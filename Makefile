@@ -1,4 +1,5 @@
 test:
+	[[ -d openapi_client ]] || cargo new --lib --name openapi openapi_client
 	cargo run -p agon_service -- generate-schema
 	openapi-generator-cli generate -i schema.json -g rust -o openapi_client
 	cargo test -p agon_tests

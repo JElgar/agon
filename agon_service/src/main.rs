@@ -15,7 +15,7 @@ use poem_openapi::{
 };
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
-use tracing::info;
+use tracing::{error, info};
 use tracing_subscriber;
 use uuid::Uuid;
 
@@ -28,7 +28,12 @@ struct JwtClaims {
 }
 
 #[derive(SecurityScheme)]
-#[oai(ty = "bearer", key_name = "authorization", key_in = "header", checker="jwt_checker")]
+#[oai(
+    ty = "bearer",
+    key_name = "authorization",
+    key_in = "header",
+    checker = "jwt_checker"
+)]
 struct AuthSchema(JwtClaims);
 
 async fn jwt_checker(_req: &Request, bearer: Bearer) -> Result<JwtClaims, poem::error::Error> {
@@ -36,13 +41,15 @@ async fn jwt_checker(_req: &Request, bearer: Bearer) -> Result<JwtClaims, poem::
     let secret_key = std::env::var("SUPABASE_JWT_SECRET").expect("JWT Secret not found");
     let decoding_key = DecodingKey::from_secret(secret_key.as_bytes());
 
-    let token_data =
-        decode::<JwtClaims>(&bearer.token, &decoding_key, &Validation::new(Algorithm::HS256)).map_err(
-            |err| {
-                info!("JWT invalid {:?}", err);
-                Error::from_string("Invalid JWT", StatusCode::UNAUTHORIZED)
-            },
-        )?;
+    let token_data = decode::<JwtClaims>(
+        &bearer.token,
+        &decoding_key,
+        &Validation::new(Algorithm::HS256),
+    )
+    .map_err(|err| {
+        info!("JWT invalid {:?}", err);
+        Error::from_string("Invalid JWT", StatusCode::UNAUTHORIZED)
+    })?;
 
     Ok(token_data.claims)
 }
@@ -52,7 +59,7 @@ struct Api;
 // impl BearerAuthorization for JwtData {
 //     fn from_request(req: &Request) -> Result<Self> {
 //         dbg!(req.headers());
-// 
+//
 //         let auth_header_value = req
 //             .headers()
 //             .get("authorization")
@@ -60,24 +67,24 @@ struct Api;
 //             .ok_or_else(|| {
 //                 Error::from_string("Authorization header must be set", StatusCode::UNAUTHORIZED)
 //             })?;
-// 
+//
 //         let jwt_value = auth_header_value.strip_prefix("Bearer: ").ok_or_else(|| {
 //             Error::from_string(
 //                 "Authorization header must have format 'Bearer: <TOKEN>'",
 //                 StatusCode::UNAUTHORIZED,
 //             )
 //         })?;
-// 
+//
 //         let secret_key = std::env::var("SUPABASE_JWT_SECRET").expect("JWT Secret not found");
 //         let decoding_key = DecodingKey::from_secret(secret_key.as_bytes());
-// 
+//
 //         let token_data =
 //             decode::<JwtData>(jwt_value, &decoding_key, &Validation::new(Algorithm::HS256))
 //                 .map_err(|err| {
 //                     info!("JWT invalid {:?}", err);
 //                     Error::from_string("Invalid JWT", StatusCode::UNAUTHORIZED)
 //                 })?;
-// 
+//
 //         Ok(token_data.claims)
 //     }
 // }
@@ -91,18 +98,31 @@ struct User {
 }
 
 #[derive(Object)]
+struct TeamListItem {
+    id: String,
+    name: String,
+}
+
+#[derive(Object)]
 struct Team {
     id: String,
     name: String,
     members: Vec<User>,
 }
 
-impl From<dao::Team> for Team {
+fn serialize_team(team: dao::Team, members: Vec<dao::User>) -> Team {
+    Team {
+        id: team.id.to_string(),
+        name: team.name,
+        members: members.into_iter().map(|it| it.into()).collect(),
+    }
+}
+
+impl From<dao::Team> for TeamListItem {
     fn from(value: dao::Team) -> Self {
-        Team {
+        TeamListItem {
             id: value.id.to_string(),
             name: value.name,
-            members: vec![],
         }
     }
 }
@@ -130,6 +150,11 @@ struct CreateUserInput {
     last_name: String,
 }
 
+#[derive(Object)]
+struct AddTeamMembersInput {
+    user_ids: Vec<String>,
+}
+
 #[derive(ApiResponse)]
 enum GetTeamResponse {
     #[oai(status = 200)]
@@ -141,6 +166,12 @@ enum GetTeamResponse {
 
 #[OpenApi]
 impl Api {
+    #[oai(path = "/ping", method = "get")]
+    async fn ping(&self) -> Result<PlainText<String>> {
+        Ok(PlainText("Pong".to_string()))
+    }
+
+
     #[oai(path = "/users", method = "post")]
     async fn create_user(
         &self,
@@ -173,7 +204,12 @@ impl Api {
             .await
             .map_err(InternalServerError)?;
 
-        Ok(Json(team.into()))
+        let team_members = dao
+            .list_team_members(&team.id)
+            .await
+            .map_err(InternalServerError)?;
+
+        Ok(Json(serialize_team(team, team_members)))
     }
 
     #[oai(path = "/teams", method = "get")]
@@ -181,10 +217,13 @@ impl Api {
         &self,
         Data(dao): Data<&Dao>,
         AuthSchema(jwt_data): AuthSchema,
-    ) -> Result<Json<Vec<Team>>> {
-        let teams = dao.list_user_teams(jwt_data.sub)
+    ) -> Result<Json<Vec<TeamListItem>>> {
+        info!("Listing teams");
+        let teams = dao
+            .list_user_teams(jwt_data.sub)
             .await
             .map_err(InternalServerError)?;
+        info!("Listed teams");
 
         Ok(Json(teams.into_iter().map(|t| t.into()).collect()))
     }
@@ -196,17 +235,51 @@ impl Api {
         AuthSchema(jwt_data): AuthSchema,
         Path(id): Path<String>,
     ) -> Result<GetTeamResponse> {
+        info!("Getting team");
+
         let team = dao
-            .get_user_team(jwt_data.sub, id)
+            .get_user_team(jwt_data.sub, id.clone())
             .await
             .map_err(InternalServerError)?;
 
-        Ok(
-            match team {
-                Some(team) => GetTeamResponse::Team(Json(team.into())),
-                None => GetTeamResponse::NotFound(PlainText("Team not found".to_string()))
-            }
-        )
+        info!("Got team");
+
+        let team_members = dao
+            .list_team_members(&id)
+            .await
+            .map_err(|e| {
+                error!("Failed to list team members {:?}", e);
+                InternalServerError(e)
+            })?;
+
+        info!("Got team members");
+
+        Ok(match team {
+            Some(team) => GetTeamResponse::Team(Json(serialize_team(team, team_members))),
+            None => GetTeamResponse::NotFound(PlainText("Team not found".to_string())),
+        })
+    }
+
+    #[oai(path = "/teams/:team_id/members", method = "post")]
+    async fn add_team_members(
+        &self,
+        Data(dao): Data<&Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(team_id): Path<String>,
+        Json(input): Json<AddTeamMembersInput>,
+    ) -> Result<()> {
+        // TODO Handle if user ids don't exists (postgres should throw an error already just need
+        // to handle it)
+
+        // TODO Validate caller is admin member of team
+
+        for user_id in input.user_ids {
+            dao.add_user_to_team(&team_id, &user_id)
+                .await
+                .map_err(InternalServerError)?;
+        }
+
+        Ok(())
     }
 }
 

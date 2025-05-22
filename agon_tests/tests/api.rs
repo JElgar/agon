@@ -1,7 +1,7 @@
 use jsonwebtoken::{EncodingKey, Header, encode};
 use openapi::apis::configuration::{self, Configuration};
-use openapi::apis::default_api::{teams_get, teams_id_get, teams_post, users_post};
-use openapi::models::{CreateTeamInput, CreateUserInput, Team, User};
+use openapi::apis::default_api::{teams_get, teams_id_get, teams_post, teams_team_id_members_post, users_post};
+use openapi::models::{AddTeamMembersInput, CreateTeamInput, CreateUserInput, Team, User};
 use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
 use uuid::Uuid;
@@ -9,6 +9,7 @@ use uuid::Uuid;
 struct TestResources {
     configuration: Configuration,
     user: User,
+    user2: User,
 }
 
 static TEST_RESOURCES: OnceCell<TestResources> = OnceCell::const_new();
@@ -19,10 +20,12 @@ async fn get_test_resources() -> &'static TestResources {
 
         let configuration = get_configuration();
         let user = create_user(CreateUserInput::default(), &configuration).await;
+        let user2 = create_user(CreateUserInput::default(), &get_user_2_configuration()).await;
 
         TestResources {
             configuration,
             user,
+            user2,
         }
     })
     .await
@@ -57,6 +60,14 @@ fn get_configuration() -> Configuration {
     }
 }
 
+fn get_user_2_configuration() -> Configuration {
+    dotenv::dotenv().ok();
+    Configuration {
+        bearer_access_token: Some(generate_jwt()),
+        ..Default::default()
+    }
+}
+
 async fn create_user(input: CreateUserInput, configuration: &Configuration) -> User {
     let response = users_post(&configuration, input).await;
     assert!(response.is_ok());
@@ -75,10 +86,11 @@ async fn my_test() {
     create_team(CreateTeamInput::default(), &test_resource.configuration).await;
 
     let result = teams_get(&test_resource.configuration).await;
+    dbg!(&result);
     assert!(result.is_ok());
     let result = result.unwrap();
     assert!(result.len() >= 1);
-    // let team = result.first().unwrap();
+    let team = result.first().unwrap();
     // assert_eq!(team.name, "My awesome team");
 }
 
@@ -116,4 +128,32 @@ async fn get_returns_team() {
     assert!(response.is_ok());
     let response = response.unwrap();
     assert_eq!(response.name, "Some team name");
+}
+
+#[tokio::test]
+async fn team_members() {
+    let test_resources = get_test_resources().await;
+
+    let team = create_team(CreateTeamInput {
+        name: "Some team name".to_string(),
+    }, &test_resources.configuration).await;
+
+    let response = teams_team_id_members_post(
+        &test_resources.configuration,
+        &team.id,
+        AddTeamMembersInput { 
+            user_ids: vec![test_resources.user2.id.clone()],
+        },
+    ).await;
+
+    assert!(response.is_ok());
+
+    let response = teams_id_get(&test_resources.configuration, &team.id).await;
+
+    assert!(response.is_ok());
+    let response = response.unwrap();
+
+    vec![test_resources.user.id.clone(), test_resources.user2.id.clone()].iter().for_each(|user_id| {
+        assert!(response.members.iter().find(|user| &user.id == user_id).is_some())
+    });
 }

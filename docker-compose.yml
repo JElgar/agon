@@ -1,6 +1,16 @@
-version: '3.9'
-
 services:
+  # api:
+  #   build:
+  #     context: agon_service
+  #   container_name: poem_api
+  #   ports:
+  #     - 7000:7000
+  #   env_file:
+  #     - .env
+  #   depends_on:
+  #     - db
+  #   restart: unless-stopped
+
   db:
     image: postgres
     restart: always

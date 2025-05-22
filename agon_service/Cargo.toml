@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 poem = "3"
 poem-openapi = { version = "5", features = ["swagger-ui"] }
+openssl = { version = "0.10", features = ["vendored"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 uuid = { version = "1.16.0", features = ["v4"] }
 dotenv = "0.15.0"

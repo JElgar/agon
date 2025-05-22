@@ -81,7 +81,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/Team"
+                    "$ref": "#/components/schemas/TeamListItem"
                   }
                 }
               }
@@ -137,10 +137,61 @@
           }
         ]
       }
+    },
+    "/teams/{team_id}/members": {
+      "post": {
+        "parameters": [
+          {
+            "name": "team_id",
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "required": true,
+            "deprecated": false,
+            "explode": true
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json; charset=utf-8": {
+              "schema": {
+                "$ref": "#/components/schemas/AddTeamMembersInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "AuthSchema": []
+          }
+        ]
+      }
     }
   },
   "components": {
     "schemas": {
+      "AddTeamMembersInput": {
+        "type": "object",
+        "title": "AddTeamMembersInput",
+        "required": [
+          "user_ids"
+        ],
+        "properties": {
+          "user_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "CreateTeamInput": {
         "type": "object",
         "title": "CreateTeamInput",
@@ -193,6 +244,22 @@
             "items": {
               "$ref": "#/components/schemas/User"
             }
+          }
+        }
+      },
+      "TeamListItem": {
+        "type": "object",
+        "title": "TeamListItem",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
           }
         }
       },

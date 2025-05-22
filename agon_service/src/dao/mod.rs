@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use base64::{Engine, encode, prelude::BASE64_STANDARD};
 use rand::Rng;
-use sqlx::{query, query_as, types::time::OffsetDateTime, Pool, Postgres, Transaction};
+use sqlx::{Pool, Postgres, Transaction, query, query_as, types::time::OffsetDateTime};
 use thiserror::Error;
 use tracing::{error, info};
 
@@ -80,11 +80,7 @@ impl Dao {
         Ok(user)
     }
 
-    pub async fn create_team(
-        &self,
-        user_id: String,
-        name: String,
-    ) -> Result<Team, DaoError> {
+    pub async fn create_team(&self, user_id: String, name: String) -> Result<Team, DaoError> {
         info!("Creating team");
 
         let team = Team {
@@ -168,8 +164,12 @@ impl Dao {
         Ok(teams)
     }
 
-    pub async fn get_user_team(&self, user_id: String, team_id: String) -> Result<Option<Team>, DaoError> {
-        info!("Listing user teams user_id={}", user_id);
+    pub async fn get_user_team(
+        &self,
+        user_id: String,
+        team_id: String,
+    ) -> Result<Option<Team>, DaoError> {
+        info!("Getting user team user_id={} team_id={}", user_id, team_id);
         let team = query_as!(
             Team,
             r#"
@@ -189,5 +189,60 @@ impl Dao {
         })?;
 
         Ok(team)
+    }
+
+    pub async fn add_user_to_team(
+        &self,
+        team_id: &String,
+        user_id: &String,
+    ) -> Result<(), DaoError> {
+        info!(
+            "Creating team membership team_id={} user_id={}",
+            team_id, user_id
+        );
+
+        // TODO Share this code with create team
+        sqlx::query!(
+            r#"
+                INSERT INTO team_members (team_id, user_id)
+                VALUES ($1, $2)
+            "#,
+            team_id,
+            user_id
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|err| {
+            error!("Failed to insert membership {:?}", err);
+            DaoError::InternalServerError("Failed to insert membership".to_string())
+        })?;
+
+        Ok(())
+    }
+
+    pub async fn list_team_members(&self, team_id: &String) -> Result<Vec<User>, DaoError> {
+        info!("Fetching team members for team_id={}", team_id);
+
+        let members = sqlx::query_as!(
+            User,
+            r#"
+                SELECT u.id, u.first_name, u.last_name, u.email, u.created_at
+                FROM users u
+                JOIN team_members tm ON u.id = tm.user_id
+                WHERE tm.team_id = $1
+            "#,
+            team_id
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|err| {
+            error!(
+                "Failed to fetch team members for team_id={}: {:?}",
+                team_id, err
+            );
+            DaoError::InternalServerError("Failed to fetch team members".to_string())
+        })?;
+
+        Ok(members)
     }
 }

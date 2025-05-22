@@ -1,0 +1,6 @@
+config:
+  hcloud:token:
+    secure: AAABAPJSQRbLOi0D8JTxBs76O7LXyf+7a6QF2KTpa533tASJsTAPqICACOtGQXhiurbwvrTPD3VS88vDO7PYvQ3JqKccA+vovWTk1AX0pS16iEfbXA0GpuzvHJalATI7
+  agon_infra:letsencrypt-email: jamesnelgar@gmail.com
+  cloudflare:apiToken:
+    secure: AAABAPMVEzLa2DhmgFvaOUFB64m9UyeHds81MnH/XLwmipszfEti6rqmCuh4D93/tSRwtgla+B5kzwiZFpDTKZMmZPY4Bd1O

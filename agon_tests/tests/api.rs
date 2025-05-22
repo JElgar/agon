@@ -7,7 +7,6 @@ use tokio::sync::OnceCell;
 use uuid::Uuid;
 
 struct TestResources {
-    configuration: Configuration,
     user: User,
     user2: User,
 }
@@ -18,12 +17,13 @@ async fn get_test_resources() -> &'static TestResources {
     TEST_RESOURCES.get_or_init(|| async {
         println!("Initializing tests");
 
-        let configuration = get_configuration();
-        let user = create_user(CreateUserInput::default(), &configuration).await;
-        let user2 = create_user(CreateUserInput::default(), &get_user_2_configuration()).await;
+        let user_id = Uuid::new_v4().to_string();
+        let user = create_user(CreateUserInput::default(), &get_configuration_for_user(&user_id)).await;
+
+        let user2_id = Uuid::new_v4().to_string();
+        let user2 = create_user(CreateUserInput::default(), &get_configuration_for_user(&user2_id)).await;
 
         TestResources {
-            configuration,
             user,
             user2,
         }
@@ -37,9 +37,9 @@ struct JwtData {
     exp: usize,
 }
 
-fn generate_jwt() -> String {
+fn generate_jwt(user_id: &String) -> String {
     let my_claims = JwtData {
-        sub: Uuid::new_v4().to_string(),
+        sub: user_id.clone(),
         exp: 9999999999,
     };
 
@@ -52,18 +52,10 @@ fn generate_jwt() -> String {
     .expect("Failed to generate test jwt")
 }
 
-fn get_configuration() -> Configuration {
+fn get_configuration_for_user(user_id: &String) -> Configuration {
     dotenv::dotenv().ok();
     Configuration {
-        bearer_access_token: Some(generate_jwt()),
-        ..Default::default()
-    }
-}
-
-fn get_user_2_configuration() -> Configuration {
-    dotenv::dotenv().ok();
-    Configuration {
-        bearer_access_token: Some(generate_jwt()),
+        bearer_access_token: Some(generate_jwt(user_id)),
         ..Default::default()
     }
 }
@@ -76,6 +68,7 @@ async fn create_user(input: CreateUserInput, configuration: &Configuration) -> U
 
 async fn create_team(input: CreateTeamInput, configuration: &Configuration) -> Team {
     let response = teams_post(&configuration, input).await;
+    dbg!(&response);
     assert!(response.is_ok());
     response.unwrap()
 }
@@ -83,9 +76,11 @@ async fn create_team(input: CreateTeamInput, configuration: &Configuration) -> T
 #[tokio::test]
 async fn my_test() {
     let test_resource = get_test_resources().await;
-    create_team(CreateTeamInput::default(), &test_resource.configuration).await;
+    let configuration = get_configuration_for_user(&test_resource.user.id);
 
-    let result = teams_get(&test_resource.configuration).await;
+    create_team(CreateTeamInput::default(), &configuration).await;
+
+    let result = teams_get(&configuration).await;
     dbg!(&result);
     assert!(result.is_ok());
     let result = result.unwrap();
@@ -98,8 +93,9 @@ async fn my_test() {
 async fn get_returns_not_found() {
     let test_resource = get_test_resources().await;
     let id = "some-fake-id";
+    let configuration = get_configuration_for_user(&test_resource.user.id);
 
-    let response = teams_id_get(&test_resource.configuration, id).await;
+    let response = teams_id_get(&configuration, id).await;
 
     assert!(response.is_err());
 
@@ -119,11 +115,13 @@ async fn get_returns_not_found() {
 #[tokio::test]
 async fn get_returns_team() {
     let test_resources = get_test_resources().await;
+    let configuration = get_configuration_for_user(&test_resources.user.id);
+
     let team = create_team(CreateTeamInput {
         name: "Some team name".to_string(),
-    }, &test_resources.configuration).await;
+    }, &configuration).await;
 
-    let response = teams_id_get(&test_resources.configuration, &team.id).await;
+    let response = teams_id_get(&configuration, &team.id).await;
 
     assert!(response.is_ok());
     let response = response.unwrap();
@@ -133,22 +131,24 @@ async fn get_returns_team() {
 #[tokio::test]
 async fn team_members() {
     let test_resources = get_test_resources().await;
+    let configuration = get_configuration_for_user(&test_resources.user.id);
 
     let team = create_team(CreateTeamInput {
         name: "Some team name".to_string(),
-    }, &test_resources.configuration).await;
+    }, &configuration).await;
 
     let response = teams_team_id_members_post(
-        &test_resources.configuration,
+        &configuration,
         &team.id,
         AddTeamMembersInput { 
             user_ids: vec![test_resources.user2.id.clone()],
         },
     ).await;
 
+    dbg!(&response);
     assert!(response.is_ok());
 
-    let response = teams_id_get(&test_resources.configuration, &team.id).await;
+    let response = teams_id_get(&configuration, &team.id).await;
 
     assert!(response.is_ok());
     let response = response.unwrap();

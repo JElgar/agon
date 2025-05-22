@@ -2,3 +2,4 @@
 resolver = "2"
 
 members = ["agon_service", "agon_tests", "openapi_client"]
+default-members = ["agon_service", "agon_tests"]

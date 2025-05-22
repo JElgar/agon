@@ -1,6 +1,4 @@
-use std::str::FromStr;
-
-use base64::{Engine, encode, prelude::BASE64_STANDARD};
+use base64::{Engine, prelude::BASE64_STANDARD};
 use rand::Rng;
 use sqlx::{Pool, Postgres, Transaction, query, query_as, types::time::OffsetDateTime};
 use thiserror::Error;
@@ -8,7 +6,7 @@ use tracing::{error, info};
 
 fn generate_id() -> String {
     let random_bytes: [u8; 8] = rand::rng().random();
-    return BASE64_STANDARD.encode(&random_bytes);
+    BASE64_STANDARD.encode(random_bytes)
 }
 
 #[derive(Error, Debug)]

@@ -4,10 +4,10 @@ use clap::{Parser, Subcommand};
 use dao::Dao;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use poem::{
-    EndpointExt, Error, FromRequest, Request, RequestBody, Result, Route, Server,
-    error::InternalServerError, http::StatusCode, listener::TcpListener, web::Data,
+    EndpointExt, Error, Request, Result, Route, Server, error::InternalServerError,
+    http::StatusCode, listener::TcpListener, web::Data,
 };
-use poem_openapi::auth::{Bearer, BearerAuthorization};
+use poem_openapi::auth::Bearer;
 use poem_openapi::{
     ApiResponse, Object, OpenApi, OpenApiService, SecurityScheme,
     param::Path,
@@ -16,8 +16,6 @@ use poem_openapi::{
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
 use tracing::{error, info};
-use tracing_subscriber;
-use uuid::Uuid;
 
 mod dao;
 
@@ -171,7 +169,6 @@ impl Api {
         Ok(PlainText("Pong".to_string()))
     }
 
-
     #[oai(path = "/users", method = "post")]
     async fn create_user(
         &self,
@@ -244,13 +241,10 @@ impl Api {
 
         info!("Got team");
 
-        let team_members = dao
-            .list_team_members(&id)
-            .await
-            .map_err(|e| {
-                error!("Failed to list team members {:?}", e);
-                InternalServerError(e)
-            })?;
+        let team_members = dao.list_team_members(&id).await.map_err(|e| {
+            error!("Failed to list team members {:?}", e);
+            InternalServerError(e)
+        })?;
 
         info!("Got team members");
 
@@ -264,7 +258,7 @@ impl Api {
     async fn add_team_members(
         &self,
         Data(dao): Data<&Dao>,
-        AuthSchema(jwt_data): AuthSchema,
+        AuthSchema(_jwt_data): AuthSchema,
         Path(team_id): Path<String>,
         Json(input): Json<AddTeamMembersInput>,
     ) -> Result<()> {
@@ -293,7 +287,7 @@ async fn create_dao() -> Result<Dao, sqlx::Error> {
 
     let dao = Dao::create(pool);
 
-    return Ok(dao);
+    Ok(dao)
 }
 
 #[derive(Debug, Parser)] // requires `derive` feature
@@ -328,7 +322,7 @@ async fn main() {
         OpenApiService::new(Api, "Hello World", "1.0").server("http://localhost:7000");
 
     match args.command {
-        Commands::RunServer { url } => {
+        Commands::RunServer { url: _ } => {
             info!("Starting up server");
 
             let ui = api_service.swagger_ui();
@@ -342,7 +336,8 @@ async fn main() {
 
             Server::new(TcpListener::bind("127.0.0.1:7000"))
                 .run(app)
-                .await;
+                .await
+                .expect("Failed to start server");
         }
 
         Commands::GenerateSchema => {

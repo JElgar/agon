@@ -76,7 +76,7 @@ const k8sProvider = new k8s.Provider('k3s-provider', {
 	kubeconfig,
 })
 
-const ctrl = new nginx.IngressController("myctrl", {
+const ctrl = new nginx.IngressController("nginx-ingress-controller", {
     controller: {
         publishService: {
             enabled: true,

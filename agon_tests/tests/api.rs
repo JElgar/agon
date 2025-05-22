@@ -1,6 +1,8 @@
 use jsonwebtoken::{EncodingKey, Header, encode};
 use openapi::apis::configuration::{self, Configuration};
-use openapi::apis::default_api::{teams_get, teams_id_get, teams_post, teams_team_id_members_post, users_post};
+use openapi::apis::default_api::{
+    teams_get, teams_id_get, teams_post, teams_team_id_members_post, users_post,
+};
 use openapi::models::{AddTeamMembersInput, CreateTeamInput, CreateUserInput, Team, User};
 use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
@@ -14,21 +16,27 @@ struct TestResources {
 static TEST_RESOURCES: OnceCell<TestResources> = OnceCell::const_new();
 
 async fn get_test_resources() -> &'static TestResources {
-    TEST_RESOURCES.get_or_init(|| async {
-        println!("Initializing tests");
+    TEST_RESOURCES
+        .get_or_init(|| async {
+            println!("Initializing tests");
 
-        let user_id = Uuid::new_v4().to_string();
-        let user = create_user(CreateUserInput::default(), &get_configuration_for_user(&user_id)).await;
+            let user_id = Uuid::new_v4().to_string();
+            let user = create_user(
+                CreateUserInput::default(),
+                &get_configuration_for_user(&user_id),
+            )
+            .await;
 
-        let user2_id = Uuid::new_v4().to_string();
-        let user2 = create_user(CreateUserInput::default(), &get_configuration_for_user(&user2_id)).await;
+            let user2_id = Uuid::new_v4().to_string();
+            let user2 = create_user(
+                CreateUserInput::default(),
+                &get_configuration_for_user(&user2_id),
+            )
+            .await;
 
-        TestResources {
-            user,
-            user2,
-        }
-    })
-    .await
+            TestResources { user, user2 }
+        })
+        .await
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -117,9 +125,13 @@ async fn get_returns_team() {
     let test_resources = get_test_resources().await;
     let configuration = get_configuration_for_user(&test_resources.user.id);
 
-    let team = create_team(CreateTeamInput {
-        name: "Some team name".to_string(),
-    }, &configuration).await;
+    let team = create_team(
+        CreateTeamInput {
+            name: "Some team name".to_string(),
+        },
+        &configuration,
+    )
+    .await;
 
     let response = teams_id_get(&configuration, &team.id).await;
 
@@ -133,17 +145,22 @@ async fn team_members() {
     let test_resources = get_test_resources().await;
     let configuration = get_configuration_for_user(&test_resources.user.id);
 
-    let team = create_team(CreateTeamInput {
-        name: "Some team name".to_string(),
-    }, &configuration).await;
+    let team = create_team(
+        CreateTeamInput {
+            name: "Some team name".to_string(),
+        },
+        &configuration,
+    )
+    .await;
 
     let response = teams_team_id_members_post(
         &configuration,
         &team.id,
-        AddTeamMembersInput { 
+        AddTeamMembersInput {
             user_ids: vec![test_resources.user2.id.clone()],
         },
-    ).await;
+    )
+    .await;
 
     dbg!(&response);
     assert!(response.is_ok());
@@ -153,7 +170,18 @@ async fn team_members() {
     assert!(response.is_ok());
     let response = response.unwrap();
 
-    vec![test_resources.user.id.clone(), test_resources.user2.id.clone()].iter().for_each(|user_id| {
-        assert!(response.members.iter().find(|user| &user.id == user_id).is_some())
+    vec![
+        test_resources.user.id.clone(),
+        test_resources.user2.id.clone(),
+    ]
+    .iter()
+    .for_each(|user_id| {
+        assert!(
+            response
+                .members
+                .iter()
+                .find(|user| &user.id == user_id)
+                .is_some()
+        )
     });
 }

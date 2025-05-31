@@ -1,0 +1,21 @@
+name: 'Setup'
+description: 'Setup project and run db'
+runs:
+  using: 'composite'
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+    - run: npm install @openapitools/openapi-generator-cli -g
+      shell: bash
+    - run: cargo install sqlx-cli
+      shell: bash
+
+    - run: docker compose up -d db
+      shell: bash
+
+    - run: cp .env.example .env && sed -i 's/^DATABASE_URL=.*/DATABASE_URL=postgresql:\/\/postgres:postgres@localhost:5432\/db/' .env
+      shell: bash
+
+    - run: make reset-db
+      shell: bash
+    - run: make generate-schema
+      shell: bash

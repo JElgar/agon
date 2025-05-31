@@ -9,9 +9,7 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-
-      - run: make init
+      - uses: ./.github/actions/setup
       - run: cargo fmt -- --check
       - run: cargo clippy -- -D warnings
 
@@ -20,60 +18,21 @@ jobs:
     defaults:
       run:
         shell: bash
-    services:
-      db_service:
-        image: postgres
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_DB: db
-          POSTGRES_PASSWORD: postgres
-        # Set health checks to wait until postgres has started
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cp .env.example .env && sed -i 's/^DATABASE_URL=.*/DATABASE_URL=postgresql:\/\/postgres:postgres@localhost:5432\/db/' .env
-      - run: npm install @openapitools/openapi-generator-cli -g
-      - run: cargo install sqlx-cli
-      - run: make reset-db
-      - run: make generate-schema
+      - uses: ./.github/actions/setup
       - run: make run &
       - run: ./wait_till_up.sh
       - run: make test
 
   build:
     runs-on: ubuntu-latest
-    services:
-      db_service:
-        image: postgres
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_DB: db
-          POSTGRES_PASSWORD: postgres
-        # Set health checks to wait until postgres has started
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cp .env.example .env && sed -i 's/^DATABASE_URL=.*/DATABASE_URL=postgresql:\/\/postgres:postgres@localhost:5432\/db/' .env
-      - run: npm install @openapitools/openapi-generator-cli -g
-      - run: cargo install sqlx-cli
-      - run: make reset-db
+      - uses: ./.github/actions/setup
       - run: make build
 
     # TODO cargo run and then make tests work against localhost (without docker maybe? - or build docke rand use taht)

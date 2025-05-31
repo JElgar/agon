@@ -33,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
-      - run: make build
+      - run: cargo build
 
     # TODO cargo run and then make tests work against localhost (without docker maybe? - or build docke rand use taht)
 

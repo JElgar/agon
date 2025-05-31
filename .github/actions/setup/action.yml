@@ -12,7 +12,7 @@ runs:
     - run: docker compose up -d db
       shell: bash
 
-    - run: cp .env.example .env && sed -i 's/^DATABASE_URL=.*/DATABASE_URL=postgresql:\/\/postgres:postgres@localhost:5432\/db/' .env
+    - run: cp .env.example .env
       shell: bash
 
     - run: make reset-db

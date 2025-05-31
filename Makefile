@@ -5,6 +5,7 @@ generate-schema:
 	make init
 	cargo run -p agon_service -- generate-schema
 	openapi-generator-cli generate -i schema.json -g rust -o openapi_client
+	echo "disable_all_formatting = true" > openapi_client/.rustfmt.toml
 
 build:
 	make generate-schema

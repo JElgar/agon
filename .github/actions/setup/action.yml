@@ -4,8 +4,10 @@ runs:
   using: 'composite'
   steps:
     - uses: dtolnay/rust-toolchain@stable
+
     - run: npm install @openapitools/openapi-generator-cli -g
       shell: bash
+
     - run: cargo install sqlx-cli
       shell: bash
 
@@ -17,5 +19,6 @@ runs:
 
     - run: make reset-db
       shell: bash
+
     - run: make generate-schema
       shell: bash

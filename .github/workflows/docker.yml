@@ -18,8 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up your composite action
-        uses: ./.github/actions/setup
+      - uses: ./.github/actions/setup
 
       - run: cargo sqlx prepare
         working-directory: ./agon_service

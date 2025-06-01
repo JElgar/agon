@@ -8,6 +8,9 @@ on:
 jobs:
   docker-push:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     defaults:
       run:
         shell: bash

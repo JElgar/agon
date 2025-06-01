@@ -4,6 +4,10 @@ on:
   push:
     branches: [ main ]
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   build:
     uses: JElgar/agon_service/.github/workflows/build.yml@main

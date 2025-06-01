@@ -5,6 +5,8 @@ runs:
   steps:
     - uses: dtolnay/rust-toolchain@stable
 
+    - uses: Swatinem/rust-cache@v2
+
     - run: npm install @openapitools/openapi-generator-cli -g
       shell: bash
 

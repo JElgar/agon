@@ -67,6 +67,21 @@ const k8sProvider = new k8s.Provider('k3s-provider', {
 	kubeconfig,
 })
 
+const cloudnativePgNamespace = new k8s.core.v1.Namespace("cloudnative-pg-namespace", {
+	metadata: {
+		name: "cnpg-system",
+	}
+}, { provider: k8sProvider });
+
+const cloudnativePg = new k8s.helm.v4.Chart('cloudnative-pg', {
+	chart: 'cloudnative-pg',
+	version: 'v0.24.0',
+	repositoryOpts: {
+		repo: 'https://cloudnative-pg.github.io/charts'
+	},
+	namespace: cloudnativePgNamespace.metadata.apply(metadata => metadata.name),
+}, { provider: k8sProvider })
+
 const ctrl = new nginx.IngressController("nginx-ingress", {
     controller: {
         publishService: {
@@ -122,9 +137,39 @@ const issuer = new k8s.apiextensions.CustomResource('letsencrypt-prod', {
 	},
 }, { provider: k8sProvider, dependsOn: [certManager, ctrl] })
 
-const appLabels = { app: "nginx" };
-const deployment = new k8s.apps.v1.Deployment("nginx-deployment", {
-	metadata: { name: "nginx" },
+const dbCluster = new k8s.apiextensions.CustomResource("db", {
+    apiVersion: "postgresql.cnpg.io/v1",
+    kind: "Cluster",
+    metadata: {
+        name: "agon-db",
+    },
+    spec: {
+        instances: 2,
+        storage: {
+            size: "1Gi",
+        },
+        monitoring: {
+            enablePodMonitor: true,
+        },
+    },
+}, { provider: k8sProvider, dependsOn: [cloudnativePg] });
+
+// Create a secret for JWT
+const jwtSecret = new k8s.core.v1.Secret("jwt-secret", {
+    metadata: {
+        name: "jwt-secret",
+        namespace: "default",
+    },
+    type: "Opaque",
+    data: {
+        "jwt-secret": config.requireSecret("jwtSecret").apply(val => Buffer.from(val).toString("base64")),
+    },
+}, { provider: k8sProvider });
+
+
+const appLabels = { app: "agon" };
+const deployment = new k8s.apps.v1.Deployment("agon-deployment", {
+	metadata: { name: "agon" },
 	spec: {
 		selector: { matchLabels: appLabels },
 		replicas: 1,
@@ -133,9 +178,29 @@ const deployment = new k8s.apps.v1.Deployment("nginx-deployment", {
 			spec: {
 				containers: [
 					{
-						name: "nginx",
-						image: "nginx:alpine",
-						ports: [{ containerPort: 80 }],
+						name: "agon-service",
+						image: "ghcr.io/jelgar/agon_service:sha-e470a2c",
+						ports: [{ containerPort: 7000 }],
+						env: [
+							{
+								name: "DATABASE_URL",
+								valueFrom: {
+									secretKeyRef: {
+										name: dbCluster.metadata.name.apply(value => `${value}-app`),
+										key: 'uri'
+									}
+								},
+							},
+							{
+								name: "JWT_SECRET",
+								valueFrom: {
+									secretKeyRef: {
+										name: jwtSecret.metadata.name,
+										key: 'jwt-secret',
+									}
+								},
+							},
+						]
 					},
 				],
 			},
@@ -143,29 +208,29 @@ const deployment = new k8s.apps.v1.Deployment("nginx-deployment", {
 	},
 }, { provider: k8sProvider });
 
-const service = new k8s.core.v1.Service("nginx-service", {
-	metadata: { name: "nginx" },
+const service = new k8s.core.v1.Service("agon-service", {
+	metadata: { name: "agon" },
 	spec: {
 		selector: appLabels,
-		ports: [{ port: 80, targetPort: 80 }],
+		ports: [{ port: 7000, targetPort: 7000 }],
 	},
 }, { provider: k8sProvider });
 
-const fullDomain = `nginx.${baseDomain}`;
+const fullDomain = `agon.${baseDomain}`;
 
-const certificate = new k8s.apiextensions.CustomResource("nginx-app-cert", {
+const certificate = new k8s.apiextensions.CustomResource("agon-cert", {
     apiVersion: "cert-manager.io/v1",
     kind: "Certificate",
-    metadata: { namespace: 'default', name: "nginx-app-cert" },
+    metadata: { namespace: 'default', name: "agon-cert" },
     spec: {
-        secretName: "nginx-app-cert",
+        secretName: "agon-cert",
         issuerRef: { name: issuer.metadata.name, kind: "ClusterIssuer" },
         commonName: fullDomain,
         dnsNames: [fullDomain],
     },
 }, { provider: k8sProvider });
 
-const ingress = new k8s.networking.v1.Ingress("nginx-ingress", {
+const ingress = new k8s.networking.v1.Ingress("agon-ingress", {
     metadata: {
         namespace: "default",
         annotations: {
@@ -176,7 +241,7 @@ const ingress = new k8s.networking.v1.Ingress("nginx-ingress", {
     spec: {
         tls: [{
             hosts: [fullDomain],
-            secretName: "nginx-app-cert",
+            secretName: "agon-cert",
         }],
         rules: [{
             host: fullDomain,
@@ -187,7 +252,7 @@ const ingress = new k8s.networking.v1.Ingress("nginx-ingress", {
                     backend: {
                         service: {
                             name: service.metadata.name,
-                            port: { number: 80 },
+                            port: { number: 7000 },
                         },
                     },
                 }],

@@ -10,3 +10,5 @@ config:
     secure: AAABAEORZWj89y5FmVA+K//6T57BZGeevHbz0hUnh9Ywzbb4tl1PF7Yk7YmCR/XJmuvUtyVSMassZm7COhDYlWMSYpD59RUU
   hcloud:token:
     secure: AAABAGj7oe9pnKlRP9flfZMIkQFRhh1AeaURflQNPIWwMEHebPAQtMykOcDvy3E9NEdoh0XeOnOwqHelr6jiNHwHaf1jN397UJGDdLvc4wF5Pyz4ccCXXdMzWm4Htu15
+  agon_infra:jwtSecret:
+    secure: AAABAGi4aeJZ7FC26DYmrLyYvdS86iUW8/NEmQi8D3eQ362tukOf/g3v3nTs2/96qv8kGESZCogaLH3lFPuRXRwFzZmnZDmoqm3Od/jp9YIOPb1mRW4hR7OzQ3BgmKBw

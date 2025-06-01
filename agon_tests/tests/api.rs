@@ -51,7 +51,7 @@ fn generate_jwt(user_id: &String) -> String {
         exp: 9999999999,
     };
 
-    let secret_key = std::env::var("SUPABASE_JWT_SECRET").expect("JWT Secret not found");
+    let secret_key = std::env::var("JWT_SECRET").expect("JWT Secret not found");
     encode(
         &Header::default(),
         &my_claims,

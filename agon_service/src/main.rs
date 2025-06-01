@@ -36,7 +36,7 @@ struct AuthSchema(JwtClaims);
 
 async fn jwt_checker(_req: &Request, bearer: Bearer) -> Result<JwtClaims, poem::error::Error> {
     // Change to change the validity of the token (set to false to fail the validation)
-    let secret_key = std::env::var("SUPABASE_JWT_SECRET").expect("JWT Secret not found");
+    let secret_key = std::env::var("JWT_SECRET").expect("JWT Secret not found");
     let decoding_key = DecodingKey::from_secret(secret_key.as_bytes());
 
     let token_data = decode::<JwtClaims>(
@@ -334,7 +334,7 @@ async fn main() {
                 .nest("/docs", ui)
                 .data(dao);
 
-            Server::new(TcpListener::bind("127.0.0.1:7000"))
+            Server::new(TcpListener::bind("0.0.0.0:7000"))
                 .run(app)
                 .await
                 .expect("Failed to start server");

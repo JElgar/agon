@@ -3,35 +3,26 @@ import * as hcloud from "@pulumi/hcloud";
 import * as command from '@pulumi/command';
 import * as k8s from "@pulumi/kubernetes";
 import * as cloudflare from "@pulumi/cloudflare";
-import * as fs from "node:fs";
-import * as path from "node:path";
 import * as nginx from "@pulumi/kubernetes-ingress-nginx";
 
 const config = new pulumi.Config();
 const subdomainPrefix = pulumi.getStack();
 const baseDomain = `${subdomainPrefix}.agon.jameselgar.com`;
 
-// const privateKeyBase64 = config.get("privateKeyBase64")!;
-// const privateKey = Buffer.from(privateKeyBase64, 'base64').toString('ascii')
-// const privateKey = std.file({
-// 	input: "~/.ssh/id_ecdsa",
-// }).then(invoke => invoke.result),
-const privateKeyPath = path.resolve(process.env.HOME || "~", ".ssh", "id_ecdsa");
-const privateKey = fs.readFileSync(privateKeyPath).toString("utf8")
-// 
-// const publicKeyPath = path.resolve(process.env.HOME || "~", ".ssh", "id_ecdsa.pub");
-// const publicKey = fs.readFileSync(publicKeyPath).toString("utf8")
-// 
-// const sshKey = new hcloud.SshKey("main", {
-// 	name: "ssh-key",
-// 	publicKey,
-// });
-const sshKey = {
-	name: 'Amazon M4 Mac'
-}
+// pulumi config set --secret privateKeyBase64 "$(cat ~/.ssh/pulumi_agon_key | base64)"
+const privateKeyBase64 = config.requireSecret("privateKeyBase64");
+const privateKey = privateKeyBase64.apply(key => Buffer.from(key, 'base64').toString('utf8'));
+
+// pulumi config set --secret publicKey "$(cat ~/.ssh/pulumi_agon_key.pub | tr -d '\n\r')"
+const publicKey = config.requireSecret("publicKey");
+
+const sshKey = new hcloud.SshKey("main", {
+    name: `${pulumi.getStack()}-ssh-key`,
+    publicKey: publicKey,
+});
 
 const node = new hcloud.Server("node", {
-	name: "node",
+	name: `${pulumi.getStack()}-node`,
 	image: "debian-11",
 	serverType: "cx22",
 	publicNets: [{
@@ -76,7 +67,7 @@ const k8sProvider = new k8s.Provider('k3s-provider', {
 	kubeconfig,
 })
 
-const ctrl = new nginx.IngressController("nginx-ingress-controller", {
+const ctrl = new nginx.IngressController("nginx-ingress", {
     controller: {
         publishService: {
             enabled: true,

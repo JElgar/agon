@@ -1,0 +1,20 @@
+name: PR
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    uses: JElgar/agon_service/.github/workflows/build.yml@main
+    secrets: inherit
+
+  publish:
+    needs: build
+    uses: JElgar/agon_service/.github/workflows/docker.yml@main
+    secrets: inherit
+
+  deploy:
+    needs: publish
+    uses: JElgar/agon_service/.github/workflows/deploy.yml@main
+    secrets: inherit

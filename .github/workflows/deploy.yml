@@ -19,7 +19,7 @@ jobs:
 
     environment:
       name: ${{ inputs.stack-name }}
-      url: ${{ steps.pulumi-up.outputs.agonServiceDomain }}
+      url: https://${{ steps.pulumi-up.outputs.agonServiceDomain }}
 
     steps:
       - uses: actions/checkout@v4

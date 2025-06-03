@@ -314,7 +314,6 @@ enum Commands {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
-    dotenv::dotenv().ok();
 
     let args = Cli::parse();
 

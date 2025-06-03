@@ -61,8 +61,8 @@ fn generate_jwt(user_id: &String) -> String {
 }
 
 fn get_configuration_for_user(user_id: &String) -> Configuration {
-    dotenv::dotenv().ok();
     Configuration {
+        base_path: std::env::var("AGON_SERVICE_URL").expect("AGON_SERVICE_URL must be set"),
         bearer_access_token: Some(generate_jwt(user_id)),
         ..Default::default()
     }

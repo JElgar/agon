@@ -1,0 +1,28 @@
+on:
+  workflow_call:
+    inputs:
+      agon-service-url:
+        required: true
+        type: string
+    secrets:
+      jwt-secret:
+        required: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup
+        uses: ./.github/actions/setup
+
+      - name: Run tests
+        run: cargo test -p agon_tests
+        env:
+          JWT_SECRET: ${{ secrets.jwt-secret }}
+          AGON_SERVICE_URL: ${{ inputs.agon-service-url }}

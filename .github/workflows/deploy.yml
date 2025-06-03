@@ -7,6 +7,9 @@ on:
       stack-name:
         required: true
         type: string
+    outputs:
+      agon-service-url:
+        value: ${{ jobs.deploy.outputs.agon-service-url }}
 
 jobs:
   deploy:
@@ -20,6 +23,9 @@ jobs:
     environment:
       name: ${{ inputs.stack-name }}
       url: https://${{ steps.pulumi-up.outputs.agonServiceDomain }}
+
+    outputs:
+      agon-service-url: https://${{ steps.pulumi-up.outputs.agonServiceDomain }}
 
     steps:
       - uses: actions/checkout@v4

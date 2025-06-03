@@ -25,3 +25,11 @@ jobs:
     with:
       agon-image: ${{ needs.publish.outputs.image }}
       stack-name: staging
+
+  test:
+    needs: deploy
+    uses: JElgar/agon_service/.github/workflows/test.yml@main
+    with:
+      agon-service-url: ${{ needs.deploy.outputs.agon-service-url }}
+    secrets:
+      jwt-secret: ${{ secrets.SUPABASE_STAGING_JWT_SECRET }}

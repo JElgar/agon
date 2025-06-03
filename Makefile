@@ -1,3 +1,9 @@
+# Load environment from .env
+ifneq (,$(wildcard ./.env))
+	include .env
+	export
+endif
+
 init:
 	[[ -d openapi_client ]] || cargo new --lib --name openapi openapi_client
 

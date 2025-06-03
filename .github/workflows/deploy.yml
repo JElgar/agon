@@ -17,6 +17,10 @@ jobs:
         shell: bash
         working-directory: agon_infra
 
+    environment:
+      name: ${{ inputs.stack-name }}
+      url: ${{ steps.pulumi-up.outputs.agonServiceDomain }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -42,15 +46,10 @@ jobs:
           message: 'Set ${{ inputs.stack-name }} agon service image to ${{ inputs.agon-image }}'
 
       - uses: pulumi/actions@v6
+        id: pulumi-up
         with:
           command: up
           stack-name: ${{ inputs.stack-name }}
-          work-dir: ./agon_infra
-
-      - uses: pulumi/actions@v6
-        with:
-          command: up
-          stack-name: staging
           work-dir: ./agon_infra
         env:
           PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}

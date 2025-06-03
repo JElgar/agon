@@ -261,4 +261,4 @@ const ingress = new k8s.networking.v1.Ingress("agon-ingress", {
     },
 }, { provider: k8sProvider, dependsOn: [ctrl] });
 
-export const ingressDomain = fullDomain;
+export const agonServiceDomain = fullDomain;

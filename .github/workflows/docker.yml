@@ -3,7 +3,7 @@ on:
     outputs:
       image:
         description: 'Full container image reference with tag'
-        value: ghcr.io/${{ jobs.docker-push.image }}:${{ github.sha }}
+        value: ${{ jobs.docker-push.outputs.image }}
 
 jobs:
   docker-push:
@@ -15,7 +15,7 @@ jobs:
       run:
         shell: bash
     outputs:
-      image: ${{ steps.lower-repo.outputs.repository }}
+      image: ${{ fromJSON(steps.meta.outputs.json).tags[1] }}
 
     steps:
       - uses: actions/checkout@v4
@@ -55,6 +55,3 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64
-
-      - id: lower-repo
-        run: echo "repository=${GITHUB_REPOSITORY@L}" >> $GITHUB_OUTPUT

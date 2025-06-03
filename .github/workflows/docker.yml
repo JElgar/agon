@@ -3,7 +3,7 @@ on:
     outputs:
       image:
         description: 'Full container image reference with tag'
-        value: ${{ jobs.build.outputs.image }}
+        value: ghcr.io/${{ github.repository }}:${{ github.sha }}
 
 jobs:
   docker-push:

@@ -1,5 +1,12 @@
 on:
   workflow_call:
+    inputs:
+      agon-image:
+        required: true
+        type: string
+      stack-name:
+        required: true
+        type: string
 
 jobs:
   deploy:
@@ -22,6 +29,23 @@ jobs:
         uses: actions/setup-node@v4
 
       - run: pnpm install
+
+      - name: Update agon image in pulumi stack config
+        run: pulumi stack select ${{ inputs.stack-name }} && pulumi config set agonServiceImage ${{ inputs.agon-image }}
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+
+      - uses: EndBug/add-and-commit@v9
+        with:
+          default_author: github_actions
+          add: 'agon_infra/Pulumi.${{ inputs.stack-name }}.yaml'
+          message: 'Set ${{ inputs.stack-name }} agon service image to ${{ inputs.agon-image }}'
+
+      - uses: pulumi/actions@v6
+        with:
+          command: up
+          stack-name: ${{ inputs.stack-name }}
+          work-dir: ./agon_infra
 
       - uses: pulumi/actions@v6
         with:

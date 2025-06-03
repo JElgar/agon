@@ -179,7 +179,7 @@ const deployment = new k8s.apps.v1.Deployment("agon-deployment", {
 				containers: [
 					{
 						name: "agon-service",
-						image: "ghcr.io/jelgar/agon_service:sha-e470a2c",
+						image: config.get("agonServiceImage"),
 						ports: [{ containerPort: 7000 }],
 						env: [
 							{

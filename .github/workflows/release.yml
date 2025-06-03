@@ -1,11 +1,11 @@
-name: PR
+name: Release
 
 on:
   push:
     branches: [ main ]
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
@@ -22,3 +22,6 @@ jobs:
     needs: publish
     uses: JElgar/agon_service/.github/workflows/deploy.yml@main
     secrets: inherit
+    with:
+      agon-image: ${{ needs.publish.outputs.image }}
+      stack-name: staging

@@ -12,4 +12,4 @@ config:
     secure: AAABAGj7oe9pnKlRP9flfZMIkQFRhh1AeaURflQNPIWwMEHebPAQtMykOcDvy3E9NEdoh0XeOnOwqHelr6jiNHwHaf1jN397UJGDdLvc4wF5Pyz4ccCXXdMzWm4Htu15
   agon_infra:jwtSecret:
     secure: AAABADMA0ioDNRXKGp3wafBE9ZwTAj/mlc0zrfoqiiMTntwUmbbQyOT1nQJxtNrk38EAGlC9DB1JHFmuKcBgnlzedzJGSsk7g3Ej9k1g71Fvb1DVwjv4ipVUk1yIIs00vjANqmBaUMlZGI1jderztzBGKdl7xjk=
-  agon_infra:agonServiceImage: ghcr.io/jelgar/agon_service:sha-0289684
+  agon_infra:agonServiceImage: ghcr.io/jelgar/agon_service:sha-481a0e6

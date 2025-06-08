@@ -173,11 +173,39 @@ enum GetTeamResponse {
     NotFound(PlainText<String>),
 }
 
+#[derive(ApiResponse)]
+enum GetUserResponse {
+    #[oai(status = 200)]
+    User(Json<User>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
 #[OpenApi]
 impl Api {
     #[oai(path = "/ping", method = "get")]
     async fn ping(&self) -> Result<PlainText<String>> {
         Ok(PlainText("Pong".to_string()))
+    }
+
+    #[oai(path = "/users/me", method = "get")]
+    async fn get_current_user(
+        &self,
+        Data(dao): Data<&Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+    ) -> Result<GetUserResponse> {
+        info!("Getting current user");
+        
+        let user = dao
+            .get_user(&jwt_data.sub)
+            .await
+            .map_err(InternalServerError)?;
+
+        match user {
+            Some(user) => Ok(GetUserResponse::User(Json(user.into()))),
+            None => Ok(GetUserResponse::NotFound(PlainText("User not found".to_string()))),
+        }
     }
 
     #[oai(path = "/users", method = "post")]

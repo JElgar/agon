@@ -44,6 +44,28 @@ impl Dao {
         Self { pool }
     }
 
+    pub async fn get_user(&self, user_id: &str) -> Result<Option<User>, DaoError> {
+        info!("Getting user with id={}", user_id);
+
+        let user = query_as!(
+            User,
+            r#"
+            SELECT id, first_name, last_name, email, created_at
+            FROM users
+            WHERE id = $1
+            "#,
+            user_id
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| {
+            error!("Failed to get user {:?}", err);
+            DaoError::InternalServerError("Failed to get user".to_string())
+        })?;
+
+        Ok(user)
+    }
+
     pub async fn create_user(
         &self,
         sub: String,
@@ -111,8 +133,8 @@ impl Dao {
         .execute(&mut *tx)
         .await
         .map_err(|err| {
-            error!("Failed to insert user {:?}", err);
-            DaoError::InternalServerError("Failed to insert user".to_string())
+            error!("Failed to insert team {:?}", err);
+            DaoError::InternalServerError("Failed to insert team".to_string())
         })?;
 
         // Insert the membership

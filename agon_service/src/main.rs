@@ -5,7 +5,7 @@ use dao::Dao;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use poem::{
     EndpointExt, Error, Request, Result, Route, Server, error::InternalServerError,
-    http::StatusCode, listener::TcpListener, web::Data,
+    http::StatusCode, listener::TcpListener, web::Data, middleware::Cors,
 };
 use poem_openapi::auth::Bearer;
 use poem_openapi::{
@@ -328,9 +328,19 @@ async fn main() {
 
             let dao = create_dao().await.unwrap();
 
+            let cors = Cors::new()
+                .allow_origin("http://localhost:5173")
+                .allow_origin("http://localhost:5174") 
+                .allow_origin("http://localhost:5175")
+                .allow_origin("http://localhost:3000")
+                .allow_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
+                .allow_headers(vec!["content-type", "authorization"])
+                .allow_credentials(true);
+
             let app = Route::new()
                 .nest("/", api_service)
                 .nest("/docs", ui)
+                .with(cors)
                 .data(dao);
 
             Server::new(TcpListener::bind("0.0.0.0:7000"))

@@ -22,14 +22,20 @@ async fn get_test_resources() -> &'static TestResources {
 
             let user_id = Uuid::new_v4().to_string();
             let user = create_user(
-                CreateUserInput::default(),
+                CreateUserInput { 
+                    username: user_id.clone(),
+                    ..CreateUserInput::default()
+                },
                 &get_configuration_for_user(&user_id),
             )
             .await;
 
             let user2_id = Uuid::new_v4().to_string();
             let user2 = create_user(
-                CreateUserInput::default(),
+                CreateUserInput { 
+                    username: user2_id.clone(),
+                    ..CreateUserInput::default()
+                },
                 &get_configuration_for_user(&user2_id),
             )
             .await;

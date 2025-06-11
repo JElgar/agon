@@ -1,6 +1,7 @@
 use std::{fs::File, io::Write};
 
 use bigdecimal::{BigDecimal, FromPrimitive, ToPrimitive};
+use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use dao::Dao;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
@@ -8,9 +9,9 @@ use poem::{
     EndpointExt, Error, Request, Result, Route, Server, error::InternalServerError,
     http::StatusCode, listener::TcpListener, middleware::Cors, web::Data,
 };
+use poem_openapi::Enum;
 use poem_openapi::auth::Bearer;
 use poem_openapi::param::Query;
-use poem_openapi::Enum;
 use poem_openapi::{
     ApiResponse, Object, OpenApi, OpenApiService, SecurityScheme,
     param::Path,
@@ -18,7 +19,6 @@ use poem_openapi::{
 };
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
-use chrono::{DateTime, Utc};
 use tracing::{error, info};
 
 mod dao;
@@ -57,15 +57,11 @@ async fn jwt_checker(_req: &Request, bearer: Bearer) -> Result<JwtClaims, poem::
     validation.validate_aud = false;
     validation.validate_nbf = false;
 
-    let token_data = decode::<JwtClaims>(
-        &bearer.token,
-        &decoding_key,
-        &validation,
-    )
-    .map_err(|err| {
-        info!("JWT invalid {:?}", err);
-        Error::from_string("Invalid JWT", StatusCode::UNAUTHORIZED)
-    })?;
+    let token_data =
+        decode::<JwtClaims>(&bearer.token, &decoding_key, &validation).map_err(|err| {
+            info!("JWT invalid {:?}", err);
+            Error::from_string("Invalid JWT", StatusCode::UNAUTHORIZED)
+        })?;
 
     Ok(token_data.claims)
 }
@@ -115,29 +111,29 @@ struct User {
 }
 
 #[derive(Object)]
-struct TeamListItem {
+struct GroupListItem {
     id: String,
     name: String,
 }
 
 #[derive(Object)]
-struct Team {
+struct Group {
     id: String,
     name: String,
     members: Vec<User>,
 }
 
-fn serialize_team(team: dao::Team, members: Vec<dao::User>) -> Team {
-    Team {
-        id: team.id.to_string(),
-        name: team.name,
+fn serialize_group(group: dao::Group, members: Vec<dao::User>) -> Group {
+    Group {
+        id: group.id.to_string(),
+        name: group.name,
         members: members.into_iter().map(|it| it.into()).collect(),
     }
 }
 
-impl From<dao::Team> for TeamListItem {
-    fn from(value: dao::Team) -> Self {
-        TeamListItem {
+impl From<dao::Group> for GroupListItem {
+    fn from(value: dao::Group) -> Self {
+        GroupListItem {
             id: value.id.to_string(),
             name: value.name,
         }
@@ -164,7 +160,7 @@ impl From<dao::Game> for Game {
             dao::GameStatus::Completed => "completed",
             dao::GameStatus::Cancelled => "cancelled",
         };
-        
+
         let game_type_enum = match value.game_type {
             dao::GameType::Football5ASide => GameType::Football5ASide,
             dao::GameType::Football11ASide => GameType::Football11ASide,
@@ -176,7 +172,7 @@ impl From<dao::Game> for Game {
             dao::GameType::Hockey => GameType::Hockey,
             dao::GameType::Other => GameType::Other,
         };
-        
+
         Game {
             id: value.id,
             title: value.title,
@@ -202,19 +198,22 @@ impl From<dao::GameInvitation> for GameInvitation {
             dao::InvitationStatus::Accepted => InvitationStatus::Accepted,
             dao::InvitationStatus::Declined => InvitationStatus::Declined,
         };
-        
+
         GameInvitation {
             game_id: value.game_id,
             user_id: value.user_id,
+            team_id: value.team_id,
             status,
             invited_at: DateTime::from_naive_utc_and_offset(value.invited_at, Utc),
-            responded_at: value.responded_at.map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
+            responded_at: value
+                .responded_at
+                .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
         }
     }
 }
 
 #[derive(Object)]
-struct CreateTeamInput {
+struct CreateGroupInput {
     name: String,
 }
 
@@ -227,7 +226,7 @@ struct CreateUserInput {
 }
 
 #[derive(Object)]
-struct AddTeamMembersInput {
+struct AddGroupMembersInput {
     user_ids: Vec<String>,
 }
 
@@ -239,13 +238,20 @@ struct Location {
 }
 
 #[derive(Object)]
+struct CreateGameTeamInput {
+    name: String,
+    color: Option<String>,
+    invited_user_ids: Vec<String>,
+}
+
+#[derive(Object)]
 struct CreateGameInput {
     title: String,
     game_type: GameType,
     location: Location,
     scheduled_time: DateTime<Utc>,
     duration_minutes: i32,
-    invited_user_ids: Vec<String>,
+    teams: Vec<CreateGameTeamInput>, // Can be 1 team (casual) or multiple teams
 }
 
 #[derive(Object)]
@@ -262,9 +268,19 @@ struct Game {
 }
 
 #[derive(Object)]
+struct GameTeam {
+    id: String,
+    name: String,
+    color: Option<String>,
+    position: i32,
+    members: Vec<User>,
+}
+
+#[derive(Object)]
 struct GameInvitation {
     game_id: String,
     user_id: String,
+    team_id: String,
     status: InvitationStatus,
     invited_at: DateTime<Utc>,
     responded_at: Option<DateTime<Utc>>,
@@ -273,6 +289,7 @@ struct GameInvitation {
 #[derive(Object)]
 struct GameWithInvitations {
     game: Game,
+    teams: Vec<GameTeam>,
     invitations: Vec<GameInvitationWithUser>,
 }
 
@@ -288,14 +305,14 @@ struct RespondToInvitationInput {
 }
 
 #[derive(Enum)]
-#[oai(rename_all="snake_case")]
+#[oai(rename_all = "snake_case")]
 enum InvitationResponse {
     Accepted,
     Declined,
 }
 
 #[derive(Enum)]
-#[oai(rename_all="snake_case")]
+#[oai(rename_all = "snake_case")]
 enum GameStatus {
     Scheduled,
     InProgress,
@@ -304,7 +321,7 @@ enum GameStatus {
 }
 
 #[derive(Enum)]
-#[oai(rename_all="snake_case")]
+#[oai(rename_all = "snake_case")]
 enum InvitationStatus {
     Pending,
     Accepted,
@@ -312,9 +329,11 @@ enum InvitationStatus {
 }
 
 #[derive(Enum)]
-#[oai(rename_all="snake_case")]
+#[oai(rename_all = "snake_case")]
 enum GameType {
+    #[oai(rename = "football_5_a_side")]
     Football5ASide,
+    #[oai(rename = "football_11_a_side")]
     Football11ASide,
     Basketball,
     Tennis,
@@ -326,9 +345,9 @@ enum GameType {
 }
 
 #[derive(ApiResponse)]
-enum GetTeamResponse {
+enum GetGroupResponse {
     #[oai(status = 200)]
-    Team(Json<Team>),
+    Group(Json<Group>),
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
@@ -409,86 +428,86 @@ impl Api {
         Ok(Json(users.into_iter().map(|u| u.into()).collect()))
     }
 
-    #[oai(path = "/teams", method = "post")]
-    async fn create_team(
+    #[oai(path = "/groups", method = "post")]
+    async fn create_group(
         &self,
         Data(dao): Data<&Dao>,
         AuthSchema(jwt_data): AuthSchema,
-        input: Json<CreateTeamInput>,
-    ) -> Result<Json<Team>> {
-        let team = dao
-            .create_team(jwt_data.sub, input.name.clone())
+        input: Json<CreateGroupInput>,
+    ) -> Result<Json<Group>> {
+        let group = dao
+            .create_group(jwt_data.sub, input.name.clone())
             .await
             .map_err(InternalServerError)?;
 
-        let team_members = dao
-            .list_team_members(&team.id)
+        let group_members = dao
+            .list_group_members(&group.id)
             .await
             .map_err(InternalServerError)?;
 
-        Ok(Json(serialize_team(team, team_members)))
+        Ok(Json(serialize_group(group, group_members)))
     }
 
-    #[oai(path = "/teams", method = "get")]
-    async fn list_teams(
+    #[oai(path = "/groups", method = "get")]
+    async fn list_groups(
         &self,
         Data(dao): Data<&Dao>,
         AuthSchema(jwt_data): AuthSchema,
-    ) -> Result<Json<Vec<TeamListItem>>> {
-        info!("Listing teams");
-        let teams = dao
-            .list_user_teams(jwt_data.sub)
+    ) -> Result<Json<Vec<GroupListItem>>> {
+        info!("Listing groups");
+        let groups = dao
+            .list_user_groups(jwt_data.sub)
             .await
             .map_err(InternalServerError)?;
-        info!("Listed teams");
+        info!("Listed groups");
 
-        Ok(Json(teams.into_iter().map(|t| t.into()).collect()))
+        Ok(Json(groups.into_iter().map(|g| g.into()).collect()))
     }
 
-    #[oai(path = "/teams/:id", method = "get")]
-    async fn get_team(
+    #[oai(path = "/groups/:id", method = "get")]
+    async fn get_group(
         &self,
         Data(dao): Data<&Dao>,
         AuthSchema(jwt_data): AuthSchema,
         Path(id): Path<String>,
-    ) -> Result<GetTeamResponse> {
-        info!("Getting team");
+    ) -> Result<GetGroupResponse> {
+        info!("Getting group");
 
-        let team = dao
-            .get_user_team(jwt_data.sub, id.clone())
+        let group = dao
+            .get_user_group(jwt_data.sub, id.clone())
             .await
             .map_err(InternalServerError)?;
 
-        info!("Got team");
+        info!("Got group");
 
-        let team_members = dao.list_team_members(&id).await.map_err(|e| {
-            error!("Failed to list team members {:?}", e);
+        let group_members = dao.list_group_members(&id).await.map_err(|e| {
+            error!("Failed to list group members {:?}", e);
             InternalServerError(e)
         })?;
 
-        info!("Got team members");
+        info!("Got group members");
 
-        Ok(match team {
-            Some(team) => GetTeamResponse::Team(Json(serialize_team(team, team_members))),
-            None => GetTeamResponse::NotFound(PlainText("Team not found".to_string())),
+        Ok(match group {
+            Some(group) => GetGroupResponse::Group(Json(serialize_group(group, group_members))),
+            None => GetGroupResponse::NotFound(PlainText("Group not found".to_string())),
         })
     }
 
-    #[oai(path = "/teams/:team_id/members", method = "post")]
-    async fn add_team_members(
+    #[oai(path = "/groups/:group_id/members", method = "post")]
+    async fn add_group_members(
         &self,
         Data(dao): Data<&Dao>,
         AuthSchema(_jwt_data): AuthSchema,
-        Path(team_id): Path<String>,
-        Json(input): Json<AddTeamMembersInput>,
+        Path(group_id): Path<String>,
+        Json(input): Json<AddGroupMembersInput>,
     ) -> Result<()> {
         // TODO Handle if user ids don't exists (postgres should throw an error already just need
         // to handle it)
 
-        // TODO Validate caller is admin member of team
+        // TODO Validate caller is admin member of group
 
         for user_id in input.user_ids {
-            dao.add_user_to_team(&team_id, &user_id)
+            dao.add_user_to_group(&group_id, &user_id)
                 .await
                 .map_err(InternalServerError)?;
         }
@@ -503,7 +522,7 @@ impl Api {
         AuthSchema(jwt_data): AuthSchema,
         input: Json<CreateGameInput>,
     ) -> Result<Json<Game>> {
-        info!("Creating game");
+        info!("Creating game ");
 
         // Convert DateTime<Utc> to NaiveDateTime for the DAO layer
         let scheduled_time = input.scheduled_time.naive_utc();
@@ -521,28 +540,41 @@ impl Api {
             GameType::Other => dao::GameType::Other,
         };
 
+        // Prepare teams data for transactional creation
+        let teams_input: Vec<dao::CreateGameTeamInput> = input
+            .teams
+            .iter()
+            .enumerate()
+            .map(|(index, team_input)| dao::CreateGameTeamInput {
+                name: team_input.name.clone(),
+                color: team_input.color.clone(),
+                position: (index + 1) as i32,
+                invited_user_ids: team_input.invited_user_ids.clone(),
+            })
+            .collect();
+
+        // Create DAO input struct
+        let dao_input = dao::CreateGameInput {
+            created_by_user_id: jwt_data.sub.clone(),
+            title: input.title.clone(),
+            game_type: dao_game_type,
+            location_latitude: BigDecimal::from_f64(input.location.latitude).ok_or_else(|| {
+                Error::from_string("Invalid latitude", StatusCode::BAD_REQUEST)
+            })?,
+            location_longitude: BigDecimal::from_f64(input.location.longitude).ok_or_else(|| {
+                Error::from_string("Invalid longitude", StatusCode::BAD_REQUEST)
+            })?,
+            location_name: input.location.name.clone(),
+            scheduled_time,
+            duration_minutes: input.duration_minutes,
+            teams: teams_input,
+        };
+
+        // Create game, teams, and invitations in a single transaction
         let game = dao
-            .create_game(
-                jwt_data.sub.clone(),
-                input.title.clone(),
-                dao_game_type,
-                BigDecimal::from_f64(input.location.latitude)
-                    .ok_or_else(|| Error::from_string("Invalid latitude", StatusCode::BAD_REQUEST))?,
-                BigDecimal::from_f64(input.location.longitude)
-                    .ok_or_else(|| Error::from_string("Invalid longitude", StatusCode::BAD_REQUEST))?,
-                input.location.name.clone(),
-                scheduled_time,
-                input.duration_minutes,
-            )
+            .create_game(dao_input)
             .await
             .map_err(InternalServerError)?;
-
-        // Invite users to the game
-        if !input.invited_user_ids.is_empty() {
-            dao.invite_users_to_game(&game.id, &input.invited_user_ids)
-                .await
-                .map_err(InternalServerError)?;
-        }
 
         Ok(Json(game.into()))
     }
@@ -579,6 +611,29 @@ impl Api {
 
         match result {
             Some((game, user_invitations)) => {
+                // Get teams for this game
+                let teams_data = dao
+                    .list_game_teams(&id)
+                    .await
+                    .map_err(InternalServerError)?;
+
+                // Build teams with their members
+                let teams = teams_data.into_iter().map(|team_data| {
+                    let team_members: Vec<User> = user_invitations
+                        .iter()
+                        .filter(|(_, invitation)| invitation.team_id == team_data.id)
+                        .map(|(user, _)| (*user).clone().into())
+                        .collect();
+
+                    GameTeam {
+                        id: team_data.id.clone(),
+                        name: team_data.name,
+                        color: team_data.color,
+                        position: team_data.position,
+                        members: team_members,
+                    }
+                }).collect();
+
                 let invitations = user_invitations
                     .into_iter()
                     .map(|(user, invitation)| GameInvitationWithUser {
@@ -589,6 +644,7 @@ impl Api {
 
                 Ok(Json(GameWithInvitations {
                     game: game.into(),
+                    teams,
                     invitations,
                 }))
             }
@@ -602,7 +658,7 @@ impl Api {
         Data(dao): Data<&Dao>,
         AuthSchema(_jwt_data): AuthSchema,
         Path(game_id): Path<String>,
-        input: Json<AddTeamMembersInput>, // Reuse the same input type
+        input: Json<AddGroupMembersInput>, // Reuse the same input type
     ) -> Result<()> {
         info!("Adding invitations to game {}", game_id);
 

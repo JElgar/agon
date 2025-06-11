@@ -1,17 +1,11 @@
-import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { useGetGames } from '@/hooks/useApi'
 import { Plus, Calendar, MapPin, Users, Clock } from 'lucide-react'
-import type { Game } from '@/lib/api'
 
 export function GamesPage() {
   const navigate = useNavigate()
-  const { data: games, loading, error, getGames } = useGetGames()
-
-  useEffect(() => {
-    getGames()
-  }, [getGames])
+  const { data: games, loading, error } = useGetGames()
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString('en-US', {

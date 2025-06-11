@@ -4,7 +4,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Plus, X, UserPlus } from 'lucide-react'
 import { useSearchUsers, useAddGameInvitations } from '@/hooks/useApi'
-import type { User, AddTeamMembersInput } from '@/lib/api'
+import type { User, AddGroupMembersInput } from '@/lib/api'
 
 interface InviteMorePeopleDialogProps {
   gameId: string
@@ -42,7 +42,7 @@ export function InviteMorePeopleDialog({
     
     if (selectedUsers.length === 0) return
 
-    const input: AddTeamMembersInput = {
+    const input: AddGroupMembersInput = {
       user_ids: selectedUsers.map(user => user.id)
     }
 

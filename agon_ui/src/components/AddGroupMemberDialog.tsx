@@ -11,20 +11,20 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
-import { useAddTeamMembers, useSearchUsers } from '@/hooks/useApi'
-import { Plus, Check, X } from 'lucide-react'
+import { useAddGroupMembers, useSearchUsers } from '@/hooks/useApi'
+import { Plus, X } from 'lucide-react'
 import type { User } from '@/lib/api'
 
-interface AddTeamMemberDialogProps {
-  teamId: string
+interface AddGroupMemberDialogProps {
+  groupId: string
   onMemberAdded?: () => void
 }
 
-export function AddTeamMemberDialog({ teamId, onMemberAdded }: AddTeamMemberDialogProps) {
+export function AddGroupMemberDialog({ groupId, onMemberAdded }: AddGroupMemberDialogProps) {
   const [open, setOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedUsers, setSelectedUsers] = useState<User[]>([])
-  const { loading, error, addTeamMembers } = useAddTeamMembers()
+  const { loading, error, addGroupMembers } = useAddGroupMembers()
   const { data: searchResults, searchUsers } = useSearchUsers()
 
   // Search users when query changes
@@ -53,7 +53,7 @@ export function AddTeamMemberDialog({ teamId, onMemberAdded }: AddTeamMemberDial
     }
 
     const userIds = selectedUsers.map(user => user.id)
-    const result = await addTeamMembers(teamId, { user_ids: userIds })
+    const result = await addGroupMembers(groupId, { user_ids: userIds })
     
     if (result !== null) {
       // Success - close dialog and reset form
@@ -92,9 +92,9 @@ export function AddTeamMemberDialog({ teamId, onMemberAdded }: AddTeamMemberDial
       </DialogTrigger>
       <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
-          <DialogTitle>Add Team Members</DialogTitle>
+          <DialogTitle>Add Group Members</DialogTitle>
           <DialogDescription>
-            Search for users by username or name and add them to your team.
+            Search for users by username or name and add them to your group.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit}>

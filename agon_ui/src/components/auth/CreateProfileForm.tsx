@@ -93,7 +93,7 @@ export function CreateProfileForm({ email, onProfileCreated }: CreateProfileForm
           
           // Get name for initials fallback
           const name = profileData?.name || profileData?.full_name || 'User'
-          const initials = name.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2)
+          const initials = name.split(' ').map((n: string) => n[0]).join('').toUpperCase().slice(0, 2)
           
           console.log('Avatar URL found:', avatarUrl)
           console.log('User initials:', initials)

@@ -2,56 +2,56 @@ import { useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft } from 'lucide-react'
-import { useGetTeam } from '@/hooks/useApi'
-import { AddTeamMemberDialog } from '@/components/AddTeamMemberDialog'
+import { useGetGroup } from '@/hooks/useApi'
+import { AddGroupMemberDialog } from '@/components/AddGroupMemberDialog'
 
-export function TeamDetailsPage() {
-  const { teamId } = useParams<{ teamId: string }>()
+export function GroupDetailsPage() {
+  const { groupId } = useParams<{ groupId: string }>()
   const navigate = useNavigate()
-  const { data: team, loading, error, getTeam } = useGetTeam()
+  const { data: group, loading, error, getGroup } = useGetGroup()
 
   useEffect(() => {
-    if (teamId) {
-      getTeam(teamId)
+    if (groupId) {
+      getGroup(groupId)
     }
-  }, [teamId, getTeam])
+  }, [groupId, getGroup])
 
   if (loading) {
     return (
       <div className="flex items-center justify-center p-8">
-        <div>Loading team details...</div>
+        <div>Loading group details...</div>
       </div>
     )
   }
 
-  if (error || (!loading && !team)) {
+  if (error || (!loading && !group)) {
     return (
       <div className="space-y-6">
         <div className="flex items-center space-x-4">
           <Button 
             variant="outline" 
             size="icon"
-            onClick={() => navigate('/teams')}
+            onClick={() => navigate('/groups')}
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>
-          <h2 className="text-2xl font-bold">Team Not Found</h2>
+          <h2 className="text-2xl font-bold">Group Not Found</h2>
         </div>
         
         <div className="p-4 bg-destructive/10 border border-destructive/20 rounded-md">
           <p className="text-destructive">
-            {error || `Team with ID "${teamId}" not found.`}
+            {error || `Group with ID "${groupId}" not found.`}
           </p>
         </div>
         
-        <Button onClick={() => navigate('/teams')}>
-          Back to Teams
+        <Button onClick={() => navigate('/groups')}>
+          Back to Groups
         </Button>
       </div>
     )
   }
 
-  if (!team) {
+  if (!group) {
     return null
   }
 
@@ -61,11 +61,11 @@ export function TeamDetailsPage() {
         <Button 
           variant="outline" 
           size="icon"
-          onClick={() => navigate('/teams')}
+          onClick={() => navigate('/groups')}
         >
           <ArrowLeft className="h-4 w-4" />
         </Button>
-        <h2 className="text-2xl font-bold">{team.name}</h2>
+        <h2 className="text-2xl font-bold">{group.name}</h2>
       </div>
 
       <div className="grid gap-6">
@@ -75,11 +75,11 @@ export function TeamDetailsPage() {
           <div className="space-y-2">
             <div>
               <span className="text-sm font-medium text-muted-foreground">Team ID:</span>
-              <p className="font-mono text-sm">{team.id}</p>
+              <p className="font-mono text-sm">{group.id}</p>
             </div>
             <div>
               <span className="text-sm font-medium text-muted-foreground">Team Name:</span>
-              <p>{team.name}</p>
+              <p>{group.name}</p>
             </div>
           </div>
         </div>
@@ -88,20 +88,20 @@ export function TeamDetailsPage() {
         <div className="p-6 border border-border rounded-lg bg-card">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-semibold">Team Members</h3>
-            <AddTeamMemberDialog 
-              teamId={team.id} 
+            <AddGroupMemberDialog
+              groupId={group?.id}
               onMemberAdded={() => {
-                // Refresh team data when a member is added
-                if (teamId) {
-                  getTeam(teamId)
+                // Refresh group data when a member is added
+                if (groupId) {
+                  getGroup(groupId)
                 }
               }} 
             />
           </div>
           
-          {team.members && team.members.length > 0 ? (
+          {group.members && group.members.length > 0 ? (
             <div className="space-y-3">
-              {team.members.map((member) => (
+              {group.members.map((member) => (
                 <div 
                   key={member.id} 
                   className="flex items-center justify-between p-3 border border-border rounded-lg"
@@ -118,7 +118,7 @@ export function TeamDetailsPage() {
             </div>
           ) : (
             <div className="text-center py-8 text-muted-foreground">
-              No team members found. Add your first team member!
+              No group members found. Add your first group member!
             </div>
           )}
         </div>

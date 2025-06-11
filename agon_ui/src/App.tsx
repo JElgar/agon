@@ -3,14 +3,14 @@ import { BrowserRouter, Routes, Route, Navigate, Link, useLocation } from 'react
 import { AuthProvider, useAuth } from '@/hooks/useAuth'
 import { LoginForm } from '@/components/auth/LoginForm'
 import { CreateProfileForm } from '@/components/auth/CreateProfileForm'
-import { TeamsPage } from '@/components/TeamsPage'
-import { TeamDetailsPage } from '@/components/TeamDetailsPage'
+import { GroupsPage } from '@/components/GroupsPage'
+import { GroupDetailsPage } from '@/components/GroupDetailsPage'
 import { GamesPage } from '@/components/GamesPage'
 import { CreateGamePage } from '@/components/CreateGamePage'
 import { GameDetailsPage } from '@/components/GameDetailsPage'
 import { Button } from '@/components/ui/button'
 import { useUserProfile } from '@/hooks/useUserProfile'
-import { useGetTeams } from '@/hooks/useApi'
+import { useGetGroups } from '@/hooks/useApi'
 import { ThemeProvider } from '@/hooks/useTheme'
 import { ThemeToggle } from '@/components/ThemeToggle'
 
@@ -34,8 +34,8 @@ function NavLink({ to, children }: { to: string; children: React.ReactNode }) {
 
 function AuthenticatedApp() {
   const { user, signOut, loading: authLoading } = useAuth()
-  const { hasProfile, loading: profileLoading, error: profileError, checkUserProfile, refreshProfile } = useUserProfile()
-  const { data: teams, loading: teamsLoading, getTeams } = useGetTeams()
+  const { hasProfile, loading: profileLoading, error: profileError, checkUserProfile } = useUserProfile()
+  const { getGroups } = useGetGroups()
 
   // Check user profile when user is authenticated
   useEffect(() => {
@@ -46,12 +46,12 @@ function AuthenticatedApp() {
     }
   }, [user, hasProfile, checkUserProfile])
 
-  // Load teams when user has profile
+  // Load groups when user has profile
   useEffect(() => {
     if (hasProfile === true) {
-      getTeams()
+      getGroups()
     }
-  }, [hasProfile, getTeams])
+  }, [hasProfile, getGroups])
 
   if (authLoading) {
     return (
@@ -133,7 +133,7 @@ function AuthenticatedApp() {
           <div className="flex items-center space-x-8">
             <h1 className="text-2xl font-bold">Agon</h1>
             <nav className="flex space-x-6">
-              <NavLink to="/teams">Teams</NavLink>
+              <NavLink to="/groups">Groups</NavLink>
               <NavLink to="/games">Games</NavLink>
             </nav>
           </div>
@@ -151,11 +151,11 @@ function AuthenticatedApp() {
       
       <main className="container mx-auto px-4 py-8">
         <Routes>
-          <Route path="/" element={<Navigate to="/teams" replace />} />
-          <Route path="/teams" element={<TeamsPage />} />
+          <Route path="/" element={<Navigate to="/groups" replace />} />
+          <Route path="/groups" element={<GroupsPage />} />
           <Route 
-            path="/teams/:teamId" 
-            element={<TeamDetailsPage />} 
+            path="/groups/:groupId" 
+            element={<GroupDetailsPage />} 
           />
           <Route path="/games" element={<GamesPage />} />
           <Route path="/games/create" element={<CreateGamePage />} />

@@ -12,6 +12,7 @@ generate-schema:
 	cargo run -p agon_service -- generate-schema
 	openapi-generator-cli generate -i schema.json -g rust -o openapi_client
 	echo "disable_all_formatting = true" > openapi_client/.rustfmt.toml
+	cd agon_ui && npm run generate
 
 build:
 	make generate-schema

@@ -1,29 +1,27 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft, Calendar, MapPin, Clock, Users, CheckCircle, XCircle } from 'lucide-react'
 import { useGetGameDetails, useRespondToInvitation } from '@/hooks/useApi'
 import { useAuth } from '@/hooks/useAuth'
 import { InviteMorePeopleDialog } from '@/components/InviteMorePeopleDialog'
-import type { InvitationResponse, InvitationStatus } from '@/lib/api'
+import type { components } from '@/types/api'
+
+type InvitationResponse = components['schemas']['InvitationResponse']
+type InvitationStatus = components['schemas']['InvitationStatus']
 
 export function GameDetailsPage() {
   const { gameId: encodedGameId } = useParams<{ gameId: string }>()
   const navigate = useNavigate()
   const { user } = useAuth()
-  const { data: gameData, loading, error, getGameDetails } = useGetGameDetails()
+  
+  // Decode the game ID from URL
+  const gameId = encodedGameId ? decodeURIComponent(encodedGameId) : undefined
+  
+  const { data: gameData, loading, error, refetch } = useGetGameDetails(gameId)
   const { loading: respondLoading, respondToInvitation } = useRespondToInvitation()
   const [isUpdating, setIsUpdating] = useState(false)
   const [showInviteDialog, setShowInviteDialog] = useState(false)
-
-  // Decode the game ID from URL
-  const gameId = encodedGameId ? decodeURIComponent(encodedGameId) : undefined
-
-  useEffect(() => {
-    if (gameId) {
-      getGameDetails(gameId)
-    }
-  }, [gameId, getGameDetails])
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString('en-US', {
@@ -79,14 +77,10 @@ export function GameDetailsPage() {
       const result = await respondToInvitation(gameId, user.id, response)
       console.log('Invitation response result:', result)
       
-      if (result !== null) {
-        // Refresh game details to show updated invitation status
-        console.log('Refreshing game details...')
-        await getGameDetails(gameId)
-        console.log('Game details refreshed')
-      } else {
+      if (result === null) {
         console.error('Failed to update invitation response')
       }
+      // React Query will automatically refetch the game details due to cache invalidation
     } catch (error) {
       console.error('Error updating invitation response:', error)
     } finally {
@@ -157,7 +151,7 @@ export function GameDetailsPage() {
       <div className="p-6 border border-border rounded-lg bg-card">
         <div className="flex items-start justify-between mb-4">
           <div className="flex-1">
-            <div className="flex items-center text-sm text-muted-foreground mb-2">
+            <div className="flex items-center text-sm mb-2">
               <span className="font-medium">{formatGameType(game.game_type)}</span>
               <span className={`ml-2 px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(game.status)}`}>
                 {game.status.charAt(0).toUpperCase() + game.status.slice(1)}
@@ -167,7 +161,7 @@ export function GameDetailsPage() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-          <div className="flex items-center text-muted-foreground">
+          <div className="flex items-center">
             <Calendar className="h-4 w-4 mr-2" />
             <div>
               <p className="font-medium">Scheduled</p>
@@ -175,7 +169,7 @@ export function GameDetailsPage() {
             </div>
           </div>
           
-          <div className="flex items-center text-muted-foreground">
+          <div className="flex items-center">
             <Clock className="h-4 w-4 mr-2" />
             <div>
               <p className="font-medium">Duration</p>
@@ -183,7 +177,7 @@ export function GameDetailsPage() {
             </div>
           </div>
           
-          <div className="flex items-center text-muted-foreground">
+          <div className="flex items-center">
             <MapPin className="h-4 w-4 mr-2" />
             <div>
               <p className="font-medium">Location</p>
@@ -263,86 +257,128 @@ export function GameDetailsPage() {
         </div>
       </div>
 
-      {/* Invitations */}
-      <div className="grid gap-6 md:grid-cols-3">
-        {/* Accepted */}
-        <div className="p-6 border border-border rounded-lg bg-card">
-          <h3 className="text-lg font-semibold mb-4 flex items-center">
-            <Users className="h-5 w-5 mr-2 text-green-600" />
-            Accepted ({acceptedInvitations.length})
-          </h3>
-          <div className="space-y-2">
-            {acceptedInvitations.map((invitation) => (
-              <div key={invitation.user.id} className="flex items-center justify-between p-2 border rounded-md">
-                <div>
-                  <p className="font-medium">{invitation.user.first_name} {invitation.user.last_name}</p>
-                  <p className="text-sm text-muted-foreground">@{invitation.user.username}</p>
+      {/* Teams and Players */}
+      {gameData.teams.length > 1 ? (
+        /* Teams Mode - Show individual teams */
+        <div className="space-y-6">
+          <h3 className="text-lg font-semibold">Teams</h3>
+          <div className="grid gap-6 md:grid-cols-2">
+            {gameData.teams.map((team) => (
+              <div key={team.id} className="p-6 border border-border rounded-lg bg-card">
+                <h4 className="text-lg font-semibold mb-4 flex items-center">
+                  {team.color && (
+                    <div 
+                      className="w-4 h-4 rounded mr-2 border"
+                      style={{ backgroundColor: team.color }}
+                    ></div>
+                  )}
+                  {team.name} ({team.members.length})
+                </h4>
+                <div className="space-y-2">
+                  {team.members.map((member) => {
+                    const invitation = gameData.invitations.find(inv => inv.user.id === member.id)
+                    const status = invitation?.invitation.status || 'unknown'
+                    
+                    return (
+                      <div key={member.id} className="flex items-center justify-between p-2 border rounded-md">
+                        <div>
+                          <p className="font-medium">{member.first_name} {member.last_name}</p>
+                          <p className="text-sm text-muted-foreground">@{member.username}</p>
+                        </div>
+                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${status === 'unknown' ? 'bg-gray-100 text-gray-800' : getInvitationStatusColor(status as InvitationStatus)}`}>
+                          {status.charAt(0).toUpperCase() + status.slice(1)}
+                        </span>
+                      </div>
+                    )
+                  })}
+                  {team.members.length === 0 && (
+                    <p className="text-sm text-muted-foreground text-center py-4">No players assigned to this team</p>
+                  )}
                 </div>
-                <CheckCircle className="h-4 w-4 text-green-600" />
               </div>
             ))}
-            {acceptedInvitations.length === 0 && (
-              <p className="text-sm text-muted-foreground">No accepted invitations yet</p>
-            )}
           </div>
         </div>
+      ) : (
+        /* Casual Mode - Show players by status */
+        <div className="grid gap-6 md:grid-cols-3">
+          {/* Accepted */}
+          <div className="p-6 border border-border rounded-lg bg-card">
+            <h3 className="text-lg font-semibold mb-4 flex items-center">
+              <Users className="h-5 w-5 mr-2 text-green-600" />
+              Accepted ({acceptedInvitations.length})
+            </h3>
+            <div className="space-y-2">
+              {acceptedInvitations.map((invitation) => (
+                <div key={invitation.user.id} className="flex items-center justify-between p-2 border rounded-md">
+                  <div>
+                    <p className="font-medium">{invitation.user.first_name} {invitation.user.last_name}</p>
+                    <p className="text-sm text-muted-foreground">@{invitation.user.username}</p>
+                  </div>
+                  <CheckCircle className="h-4 w-4 text-green-600" />
+                </div>
+              ))}
+              {acceptedInvitations.length === 0 && (
+                <p className="text-sm text-muted-foreground">No accepted invitations yet</p>
+              )}
+            </div>
+          </div>
 
-        {/* Pending */}
-        <div className="p-6 border border-border rounded-lg bg-card">
-          <h3 className="text-lg font-semibold mb-4 flex items-center">
-            <Clock className="h-5 w-5 mr-2 text-yellow-600" />
-            Pending ({pendingInvitations.length})
-          </h3>
-          <div className="space-y-2">
-            {pendingInvitations.map((invitation) => (
-              <div key={invitation.user.id} className="flex items-center justify-between p-2 border rounded-md">
-                <div>
-                  <p className="font-medium">{invitation.user.first_name} {invitation.user.last_name}</p>
-                  <p className="text-sm text-muted-foreground">@{invitation.user.username}</p>
+          {/* Pending */}
+          <div className="p-6 border border-border rounded-lg bg-card">
+            <h3 className="text-lg font-semibold mb-4 flex items-center">
+              <Clock className="h-5 w-5 mr-2 text-yellow-600" />
+              Pending ({pendingInvitations.length})
+            </h3>
+            <div className="space-y-2">
+              {pendingInvitations.map((invitation) => (
+                <div key={invitation.user.id} className="flex items-center justify-between p-2 border rounded-md">
+                  <div>
+                    <p className="font-medium">{invitation.user.first_name} {invitation.user.last_name}</p>
+                    <p className="text-sm text-muted-foreground">@{invitation.user.username}</p>
+                  </div>
+                  <Clock className="h-4 w-4 text-yellow-600" />
                 </div>
-                <Clock className="h-4 w-4 text-yellow-600" />
-              </div>
-            ))}
-            {pendingInvitations.length === 0 && (
-              <p className="text-sm text-muted-foreground">No pending invitations</p>
-            )}
+              ))}
+              {pendingInvitations.length === 0 && (
+                <p className="text-sm text-muted-foreground">No pending invitations</p>
+              )}
+            </div>
           </div>
-        </div>
 
-        {/* Declined */}
-        <div className="p-6 border border-border rounded-lg bg-card">
-          <h3 className="text-lg font-semibold mb-4 flex items-center">
-            <XCircle className="h-5 w-5 mr-2 text-red-600" />
-            Declined ({declinedInvitations.length})
-          </h3>
-          <div className="space-y-2">
-            {declinedInvitations.map((invitation) => (
-              <div key={invitation.user.id} className="flex items-center justify-between p-2 border rounded-md">
-                <div>
-                  <p className="font-medium">{invitation.user.first_name} {invitation.user.last_name}</p>
-                  <p className="text-sm text-muted-foreground">@{invitation.user.username}</p>
+          {/* Declined */}
+          <div className="p-6 border border-border rounded-lg bg-card">
+            <h3 className="text-lg font-semibold mb-4 flex items-center">
+              <XCircle className="h-5 w-5 mr-2 text-red-600" />
+              Declined ({declinedInvitations.length})
+            </h3>
+            <div className="space-y-2">
+              {declinedInvitations.map((invitation) => (
+                <div key={invitation.user.id} className="flex items-center justify-between p-2 border rounded-md">
+                  <div>
+                    <p className="font-medium">{invitation.user.first_name} {invitation.user.last_name}</p>
+                    <p className="text-sm text-muted-foreground">@{invitation.user.username}</p>
+                  </div>
+                  <XCircle className="h-4 w-4 text-red-600" />
                 </div>
-                <XCircle className="h-4 w-4 text-red-600" />
-              </div>
-            ))}
-            {declinedInvitations.length === 0 && (
-              <p className="text-sm text-muted-foreground">No declined invitations</p>
-            )}
+              ))}
+              {declinedInvitations.length === 0 && (
+                <p className="text-sm text-muted-foreground">No declined invitations</p>
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Invite More People Dialog */}
       {gameData && (
         <InviteMorePeopleDialog
-          gameId={gameId}
+          gameId={gameId!}
           isOpen={showInviteDialog}
           onClose={() => setShowInviteDialog(false)}
           onInvitesSent={() => {
             // Refresh game details to show new invitations
-            if (gameId) {
-              getGameDetails(gameId)
-            }
+            refetch()
           }}
           existingInvitations={gameData.invitations.map(inv => inv.user)}
         />

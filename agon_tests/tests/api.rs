@@ -1,9 +1,9 @@
 use jsonwebtoken::{EncodingKey, Header, encode};
 use openapi::apis::configuration::{self, Configuration};
 use openapi::apis::default_api::{
-    teams_get, teams_id_get, teams_post, teams_team_id_members_post, users_post,
+    groups_get, groups_group_id_members_post, groups_id_get, groups_post, users_post,
 };
-use openapi::models::{AddTeamMembersInput, CreateTeamInput, CreateUserInput, Team, User};
+use openapi::models::{AddGroupMembersInput, CreateGroupInput, CreateUserInput, Group, User};
 use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
 use uuid::Uuid;
@@ -22,7 +22,7 @@ async fn get_test_resources() -> &'static TestResources {
 
             let user_id = Uuid::new_v4().to_string();
             let user = create_user(
-                CreateUserInput { 
+                CreateUserInput {
                     username: user_id.clone(),
                     ..CreateUserInput::default()
                 },
@@ -32,7 +32,7 @@ async fn get_test_resources() -> &'static TestResources {
 
             let user2_id = Uuid::new_v4().to_string();
             let user2 = create_user(
-                CreateUserInput { 
+                CreateUserInput {
                     username: user2_id.clone(),
                     ..CreateUserInput::default()
                 },
@@ -76,12 +76,13 @@ fn get_configuration_for_user(user_id: &String) -> Configuration {
 
 async fn create_user(input: CreateUserInput, configuration: &Configuration) -> User {
     let response = users_post(&configuration, input).await;
+    dbg!(&response);
     assert!(response.is_ok());
     response.unwrap()
 }
 
-async fn create_team(input: CreateTeamInput, configuration: &Configuration) -> Team {
-    let response = teams_post(&configuration, input).await;
+async fn create_group(input: CreateGroupInput, configuration: &Configuration) -> Group {
+    let response = groups_post(&configuration, input).await;
     dbg!(&response);
     assert!(response.is_ok());
     response.unwrap()
@@ -92,15 +93,15 @@ async fn my_test() {
     let test_resource = get_test_resources().await;
     let configuration = get_configuration_for_user(&test_resource.user.id);
 
-    create_team(CreateTeamInput::default(), &configuration).await;
+    create_group(CreateGroupInput::default(), &configuration).await;
 
-    let result = teams_get(&configuration).await;
+    let result = groups_get(&configuration).await;
     dbg!(&result);
     assert!(result.is_ok());
     let result = result.unwrap();
     assert!(result.len() >= 1);
-    let team = result.first().unwrap();
-    // assert_eq!(team.name, "My awesome team");
+    let group = result.first().unwrap();
+    // assert_eq!(group.name, "My awesome group");
 }
 
 #[tokio::test]
@@ -109,7 +110,7 @@ async fn get_returns_not_found() {
     let id = "some-fake-id";
     let configuration = get_configuration_for_user(&test_resource.user.id);
 
-    let response = teams_id_get(&configuration, id).await;
+    let response = groups_id_get(&configuration, id).await;
 
     assert!(response.is_err());
 
@@ -127,42 +128,42 @@ async fn get_returns_not_found() {
 }
 
 #[tokio::test]
-async fn get_returns_team() {
+async fn get_returns_group() {
     let test_resources = get_test_resources().await;
     let configuration = get_configuration_for_user(&test_resources.user.id);
 
-    let team = create_team(
-        CreateTeamInput {
-            name: "Some team name".to_string(),
+    let group = create_group(
+        CreateGroupInput {
+            name: "Some group name".to_string(),
         },
         &configuration,
     )
     .await;
 
-    let response = teams_id_get(&configuration, &team.id).await;
+    let response = groups_id_get(&configuration, &group.id).await;
 
     assert!(response.is_ok());
     let response = response.unwrap();
-    assert_eq!(response.name, "Some team name");
+    assert_eq!(response.name, "Some group name");
 }
 
 #[tokio::test]
-async fn team_members() {
+async fn group_members() {
     let test_resources = get_test_resources().await;
     let configuration = get_configuration_for_user(&test_resources.user.id);
 
-    let team = create_team(
-        CreateTeamInput {
-            name: "Some team name".to_string(),
+    let group = create_group(
+        CreateGroupInput {
+            name: "Some group name".to_string(),
         },
         &configuration,
     )
     .await;
 
-    let response = teams_team_id_members_post(
+    let response = groups_group_id_members_post(
         &configuration,
-        &team.id,
-        AddTeamMembersInput {
+        &group.id,
+        AddGroupMembersInput {
             user_ids: vec![test_resources.user2.id.clone()],
         },
     )
@@ -171,7 +172,7 @@ async fn team_members() {
     dbg!(&response);
     assert!(response.is_ok());
 
-    let response = teams_id_get(&configuration, &team.id).await;
+    let response = groups_id_get(&configuration, &group.id).await;
 
     assert!(response.is_ok());
     let response = response.unwrap();

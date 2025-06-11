@@ -1,31 +1,30 @@
 import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
-import { useGetTeams, useCreateTeam } from '@/hooks/useApi'
+import { useGetGroups, useCreateGroup } from '@/hooks/useApi'
 import { debugJwt } from '@/utils/jwt-debug'
 
-export function TeamsPage() {
+export function GroupsPage() {
   const navigate = useNavigate()
-  const { data: teams, loading: teamsLoading, error: teamsError, getTeams } = useGetTeams()
-  const { loading: createLoading, error: createError, createTeam } = useCreateTeam()
+  const { data: groups, loading: groupsLoading, error: groupsError, getGroups } = useGetGroups()
+  const { loading: createLoading, error: createError, createGroup } = useCreateGroup()
 
   useEffect(() => {
     debugJwt() // Debug JWT token
-    getTeams()
-  }, [getTeams])
+  }, [])
 
-  const handleCreateTeam = async () => {
-    const result = await createTeam({ name: `Team ${Date.now()}` })
+  const handleCreateGroup = async () => {
+    const result = await createGroup({ name: `Group ${Date.now()}` })
     if (result) {
-      // Refresh teams list
-      getTeams()
+      // Refresh groups list
+      getGroups()
     }
   }
 
-  if (teamsLoading) {
+  if (groupsLoading) {
     return (
       <div className="flex items-center justify-center p-8">
-        <div>Loading teams...</div>
+        <div>Loading groups...</div>
       </div>
     )
   }
@@ -33,43 +32,43 @@ export function TeamsPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold">Teams</h2>
+        <h2 className="text-2xl font-bold">Groups</h2>
         <Button 
-          onClick={handleCreateTeam}
+          onClick={handleCreateGroup}
           disabled={createLoading}
         >
-          {createLoading ? 'Creating...' : 'Create Team'}
+          {createLoading ? 'Creating...' : 'Create Group'}
         </Button>
       </div>
 
-      {teamsError && (
+      {groupsError && (
         <div className="p-4 bg-red-50 border border-red-200 rounded-md">
-          <p className="text-red-800">Error loading teams: {teamsError}</p>
+          <p className="text-red-800">Error loading groups: {groupsError}</p>
         </div>
       )}
 
       {createError && (
         <div className="p-4 bg-red-50 border border-red-200 rounded-md">
-          <p className="text-red-800">Error creating team: {createError}</p>
+          <p className="text-red-800">Error creating group: {createError}</p>
         </div>
       )}
 
       <div className="grid gap-4">
-        {teams && teams.length > 0 ? (
-          teams.map((team) => (
+        {groups && groups.length > 0 ? (
+          groups.map((group) => (
             <div 
-              key={team.id}
+              key={group.id}
               className="p-4 border border-border rounded-lg hover:bg-muted/50 cursor-pointer transition-colors"
-              onClick={() => navigate(`/teams/${team.id}`)}
+              onClick={() => navigate(`/groups/${group.id}`)}
             >
-              <h3 className="font-semibold">{team.name}</h3>
-              <p className="text-sm text-muted-foreground">ID: {team.id}</p>
+              <h3 className="font-semibold">{group.name}</h3>
+              <p className="text-sm text-muted-foreground">ID: {group.id}</p>
               <p className="text-xs text-muted-foreground mt-2">Click to view details</p>
             </div>
           ))
         ) : (
           <div className="text-center py-8 text-muted-foreground">
-            No teams found. Create your first team!
+            No groups found. Create your first group!
           </div>
         )}
       </div>

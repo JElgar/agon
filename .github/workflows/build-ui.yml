@@ -21,6 +21,7 @@ jobs:
         working-directory: ./agon_ui
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
       - run: npm install
       - run: npm run generate
       - run: npm run build

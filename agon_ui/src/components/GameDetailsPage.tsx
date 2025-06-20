@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
-import { ArrowLeft, Calendar, MapPin, Clock, Users, CheckCircle, XCircle } from 'lucide-react'
+import { ArrowLeft, Calendar, MapPin, Clock, Users, CheckCircle, XCircle, RotateCcw } from 'lucide-react'
 import { useGetGameDetails, useRespondToInvitation, useGetGroup } from '@/hooks/useApi'
 import { useAuth } from '@/hooks/useAuth'
 import { InviteMorePeopleDialog } from '@/components/InviteMorePeopleDialog'
 import type { components } from '@/types/api'
+import type { Game } from '@/lib/api'
 
 type InvitationResponse = components['schemas']['InvitationResponse']
 type InvitationStatus = components['schemas']['InvitationStatus']
@@ -71,6 +72,25 @@ export function GameDetailsPage() {
     return gameType.split('_').map(word => 
       word.charAt(0).toUpperCase() + word.slice(1)
     ).join(' ')
+  }
+
+  const formatScheduleInfo = (game: Game) => {
+    if (game.schedule.type === 'recurring') {
+      return {
+        type: 'Recurring Game',
+        details: `Every ${game.schedule.cron_schedule}`,
+        occurrence: `This occurrence: ${new Date(game.schedule.occurrence_date).toLocaleDateString()}`,
+        range: game.schedule.end_date 
+          ? `Until ${new Date(game.schedule.end_date).toLocaleDateString()}`
+          : 'No end date'
+      }
+    }
+    return {
+      type: 'One-time Game',
+      details: 'Single occurrence',
+      occurrence: null,
+      range: null
+    }
   }
 
   const getStatusColor = (status: string) => {
@@ -192,7 +212,7 @@ export function GameDetailsPage() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           <div className="flex items-center">
             <Calendar className="h-4 w-4 mr-2" />
             <div>
@@ -214,6 +234,17 @@ export function GameDetailsPage() {
             <div>
               <p className="font-medium">Location</p>
               <p className="text-sm">{game.location.name || `${game.location.latitude}, ${game.location.longitude}`}</p>
+            </div>
+          </div>
+
+          <div className="flex items-center">
+            {game.schedule.type === 'recurring' ? <RotateCcw className="h-4 w-4 mr-2" /> : <Calendar className="h-4 w-4 mr-2" />}
+            <div>
+              <p className="font-medium">{formatScheduleInfo(game).type}</p>
+              <p className="text-sm">{formatScheduleInfo(game).details}</p>
+              {formatScheduleInfo(game).occurrence && (
+                <p className="text-xs text-muted-foreground">{formatScheduleInfo(game).occurrence}</p>
+              )}
             </div>
           </div>
         </div>

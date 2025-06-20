@@ -1,6 +1,6 @@
 use base64::{Engine, prelude::BASE64_URL_SAFE};
 use bigdecimal::BigDecimal;
-use chrono::{NaiveDateTime, NaiveDate, Utc, Duration, TimeZone};
+use chrono::{Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use cron::Schedule;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -127,12 +127,10 @@ struct RecurringGame {
 
 pub struct GameTeam {
     pub id: String,
-    pub game_id: String,
     pub name: String,
     pub color: Option<String>,
     // TODO Remove this?
     pub position: i32,
-    pub created_at: NaiveDateTime,
 }
 
 pub struct GameInvitation {
@@ -143,12 +141,6 @@ pub struct GameInvitation {
     pub status: InvitationStatus,
     pub invited_at: NaiveDateTime,
     pub responded_at: Option<NaiveDateTime>,
-}
-
-pub struct GroupGameInvitation {
-    pub game_id: String,
-    pub group_id: String,
-    pub invited_at: NaiveDateTime,
 }
 
 pub struct CreateGameTeamInput {
@@ -611,36 +603,39 @@ impl Dao {
             DaoError::InternalServerError("Failed to list user games".to_string())
         })?;
 
-        Ok(results.into_iter().map(|row| {
-            let schedule = if let Some(cron_schedule) = row.cron_schedule {
-                // This is a recurring game
-                GameSchedule::Recurring {
-                    cron_schedule,
-                    start_date: row.start_date.unwrap(),
-                    end_date: row.end_date,
-                    occurrence_date: row.occurrence_date.unwrap(),
-                }
-            } else {
-                // This is a one-off game
-                GameSchedule::OneOff {
-                    scheduled_time: row.scheduled_time,
-                }
-            };
+        Ok(results
+            .into_iter()
+            .map(|row| {
+                let schedule = if let Some(cron_schedule) = row.cron_schedule {
+                    // This is a recurring game
+                    GameSchedule::Recurring {
+                        cron_schedule,
+                        start_date: row.start_date.unwrap(),
+                        end_date: row.end_date,
+                        occurrence_date: row.occurrence_date.unwrap(),
+                    }
+                } else {
+                    // This is a one-off game
+                    GameSchedule::OneOff {
+                        scheduled_time: row.scheduled_time,
+                    }
+                };
 
-            Game {
-                id: row.id,
-                title: row.title,
-                game_type: row.game_type,
-                location_latitude: row.location_latitude,
-                location_longitude: row.location_longitude,
-                location_name: row.location_name,
-                duration_minutes: row.duration_minutes,
-                created_by_user_id: row.created_by_user_id,
-                created_at: row.created_at,
-                status: row.status,
-                schedule,
-            }
-        }).collect())
+                Game {
+                    id: row.id,
+                    title: row.title,
+                    game_type: row.game_type,
+                    location_latitude: row.location_latitude,
+                    location_longitude: row.location_longitude,
+                    location_name: row.location_name,
+                    duration_minutes: row.duration_minutes,
+                    created_by_user_id: row.created_by_user_id,
+                    created_at: row.created_at,
+                    status: row.status,
+                    schedule,
+                }
+            })
+            .collect())
     }
 
     pub async fn get_game_with_invitations(
@@ -701,32 +696,42 @@ impl Dao {
     }
 
     /// Create a game with teams and invitations in a single transaction
-    pub async fn create_game(
-        &self,
-        input: CreateGameInput,
-    ) -> Result<Game, DaoError> {
+    pub async fn create_game(&self, input: CreateGameInput) -> Result<Game, DaoError> {
         match &input.schedule {
             CreateGameSchedule::OneOff { scheduled_time } => {
                 let template = self.create_game_template(&input).await?;
-                self.create_game_from_template(&template.id, *scheduled_time, None, None).await
+                self.create_game_from_template(&template.id, *scheduled_time, None, None)
+                    .await
             }
-            CreateGameSchedule::Recurring { cron_schedule, start_date, end_date } => {
+            CreateGameSchedule::Recurring {
+                cron_schedule,
+                start_date,
+                end_date,
+            } => {
                 let template = self.create_game_template(&input).await?;
-                let recurring_game = self.create_recurring_game(&template.id, cron_schedule, *start_date, *end_date).await?;
-                
+                let recurring_game = self
+                    .create_recurring_game(&template.id, cron_schedule, *start_date, *end_date)
+                    .await?;
+
                 // Generate initial games and return the first one
-                self.generate_games_for_recurring_game(&recurring_game).await?;
+                self.generate_games_for_recurring_game(&recurring_game)
+                    .await?;
                 let first_game = self.get_first_generated_game(&recurring_game.id).await?;
-                first_game.ok_or_else(|| DaoError::InternalServerError("Failed to generate first game".to_string()))
+                first_game.ok_or_else(|| {
+                    DaoError::InternalServerError("Failed to generate first game".to_string())
+                })
             }
         }
     }
 
     /// Internal helper: Create game template
-    async fn create_game_template(&self, input: &CreateGameInput) -> Result<GameTemplate, DaoError> {
+    async fn create_game_template(
+        &self,
+        input: &CreateGameInput,
+    ) -> Result<GameTemplate, DaoError> {
         let template_id = generate_id();
         let now = Utc::now().naive_utc();
-        
+
         let mut tx = self.pool.begin().await.map_err(|err| {
             error!("Failed to start transaction {:?}", err);
             DaoError::InternalServerError("Failed to start transaction".to_string())
@@ -771,7 +776,7 @@ impl Dao {
         for team_input in &input.teams {
             // Create template team
             let team_id = generate_id();
-            
+
             query!(
                 "INSERT INTO game_template_teams (id, template_id, name, color, position, created_at)
                 VALUES ($1, $2, $3, $4, $5, $6)",
@@ -968,8 +973,11 @@ impl Dao {
         })?;
 
         for template_invitation in template_invitations {
-            let game_team_id = team_id_mapping.get(&template_invitation.team_id)
-                .ok_or_else(|| DaoError::InternalServerError("Team mapping not found".to_string()))?;
+            let game_team_id = team_id_mapping
+                .get(&template_invitation.team_id)
+                .ok_or_else(|| {
+                    DaoError::InternalServerError("Team mapping not found".to_string())
+                })?;
 
             if let Some(user_id) = template_invitation.user_id {
                 // Direct user invitation
@@ -1004,7 +1012,9 @@ impl Dao {
                 .await
                 .map_err(|err| {
                     error!("Failed to insert group game invitation {:?}", err);
-                    DaoError::InternalServerError("Failed to insert group game invitation".to_string())
+                    DaoError::InternalServerError(
+                        "Failed to insert group game invitation".to_string(),
+                    )
                 })?;
 
                 // Get group members and create individual invitations
@@ -1047,29 +1057,36 @@ impl Dao {
         })?;
 
         // Fetch the created game with template data
-        self.get_game(&game_id).await?
-            .ok_or_else(|| DaoError::InternalServerError("Failed to fetch created game".to_string()))
+        self.get_game(&game_id).await?.ok_or_else(|| {
+            DaoError::InternalServerError("Failed to fetch created game".to_string())
+        })
     }
 
     /// Generate games for recurring game using cron schedule
-    async fn generate_games_for_recurring_game(&self, recurring_game: &RecurringGame) -> Result<(), DaoError> {
+    async fn generate_games_for_recurring_game(
+        &self,
+        recurring_game: &RecurringGame,
+    ) -> Result<(), DaoError> {
         const GENERATE_AHEAD_DAYS: i64 = 30;
-        
+
         info!("Generating games for recurring game {}", recurring_game.id);
 
         // Parse the cron schedule
-        let schedule = Schedule::from_str(&recurring_game.cron_schedule)
-            .map_err(|err| {
-                error!("Invalid cron schedule {}: {:?}", recurring_game.cron_schedule, err);
-                DaoError::InternalServerError("Invalid cron schedule".to_string())
-            })?;
+        let schedule = Schedule::from_str(&recurring_game.cron_schedule).map_err(|err| {
+            error!(
+                "Invalid cron schedule {}: {:?}",
+                recurring_game.cron_schedule, err
+            );
+            DaoError::InternalServerError("Invalid cron schedule".to_string())
+        })?;
 
         // Calculate the date range for generation
-        let start_date = recurring_game.last_generated_date
+        let start_date = recurring_game
+            .last_generated_date
             .unwrap_or(recurring_game.start_date);
         let end_date = std::cmp::min(
             recurring_game.end_date.unwrap_or(NaiveDate::MAX),
-            Utc::now().date_naive() + Duration::days(GENERATE_AHEAD_DAYS)
+            Utc::now().date_naive() + Duration::days(GENERATE_AHEAD_DAYS),
         );
 
         info!("Generating games from {} to {}", start_date, end_date);
@@ -1081,7 +1098,7 @@ impl Dao {
 
         for datetime in schedule.after(&start_datetime) {
             let occurrence_date = datetime.date_naive();
-            
+
             // Stop if we've reached the end date
             if occurrence_date > end_date {
                 break;
@@ -1113,12 +1130,14 @@ impl Dao {
 
             // Generate game for this occurrence
             let scheduled_time = datetime.naive_utc();
-            let _game = self.create_game_from_template(
-                &recurring_game.template_id,
-                scheduled_time,
-                Some(recurring_game.id.clone()),
-                Some(occurrence_date),
-            ).await?;
+            let _game = self
+                .create_game_from_template(
+                    &recurring_game.template_id,
+                    scheduled_time,
+                    Some(recurring_game.id.clone()),
+                    Some(occurrence_date),
+                )
+                .await?;
 
             generated_count += 1;
             last_generated_date = occurrence_date;
@@ -1145,13 +1164,22 @@ impl Dao {
             })?;
         }
 
-        info!("Generated {} games for recurring game {}", generated_count, recurring_game.id);
+        info!(
+            "Generated {} games for recurring game {}",
+            generated_count, recurring_game.id
+        );
         Ok(())
     }
 
     /// Get first generated game for recurring series
-    async fn get_first_generated_game(&self, recurring_game_id: &str) -> Result<Option<Game>, DaoError> {
-        info!("Getting first generated game for recurring game {}", recurring_game_id);
+    async fn get_first_generated_game(
+        &self,
+        recurring_game_id: &str,
+    ) -> Result<Option<Game>, DaoError> {
+        info!(
+            "Getting first generated game for recurring game {}",
+            recurring_game_id
+        );
 
         let result = query!(
             "SELECT id FROM games WHERE recurring_game_id = $1 ORDER BY occurrence_date ASC LIMIT 1",
@@ -1175,7 +1203,7 @@ impl Dao {
         let teams = query_as!(
             GameTeam,
             r#"
-            SELECT id, game_id, name, color, position, created_at
+            SELECT id, name, color, position
             FROM game_teams
             WHERE game_id = $1
             ORDER BY position
@@ -1222,61 +1250,38 @@ impl Dao {
             DaoError::InternalServerError("Failed to list group games".to_string())
         })?;
 
-        Ok(results.into_iter().map(|row| {
-            let schedule = if let Some(cron_schedule) = row.cron_schedule {
-                // This is a recurring game
-                GameSchedule::Recurring {
-                    cron_schedule,
-                    start_date: row.start_date.unwrap(),
-                    end_date: row.end_date,
-                    occurrence_date: row.occurrence_date.unwrap(),
+        Ok(results
+            .into_iter()
+            .map(|row| {
+                let schedule = if let Some(cron_schedule) = row.cron_schedule {
+                    // This is a recurring game
+                    GameSchedule::Recurring {
+                        cron_schedule,
+                        start_date: row.start_date.unwrap(),
+                        end_date: row.end_date,
+                        occurrence_date: row.occurrence_date.unwrap(),
+                    }
+                } else {
+                    // This is a one-off game
+                    GameSchedule::OneOff {
+                        scheduled_time: row.scheduled_time,
+                    }
+                };
+
+                Game {
+                    id: row.id,
+                    title: row.title,
+                    game_type: row.game_type,
+                    location_latitude: row.location_latitude,
+                    location_longitude: row.location_longitude,
+                    location_name: row.location_name,
+                    duration_minutes: row.duration_minutes,
+                    created_by_user_id: row.created_by_user_id,
+                    created_at: row.created_at,
+                    status: row.status,
+                    schedule,
                 }
-            } else {
-                // This is a one-off game
-                GameSchedule::OneOff {
-                    scheduled_time: row.scheduled_time,
-                }
-            };
-
-            Game {
-                id: row.id,
-                title: row.title,
-                game_type: row.game_type,
-                location_latitude: row.location_latitude,
-                location_longitude: row.location_longitude,
-                location_name: row.location_name,
-                duration_minutes: row.duration_minutes,
-                created_by_user_id: row.created_by_user_id,
-                created_at: row.created_at,
-                status: row.status,
-                schedule,
-            }
-        }).collect())
-    }
-
-    /// Add group invitation to a game
-    pub async fn add_group_game_invitation(
-        &self,
-        game_id: &str,
-        group_id: &str,
-    ) -> Result<(), DaoError> {
-        info!("Adding group {} invitation to game {}", group_id, game_id);
-
-        query!(
-            "INSERT INTO group_game_invitations (game_id, group_id, invited_at)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (game_id, group_id) DO NOTHING",
-            game_id,
-            group_id,
-            Utc::now().naive_utc(),
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|err| {
-            error!("Failed to insert group game invitation {:?}", err);
-            DaoError::InternalServerError("Failed to insert group game invitation".to_string())
-        })?;
-
-        Ok(())
+            })
+            .collect())
     }
 }

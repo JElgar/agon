@@ -1,7 +1,7 @@
 use std::{fs::File, io::Write};
 
 use bigdecimal::{BigDecimal, FromPrimitive, ToPrimitive};
-use chrono::{DateTime, Utc, NaiveDate};
+use chrono::{DateTime, NaiveDate, Utc};
 use clap::{Parser, Subcommand};
 use dao::Dao;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
@@ -176,11 +176,35 @@ impl From<dao::Game> for Game {
         // Extract scheduled_time from the schedule
         let scheduled_time = match &value.schedule {
             dao::GameSchedule::OneOff { scheduled_time } => *scheduled_time,
-            dao::GameSchedule::Recurring { occurrence_date, .. } => {
+            dao::GameSchedule::Recurring {
+                occurrence_date, ..
+            } => {
                 // For recurring games, we need to derive the time from the occurrence date
                 // For now, using a default time (this could be improved by storing time in the template)
-                occurrence_date.and_hms_opt(18, 0, 0).unwrap_or_else(|| occurrence_date.and_hms_opt(0, 0, 0).unwrap())
+                occurrence_date
+                    .and_hms_opt(18, 0, 0)
+                    .unwrap_or_else(|| occurrence_date.and_hms_opt(0, 0, 0).unwrap())
             }
+        };
+
+        // Convert DAO schedule to API schedule response
+        let api_schedule = match &value.schedule {
+            dao::GameSchedule::OneOff { scheduled_time } => {
+                GameScheduleResponse::OneOff(OneOffScheduleResponse {
+                    scheduled_time: DateTime::from_naive_utc_and_offset(*scheduled_time, Utc),
+                })
+            }
+            dao::GameSchedule::Recurring {
+                cron_schedule,
+                start_date,
+                end_date,
+                occurrence_date,
+            } => GameScheduleResponse::Recurring(RecurringScheduleResponse {
+                cron_schedule: cron_schedule.clone(),
+                start_date: *start_date,
+                end_date: *end_date,
+                occurrence_date: *occurrence_date,
+            }),
         };
 
         Game {
@@ -197,6 +221,7 @@ impl From<dao::Game> for Game {
             created_by_user_id: value.created_by_user_id,
             created_at: DateTime::from_naive_utc_and_offset(value.created_at, Utc),
             status: status_str.to_string(),
+            schedule: api_schedule,
         }
     }
 }
@@ -284,6 +309,29 @@ enum GameSchedule {
     Recurring(RecurringSchedule),
 }
 
+// Response schedule types (for API responses)
+#[derive(Object)]
+struct OneOffScheduleResponse {
+    scheduled_time: DateTime<Utc>,
+}
+
+#[derive(Object)]
+struct RecurringScheduleResponse {
+    cron_schedule: String,
+    start_date: NaiveDate,
+    end_date: Option<NaiveDate>,
+    occurrence_date: NaiveDate,
+}
+
+#[derive(Union)]
+#[oai(discriminator_name = "type")]
+enum GameScheduleResponse {
+    #[oai(mapping = "one_off")]
+    OneOff(OneOffScheduleResponse),
+    #[oai(mapping = "recurring")]
+    Recurring(RecurringScheduleResponse),
+}
+
 #[derive(Object)]
 struct CreateGameInput {
     title: String,
@@ -305,6 +353,7 @@ struct Game {
     created_by_user_id: String,
     created_at: DateTime<Utc>,
     status: String,
+    schedule: GameScheduleResponse,
 }
 
 #[derive(Object)]
@@ -580,18 +629,14 @@ impl Api {
 
         // Convert API schedule to DAO schedule
         let dao_schedule = match &input.schedule {
-            GameSchedule::OneOff(one_off) => {
-                dao::CreateGameSchedule::OneOff {
-                    scheduled_time: one_off.scheduled_time.naive_utc(),
-                }
-            }
-            GameSchedule::Recurring(recurring) => {
-                dao::CreateGameSchedule::Recurring {
-                    cron_schedule: recurring.cron_schedule.clone(),
-                    start_date: recurring.start_date,
-                    end_date: recurring.end_date,
-                }
-            }
+            GameSchedule::OneOff(one_off) => dao::CreateGameSchedule::OneOff {
+                scheduled_time: one_off.scheduled_time.naive_utc(),
+            },
+            GameSchedule::Recurring(recurring) => dao::CreateGameSchedule::Recurring {
+                cron_schedule: recurring.cron_schedule.clone(),
+                start_date: recurring.start_date,
+                end_date: recurring.end_date,
+            },
         };
 
         // Prepare teams data for transactional creation
@@ -613,12 +658,10 @@ impl Api {
             created_by_user_id: jwt_data.sub.clone(),
             title: input.title.clone(),
             game_type: dao_game_type,
-            location_latitude: BigDecimal::from_f64(input.location.latitude).ok_or_else(|| {
-                Error::from_string("Invalid latitude", StatusCode::BAD_REQUEST)
-            })?,
-            location_longitude: BigDecimal::from_f64(input.location.longitude).ok_or_else(|| {
-                Error::from_string("Invalid longitude", StatusCode::BAD_REQUEST)
-            })?,
+            location_latitude: BigDecimal::from_f64(input.location.latitude)
+                .ok_or_else(|| Error::from_string("Invalid latitude", StatusCode::BAD_REQUEST))?,
+            location_longitude: BigDecimal::from_f64(input.location.longitude)
+                .ok_or_else(|| Error::from_string("Invalid longitude", StatusCode::BAD_REQUEST))?,
             location_name: input.location.name.clone(),
             duration_minutes: input.duration_minutes,
             teams: teams_input,
@@ -673,21 +716,24 @@ impl Api {
                     .map_err(InternalServerError)?;
 
                 // Build teams with their members
-                let teams = teams_data.into_iter().map(|team_data| {
-                    let team_members: Vec<User> = user_invitations
-                        .iter()
-                        .filter(|(_, invitation)| invitation.team_id == team_data.id)
-                        .map(|(user, _)| (*user).clone().into())
-                        .collect();
+                let teams = teams_data
+                    .into_iter()
+                    .map(|team_data| {
+                        let team_members: Vec<User> = user_invitations
+                            .iter()
+                            .filter(|(_, invitation)| invitation.team_id == team_data.id)
+                            .map(|(user, _)| (*user).clone().into())
+                            .collect();
 
-                    GameTeam {
-                        id: team_data.id.clone(),
-                        name: team_data.name,
-                        color: team_data.color,
-                        position: team_data.position,
-                        members: team_members,
-                    }
-                }).collect();
+                        GameTeam {
+                            id: team_data.id.clone(),
+                            name: team_data.name,
+                            color: team_data.color,
+                            position: team_data.position,
+                            members: team_members,
+                        }
+                    })
+                    .collect();
 
                 let invitations = user_invitations
                     .into_iter()
@@ -762,7 +808,10 @@ impl Api {
             .map_err(InternalServerError)?;
 
         if group.is_none() {
-            return Err(Error::from_string("Group not found or access denied", StatusCode::FORBIDDEN));
+            return Err(Error::from_string(
+                "Group not found or access denied",
+                StatusCode::FORBIDDEN,
+            ));
         }
 
         // Get games where this group was explicitly invited

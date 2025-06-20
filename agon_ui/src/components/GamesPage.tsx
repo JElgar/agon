@@ -1,7 +1,8 @@
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { useGetGames } from '@/hooks/useApi'
-import { Plus, Calendar, MapPin, Users, Clock } from 'lucide-react'
+import { Plus, Calendar, MapPin, Users, Clock, RotateCcw } from 'lucide-react'
+import type { Game } from '@/lib/api'
 
 export function GamesPage() {
   const navigate = useNavigate()
@@ -31,6 +32,13 @@ export function GamesPage() {
       case 'cancelled': return 'bg-red-100 text-red-800'
       default: return 'bg-gray-100 text-gray-800'
     }
+  }
+
+  const formatScheduleInfo = (game: Game) => {
+    if (game.schedule.type === 'recurring') {
+      return `Recurring game (${game.schedule.cron_schedule})`
+    }
+    return 'One-time game'
   }
 
   if (loading) {
@@ -69,14 +77,16 @@ export function GamesPage() {
                 <div className="flex-1">
                   <h3 className="text-lg font-semibold mb-1 flex items-center">
                     {game.title}
-                    {/* TODO: Once API provides schedule info, show recurring indicator */}
-                    {/* {game.isRecurring && <RotateCcw className="h-4 w-4 ml-2 text-muted-foreground" />} */}
+                    {game.schedule.type === 'recurring' && <RotateCcw className="h-4 w-4 ml-2 text-muted-foreground" />}
                   </h3>
                   <div className="flex items-center text-sm text-muted-foreground mb-2">
                     <span className="font-medium">{formatGameType(game.game_type)}</span>
                     <span className={`ml-2 px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(game.status)}`}>
                       {game.status.charAt(0).toUpperCase() + game.status.slice(1)}
                     </span>
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {formatScheduleInfo(game)}
                   </div>
                 </div>
               </div>

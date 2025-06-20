@@ -1,0 +1,26 @@
+on:
+  workflow_call:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./agon_ui
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm install
+      - run: npm run lint
+
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./agon_ui
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm install
+      - run: npm run generate
+      - run: npm run build

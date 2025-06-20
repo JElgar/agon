@@ -1,24 +1,19 @@
 import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
-import { useGetGroups, useCreateGroup } from '@/hooks/useApi'
+import { useGetGroups } from '@/hooks/useApi'
 import { debugJwt } from '@/utils/jwt-debug'
 
 export function GroupsPage() {
   const navigate = useNavigate()
-  const { data: groups, loading: groupsLoading, error: groupsError, getGroups } = useGetGroups()
-  const { loading: createLoading, error: createError, createGroup } = useCreateGroup()
+  const { data: groups, loading: groupsLoading, error: groupsError } = useGetGroups()
 
   useEffect(() => {
     debugJwt() // Debug JWT token
   }, [])
 
-  const handleCreateGroup = async () => {
-    const result = await createGroup({ name: `Group ${Date.now()}` })
-    if (result) {
-      // Refresh groups list
-      getGroups()
-    }
+  const handleCreateGroup = () => {
+    navigate('/groups/create')
   }
 
   if (groupsLoading) {
@@ -33,23 +28,14 @@ export function GroupsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold">Groups</h2>
-        <Button 
-          onClick={handleCreateGroup}
-          disabled={createLoading}
-        >
-          {createLoading ? 'Creating...' : 'Create Group'}
+        <Button onClick={handleCreateGroup}>
+          Create Group
         </Button>
       </div>
 
       {groupsError && (
-        <div className="p-4 bg-red-50 border border-red-200 rounded-md">
-          <p className="text-red-800">Error loading groups: {groupsError}</p>
-        </div>
-      )}
-
-      {createError && (
-        <div className="p-4 bg-red-50 border border-red-200 rounded-md">
-          <p className="text-red-800">Error creating group: {createError}</p>
+        <div className="p-4 bg-destructive/10 border border-destructive/20 rounded-md">
+          <p className="text-destructive">Error loading groups: {groupsError}</p>
         </div>
       )}
 

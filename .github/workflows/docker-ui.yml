@@ -23,7 +23,7 @@ jobs:
       - uses: ./.github/actions/setup
 
       - run: cargo sqlx prepare
-        working-directory: ./agon_service
+        working-directory: ./agon_ui
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -39,7 +39,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ghcr.io/agon_ui
           tags: |
             type=sha
             type=ref,event=branch
@@ -48,7 +48,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
-          context: ./agon_service
+          context: ./agon_ui
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

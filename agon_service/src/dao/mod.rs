@@ -1,9 +1,11 @@
 use base64::{Engine, prelude::BASE64_URL_SAFE};
 use bigdecimal::BigDecimal;
-use chrono::{NaiveDateTime, Utc};
+use chrono::{NaiveDateTime, NaiveDate, Utc, Duration, TimeZone};
+use cron::Schedule;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sqlx::{Pool, Postgres, Transaction, Type, query, query_as};
+use std::str::FromStr;
 use thiserror::Error;
 use tracing::{error, info};
 
@@ -38,7 +40,9 @@ pub enum InvitationStatus {
 #[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[sqlx(type_name = "game_type", rename_all = "snake_case")]
 pub enum GameType {
+    #[sqlx(rename = "football_5_a_side")]
     Football5ASide,
+    #[sqlx(rename = "football_11_a_side")]
     Football11ASide,
     Basketball,
     Tennis,
@@ -66,6 +70,21 @@ pub struct User {
     pub created_at: NaiveDateTime,
 }
 
+// DAO-level schedule enum
+#[derive(Debug, Clone)]
+pub enum GameSchedule {
+    OneOff {
+        scheduled_time: NaiveDateTime,
+    },
+    Recurring {
+        cron_schedule: String,
+        start_date: NaiveDate,
+        end_date: Option<NaiveDate>,
+        occurrence_date: NaiveDate,
+    },
+}
+
+// Updated Game struct with schedule
 pub struct Game {
     pub id: String,
     pub title: String,
@@ -73,11 +92,37 @@ pub struct Game {
     pub location_latitude: BigDecimal,
     pub location_longitude: BigDecimal,
     pub location_name: Option<String>,
-    pub scheduled_time: NaiveDateTime,
     pub duration_minutes: i32,
     pub created_by_user_id: String,
     pub created_at: NaiveDateTime,
     pub status: GameStatus,
+    pub schedule: GameSchedule,
+}
+
+// Internal template struct
+struct GameTemplate {
+    pub id: String,
+    pub title: String,
+    pub game_type: GameType,
+    pub location_latitude: BigDecimal,
+    pub location_longitude: BigDecimal,
+    pub location_name: Option<String>,
+    pub duration_minutes: i32,
+    pub created_by_user_id: String,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+}
+
+// Internal recurring game struct
+struct RecurringGame {
+    pub id: String,
+    pub template_id: String,
+    pub cron_schedule: String,
+    pub start_date: NaiveDate,
+    pub end_date: Option<NaiveDate>,
+    pub last_generated_date: Option<NaiveDate>,
+    pub is_active: bool,
+    pub created_at: NaiveDateTime,
 }
 
 pub struct GameTeam {
@@ -94,9 +139,16 @@ pub struct GameInvitation {
     pub game_id: String,
     pub user_id: String,
     pub team_id: String,
+    pub group_id: Option<String>,
     pub status: InvitationStatus,
     pub invited_at: NaiveDateTime,
     pub responded_at: Option<NaiveDateTime>,
+}
+
+pub struct GroupGameInvitation {
+    pub game_id: String,
+    pub group_id: String,
+    pub invited_at: NaiveDateTime,
 }
 
 pub struct CreateGameTeamInput {
@@ -104,6 +156,20 @@ pub struct CreateGameTeamInput {
     pub color: Option<String>,
     pub position: i32,
     pub invited_user_ids: Vec<String>,
+    pub invited_group_ids: Vec<String>,
+}
+
+// Schedule input types
+#[derive(Debug, Clone)]
+pub enum CreateGameSchedule {
+    OneOff {
+        scheduled_time: NaiveDateTime,
+    },
+    Recurring {
+        cron_schedule: String,
+        start_date: NaiveDate,
+        end_date: Option<NaiveDate>,
+    },
 }
 
 pub struct CreateGameInput {
@@ -113,9 +179,9 @@ pub struct CreateGameInput {
     pub location_latitude: BigDecimal,
     pub location_longitude: BigDecimal,
     pub location_name: Option<String>,
-    pub scheduled_time: NaiveDateTime,
     pub duration_minutes: i32,
     pub teams: Vec<CreateGameTeamInput>,
+    pub schedule: CreateGameSchedule,
 }
 
 #[derive(Clone)]
@@ -387,6 +453,7 @@ impl Dao {
         &self,
         game_id: &str,
         user_ids: &[String],
+        team_id: &str,
     ) -> Result<(), DaoError> {
         info!(
             "Adding invitations for game {} to users {:?}",
@@ -400,11 +467,13 @@ impl Dao {
 
         for user_id in user_ids {
             query!(
-                "INSERT INTO game_invitations (game_id, user_id, status, invited_at)
-                VALUES ($1, $2, $3, $4)
+                "INSERT INTO game_invitations (game_id, user_id, team_id, group_id, status, invited_at)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 ON CONFLICT (game_id, user_id) DO NOTHING",
                 game_id,
                 user_id,
+                team_id,
+                None::<String>, // Additional invitations are not from a group
                 InvitationStatus::Pending as InvitationStatus,
                 Utc::now().naive_utc(),
             )
@@ -454,19 +523,83 @@ impl Dao {
         Ok(())
     }
 
+    pub async fn get_game(&self, game_id: &str) -> Result<Option<Game>, DaoError> {
+        info!("Getting game with id={}", game_id);
+
+        let result = query!(
+            r#"
+            SELECT 
+                g.id, g.scheduled_time, g.occurrence_date,
+                g.status as "status: GameStatus", g.created_at,
+                t.title, t.game_type as "game_type: GameType", 
+                t.location_latitude, t.location_longitude, t.location_name, 
+                t.duration_minutes, t.created_by_user_id,
+                -- Recurring game info (NULL for one-off games)
+                rg.cron_schedule as "cron_schedule?", rg.start_date as "start_date?", rg.end_date as "end_date?"
+            FROM games g
+            JOIN game_templates t ON g.template_id = t.id
+            LEFT JOIN recurring_games rg ON g.recurring_game_id = rg.id
+            WHERE g.id = $1
+            "#,
+            game_id
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| {
+            error!("Failed to get game {:?}", err);
+            DaoError::InternalServerError("Failed to get game".to_string())
+        })?;
+
+        Ok(result.map(|row| {
+            let schedule = if let Some(cron_schedule) = row.cron_schedule {
+                // This is a recurring game
+                GameSchedule::Recurring {
+                    cron_schedule,
+                    start_date: row.start_date.unwrap(),
+                    end_date: row.end_date,
+                    occurrence_date: row.occurrence_date.unwrap(),
+                }
+            } else {
+                // This is a one-off game
+                GameSchedule::OneOff {
+                    scheduled_time: row.scheduled_time,
+                }
+            };
+
+            Game {
+                id: row.id,
+                title: row.title,
+                game_type: row.game_type,
+                location_latitude: row.location_latitude,
+                location_longitude: row.location_longitude,
+                location_name: row.location_name,
+                duration_minutes: row.duration_minutes,
+                created_by_user_id: row.created_by_user_id,
+                created_at: row.created_at,
+                status: row.status,
+                schedule,
+            }
+        }))
+    }
+
     pub async fn list_user_games(&self, user_id: &str) -> Result<Vec<Game>, DaoError> {
         info!("Listing games for user {}", user_id);
 
-        let games = query_as!(
-            Game,
+        let results = query!(
             r#"
-            SELECT DISTINCT g.id, g.title, g.game_type as "game_type: GameType", 
-                   g.location_latitude, g.location_longitude, g.location_name,
-                   g.scheduled_time, g.duration_minutes, g.created_by_user_id, 
-                   g.created_at, g.status as "status: GameStatus"
+            SELECT DISTINCT 
+                g.id, g.scheduled_time, g.occurrence_date,
+                g.status as "status: GameStatus", g.created_at,
+                t.title, t.game_type as "game_type: GameType", 
+                t.location_latitude, t.location_longitude, t.location_name, 
+                t.duration_minutes, t.created_by_user_id,
+                -- Recurring game info (NULL for one-off games)
+                rg.cron_schedule as "cron_schedule?", rg.start_date as "start_date?", rg.end_date as "end_date?"
             FROM games g
+            JOIN game_templates t ON g.template_id = t.id
+            LEFT JOIN recurring_games rg ON g.recurring_game_id = rg.id
             LEFT JOIN game_invitations gi ON g.id = gi.game_id
-            WHERE g.created_by_user_id = $1 OR gi.user_id = $1
+            WHERE t.created_by_user_id = $1 OR gi.user_id = $1
             ORDER BY g.scheduled_time DESC
             "#,
             user_id
@@ -478,7 +611,36 @@ impl Dao {
             DaoError::InternalServerError("Failed to list user games".to_string())
         })?;
 
-        Ok(games)
+        Ok(results.into_iter().map(|row| {
+            let schedule = if let Some(cron_schedule) = row.cron_schedule {
+                // This is a recurring game
+                GameSchedule::Recurring {
+                    cron_schedule,
+                    start_date: row.start_date.unwrap(),
+                    end_date: row.end_date,
+                    occurrence_date: row.occurrence_date.unwrap(),
+                }
+            } else {
+                // This is a one-off game
+                GameSchedule::OneOff {
+                    scheduled_time: row.scheduled_time,
+                }
+            };
+
+            Game {
+                id: row.id,
+                title: row.title,
+                game_type: row.game_type,
+                location_latitude: row.location_latitude,
+                location_longitude: row.location_longitude,
+                location_name: row.location_name,
+                duration_minutes: row.duration_minutes,
+                created_by_user_id: row.created_by_user_id,
+                created_at: row.created_at,
+                status: row.status,
+                schedule,
+            }
+        }).collect())
     }
 
     pub async fn get_game_with_invitations(
@@ -487,30 +649,13 @@ impl Dao {
     ) -> Result<Option<(Game, Vec<(User, GameInvitation)>)>, DaoError> {
         info!("Getting game with invitations for game {}", game_id);
 
-        let game = query_as!(
-            Game,
-            r#"
-            SELECT id, title, game_type as "game_type: GameType", 
-                   location_latitude, location_longitude, location_name,
-                   scheduled_time, duration_minutes, created_by_user_id, 
-                   created_at, status as "status: GameStatus"
-            FROM games
-            WHERE id = $1
-            "#,
-            game_id
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|err| {
-            error!("Failed to get game {:?}", err);
-            DaoError::InternalServerError("Failed to get game".to_string())
-        })?;
+        let game = self.get_game(game_id).await?;
 
         if let Some(game) = game {
             let invitations = sqlx::query!(
                 r#"
                 SELECT u.id as user_id, u.first_name, u.last_name, u.email, u.username, u.created_at as user_created_at,
-                       gi.game_id, gi.team_id, gi.status as "status: InvitationStatus", gi.invited_at, gi.responded_at
+                       gi.game_id, gi.team_id, gi.group_id, gi.status as "status: InvitationStatus", gi.invited_at, gi.responded_at
                 FROM game_invitations gi
                 JOIN users u ON gi.user_id = u.id
                 WHERE gi.game_id = $1
@@ -540,6 +685,7 @@ impl Dao {
                         game_id: row.game_id,
                         user_id: user.id.clone(),
                         team_id: row.team_id,
+                        group_id: row.group_id,
                         status: row.status, // sqlx will handle the enum conversion
                         invited_at: row.invited_at,
                         responded_at: row.responded_at,
@@ -559,98 +705,127 @@ impl Dao {
         &self,
         input: CreateGameInput,
     ) -> Result<Game, DaoError> {
-        let game_id = generate_id();
-        info!("Creating game id={}", &game_id);
+        match &input.schedule {
+            CreateGameSchedule::OneOff { scheduled_time } => {
+                let template = self.create_game_template(&input).await?;
+                self.create_game_from_template(&template.id, *scheduled_time, None, None).await
+            }
+            CreateGameSchedule::Recurring { cron_schedule, start_date, end_date } => {
+                let template = self.create_game_template(&input).await?;
+                let recurring_game = self.create_recurring_game(&template.id, cron_schedule, *start_date, *end_date).await?;
+                
+                // Generate initial games and return the first one
+                self.generate_games_for_recurring_game(&recurring_game).await?;
+                let first_game = self.get_first_generated_game(&recurring_game.id).await?;
+                first_game.ok_or_else(|| DaoError::InternalServerError("Failed to generate first game".to_string()))
+            }
+        }
+    }
 
-        // Start transaction
+    /// Internal helper: Create game template
+    async fn create_game_template(&self, input: &CreateGameInput) -> Result<GameTemplate, DaoError> {
+        let template_id = generate_id();
+        let now = Utc::now().naive_utc();
+        
         let mut tx = self.pool.begin().await.map_err(|err| {
             error!("Failed to start transaction {:?}", err);
             DaoError::InternalServerError("Failed to start transaction".to_string())
         })?;
 
-        // Create the game
-        let game = Game {
-            id: game_id,
-            title: input.title,
+        // Create the template
+        let template = GameTemplate {
+            id: template_id.clone(),
+            title: input.title.clone(),
             game_type: input.game_type.clone(),
-            location_latitude: input.location_latitude,
-            location_longitude: input.location_longitude,
-            location_name: input.location_name,
-            scheduled_time: input.scheduled_time,
+            location_latitude: input.location_latitude.clone(),
+            location_longitude: input.location_longitude.clone(),
+            location_name: input.location_name.clone(),
             duration_minutes: input.duration_minutes,
-            created_by_user_id: input.created_by_user_id,
-            created_at: Utc::now().naive_utc(),
-            status: GameStatus::Scheduled,
+            created_by_user_id: input.created_by_user_id.clone(),
+            created_at: now,
+            updated_at: now,
         };
 
         query!(
-            "INSERT INTO games (id, title, game_type, location_latitude, location_longitude, location_name, scheduled_time, duration_minutes, created_by_user_id, created_at, status)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-            game.id,
-            game.title,
-            game.game_type.clone() as GameType,
-            game.location_latitude,
-            game.location_longitude,
-            game.location_name,
-            game.scheduled_time,
-            game.duration_minutes,
-            game.created_by_user_id,
-            game.created_at,
-            game.status.clone() as GameStatus
+            "INSERT INTO game_templates (id, title, game_type, location_latitude, location_longitude, location_name, duration_minutes, created_by_user_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+            template.id,
+            template.title,
+            template.game_type.clone() as GameType,
+            template.location_latitude,
+            template.location_longitude,
+            template.location_name,
+            template.duration_minutes,
+            template.created_by_user_id,
+            template.created_at,
+            template.updated_at
         )
         .execute(&mut *tx)
         .await
         .map_err(|err| {
-            error!("Failed to insert game {:?}", err);
-            DaoError::InternalServerError("Failed to insert game".to_string())
+            error!("Failed to insert game template {:?}", err);
+            DaoError::InternalServerError("Failed to insert game template".to_string())
         })?;
 
-        // Create teams and invitations
-        for team_input in input.teams {
-            // Create team
-            let team = GameTeam {
-                id: generate_id(),
-                game_id: game.id.clone(),
-                name: team_input.name.clone(),
-                color: team_input.color.clone(),
-                position: team_input.position,
-                created_at: Utc::now().naive_utc(),
-            };
-
+        // Create template teams and invitations
+        for team_input in &input.teams {
+            // Create template team
+            let team_id = generate_id();
+            
             query!(
-                "INSERT INTO game_teams (id, game_id, name, color, position, created_at)
+                "INSERT INTO game_template_teams (id, template_id, name, color, position, created_at)
                 VALUES ($1, $2, $3, $4, $5, $6)",
-                team.id,
-                team.game_id,
-                team.name,
-                team.color,
-                team.position,
-                team.created_at
+                team_id,
+                template.id,
+                team_input.name,
+                team_input.color,
+                team_input.position,
+                now
             )
             .execute(&mut *tx)
             .await
             .map_err(|err| {
-                error!("Failed to insert game team {:?}", err);
-                DaoError::InternalServerError("Failed to insert game team".to_string())
+                error!("Failed to insert game template team {:?}", err);
+                DaoError::InternalServerError("Failed to insert game template team".to_string())
             })?;
 
-            // Create invitations for this team
-            for user_id in team_input.invited_user_ids {
+            // Create template invitations for individual users in this team
+            for user_id in &team_input.invited_user_ids {
                 query!(
-                    "INSERT INTO game_invitations (game_id, user_id, team_id, status, invited_at)
-                    VALUES ($1, $2, $3, $4, $5)
-                    ON CONFLICT (game_id, user_id) DO UPDATE SET team_id = $3",
-                    game.id,
+                    "INSERT INTO game_template_invitations (id, template_id, user_id, group_id, team_id, created_at)
+                    VALUES ($1, $2, $3, $4, $5, $6)",
+                    generate_id(),
+                    template.id,
                     user_id,
-                    team.id,
-                    InvitationStatus::Pending as InvitationStatus,
-                    Utc::now().naive_utc(),
+                    None::<String>, // Direct user invitation, not from a group
+                    team_id,
+                    now
                 )
                 .execute(&mut *tx)
                 .await
                 .map_err(|err| {
-                    error!("Failed to insert game invitation {:?}", err);
-                    DaoError::InternalServerError("Failed to insert game invitation".to_string())
+                    error!("Failed to insert game template invitation {:?}", err);
+                    DaoError::InternalServerError("Failed to insert game template invitation".to_string())
+                })?;
+            }
+
+            // Create template group invitations for this team
+            for group_id in &team_input.invited_group_ids {
+                query!(
+                    "INSERT INTO game_template_invitations (id, template_id, user_id, group_id, team_id, created_at)
+                    VALUES ($1, $2, $3, $4, $5, $6)",
+                    generate_id(),
+                    template.id,
+                    None::<String>, // No specific user, this is a group invitation
+                    Some(group_id.clone()),
+                    team_id,
+                    now
+                )
+                .execute(&mut *tx)
+                .await
+                .map_err(|err| {
+                    error!("Failed to insert game template group invitation {:?}", err);
+                    DaoError::InternalServerError("Failed to insert game template group invitation".to_string())
                 })?;
             }
         }
@@ -661,8 +836,339 @@ impl Dao {
             DaoError::InternalServerError("Failed to commit transaction".to_string())
         })?;
 
-        info!("Successfully created game with teams and invitations");
-        Ok(game)
+        Ok(template)
+    }
+
+    /// Internal helper: Create recurring game
+    async fn create_recurring_game(
+        &self,
+        template_id: &str,
+        cron_schedule: &str,
+        start_date: NaiveDate,
+        end_date: Option<NaiveDate>,
+    ) -> Result<RecurringGame, DaoError> {
+        let recurring_id = generate_id();
+        let now = Utc::now().naive_utc();
+
+        let recurring_game = RecurringGame {
+            id: recurring_id.clone(),
+            template_id: template_id.to_string(),
+            cron_schedule: cron_schedule.to_string(),
+            start_date,
+            end_date,
+            last_generated_date: None,
+            is_active: true,
+            created_at: now,
+        };
+
+        query!(
+            "INSERT INTO recurring_games (id, template_id, cron_schedule, start_date, end_date, last_generated_date, is_active, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            recurring_game.id,
+            recurring_game.template_id,
+            recurring_game.cron_schedule,
+            recurring_game.start_date,
+            recurring_game.end_date,
+            recurring_game.last_generated_date,
+            recurring_game.is_active,
+            recurring_game.created_at
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|err| {
+            error!("Failed to insert recurring game {:?}", err);
+            DaoError::InternalServerError("Failed to insert recurring game".to_string())
+        })?;
+
+        Ok(recurring_game)
+    }
+
+    /// Internal helper: Create game instance from template
+    async fn create_game_from_template(
+        &self,
+        template_id: &str,
+        scheduled_time: NaiveDateTime,
+        recurring_game_id: Option<String>,
+        occurrence_date: Option<NaiveDate>,
+    ) -> Result<Game, DaoError> {
+        let game_id = generate_id();
+        let now = Utc::now().naive_utc();
+
+        let mut tx = self.pool.begin().await.map_err(|err| {
+            error!("Failed to start transaction {:?}", err);
+            DaoError::InternalServerError("Failed to start transaction".to_string())
+        })?;
+
+        // Insert game instance
+        query!(
+            "INSERT INTO games (id, template_id, recurring_game_id, scheduled_time, occurrence_date, status, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            game_id,
+            template_id,
+            recurring_game_id,
+            scheduled_time,
+            occurrence_date,
+            GameStatus::Scheduled as GameStatus,
+            now
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| {
+            error!("Failed to insert game {:?}", err);
+            DaoError::InternalServerError("Failed to insert game".to_string())
+        })?;
+
+        // Copy template teams to game teams
+        let template_teams = query!(
+            "SELECT id, name, color, position FROM game_template_teams WHERE template_id = $1 ORDER BY position",
+            template_id
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|err| {
+            error!("Failed to fetch template teams {:?}", err);
+            DaoError::InternalServerError("Failed to fetch template teams".to_string())
+        })?;
+
+        let mut team_id_mapping = std::collections::HashMap::new();
+
+        for template_team in template_teams {
+            let team_id = generate_id();
+            team_id_mapping.insert(template_team.id.clone(), team_id.clone());
+
+            query!(
+                "INSERT INTO game_teams (id, game_id, template_team_id, name, color, position, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                team_id,
+                game_id,
+                Some(template_team.id),
+                template_team.name,
+                template_team.color,
+                template_team.position,
+                now
+            )
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| {
+                error!("Failed to insert game team {:?}", err);
+                DaoError::InternalServerError("Failed to insert game team".to_string())
+            })?;
+        }
+
+        // Copy template invitations to game invitations
+        let template_invitations = query!(
+            "SELECT user_id, group_id, team_id FROM game_template_invitations WHERE template_id = $1",
+            template_id
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|err| {
+            error!("Failed to fetch template invitations {:?}", err);
+            DaoError::InternalServerError("Failed to fetch template invitations".to_string())
+        })?;
+
+        for template_invitation in template_invitations {
+            let game_team_id = team_id_mapping.get(&template_invitation.team_id)
+                .ok_or_else(|| DaoError::InternalServerError("Team mapping not found".to_string()))?;
+
+            if let Some(user_id) = template_invitation.user_id {
+                // Direct user invitation
+                query!(
+                    "INSERT INTO game_invitations (game_id, user_id, team_id, group_id, status, invited_at)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    ON CONFLICT (game_id, user_id) DO UPDATE SET team_id = $3, group_id = $4",
+                    game_id,
+                    user_id,
+                    game_team_id,
+                    None::<String>,
+                    InvitationStatus::Pending as InvitationStatus,
+                    now
+                )
+                .execute(&mut *tx)
+                .await
+                .map_err(|err| {
+                    error!("Failed to insert game invitation {:?}", err);
+                    DaoError::InternalServerError("Failed to insert game invitation".to_string())
+                })?;
+            } else if let Some(group_id) = template_invitation.group_id {
+                // Group invitation - expand to individual users
+                query!(
+                    "INSERT INTO group_game_invitations (game_id, group_id, invited_at)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (game_id, group_id) DO NOTHING",
+                    game_id,
+                    group_id,
+                    now
+                )
+                .execute(&mut *tx)
+                .await
+                .map_err(|err| {
+                    error!("Failed to insert group game invitation {:?}", err);
+                    DaoError::InternalServerError("Failed to insert group game invitation".to_string())
+                })?;
+
+                // Get group members and create individual invitations
+                let group_members = query!(
+                    "SELECT user_id FROM group_members WHERE group_id = $1",
+                    group_id
+                )
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(|err| {
+                    error!("Failed to fetch group members {:?}", err);
+                    DaoError::InternalServerError("Failed to fetch group members".to_string())
+                })?;
+
+                for member in group_members {
+                    query!(
+                        "INSERT INTO game_invitations (game_id, user_id, team_id, group_id, status, invited_at)
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                        ON CONFLICT (game_id, user_id) DO UPDATE SET team_id = $3, group_id = $4",
+                        game_id,
+                        member.user_id,
+                        game_team_id,
+                        Some(group_id.clone()),
+                        InvitationStatus::Pending as InvitationStatus,
+                        now
+                    )
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|err| {
+                        error!("Failed to insert group member game invitation {:?}", err);
+                        DaoError::InternalServerError("Failed to insert group member game invitation".to_string())
+                    })?;
+                }
+            }
+        }
+
+        tx.commit().await.map_err(|err| {
+            error!("Failed to commit transaction {:?}", err);
+            DaoError::InternalServerError("Failed to commit transaction".to_string())
+        })?;
+
+        // Fetch the created game with template data
+        self.get_game(&game_id).await?
+            .ok_or_else(|| DaoError::InternalServerError("Failed to fetch created game".to_string()))
+    }
+
+    /// Generate games for recurring game using cron schedule
+    async fn generate_games_for_recurring_game(&self, recurring_game: &RecurringGame) -> Result<(), DaoError> {
+        const GENERATE_AHEAD_DAYS: i64 = 30;
+        
+        info!("Generating games for recurring game {}", recurring_game.id);
+
+        // Parse the cron schedule
+        let schedule = Schedule::from_str(&recurring_game.cron_schedule)
+            .map_err(|err| {
+                error!("Invalid cron schedule {}: {:?}", recurring_game.cron_schedule, err);
+                DaoError::InternalServerError("Invalid cron schedule".to_string())
+            })?;
+
+        // Calculate the date range for generation
+        let start_date = recurring_game.last_generated_date
+            .unwrap_or(recurring_game.start_date);
+        let end_date = std::cmp::min(
+            recurring_game.end_date.unwrap_or(NaiveDate::MAX),
+            Utc::now().date_naive() + Duration::days(GENERATE_AHEAD_DAYS)
+        );
+
+        info!("Generating games from {} to {}", start_date, end_date);
+
+        // Get upcoming occurrences
+        let start_datetime = Utc.from_utc_datetime(&start_date.and_hms_opt(0, 0, 0).unwrap());
+        let mut generated_count = 0;
+        let mut last_generated_date = start_date;
+
+        for datetime in schedule.after(&start_datetime) {
+            let occurrence_date = datetime.date_naive();
+            
+            // Stop if we've reached the end date
+            if occurrence_date > end_date {
+                break;
+            }
+
+            // Skip if we already generated this date
+            if occurrence_date <= start_date {
+                continue;
+            }
+
+            // Check if a game already exists for this occurrence
+            let existing_game = query!(
+                "SELECT id FROM games WHERE recurring_game_id = $1 AND occurrence_date = $2",
+                recurring_game.id,
+                occurrence_date
+            )
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|err| {
+                error!("Failed to check existing game {:?}", err);
+                DaoError::InternalServerError("Failed to check existing game".to_string())
+            })?;
+
+            if existing_game.is_some() {
+                info!("Game already exists for {}, skipping", occurrence_date);
+                last_generated_date = occurrence_date;
+                continue;
+            }
+
+            // Generate game for this occurrence
+            let scheduled_time = datetime.naive_utc();
+            let _game = self.create_game_from_template(
+                &recurring_game.template_id,
+                scheduled_time,
+                Some(recurring_game.id.clone()),
+                Some(occurrence_date),
+            ).await?;
+
+            generated_count += 1;
+            last_generated_date = occurrence_date;
+            info!("Generated game for {}", occurrence_date);
+
+            // Limit the number of games generated in one batch
+            if generated_count >= 10 {
+                break;
+            }
+        }
+
+        // Update the last_generated_date
+        if generated_count > 0 {
+            query!(
+                "UPDATE recurring_games SET last_generated_date = $1 WHERE id = $2",
+                last_generated_date,
+                recurring_game.id
+            )
+            .execute(&self.pool)
+            .await
+            .map_err(|err| {
+                error!("Failed to update last_generated_date {:?}", err);
+                DaoError::InternalServerError("Failed to update last_generated_date".to_string())
+            })?;
+        }
+
+        info!("Generated {} games for recurring game {}", generated_count, recurring_game.id);
+        Ok(())
+    }
+
+    /// Get first generated game for recurring series
+    async fn get_first_generated_game(&self, recurring_game_id: &str) -> Result<Option<Game>, DaoError> {
+        info!("Getting first generated game for recurring game {}", recurring_game_id);
+
+        let result = query!(
+            "SELECT id FROM games WHERE recurring_game_id = $1 ORDER BY occurrence_date ASC LIMIT 1",
+            recurring_game_id
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| {
+            error!("Failed to get first generated game {:?}", err);
+            DaoError::InternalServerError("Failed to get first generated game".to_string())
+        })?;
+
+        if let Some(row) = result {
+            self.get_game(&row.id).await
+        } else {
+            Ok(None)
+        }
     }
 
     pub async fn list_game_teams(&self, game_id: &str) -> Result<Vec<GameTeam>, DaoError> {
@@ -684,5 +1190,93 @@ impl Dao {
         })?;
 
         Ok(teams)
+    }
+
+    /// Get games where a specific group was invited
+    pub async fn list_group_games(&self, group_id: &str) -> Result<Vec<Game>, DaoError> {
+        info!("Listing games for group {}", group_id);
+
+        let results = query!(
+            r#"
+            SELECT DISTINCT 
+                g.id, g.scheduled_time, g.occurrence_date,
+                g.status as "status: GameStatus", g.created_at,
+                t.title, t.game_type as "game_type: GameType", 
+                t.location_latitude, t.location_longitude, t.location_name, 
+                t.duration_minutes, t.created_by_user_id,
+                -- Recurring game info (NULL for one-off games)
+                rg.cron_schedule as "cron_schedule?", rg.start_date as "start_date?", rg.end_date as "end_date?"
+            FROM games g
+            JOIN game_templates t ON g.template_id = t.id
+            LEFT JOIN recurring_games rg ON g.recurring_game_id = rg.id
+            JOIN group_game_invitations ggi ON g.id = ggi.game_id
+            WHERE ggi.group_id = $1
+            ORDER BY g.scheduled_time DESC
+            "#,
+            group_id
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|err| {
+            error!("Failed to list group games {:?}", err);
+            DaoError::InternalServerError("Failed to list group games".to_string())
+        })?;
+
+        Ok(results.into_iter().map(|row| {
+            let schedule = if let Some(cron_schedule) = row.cron_schedule {
+                // This is a recurring game
+                GameSchedule::Recurring {
+                    cron_schedule,
+                    start_date: row.start_date.unwrap(),
+                    end_date: row.end_date,
+                    occurrence_date: row.occurrence_date.unwrap(),
+                }
+            } else {
+                // This is a one-off game
+                GameSchedule::OneOff {
+                    scheduled_time: row.scheduled_time,
+                }
+            };
+
+            Game {
+                id: row.id,
+                title: row.title,
+                game_type: row.game_type,
+                location_latitude: row.location_latitude,
+                location_longitude: row.location_longitude,
+                location_name: row.location_name,
+                duration_minutes: row.duration_minutes,
+                created_by_user_id: row.created_by_user_id,
+                created_at: row.created_at,
+                status: row.status,
+                schedule,
+            }
+        }).collect())
+    }
+
+    /// Add group invitation to a game
+    pub async fn add_group_game_invitation(
+        &self,
+        game_id: &str,
+        group_id: &str,
+    ) -> Result<(), DaoError> {
+        info!("Adding group {} invitation to game {}", group_id, game_id);
+
+        query!(
+            "INSERT INTO group_game_invitations (game_id, group_id, invited_at)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (game_id, group_id) DO NOTHING",
+            game_id,
+            group_id,
+            Utc::now().naive_utc(),
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|err| {
+            error!("Failed to insert group game invitation {:?}", err);
+            DaoError::InternalServerError("Failed to insert group game invitation".to_string())
+        })?;
+
+        Ok(())
     }
 }

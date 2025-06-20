@@ -1,7 +1,7 @@
 use std::{fs::File, io::Write};
 
 use bigdecimal::{BigDecimal, FromPrimitive, ToPrimitive};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Utc, NaiveDate};
 use clap::{Parser, Subcommand};
 use dao::Dao;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
@@ -13,7 +13,7 @@ use poem_openapi::Enum;
 use poem_openapi::auth::Bearer;
 use poem_openapi::param::Query;
 use poem_openapi::{
-    ApiResponse, Object, OpenApi, OpenApiService, SecurityScheme,
+    ApiResponse, Object, OpenApi, OpenApiService, SecurityScheme, Union,
     param::Path,
     payload::{Json, PlainText},
 };
@@ -173,6 +173,16 @@ impl From<dao::Game> for Game {
             dao::GameType::Other => GameType::Other,
         };
 
+        // Extract scheduled_time from the schedule
+        let scheduled_time = match &value.schedule {
+            dao::GameSchedule::OneOff { scheduled_time } => *scheduled_time,
+            dao::GameSchedule::Recurring { occurrence_date, .. } => {
+                // For recurring games, we need to derive the time from the occurrence date
+                // For now, using a default time (this could be improved by storing time in the template)
+                occurrence_date.and_hms_opt(18, 0, 0).unwrap_or_else(|| occurrence_date.and_hms_opt(0, 0, 0).unwrap())
+            }
+        };
+
         Game {
             id: value.id,
             title: value.title,
@@ -182,7 +192,7 @@ impl From<dao::Game> for Game {
                 longitude: value.location_longitude.to_f64().unwrap_or(0.0),
                 name: value.location_name,
             },
-            scheduled_time: DateTime::from_naive_utc_and_offset(value.scheduled_time, Utc),
+            scheduled_time: DateTime::from_naive_utc_and_offset(scheduled_time, Utc),
             duration_minutes: value.duration_minutes,
             created_by_user_id: value.created_by_user_id,
             created_at: DateTime::from_naive_utc_and_offset(value.created_at, Utc),
@@ -203,6 +213,7 @@ impl From<dao::GameInvitation> for GameInvitation {
             game_id: value.game_id,
             user_id: value.user_id,
             team_id: value.team_id,
+            group_id: value.group_id,
             status,
             invited_at: DateTime::from_naive_utc_and_offset(value.invited_at, Utc),
             responded_at: value
@@ -231,6 +242,12 @@ struct AddGroupMembersInput {
 }
 
 #[derive(Object)]
+struct AddGameInvitationsInput {
+    user_ids: Vec<String>,
+    team_id: String,
+}
+
+#[derive(Object)]
 struct Location {
     latitude: f64,
     longitude: f64,
@@ -242,6 +259,29 @@ struct CreateGameTeamInput {
     name: String,
     color: Option<String>,
     invited_user_ids: Vec<String>,
+    invited_group_ids: Option<Vec<String>>,
+}
+
+// Schedule union types for API
+#[derive(Object)]
+struct OneOffSchedule {
+    scheduled_time: DateTime<Utc>,
+}
+
+#[derive(Object)]
+struct RecurringSchedule {
+    cron_schedule: String,
+    start_date: NaiveDate,
+    end_date: Option<NaiveDate>,
+}
+
+#[derive(Union)]
+#[oai(discriminator_name = "type")]
+enum GameSchedule {
+    #[oai(mapping = "one_off")]
+    OneOff(OneOffSchedule),
+    #[oai(mapping = "recurring")]
+    Recurring(RecurringSchedule),
 }
 
 #[derive(Object)]
@@ -249,9 +289,9 @@ struct CreateGameInput {
     title: String,
     game_type: GameType,
     location: Location,
-    scheduled_time: DateTime<Utc>,
     duration_minutes: i32,
-    teams: Vec<CreateGameTeamInput>, // Can be 1 team (casual) or multiple teams
+    teams: Vec<CreateGameTeamInput>,
+    schedule: GameSchedule,
 }
 
 #[derive(Object)]
@@ -281,6 +321,7 @@ struct GameInvitation {
     game_id: String,
     user_id: String,
     team_id: String,
+    group_id: Option<String>,
     status: InvitationStatus,
     invited_at: DateTime<Utc>,
     responded_at: Option<DateTime<Utc>>,
@@ -522,10 +563,7 @@ impl Api {
         AuthSchema(jwt_data): AuthSchema,
         input: Json<CreateGameInput>,
     ) -> Result<Json<Game>> {
-        info!("Creating game ");
-
-        // Convert DateTime<Utc> to NaiveDateTime for the DAO layer
-        let scheduled_time = input.scheduled_time.naive_utc();
+        info!("Creating game");
 
         // Convert API game type to DAO game type
         let dao_game_type = match input.game_type {
@@ -540,6 +578,22 @@ impl Api {
             GameType::Other => dao::GameType::Other,
         };
 
+        // Convert API schedule to DAO schedule
+        let dao_schedule = match &input.schedule {
+            GameSchedule::OneOff(one_off) => {
+                dao::CreateGameSchedule::OneOff {
+                    scheduled_time: one_off.scheduled_time.naive_utc(),
+                }
+            }
+            GameSchedule::Recurring(recurring) => {
+                dao::CreateGameSchedule::Recurring {
+                    cron_schedule: recurring.cron_schedule.clone(),
+                    start_date: recurring.start_date,
+                    end_date: recurring.end_date,
+                }
+            }
+        };
+
         // Prepare teams data for transactional creation
         let teams_input: Vec<dao::CreateGameTeamInput> = input
             .teams
@@ -550,6 +604,7 @@ impl Api {
                 color: team_input.color.clone(),
                 position: (index + 1) as i32,
                 invited_user_ids: team_input.invited_user_ids.clone(),
+                invited_group_ids: team_input.invited_group_ids.clone().unwrap_or_default(),
             })
             .collect();
 
@@ -565,9 +620,9 @@ impl Api {
                 Error::from_string("Invalid longitude", StatusCode::BAD_REQUEST)
             })?,
             location_name: input.location.name.clone(),
-            scheduled_time,
             duration_minutes: input.duration_minutes,
             teams: teams_input,
+            schedule: dao_schedule,
         };
 
         // Create game, teams, and invitations in a single transaction
@@ -658,43 +713,65 @@ impl Api {
         Data(dao): Data<&Dao>,
         AuthSchema(_jwt_data): AuthSchema,
         Path(game_id): Path<String>,
-        input: Json<AddGroupMembersInput>, // Reuse the same input type
+        input: Json<AddGameInvitationsInput>,
     ) -> Result<()> {
         info!("Adding invitations to game {}", game_id);
 
-        dao.add_game_invitations(&game_id, &input.user_ids)
+        dao.add_game_invitations(&game_id, &input.user_ids, &input.team_id)
             .await
             .map_err(InternalServerError)?;
 
         Ok(())
     }
 
-    #[oai(path = "/games/:game_id/invitations/:user_id", method = "put")]
+    #[oai(path = "/games/:game_id/invitations", method = "put")]
     async fn respond_to_invitation(
         &self,
         Data(dao): Data<&Dao>,
         AuthSchema(jwt_data): AuthSchema,
         Path(game_id): Path<String>,
-        Path(user_id): Path<String>,
         input: Json<RespondToInvitationInput>,
     ) -> Result<()> {
         info!("Responding to game invitation");
-
-        // Ensure the user can only respond for themselves
-        if jwt_data.sub != user_id {
-            return Err(Error::from_string("Unauthorized", StatusCode::FORBIDDEN));
-        }
 
         let response_enum = match input.response {
             InvitationResponse::Accepted => dao::InvitationStatus::Accepted,
             InvitationResponse::Declined => dao::InvitationStatus::Declined,
         };
 
-        dao.respond_to_game_invitation(&game_id, &user_id, response_enum)
+        dao.respond_to_game_invitation(&game_id, &jwt_data.sub, response_enum)
             .await
             .map_err(InternalServerError)?;
 
         Ok(())
+    }
+
+    #[oai(path = "/groups/:group_id/games", method = "get")]
+    async fn list_group_games(
+        &self,
+        Data(dao): Data<&Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(group_id): Path<String>,
+    ) -> Result<Json<Vec<Game>>> {
+        info!("Listing games for group {}", group_id);
+
+        // First, verify the user has access to this group
+        let group = dao
+            .get_user_group(jwt_data.sub, group_id.clone())
+            .await
+            .map_err(InternalServerError)?;
+
+        if group.is_none() {
+            return Err(Error::from_string("Group not found or access denied", StatusCode::FORBIDDEN));
+        }
+
+        // Get games where this group was explicitly invited
+        let games = dao
+            .list_group_games(&group_id)
+            .await
+            .map_err(InternalServerError)?;
+
+        Ok(Json(games.into_iter().map(|g| g.into()).collect()))
     }
 }
 

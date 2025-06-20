@@ -3,8 +3,14 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Plus, X, UserPlus } from 'lucide-react'
-import { useSearchUsers, useAddGameInvitations } from '@/hooks/useApi'
-import type { User, AddGroupMembersInput } from '@/lib/api'
+import { useSearchUsers, useAddGameInvitations, useGetGroup } from '@/hooks/useApi'
+import { GroupSearch } from '@/components/GroupSearch'
+import { expandGroupsToUserIds, getInvitationSummary, validateInvitationData } from '@/utils/group-utils'
+import type { User } from '@/lib/api'
+import type { components } from '@/types/api'
+
+type GroupListItem = components['schemas']['GroupListItem']
+type GameTeam = components['schemas']['GameTeam']
 
 interface InviteMorePeopleDialogProps {
   gameId: string
@@ -12,6 +18,7 @@ interface InviteMorePeopleDialogProps {
   onClose: () => void
   onInvitesSent: () => void
   existingInvitations: User[]
+  teams: GameTeam[]
 }
 
 export function InviteMorePeopleDialog({ 
@@ -19,13 +26,17 @@ export function InviteMorePeopleDialog({
   isOpen, 
   onClose, 
   onInvitesSent,
-  existingInvitations 
+  existingInvitations,
+  teams
 }: InviteMorePeopleDialogProps) {
   const { data: searchResults, searchUsers } = useSearchUsers()
   const { loading: inviteLoading, error: inviteError, addGameInvitations } = useAddGameInvitations()
+  const { getGroup } = useGetGroup()
 
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedUsers, setSelectedUsers] = useState<User[]>([])
+  const [selectedGroups, setSelectedGroups] = useState<GroupListItem[]>([])
+  const [selectedTeamId, setSelectedTeamId] = useState<string>(teams.length > 0 ? teams[0].id : '')
 
   // Search users when query changes
   useEffect(() => {
@@ -40,16 +51,22 @@ export function InviteMorePeopleDialog({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     
-    if (selectedUsers.length === 0) return
+    const invitationData = { individualUsers: selectedUsers, selectedGroups: selectedGroups }
+    if (!validateInvitationData(invitationData) || !selectedTeamId) return
 
-    const input: AddGroupMembersInput = {
-      user_ids: selectedUsers.map(user => user.id)
+    // Expand groups to individual user IDs
+    const userIds = await expandGroupsToUserIds(invitationData, getGroup)
+    
+    const input = {
+      user_ids: userIds,
+      team_id: selectedTeamId
     }
 
     const result = await addGameInvitations(gameId, input)
     if (result !== null) {
       // Reset form state
       setSelectedUsers([])
+      setSelectedGroups([])
       setSearchQuery('')
       onInvitesSent()
       onClose()
@@ -65,6 +82,16 @@ export function InviteMorePeopleDialog({
 
   const removeUser = (userId: string) => {
     setSelectedUsers(prev => prev.filter(user => user.id !== userId))
+  }
+
+  const addGroup = (group: GroupListItem) => {
+    if (!selectedGroups.some(g => g.id === group.id)) {
+      setSelectedGroups(prev => [...prev, group])
+    }
+  }
+
+  const removeGroup = (groupId: string) => {
+    setSelectedGroups(prev => prev.filter(group => group.id !== groupId))
   }
 
   // Filter out users who already have invitations and users who are already selected
@@ -93,6 +120,26 @@ export function InviteMorePeopleDialog({
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Team Selection */}
+          {teams.length > 1 && (
+            <div>
+              <Label htmlFor="team">Assign to Team</Label>
+              <select
+                id="team"
+                value={selectedTeamId}
+                onChange={(e) => setSelectedTeamId(e.target.value)}
+                className="w-full px-3 py-2 border border-input rounded-md bg-background"
+                required
+              >
+                {teams.map((team) => (
+                  <option key={team.id} value={team.id}>
+                    {team.name} ({team.members.length} members)
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           {/* User Search */}
           <div>
             <Label htmlFor="search">Search Users</Label>
@@ -134,6 +181,15 @@ export function InviteMorePeopleDialog({
               All found users are already invited to this game.
             </div>
           )}
+
+          {/* Group Search */}
+          <GroupSearch
+            selectedGroups={selectedGroups}
+            onGroupAdd={addGroup}
+            onGroupRemove={removeGroup}
+            label="Search Groups"
+            placeholder="Type group name..."
+          />
 
           {/* Selected Users */}
           {selectedUsers.length > 0 && (
@@ -180,9 +236,9 @@ export function InviteMorePeopleDialog({
             </Button>
             <Button
               type="submit"
-              disabled={selectedUsers.length === 0 || inviteLoading}
+              disabled={!validateInvitationData({ individualUsers: selectedUsers, selectedGroups: selectedGroups }) || inviteLoading}
             >
-              {inviteLoading ? 'Sending...' : `Send ${selectedUsers.length} Invitation${selectedUsers.length === 1 ? '' : 's'}`}
+              {inviteLoading ? 'Sending...' : `Send Invitations (${getInvitationSummary({ individualUsers: selectedUsers, selectedGroups: selectedGroups })})`}
             </Button>
           </div>
         </form>

@@ -67,7 +67,11 @@ export function GamesPage() {
             >
               <div className="flex items-start justify-between mb-4">
                 <div className="flex-1">
-                  <h3 className="text-lg font-semibold mb-1">{game.title}</h3>
+                  <h3 className="text-lg font-semibold mb-1 flex items-center">
+                    {game.title}
+                    {/* TODO: Once API provides schedule info, show recurring indicator */}
+                    {/* {game.isRecurring && <RotateCcw className="h-4 w-4 ml-2 text-muted-foreground" />} */}
+                  </h3>
                   <div className="flex items-center text-sm text-muted-foreground mb-2">
                     <span className="font-medium">{formatGameType(game.game_type)}</span>
                     <span className={`ml-2 px-2 py-1 rounded-full text-xs font-medium ${getStatusColor(game.status)}`}>

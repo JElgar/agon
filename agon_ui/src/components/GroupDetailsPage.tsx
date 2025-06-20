@@ -1,14 +1,15 @@
 import { useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
-import { ArrowLeft } from 'lucide-react'
-import { useGetGroup } from '@/hooks/useApi'
+import { ArrowLeft, Calendar, MapPin, Clock } from 'lucide-react'
+import { useGetGroup, useGetGroupGames } from '@/hooks/useApi'
 import { AddGroupMemberDialog } from '@/components/AddGroupMemberDialog'
 
 export function GroupDetailsPage() {
   const { groupId } = useParams<{ groupId: string }>()
   const navigate = useNavigate()
   const { data: group, loading, error, getGroup } = useGetGroup()
+  const { data: groupGames, loading: loadingGames, error: gamesError } = useGetGroupGames(groupId)
 
   useEffect(() => {
     if (groupId) {
@@ -123,6 +124,58 @@ export function GroupDetailsPage() {
           )}
         </div>
 
+        {/* Games Section */}
+        <div className="p-6 border border-border rounded-lg bg-card">
+          <h3 className="text-lg font-semibold mb-4">Group Games</h3>
+          
+          {loadingGames ? (
+            <div className="text-center py-8 text-muted-foreground">
+              Loading games...
+            </div>
+          ) : gamesError ? (
+            <div className="text-center py-8 text-destructive">
+              Failed to load group games: {gamesError}
+            </div>
+          ) : groupGames && groupGames.length > 0 ? (
+            <div className="space-y-3">
+              {groupGames.map((game) => (
+                <div 
+                  key={game.id} 
+                  className="flex items-center justify-between p-3 border border-border rounded-lg hover:bg-muted/50 cursor-pointer"
+                  onClick={() => navigate(`/games/${encodeURIComponent(game.id)}`)}
+                >
+                  <div className="flex-1">
+                    <div className="flex items-center space-x-2 mb-1">
+                      <h4 className="font-medium">{game.title}</h4>
+                      <span className="text-xs bg-muted px-2 py-1 rounded">{game.game_type.replace('_', ' ')}</span>
+                    </div>
+                    <div className="flex items-center space-x-4 text-sm text-muted-foreground">
+                      <div className="flex items-center space-x-1">
+                        <Calendar className="h-3 w-3" />
+                        <span>{new Date(game.scheduled_time).toLocaleDateString()}</span>
+                      </div>
+                      <div className="flex items-center space-x-1">
+                        <Clock className="h-3 w-3" />
+                        <span>{new Date(game.scheduled_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                      </div>
+                      <div className="flex items-center space-x-1">
+                        <MapPin className="h-3 w-3" />
+                        <span>{game.location.name || `${game.location.latitude}, ${game.location.longitude}`}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {game.duration_minutes}min
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-8 text-muted-foreground">
+              No games found where this group was invited.
+            </div>
+          )}
+        </div>
 
         {/* Team Settings */}
         <div className="p-6 border border-border rounded-lg bg-card">

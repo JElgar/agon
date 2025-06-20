@@ -9,26 +9,36 @@ permissions:
   packages: write
 
 jobs:
-  build:
-    uses: JElgar/agon_service/.github/workflows/build.yml@main
+  build-service:
+    uses: JElgar/agon/.github/workflows/build-service.yml@main
     secrets: inherit
 
-  publish:
-    needs: build
-    uses: JElgar/agon_service/.github/workflows/docker.yml@main
+  build-ui:
+    uses: JElgar/agon/.github/workflows/build-ui.yml@main
+    secrets: inherit
+
+  publish-service:
+    needs: build-service
+    uses: JElgar/agon/.github/workflows/docker-service.yml@main
+    secrets: inherit
+
+  publish-ui:
+    needs: build-ui
+    uses: JElgar/agon/.github/workflows/docker-ui.yml@main
     secrets: inherit
 
   deploy:
-    needs: publish
-    uses: JElgar/agon_service/.github/workflows/deploy.yml@main
+    needs: [publish-service, publish-ui]
+    uses: JElgar/agon/.github/workflows/deploy.yml@main
     secrets: inherit
     with:
-      agon-image: ${{ needs.publish.outputs.image }}
+      agon-service-image: ${{ needs.publish-service.outputs.image }}
+      agon-ui-image: ${{ needs.publish-ui.outputs.image }}
       stack-name: staging
 
   test:
     needs: deploy
-    uses: JElgar/agon_service/.github/workflows/test.yml@main
+    uses: JElgar/agon/.github/workflows/test.yml@main
     with:
       agon-service-url: ${{ needs.deploy.outputs.agon-service-url }}
     secrets:

@@ -25,6 +25,7 @@ export function LoginForm() {
         setMessage(error.message)
       }
     } catch (err) {
+      console.error("Sign in failed", err);
       setMessage('Authentication service not configured. Please add your Supabase credentials.')
     }
 
@@ -48,6 +49,7 @@ export function LoginForm() {
         setMessage('Check your email for the confirmation link!')
       }
     } catch (err) {
+      console.error("Sign up failed", err);
       setMessage('Authentication service not configured. Please add your Supabase credentials.')
     }
 
@@ -72,6 +74,7 @@ export function LoginForm() {
       }
       // Don't set loading to false here as we're redirecting
     } catch (err) {
+      console.error("Oauth sign in failed", err);
       setMessage('Authentication service not configured. Please add your Supabase credentials.')
       setLoading(false)
     }

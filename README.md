@@ -29,6 +29,7 @@ make test
 - Calendar/schedule view
 - ICS
 - Recurring
+    - Store game metadata separtely (for all games) so updating a recurring (excluding dates/times) is a single record
 - Location
     - Allow users to type to find location
     - Show location on the map

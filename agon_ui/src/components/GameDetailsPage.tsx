@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { ArrowLeft, Calendar, MapPin, Clock, Users, CheckCircle, XCircle } from 'lucide-react'
-import { useGetGameDetails, useRespondToInvitation } from '@/hooks/useApi'
+import { useGetGameDetails, useRespondToInvitation, useGetGroup } from '@/hooks/useApi'
 import { useAuth } from '@/hooks/useAuth'
 import { InviteMorePeopleDialog } from '@/components/InviteMorePeopleDialog'
 import type { components } from '@/types/api'
@@ -20,8 +20,41 @@ export function GameDetailsPage() {
   
   const { data: gameData, loading, error, refetch } = useGetGameDetails(gameId)
   const { loading: respondLoading, respondToInvitation } = useRespondToInvitation()
+  const { getGroup } = useGetGroup()
   const [isUpdating, setIsUpdating] = useState(false)
   const [showInviteDialog, setShowInviteDialog] = useState(false)
+  const [groupNames, setGroupNames] = useState<Record<string, string>>({})
+
+  // Fetch group names for invitations that came from groups
+  useEffect(() => {
+    const fetchGroupNames = async () => {
+      if (!gameData?.invitations) return
+
+      const groupIds = new Set<string>()
+      gameData.invitations.forEach(inv => {
+        if (inv.invitation.group_id) {
+          groupIds.add(inv.invitation.group_id)
+        }
+      })
+
+      const newGroupNames: Record<string, string> = {}
+      for (const groupId of groupIds) {
+        try {
+          const group = await getGroup(groupId)
+          if (group) {
+            newGroupNames[groupId] = group.name
+          }
+        } catch (error) {
+          console.error(`Failed to fetch group ${groupId}:`, error)
+          newGroupNames[groupId] = 'Unknown Group'
+        }
+      }
+
+      setGroupNames(newGroupNames)
+    }
+
+    fetchGroupNames()
+  }, [gameData?.invitations, getGroup])
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString('en-US', {
@@ -68,13 +101,12 @@ export function GameDetailsPage() {
     
     console.log(`${isChanging ? 'Updating' : 'Responding to'} invitation:`, { 
       gameId, 
-      userId: user.id, 
       response, 
       previousStatus: currentStatus 
     })
     
     try {
-      const result = await respondToInvitation(gameId, user.id, response)
+      const result = await respondToInvitation(gameId, response)
       console.log('Invitation response result:', result)
       
       if (result === null) {
@@ -190,6 +222,11 @@ export function GameDetailsPage() {
         {currentUserInvitation && (
           <div className="mb-6 p-4 border rounded-md bg-muted/50">
             <h4 className="font-medium mb-2">Your Invitation</h4>
+            {currentUserInvitation.invitation.group_id && groupNames[currentUserInvitation.invitation.group_id] && (
+              <p className="text-sm text-muted-foreground mb-2">
+                Invited via group: <span className="font-medium">{groupNames[currentUserInvitation.invitation.group_id]}</span>
+              </p>
+            )}
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-2">
                 <span className={`px-2 py-1 rounded-full text-xs font-medium ${getInvitationStatusColor(currentUserInvitation.invitation.status)}`}>
@@ -278,12 +315,19 @@ export function GameDetailsPage() {
                   {team.members.map((member) => {
                     const invitation = gameData.invitations.find(inv => inv.user.id === member.id)
                     const status = invitation?.invitation.status || 'unknown'
+                    const groupId = invitation?.invitation.group_id
+                    const groupName = groupId ? groupNames[groupId] : null
                     
                     return (
                       <div key={member.id} className="flex items-center justify-between p-2 border rounded-md">
-                        <div>
+                        <div className="flex-1">
                           <p className="font-medium">{member.first_name} {member.last_name}</p>
                           <p className="text-sm text-muted-foreground">@{member.username}</p>
+                          {groupName && (
+                            <p className="text-xs text-muted-foreground">
+                              via group: <span className="font-medium">{groupName}</span>
+                            </p>
+                          )}
                         </div>
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${status === 'unknown' ? 'bg-gray-100 text-gray-800' : getInvitationStatusColor(status as InvitationStatus)}`}>
                           {status.charAt(0).toUpperCase() + status.slice(1)}
@@ -309,15 +353,25 @@ export function GameDetailsPage() {
               Accepted ({acceptedInvitations.length})
             </h3>
             <div className="space-y-2">
-              {acceptedInvitations.map((invitation) => (
-                <div key={invitation.user.id} className="flex items-center justify-between p-2 border rounded-md">
-                  <div>
-                    <p className="font-medium">{invitation.user.first_name} {invitation.user.last_name}</p>
-                    <p className="text-sm text-muted-foreground">@{invitation.user.username}</p>
+              {acceptedInvitations.map((invitation) => {
+                const groupId = invitation.invitation.group_id
+                const groupName = groupId ? groupNames[groupId] : null
+                
+                return (
+                  <div key={invitation.user.id} className="flex items-center justify-between p-2 border rounded-md">
+                    <div className="flex-1">
+                      <p className="font-medium">{invitation.user.first_name} {invitation.user.last_name}</p>
+                      <p className="text-sm text-muted-foreground">@{invitation.user.username}</p>
+                      {groupName && (
+                        <p className="text-xs text-muted-foreground">
+                          via group: <span className="font-medium">{groupName}</span>
+                        </p>
+                      )}
+                    </div>
+                    <CheckCircle className="h-4 w-4 text-green-600" />
                   </div>
-                  <CheckCircle className="h-4 w-4 text-green-600" />
-                </div>
-              ))}
+                )
+              })}
               {acceptedInvitations.length === 0 && (
                 <p className="text-sm text-muted-foreground">No accepted invitations yet</p>
               )}
@@ -331,15 +385,25 @@ export function GameDetailsPage() {
               Pending ({pendingInvitations.length})
             </h3>
             <div className="space-y-2">
-              {pendingInvitations.map((invitation) => (
-                <div key={invitation.user.id} className="flex items-center justify-between p-2 border rounded-md">
-                  <div>
-                    <p className="font-medium">{invitation.user.first_name} {invitation.user.last_name}</p>
-                    <p className="text-sm text-muted-foreground">@{invitation.user.username}</p>
+              {pendingInvitations.map((invitation) => {
+                const groupId = invitation.invitation.group_id
+                const groupName = groupId ? groupNames[groupId] : null
+                
+                return (
+                  <div key={invitation.user.id} className="flex items-center justify-between p-2 border rounded-md">
+                    <div className="flex-1">
+                      <p className="font-medium">{invitation.user.first_name} {invitation.user.last_name}</p>
+                      <p className="text-sm text-muted-foreground">@{invitation.user.username}</p>
+                      {groupName && (
+                        <p className="text-xs text-muted-foreground">
+                          via group: <span className="font-medium">{groupName}</span>
+                        </p>
+                      )}
+                    </div>
+                    <Clock className="h-4 w-4 text-yellow-600" />
                   </div>
-                  <Clock className="h-4 w-4 text-yellow-600" />
-                </div>
-              ))}
+                )
+              })}
               {pendingInvitations.length === 0 && (
                 <p className="text-sm text-muted-foreground">No pending invitations</p>
               )}
@@ -353,15 +417,25 @@ export function GameDetailsPage() {
               Declined ({declinedInvitations.length})
             </h3>
             <div className="space-y-2">
-              {declinedInvitations.map((invitation) => (
-                <div key={invitation.user.id} className="flex items-center justify-between p-2 border rounded-md">
-                  <div>
-                    <p className="font-medium">{invitation.user.first_name} {invitation.user.last_name}</p>
-                    <p className="text-sm text-muted-foreground">@{invitation.user.username}</p>
+              {declinedInvitations.map((invitation) => {
+                const groupId = invitation.invitation.group_id
+                const groupName = groupId ? groupNames[groupId] : null
+                
+                return (
+                  <div key={invitation.user.id} className="flex items-center justify-between p-2 border rounded-md">
+                    <div className="flex-1">
+                      <p className="font-medium">{invitation.user.first_name} {invitation.user.last_name}</p>
+                      <p className="text-sm text-muted-foreground">@{invitation.user.username}</p>
+                      {groupName && (
+                        <p className="text-xs text-muted-foreground">
+                          via group: <span className="font-medium">{groupName}</span>
+                        </p>
+                      )}
+                    </div>
+                    <XCircle className="h-4 w-4 text-red-600" />
                   </div>
-                  <XCircle className="h-4 w-4 text-red-600" />
-                </div>
-              ))}
+                )
+              })}
               {declinedInvitations.length === 0 && (
                 <p className="text-sm text-muted-foreground">No declined invitations</p>
               )}
@@ -381,6 +455,7 @@ export function GameDetailsPage() {
             refetch()
           }}
           existingInvitations={gameData.invitations.map(inv => inv.user)}
+          teams={gameData.teams}
         />
       )}
     </div>

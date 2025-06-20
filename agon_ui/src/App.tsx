@@ -5,6 +5,7 @@ import { LoginForm } from '@/components/auth/LoginForm'
 import { CreateProfileForm } from '@/components/auth/CreateProfileForm'
 import { GroupsPage } from '@/components/GroupsPage'
 import { GroupDetailsPage } from '@/components/GroupDetailsPage'
+import { CreateGroupPage } from '@/components/CreateGroupPage'
 import { GamesPage } from '@/components/GamesPage'
 import { CreateGamePage } from '@/components/CreateGamePage'
 import { GameDetailsPage } from '@/components/GameDetailsPage'
@@ -153,6 +154,7 @@ function AuthenticatedApp() {
         <Routes>
           <Route path="/" element={<Navigate to="/groups" replace />} />
           <Route path="/groups" element={<GroupsPage />} />
+          <Route path="/groups/create" element={<CreateGroupPage />} />
           <Route 
             path="/groups/:groupId" 
             element={<GroupDetailsPage />} 

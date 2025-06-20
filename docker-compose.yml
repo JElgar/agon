@@ -24,4 +24,12 @@ services:
     image: adminer
     restart: always
     ports:
-      - 7002:8080
+      - 7002:808
+
+  # ui:
+  #   build:
+  #     context: agon_ui 
+  #   container_name: poem_api
+  #   ports:
+  #     - 7003:80
+  #   restart: unless-stopped

@@ -4,7 +4,6 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useCreateUser } from '@/hooks/useApi'
 import { useAuth } from '@/hooks/useAuth'
-import { debugUserMetadata } from '@/utils/user-debug'
 
 interface CreateProfileFormProps {
   email: string
@@ -22,9 +21,6 @@ export function CreateProfileForm({ email, onProfileCreated }: CreateProfileForm
   // Pre-populate form with Google profile info
   useEffect(() => {
     if (user) {
-      // Debug user metadata to see what's available
-      debugUserMetadata(user)
-      
       const metadata = user.user_metadata
       const identityData = user.identities?.[0]?.identity_data
       

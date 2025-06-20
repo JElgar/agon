@@ -3,8 +3,16 @@ import { useNavigate } from 'react-router-dom'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { ArrowLeft, Plus, X, GripVertical } from 'lucide-react'
+import { Calendar } from '@/components/ui/calendar'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
+import { ArrowLeft, Plus, X, GripVertical, ChevronDownIcon, RotateCcw } from 'lucide-react'
 import { useCreateGame, useSearchUsers } from '@/hooks/useApi'
+import { GroupSearch } from '@/components/GroupSearch'
+// import { expandGroupsToUserIds, getInvitationSummary, validateInvitationData } from '@/utils/group-utils'
 import {
   DndContext,
   DragOverlay,
@@ -21,8 +29,10 @@ import type { components } from '@/types/api'
 
 type GameType = components['schemas']['GameType']
 type User = components['schemas']['User']  
+type GroupListItem = components['schemas']['GroupListItem']
 type CreateGameInput = components['schemas']['CreateGameInput']
 type CreateGameTeamInput = components['schemas']['CreateGameTeamInput']
+type GameSchedule = components['schemas']['GameSchedule']
 
 const GAME_TYPES: { value: GameType; label: string }[] = [
   { value: 'football_5_a_side' as GameType, label: '5-a-side Football' },
@@ -34,6 +44,18 @@ const GAME_TYPES: { value: GameType; label: string }[] = [
   { value: 'rugby' as GameType, label: 'Rugby' },
   { value: 'hockey' as GameType, label: 'Hockey' },
   { value: 'other' as GameType, label: 'Other' },
+]
+
+const QUICK_CRON_OPTIONS = [
+  { value: '0 0 18 * * Mon *', label: 'Every Monday at 6 PM' },
+  { value: '0 0 18 * * Tue *', label: 'Every Tuesday at 6 PM' },
+  { value: '0 0 18 * * Wed *', label: 'Every Wednesday at 6 PM' },
+  { value: '0 0 18 * * Thu *', label: 'Every Thursday at 6 PM' },
+  { value: '0 0 18 * * Fri *', label: 'Every Friday at 6 PM' },
+  { value: '0 0 18 * * Sat *', label: 'Every Saturday at 6 PM' },
+  { value: '0 0 18 * * Sun *', label: 'Every Sunday at 6 PM' },
+  { value: '0 0 19 * * Mon,Wed,Fri *', label: 'Monday, Wednesday, Friday at 7 PM' },
+  { value: '0 0 20 * * Sat,Sun *', label: 'Weekends at 8 PM' },
 ]
 
 // Draggable User Component
@@ -174,22 +196,92 @@ export function CreateGamePage() {
   const navigate = useNavigate()
   const { loading, error, createGame } = useCreateGame()
   const { data: searchResults, searchUsers } = useSearchUsers()
+  // const { getGroup } = useGetGroup() // Not used in create form
   // Form state
   const [title, setTitle] = useState('')
   const [gameType, setGameType] = useState<GameType>('football_5_a_side' as GameType)
   const [locationName, setLocationName] = useState('')
   const [latitude, setLatitude] = useState('')
   const [longitude, setLongitude] = useState('')
-  const [scheduledDate, setScheduledDate] = useState('')
-  const [scheduledTime, setScheduledTime] = useState('')
   const [duration, setDuration] = useState('90')
+  
+  // Schedule state
+  const [scheduleType, setScheduleType] = useState<'one_off' | 'recurring'>('one_off')
+  
+  // One-off schedule fields
+  const [scheduledDate, setScheduledDate] = useState<Date | undefined>(undefined)
+  const [scheduledTime, setScheduledTime] = useState('')
+  
+  // Recurring schedule fields
+  const [cronSchedule, setCronSchedule] = useState('')
+  const [startDate, setStartDate] = useState<Date | undefined>(undefined)
+  const [endDate, setEndDate] = useState<Date | undefined>(undefined)
+  const [quickCron, setQuickCron] = useState('')
+  
+  // Validation state
+  const [validationErrors, setValidationErrors] = useState<string[]>([])
+  
+  // Handle quick cron selection
+  const handleQuickCronChange = (value: string) => {
+    setQuickCron(value)
+    if (value) {
+      setCronSchedule(value)
+    }
+  }
+  
+  // Handle manual cron schedule change
+  const handleCronScheduleChange = (value: string) => {
+    setCronSchedule(value)
+    // Clear quick cron if manually editing
+    if (value !== quickCron) {
+      setQuickCron('')
+    }
+  }
+  
+  // Basic cron validation for 7-field format
+  const validateCronSchedule = (cron: string): string | null => {
+    if (!cron.trim()) return null
+    
+    const parts = cron.trim().split(/\s+/)
+    if (parts.length !== 7) {
+      return 'Cron schedule must have exactly 7 parts (seconds minutes hours day month weekday year)'
+    }
+    
+    // Basic format check - could be enhanced
+    const [seconds, minutes, hours] = parts
+    
+    // Simple validation for common patterns
+    const timePattern = /^(\*|\d+|\d+-\d+|\*\/\d+|\d+(,\d+)*|Mon|Tue|Wed|Thu|Fri|Sat|Sun|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/i
+    
+    if (!timePattern.test(seconds)) {
+      return 'Invalid seconds format'
+    }
+    if (!timePattern.test(minutes)) {
+      return 'Invalid minutes format'
+    }
+    if (!timePattern.test(hours)) {
+      return 'Invalid hours format'
+    }
+    
+    return null
+  }
+  
+  const cronError = validateCronSchedule(cronSchedule)
+  
+  // Calendar popover state
+  const [calendarOpen, setCalendarOpen] = useState(false)
+  const [startDateCalendarOpen, setStartDateCalendarOpen] = useState(false)
+  const [endDateCalendarOpen, setEndDateCalendarOpen] = useState(false)
   
   // Team state
   const [useTeams, setUseTeams] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedUsers, setSelectedUsers] = useState<User[]>([]) // For casual mode
+  const [selectedGroups, setSelectedGroups] = useState<GroupListItem[]>([]) // For casual mode groups
   const [teamAUsers, setTeamAUsers] = useState<User[]>([]) // For teams mode
   const [teamBUsers, setTeamBUsers] = useState<User[]>([]) // For teams mode
+  const [teamAGroups, setTeamAGroups] = useState<GroupListItem[]>([]) // For teams mode groups
+  const [teamBGroups, setTeamBGroups] = useState<GroupListItem[]>([]) // For teams mode groups
   
   // Team customization state
   const [teamAName, setTeamAName] = useState('Team A')
@@ -220,31 +312,95 @@ export function CreateGamePage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     
-    if (!title.trim() || !scheduledDate || !scheduledTime || !latitude || !longitude) {
+    console.log('Form submitted with data:', {
+      title: title.trim(),
+      latitude,
+      longitude,
+      scheduleType,
+      scheduledDate,
+      scheduledTime,
+      cronSchedule: cronSchedule.trim(),
+      startDate,
+      endDate
+    })
+    
+    // Clear previous validation errors
+    const errors: string[] = []
+    
+    // Basic validation
+    if (!title.trim()) errors.push('Game title is required')
+    if (!latitude) errors.push('Latitude is required')
+    if (!longitude) errors.push('Longitude is required')
+
+    // Validate schedule fields based on type
+    if (scheduleType === 'one_off') {
+      if (!scheduledDate) errors.push('Scheduled date is required for one-time games')
+      if (!scheduledTime) errors.push('Scheduled time is required for one-time games')
+    } else {
+      if (!cronSchedule.trim()) errors.push('Cron schedule is required for recurring games')
+      if (!startDate) errors.push('Start date is required for recurring games')
+      
+      // Check for cron validation errors
+      if (cronError) errors.push(cronError)
+    }
+    
+    if (errors.length > 0) {
+      setValidationErrors(errors)
+      console.log('Validation failed:', errors)
       return
     }
+    
+    // Clear validation errors if we get here
+    setValidationErrors([])
 
-    // Combine date and time into ISO string
-    const scheduledDateTime = new Date(`${scheduledDate}T${scheduledTime}`).toISOString()
+    // Build schedule object
+    let schedule: GameSchedule
+    if (scheduleType === 'one_off') {
+      // Combine date and time into ISO string
+      const year = scheduledDate!.getFullYear()
+      const month = String(scheduledDate!.getMonth() + 1).padStart(2, '0')
+      const day = String(scheduledDate!.getDate()).padStart(2, '0')
+      const dateString = `${year}-${month}-${day}`
+      const scheduledDateTime = new Date(`${dateString}T${scheduledTime}`).toISOString()
+      
+      schedule = {
+        type: 'one_off',
+        scheduled_time: scheduledDateTime
+      }
+    } else {
+      // Format dates for API
+      const startDateString = startDate!.toISOString().split('T')[0] // YYYY-MM-DD format
+      const endDateString = endDate ? endDate.toISOString().split('T')[0] : undefined
+      
+      schedule = {
+        type: 'recurring',
+        cron_schedule: cronSchedule.trim(),
+        start_date: startDateString,
+        end_date: endDateString
+      }
+    }
 
-    // Build teams array
+    // Build teams array with user IDs and group IDs
     const teams: CreateGameTeamInput[] = useTeams 
       ? [
           {
             name: teamAName.trim() || "Team A",
             color: teamAColor,
             invited_user_ids: teamAUsers.map(user => user.id),
+            invited_group_ids: teamAGroups.map(group => group.id),
           },
           {
             name: teamBName.trim() || "Team B", 
             color: teamBColor,
             invited_user_ids: teamBUsers.map(user => user.id),
+            invited_group_ids: teamBGroups.map(group => group.id),
           }
         ]
       : [
           {
             name: "Default",
             invited_user_ids: selectedUsers.map(user => user.id),
+            invited_group_ids: selectedGroups.map(group => group.id),
           }
         ]
 
@@ -256,15 +412,25 @@ export function CreateGamePage() {
         longitude: parseFloat(longitude),
         name: locationName.trim() || undefined,
       },
-      scheduled_time: scheduledDateTime,
+      schedule,
       duration_minutes: parseInt(duration),
       teams,
     }
 
-    const result = await createGame(gameInput)
-    if (result) {
-      // Navigate to the created game's details page with URL-encoded ID
-      navigate(`/games/${encodeURIComponent(result.id)}`)
+    console.log('Calling createGame API with:', gameInput)
+    
+    try {
+      const result = await createGame(gameInput)
+      console.log('Create game result:', result)
+      
+      if (result) {
+        // Navigate to the created game's details page with URL-encoded ID
+        navigate(`/games/${encodeURIComponent(result.id)}`)
+      } else {
+        console.log('Create game returned null/undefined')
+      }
+    } catch (err) {
+      console.error('Error creating game:', err)
     }
   }
 
@@ -299,6 +465,39 @@ export function CreateGamePage() {
 
   const removeUserFromTeamB = (userId: string) => {
     setTeamBUsers(prev => prev.filter(user => user.id !== userId))
+  }
+
+  // Group handlers for casual mode
+  const addGroupToCasual = (group: GroupListItem) => {
+    if (!selectedGroups.some(g => g.id === group.id)) {
+      setSelectedGroups(prev => [...prev, group])
+    }
+  }
+
+  const removeGroupFromCasual = (groupId: string) => {
+    setSelectedGroups(prev => prev.filter(group => group.id !== groupId))
+  }
+
+  // Group handlers for team A
+  const addGroupToTeamA = (group: GroupListItem) => {
+    if (!teamAGroups.some(g => g.id === group.id) && !teamBGroups.some(g => g.id === group.id)) {
+      setTeamAGroups(prev => [...prev, group])
+    }
+  }
+
+  const removeGroupFromTeamA = (groupId: string) => {
+    setTeamAGroups(prev => prev.filter(group => group.id !== groupId))
+  }
+
+  // Group handlers for team B
+  const addGroupToTeamB = (group: GroupListItem) => {
+    if (!teamBGroups.some(g => g.id === group.id) && !teamAGroups.some(g => g.id === group.id)) {
+      setTeamBGroups(prev => [...prev, group])
+    }
+  }
+
+  const removeGroupFromTeamB = (groupId: string) => {
+    setTeamBGroups(prev => prev.filter(group => group.id !== groupId))
   }
 
   // Drag and drop handlers
@@ -414,27 +613,197 @@ export function CreateGamePage() {
               </select>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {/* Schedule Type Selection */}
+            <div className="space-y-4">
               <div>
-                <Label htmlFor="scheduledDate">Date</Label>
-                <Input
-                  id="scheduledDate"
-                  type="date"
-                  value={scheduledDate}
-                  onChange={(e) => setScheduledDate(e.target.value)}
-                  required
-                />
+                <Label className="text-base font-medium">Schedule Type</Label>
+                <div className="flex items-center space-x-6 mt-2">
+                  <label className="flex items-center space-x-2">
+                    <input
+                      type="radio"
+                      name="scheduleType"
+                      value="one_off"
+                      checked={scheduleType === 'one_off'}
+                      onChange={(e) => setScheduleType(e.target.value as 'one_off' | 'recurring')}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm">One-time game</span>
+                  </label>
+                  <label className="flex items-center space-x-2">
+                    <input
+                      type="radio"
+                      name="scheduleType"
+                      value="recurring"
+                      checked={scheduleType === 'recurring'}
+                      onChange={(e) => setScheduleType(e.target.value as 'one_off' | 'recurring')}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm flex items-center">
+                      <RotateCcw className="h-4 w-4 mr-1" />
+                      Recurring games
+                    </span>
+                  </label>
+                </div>
               </div>
-              <div>
-                <Label htmlFor="scheduledTime">Time</Label>
-                <Input
-                  id="scheduledTime"
-                  type="time"
-                  value={scheduledTime}
-                  onChange={(e) => setScheduledTime(e.target.value)}
-                  required
-                />
-              </div>
+              
+              {/* One-off Schedule */}
+              {scheduleType === 'one_off' && (
+                <div className="flex gap-4">
+                  <div className="flex flex-col gap-3">
+                    <Label htmlFor="date" className="px-1">
+                      Date
+                    </Label>
+                    <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          id="date"
+                          className="w-48 justify-between font-normal"
+                        >
+                          {scheduledDate ? scheduledDate.toLocaleDateString() : "Select date"}
+                          <ChevronDownIcon />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-auto overflow-hidden p-0" align="start">
+                        <Calendar
+                          mode="single"
+                          selected={scheduledDate}
+                          captionLayout="dropdown"
+                          onSelect={(date) => {
+                            setScheduledDate(date)
+                            setCalendarOpen(false)
+                          }}
+                        />
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                  <div className="flex flex-col gap-3">
+                    <Label htmlFor="time" className="px-1">
+                      Time
+                    </Label>
+                    <Input
+                      type="time"
+                      id="time"
+                      value={scheduledTime}
+                      onChange={(e) => setScheduledTime(e.target.value)}
+                      required={scheduleType === 'one_off'}
+                      className="bg-background appearance-none [&::-webkit-calendar-picker-indicator]:hidden [&::-webkit-calendar-picker-indicator]:appearance-none"
+                    />
+                  </div>
+                </div>
+              )}
+              
+              {/* Recurring Schedule */}
+              {scheduleType === 'recurring' && (
+                <div className="space-y-4">
+                  <div>
+                    <Label htmlFor="quickCron">Quick Schedule Options</Label>
+                    <select
+                      id="quickCron"
+                      value={quickCron}
+                      onChange={(e) => handleQuickCronChange(e.target.value)}
+                      className="w-full px-3 py-2 border border-input rounded-md bg-background"
+                    >
+                      <option value="">Select a common schedule...</option>
+                      {QUICK_CRON_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  
+                  <div>
+                    <Label htmlFor="cronSchedule">Custom Cron Schedule</Label>
+                    <Input
+                      id="cronSchedule"
+                      value={cronSchedule}
+                      onChange={(e) => handleCronScheduleChange(e.target.value)}
+                      placeholder="e.g., 0 0 18 * * Mon * (Every Monday at 6 PM)"
+                      required={scheduleType === 'recurring'}
+                      className={cronError ? 'border-destructive' : ''}
+                    />
+                    {cronError && (
+                      <p className="text-xs text-destructive mt-1">{cronError}</p>
+                    )}
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Format: seconds minutes hours day month weekday year (use * for any, Mon/Tue/etc for weekdays)
+                    </p>
+                  </div>
+                  
+                  <div className="flex gap-4">
+                    <div className="flex flex-col gap-3">
+                      <Label htmlFor="startDate" className="px-1">
+                        Start Date
+                      </Label>
+                      <Popover open={startDateCalendarOpen} onOpenChange={setStartDateCalendarOpen}>
+                        <PopoverTrigger asChild>
+                          <Button
+                            variant="outline"
+                            id="startDate"
+                            className="w-48 justify-between font-normal"
+                          >
+                            {startDate ? startDate.toLocaleDateString() : "Select start date"}
+                            <ChevronDownIcon />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto overflow-hidden p-0" align="start">
+                          <Calendar
+                            mode="single"
+                            selected={startDate}
+                            captionLayout="dropdown"
+                            onSelect={(date) => {
+                              setStartDate(date)
+                              setStartDateCalendarOpen(false)
+                            }}
+                          />
+                        </PopoverContent>
+                      </Popover>
+                    </div>
+                    
+                    <div className="flex flex-col gap-3">
+                      <Label htmlFor="endDate" className="px-1">
+                        End Date (Optional)
+                      </Label>
+                      <Popover open={endDateCalendarOpen} onOpenChange={setEndDateCalendarOpen}>
+                        <PopoverTrigger asChild>
+                          <Button
+                            variant="outline"
+                            id="endDate"
+                            className="w-48 justify-between font-normal"
+                          >
+                            {endDate ? endDate.toLocaleDateString() : "Select end date"}
+                            <ChevronDownIcon />
+                          </Button>
+                        </PopoverTrigger>
+                        <PopoverContent className="w-auto overflow-hidden p-0" align="start">
+                          <Calendar
+                            mode="single"
+                            selected={endDate}
+                            captionLayout="dropdown"
+                            onSelect={(date) => {
+                              setEndDate(date)
+                              setEndDateCalendarOpen(false)
+                            }}
+                            disabled={(date) => startDate ? date < startDate : false}
+                          />
+                        </PopoverContent>
+                      </Popover>
+                      {endDate && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setEndDate(undefined)}
+                          className="text-xs"
+                        >
+                          Clear end date
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div>
@@ -571,6 +940,46 @@ export function CreateGamePage() {
               </div>
             )}
 
+            {/* Group Search */}
+            {useTeams ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Team A Groups */}
+                <div className="space-y-4">
+                  <h4 className="font-medium">Team A Groups</h4>
+                  <GroupSearch
+                    selectedGroups={teamAGroups}
+                    onGroupAdd={addGroupToTeamA}
+                    onGroupRemove={removeGroupFromTeamA}
+                    excludeGroups={teamBGroups}
+                    label="Search Groups for Team A"
+                    placeholder="Type group name for Team A..."
+                  />
+                </div>
+                
+                {/* Team B Groups */}
+                <div className="space-y-4">
+                  <h4 className="font-medium">Team B Groups</h4>
+                  <GroupSearch
+                    selectedGroups={teamBGroups}
+                    onGroupAdd={addGroupToTeamB}
+                    onGroupRemove={removeGroupFromTeamB}
+                    excludeGroups={teamAGroups}
+                    label="Search Groups for Team B"
+                    placeholder="Type group name for Team B..."
+                  />
+                </div>
+              </div>
+            ) : (
+              /* Casual Mode Groups */
+              <GroupSearch
+                selectedGroups={selectedGroups}
+                onGroupAdd={addGroupToCasual}
+                onGroupRemove={removeGroupFromCasual}
+                label="Search Groups"
+                placeholder="Type group name..."
+              />
+            )}
+
             {/* Teams or Casual Display with Drag & Drop */}
             {useTeams ? (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -665,6 +1074,17 @@ export function CreateGamePage() {
         {error && (
           <div className="p-4 bg-destructive/10 border border-destructive/20 rounded-md">
             <p className="text-destructive text-sm">{error}</p>
+          </div>
+        )}
+
+        {validationErrors.length > 0 && (
+          <div className="p-4 bg-destructive/10 border border-destructive/20 rounded-md">
+            <p className="text-destructive text-sm font-medium mb-2">Please fix the following errors:</p>
+            <ul className="text-destructive text-sm list-disc list-inside space-y-1">
+              {validationErrors.map((error, index) => (
+                <li key={index}>{error}</li>
+              ))}
+            </ul>
           </div>
         )}
 

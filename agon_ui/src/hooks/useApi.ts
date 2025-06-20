@@ -1,4 +1,3 @@
-// Migrated to use openapi-react-query
 import { fetchClient } from '@/lib/api-client'
 import { useState, useCallback } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -61,6 +60,7 @@ export function useSearchUsers() {
       })
       if (response.error) throw new Error('Search failed')
       setSearchData(response.data || [])
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
       setSearchError(error.message)
     } finally {
@@ -120,7 +120,7 @@ export function useGetGroup() {
   const [groupLoading, setGroupLoading] = useState(false)
   const [groupError, setGroupError] = useState<string | null>(null)
   
-  const getGroup = useCallback(async (id: string) => {
+  const getGroup = useCallback(async (id: string): Promise<Group | null> => {
     setGroupLoading(true)
     setGroupError(null)
     
@@ -129,8 +129,10 @@ export function useGetGroup() {
         params: { path: { id } }
       })
       if (response.error) throw new Error('Failed to get group')
-      setGroupData(response.data || null)
-      return response.data
+      const groupData = response.data || null
+      setGroupData(groupData)
+      return groupData
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } catch (error: any) {
       setGroupError(error.message)
       return null
@@ -144,6 +146,46 @@ export function useGetGroup() {
     loading: groupLoading,
     error: groupError,
     getGroup
+  }
+}
+
+export function useSearchGroups() {
+  const [groupSearchData, setGroupSearchData] = useState<components['schemas']['GroupListItem'][] | null>(null)
+  const [groupSearchLoading, setGroupSearchLoading] = useState(false)
+  const [groupSearchError, setGroupSearchError] = useState<string | null>(null)
+  
+  const searchGroups = useCallback(async (query: string) => {
+    if (query.trim().length < 2) {
+      setGroupSearchData([])
+      return
+    }
+    
+    setGroupSearchLoading(true)
+    setGroupSearchError(null)
+    
+    try {
+      // Get all groups and filter client-side since there's no search endpoint
+      const response = await fetchClient.GET('/groups')
+      if (response.error) throw new Error('Search failed')
+      
+      const filteredGroups = (response.data || []).filter(group =>
+        group.name.toLowerCase().includes(query.toLowerCase())
+      )
+      
+      setGroupSearchData(filteredGroups)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } catch (error: any) {
+      setGroupSearchError(error.message)
+    } finally {
+      setGroupSearchLoading(false)
+    }
+  }, [])
+
+  return {
+    data: groupSearchData,
+    loading: groupSearchLoading,
+    error: groupSearchError,
+    searchGroups
   }
 }
 
@@ -235,7 +277,7 @@ export function useGetGameDetails(gameId?: string) {
 export function useAddGameInvitations() {
   const queryClient = useQueryClient()
   const mutation = useMutation({
-    mutationFn: async ({ gameId, input }: { gameId: string, input: components['schemas']['AddGroupMembersInput'] }) => {
+    mutationFn: async ({ gameId, input }: { gameId: string, input: components['schemas']['AddGameInvitationsInput'] }) => {
       const response = await fetchClient.POST('/games/{game_id}/invitations', {
         params: { path: { game_id: gameId } },
         body: input
@@ -254,7 +296,7 @@ export function useAddGameInvitations() {
   return {
     loading: mutation.isPending,
     error: mutation.error?.message || null,
-    addGameInvitations: (gameId: string, input: components['schemas']['AddGroupMembersInput']) => 
+    addGameInvitations: (gameId: string, input: components['schemas']['AddGameInvitationsInput']) => 
       mutation.mutateAsync({ gameId, input })
   }
 }
@@ -262,13 +304,12 @@ export function useAddGameInvitations() {
 export function useRespondToInvitation() {
   const queryClient = useQueryClient()
   const mutation = useMutation({
-    mutationFn: async ({ gameId, userId, response }: { 
+    mutationFn: async ({ gameId, response }: { 
       gameId: string, 
-      userId: string, 
       response: components['schemas']['InvitationResponse'] 
     }) => {
-      const apiResponse = await fetchClient.PUT('/games/{game_id}/invitations/{user_id}', {
-        params: { path: { game_id: gameId, user_id: userId } },
+      const apiResponse = await fetchClient.PUT('/games/{game_id}/invitations', {
+        params: { path: { game_id: gameId } },
         body: { response }
       })
       if (apiResponse.error) throw new Error('Failed to respond to invitation')
@@ -285,7 +326,30 @@ export function useRespondToInvitation() {
   return {
     loading: mutation.isPending,
     error: mutation.error?.message || null,
-    respondToInvitation: (gameId: string, userId: string, response: components['schemas']['InvitationResponse']) => 
-      mutation.mutateAsync({ gameId, userId, response })
+    respondToInvitation: (gameId: string, response: components['schemas']['InvitationResponse']) => 
+      mutation.mutateAsync({ gameId, response })
   }
 }
+
+export function useGetGroupGames(groupId?: string) {
+  const query = useQuery({
+    queryKey: ['group-games', groupId],
+    queryFn: async () => {
+      if (!groupId) throw new Error('Group ID is required')
+      const response = await fetchClient.GET('/groups/{group_id}/games', {
+        params: { path: { group_id: groupId } }
+      })
+      if (response.error) throw new Error('Failed to get group games')
+      return response.data
+    },
+    enabled: !!groupId
+  })
+  
+  return {
+    data: query.data,
+    loading: query.isLoading,
+    error: query.error?.message || null,
+    refetch: query.refetch
+  }
+}
+

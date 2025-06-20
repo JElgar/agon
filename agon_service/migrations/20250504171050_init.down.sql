@@ -1,4 +1,5 @@
 -- Add down migration script here
+DROP TABLE IF EXISTS group_game_invitations;
 DROP TABLE IF EXISTS game_invitations;
 DROP TABLE IF EXISTS game_teams;
 DROP TABLE IF EXISTS games;

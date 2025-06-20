@@ -22,9 +22,6 @@ jobs:
 
       - uses: ./.github/actions/setup
 
-      - run: cargo sqlx prepare
-        working-directory: ./agon_ui
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 

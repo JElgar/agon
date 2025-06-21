@@ -1,16 +1,13 @@
 FROM node:24-alpine AS build
-# Set up environment as production 
-ENV NODE_ENV=production
  
-# Set up working directory 
+# Set up working directory
 WORKDIR /app
  
 # Copy package.json and package-lock.json (or yarn.lock) first for better cache performance 
 COPY package*.json ./
 
-
 # Install dependencies 
-RUN npm install --production
+RUN npm install
  
 # Add the rest of the application files 
 COPY . /app/

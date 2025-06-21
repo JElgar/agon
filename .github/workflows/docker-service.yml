@@ -39,7 +39,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/agon_service
+          images: ghcr.io/jelgar/agon_service
           tags: |
             type=sha
             type=ref,event=branch

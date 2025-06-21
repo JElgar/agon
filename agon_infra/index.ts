@@ -330,14 +330,14 @@ const jwtSecret = new k8s.core.v1.Secret("jwt-secret", {
 }, { provider: k8sProvider });
 
 
-const appLabels = { app: "agon" };
-const deployment = new k8s.apps.v1.Deployment("agon-deployment", {
+const serviceAppLabels = { app: "agon" };
+new k8s.apps.v1.Deployment("agon-deployment", {
 	metadata: { name: "agon" },
 	spec: {
-		selector: { matchLabels: appLabels },
+		selector: { matchLabels: serviceAppLabels },
 		replicas: 1,
 		template: {
-			metadata: { labels: appLabels },
+			metadata: { labels: serviceAppLabels },
 			spec: {
 				containers: [
 					{
@@ -371,11 +371,40 @@ const deployment = new k8s.apps.v1.Deployment("agon-deployment", {
 	},
 }, { provider: k8sProvider });
 
+const uiAppLabels = { app: "agon-ui" };
+new k8s.apps.v1.Deployment("agon-ui-deployment", {
+	metadata: { name: "agon-ui" },
+	spec: {
+		selector: { matchLabels: uiAppLabels },
+		replicas: 1,
+		template: {
+			metadata: { labels: uiAppLabels },
+			spec: {
+				containers: [
+					{
+						name: "agon-ui",
+						image: config.get("agonUiImage"),
+						ports: [{ containerPort: 80 }],
+					},
+				],
+			},
+		},
+	},
+}, { provider: k8sProvider });
+
 const service = new k8s.core.v1.Service("agon-service", {
 	metadata: { name: "agon" },
 	spec: {
-		selector: appLabels,
+		selector: serviceAppLabels,
 		ports: [{ port: 7000, targetPort: 7000 }],
+	},
+}, { provider: k8sProvider });
+
+const uiService = new k8s.core.v1.Service("agon-ui-service", {
+	metadata: { name: "agon-ui" },
+	spec: {
+		selector: uiAppLabels,
+		ports: [{ port: 80, targetPort: 80 }],
 	},
 }, { provider: k8sProvider });
 
@@ -399,6 +428,8 @@ const ingress = new k8s.networking.v1.Ingress("agon-ingress", {
 		annotations: {
 			"kubernetes.io/ingress.class": "nginx",
 			"cert-manager.io/cluster-issuer": issuer.metadata.name,
+			"nginx.ingress.kubernetes.io/use-regex": "true",
+			"nginx.ingress.kubernetes.io/rewrite-target": "$2",
 		},
 	},
 	spec: {
@@ -409,16 +440,28 @@ const ingress = new k8s.networking.v1.Ingress("agon-ingress", {
 		rules: [{
 			host: fullDomain,
 			http: {
-				paths: [{
-					path: "/",
-					pathType: "Prefix",
-					backend: {
-						service: {
-							name: service.metadata.name,
-							port: { number: 7000 },
+				paths: [
+					{
+						path: "/api(/|$)(.*)",
+						pathType: "Prefix",
+						backend: {
+							service: {
+								name: service.metadata.name,
+								port: { number: 7000 },
+							},
 						},
 					},
-				}],
+					{
+						path: "/",
+						pathType: "Prefix",
+						backend: {
+							service: {
+								name: uiService.metadata.name,
+								port: { number: 80 },
+							},
+						},
+					},
+				],
 			},
 		}],
 	},
@@ -468,4 +511,4 @@ const temporalIngress = new k8s.networking.v1.Ingress("temporal-ingress", {
 	},
 }, { provider: k8sProvider, dependsOn: [ctrl] });
 
-export const agonServiceDomain = fullDomain;
+export const agonDomain = fullDomain;

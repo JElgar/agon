@@ -40,6 +40,6 @@ jobs:
     needs: deploy
     uses: JElgar/agon/.github/workflows/test.yml@main
     with:
-      agon-service-url: ${{ needs.deploy.outputs.agon-service-url }}
+      agon-service-url: ${{ needs.deploy.outputs.agon-url }}/api
     secrets:
       jwt-secret: ${{ secrets.SUPABASE_STAGING_JWT_SECRET }}

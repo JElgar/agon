@@ -4,7 +4,7 @@ import type { paths } from "@/types/api";
 import { supabase } from "./supabase";
 
 const fetchClient = createFetchClient<paths>({
-  baseUrl: import.meta.env.VITE_API_BASE_URL || 'http://localhost:7000',
+  baseUrl: '/api',
 });
 
 // Configure authentication middleware

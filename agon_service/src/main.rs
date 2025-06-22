@@ -20,7 +20,6 @@ use poem_openapi::{
     payload::{Json, PlainText},
 };
 use serde::{Deserialize, Serialize};
-use sqlx::Executor;
 use sqlx::postgres::PgPoolOptions;
 use tracing::{error, info};
 
@@ -836,11 +835,11 @@ async fn create_dao() -> Result<Dao, sqlx::Error> {
         .await?;
 
     // TODO Remove this!!! For now wipe the whole db on every startup
-    pool.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
-        .await
-        .expect("Failed to wipe db");
+    // pool.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+    //     .await
+    //     .expect("Failed to wipe db");
 
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    // sqlx::migrate!("./migrations").run(&pool).await?;
 
     let dao = Dao::create(pool);
 

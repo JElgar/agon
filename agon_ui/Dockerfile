@@ -20,11 +20,10 @@ FROM nginx:alpine
 # Copy the built React files from the build stage to Nginx
 COPY --from=build /app/dist /usr/share/nginx/html
 
-COPY set-runtime-env.sh /docker-entrypoint.d/set-runtime-env.sh
-RUN chmod +x /docker-entrypoint.d/set-runtime-env.sh
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 # Expose the port
 EXPOSE 80
 
-# Start Nginx to serve the React app
-CMD ["nginx", "-g", "daemon off;"]
+ENTRYPOINT ["/entrypoint.sh"]

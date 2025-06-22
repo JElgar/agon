@@ -31,10 +31,13 @@ services:
     ports:
       - 7002:808
 
-  # ui:
-  #   build:
-  #     context: agon_ui 
-  #   container_name: poem_api
-  #   ports:
-  #     - 7003:80
-  #   restart: unless-stopped
+  ui:
+    build:
+      context: agon_ui
+    container_name: ui
+    ports:
+      - 7003:80
+    restart: unless-stopped
+    environment:
+      VITE_SUPABASE_URL: https://tvqmukrwpinkedgvrmpy.supabase.co
+      VITE_SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR2cW11a3J3cGlua2VkZ3ZybXB5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU2ODgyNDIsImV4cCI6MjA2MTI2NDI0Mn0.yI1ctlfle2gcrZE7BhjwOFI9EVAQmd9JjPbGOqRsuVs

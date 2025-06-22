@@ -5,6 +5,8 @@ use chrono::{DateTime, NaiveDate, Utc};
 use clap::{Parser, Subcommand};
 use dao::Dao;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
+use poem::http::Uri;
+use poem::{Endpoint, IntoResponse, Response};
 use poem::{
     EndpointExt, Error, Request, Result, Route, Server, error::InternalServerError,
     http::StatusCode, listener::TcpListener, middleware::Cors, web::Data,
@@ -858,9 +860,34 @@ enum Commands {
     GenerateSchema,
 }
 
+fn log_request(uri: Uri, status: StatusCode) {
+    info!(
+        path = uri.path(),
+        status = status.as_u16(),
+        "Request complete"
+    );
+}
+
+async fn log_middleware<E: Endpoint>(next: E, req: Request) -> Result<Response> {
+    let uri = req.uri().clone();
+    let res = next.call(req).await;
+
+    match res {
+        Ok(resp) => {
+            let resp = resp.into_response();
+            log_request(uri, resp.status());
+            Ok(resp)
+        }
+        Err(err) => {
+            log_request(uri, err.status());
+            Err(err)
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt().json().init();
 
     let args = Cli::parse();
 
@@ -888,7 +915,8 @@ async fn main() {
                 .nest("/", api_service)
                 .nest("/docs", ui)
                 .with(cors)
-                .data(dao);
+                .data(dao)
+                .around(log_middleware);
 
             Server::new(TcpListener::bind("0.0.0.0:7000"))
                 .run(app)

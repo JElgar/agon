@@ -422,14 +422,47 @@ const certificate = new k8s.apiextensions.CustomResource("agon-cert", {
 	},
 }, { provider: k8sProvider });
 
-const ingress = new k8s.networking.v1.Ingress("agon-ingress", {
+new k8s.networking.v1.Ingress("agon-ingress", {
 	metadata: {
 		namespace: "default",
 		annotations: {
 			"kubernetes.io/ingress.class": "nginx",
 			"cert-manager.io/cluster-issuer": issuer.metadata.name,
-			"nginx.ingress.kubernetes.io/use-regex": "true",
+		},
+	},
+	spec: {
+		tls: [{
+			hosts: [fullDomain],
+			secretName: "agon-cert",
+		}],
+		rules: [{
+			host: fullDomain,
+			http: {
+				paths: [
+					{
+						path: "/",
+						pathType: "Prefix",
+						backend: {
+							service: {
+								name: uiService.metadata.name,
+								port: { number: 80 },
+							},
+						},
+					},
+				],
+			},
+		}],
+	},
+}, { provider: k8sProvider, dependsOn: [ctrl] });
+
+new k8s.networking.v1.Ingress("agon-api-ingress", {
+	metadata: {
+		namespace: "default",
+		annotations: {
+			"kubernetes.io/ingress.class": "nginx",
+			"cert-manager.io/cluster-issuer": issuer.metadata.name,
 			"nginx.ingress.kubernetes.io/rewrite-target": "$2",
+			"nginx.ingress.kubernetes.io/use-regex": "true",
 		},
 	},
 	spec: {
@@ -443,21 +476,11 @@ const ingress = new k8s.networking.v1.Ingress("agon-ingress", {
 				paths: [
 					{
 						path: "/api(/|$)(.*)",
-						pathType: "Prefix",
+						pathType: "ImplementationSpecific",
 						backend: {
 							service: {
 								name: service.metadata.name,
 								port: { number: 7000 },
-							},
-						},
-					},
-					{
-						path: "/",
-						pathType: "Prefix",
-						backend: {
-							service: {
-								name: uiService.metadata.name,
-								port: { number: 80 },
 							},
 						},
 					},

@@ -385,6 +385,16 @@ new k8s.apps.v1.Deployment("agon-ui-deployment", {
 						name: "agon-ui",
 						image: config.get("agonUiImage"),
 						ports: [{ containerPort: 80 }],
+						env: [
+							{
+								name: "VITE_SUPABASE_URL",
+								value: config.get("supabaseUrl"),
+							},
+							{
+								name: "VITE_SUPABASE_ANON_KEY",
+								value: config.get("supabaseAnonKey"),
+							},
+						],
 					},
 				],
 			},

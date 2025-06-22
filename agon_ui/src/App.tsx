@@ -14,6 +14,7 @@ import { useUserProfile } from '@/hooks/useUserProfile'
 import { useGetGroups } from '@/hooks/useApi'
 import { ThemeProvider } from '@/hooks/useTheme'
 import { ThemeToggle } from '@/components/ThemeToggle'
+import { getRuntimeEnv } from './utils/runtime-env'
 
 function NavLink({ to, children }: { to: string; children: React.ReactNode }) {
   const location = useLocation()
@@ -54,6 +55,8 @@ function AuthenticatedApp() {
     }
   }, [hasProfile, getGroups])
 
+  const env = getRuntimeEnv();
+
   if (authLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -67,10 +70,17 @@ function AuthenticatedApp() {
       <div className="min-h-screen flex items-center justify-center">
         <div className="w-full max-w-md">
           <h1 className="text-3xl font-bold text-center mb-8">Welcome to Agon</h1>
-          {!import.meta.env.VITE_SUPABASE_URL && (
+          {!env.VITE_SUPABASE_URL && (
             <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-md">
               <p className="text-sm text-yellow-800">
                 <strong>Development Mode:</strong> Configure Supabase credentials in your .env file to enable authentication.
+              </p>
+            </div>
+          )}
+          {env.VITE_SUPABASE_URL && (
+            <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-md">
+              <p className="text-sm text-yellow-800">
+                <strong>Development Mode:</strong> Supabase credentials { env.VITE_SUPABASE_URL }.
               </p>
             </div>
           )}

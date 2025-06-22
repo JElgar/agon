@@ -45,10 +45,26 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': {
-          target: 'http://localhost:7000',
-          changeOrigin: true,
-          rewrite: (path) => path.replace(/^\/api/, ''),
+        target: 'http://localhost:7000',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ''),
       }
     },
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        format: 'es',
+        globals: {
+          react: 'React',
+          'react-dom': 'ReactDOM',
+        },
+        manualChunks(id) {
+          if (/runtime-env.ts/.test(id)) {
+            return 'runtime-env'
+          }
+        },
+      },
+    }
   },
 })

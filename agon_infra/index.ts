@@ -471,7 +471,7 @@ new k8s.networking.v1.Ingress("agon-api-ingress", {
 		annotations: {
 			"kubernetes.io/ingress.class": "nginx",
 			"cert-manager.io/cluster-issuer": issuer.metadata.name,
-			"nginx.ingress.kubernetes.io/rewrite-target": "$2",
+			"nginx.ingress.kubernetes.io/rewrite-target": "/$2",
 			"nginx.ingress.kubernetes.io/use-regex": "true",
 		},
 	},

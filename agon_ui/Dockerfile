@@ -1,27 +1,30 @@
 FROM node:24-alpine AS build
- 
+
 # Set up working directory
 WORKDIR /app
- 
-# Copy package.json and package-lock.json (or yarn.lock) first for better cache performance 
+
+# Copy package.json and package-lock.json (or yarn.lock) first for better cache performance
 COPY package*.json ./
 
-# Install dependencies 
+# Install dependencies
 RUN npm install
- 
-# Add the rest of the application files 
+
+# Add the rest of the application files
 COPY . /app/
  
 # Build the React app for production 
 RUN npm run build
 
 FROM nginx:alpine
- 
-# Copy the built React files from the build stage to Nginx 
+
+# Copy the built React files from the build stage to Nginx
 COPY --from=build /app/dist /usr/share/nginx/html
- 
-# Expose the port 
+
+COPY set-runtime-env.sh /docker-entrypoint.d/set-runtime-env.sh
+RUN chmod +x /docker-entrypoint.d/set-runtime-env.sh
+
+# Expose the port
 EXPOSE 80
- 
-# Start Nginx to serve the React app 
+
+# Start Nginx to serve the React app
 CMD ["nginx", "-g", "daemon off;"]

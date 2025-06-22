@@ -12,7 +12,7 @@ config:
     secure: AAABAGj7oe9pnKlRP9flfZMIkQFRhh1AeaURflQNPIWwMEHebPAQtMykOcDvy3E9NEdoh0XeOnOwqHelr6jiNHwHaf1jN397UJGDdLvc4wF5Pyz4ccCXXdMzWm4Htu15
   agon_infra:jwtSecret:
     secure: AAABADBP9eHYuDTlHlcI6flRrRAXuRhBbmNxzCAWxT5+6AEcP6M3lftPCLvrcEHP3U3qcCFpYghv60PkY/qv8G7bLgBUyLEI9Fpt8U2z4D0uzOP1rWQKDUdnynvVoUZHcCZUi6vKrrIXGAh7WWRmGDV7PfhannkL
-  agon_infra:agonServiceImage: ghcr.io/jelgar/agon_service:sha-6212b11
-  agon_infra:agonUiImage: ghcr.io/jelgar/agon_ui:sha-6212b11
+  agon_infra:agonServiceImage: ghcr.io/jelgar/agon_service:sha-4399464
+  agon_infra:agonUiImage: ghcr.io/jelgar/agon_ui:sha-4399464
   agon_infra:supabaseAnonKey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR2cW11a3J3cGlua2VkZ3ZybXB5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU2ODgyNDIsImV4cCI6MjA2MTI2NDI0Mn0.yI1ctlfle2gcrZE7BhjwOFI9EVAQmd9JjPbGOqRsuVs
   agon_infra:supabaseUrl: https://tvqmukrwpinkedgvrmpy.supabase.co

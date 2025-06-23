@@ -922,10 +922,11 @@ async fn main() {
             let dao = create_dao().await.unwrap();
 
             let cors = Cors::new()
-                .allow_origin("http://localhost:5173")
+                .allow_origin("*")
                 .allow_origin("http://localhost:5174")
                 .allow_origin("http://localhost:5175")
-                .allow_origin("http://localhost:3000")
+                .allow_origin("http://localhost:7003")
+                .allow_origin_regex("https://*.agon.jameselgar.com")
                 .allow_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
                 .allow_headers(vec!["content-type", "authorization"])
                 .allow_credentials(true);

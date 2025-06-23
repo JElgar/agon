@@ -7,6 +7,7 @@ WORKDIR /app
 # Pre-cache dependencies
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY migrations ./migrations
 COPY .sqlx ./.sqlx
 
 # Compile dependencies first to cache them

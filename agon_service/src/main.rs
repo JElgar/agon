@@ -1,3 +1,4 @@
+use std::io;
 use std::{fs::File, io::Write};
 
 use bigdecimal::{BigDecimal, FromPrimitive, ToPrimitive};
@@ -21,6 +22,7 @@ use poem_openapi::{
 };
 use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
+use sqlx::{Executor, Pool, Postgres};
 use tracing::{error, info};
 
 mod dao;
@@ -826,13 +828,17 @@ impl Api {
     }
 }
 
-async fn create_dao() -> Result<Dao, sqlx::Error> {
+async fn create_db_pool() -> Result<Pool<Postgres>, sqlx::Error> {
     let db_url = std::env::var("DATABASE_URL").expect("Database url must be set");
 
-    let pool = PgPoolOptions::new()
+    PgPoolOptions::new()
         .max_connections(5)
         .connect(&db_url)
-        .await?;
+        .await
+}
+
+async fn create_dao() -> Result<Dao, sqlx::Error> {
+    let pool = create_db_pool().await?;
 
     // TODO Remove this!!! For now wipe the whole db on every startup
     // pool.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
@@ -865,6 +871,12 @@ enum Commands {
 
     /// Generates service open api schema
     GenerateSchema,
+
+    /// Run db migrations
+    MigrateDb {
+        #[arg(short, long, action)]
+        reset_db: Option<bool>,
+    },
 }
 
 fn log_request(uri: Uri, status: StatusCode) {
@@ -929,6 +941,35 @@ async fn main() {
                 .run(app)
                 .await
                 .expect("Failed to start server");
+        }
+
+        Commands::MigrateDb { reset_db } => {
+            info!("Running db migrations");
+
+            let pool = create_db_pool().await.expect("Failed to create db pool");
+
+            if matches!(reset_db, Some(true)) {
+                let mut answer = String::new();
+
+                println!("Are you sure you want to wipe the database (y/n)");
+                io::stdin()
+                    .read_line(&mut answer)
+                    .expect("Failed to read stdin");
+
+                if answer.trim() != "y" {
+                    println!("Operation cancelled");
+                    return;
+                }
+
+                pool.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+                    .await
+                    .expect("Failed to wipe db");
+            }
+
+            sqlx::migrate!("./migrations")
+                .run(&pool)
+                .await
+                .expect("Migrations failed");
         }
 
         Commands::GenerateSchema => {

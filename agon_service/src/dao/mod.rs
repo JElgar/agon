@@ -255,14 +255,14 @@ impl Dao {
             created_at: Utc::now().naive_utc(),
         };
 
-        info!("Running transaction");
+        info!("Creating transaction");
 
         let mut tx: Transaction<'_, Postgres> = self.pool.begin().await.map_err(|err| {
             error!("Failed to start transaction {:?}", err);
             DaoError::InternalServerError("Failed to start transaction".to_string())
         })?;
 
-        info!("Ran transaction");
+        info!("Created transaction");
 
         // Insert the group
         sqlx::query!(

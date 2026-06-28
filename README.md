@@ -37,3 +37,64 @@ make test
 
 - Notifications
 - Game announcements
+
+## Database schema
+
+### User
+
+- id
+- name
+- email
+
+### Group
+
+- id
+- name
+
+### Group invite
+
+- group_id
+- user_id
+
+### Group membership
+
+- group_id
+
+### Game series
+
+- id
+- name
+- default team/group invites
+- default location
+- default duration
+
+- start date
+- end date -> optional
+- schedule -> optional if recurring
+
+### Game instance
+
+- game_series_id
+- start time
+- overrides for defaults from series
+
+### Venue
+
+- id
+- long, lat
+- 
+
+## Opertaions
+
+- Create game (optionally recurring)
+    - This creates a game series and one/many game instances
+    - It can include a deafult venue
+- Upgate game
+- Get game
+- List user games
+    - Filter between given date range
+
+- Submit game result
+
+- Sign up/in
+- Update profile

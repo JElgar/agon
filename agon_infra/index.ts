@@ -7,7 +7,7 @@ import * as nginx from "@pulumi/kubernetes-ingress-nginx";
 
 const config = new pulumi.Config();
 const subdomainPrefix = pulumi.getStack();
-const baseDomain = `${subdomainPrefix}.agon.jameselgar.com`;
+const baseDomain = `${subdomainPrefix}.get-agon.com`;
 
 // pulumi config set --secret privateKeyBase64 "$(cat ~/.ssh/pulumi_agon_key | base64)"
 const privateKeyBase64 = config.requireSecret("privateKeyBase64");
@@ -23,8 +23,8 @@ const sshKey = new hcloud.SshKey("main", {
 
 const node = new hcloud.Server("node", {
 	name: `${pulumi.getStack()}-node`,
-	image: "debian-11",
-	serverType: "cx22",
+	image: "ubuntu-26.04",
+	serverType: "cpx22",
 	publicNets: [{
 		ipv4Enabled: true,
 		ipv6Enabled: true,
@@ -32,7 +32,7 @@ const node = new hcloud.Server("node", {
 	sshKeys: [sshKey.name],
 });
 
-const cloudflareZoneId = '9620974aadec8ffe30d7f699033cf48d';
+const cloudflareZoneId = '3d1b2636aa31acc40c4044830fe4982c';
 
 const dnsRecord = new cloudflare.DnsRecord('record', {
 	zoneId: cloudflareZoneId,

@@ -3,7 +3,7 @@ config:
     secure: AAABAPJSQRbLOi0D8JTxBs76O7LXyf+7a6QF2KTpa533tASJsTAPqICACOtGQXhiurbwvrTPD3VS88vDO7PYvQ3JqKccA+vovWTk1AX0pS16iEfbXA0GpuzvHJalATI7
   agon_infra:letsencrypt-email: jamesnelgar@gmail.com
   cloudflare:apiToken:
-    secure: AAABAPMVEzLa2DhmgFvaOUFB64m9UyeHds81MnH/XLwmipszfEti6rqmCuh4D93/tSRwtgla+B5kzwiZFpDTKZMmZPY4Bd1O
+    secure: AAABAMPXfML929oDHAXX8XLleY7/1n3+vPKcZGvEyNyrOFyPKwITGF+69TRABz0EZzSUqb+BftX/ijj6Xc4cHqjpNqwak/WwMVUfvpNSnab0Ty6fMQ==
   agon_infra:privateKey:
     secure: AAABAIT6rTkTpF6q4RpzgMBriU2LEmq4pnY7o0yorAr88oT2WAqq5FORsNksfwfwSvAWNCyZqgxE2JqKfdSliLzi9g==
   agon_infra:publicKey:

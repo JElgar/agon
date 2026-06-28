@@ -7,7 +7,7 @@ config:
   agon_infra:publicKey:
     secure: AAABAKejq+FdEEQ1OT3oNlIztaXyqDdqlyeDsqLqS4tdf/h/dh2TdP2W1TYyVP/JMj8Bu9awIDntWOfXnHcTUBEZncTetapSuwu4wanpRW7SgAZJf4fUb3G9ujyETwQ9UfsGMSSn+KMXZagvUb/WCqoNTraehG4N8AcJMUZKh+0u3GRwGA==
   cloudflare:apiToken:
-    secure: AAABAEORZWj89y5FmVA+K//6T57BZGeevHbz0hUnh9Ywzbb4tl1PF7Yk7YmCR/XJmuvUtyVSMassZm7COhDYlWMSYpD59RUU
+    secure: AAABAOHPLhnLxwES04NhLHmMCq4u/vww/OEXJ/Iw6LmBcrJBhvyQ4xn7qZyTPFXd74A5qu0465zpsh2gbIc5p6AA/2GwjY+uif0Rn0bn1duh1we/VQ==
   hcloud:token:
     secure: AAABAGj7oe9pnKlRP9flfZMIkQFRhh1AeaURflQNPIWwMEHebPAQtMykOcDvy3E9NEdoh0XeOnOwqHelr6jiNHwHaf1jN397UJGDdLvc4wF5Pyz4ccCXXdMzWm4Htu15
   agon_infra:jwtSecret:

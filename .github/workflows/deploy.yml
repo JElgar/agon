@@ -59,7 +59,10 @@ jobs:
         with:
           default_author: github_actions
           add: 'agon_infra/Pulumi.${{ inputs.stack-name }}.yaml'
-          message: '{{ input.stage-name }} release\n agon-service-image ${{ inputs.agon-service-image }}\nagon-worker-image ${{ inputs.agon-worker-image }}'
+          message: |
+            ${{ inputs.stack-name }} release
+            agon-service-image ${{ inputs.agon-service-image }}
+            agon-worker-image ${{ inputs.agon-worker-image }}
 
       - uses: pulumi/actions@v6
         id: pulumi-up

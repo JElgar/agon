@@ -8,7 +8,7 @@ use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, from_item, s, to_item};
 use super::keys::{Pk, Sk};
-use super::records::UserRecord;
+use super::records::{EmailGuardRecord, UserRecord};
 
 pub const TYPE_USER: &str = "user";
 pub const TYPE_EMAIL_GUARD: &str = "email_guard";
@@ -24,10 +24,14 @@ impl Dao {
         let profile_item = to_item(&Pk::User(user.id.clone()), &Sk::Profile, TYPE_USER, user)?;
 
         // The guard item only needs to exist; it stores the owning user id so the
-        // guard can be traced back / released on email change.
+        // guard can be traced back / released on email change. Serialized from a
+        // real record (a map) — `serde_dynamo` rejects unit `()` as "not
+        // map-like", so it can't be used as an empty-fields placeholder.
         let guard_pk = Pk::email_guard(&user.email);
-        let mut guard_item = to_item(&guard_pk, &Sk::Guard, TYPE_EMAIL_GUARD, &())?;
-        guard_item.insert("user_id".into(), s(user.id.clone()));
+        let guard = EmailGuardRecord {
+            user_id: user.id.clone(),
+        };
+        let guard_item = to_item(&guard_pk, &Sk::Guard, TYPE_EMAIL_GUARD, &guard)?;
 
         let put_profile = Put::builder()
             .table_name(self.table())

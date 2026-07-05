@@ -116,6 +116,16 @@ pub struct EmbeddedInvitationRecord {
     pub kind: InvitationKindRecord,
 }
 
+/// `EMAIL#<lowercased-email>` / `#GUARD` — the email-uniqueness guard item.
+///
+/// Exists only to reserve the email (a conditional put on its PK enforces
+/// uniqueness); it records the owning `user_id` so the guard can be traced back
+/// / released on an email change.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EmailGuardRecord {
+    pub user_id: String,
+}
+
 /// `USER#<id>` / `#PROFILE` — the user profile item.
 ///
 /// Counts are denormalized and maintained via atomic `ADD` (see follow ops).

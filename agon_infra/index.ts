@@ -4,6 +4,7 @@ import * as command from '@pulumi/command';
 import * as k8s from "@pulumi/kubernetes";
 import * as cloudflare from "@pulumi/cloudflare";
 import * as nginx from "@pulumi/kubernetes-ingress-nginx";
+import * as aws from "@pulumi/aws";
 
 const config = new pulumi.Config();
 const subdomainPrefix = pulumi.getStack();
@@ -300,22 +301,286 @@ const temporal = new k8s.helm.v4.Chart('temporal', {
 	values: temporalHelmValues,
 }, { provider: k8sProvider })
 
-const dbCluster = new k8s.apiextensions.CustomResource("db", {
-	apiVersion: "postgresql.cnpg.io/v1",
-	kind: "Cluster",
-	metadata: {
-		name: "agon-db",
-	},
-	spec: {
-		instances: 2,
-		storage: {
-			size: "1Gi",
+// ───────────────────────────────────────────────────────────────────────────
+// AWS: DynamoDB single-table + least-privilege app credentials
+// See docs/dynamodb-design.md. All entities live in one table addressed by
+// PK/SK, with three overloaded GSIs. Streams are enabled to feed the async
+// pipeline (EventBridge Pipe → SQS → worker; see docs/async-design.md).
+// ───────────────────────────────────────────────────────────────────────────
+
+// AWS credentials + region are read from the `aws:` config namespace by the
+// default provider, exactly like cloudflare:apiToken / hcloud:token. Set them
+// as stack secrets (see the commented commands at the top of this file group):
+//   pulumi config set aws:region eu-west-1
+//   pulumi config set --secret aws:accessKey <id>
+//   pulumi config set --secret aws:secretKey <secret>
+// The region is also needed as a plain value for the app's env below.
+const awsRegion = new pulumi.Config("aws").require("region");
+
+const dynamoTable = new aws.dynamodb.Table("agon", {
+	name: `agon-${pulumi.getStack()}`,
+	billingMode: "PAY_PER_REQUEST",
+	hashKey: "PK",
+	rangeKey: "SK",
+	// Only key/index attributes are declared; all others are schemaless.
+	attributes: [
+		{ name: "PK", type: "S" },
+		{ name: "SK", type: "S" },
+		{ name: "GSI1PK", type: "S" },
+		{ name: "GSI1SK", type: "S" },
+		{ name: "GSI2PK", type: "S" },
+		{ name: "GSI2SK", type: "S" },
+		{ name: "GSI3PK", type: "S" },
+		{ name: "GSI3SK", type: "S" },
+	],
+	globalSecondaryIndexes: [
+		{ name: "GSI1", hashKey: "GSI1PK", rangeKey: "GSI1SK", projectionType: "ALL" },
+		{ name: "GSI2", hashKey: "GSI2PK", rangeKey: "GSI2SK", projectionType: "ALL" },
+		{ name: "GSI3", hashKey: "GSI3PK", rangeKey: "GSI3SK", projectionType: "ALL" },
+	],
+	// Streams feed the async fan-out / search-indexing pipeline.
+	streamEnabled: true,
+	streamViewType: "NEW_AND_OLD_IMAGES",
+	// Optional auto-expiry for ephemeral items (e.g. pending assets); items opt
+	// in by setting a numeric `ttl` attribute (epoch seconds).
+	ttl: { attributeName: "ttl", enabled: true },
+	pointInTimeRecovery: { enabled: true },
+});
+
+// Least-privilege IAM user for the API/worker: CRUD on the table + query on its
+// indexes + read the stream. No table-management or account-wide permissions.
+const appAwsUser = new aws.iam.User("agon-app", {
+	name: `agon-app-${pulumi.getStack()}`,
+});
+
+new aws.iam.UserPolicy("agon-app-dynamodb", {
+	user: appAwsUser.name,
+	policy: pulumi.jsonStringify({
+		Version: "2012-10-17",
+		Statement: [
+			{
+				Sid: "TableCrud",
+				Effect: "Allow",
+				Action: [
+					"dynamodb:GetItem",
+					"dynamodb:BatchGetItem",
+					"dynamodb:PutItem",
+					"dynamodb:UpdateItem",
+					"dynamodb:DeleteItem",
+					"dynamodb:Query",
+					"dynamodb:TransactWriteItems",
+					"dynamodb:TransactGetItems",
+					"dynamodb:ConditionCheckItem",
+				],
+				// Table and all its indexes.
+				Resource: [dynamoTable.arn, pulumi.interpolate`${dynamoTable.arn}/index/*`],
+			},
+			{
+				Sid: "ReadStream",
+				Effect: "Allow",
+				Action: [
+					"dynamodb:GetRecords",
+					"dynamodb:GetShardIterator",
+					"dynamodb:DescribeStream",
+					"dynamodb:ListStreams",
+				],
+				Resource: [pulumi.interpolate`${dynamoTable.arn}/stream/*`],
+			},
+		],
+	}),
+});
+
+// ── S3: asset storage ───────────────────────────────────────────────────────
+// Private bucket for user-uploaded images (profile / team / match). The app
+// hands clients presigned PUT URLs to upload and presigned GET URLs to read, so
+// the bucket stays private and the API mediates all access. Provider-agnostic
+// by design (see the Asset API) — swappable for R2/MinIO later without app
+// changes.
+const assetsBucket = new aws.s3.BucketV2("agon-assets", {
+	bucket: `agon-assets-${pulumi.getStack()}`,
+});
+
+// Lock down public access; objects are only reachable via presigned URLs.
+new aws.s3.BucketPublicAccessBlock("agon-assets", {
+	bucket: assetsBucket.id,
+	blockPublicAcls: true,
+	blockPublicPolicy: true,
+	ignorePublicAcls: true,
+	restrictPublicBuckets: true,
+});
+
+// Emit S3 events to EventBridge; the async pipeline (S3 → EventBridge → SQS →
+// worker) uses "object created" to flip a Pending asset to Uploaded. The rule
+// itself is added with the async infra pass (worker/queue don't exist yet).
+new aws.s3.BucketNotification("agon-assets", {
+	bucket: assetsBucket.id,
+	eventbridge: true,
+});
+
+// Expire incomplete multipart uploads so abandoned uploads don't linger.
+new aws.s3.BucketLifecycleConfigurationV2("agon-assets", {
+	bucket: assetsBucket.id,
+	rules: [
+		{
+			id: "abort-incomplete-uploads",
+			status: "Enabled",
+			abortIncompleteMultipartUpload: { daysAfterInitiation: 7 },
 		},
-		monitoring: {
-			enablePodMonitor: true,
+	],
+});
+
+new aws.iam.UserPolicy("agon-app-s3", {
+	user: appAwsUser.name,
+	policy: pulumi.jsonStringify({
+		Version: "2012-10-17",
+		Statement: [
+			{
+				Sid: "AssetObjectRw",
+				Effect: "Allow",
+				Action: ["s3:PutObject", "s3:GetObject"],
+				Resource: [pulumi.interpolate`${assetsBucket.arn}/*`],
+			},
+		],
+	}),
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Async pipeline: DynamoDB Streams → EventBridge Pipe → SQS → agon_worker
+// Every committed write is captured off the table's stream and delivered to a
+// durable SQS queue that the self-hosted worker long-polls. This is the
+// at-least-once guarantee (see docs/async-design.md §2/§3). The Pipe transforms
+// each raw stream record into the thin `{event, pk, sk}` envelope the worker
+// consumes, so the worker never sees the raw stream wire format (§12.3).
+// ───────────────────────────────────────────────────────────────────────────
+
+// Dead-letter queue for messages that repeatedly fail processing, so a poison
+// message can't block the main queue forever.
+const eventsDlq = new aws.sqs.Queue("agon-events-dlq", {
+	name: `agon-events-dlq-${pulumi.getStack()}`,
+	messageRetentionSeconds: 1209600, // 14 days — max, for inspection.
+});
+
+// The main events queue the worker long-polls. Visibility timeout matches the
+// worker's per-message processing budget; failures redeliver after it elapses.
+const eventsQueue = new aws.sqs.Queue("agon-events", {
+	name: `agon-events-${pulumi.getStack()}`,
+	visibilityTimeoutSeconds: 60,
+	messageRetentionSeconds: 345600, // 4 days.
+	redrivePolicy: pulumi.jsonStringify({
+		deadLetterTargetArn: eventsDlq.arn,
+		maxReceiveCount: 5,
+	}),
+});
+
+// The worker needs to consume the queue (in addition to the DynamoDB perms it
+// already has via the shared app user).
+new aws.iam.UserPolicy("agon-app-sqs", {
+	user: appAwsUser.name,
+	policy: pulumi.jsonStringify({
+		Version: "2012-10-17",
+		Statement: [
+			{
+				Sid: "ConsumeEventsQueue",
+				Effect: "Allow",
+				Action: [
+					"sqs:ReceiveMessage",
+					"sqs:DeleteMessage",
+					"sqs:GetQueueAttributes",
+				],
+				Resource: [eventsQueue.arn],
+			},
+		],
+	}),
+});
+
+// Role assumed by the EventBridge Pipe: read the DynamoDB stream, write to SQS.
+const pipeRole = new aws.iam.Role("agon-pipe-role", {
+	name: `agon-pipe-${pulumi.getStack()}`,
+	assumeRolePolicy: pulumi.jsonStringify({
+		Version: "2012-10-17",
+		Statement: [
+			{
+				Effect: "Allow",
+				Principal: { Service: "pipes.amazonaws.com" },
+				Action: "sts:AssumeRole",
+			},
+		],
+	}),
+});
+
+new aws.iam.RolePolicy("agon-pipe-policy", {
+	role: pipeRole.id,
+	policy: pulumi.jsonStringify({
+		Version: "2012-10-17",
+		Statement: [
+			{
+				Sid: "ReadStream",
+				Effect: "Allow",
+				Action: [
+					"dynamodb:DescribeStream",
+					"dynamodb:GetRecords",
+					"dynamodb:GetShardIterator",
+					"dynamodb:ListStreams",
+				],
+				Resource: [dynamoTable.streamArn],
+			},
+			{
+				Sid: "WriteQueue",
+				Effect: "Allow",
+				Action: ["sqs:SendMessage"],
+				Resource: [eventsQueue.arn],
+			},
+		],
+	}),
+});
+
+// The Pipe: stream source → SQS target, transforming each record into the
+// worker's envelope. The `event`/`pk`/`sk` values are strings (quoted); the
+// `old_image`/`new_image` values are whole DynamoDB item objects, so their
+// placeholders are UNQUOTED (EventBridge emits the nested JSON object, and adds
+// quotes only around string placeholders — see the input-transform docs). The
+// table stream is NEW_AND_OLD_IMAGES, so both images are available.
+//
+// Absent paths are omitted from the output, so an INSERT (no OldImage) or a
+// REMOVE (no NewImage) simply drops that field — the worker treats it as None.
+// Images are in raw DynamoDB attribute-value shape ({"S":"..."} etc.); the
+// worker uses them opportunistically (e.g. detecting a status transition) and
+// otherwise re-reads current state from the table.
+new aws.pipes.Pipe("agon-events-pipe", {
+	name: `agon-events-${pulumi.getStack()}`,
+	roleArn: pipeRole.arn,
+	source: dynamoTable.streamArn,
+	sourceParameters: {
+		dynamodbStreamParameters: {
+			startingPosition: "LATEST",
+			batchSize: 10,
+			maximumRetryAttempts: 3,
 		},
 	},
-}, { provider: k8sProvider, dependsOn: [cloudnativePg] });
+	target: eventsQueue.arn,
+	targetParameters: {
+		inputTemplate: '{"event": "<$.eventName>", "pk": "<$.dynamodb.Keys.PK.S>", "sk": "<$.dynamodb.Keys.SK.S>", "old_image": <$.dynamodb.OldImage>, "new_image": <$.dynamodb.NewImage>}',
+	},
+});
+
+const appAwsAccessKey = new aws.iam.AccessKey("agon-app", {
+	user: appAwsUser.name,
+});
+
+// AWS creds + table name + queue URL for the service and worker as a k8s
+// secret, injected into the deployment envs below.
+const awsSecret = new k8s.core.v1.Secret("aws-credentials", {
+	metadata: { name: "aws-credentials", namespace: "default" },
+	type: "Opaque",
+	stringData: {
+		AWS_ACCESS_KEY_ID: appAwsAccessKey.id,
+		AWS_SECRET_ACCESS_KEY: appAwsAccessKey.secret,
+		AWS_REGION: awsRegion,
+		AGON_TABLE_NAME: dynamoTable.name,
+		AGON_ASSETS_BUCKET: assetsBucket.bucket,
+		AGON_EVENTS_QUEUE_URL: eventsQueue.url,
+	},
+}, { provider: k8sProvider });
 
 // Create a secret for JWT
 const jwtSecret = new k8s.core.v1.Secret("jwt-secret", {
@@ -328,6 +593,97 @@ const jwtSecret = new k8s.core.v1.Secret("jwt-secret", {
 		"jwt-secret": config.requireSecret("jwtSecret").apply(val => Buffer.from(val).toString("base64")),
 	},
 }, { provider: k8sProvider });
+
+// ───────────────────────────────────────────────────────────────────────────
+// Meilisearch: search / discovery index
+// Self-hosted search engine backing the discovery endpoints (users / teams /
+// matches). The async worker keeps its indexes in sync off the DynamoDB stream
+// (see docs/async-design.md §7); the API queries it and hydrates from DynamoDB.
+// In-cluster only — reached via the `meilisearch` Service, never exposed
+// publicly (no ingress). State lives on a PVC so index data survives restarts.
+// ───────────────────────────────────────────────────────────────────────────
+
+// Master key, held as a k8s secret. Set it as a stack secret:
+//   pulumi config set --secret meiliMasterKey <key>   (>= 16 bytes)
+const meiliSecret = new k8s.core.v1.Secret("meili-master-key", {
+	metadata: { name: "meili-master-key", namespace: "default" },
+	type: "Opaque",
+	stringData: {
+		MEILI_MASTER_KEY: config.requireSecret("meiliMasterKey"),
+	},
+}, { provider: k8sProvider });
+
+// Persistent storage for the Meilisearch data directory (/meili_data).
+const meiliPvc = new k8s.core.v1.PersistentVolumeClaim("meili-data", {
+	metadata: { name: "meili-data", namespace: "default" },
+	spec: {
+		accessModes: ["ReadWriteOnce"],
+		resources: { requests: { storage: "2Gi" } },
+	},
+}, { provider: k8sProvider });
+
+const meiliAppLabels = { app: "meilisearch" };
+new k8s.apps.v1.Deployment("meilisearch-deployment", {
+	metadata: { name: "meilisearch" },
+	spec: {
+		selector: { matchLabels: meiliAppLabels },
+		replicas: 1,
+		// The index lives on a single RWO volume, so never run two pods at once.
+		strategy: { type: "Recreate" },
+		template: {
+			metadata: { labels: meiliAppLabels },
+			spec: {
+				containers: [
+					{
+						name: "meilisearch",
+						image: "getmeili/meilisearch:v1.11",
+						ports: [{ containerPort: 7700 }],
+						env: [
+							{ name: "MEILI_ENV", value: "production" },
+							{
+								name: "MEILI_MASTER_KEY",
+								valueFrom: {
+									secretKeyRef: {
+										name: meiliSecret.metadata.name,
+										key: "MEILI_MASTER_KEY",
+									},
+								},
+							},
+						],
+						volumeMounts: [{ name: "data", mountPath: "/meili_data" }],
+						readinessProbe: {
+							httpGet: { path: "/health", port: 7700 },
+							initialDelaySeconds: 5,
+							periodSeconds: 10,
+						},
+						livenessProbe: {
+							httpGet: { path: "/health", port: 7700 },
+							initialDelaySeconds: 10,
+							periodSeconds: 20,
+						},
+					},
+				],
+				volumes: [
+					{
+						name: "data",
+						persistentVolumeClaim: { claimName: meiliPvc.metadata.name },
+					},
+				],
+			},
+		},
+	},
+}, { provider: k8sProvider });
+
+const meiliService = new k8s.core.v1.Service("meilisearch-service", {
+	metadata: { name: "meilisearch" },
+	spec: {
+		selector: meiliAppLabels,
+		ports: [{ port: 7700, targetPort: 7700 }],
+	},
+}, { provider: k8sProvider });
+
+// Cluster-internal Meilisearch URL for the service and worker.
+const meiliUrl = meiliService.metadata.name.apply(name => `http://${name}:7700`);
 
 
 const serviceAppLabels = { app: "agon" };
@@ -344,16 +700,8 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 						name: "agon-service",
 						image: config.get("agonServiceImage"),
 						ports: [{ containerPort: 7000 }],
+							envFrom: [{ secretRef: { name: awsSecret.metadata.name } }],
 						env: [
-							{
-								name: "DATABASE_URL",
-								valueFrom: {
-									secretKeyRef: {
-										name: dbCluster.metadata.name.apply(value => `${value}-app`),
-										key: 'uri'
-									}
-								},
-							},
 							{
 								name: "JWT_SECRET",
 								valueFrom: {
@@ -363,7 +711,64 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 									}
 								},
 							},
+							{
+								name: "MEILI_URL",
+								value: meiliUrl,
+							},
+							{
+								name: "MEILI_MASTER_KEY",
+								valueFrom: {
+									secretKeyRef: {
+										name: meiliSecret.metadata.name,
+										key: "MEILI_MASTER_KEY",
+									}
+								},
+							},
 						]
+					},
+				],
+			},
+		},
+	},
+}, { provider: k8sProvider });
+
+// ───────────────────────────────────────────────────────────────────────────
+// agon_worker: async processing worker
+// Long-polls the SQS events queue (fed by the EventBridge Pipe above) and runs
+// the inline handlers — search indexing (Meilisearch) and notification
+// generation. Shares the aws-credentials secret (now carrying the queue URL)
+// plus the Meilisearch URL/key. No ports / ingress — it only consumes SQS.
+// ───────────────────────────────────────────────────────────────────────────
+const workerAppLabels = { app: "agon-worker" };
+new k8s.apps.v1.Deployment("agon-worker-deployment", {
+	metadata: { name: "agon-worker" },
+	spec: {
+		selector: { matchLabels: workerAppLabels },
+		replicas: 1,
+		template: {
+			metadata: { labels: workerAppLabels },
+			spec: {
+				containers: [
+					{
+						name: "agon-worker",
+						image: config.get("agonWorkerImage"),
+						// AWS creds + table + queue URL come from the shared secret.
+						envFrom: [{ secretRef: { name: awsSecret.metadata.name } }],
+						env: [
+							{
+								name: "MEILI_URL",
+								value: meiliUrl,
+							},
+							{
+								name: "MEILI_MASTER_KEY",
+								valueFrom: {
+									secretKeyRef: {
+										name: meiliSecret.metadata.name,
+										key: "MEILI_MASTER_KEY",
+									}
+								},
+							},
+						],
 					},
 				],
 			},

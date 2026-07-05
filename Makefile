@@ -25,8 +25,4 @@ test:
 	cargo test -p agon_tests
 
 run:
-	docker compose up -d
 	cargo run -p agon_service -- run-server abc.com
-
-reset-db:
-	cd agon_service && sqlx migrate revert && sqlx migrate run

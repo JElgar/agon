@@ -1,5 +1,5 @@
 [workspace]
 resolver = "2"
 
-members = ["agon_service", "agon_tests", "openapi_client"]
-default-members = ["agon_service", "agon_tests"]
+members = ["agon_core", "agon_service", "agon_worker", "agon_tests", "openapi_client"]
+default-members = ["agon_core", "agon_service", "agon_worker", "agon_tests"]

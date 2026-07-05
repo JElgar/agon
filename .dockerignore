@@ -1,0 +1,12 @@
+# Rust build artifacts — rebuilt inside the image, never copy the host's.
+target/
+
+# Node / infra tooling not needed by the Rust image builds.
+**/node_modules/
+agon_infra/
+agon_ui/
+
+# Local env / VCS / editor cruft.
+.git/
+.env
+**/*.log

@@ -1,5 +1,5 @@
 name: 'Setup'
-description: 'Setup project and run db'
+description: 'Setup project (toolchain, cache, OpenAPI schema)'
 runs:
   using: 'composite'
   steps:
@@ -12,16 +12,7 @@ runs:
     - run: npm install @openapitools/openapi-generator-cli -g
       shell: bash
 
-    - run: cargo install sqlx-cli
-      shell: bash
-
-    - run: docker compose up -d db
-      shell: bash
-
     - run: cp .env.example .env
-      shell: bash
-
-    - run: make reset-db
       shell: bash
 
     - run: make generate-schema

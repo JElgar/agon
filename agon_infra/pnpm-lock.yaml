@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@pulumi/aws':
+        specifier: ^6.66.0
+        version: 6.83.4(typescript@5.8.3)
       '@pulumi/cloudflare':
         specifier: ^6.1.2
         version: 6.1.2(typescript@5.8.3)
@@ -232,6 +235,9 @@ packages:
 
   '@protobufjs/utf8@1.1.0':
     resolution: {integrity: sha512-Vvn3zZrhQZkkBE8LSuW3em98c0FwgO4nxzv6OdSxPKJIEKY2bGbHn+mhGIPerzI4twdxaP8/0+06HBpwf345Lw==}
+
+  '@pulumi/aws@6.83.4':
+    resolution: {integrity: sha512-mk3LhRJF6BdOq7VAWtrZpv+loLdaPxvbOVTESommiYXlSX87xXA8mytQCaeIXaivtpdj+xcBOJ8vz0A0Ktmw9g==}
 
   '@pulumi/cloudflare@6.1.2':
     resolution: {integrity: sha512-mub5p9IN3VVzjJyFVIXU8BFmiwYxQP7w7kqXhffWqw4eHkq50AtJVE1KAxs0KiG4ILaGDWKdg4HdAacrf2pbIA==}
@@ -684,6 +690,11 @@ packages:
 
   merge-stream@2.0.0:
     resolution: {integrity: sha512-abv/qOcuPfk3URPfDzmZU1LKmuw8kT+0nIHvKrKgFrwifol/doWcdA4ZqsWQ8ENrFKkd67Mfpo/LovbIUsbt3w==}
+
+  mime@2.6.0:
+    resolution: {integrity: sha512-USPkMeET31rOMiarsBNIHZKLGgvKc/LrjofAnBlOttf5ajRvqiRA8QsenbcooctK6d6Ts6aqZXBA+XbkKthiQg==}
+    engines: {node: '>=4.0.0'}
+    hasBin: true
 
   mimic-fn@2.1.0:
     resolution: {integrity: sha512-OqbOk5oEQeAZ8WXWydlu9HJjz9WVdEIvamMCcXmuqUYjTknH/sqsWvhQ3vgwKFRR1HpjvNBKQ37nbJgYzGqGcg==}
@@ -1400,6 +1411,16 @@ snapshots:
 
   '@protobufjs/utf8@1.1.0': {}
 
+  '@pulumi/aws@6.83.4(typescript@5.8.3)':
+    dependencies:
+      '@pulumi/pulumi': 3.169.0(typescript@5.8.3)
+      mime: 2.6.0
+    transitivePeerDependencies:
+      - bluebird
+      - supports-color
+      - ts-node
+      - typescript
+
   '@pulumi/cloudflare@6.1.2(typescript@5.8.3)':
     dependencies:
       '@pulumi/pulumi': 3.169.0(typescript@5.8.3)
@@ -1921,6 +1942,8 @@ snapshots:
       - supports-color
 
   merge-stream@2.0.0: {}
+
+  mime@2.6.0: {}
 
   mimic-fn@2.1.0: {}
 

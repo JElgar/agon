@@ -1,44 +1,16 @@
 services:
-  # api:
-  #   build:
-  #     context: agon_service
-  #   container_name: poem_api
-  #   ports:
-  #     - 7000:7000
-  #   env_file:
-  #     - .env
-  #   depends_on:
-  #     - db
-  #   restart: unless-stopped
-
-  db:
-    image: postgres
+  # Local Meilisearch for the discovery/search endpoints. Data (DynamoDB) lives
+  # in AWS; only search is run locally. Master key matches .env.example.
+  meilisearch:
+    image: getmeili/meilisearch:v1.11
     restart: always
-    shm_size: 128mb
     environment:
-      POSTGRES_PASSWORD: postgres
-      # PGUSER: postgres
+      MEILI_ENV: development
+      MEILI_MASTER_KEY: masterKeyForLocalDevOnly
     ports:
-      - 7001:5432
-      # healthcheck:
-      #   test: pg_isready
-      #   interval: 10s
-      #   timeout: 5s
-      #   retries: 5
+      - 7700:7700
+    volumes:
+      - meili_data:/meili_data
 
-  adminer:
-    image: adminer
-    restart: always
-    ports:
-      - 7002:808
-
-      # ui:
-      #   build:
-      #     context: agon_ui
-      #   container_name: ui
-      #   ports:
-      #     - 7003:80
-      #   restart: unless-stopped
-      #   environment:
-      #     VITE_SUPABASE_URL: https://tvqmukrwpinkedgvrmpy.supabase.co
-      #     VITE_SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR2cW11a3J3cGlua2VkZ3ZybXB5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU2ODgyNDIsImV4cCI6MjA2MTI2NDI0Mn0.yI1ctlfle2gcrZE7BhjwOFI9EVAQmd9JjPbGOqRsuVs
+volumes:
+  meili_data:

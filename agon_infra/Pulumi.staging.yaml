@@ -16,3 +16,8 @@ config:
   agon_infra:agonUiImage: ghcr.io/jelgar/agon_ui:sha-260cd6c
   agon_infra:supabaseAnonKey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR2cW11a3J3cGlua2VkZ3ZybXB5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU2ODgyNDIsImV4cCI6MjA2MTI2NDI0Mn0.yI1ctlfle2gcrZE7BhjwOFI9EVAQmd9JjPbGOqRsuVs
   agon_infra:supabaseUrl: https://tvqmukrwpinkedgvrmpy.supabase.co
+  aws:region: eu-west-1
+  aws:accessKey:
+    secure: AAABAJBgfjzGVypxRD8oOluoYaZ6+rkRuJ0dvGpKYNzyRxepovpRkwDZli9rYS40frNSJg==
+  aws:secretKey:
+    secure: AAABAB5yiLg3l2kvn0TCSA4JzJzhTJqK6+QRfGRdMo8YJv+hm9ANZwwgCA9fiiY0hlYJOZz4pNrB4aBhSjqTliVsLoq3KsBW

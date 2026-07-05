@@ -1,0 +1,55 @@
+[package]
+name = "agon_worker"
+version = "0.1.0"
+edition = "2024"
+
+# The async processing worker. Long-polls the SQS queue fed by DynamoDB Streams
+# (via an EventBridge Pipe) and runs inline handlers: search indexing
+# (Meilisearch) and notification generation.
+#
+# Multi-step orchestration (feed fan-out, the accept-invitation saga) lives in
+# the `temporal` module behind the OFF-BY-DEFAULT `temporal` feature. That code
+# targets the Temporal Rust SDK Public Preview — a churning git dependency with
+# no crates.io release — so it is gated to keep the default build (the verified
+# inline worker) green. Enable with `--features temporal` once the SDK revision
+# is pinned and reconciled. See docs/async-design.md.
+#
+# Shares the DynamoDB data-access layer with the API via agon_core. No poem.
+
+[features]
+default = []
+# Enables the Temporal worker + client (feed fan-out, accept-invitation saga).
+# UNVERIFIED against a specific SDK revision — see src/temporal/mod.rs.
+temporal = [
+    "dep:temporalio-sdk",
+    "dep:temporalio-client",
+    "dep:temporalio-sdk-core",
+    "dep:temporalio-macros",
+    "dep:anyhow",
+]
+
+[dependencies]
+agon_core = { path = "../agon_core" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-sqs = "1"
+serde = { version = "1.0.209", features = ["derive"] }
+serde_json = "1.0.140"
+# Deserializes DynamoDB Streams images (attribute-value JSON) straight into the
+# shared record structs — same crate agon_core uses for item (de)serialization.
+serde_dynamo = "4"
+chrono = { version = "0.4.41", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+thiserror = "1.0.64"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["json", "env-filter"] }
+futures = "0.3"
+
+# Temporal Rust SDK (Public Preview) — optional, only pulled in by `temporal`.
+# Pinned to a git revision because there is no crates.io release. Bump `rev` to
+# reconcile against SDK API changes.
+temporalio-sdk = { git = "https://github.com/temporalio/sdk-core", optional = true }
+temporalio-client = { git = "https://github.com/temporalio/sdk-core", optional = true }
+temporalio-sdk-core = { git = "https://github.com/temporalio/sdk-core", optional = true }
+temporalio-macros = { git = "https://github.com/temporalio/sdk-core", optional = true }
+anyhow = { version = "1", optional = true }

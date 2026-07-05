@@ -93,18 +93,23 @@ impl Dao {
     /// `None` if the meta item is absent. Likes/comments/detailed-score are
     /// deliberately not loaded here — fetch via their own paginated ops.
     pub async fn get_match(&self, match_id: &str) -> DaoResult<Option<MatchAggregate>> {
-        // Bound the collection read to the meta/side/player items — skip the
-        // potentially large LIKE#/COMMENT#/SCORESUB# ranges. `#META`, `PLAYER#`
-        // and `SIDE#` all sort before `SCORESUB#`; `DETAIL#` sorts among them, so
-        // we filter it out below rather than by range.
+        // Read the whole match partition and pick out the meta/side/player items.
+        //
+        // Note: we deliberately do NOT use a `SK < "SCORESUB#"` range bound to
+        // skip the large LIKE#/COMMENT# ranges — the SK prefixes don't partition
+        // cleanly by that boundary. Lexical order is:
+        //   #META < COMMENT# < DETAIL# < LIKE# < PLAYER# < SCORESUB# < SIDE#
+        // so `SIDE#` sorts *after* `SCORESUB#`; any upper bound that excludes
+        // score submissions also excludes the sides we need (that bug returned an
+        // aggregate with no sides, which broke score validation). Filtering by SK
+        // type in the loop below is correct regardless of ordering.
         let out = self
             .client
             .query()
             .table_name(self.table())
-            .key_condition_expression("#pk = :pk AND SK < :max")
+            .key_condition_expression("#pk = :pk")
             .expression_attribute_names("#pk", ATTR_PK)
             .expression_attribute_values(":pk", s(Pk::Match(match_id.into()).to_string()))
-            .expression_attribute_values(":max", s("SCORESUB#"))
             .send()
             .await
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
@@ -118,7 +123,7 @@ impl Dao {
                 Sk::Meta => meta = Some(from_item(item)?),
                 Sk::Side(_) => sides.push(from_item(item)?),
                 Sk::Player(_) => players.push(from_item(item)?),
-                // DETAIL#, LIKE#, COMMENT# etc. — not part of this aggregate.
+                // DETAIL#, LIKE#, COMMENT#, SCORESUB# etc. — not part of this aggregate.
                 _ => {}
             }
         }

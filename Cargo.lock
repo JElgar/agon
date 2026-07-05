@@ -51,7 +51,6 @@ name = "agon_worker"
 version = "0.1.0"
 dependencies = [
  "agon_core",
- "anyhow",
  "aws-config",
  "aws-sdk-sqs",
  "chrono",
@@ -61,9 +60,11 @@ dependencies = [
  "serde_dynamo",
  "serde_json",
  "temporalio-client",
+ "temporalio-common",
  "temporalio-macros",
  "temporalio-sdk",
  "temporalio-sdk-core",
+ "temporalio-workflow",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -3688,7 +3689,8 @@ dependencies = [
 [[package]]
 name = "temporalio-client"
 version = "0.5.0"
-source = "git+https://github.com/temporalio/sdk-core#9f83b7e307dc032b31ff3bd3811ef3438106f77a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "257e69cdc823bfd0707d4daac7470451d59d31aefe519c4eb60d4ceeb77c443e"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3720,7 +3722,8 @@ dependencies = [
 [[package]]
 name = "temporalio-common"
 version = "0.5.0"
-source = "git+https://github.com/temporalio/sdk-core#9f83b7e307dc032b31ff3bd3811ef3438106f77a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6988555678e6177c08553aece24312643b714d35983ad9bf383c9f9eb77ea6ec"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3758,19 +3761,18 @@ dependencies = [
 [[package]]
 name = "temporalio-common-wasm"
 version = "0.5.0"
-source = "git+https://github.com/temporalio/sdk-core#9f83b7e307dc032b31ff3bd3811ef3438106f77a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d5dba313ccb58da518e23f85557e7cb9d5a1298fd7d8935328521ca641a4b11"
 dependencies = [
  "anyhow",
  "async-trait",
  "bon",
- "chrono",
  "crc32fast",
  "derive_more 2.1.1",
  "erased-serde",
  "futures",
  "parking_lot",
  "prost",
- "prost-wkt-types",
  "serde",
  "serde_json",
  "temporalio-protos",
@@ -3784,7 +3786,8 @@ dependencies = [
 [[package]]
 name = "temporalio-macros"
 version = "0.5.0"
-source = "git+https://github.com/temporalio/sdk-core#9f83b7e307dc032b31ff3bd3811ef3438106f77a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80bd354f4226ade84d07266a21456553be402b2187ef72f263c334ec93a2109c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3794,7 +3797,8 @@ dependencies = [
 [[package]]
 name = "temporalio-protos"
 version = "0.5.0"
-source = "git+https://github.com/temporalio/sdk-core#9f83b7e307dc032b31ff3bd3811ef3438106f77a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bce29ee903d46edec16df756e78e5ab125e4d342957174d4ac8ee30290ef249a"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3816,7 +3820,8 @@ dependencies = [
 [[package]]
 name = "temporalio-sdk"
 version = "0.5.0"
-source = "git+https://github.com/temporalio/sdk-core#9f83b7e307dc032b31ff3bd3811ef3438106f77a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "964d8c74815d169491e640e5688b7a37525641c59c683ea775a7bc9138c38b5c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3844,7 +3849,8 @@ dependencies = [
 [[package]]
 name = "temporalio-sdk-core"
 version = "0.5.0"
-source = "git+https://github.com/temporalio/sdk-core#9f83b7e307dc032b31ff3bd3811ef3438106f77a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8498ec9d16b1ca9a85aaf622d7542f2bdefe82972e221f8026d1ddd18686591"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3889,7 +3895,8 @@ dependencies = [
 [[package]]
 name = "temporalio-workflow"
 version = "0.5.0"
-source = "git+https://github.com/temporalio/sdk-core#9f83b7e307dc032b31ff3bd3811ef3438106f77a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "144d49f689bc594fbc81da9bf7989858b0e358b6aa28d47400ae822d3e0b559b"
 dependencies = [
  "anyhow",
  "bon",

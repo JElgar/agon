@@ -19,7 +19,10 @@ COPY . .
 RUN cargo build --release -p agon_worker
 
 # Stage 2 - Runtime
-FROM debian:bookworm-slim
+# Must share glibc with the builder base. `rust:1.96` is on Debian trixie
+# (glibc 2.38/2.39); bookworm-slim (glibc 2.36) is too old and the binary fails
+# at startup with `GLIBC_2.3x not found`, so match the builder with trixie.
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 

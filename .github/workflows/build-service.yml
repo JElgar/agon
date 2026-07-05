@@ -32,15 +32,13 @@ jobs:
 
     # TODO cargo run and then make tests work against localhost (without docker maybe? - or build docke rand use taht)
 
-  # Non-blocking: compile the worker WITH the Temporal feature so SDK API drift
-  # surfaces here. The Temporal Rust SDK is Public Preview (a churning git
-  # dependency) and this code cannot be verified locally, so it is NOT part of
-  # the default build/deploy. `continue-on-error` means a failure here reports
-  # the compile errors to fix without blocking the release. Remove the flag once
-  # the feature compiles cleanly and we want it enforced.
+  # Compile the worker WITH the Temporal feature. The Temporal Rust SDK is
+  # Public Preview and pinned to a specific git rev (see agon_worker/Cargo.toml);
+  # this code compiles cleanly against that rev, so the check is enforced. The
+  # `temporal` feature is still OFF in the default build/deploy — this job only
+  # guards that the code keeps compiling (e.g. if the pinned rev is bumped).
   check-temporal:
     runs-on: ubuntu-latest
-    continue-on-error: true
     defaults:
       run:
         shell: bash

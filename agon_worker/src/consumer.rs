@@ -203,7 +203,7 @@ impl Consumer {
         // Only act on the transition into "accepted", not every modify of an
         // already-accepted invitation.
         let was_accepted = event
-            .old::<InvitationRecord>()
+            .old_record::<InvitationRecord>()
             .map(|old| old.status == "accepted")
             .unwrap_or(false);
         if new_inv.status != "accepted" || was_accepted {

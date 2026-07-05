@@ -27,7 +27,7 @@ pub async fn run(dao: Dao, search: SearchClient) -> Result<(), Box<dyn std::erro
     let (conn_options, client_options) =
         ClientOptions::load_from_config(LoadClientConfigProfileOptions::default())?;
     let connection = Connection::connect(conn_options).await?;
-    let client = Client::new(connection, client_options);
+    let client = Client::new(connection, client_options)?;
 
     let worker_options = WorkerOptions::new(TASK_QUEUE)
         .register_activities(AgonActivities { dao, search })
@@ -36,6 +36,7 @@ pub async fn run(dao: Dao, search: SearchClient) -> Result<(), Box<dyn std::erro
         .build();
 
     tracing::info!(task_queue = TASK_QUEUE, "temporal worker starting");
-    Worker::new(&runtime, client, worker_options)?.run().await?;
+    let mut worker = Worker::new(&runtime, client, worker_options)?;
+    worker.run().await?;
     Ok(())
 }

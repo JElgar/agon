@@ -57,7 +57,7 @@ impl AgonActivities {
     /// Returns `match_exists = false` if the match is gone (workflow no-ops).
     #[activity]
     pub async fn resolve_fanout_audience(
-        &self,
+        self: std::sync::Arc<Self>,
         _ctx: ActivityContext,
         match_id: String,
     ) -> Result<FanoutAudience, ActivityError> {
@@ -87,7 +87,7 @@ impl AgonActivities {
     /// a retried chunk is harmless.
     #[activity]
     pub async fn write_feed_chunk(
-        &self,
+        self: std::sync::Arc<Self>,
         _ctx: ActivityContext,
         chunk: WriteFeedChunk,
     ) -> Result<(), ActivityError> {
@@ -107,7 +107,7 @@ impl AgonActivities {
     /// the inline indexing stream event lands.
     #[activity]
     pub async fn index_match(
-        &self,
+        self: std::sync::Arc<Self>,
         _ctx: ActivityContext,
         match_id: String,
     ) -> Result<(), ActivityError> {
@@ -117,7 +117,7 @@ impl AgonActivities {
                 self.search
                     .upsert(Index::Matches, &doc)
                     .await
-                    .map_err(activity_err)
+                    .map_err(search_err)
             }
             None => Ok(()),
         }
@@ -127,7 +127,7 @@ impl AgonActivities {
     /// the accepting user. Idempotent.
     #[activity]
     pub async fn link_accepted_invitation(
-        &self,
+        self: std::sync::Arc<Self>,
         _ctx: ActivityContext,
         input: LinkAccepted,
     ) -> Result<(), ActivityError> {
@@ -142,7 +142,14 @@ impl AgonActivities {
     }
 }
 
-/// Map a DAO error into a Temporal `ActivityError` so the activity retries.
+/// Map a DAO error into a Temporal `ActivityError` (an Application error, so the
+/// activity retries per its retry policy). `DaoError` is a `std::error::Error`
+/// (thiserror), which `ActivityError` accepts via its blanket `From`.
 fn activity_err(err: agon_core::dao::error::DaoError) -> ActivityError {
-    ActivityError::from(anyhow::anyhow!(err.to_string()))
+    ActivityError::from(err)
+}
+
+/// Same, for a Meilisearch error.
+fn search_err(err: agon_core::error::SearchError) -> ActivityError {
+    ActivityError::from(err)
 }

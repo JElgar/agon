@@ -2,24 +2,25 @@
 //! work (feed fan-out, the accept-invitation saga). Workflows call activities;
 //! they never touch DynamoDB / the network directly.
 //!
-//! ⚠️ UNVERIFIED: written against the Temporal Rust SDK **Public Preview** API
-//! and cannot be compiled here (churning git dependency, no crates.io release,
-//! no Temporal server). Signatures likely need adjustment against your pinned
-//! SDK revision. Gated behind the `temporal` cargo feature.
+//! Verified against the Temporal Rust SDK (Public Preview) source at the pinned
+//! git revision — the workflow/activity macros, `WorkflowContext::start_activity`
+//! and `workflow_time`, and the unit-struct + `#[run(ctx, input)]` shape all
+//! match the SDK's own examples. Still gated behind the `temporal` feature.
 //!
 //! Idempotency / determinism:
-//! - Workflow ids are deterministic (`fanout-<match_id>`, `accept-<inv_id>`), so
-//!   a duplicate start attaches to the running/completed run rather than
-//!   double-processing (see docs/async-design.md §3).
+//! - Workflow ids are deterministic (`fanout-<match_id>`, `accept-<inv_id>`) and
+//!   started with `UseExisting`, so a duplicate start attaches to the running
+//!   run (see docs/async-design.md §3).
 //! - Every activity's effects are idempotent (feed writes keyed by match id,
 //!   link is a fixed-point update), so activity retries are safe.
-//! - Timestamps come from the workflow context (`ctx.now()`), never the wall
-//!   clock, to keep replay deterministic.
+//! - Timestamps come from `ctx.workflow_time()` (deterministic on replay), never
+//!   the wall clock.
 
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use temporalio_macros::{workflow, workflow_methods};
-use temporalio_sdk::{ActivityOptions, WorkflowContext, WorkflowContextView, WorkflowResult};
+use temporalio_sdk::{ActivityOptions, WorkflowContext, WorkflowResult};
 
 use super::activities::{AgonActivities, LinkAccepted, WriteFeedChunk};
 
@@ -33,6 +34,14 @@ fn activity_opts() -> ActivityOptions {
     ActivityOptions::start_to_close_timeout(Duration::from_secs(30))
 }
 
+/// An RFC3339 timestamp from the workflow's deterministic clock. Falls back to
+/// empty if the context has no time yet (shouldn't happen inside `run`).
+fn workflow_now(ctx: &WorkflowContext<impl Sized>) -> String {
+    ctx.workflow_time()
+        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
+        .unwrap_or_default()
+}
+
 // ===========================================================================
 // FanOutMatch — fan a match into its audience's feeds.
 // ===========================================================================
@@ -40,39 +49,29 @@ fn activity_opts() -> ActivityOptions {
 /// Fan a match into the feeds of everyone who should see it. Started when a
 /// match is created / completed. Workflow id: `fanout-<match_id>`.
 #[workflow]
-pub struct FanOutMatch {
-    match_id: String,
-}
+#[derive(Default)]
+pub struct FanOutMatch;
 
 #[workflow_methods]
 impl FanOutMatch {
-    #[init]
-    fn new(_ctx: &WorkflowContextView, match_id: String) -> Self {
-        Self { match_id }
-    }
-
     #[run]
-    async fn run(ctx: &mut WorkflowContext<Self>) -> WorkflowResult<()> {
-        let match_id = ctx.state(|s| s.match_id.clone());
-
-        // 1. Resolve the audience (followers of participants + involved teams +
-        //    participants themselves) and the match start time.
+    pub async fn run(ctx: &mut WorkflowContext<Self>, match_id: String) -> WorkflowResult<()> {
+        // 1. Resolve the audience + the match start time.
         let audience = ctx
             .start_activity(
                 AgonActivities::resolve_fanout_audience,
                 match_id.clone(),
                 activity_opts(),
-            )?
+            )
             .await?;
 
         if !audience.match_exists {
-            // Match gone before fan-out ran; nothing to do.
             return Ok(());
         }
 
         // 2. Write feed entries in checkpointed chunks. Each chunk is its own
         //    activity, so a failure resumes at the failed chunk on replay.
-        let now = ctx.now().to_rfc3339();
+        let now = workflow_now(ctx);
         for chunk in audience.viewer_ids.chunks(FEED_CHUNK) {
             ctx.start_activity(
                 AgonActivities::write_feed_chunk,
@@ -83,13 +82,13 @@ impl FanOutMatch {
                     now: now.clone(),
                 },
                 activity_opts(),
-            )?
+            )
             .await?;
         }
 
         // 3. Ensure the match is searchable (idempotent; complements the inline
         //    indexing handler).
-        ctx.start_activity(AgonActivities::index_match, match_id, activity_opts())?
+        ctx.start_activity(AgonActivities::index_match, match_id, activity_opts())
             .await?;
 
         Ok(())
@@ -101,7 +100,7 @@ impl FanOutMatch {
 // ===========================================================================
 
 /// Inputs to the accept-invitation saga.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AcceptInvitationInput {
     pub invitation_id: String,
     pub accepting_user_id: String,
@@ -114,21 +113,16 @@ pub struct AcceptInvitationInput {
 /// Link an accepted invitation's roster entry and, for a match invite, re-run
 /// fan-out (acceptance can change the audience). Workflow id: `accept-<inv_id>`.
 #[workflow]
-pub struct AcceptInvitation {
-    input: AcceptInvitationInput,
-}
+#[derive(Default)]
+pub struct AcceptInvitation;
 
 #[workflow_methods]
 impl AcceptInvitation {
-    #[init]
-    fn new(_ctx: &WorkflowContextView, input: AcceptInvitationInput) -> Self {
-        Self { input }
-    }
-
     #[run]
-    async fn run(ctx: &mut WorkflowContext<Self>) -> WorkflowResult<()> {
-        let input = ctx.state(|s| s.input.clone());
-
+    pub async fn run(
+        ctx: &mut WorkflowContext<Self>,
+        input: AcceptInvitationInput,
+    ) -> WorkflowResult<()> {
         // 1. Link the roster entry (external → user) and mark it accepted.
         ctx.start_activity(
             AgonActivities::link_accepted_invitation,
@@ -138,23 +132,22 @@ impl AcceptInvitation {
                 responded_at: input.responded_at.clone(),
             },
             activity_opts(),
-        )?
+        )
         .await?;
 
         // 2. For a match invite, re-fan-out so the newly-linked participant (and
-        //    their followers) pick the match up. Run inline as activities rather
-        //    than a child workflow to keep this saga self-contained.
+        //    their followers) pick the match up.
         if let Some(match_id) = input.match_id {
             let audience = ctx
                 .start_activity(
                     AgonActivities::resolve_fanout_audience,
                     match_id.clone(),
                     activity_opts(),
-                )?
+                )
                 .await?;
 
             if audience.match_exists {
-                let now = ctx.now().to_rfc3339();
+                let now = workflow_now(ctx);
                 for chunk in audience.viewer_ids.chunks(FEED_CHUNK) {
                     ctx.start_activity(
                         AgonActivities::write_feed_chunk,
@@ -165,7 +158,7 @@ impl AcceptInvitation {
                             now: now.clone(),
                         },
                         activity_opts(),
-                    )?
+                    )
                     .await?;
                 }
             }

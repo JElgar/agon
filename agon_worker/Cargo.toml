@@ -25,7 +25,8 @@ temporal = [
     "dep:temporalio-client",
     "dep:temporalio-sdk-core",
     "dep:temporalio-macros",
-    "dep:anyhow",
+    "dep:temporalio-workflow",
+    "dep:temporalio-common",
 ]
 
 [dependencies]
@@ -45,11 +46,12 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["json", "env-filter"] }
 futures = "0.3"
 
-# Temporal Rust SDK (Public Preview) — optional, only pulled in by `temporal`.
-# Pinned to a git revision because there is no crates.io release. Bump `rev` to
-# reconcile against SDK API changes.
-temporalio-sdk = { git = "https://github.com/temporalio/sdk-core", optional = true }
-temporalio-client = { git = "https://github.com/temporalio/sdk-core", optional = true }
-temporalio-sdk-core = { git = "https://github.com/temporalio/sdk-core", optional = true }
-temporalio-macros = { git = "https://github.com/temporalio/sdk-core", optional = true }
-anyhow = { version = "1", optional = true }
+# Temporal Rust SDK — optional, only pulled in by the `temporal` feature.
+temporalio-sdk = { version = "0.5.0", optional = true }
+temporalio-client = { version = "0.5.0", optional = true }
+temporalio-sdk-core = { version = "0.5.0", optional = true }
+temporalio-macros = { version = "0.5.0", optional = true }
+# Referenced by the workflow/activity macro expansions (`::temporalio_workflow::…`)
+# and for the WorkflowIdConflictPolicy enum, so both must be direct deps.
+temporalio-workflow = { version = "0.5.0", optional = true }
+temporalio-common = { version = "0.5.0", optional = true }

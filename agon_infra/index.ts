@@ -640,6 +640,11 @@ new k8s.apps.v1.Deployment("meilisearch-deployment", {
 						ports: [{ containerPort: 7700 }],
 						env: [
 							{ name: "MEILI_ENV", value: "production" },
+							// Expose the Prometheus /metrics endpoint (experimental).
+							// Scraped by the ServiceMonitor below. Requires a bearer key
+							// with `metrics.get`, so Prometheus authenticates with the
+							// master key (see the ServiceMonitor's bearerTokenSecret).
+							{ name: "MEILI_EXPERIMENTAL_ENABLE_METRICS", value: "true" },
 							{
 								name: "MEILI_MASTER_KEY",
 								valueFrom: {
@@ -678,7 +683,8 @@ const meiliService = new k8s.core.v1.Service("meilisearch-service", {
 	metadata: { name: "meilisearch" },
 	spec: {
 		selector: meiliAppLabels,
-		ports: [{ port: 7700, targetPort: 7700 }],
+		// Port is named so the Meilisearch ServiceMonitor can reference it.
+		ports: [{ name: "http", port: 7700, targetPort: 7700 }],
 	},
 }, { provider: k8sProvider });
 
@@ -763,6 +769,16 @@ const kubePrometheusStack = new k8s.helm.v4.Chart("kube-prometheus-stack", {
 		kubeProxy: { enabled: false },
 		kubeEtcd: { enabled: false },
 		prometheusOperator: {
+			// The admission webhook's TLS secret is created by the chart's Helm
+			// HOOK Jobs (pre-install/post-install). Pulumi's helm.v4.Chart does NOT
+			// run Helm hooks, so those Jobs never run and the operator hangs forever
+			// mounting the missing `kube-prometheus-stack-admission` secret. Disable
+			// the webhook (and its TLS) to drop the hook dependency entirely.
+			admissionWebhooks: {
+				enabled: false,
+				patch: { enabled: false },
+			},
+			tls: { enabled: false },
 			resources: {
 				requests: { cpu: "50m", memory: "100Mi" },
 				limits: { memory: "250Mi" },
@@ -1034,6 +1050,134 @@ new k8s.core.v1.Service("grafana-proxy", {
 }, { provider: k8sProvider });
 
 export const grafanaUrl = `https://${grafanaDomain}`;
+
+// ── Meilisearch scraping ──────────────────────────────────────────────────────
+// Meilisearch's /metrics endpoint is experimental (enabled via
+// MEILI_EXPERIMENTAL_ENABLE_METRICS on the deployment) and requires a bearer key
+// with the `metrics.get` action — we use the master key. This ServiceMonitor
+// lives in `default` (same namespace as the meilisearch Service + its master-key
+// secret) and is discovered by the Prometheus Operator, which is configured
+// (serviceMonitorSelectorNilUsesHelmValues: false) to watch all namespaces.
+new k8s.apiextensions.CustomResource("meilisearch-servicemonitor", {
+	apiVersion: "monitoring.coreos.com/v1",
+	kind: "ServiceMonitor",
+	metadata: { name: "meilisearch", namespace: "default" },
+	spec: {
+		selector: { matchLabels: meiliAppLabels },
+		endpoints: [{
+			// References the meilisearch Service's port by name (named "http" below).
+			port: "http",
+			path: "/metrics",
+			interval: "30s",
+			// Authenticate with the master key from the existing secret.
+			bearerTokenSecret: { name: meiliSecret.metadata.name, key: "MEILI_MASTER_KEY" },
+		}],
+	},
+}, { provider: k8sProvider, dependsOn: [kubePrometheusStack] });
+
+// ── Grafana dashboards ────────────────────────────────────────────────────────
+// The kube-prometheus-stack Grafana runs a sidecar that auto-imports any
+// ConfigMap in its namespace labelled `grafana_dashboard: "1"`. We ship two:
+// the agon API (our custom request metrics) and Meilisearch. Metric names assume
+// Alloy's prometheus exporter suffix conversion (dots→underscores, `_total` on
+// counters, unit `_seconds` on the duration histogram).
+
+// agon-service: request rate, error rate, and p50/p95 latency from the
+// http.server.request.* instruments recorded in the request middleware.
+const agonDashboard = {
+	title: "Agon — API",
+	uid: "agon-api",
+	timezone: "browser",
+	time: { from: "now-6h", to: "now" },
+	panels: [
+		{
+			id: 1, title: "Request rate (req/s)", type: "timeseries",
+			gridPos: { h: 8, w: 12, x: 0, y: 0 },
+			targets: [{
+				expr: "sum by (http_response_status_code) (rate(http_server_request_count_total{job=\"agon-service\"}[5m]))",
+				legendFormat: "{{http_response_status_code}}",
+			}],
+		},
+		{
+			id: 2, title: "5xx error rate", type: "timeseries",
+			gridPos: { h: 8, w: 12, x: 12, y: 0 },
+			targets: [{
+				expr: "sum(rate(http_server_request_count_total{http_response_status_code=~\"5..\"}[5m]))",
+				legendFormat: "5xx",
+			}],
+		},
+		{
+			id: 3, title: "Latency p50 / p95 (s)", type: "timeseries",
+			gridPos: { h: 8, w: 24, x: 0, y: 8 },
+			targets: [
+				{
+					expr: "histogram_quantile(0.50, sum by (le) (rate(http_server_request_duration_seconds_bucket[5m])))",
+					legendFormat: "p50",
+				},
+				{
+					expr: "histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket[5m])))",
+					legendFormat: "p95",
+				},
+			],
+		},
+	],
+	schemaVersion: 39,
+};
+
+// Meilisearch: index docs, DB size, HTTP request rate, task queue latency.
+const meiliDashboard = {
+	title: "Meilisearch",
+	uid: "meilisearch",
+	timezone: "browser",
+	time: { from: "now-6h", to: "now" },
+	panels: [
+		{
+			id: 1, title: "Documents per index", type: "timeseries",
+			gridPos: { h: 8, w: 12, x: 0, y: 0 },
+			targets: [{ expr: "meilisearch_index_docs_count", legendFormat: "{{index}}" }],
+		},
+		{
+			id: 2, title: "DB size (bytes)", type: "timeseries",
+			gridPos: { h: 8, w: 12, x: 12, y: 0 },
+			targets: [
+				{ expr: "meilisearch_db_size_bytes", legendFormat: "total" },
+				{ expr: "meilisearch_used_db_size_bytes", legendFormat: "used" },
+			],
+		},
+		{
+			id: 3, title: "HTTP requests (req/s)", type: "timeseries",
+			gridPos: { h: 8, w: 12, x: 0, y: 8 },
+			targets: [{
+				expr: "sum by (path) (rate(meilisearch_http_requests_total[5m]))",
+				legendFormat: "{{path}}",
+			}],
+		},
+		{
+			id: 4, title: "Task queue latency (s)", type: "timeseries",
+			gridPos: { h: 8, w: 12, x: 12, y: 8 },
+			targets: [{ expr: "meilisearch_task_queue_latency_seconds", legendFormat: "latency" }],
+		},
+	],
+	schemaVersion: 39,
+};
+
+new k8s.core.v1.ConfigMap("agon-dashboard", {
+	metadata: {
+		name: "agon-dashboard",
+		namespace: observabilityNamespace,
+		labels: { grafana_dashboard: "1" },
+	},
+	data: { "agon-api.json": JSON.stringify(agonDashboard) },
+}, { provider: k8sProvider, dependsOn: [kubePrometheusStack] });
+
+new k8s.core.v1.ConfigMap("meilisearch-dashboard", {
+	metadata: {
+		name: "meilisearch-dashboard",
+		namespace: observabilityNamespace,
+		labels: { grafana_dashboard: "1" },
+	},
+	data: { "meilisearch.json": JSON.stringify(meiliDashboard) },
+}, { provider: k8sProvider, dependsOn: [kubePrometheusStack] });
 
 const serviceAppLabels = { app: "agon" };
 new k8s.apps.v1.Deployment("agon-deployment", {

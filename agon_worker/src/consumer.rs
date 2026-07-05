@@ -105,8 +105,16 @@ impl Consumer {
         Ok(())
     }
 
-    /// Process one message and, on success (or permanent failure), delete it.
-    /// Transient failures leave the message on the queue for redelivery.
+    /// Process one message; delete it (ACK) only on success. Any failure —
+    /// permanent or transient — is left on the queue, so it redelivers and, after
+    /// `maxReceiveCount` attempts, SQS moves it to the DLQ.
+    ///
+    /// We deliberately do NOT delete "permanent" (unparseable) messages: a parse
+    /// bug that classifies every message as permanent would otherwise silently
+    /// destroy every event (that exact incident happened — a Pipe rendering quirk
+    /// made every envelope look malformed). Routing them to the DLQ keeps them
+    /// visible and replayable instead of lost. The only cost is a permanently-bad
+    /// message is retried a few times before landing in the DLQ, which is cheap.
     async fn process_and_ack(&self, msg: &Message) {
         let receipt = match msg.receipt_handle() {
             Some(r) => r,
@@ -119,10 +127,8 @@ impl Consumer {
         match self.process(msg).await {
             Ok(()) => self.delete(receipt).await,
             Err(e) if e.is_permanent() => {
-                // Bad data will never succeed — drop it (DLQ is the backstop for
-                // anything we misclassify).
-                tracing::error!(error = %e, body = ?msg.body(), "permanent failure; dropping message");
-                self.delete(receipt).await;
+                // Don't delete — let it redeliver into the DLQ for inspection.
+                tracing::error!(error = %e, body = ?msg.body(), "permanent failure; routing to DLQ via redelivery");
             }
             Err(e) => {
                 // Transient — leave it for redelivery after the visibility timeout.

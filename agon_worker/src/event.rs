@@ -60,10 +60,38 @@ pub struct Envelope {
     pub event: ChangeKind,
     pub pk: String,
     pub sk: String,
-    #[serde(default)]
+    // The EventBridge Pipe input template substitutes an **empty string** (not an
+    // omitted key) for an image path that doesn't exist on the record — e.g.
+    // `old_image` on an INSERT arrives as `"old_image": ""`. `deserialize_image`
+    // maps that empty string (and null / absent) to `None`, and a real map to
+    // `Some`. Without this, `""` fails to parse as a map and the whole message is
+    // (wrongly) dropped as malformed.
+    #[serde(default, deserialize_with = "deserialize_optional_image")]
     pub old_image: Option<Image>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_image")]
     pub new_image: Option<Image>,
+}
+
+/// Deserialize an optional DynamoDB image that may arrive as a map, `null`, or
+/// an empty string (the EventBridge Pipe's rendering of an absent path).
+fn deserialize_optional_image<'de, D>(deserializer: D) -> Result<Option<Image>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        // Absent path rendered as "" (or any string) → no image.
+        serde_json::Value::String(_) | serde_json::Value::Null => Ok(None),
+        // A real attribute-value map → the image.
+        serde_json::Value::Object(_) => {
+            let image: Image = serde_json::from_value(value).map_err(D::Error::custom)?;
+            Ok(Some(image))
+        }
+        other => Err(D::Error::custom(format!(
+            "unexpected image value: {other:?}"
+        ))),
+    }
 }
 
 /// A parsed change event: the raw envelope with its keys resolved into typed
@@ -224,5 +252,43 @@ mod tests {
             parsed.context,
             InvitationContextRecord::Match { .. }
         ));
+    }
+
+    /// The EventBridge Pipe renders an absent image path as an empty string, so
+    /// an INSERT arrives as `"old_image": ""`. That must parse as `None`, not
+    /// blow up as "expected a map" (which previously dropped every message).
+    /// This is the verbatim shape observed from staging.
+    #[test]
+    fn empty_string_old_image_parses_as_none() {
+        let body = r##"{
+            "event": "INSERT",
+            "pk": "USER#u1",
+            "sk": "#PROFILE",
+            "old_image": "",
+            "new_image": {
+                "id": {"S": "u1"},
+                "name": {"S": "Test User"},
+                "email": {"S": "u1@example.com"},
+                "created_at": {"S": "2026-07-05T13:23:51.658Z"},
+                "follower_count": {"N": "0"},
+                "following_count": {"N": "0"},
+                "unread_count": {"N": "0"}
+            }
+        }"##;
+        let envelope: Envelope =
+            serde_json::from_str(body).expect("envelope with empty old_image parses");
+        assert!(
+            envelope.old_image.is_none(),
+            "empty-string old_image -> None"
+        );
+        assert!(envelope.new_image.is_some(), "new_image present");
+
+        let event = ChangeEvent::from_envelope(&envelope).unwrap();
+        assert_eq!(event.kind, ChangeKind::Insert);
+        let user: agon_core::dao::records::UserRecord = event
+            .new_record()
+            .expect("new image parses into UserRecord");
+        assert_eq!(user.id, "u1");
+        assert_eq!(user.name, "Test User");
     }
 }

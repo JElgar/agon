@@ -1,10 +1,13 @@
 //! Worker error type.
 //!
-//! A handler returning `Err` means the SQS message is **not** deleted, so SQS
+//! Any handler returning `Err` means the SQS message is **not** deleted, so SQS
 //! redelivers it (at-least-once; see docs/async-design.md §3). Handlers must
-//! therefore be idempotent. A message whose body can't even be parsed is a
-//! permanent poison message: we log and drop it (delete) rather than loop
-//! forever — the DLQ redrive policy is the backstop for repeated failures.
+//! therefore be idempotent. This applies to *both* transient and "permanent"
+//! (unparseable) failures: a permanently-bad message is retried up to the
+//! queue's `maxReceiveCount` and then moved to the DLQ by SQS, rather than being
+//! deleted. `is_permanent` only affects log severity/wording now — we never drop
+//! a message ourselves, because a mass-misclassification (e.g. a parse bug) would
+//! otherwise silently destroy every event instead of parking them in the DLQ.
 
 use agon_core::dao::error::DaoError;
 use agon_core::dao::keys::KeyError;

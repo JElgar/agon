@@ -247,6 +247,10 @@ async fn create_and_get_match() {
         .expect("get match");
     assert_eq!(fetched.id, created.id);
     assert_eq!(fetched.match_type, models::MatchType::Tennis);
+    // Sides must survive the round-trip through get_match (a DAO query-bound bug
+    // once dropped them, which broke score validation — guard against regressing).
+    assert_eq!(fetched.sides.len(), 2, "get_match returns both sides");
+    assert_eq!(fetched.players.len(), 1, "get_match returns the invited player");
 }
 
 #[tokio::test]
@@ -511,25 +515,585 @@ async fn notifications_endpoints_respond() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn search_users_returns_ok() {
-    let (config, _user) = new_user().await;
-    // We don't assert on content: indexing is async (the worker populates
-    // Meilisearch off the stream), so a just-created user may not be indexed
-    // yet. We assert the endpoint is wired and returns a well-formed list.
-    let results = users_search_get(&config, "Test")
-        .await
-        .expect("search users");
-    let _ = results.len();
-}
-
-#[tokio::test]
 async fn feed_returns_ok() {
     let (config, _user) = new_user().await;
     let page = feed_get(&config, None, None, None, None)
         .await
         .expect("get feed");
-    // Feed fan-out is async / not yet fully implemented; just assert shape.
+    // Feed fan-out is delegated to Temporal, which is not enabled in the deployed
+    // build, so we can't assert feed content yet — only that the endpoint is
+    // wired and returns a well-formed page. (Promote to an `eventually` content
+    // assertion once fan-out ships.)
     let _ = page.items.len();
+}
+
+// ---------------------------------------------------------------------------
+// Async pipeline (eventual consistency) — exercises the real stream -> SQS ->
+// worker path. These assert effects that land *after* the synchronous write.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_created_user_becomes_searchable() {
+    // Give the user a unique, searchable name so the query can't match anyone
+    // else in a shared staging environment.
+    let subject = Uuid::new_v4().to_string();
+    let config = config_for(&subject);
+    let unique = format!("Zephyrine{}", subject.replace('-', ""));
+    let user = users_post(
+        &config,
+        models::CreateUserInput {
+            email: format!("{subject}@example.com"),
+            name: unique.clone(),
+        },
+    )
+    .await
+    .expect("create user");
+
+    // The worker indexes the user into Meilisearch off the DynamoDB stream —
+    // eventually. Poll until the search finds them by their unique name.
+    let found = eventually("created user to be searchable", || {
+        let config = &config;
+        let unique = &unique;
+        let target = &user.profile.id;
+        async move {
+            let results = users_search_get(config, unique).await.ok()?;
+            results.into_iter().find(|u| &u.id == target)
+        }
+    })
+    .await;
+    assert_eq!(found.id, user.profile.id);
+}
+
+#[tokio::test]
+async fn following_a_user_eventually_notifies_them() {
+    let (follower_config, follower) = new_user().await;
+    let (followee_config, followee) = new_user().await;
+
+    users_user_id_follow_post(&follower_config, &followee.profile.id)
+        .await
+        .expect("follow");
+
+    // The worker generates a Follow notification for the followee off the stream.
+    // Poll the followee's notifications until it appears, with the follower as
+    // the actor.
+    let notif = eventually("follow notification to be generated", || {
+        let config = &followee_config;
+        let follower_id = &follower.profile.id;
+        async move {
+            let page = notifications_get(config, None, None).await.ok()?;
+            page.items.into_iter().find(|n| match &*n.kind {
+                models::NotificationKind::Follow(f) => &f.follower.id == follower_id,
+                _ => false,
+            })
+        }
+    })
+    .await;
+    assert!(!notif.is_read, "a fresh notification is unread");
+
+    // And the unread badge count reflects it.
+    let unread = notifications_unread_count_get(&followee_config)
+        .await
+        .expect("unread count");
+    assert!(unread.unread_count >= 1);
+}
+
+// ---------------------------------------------------------------------------
+// Match scoring (PATCH a score -> completes match + records a submission)
+// ---------------------------------------------------------------------------
+
+/// A simple score for the two default sides ("a"/"b" client ids map to real
+/// side ids on the created match, so we read them off the created match).
+fn simple_score(side_a: &str, side_b: &str, a: i32, b: i32) -> models::Score {
+    models::Score::Simple(Box::new(models::ScoreSimpleScore {
+        entries: vec![
+            models::SimpleScoreEntry {
+                side_id: side_a.to_string(),
+                points: a,
+            },
+            models::SimpleScoreEntry {
+                side_id: side_b.to_string(),
+                points: b,
+            },
+        ],
+        r#type: Default::default(),
+    }))
+}
+
+#[tokio::test]
+async fn scoring_a_match_completes_it_and_records_a_submission() {
+    let (config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    assert!(matches!(created.status, models::MatchStatus::Scheduled));
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+
+    // PATCH a score: this both completes the match and records a submission.
+    let updated = matches_match_id_patch(
+        &config,
+        &created.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 3))),
+            winner_side_id: Some(side_a.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("patch score");
+    assert!(matches!(updated.status, models::MatchStatus::Completed));
+    assert!(updated.confirmed_score.is_some());
+
+    // The submission is visible in the match's submission history.
+    let submissions = matches_match_id_score_submissions_get(&config, &created.id)
+        .await
+        .expect("list submissions");
+    assert!(!submissions.is_empty(), "a submission was recorded");
+}
+
+// ---------------------------------------------------------------------------
+// Match discovery (GET /matches) — filter smoke test
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn list_matches_accepts_filters() {
+    let (config, _user) = new_user().await;
+    // Discovery is served by the search index (async-populated), so we don't
+    // assert content — just that the endpoint accepts the full filter set and
+    // returns a well-formed page.
+    let page = matches_get(
+        &config,
+        Some("test"),
+        None,
+        Some(models::MatchType::Tennis),
+        Some("2026-01-01T00:00:00Z".to_string()),
+        Some("2026-12-31T00:00:00Z".to_string()),
+        None,
+        Some(10),
+    )
+    .await
+    .expect("list matches");
+    let _ = page.items.len();
+}
+
+#[tokio::test]
+async fn list_matches_rejects_inverted_date_range() {
+    let (config, _user) = new_user().await;
+    // `from` after `to` is a 400 with a specific message.
+    let response = matches_get(
+        &config,
+        None,
+        None,
+        None,
+        Some("2026-12-31T00:00:00Z".to_string()),
+        Some("2026-01-01T00:00:00Z".to_string()),
+        None,
+        None,
+    )
+    .await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::BAD_REQUEST,
+        "`from` must be before `to`",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Validation errors (assert the specific rejection message, not just status)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn creating_a_match_with_one_side_is_rejected() {
+    let (config, _user) = new_user().await;
+    let mut input = create_match_input("irrelevant");
+    input.sides.truncate(1); // only one side
+    input.invites.clear();
+    let response = matches_post(&config, input).await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::BAD_REQUEST,
+        "at least two sides",
+    );
+}
+
+#[tokio::test]
+async fn scoring_an_unknown_side_is_rejected() {
+    let (config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let match_ = matches_post(&config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let real_side = match_.sides[0].id.clone();
+
+    // One real side, one bogus side id.
+    let response = matches_match_id_patch(
+        &config,
+        &match_.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(simple_score(&real_side, "not-a-real-side", 6, 3))),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::BAD_REQUEST,
+        "not part of this match",
+    );
+}
+
+#[tokio::test]
+async fn empty_comment_text_is_rejected() {
+    let (config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let match_ = matches_post(&config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    let response = matches_match_id_comments_post(
+        &config,
+        &match_.id,
+        models::CreateCommentInput {
+            text: "   ".to_string(), // whitespace only
+            parent_id: None,
+        },
+    )
+    .await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::BAD_REQUEST,
+        "must not be empty",
+    );
+}
+
+#[tokio::test]
+async fn replying_to_a_reply_is_rejected() {
+    let (config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let match_ = matches_post(&config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    let parent = matches_match_id_comments_post(
+        &config,
+        &match_.id,
+        models::CreateCommentInput {
+            text: "parent".to_string(),
+            parent_id: None,
+        },
+    )
+    .await
+    .expect("parent");
+    let reply = matches_match_id_comments_post(
+        &config,
+        &match_.id,
+        models::CreateCommentInput {
+            text: "reply".to_string(),
+            parent_id: Some(parent.id.clone()),
+        },
+    )
+    .await
+    .expect("reply");
+
+    // Replying to the reply (a second-level reply) is rejected.
+    let response = matches_match_id_comments_post(
+        &config,
+        &match_.id,
+        models::CreateCommentInput {
+            text: "nested".to_string(),
+            parent_id: Some(reply.id.clone()),
+        },
+    )
+    .await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::BAD_REQUEST,
+        "cannot reply to a reply",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Comment replies & like listing
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn replies_are_listed_under_their_parent() {
+    let (config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let match_ = matches_post(&config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    let parent = matches_match_id_comments_post(
+        &config,
+        &match_.id,
+        models::CreateCommentInput {
+            text: "parent".to_string(),
+            parent_id: None,
+        },
+    )
+    .await
+    .expect("parent comment");
+
+    matches_match_id_comments_post(
+        &config,
+        &match_.id,
+        models::CreateCommentInput {
+            text: "reply".to_string(),
+            parent_id: Some(parent.id.clone()),
+        },
+    )
+    .await
+    .expect("reply");
+
+    let replies = matches_match_id_comments_comment_id_replies_get(
+        &config, &match_.id, &parent.id, None, None,
+    )
+    .await
+    .expect("list replies");
+    assert!(replies.items.iter().any(|c| c.text.as_deref() == Some("reply")));
+}
+
+#[tokio::test]
+async fn a_matchs_likers_are_listed() {
+    let (config, liker) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let match_ = matches_post(&config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    matches_match_id_likes_post(&config, &match_.id)
+        .await
+        .expect("like");
+
+    let likers = matches_match_id_likes_get(&config, &match_.id, None, None)
+        .await
+        .expect("list likers");
+    assert!(likers.items.iter().any(|u| u.id == liker.profile.id));
+}
+
+// ---------------------------------------------------------------------------
+// Follow listing
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn following_list_includes_followed_user() {
+    let (follower_config, follower) = new_user().await;
+    let (_followee_config, followee) = new_user().await;
+
+    users_user_id_follow_post(&follower_config, &followee.profile.id)
+        .await
+        .expect("follow");
+
+    let following =
+        users_user_id_following_get(&follower_config, &follower.profile.id, None, None)
+            .await
+            .expect("following list");
+    assert!(following.items.iter().any(|u| u.id == followee.profile.id));
+}
+
+#[tokio::test]
+async fn team_followers_list_includes_the_follower() {
+    let (owner_config, _owner) = new_user().await;
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Followed Team".to_string(),
+        },
+    )
+    .await
+    .expect("create team");
+
+    let (follower_config, follower) = new_user().await;
+    teams_team_id_follow_post(&follower_config, &team.id)
+        .await
+        .expect("follow team");
+
+    let followers = teams_team_id_followers_get(&owner_config, &team.id, None, None)
+        .await
+        .expect("team followers");
+    assert!(followers.items.iter().any(|u| u.id == follower.profile.id));
+}
+
+// ---------------------------------------------------------------------------
+// Team update
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn patch_team_updates_name() {
+    let (config, _user) = new_user().await;
+    let team = teams_post(
+        &config,
+        models::CreateTeamInput {
+            name: "Before".to_string(),
+        },
+    )
+    .await
+    .expect("create team");
+
+    let updated = teams_team_id_patch(
+        &config,
+        &team.id,
+        models::UpdateTeamInput {
+            name: Some("After".to_string()),
+        },
+    )
+    .await
+    .expect("patch team");
+    assert_eq!(updated.name, "After");
+}
+
+// ---------------------------------------------------------------------------
+// Invitations: fetch, decline, revoke
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn invitation_can_be_fetched_and_declined() {
+    let (owner_config, _owner) = new_user().await;
+    let (invitee_config, invitee) = new_user().await;
+    let match_ = matches_post(&owner_config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    let inbox = users_me_invitations_get(&invitee_config, None, None, None)
+        .await
+        .expect("inbox");
+    let detail = inbox
+        .items
+        .iter()
+        .find(|i| matches!(&*i.context, models::InvitationContext::Match(ctx) if ctx.match_id == match_.id))
+        .expect("invitation in inbox");
+    let invitation_id = detail.invitation.id.clone();
+
+    // Fetchable by id.
+    let fetched = invitations_invitation_id_get(&invitee_config, &invitation_id)
+        .await
+        .expect("get invitation");
+    assert_eq!(fetched.invitation.id, invitation_id);
+
+    // Decline it.
+    let responded = invitations_invitation_id_respond_post(
+        &invitee_config,
+        &invitation_id,
+        models::RespondToInvitationInput {
+            response: models::InvitationResponse::Declined,
+            side_id: None,
+        },
+    )
+    .await
+    .expect("decline");
+    assert!(matches!(responded.status, models::InvitationStatus::Declined));
+}
+
+#[tokio::test]
+async fn inviter_can_revoke_an_invitation() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let match_ = matches_post(&owner_config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    // Add a fresh invitation via the match-invitations endpoint so we own it.
+    let created = matches_match_id_invitations_post(
+        &owner_config,
+        &match_.id,
+        models::AddInvitationsInput {
+            invited_user_ids: vec![invitee.profile.id.clone()],
+            invited_external_names: vec![],
+            side_id: None,
+        },
+    )
+    .await
+    .expect("add invitation");
+    let inv_id = created.first().expect("one invitation").id.clone();
+
+    invitations_invitation_id_delete(&owner_config, &inv_id)
+        .await
+        .expect("revoke");
+
+    // Now gone.
+    let response = invitations_invitation_id_get(&owner_config, &inv_id).await;
+    assert_not_found(response);
+}
+
+// ---------------------------------------------------------------------------
+// Notifications: single mark-read
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn marking_a_single_notification_read_is_accepted() {
+    let (config, _user) = new_user().await;
+    // No notification necessarily exists (generation is async), but the endpoint
+    // is idempotent and must accept an arbitrary id without erroring.
+    notifications_notification_id_read_post(&config, "any-id")
+        .await
+        .expect("mark single read");
+}
+
+// ---------------------------------------------------------------------------
+// Error paths
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn creating_a_user_with_a_duplicate_email_is_rejected() {
+    let (_config, user) = new_user().await;
+    // A second, distinct caller trying to claim the same email.
+    let (other_config, _other) = new_user().await;
+    let response = users_post(
+        &other_config,
+        models::CreateUserInput {
+            email: user.email.clone(),
+            name: "Dupe".to_string(),
+        },
+    )
+    .await;
+    // Email uniqueness is guarded. The API surfaces DAO conflicts as a 400
+    // ValidationError (its consistent convention — there are no 409s), rather
+    // than 409 Conflict.
+    assert_bad_request(response);
+}
+
+#[tokio::test]
+async fn non_author_cannot_edit_a_comment() {
+    let (author_config, _author) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let match_ = matches_post(&author_config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    let comment = matches_match_id_comments_post(
+        &author_config,
+        &match_.id,
+        models::CreateCommentInput {
+            text: "mine".to_string(),
+            parent_id: None,
+        },
+    )
+    .await
+    .expect("create comment");
+
+    // A different user tries to edit it -> 403 Forbidden.
+    let (other_config, _other) = new_user().await;
+    let response = matches_match_id_comments_comment_id_patch(
+        &other_config,
+        &match_.id,
+        &comment.id,
+        models::UpdateCommentInput {
+            text: "hijacked".to_string(),
+        },
+    )
+    .await;
+    assert!(response.is_err());
+    let err = response.unwrap_err();
+    assert!(matches!(
+        err,
+        openapi::apis::Error::ResponseError(openapi::apis::ResponseContent {
+            status: reqwest::StatusCode::FORBIDDEN,
+            ..
+        })
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -541,15 +1105,83 @@ async fn get_missing_match_returns_not_found() {
     let (config, _user) = new_user().await;
 
     let response = matches_match_id_get(&config, "does-not-exist").await;
-    assert!(response.is_err());
-    let err = response.unwrap_err();
-    assert!(matches!(
-        err,
-        openapi::apis::Error::ResponseError(openapi::apis::ResponseContent {
-            status: reqwest::StatusCode::NOT_FOUND,
-            ..
-        })
-    ));
+    assert_not_found(response);
+}
+
+// ---------------------------------------------------------------------------
+// Response-status assertion helpers
+// ---------------------------------------------------------------------------
+
+/// Assert a client call failed with a specific HTTP status.
+fn assert_status<T, E: std::fmt::Debug>(
+    response: Result<T, openapi::apis::Error<E>>,
+    expected: reqwest::StatusCode,
+) {
+    match response {
+        Ok(_) => panic!("expected {expected}, got success"),
+        Err(openapi::apis::Error::ResponseError(rc)) => {
+            assert_eq!(rc.status, expected, "unexpected status");
+        }
+        Err(e) => panic!("expected {expected} response error, got: {e:?}"),
+    }
+}
+
+/// Assert a client call failed with a status AND that the response body contains
+/// `expected_content` (the human-readable validation message). Verifies we get
+/// the *specific* rejection we expect, not just any error of that status.
+fn assert_status_with_content<T, E: std::fmt::Debug>(
+    response: Result<T, openapi::apis::Error<E>>,
+    expected: reqwest::StatusCode,
+    expected_content: &str,
+) {
+    match response {
+        Ok(_) => panic!("expected {expected} ({expected_content}), got success"),
+        Err(openapi::apis::Error::ResponseError(rc)) => {
+            assert_eq!(rc.status, expected, "unexpected status");
+            assert!(
+                rc.content.contains(expected_content),
+                "expected body to contain {expected_content:?}, got: {:?}",
+                rc.content
+            );
+        }
+        Err(e) => panic!("expected {expected} response error, got: {e:?}"),
+    }
+}
+
+fn assert_not_found<T, E: std::fmt::Debug>(response: Result<T, openapi::apis::Error<E>>) {
+    assert_status(response, reqwest::StatusCode::NOT_FOUND);
+}
+
+fn assert_bad_request<T, E: std::fmt::Debug>(response: Result<T, openapi::apis::Error<E>>) {
+    assert_status(response, reqwest::StatusCode::BAD_REQUEST);
+}
+
+// ---------------------------------------------------------------------------
+// Async eventual-consistency helper
+// ---------------------------------------------------------------------------
+
+/// Poll `f` until it returns `Some(v)` or the timeout elapses, then return `v`.
+/// For async pipeline effects (search indexing, notification generation) that
+/// are eventually consistent: the write commits synchronously, but the stream →
+/// SQS → worker → Meilisearch/notification path lands afterwards.
+async fn eventually<T, F, Fut>(what: &str, f: F) -> T
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Option<T>>,
+{
+    // ~20s total: async fan-out via SQS long-poll + worker processing can take a
+    // few seconds; generous so CI isn't flaky, bounded so a broken pipeline fails
+    // rather than hangs.
+    const ATTEMPTS: u32 = 20;
+    for attempt in 1..=ATTEMPTS {
+        if let Some(v) = f().await {
+            return v;
+        }
+        if attempt < ATTEMPTS {
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        }
+    }
+    panic!("timed out after {ATTEMPTS}s waiting for: {what}");
 }
 
 // ---------------------------------------------------------------------------

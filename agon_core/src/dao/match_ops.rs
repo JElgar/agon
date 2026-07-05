@@ -7,7 +7,7 @@ use aws_sdk_dynamodb::types::{AttributeValue, Put, TransactWriteItem};
 
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
-use super::item::{ATTR_PK, ItemBuilder, from_item, item_sk, s, to_item};
+use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::{
     ConfirmedScoreRecord, MatchDetailedScoreRecord, MatchPlayerRecord, MatchRecord,
@@ -89,50 +89,91 @@ impl Dao {
         }
     }
 
-    /// Fetch the match aggregate (meta + sides + players) in one partition query.
-    /// `None` if the meta item is absent. Likes/comments/detailed-score are
-    /// deliberately not loaded here — fetch via their own paginated ops.
+    /// Fetch the match aggregate (meta + sides + players). `None` if the meta
+    /// item is absent. Likes/comments/submissions/detailed-score are deliberately
+    /// not loaded here — fetch via their own paginated ops.
+    ///
+    /// Reads are **scoped per collection** rather than scanning the whole match
+    /// partition: a `GetItem` for meta, then `begins_with(SK, "SIDE#")` and
+    /// `begins_with(SK, "PLAYER#")` queries. This reads only the handful of
+    /// side/player items — not the potentially large COMMENT#/LIKE#/SCORESUB#
+    /// ranges — and, crucially, avoids the 1 MB single-Query-page trap: because
+    /// `SIDE#` sorts last in the partition (`#META < COMMENT# < DETAIL# < LIKE# <
+    /// PLAYER# < SCORESUB# < SIDE#`), a whole-partition query on a match with
+    /// many comments could push sides onto an unread second page and silently
+    /// drop them. Scoped queries can't (BatchGetItem isn't an option — side and
+    /// player ids aren't known ahead of the read).
     pub async fn get_match(&self, match_id: &str) -> DaoResult<Option<MatchAggregate>> {
-        // Read the whole match partition and pick out the meta/side/player items.
-        //
-        // Note: we deliberately do NOT use a `SK < "SCORESUB#"` range bound to
-        // skip the large LIKE#/COMMENT# ranges — the SK prefixes don't partition
-        // cleanly by that boundary. Lexical order is:
-        //   #META < COMMENT# < DETAIL# < LIKE# < PLAYER# < SCORESUB# < SIDE#
-        // so `SIDE#` sorts *after* `SCORESUB#`; any upper bound that excludes
-        // score submissions also excludes the sides we need (that bug returned an
-        // aggregate with no sides, which broke score validation). Filtering by SK
-        // type in the loop below is correct regardless of ordering.
-        let out = self
+        let pk = Pk::Match(match_id.into());
+
+        // Meta first: if the match doesn't exist, skip the side/player reads.
+        let meta_out = self
             .client
-            .query()
+            .get_item()
             .table_name(self.table())
-            .key_condition_expression("#pk = :pk")
-            .expression_attribute_names("#pk", ATTR_PK)
-            .expression_attribute_values(":pk", s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_PK, s(pk.to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
             .send()
             .await
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        let Some(meta_item) = meta_out.item else {
+            return Ok(None);
+        };
+        let match_: MatchRecord = from_item(meta_item)?;
 
-        let mut meta: Option<MatchRecord> = None;
-        let mut sides: Vec<MatchSideRecord> = Vec::new();
-        let mut players: Vec<MatchPlayerRecord> = Vec::new();
+        // TODO(perf): these three reads (meta GetItem above + sides + players)
+        // are independent and currently run sequentially. Parallelize the
+        // sides/players queries once agon_core takes a futures/tokio dep
+        // (`try_join!`) — deferred to avoid adding the dependency just for this.
+        let sides: Vec<MatchSideRecord> = self
+            .query_match_collection(match_id, Sk::Side(String::new()).prefix())
+            .await?;
+        let players: Vec<MatchPlayerRecord> = self
+            .query_match_collection(match_id, Sk::Player(String::new()).prefix())
+            .await?;
 
-        for item in out.items.unwrap_or_default() {
-            match item_sk(&item)? {
-                Sk::Meta => meta = Some(from_item(item)?),
-                Sk::Side(_) => sides.push(from_item(item)?),
-                Sk::Player(_) => players.push(from_item(item)?),
-                // DETAIL#, LIKE#, COMMENT#, SCORESUB# etc. — not part of this aggregate.
-                _ => {}
-            }
-        }
-
-        Ok(meta.map(|match_| MatchAggregate {
+        Ok(Some(MatchAggregate {
             match_,
             sides,
             players,
         }))
+    }
+
+    /// Read every item in a match's partition whose SK starts with `sk_prefix`
+    /// (e.g. `SIDE#`, `PLAYER#`), draining all query pages so a large collection
+    /// is never truncated at the 1 MB page limit. Deserializes each into `T`.
+    async fn query_match_collection<T: serde::de::DeserializeOwned>(
+        &self,
+        match_id: &str,
+        sk_prefix: &str,
+    ) -> DaoResult<Vec<T>> {
+        let pk = Pk::Match(match_id.into()).to_string();
+        let mut items = Vec::new();
+        let mut start_key = None;
+        loop {
+            let out = self
+                .client
+                .query()
+                .table_name(self.table())
+                .key_condition_expression("#pk = :pk AND begins_with(SK, :sk)")
+                .expression_attribute_names("#pk", ATTR_PK)
+                .expression_attribute_values(":pk", s(pk.clone()))
+                .expression_attribute_values(":sk", s(sk_prefix))
+                .set_exclusive_start_key(start_key)
+                .send()
+                .await
+                .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+            for item in out.items.unwrap_or_default() {
+                items.push(from_item(item)?);
+            }
+
+            match out.last_evaluated_key {
+                Some(k) => start_key = Some(k),
+                None => break,
+            }
+        }
+        Ok(items)
     }
 
     /// Update a match's mutable meta fields. Any `Some` field is written; `name`,

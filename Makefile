@@ -22,7 +22,7 @@ build:
 	cargo build
 
 test:
-	cargo test -p agon_tests
+	cargo test --manifest-path agon_tests/Cargo.toml
 
 run:
 	cargo run -p agon_service -- run-server abc.com

@@ -1,5 +1,9 @@
 [workspace]
 resolver = "2"
 
-members = ["agon_core", "agon_service", "agon_worker", "agon_tests", "openapi_client"]
-default-members = ["agon_core", "agon_service", "agon_worker", "agon_tests"]
+# Only the shippable crates. `agon_tests` and the generated (gitignored)
+# `openapi_client` form their own workspace (see agon_tests/Cargo.toml) so a
+# clean checkout / Docker build of the service or worker never references the
+# generated client, which isn't present until `make generate-schema` runs them.
+members = ["agon_core", "agon_service", "agon_worker"]
+exclude = ["agon_tests", "openapi_client"]

@@ -1,3 +1,11 @@
+# Own workspace, separate from the shippable root workspace, so a clean checkout
+# / Docker build of the service or worker never references the generated
+# (gitignored) openapi_client. This is a single-package workspace; openapi_client
+# is pulled in as an external path dependency (below), which does NOT require it
+# to be a workspace member. Run tests via
+# `cargo test --manifest-path agon_tests/Cargo.toml`.
+[workspace]
+
 [package]
 name = "agon_tests"
 version = "0.1.0"

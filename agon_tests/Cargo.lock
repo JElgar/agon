@@ -21,7 +21,6 @@ checksum = "512761e0bb2578dd7380c6baaa0f4ce03e84f95e960231d1dec8bf4d7d6e2627"
 name = "agon_tests"
 version = "0.1.0"
 dependencies = [
- "dotenv",
  "futures",
  "jsonwebtoken",
  "openapi",
@@ -29,6 +28,7 @@ dependencies = [
  "reqwest",
  "serde",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -156,12 +156,6 @@ dependencies = [
  "quote",
  "syn",
 ]
-
-[[package]]
-name = "dotenv"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77c90badedccf4105eca100756a0b1289e191f6fcbdadd3cee1d2f614f97da8f"
 
 [[package]]
 name = "dyn-clone"
@@ -1736,6 +1730,9 @@ name = "uuid"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "458f7a779bf54acc9f347480ac654f68407d3aab21269a6e3c9f922acd9e2da9"
+dependencies = [
+ "getrandom 0.3.2",
+]
 
 [[package]]
 name = "vcpkg"

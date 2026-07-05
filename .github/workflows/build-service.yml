@@ -47,5 +47,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
+      # The Temporal SDK's transitive deps (prost-wkt-types) compile protobuf at
+      # build time and need the `protoc` compiler on the runner.
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - run: protoc --version
       - run: cargo check -p agon_worker --features temporal
 

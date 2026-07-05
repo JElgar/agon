@@ -22,7 +22,7 @@ jobs:
         uses: ./.github/actions/setup
 
       - name: Run tests
-        run: cargo test -p agon_tests
+        run: cargo test --manifest-path agon_tests/Cargo.toml
         env:
           JWT_SECRET: ${{ secrets.jwt-secret }}
           AGON_SERVICE_URL: ${{ inputs.agon-service-url }}

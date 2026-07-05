@@ -8,8 +8,6 @@ FROM rust:1.85 as builder
 
 WORKDIR /app
 
-# The whole workspace is needed: cargo parses every member listed in the root
-# Cargo.toml even when building a single package with -p.
 COPY . .
 
 RUN cargo build --release -p agon_service

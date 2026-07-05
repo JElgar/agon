@@ -11,7 +11,7 @@ pub use football::FootballDetail;
 /// match detail view, not the feed. New sports are added as new variants
 /// without breaking existing clients.
 #[derive(Union)]
-#[oai(discriminator_name = "type")]
+#[oai(one_of, discriminator_name = "type")]
 pub enum DetailedScore {
     Football(FootballDetail),
     Cricket(CricketDetail),

@@ -277,7 +277,7 @@ struct MatchPlayer {
 /// explicitly; clients switch on `type` to pick a renderer. Add new variants
 /// (e.g. cricket, golf) without breaking existing clients.
 #[derive(Union)]
-#[oai(discriminator_name = "type")]
+#[oai(one_of, discriminator_name = "type")]
 enum Score {
     /// Single number per side: football, basketball, rugby.
     Simple(SimpleScore),
@@ -613,7 +613,7 @@ struct UpdateMatchInput {
 /// A single entry in the feed. Modelled as a union so new item types
 /// (member joined, achievements, etc.) can be added without breaking clients.
 #[derive(Union)]
-#[oai(discriminator_name = "type")]
+#[oai(one_of, discriminator_name = "type")]
 enum FeedItem {
     Match(Match),
 }
@@ -2025,23 +2025,30 @@ impl Api {
     #[oai(path = "/matches/:match_id/likes", method = "post")]
     async fn like_match(
         &self,
-        AuthSchema(_jwt_data): AuthSchema,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
         Path(match_id): Path<String>,
     ) -> Result<LikeResponse> {
         info!("Liking match {match_id}");
-        // TODO: create the like edge (caller -> match); idempotent. 404 if the
-        // match doesn't exist.
+        // Idempotent create of the caller -> match like edge (bumps like_count).
+        dao.like_match(&match_id, &jwt_data.sub, &now_iso())
+            .await
+            .map_err(dao_internal)?;
         Ok(LikeResponse::Ok)
     }
 
     #[oai(path = "/matches/:match_id/likes", method = "delete")]
     async fn unlike_match(
         &self,
-        AuthSchema(_jwt_data): AuthSchema,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
         Path(match_id): Path<String>,
     ) -> Result<LikeResponse> {
         info!("Unliking match {match_id}");
-        // TODO: remove the like edge (caller -> match); idempotent.
+        // Idempotent removal of the caller -> match like edge.
+        dao.unlike_match(&match_id, &jwt_data.sub)
+            .await
+            .map_err(dao_internal)?;
         Ok(LikeResponse::Ok)
     }
 
@@ -2397,16 +2404,22 @@ impl Api {
     async fn get_team(
         &self,
         Data(dao): Data<&dao::Dao>,
-        AuthSchema(_jwt_data): AuthSchema,
+        AuthSchema(jwt_data): AuthSchema,
         Path(team_id): Path<String>,
     ) -> Result<GetTeamResponse> {
         info!("Getting team {team_id}");
         match dao.get_team(&team_id).await.map_err(dao_internal)? {
-            Some(agg) => Ok(GetTeamResponse::Team(Json(team_from_records(
-                &agg.team,
-                &agg.members,
-                false,
-            )))),
+            Some(agg) => {
+                let is_followed_by_me = dao
+                    .is_following_team(&jwt_data.sub, &team_id)
+                    .await
+                    .map_err(dao_internal)?;
+                Ok(GetTeamResponse::Team(Json(team_from_records(
+                    &agg.team,
+                    &agg.members,
+                    is_followed_by_me,
+                ))))
+            }
             None => Ok(GetTeamResponse::NotFound(PlainText(
                 "team not found".into(),
             ))),

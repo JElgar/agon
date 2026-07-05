@@ -150,6 +150,22 @@ impl Dao {
         Ok(out.item.is_some())
     }
 
+    /// Whether `follower_id` follows the team `team_id`. Existence check on the
+    /// `TEAM#<team>` / `FOLLOWER#<follower>` edge.
+    pub async fn is_following_team(&self, follower_id: &str, team_id: &str) -> DaoResult<bool> {
+        let out = self
+            .client
+            .get_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Team(team_id.into()).to_string()))
+            .key("SK", s(Sk::Follower(follower_id.into()).to_string()))
+            .projection_expression(ATTR_PK) // existence check only
+            .send()
+            .await
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        Ok(out.item.is_some())
+    }
+
     /// List a user's followers (the edge records), cursor-paginated.
     pub async fn list_user_followers(
         &self,

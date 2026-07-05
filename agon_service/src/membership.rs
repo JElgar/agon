@@ -9,7 +9,7 @@ use poem_openapi::{Enum, Object, Union};
 /// keeping the same `id`, so anything referencing it (e.g. match score events)
 /// stays valid.
 #[derive(Union)]
-#[oai(discriminator_name = "type")]
+#[oai(one_of, discriminator_name = "type")]
 pub enum Member {
     User(UserMember),
     External(ExternalMember),
@@ -55,7 +55,7 @@ pub struct Invitation {
 
 /// How an invitation is authorised on acceptance.
 #[derive(Union)]
-#[oai(discriminator_name = "type")]
+#[oai(one_of, discriminator_name = "type")]
 pub enum InvitationKind {
     /// Targets a known Agon user. Accepted by that user (the accepting request's
     /// user id must match `invited_user_id`); no secret needed.
@@ -95,7 +95,7 @@ pub struct InvitationDetail {
 }
 
 #[derive(Union)]
-#[oai(discriminator_name = "type")]
+#[oai(one_of, discriminator_name = "type")]
 pub enum InvitationContext {
     Match(InvitationMatchContext),
     Team(InvitationTeamContext),

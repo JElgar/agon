@@ -24,7 +24,7 @@ pub struct Notification {
 /// without extra fetches. Display hints are snapshots; live state is read from
 /// the referenced entity.
 #[derive(Union)]
-#[oai(discriminator_name = "type")]
+#[oai(one_of, discriminator_name = "type")]
 pub enum NotificationKind {
     /// You were invited to / tagged in a match. Confirm/Decline act on the
     /// referenced invitation.

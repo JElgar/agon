@@ -460,8 +460,7 @@ async fn match_invitation_appears_in_inbox_and_can_be_accepted() {
         .iter()
         .find(|i| {
             matches!(&*i.context,
-            models::InvitationContext::InvitationContextInvitationMatchContext { match_id, .. }
-                if *match_id == match_.id)
+            models::InvitationContext::Match(ctx) if ctx.match_id == match_.id)
         })
         .expect("match invitation in inbox");
 
@@ -557,15 +556,15 @@ async fn get_missing_match_returns_not_found() {
 // Local helpers
 // ---------------------------------------------------------------------------
 
-/// The linked user id + stable membership id of each team member.
+/// The (linked user id, stable membership id) of each team member that is a
+/// linked Agon user. External (unlinked) members have no user id, so they're
+/// omitted.
 fn member_user_and_membership_ids(team: &models::Team) -> Vec<(String, String)> {
     team.members
         .iter()
-        .map(|m| match &*m.member {
-            models::Member::MemberUserMember { id, user_id, .. }
-            | models::Member::MemberExternalMember { id, user_id, .. } => {
-                (user_id.clone(), id.clone())
-            }
+        .filter_map(|m| match &*m.member {
+            models::Member::User(u) => Some((u.user_id.clone(), u.id.clone())),
+            models::Member::External(_) => None,
         })
         .collect()
 }

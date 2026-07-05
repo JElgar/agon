@@ -7,3 +7,4 @@
 pub mod dao;
 pub mod error;
 pub mod search;
+pub mod telemetry;

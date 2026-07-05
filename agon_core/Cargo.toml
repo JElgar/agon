@@ -17,3 +17,14 @@ aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-dynamodb = "1"
 serde_dynamo = { version = "4", features = ["aws-sdk-dynamodb+1"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Observability: OTLP export of logs, traces and metrics. `telemetry::init`
+# wires the `tracing` ecosystem to an OTLP collector (Grafana Alloy in prod);
+# both binaries call it at startup. See docs/observability.md.
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["json", "env-filter"] }
+tracing-opentelemetry = "0.33"
+opentelemetry = "0.32"
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "trace", "metrics", "logs"] }
+opentelemetry-appender-tracing = "0.32"

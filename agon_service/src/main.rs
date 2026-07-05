@@ -73,6 +73,13 @@ struct JwtClaims {
     iss: Option<String>,
     aud: Option<String>,
     role: Option<String>,
+    /// The authenticated email, from the identity provider. This is the trusted
+    /// source of a user's email — it is NOT taken from request bodies (which the
+    /// caller controls and could spoof). Top-level `email` is where Supabase and
+    /// most IdPs put it; if a future provider nests it elsewhere, map it here.
+    /// Optional so tokens without an email still authenticate for endpoints that
+    /// don't need it (only signup requires it).
+    email: Option<String>,
 }
 
 #[derive(SecurityScheme)]
@@ -146,7 +153,9 @@ struct User {
 
 #[derive(Object)]
 struct CreateUserInput {
-    email: String,
+    /// The user's display name. The email is NOT accepted here — it's taken from
+    /// the verified JWT (`email` claim), so a caller can't sign up as an
+    /// arbitrary/other email.
     name: String,
 }
 
@@ -157,9 +166,11 @@ struct CreateUserInput {
 /// unchanged.
 #[derive(Object)]
 struct UpdateUserInput {
-    email: Option<String>,
     name: Option<String>,
     profile_image_asset_id: Option<String>,
+    // Note: no `email` field. Email is owned by the identity provider (the JWT
+    // `email` claim), not user-editable through the API — accepting it here would
+    // be both a no-op (the DAO doesn't update email) and misleading.
 }
 
 #[derive(Object)]
@@ -1226,10 +1237,20 @@ impl Api {
     ) -> Result<CreateUserResponse> {
         info!("Creating user");
         let input = input.0;
-        // The user's id is their JWT subject (Supabase user id).
+        // Identity comes entirely from the verified JWT: `sub` is the id, `email`
+        // is the trusted email claim. We do NOT accept an email from the body —
+        // that would let any authenticated caller sign up as an arbitrary email.
+        let email = match jwt_data.email.clone() {
+            Some(email) => email,
+            None => {
+                return Ok(CreateUserResponse::ValidationError(PlainText(
+                    "authentication token has no email claim".into(),
+                )));
+            }
+        };
         let record = dao::records::UserRecord {
             id: jwt_data.sub.clone(),
-            email: input.email,
+            email,
             name: input.name,
             profile_image_url: None,
             follower_count: 0,
@@ -3785,10 +3806,14 @@ enum Commands {
         /// The subject (user id) to embed in the `sub` claim
         #[arg(default_value = "test-user")]
         sub: String,
+        /// The email to embed in the `email` claim (used by signup, which reads
+        /// the email from the token rather than the request body).
+        #[arg(long)]
+        email: Option<String>,
     },
 }
 
-fn log_request(uri: Uri, status: StatusCode) {
+fn log_request(uri: &Uri, status: StatusCode) {
     info!(
         path = uri.path(),
         status = status.as_u16(),
@@ -3796,26 +3821,79 @@ fn log_request(uri: Uri, status: StatusCode) {
     );
 }
 
-async fn log_middleware<E: Endpoint>(next: E, req: Request) -> Result<Response> {
-    let uri = req.uri().clone();
-    let res = next.call(req).await;
+/// Request metrics recorded on the global OTel meter (exported via OTLP; see
+/// agon_core::telemetry). Built once and reused so the instruments are stable.
+///
+/// Metric attributes are deliberately restricted to `http.request.method` and
+/// `http.response.status_code` — low, bounded cardinality. The concrete request
+/// path (which embeds IDs) is attached to the span instead, not the metrics, so
+/// we don't blow up the Prometheus series count.
+struct RequestMetrics {
+    /// Total requests handled, by method + status.
+    count: opentelemetry::metrics::Counter<u64>,
+    /// Request duration in seconds, by method + status.
+    duration: opentelemetry::metrics::Histogram<f64>,
+}
 
-    match res {
+impl RequestMetrics {
+    fn global() -> &'static RequestMetrics {
+        use std::sync::OnceLock;
+        static METRICS: OnceLock<RequestMetrics> = OnceLock::new();
+        METRICS.get_or_init(|| {
+            let meter = opentelemetry::global::meter("agon-service");
+            RequestMetrics {
+                count: meter
+                    .u64_counter("http.server.request.count")
+                    .with_description("Total HTTP requests handled")
+                    .build(),
+                duration: meter
+                    .f64_histogram("http.server.request.duration")
+                    .with_description("HTTP request duration")
+                    .with_unit("s")
+                    .build(),
+            }
+        })
+    }
+}
+
+async fn log_middleware<E: Endpoint>(next: E, req: Request) -> Result<Response> {
+    use opentelemetry::KeyValue;
+    use std::time::Instant;
+
+    let uri = req.uri().clone();
+    let method = req.method().to_string();
+    let start = Instant::now();
+
+    let (status, result) = match next.call(req).await {
         Ok(resp) => {
             let resp = resp.into_response();
-            log_request(uri, resp.status());
-            Ok(resp)
+            (resp.status(), Ok(resp))
         }
-        Err(err) => {
-            log_request(uri, err.status());
-            Err(err)
-        }
-    }
+        Err(err) => (err.status(), Err(err)),
+    };
+
+    log_request(&uri, status);
+
+    // Record request count + latency on the global meter. Attributes are kept to
+    // bounded-cardinality dimensions only (see RequestMetrics).
+    let attrs = [
+        KeyValue::new("http.request.method", method),
+        KeyValue::new("http.response.status_code", status.as_u16() as i64),
+    ];
+    let metrics = RequestMetrics::global();
+    metrics.count.add(1, &attrs);
+    metrics
+        .duration
+        .record(start.elapsed().as_secs_f64(), &attrs);
+
+    result
 }
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt().json().init();
+    // Held for the process lifetime; dropping it flushes the OTLP batch
+    // exporters on shutdown. See agon_core::telemetry.
+    let _telemetry = agon_core::telemetry::init("agon-service");
 
     let args = Cli::parse();
 
@@ -3869,7 +3947,7 @@ async fn main() {
                 .expect("Failed to write to file");
         }
 
-        Commands::GenerateToken { sub } => {
+        Commands::GenerateToken { sub, email } => {
             let secret_key = std::env::var("JWT_SECRET").expect("JWT Secret not found");
 
             let claims = JwtClaims {
@@ -3879,6 +3957,7 @@ async fn main() {
                 iss: None,
                 aud: None,
                 role: None,
+                email,
             };
 
             let token = encode(

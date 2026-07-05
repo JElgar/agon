@@ -24,3 +24,5 @@ config:
   agon_infra:agonWorkerImage: ghcr.io/jelgar/agon_worker:sha-e223e25
   agon_infra:meiliMasterKey:
     secure: AAABAIf2qyWw1sfYjtropRzh9Vxt8GcUV5QhvNiratSoOr7aYh0LSgqjNM3URoXvUlu1jN63KCwtOn/Ngtp1NaArVTwI3Ayy+IEBcPxaVaXpSNmTrkv/i5YKJhP/g5hG
+  agon_infra:grafanaAdminPassword:
+    secure: AAABAMvy4LoxYNBmHwvlttPqHhd/6KHyDm2WELiFLWin+3lcCNPL8IP9fKjIpg==

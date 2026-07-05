@@ -26,7 +26,9 @@ use agon_core::search::SearchClient;
 
 #[tokio::main]
 async fn main() {
-    init_tracing();
+    // Held for the process lifetime; dropping it on the way out of `main`
+    // flushes the OTLP batch exporters. See agon_core::telemetry.
+    let _telemetry = agon_core::telemetry::init("agon-worker");
 
     let config = match Config::from_env() {
         Ok(c) => c,
@@ -84,12 +86,6 @@ async fn main() {
     }
 
     tracing::info!("worker stopped");
-}
-
-fn init_tracing() {
-    use tracing_subscriber::{EnvFilter, fmt};
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    fmt().json().with_env_filter(filter).init();
 }
 
 /// Resolves on SIGTERM (k8s pod termination) or Ctrl-C, so in-flight messages

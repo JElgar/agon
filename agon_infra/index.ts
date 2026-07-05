@@ -686,6 +686,355 @@ const meiliService = new k8s.core.v1.Service("meilisearch-service", {
 const meiliUrl = meiliService.metadata.name.apply(name => `http://${name}:7700`);
 
 
+// ───────────────────────────────────────────────────────────────────────────
+// Observability: LGTM stack (Loki, Grafana, Tempo, Mimir-less) + kube-prometheus
+//
+// Grafana is the single UI. Behind it:
+//   * kube-prometheus-stack — Prometheus Operator (satisfies the CNPG
+//     `enablePodMonitor` above), Prometheus, node-exporter, kube-state-metrics,
+//     AND Grafana with datasources pre-provisioned.
+//   * Loki  (single-binary, filesystem) — logs.
+//   * Tempo (single-binary, filesystem) — traces.
+//   * Alloy — one OTLP collector the apps push to; it fans out
+//       traces  → Tempo, logs → Loki, metrics → Prometheus (remote-write).
+//
+// The apps push over OTLP/gRPC to `alloy.observability:4317`; only Alloy knows
+// the individual backends, so swapping/scaling them never touches the Rust.
+//
+// ⚠️ Sizing: this whole stack runs on the single cpx22 node (~4 GB). Every
+// component below sets tight resource requests/limits and short retention. If
+// the node starts OOMing, the first levers are bumping the node type or cutting
+// retention further. See docs/observability.md.
+// ───────────────────────────────────────────────────────────────────────────
+const observabilityNs = new k8s.core.v1.Namespace("observability", {
+	metadata: { name: "observability" },
+}, { provider: k8sProvider });
+
+const observabilityNamespace = observabilityNs.metadata.name;
+
+// Grafana admin password, held as a stack secret:
+//   pulumi config set --secret grafanaAdminPassword <password>
+const grafanaAdminPassword = config.requireSecret("grafanaAdminPassword");
+
+// kube-prometheus-stack: Prometheus Operator + Prometheus + Grafana + cluster
+// metrics. Grafana datasources for Prometheus/Loki/Tempo are provisioned inline
+// so the UI works out of the box, with trace↔log correlation wired between
+// Tempo and Loki. Prometheus is given a remote-write receiver so Alloy can push
+// the apps' OTLP metrics into it.
+const kubePrometheusStack = new k8s.helm.v4.Chart("kube-prometheus-stack", {
+	chart: "kube-prometheus-stack",
+	version: "77.6.2",
+	repositoryOpts: { repo: "https://prometheus-community.github.io/helm-charts" },
+	namespace: observabilityNamespace,
+	values: {
+		// Watch ServiceMonitors/PodMonitors across all namespaces (CNPG's live
+		// in the default namespace), not just those with the release's labels.
+		prometheus: {
+			prometheusSpec: {
+				serviceMonitorSelectorNilUsesHelmValues: false,
+				podMonitorSelectorNilUsesHelmValues: false,
+				ruleSelectorNilUsesHelmValues: false,
+				// Accept remote-write + OTLP from Alloy.
+				enableRemoteWriteReceiver: true,
+				enableFeatures: ["otlp-write-receiver"],
+				retention: "7d",
+				retentionSize: "6GB",
+				resources: {
+					requests: { cpu: "100m", memory: "400Mi" },
+					limits: { memory: "900Mi" },
+				},
+				storageSpec: {
+					volumeClaimTemplate: {
+						spec: {
+							accessModes: ["ReadWriteOnce"],
+							resources: { requests: { storage: "8Gi" } },
+						},
+					},
+				},
+			},
+		},
+		// Trim the pieces that don't earn their memory on a single-node cluster.
+		alertmanager: { enabled: false },
+		// k3s runs these as static pods the operator can't scrape by default;
+		// disabling the ServiceMonitors avoids noisy "down" targets. Re-enable
+		// per-component with the right endpoints if you want control-plane metrics.
+		kubeControllerManager: { enabled: false },
+		kubeScheduler: { enabled: false },
+		kubeProxy: { enabled: false },
+		kubeEtcd: { enabled: false },
+		prometheusOperator: {
+			resources: {
+				requests: { cpu: "50m", memory: "100Mi" },
+				limits: { memory: "250Mi" },
+			},
+		},
+		"kube-state-metrics": {
+			resources: {
+				requests: { cpu: "20m", memory: "48Mi" },
+				limits: { memory: "128Mi" },
+			},
+		},
+		"prometheus-node-exporter": {
+			resources: {
+				requests: { cpu: "20m", memory: "32Mi" },
+				limits: { memory: "64Mi" },
+			},
+		},
+		grafana: {
+			adminPassword: grafanaAdminPassword,
+			resources: {
+				requests: { cpu: "50m", memory: "128Mi" },
+				limits: { memory: "300Mi" },
+			},
+			// Persist dashboards/settings across restarts.
+			persistence: { enabled: true, size: "1Gi" },
+			// Datasources for the other two signals. Prometheus is added by the
+			// chart itself; we add Loki + Tempo and wire correlation.
+			additionalDataSources: [
+				{
+					name: "Loki",
+					type: "loki",
+					access: "proxy",
+					url: "http://loki.observability:3100",
+					jsonData: {
+						// Turn a log line's trace id into a Tempo link.
+						derivedFields: [
+							{
+								name: "trace_id",
+								matcherRegex: "trace_id=(\\w+)",
+								datasourceUid: "tempo",
+								url: "$${__value.raw}",
+							},
+						],
+					},
+				},
+				{
+					name: "Tempo",
+					uid: "tempo",
+					type: "tempo",
+					access: "proxy",
+					url: "http://tempo.observability:3100",
+					jsonData: {
+						// Jump from a span to its logs in Loki.
+						tracesToLogsV2: {
+							datasourceUid: "loki",
+							filterByTraceID: true,
+						},
+					},
+				},
+			],
+		},
+	},
+}, { provider: k8sProvider });
+
+// Loki — single-binary, filesystem-backed. Enough for one node; not HA. The
+// `test`/`lokiCanary` helpers and gateway are off to save resources.
+const loki = new k8s.helm.v4.Chart("loki", {
+	chart: "loki",
+	version: "6.24.0",
+	repositoryOpts: { repo: "https://grafana.github.io/helm-charts" },
+	namespace: observabilityNamespace,
+	values: {
+		deploymentMode: "SingleBinary",
+		loki: {
+			auth_enabled: false,
+			commonConfig: { replication_factor: 1 },
+			storage: { type: "filesystem" },
+			schemaConfig: {
+				configs: [
+					{
+						from: "2024-01-01",
+						store: "tsdb",
+						object_store: "filesystem",
+						schema: "v13",
+						index: { prefix: "index_", period: "24h" },
+					},
+				],
+			},
+			// Drop logs older than ~3 days to bound disk on the small node.
+			limits_config: { retention_period: "72h" },
+		},
+		singleBinary: {
+			replicas: 1,
+			persistence: { enabled: true, size: "5Gi" },
+			resources: {
+				requests: { cpu: "100m", memory: "128Mi" },
+				limits: { memory: "400Mi" },
+			},
+		},
+		// Single-binary mode: turn off all the distributed component deployments.
+		backend: { replicas: 0 },
+		read: { replicas: 0 },
+		write: { replicas: 0 },
+		gateway: { enabled: false },
+		chunksCache: { enabled: false },
+		resultsCache: { enabled: false },
+		lokiCanary: { enabled: false },
+		test: { enabled: false },
+		monitoring: { selfMonitoring: { enabled: false }, lokiCanary: { enabled: false } },
+	},
+}, { provider: k8sProvider });
+
+// Tempo — single-binary traces backend with the OTLP receiver enabled. Alloy
+// forwards spans here; Grafana queries it on port 3100.
+const tempo = new k8s.helm.v4.Chart("tempo", {
+	chart: "tempo",
+	version: "1.18.2",
+	repositoryOpts: { repo: "https://grafana.github.io/helm-charts" },
+	namespace: observabilityNamespace,
+	values: {
+		tempo: {
+			retention: "72h",
+			storage: {
+				trace: { backend: "local", local: { path: "/var/tempo/traces" } },
+			},
+			resources: {
+				requests: { cpu: "100m", memory: "128Mi" },
+				limits: { memory: "400Mi" },
+			},
+		},
+		persistence: { enabled: true, size: "5Gi" },
+	},
+}, { provider: k8sProvider });
+
+// Grafana Alloy — the single OTLP collector the apps push to. Receives OTLP on
+// 4317 (gRPC) / 4318 (HTTP) and fans out: traces→Tempo, logs→Loki,
+// metrics→Prometheus remote-write. Config is Alloy's River syntax.
+const alloyConfig = `
+otelcol.receiver.otlp "default" {
+  grpc { endpoint = "0.0.0.0:4317" }
+  http { endpoint = "0.0.0.0:4318" }
+
+  output {
+    metrics = [otelcol.processor.batch.default.input]
+    logs    = [otelcol.processor.batch.default.input]
+    traces  = [otelcol.processor.batch.default.input]
+  }
+}
+
+otelcol.processor.batch "default" {
+  output {
+    metrics = [otelcol.exporter.prometheus.default.input]
+    logs    = [otelcol.exporter.loki.default.input]
+    traces  = [otelcol.exporter.otlp.tempo.input]
+  }
+}
+
+// Traces → Tempo (OTLP gRPC on 4317, insecure in-cluster).
+otelcol.exporter.otlp "tempo" {
+  client {
+    endpoint = "tempo.observability:4317"
+    tls { insecure = true }
+  }
+}
+
+// Logs → Loki (OTLP HTTP push endpoint).
+otelcol.exporter.loki "default" {
+  forward_to = [loki.write.default.receiver]
+}
+loki.write "default" {
+  endpoint { url = "http://loki.observability:3100/loki/api/v1/push" }
+}
+
+// Metrics → Prometheus remote-write.
+otelcol.exporter.prometheus "default" {
+  forward_to = [prometheus.remote_write.default.receiver]
+}
+prometheus.remote_write "default" {
+  endpoint { url = "http://kube-prometheus-stack-prometheus.observability:9090/api/v1/write" }
+}
+`;
+
+const alloyConfigMap = new k8s.core.v1.ConfigMap("alloy-config", {
+	metadata: { name: "alloy-config", namespace: observabilityNamespace },
+	data: { "config.alloy": alloyConfig },
+}, { provider: k8sProvider });
+
+const alloy = new k8s.helm.v4.Chart("alloy", {
+	chart: "alloy",
+	version: "1.2.1",
+	repositoryOpts: { repo: "https://grafana.github.io/helm-charts" },
+	namespace: observabilityNamespace,
+	values: {
+		alloy: {
+			configMap: { create: false, name: alloyConfigMap.metadata.name },
+			// Expose the OTLP ports on the Alloy Service so the apps can reach it.
+			extraPorts: [
+				{ name: "otlp-grpc", port: 4317, targetPort: 4317, protocol: "TCP" },
+				{ name: "otlp-http", port: 4318, targetPort: 4318, protocol: "TCP" },
+			],
+			resources: {
+				requests: { cpu: "50m", memory: "128Mi" },
+				limits: { memory: "300Mi" },
+			},
+		},
+		// Single collector instance; no clustering / node-local agent needed.
+		controller: { type: "deployment", replicas: 1 },
+	},
+}, { provider: k8sProvider, dependsOn: [loki, tempo, kubePrometheusStack] });
+
+// The OTLP endpoint both apps push to. In-cluster gRPC on the Alloy Service.
+const otlpEndpoint = "http://alloy.observability:4317";
+
+// ── Grafana ingress ──────────────────────────────────────────────────────────
+// Public TLS ingress at grafana.<stack>.get-agon.com, mirroring the agon /
+// temporal ingresses. Grafana's Service is created by kube-prometheus-stack.
+const grafanaDomain = `grafana.${baseDomain}`;
+const grafanaServiceName = "kube-prometheus-stack-grafana";
+
+const grafanaCertificate = new k8s.apiextensions.CustomResource("grafana-cert", {
+	apiVersion: "cert-manager.io/v1",
+	kind: "Certificate",
+	metadata: { namespace: "default", name: "grafana-cert" },
+	spec: {
+		secretName: "grafana-cert",
+		issuerRef: { name: issuer.metadata.name, kind: "ClusterIssuer" },
+		commonName: grafanaDomain,
+		dnsNames: [grafanaDomain],
+	},
+}, { provider: k8sProvider });
+
+new k8s.networking.v1.Ingress("grafana-ingress", {
+	metadata: {
+		namespace: "default",
+		annotations: {
+			"kubernetes.io/ingress.class": "nginx",
+			"cert-manager.io/cluster-issuer": issuer.metadata.name,
+		},
+	},
+	spec: {
+		tls: [{ hosts: [grafanaDomain], secretName: "grafana-cert" }],
+		rules: [{
+			host: grafanaDomain,
+			http: {
+				paths: [{
+					path: "/",
+					pathType: "Prefix",
+					backend: {
+						// Grafana runs in the observability namespace; this ingress is
+						// in default. An ExternalName service bridges the namespaces.
+						service: { name: "grafana-proxy", port: { number: 80 } },
+					},
+				}],
+			},
+		}],
+	},
+}, { provider: k8sProvider, dependsOn: [ctrl, kubePrometheusStack] });
+
+// Cross-namespace bridge: an ExternalName Service in `default` pointing at the
+// Grafana Service in `observability`, so the ingress backend (which must live
+// in the same namespace as the Ingress) can reach it.
+new k8s.core.v1.Service("grafana-proxy", {
+	metadata: { name: "grafana-proxy", namespace: "default" },
+	spec: {
+		type: "ExternalName",
+		externalName: `${grafanaServiceName}.observability.svc.cluster.local`,
+		ports: [{ port: 80, targetPort: 3000 }],
+	},
+}, { provider: k8sProvider });
+
+export const grafanaUrl = `https://${grafanaDomain}`;
+
 const serviceAppLabels = { app: "agon" };
 new k8s.apps.v1.Deployment("agon-deployment", {
 	metadata: { name: "agon" },
@@ -724,6 +1073,9 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 									}
 								},
 							},
+							// OTLP export to the Alloy collector. Unset ⇒ stdout logs only.
+							{ name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: otlpEndpoint },
+							{ name: "OTEL_SERVICE_NAME", value: "agon-service" },
 						]
 					},
 				],
@@ -768,6 +1120,9 @@ new k8s.apps.v1.Deployment("agon-worker-deployment", {
 									}
 								},
 							},
+							// OTLP export to the Alloy collector. Unset ⇒ stdout logs only.
+							{ name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: otlpEndpoint },
+							{ name: "OTEL_SERVICE_NAME", value: "agon-worker" },
 						],
 					},
 				],

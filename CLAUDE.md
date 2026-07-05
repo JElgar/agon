@@ -17,6 +17,10 @@ Agon is a Rust-based team management API service built with the Poem web framewo
 - **Authentication**: JWT bearer tokens validated via custom security scheme
 - **Migrations**: SQLx migrations in `agon_service/migrations/`
 - **Infrastructure**: Pulumi with TypeScript for cloud deployment
+- **Observability**: OTLP export (logs/traces/metrics) from both binaries via
+  `agon_core::telemetry`, to a self-hosted Grafana + Loki/Tempo/Prometheus
+  stack. See `docs/observability.md`. Export is off unless
+  `OTEL_EXPORTER_OTLP_ENDPOINT` is set, so local runs log JSON to stdout only.
 
 ### Database Schema
 The service manages users and teams with a many-to-many relationship:

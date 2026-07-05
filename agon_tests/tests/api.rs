@@ -26,12 +26,23 @@ use uuid::Uuid;
 struct JwtData {
     sub: String,
     exp: usize,
+    /// The identity provider's email claim. The service reads the user's email
+    /// from here (not the request body), so tokens must carry it for signup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    email: Option<String>,
+}
+
+/// The deterministic email for a test subject. Signup reads the email from the
+/// token, so the JWT and any expectations use this same derivation.
+fn email_for(subject: &str) -> String {
+    format!("{subject}@example.com")
 }
 
 fn generate_jwt(user_id: &str) -> String {
     let claims = JwtData {
         sub: user_id.to_string(),
         exp: 9999999999,
+        email: Some(email_for(user_id)),
     };
     let secret_key = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
     encode(
@@ -42,7 +53,8 @@ fn generate_jwt(user_id: &str) -> String {
     .expect("failed to generate test jwt")
 }
 
-/// A client configured to authenticate as the given subject (JWT `sub`).
+/// A client configured to authenticate as the given subject (JWT `sub` + a
+/// matching `email` claim).
 fn config_for(subject: &str) -> Configuration {
     Configuration {
         base_path: std::env::var("AGON_SERVICE_URL").expect("AGON_SERVICE_URL must be set"),
@@ -51,17 +63,37 @@ fn config_for(subject: &str) -> Configuration {
     }
 }
 
-/// Create a brand-new user and return (their client config, their profile).
-/// The JWT subject and the created user id are the same, so the config
-/// authenticates as the created user.
+/// A client for a specific subject with an explicit `email` claim — used to test
+/// two distinct identities presenting the same authenticated email.
+fn config_with_email(subject: &str, email: &str) -> Configuration {
+    let claims = JwtData {
+        sub: subject.to_string(),
+        exp: 9999999999,
+        email: Some(email.to_string()),
+    };
+    let secret_key = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+    let token = encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret_key.as_bytes()),
+    )
+    .expect("failed to generate test jwt");
+    Configuration {
+        base_path: std::env::var("AGON_SERVICE_URL").expect("AGON_SERVICE_URL must be set"),
+        bearer_access_token: Some(token),
+        ..Default::default()
+    }
+}
+
+/// Create a brand-new user and return (their client config, their profile). The
+/// JWT subject is the created user id, and the user's email comes from the
+/// token's `email` claim (not the request body).
 async fn new_user() -> (Configuration, models::User) {
     let subject = Uuid::new_v4().to_string();
     let config = config_for(&subject);
-    let email = format!("{subject}@example.com");
     let user = users_post(
         &config,
         models::CreateUserInput {
-            email,
             name: "Test User".to_string(),
         },
     )
@@ -117,6 +149,64 @@ async fn create_user_and_get_me() {
     assert_eq!(me.email, user.email);
 }
 
+/// The user's email is taken from the verified JWT `email` claim, NOT from the
+/// request body — so a caller can't sign up as an arbitrary email. We create a
+/// user whose token carries a specific email and assert the account gets exactly
+/// that email (the body has no email field to override it with).
+#[tokio::test]
+async fn signup_email_comes_from_the_token_not_the_body() {
+    let subject = Uuid::new_v4().to_string();
+    let claimed_email = format!("claimed-{subject}@example.com");
+    let config = config_with_email(&subject, &claimed_email);
+
+    let user = users_post(
+        &config,
+        models::CreateUserInput {
+            name: "Token Email".to_string(),
+        },
+    )
+    .await
+    .expect("create user");
+
+    assert_eq!(
+        user.email, claimed_email,
+        "account email must be the token's email claim"
+    );
+}
+
+/// A token with no `email` claim can't sign up (there's no trusted email to use).
+#[tokio::test]
+async fn signup_without_an_email_claim_is_rejected() {
+    // Build a token deliberately missing the email claim.
+    let subject = Uuid::new_v4().to_string();
+    let claims = JwtData {
+        sub: subject.clone(),
+        exp: 9999999999,
+        email: None,
+    };
+    let secret_key = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+    let token = encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret_key.as_bytes()),
+    )
+    .expect("jwt");
+    let config = Configuration {
+        base_path: std::env::var("AGON_SERVICE_URL").expect("AGON_SERVICE_URL must be set"),
+        bearer_access_token: Some(token),
+        ..Default::default()
+    };
+
+    let response = users_post(
+        &config,
+        models::CreateUserInput {
+            name: "No Email".to_string(),
+        },
+    )
+    .await;
+    assert_status_with_content(response, reqwest::StatusCode::BAD_REQUEST, "email");
+}
+
 #[tokio::test]
 async fn get_user_profile_by_id() {
     let (_creator, subject) = new_user().await;
@@ -137,7 +227,6 @@ async fn update_me_changes_name() {
     let updated = users_me_patch(
         &config,
         models::UpdateUserInput {
-            email: None,
             name: Some("New Name".to_string()),
             profile_image_asset_id: None,
         },
@@ -542,7 +631,6 @@ async fn a_created_user_becomes_searchable() {
     let user = users_post(
         &config,
         models::CreateUserInput {
-            email: format!("{subject}@example.com"),
             name: unique.clone(),
         },
     )
@@ -1039,12 +1127,15 @@ async fn marking_a_single_notification_read_is_accepted() {
 #[tokio::test]
 async fn creating_a_user_with_a_duplicate_email_is_rejected() {
     let (_config, user) = new_user().await;
-    // A second, distinct caller trying to claim the same email.
-    let (other_config, _other) = new_user().await;
+
+    // A second, DISTINCT subject whose token carries the SAME email claim. Email
+    // now comes from the verified token (not the body), so a duplicate means two
+    // identities presenting the same authenticated email.
+    let other_subject = Uuid::new_v4().to_string();
+    let other_config = config_with_email(&other_subject, &user.email);
     let response = users_post(
         &other_config,
         models::CreateUserInput {
-            email: user.email.clone(),
             name: "Dupe".to_string(),
         },
     )

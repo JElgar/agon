@@ -769,16 +769,20 @@ const kubePrometheusStack = new k8s.helm.v4.Chart("kube-prometheus-stack", {
 		kubeProxy: { enabled: false },
 		kubeEtcd: { enabled: false },
 		prometheusOperator: {
-			// The admission webhook's TLS secret is created by the chart's Helm
-			// HOOK Jobs (pre-install/post-install). Pulumi's helm.v4.Chart does NOT
-			// run Helm hooks, so those Jobs never run and the operator hangs forever
-			// mounting the missing `kube-prometheus-stack-admission` secret. Disable
-			// the webhook (and its TLS) to drop the hook dependency entirely.
+			// The admission webhook (validates PrometheusRule/AlertmanagerConfig CRDs)
+			// normally gets its TLS secret from the chart's Helm HOOK Jobs
+			// (pre-install/post-install `admission-create`/`-patch`). Pulumi's
+			// helm.v4.Chart does NOT run Helm hooks, so those Jobs never run and the
+			// operator would hang forever mounting the missing
+			// `kube-prometheus-stack-admission` secret. Instead of disabling the
+			// webhook, we let cert-manager issue the cert — it creates a self-signed
+			// Issuer + Certificate (CRs, not hooks), so there's no hook dependency and
+			// CRD validation stays on. `patch` is the hook-Job path; keep it disabled.
 			admissionWebhooks: {
-				enabled: false,
+				enabled: true,
 				patch: { enabled: false },
+				certManager: { enabled: true },
 			},
-			tls: { enabled: false },
 			resources: {
 				requests: { cpu: "50m", memory: "100Mi" },
 				limits: { memory: "250Mi" },
@@ -841,7 +845,10 @@ const kubePrometheusStack = new k8s.helm.v4.Chart("kube-prometheus-stack", {
 			],
 		},
 	},
-}, { provider: k8sProvider });
+	// The operator's admission webhook now gets its TLS cert from cert-manager
+	// (see admissionWebhooks.certManager above), so cert-manager's CRDs + webhook
+	// must be ready before this chart applies.
+}, { provider: k8sProvider, dependsOn: [certManager] });
 
 // Loki — single-binary, filesystem-backed. Enough for one node; not HA. The
 // `test`/`lokiCanary` helpers and gateway are off to save resources.
@@ -1045,7 +1052,11 @@ new k8s.core.v1.Service("grafana-proxy", {
 	spec: {
 		type: "ExternalName",
 		externalName: `${grafanaServiceName}.observability.svc.cluster.local`,
-		ports: [{ port: 80, targetPort: 3000 }],
+		// The Grafana Service in observability listens on port 80 (it maps 80→3000
+		// internally). nginx-ingress dials the resolved ClusterIP on this port, so
+		// it must be 80, not Grafana's container port 3000 — otherwise nginx hits
+		// ClusterIP:3000, where nothing listens, and every request 504s.
+		ports: [{ port: 80, targetPort: 80 }],
 	},
 }, { provider: k8sProvider });
 

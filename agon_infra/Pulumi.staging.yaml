@@ -26,3 +26,11 @@ config:
     secure: AAABAIf2qyWw1sfYjtropRzh9Vxt8GcUV5QhvNiratSoOr7aYh0LSgqjNM3URoXvUlu1jN63KCwtOn/Ngtp1NaArVTwI3Ayy+IEBcPxaVaXpSNmTrkv/i5YKJhP/g5hG
   agon_infra:grafanaAdminPassword:
     secure: AAABAMvy4LoxYNBmHwvlttPqHhd/6KHyDm2WELiFLWin+3lcCNPL8IP9fKjIpg==
+  ovh:endpoint: ovh-eu
+  ovh:applicationKey: 6750e908934cca1c
+  ovh:applicationSecret:
+    secure: AAABALRXYFQUn6elDVVFTfKkaBkQICSEO8dXSjxWQF573aKKVVqfLcwB8W6bN6Tax5sJ8RMD5j092gAFSjd4jw==
+  ovh:consumerKey:
+    secure: AAABANAOlZN4I/ZaMhGF/kIg0w/S8cxq1jlx8xwHJUJZ7GoY/s+4PBPozsU42nP8CnaORv/kDYk7ujNHjXQTzw==
+  agon_infra:nodeIp: 51.38.64.148
+  agon_infra:nodeServiceName: vps-0a0d860d.vps.ovh.net

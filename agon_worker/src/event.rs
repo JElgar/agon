@@ -98,10 +98,8 @@ where
 /// `Pk`/`Sk` values, plus the (optional) old/new images.
 ///
 /// The images (and the `old_record`/`new_record` accessors) are consumed by the
-/// `temporal`-gated accept-saga path and by tests; `allow(dead_code)` keeps the
-/// default (feature-off) bin build clean without gating the fields themselves.
+/// accept-saga routing path (`consumer::workflow_for`) and by tests.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct ChangeEvent {
     pub kind: ChangeKind,
     pub pk: Pk,
@@ -124,20 +122,17 @@ impl ChangeEvent {
 
     /// Deserialize the old image into a DAO record `T`. `None` if there is no old
     /// image (INSERT) or it doesn't fit `T`.
-    #[allow(dead_code)] // used by the `temporal` feature + tests
     pub fn old_record<T: DeserializeOwned>(&self) -> Option<T> {
         deserialize_image(self.old_image.as_ref())
     }
 
     /// Deserialize the new image into a DAO record `T`. `None` if there is no new
     /// image (REMOVE) or it doesn't fit `T`.
-    #[allow(dead_code)] // used by the `temporal` feature + tests
     pub fn new_record<T: DeserializeOwned>(&self) -> Option<T> {
         deserialize_image(self.new_image.as_ref())
     }
 }
 
-#[allow(dead_code)] // used by the `temporal` feature + tests
 fn deserialize_image<T: DeserializeOwned>(image: Option<&Image>) -> Option<T> {
     image
         .cloned()

@@ -1060,6 +1060,18 @@ impl Api {
         Ok(PlainText("Pong".to_string()))
     }
 
+    /// Resolve the authenticated caller's stable internal user id from their JWT
+    /// `sub` (via the `AUTH#<sub>` mapping). This is the id everything downstream
+    /// keys off — never the raw `sub`, so the auth provider can change without
+    /// touching stored data. Returns 401 if the `sub` maps to no user (i.e. the
+    /// caller is authenticated but hasn't completed signup via `POST /users`).
+    async fn require_uid(&self, dao: &dao::Dao, jwt: &JwtClaims) -> Result<String> {
+        dao.get_user_id_by_sub(&jwt.sub)
+            .await
+            .map_err(dao_internal)?
+            .ok_or_else(|| Error::from_string("user not found", StatusCode::UNAUTHORIZED))
+    }
+
     #[oai(path = "/users/me", method = "get")]
     async fn get_current_user(
         &self,
@@ -1067,7 +1079,21 @@ impl Api {
         AuthSchema(jwt_data): AuthSchema,
     ) -> Result<GetUserResponse> {
         info!("Getting current user");
-        let record = match dao.get_user(&jwt_data.sub).await.map_err(dao_internal)? {
+        // Resolve sub -> internal id. A caller who hasn't signed up yet maps to
+        // nothing → 404 (the existing contract for /users/me).
+        let uid = match dao
+            .get_user_id_by_sub(&jwt_data.sub)
+            .await
+            .map_err(dao_internal)?
+        {
+            Some(id) => id,
+            None => {
+                return Ok(GetUserResponse::NotFound(PlainText(
+                    "user not found".into(),
+                )));
+            }
+        };
+        let record = match dao.get_user(&uid).await.map_err(dao_internal)? {
             Some(r) => r,
             None => {
                 return Ok(GetUserResponse::NotFound(PlainText(
@@ -1075,10 +1101,7 @@ impl Api {
                 )));
             }
         };
-        let stats = dao
-            .list_user_stats(&jwt_data.sub)
-            .await
-            .map_err(dao_internal)?;
+        let stats = dao.list_user_stats(&uid).await.map_err(dao_internal)?;
         // Own profile: not "followed by me".
         let profile = user_profile_from_record(&record, &stats, false);
         Ok(GetUserResponse::User(Json(User {
@@ -1096,6 +1119,7 @@ impl Api {
     ) -> Result<UpdateUserResponse> {
         info!("Updating current user profile");
         let input = input.0;
+        let uid = self.require_uid(dao, &jwt_data).await?;
 
         // Resolve an attached asset id to its stored URL (must be Uploaded and
         // owned by the caller). Some(Some(url)) = set image; None = leave as-is.
@@ -1103,9 +1127,7 @@ impl Api {
             Some(asset_id) => {
                 let asset = dao.get_asset(asset_id).await.map_err(dao_internal)?;
                 match asset {
-                    Some(a) if a.status == "uploaded" && a.owner_user_id == jwt_data.sub => {
-                        Some(a.url)
-                    }
+                    Some(a) if a.status == "uploaded" && a.owner_user_id == uid => Some(a.url),
                     _ => {
                         return Ok(UpdateUserResponse::ValidationError(PlainText(
                             "asset not found, not uploaded, or not owned by you".into(),
@@ -1117,7 +1139,7 @@ impl Api {
         };
 
         dao.update_user_profile(
-            &jwt_data.sub,
+            &uid,
             input.name.as_deref(),
             resolved_image.as_ref().map(|o| o.as_deref()),
         )
@@ -1131,14 +1153,11 @@ impl Api {
 
         // Return the updated profile.
         let record = dao
-            .get_user(&jwt_data.sub)
+            .get_user(&uid)
             .await
             .map_err(dao_internal)?
             .ok_or_else(|| Error::from_string("user not found", StatusCode::NOT_FOUND))?;
-        let stats = dao
-            .list_user_stats(&jwt_data.sub)
-            .await
-            .map_err(dao_internal)?;
+        let stats = dao.list_user_stats(&uid).await.map_err(dao_internal)?;
         let profile = user_profile_from_record(&record, &stats, false);
         Ok(UpdateUserResponse::User(Json(User {
             email: record.email,
@@ -1155,6 +1174,7 @@ impl Api {
     ) -> Result<CreateAssetResponse> {
         info!("Creating asset for content type {}", input.content_type);
         let input = input.0;
+        let uid = self.require_uid(dao, &jwt_data).await?;
 
         // Validate the content type against the purpose (images only for now).
         if !input.content_type.starts_with("image/") {
@@ -1169,7 +1189,7 @@ impl Api {
         let storage_key = format!("{}/{}", upload_purpose_str(&input.purpose), id);
         let record = dao::records::AssetRecord {
             id: id.clone(),
-            owner_user_id: jwt_data.sub,
+            owner_user_id: uid,
             purpose: upload_purpose_str(&input.purpose).to_string(),
             content_type: input.content_type,
             status: String::from("pending"),
@@ -1216,10 +1236,11 @@ impl Api {
             }
         };
         let stats = dao.list_user_stats(&user_id).await.map_err(dao_internal)?;
-        let is_followed = if jwt_data.sub == user_id {
+        let caller_uid = self.require_uid(dao, &jwt_data).await?;
+        let is_followed = if caller_uid == user_id {
             false
         } else {
-            dao.is_following_user(&jwt_data.sub, &user_id)
+            dao.is_following_user(&caller_uid, &user_id)
                 .await
                 .map_err(dao_internal)?
         };
@@ -1248,8 +1269,11 @@ impl Api {
                 )));
             }
         };
+        // The internal id is freshly minted and stable — it is NOT the JWT `sub`.
+        // The `sub` is mapped to it via the AUTH# guard so the auth provider can
+        // change without rewriting any user-keyed data.
         let record = dao::records::UserRecord {
-            id: jwt_data.sub.clone(),
+            id: new_id(),
             email,
             name: input.name,
             profile_image_url: None,
@@ -1258,11 +1282,11 @@ impl Api {
             unread_count: 0,
             created_at: now_iso(),
         };
-        match dao.create_user(&record).await {
+        match dao.create_user(&jwt_data.sub, &record).await {
             Ok(()) => {}
             Err(dao::DaoError::Conflict(_)) => {
                 return Ok(CreateUserResponse::ValidationError(PlainText(
-                    "a user with that email or id already exists".into(),
+                    "a user with that email or subject already exists".into(),
                 )));
             }
             Err(e) => return Err(dao_internal(e)),
@@ -1316,6 +1340,7 @@ impl Api {
         Query(to): Query<Option<chrono::DateTime<chrono::Utc>>>,
     ) -> Result<GetFeedResponse> {
         info!("Getting caller's social feed");
+        let uid = self.require_uid(dao, &jwt_data).await?;
 
         // The feed is always the authenticated caller's own social feed (matches
         // from people/teams they follow). No user_id / sport filtering here —
@@ -1336,7 +1361,7 @@ impl Api {
         // first. The cursor is the DAO's opaque LastEvaluatedKey (400 if
         // malformed). Feed entries are thin pointers, so hydrate each referenced
         // match from DynamoDB — entries never carry stale copies.
-        let page = match dao.list_feed(&jwt_data.sub, cursor.as_deref(), limit).await {
+        let page = match dao.list_feed(&uid, cursor.as_deref(), limit).await {
             Ok(p) => p,
             Err(dao::DaoError::Malformed(_)) => {
                 return Ok(GetFeedResponse::ValidationError(PlainText(
@@ -1359,7 +1384,7 @@ impl Api {
             }
             if let Some(agg) = dao.get_match(&entry.ref_id).await.map_err(dao_internal)? {
                 let i_liked = dao
-                    .has_liked_match(&entry.ref_id, &jwt_data.sub)
+                    .has_liked_match(&entry.ref_id, &uid)
                     .await
                     .map_err(dao_internal)?;
                 items.push(FeedItem::Match(match_from_records(
@@ -1382,7 +1407,7 @@ impl Api {
         &self,
         Data(dao): Data<&dao::Dao>,
         Data(search): Data<&agon_core::search::SearchClient>,
-        AuthSchema(_jwt_data): AuthSchema,
+        AuthSchema(jwt_data): AuthSchema,
         /// Free-text query over match name / participants.
         #[oai(name = "q")]
         Query(query): Query<Option<String>>,
@@ -1400,6 +1425,7 @@ impl Api {
         Query(limit): Query<Option<u32>>,
     ) -> Result<ListMatchesResponse> {
         info!("Searching matches");
+        let caller_uid = self.require_uid(dao, &jwt_data).await?;
 
         // Match discovery is served by the search index (Meilisearch), NOT
         // DynamoDB — it supports arbitrary combinations of text / participant /
@@ -1460,7 +1486,7 @@ impl Api {
         for id in &hits.ids {
             if let Some(agg) = dao.get_match(id).await.map_err(dao_internal)? {
                 let i_liked = dao
-                    .has_liked_match(id, &_jwt_data.sub)
+                    .has_liked_match(id, &caller_uid)
                     .await
                     .map_err(dao_internal)?;
                 items.push(match_from_records(
@@ -1486,6 +1512,7 @@ impl Api {
     ) -> Result<CreateMatchResponse> {
         info!("Creating match {}", input.name);
         let input = input.0;
+        let uid = self.require_uid(dao, &jwt_data).await?;
 
         // A match needs at least two sides for a score to be meaningful.
         if input.sides.len() < 2 {
@@ -1552,7 +1579,7 @@ impl Api {
                 let (player, inv) = build_invited_player(
                     &match_id,
                     &input.name,
-                    &jwt_data.sub,
+                    &uid,
                     side_id.clone(),
                     Some(user_id.clone()),
                     None,
@@ -1565,7 +1592,7 @@ impl Api {
                 let (player, inv) = build_invited_player(
                     &match_id,
                     &input.name,
-                    &jwt_data.sub,
+                    &uid,
                     side_id.clone(),
                     None,
                     Some(name.clone()),
@@ -1630,6 +1657,7 @@ impl Api {
         Path(match_id): Path<String>,
     ) -> Result<GetMatchResponse> {
         info!("Getting match {match_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
             None => {
@@ -1639,7 +1667,7 @@ impl Api {
             }
         };
         let i_liked = dao
-            .has_liked_match(&match_id, &jwt_data.sub)
+            .has_liked_match(&match_id, &uid)
             .await
             .map_err(dao_internal)?;
         Ok(GetMatchResponse::Match(Json(match_from_records(
@@ -1660,6 +1688,7 @@ impl Api {
     ) -> Result<UpdateMatchResponse> {
         info!("Updating match {match_id}");
         let input = input.0;
+        let uid = self.require_uid(dao, &jwt_data).await?;
 
         // Load the current state (404 if missing).
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
@@ -1721,7 +1750,7 @@ impl Api {
                     score: new_record.clone(),
                     winner_side_id: input.winner_side_id.clone(),
                     status: String::from("confirmed"),
-                    submitted_by_player_id: jwt_data.sub.clone(),
+                    submitted_by_player_id: uid.clone(),
                     submitted_at,
                     responses: Vec::new(),
                 };
@@ -1814,7 +1843,7 @@ impl Api {
             }
         };
         let i_liked = dao
-            .has_liked_match(&match_id, &jwt_data.sub)
+            .has_liked_match(&match_id, &uid)
             .await
             .map_err(dao_internal)?;
         Ok(UpdateMatchResponse::Match(Json(match_from_records(
@@ -1915,6 +1944,7 @@ impl Api {
             input.response
         );
 
+        let uid = self.require_uid(dao, &jwt_data).await?;
         // The match tells us the sides and which side the caller plays for.
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
@@ -1928,7 +1958,7 @@ impl Api {
         let caller_player = agg
             .players
             .iter()
-            .find(|p| p.user_id.as_deref() == Some(jwt_data.sub.as_str()));
+            .find(|p| p.user_id.as_deref() == Some(uid.as_str()));
         let (caller_player_id, caller_side_id) = match caller_player.and_then(|p| {
             p.side_id
                 .as_ref()
@@ -2051,8 +2081,9 @@ impl Api {
         Path(match_id): Path<String>,
     ) -> Result<LikeResponse> {
         info!("Liking match {match_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
         // Idempotent create of the caller -> match like edge (bumps like_count).
-        dao.like_match(&match_id, &jwt_data.sub, &now_iso())
+        dao.like_match(&match_id, &uid, &now_iso())
             .await
             .map_err(dao_internal)?;
         Ok(LikeResponse::Ok)
@@ -2066,8 +2097,9 @@ impl Api {
         Path(match_id): Path<String>,
     ) -> Result<LikeResponse> {
         info!("Unliking match {match_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
         // Idempotent removal of the caller -> match like edge.
-        dao.unlike_match(&match_id, &jwt_data.sub)
+        dao.unlike_match(&match_id, &uid)
             .await
             .map_err(dao_internal)?;
         Ok(LikeResponse::Ok)
@@ -2130,6 +2162,7 @@ impl Api {
     ) -> Result<CreateCommentResponse> {
         info!("Creating comment on match {match_id}");
         let input = input.0;
+        let uid = self.require_uid(dao, &jwt_data).await?;
         if input.text.trim().is_empty() {
             return Ok(CreateCommentResponse::ValidationError(PlainText(
                 "comment text must not be empty".into(),
@@ -2140,7 +2173,7 @@ impl Api {
             comment_id: new_id(),
             match_id: match_id.clone(),
             parent_id: input.parent_id.clone(),
-            author_user_id: Some(jwt_data.sub.clone()),
+            author_user_id: Some(uid.clone()),
             text: Some(input.text),
             created_at: now_iso(),
             edited_at: None,
@@ -2174,7 +2207,7 @@ impl Api {
         }
 
         // Author is the caller.
-        let author = self.try_user_profile(dao, &jwt_data.sub).await?;
+        let author = self.try_user_profile(dao, &uid).await?;
         Ok(CreateCommentResponse::Comment(Json(comment_from_record(
             &record, author,
         ))))
@@ -2218,6 +2251,7 @@ impl Api {
     ) -> Result<UpdateCommentResponse> {
         info!("Updating comment {comment_id} on match {match_id}");
         let input = input.0;
+        let uid = self.require_uid(dao, &jwt_data).await?;
         if input.text.trim().is_empty() {
             return Ok(UpdateCommentResponse::ValidationError(PlainText(
                 "comment text must not be empty".into(),
@@ -2236,7 +2270,7 @@ impl Api {
                 )));
             }
         };
-        if existing.author_user_id.as_deref() != Some(jwt_data.sub.as_str()) {
+        if existing.author_user_id.as_deref() != Some(uid.as_str()) {
             return Ok(UpdateCommentResponse::Forbidden(PlainText(
                 "only the author can edit this comment".into(),
             )));
@@ -2250,7 +2284,7 @@ impl Api {
         let mut updated = existing;
         updated.text = Some(input.text);
         updated.edited_at = Some(edited_at);
-        let author = self.try_user_profile(dao, &jwt_data.sub).await?;
+        let author = self.try_user_profile(dao, &uid).await?;
         Ok(UpdateCommentResponse::Comment(Json(comment_from_record(
             &updated, author,
         ))))
@@ -2265,6 +2299,7 @@ impl Api {
         Path(comment_id): Path<String>,
     ) -> Result<DeleteCommentResponse> {
         info!("Deleting comment {comment_id} on match {match_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
         let existing = match dao
             .get_comment(&match_id, &comment_id)
             .await
@@ -2277,7 +2312,7 @@ impl Api {
                 )));
             }
         };
-        if existing.author_user_id.as_deref() != Some(jwt_data.sub.as_str()) {
+        if existing.author_user_id.as_deref() != Some(uid.as_str()) {
             return Ok(DeleteCommentResponse::Forbidden(PlainText(
                 "only the author can delete this comment".into(),
             )));
@@ -2306,9 +2341,10 @@ impl Api {
         /// Maximum number of items to return (defaults to 20, capped at 50).
         Query(limit): Query<Option<u32>>,
     ) -> Result<ListTeamsResponse> {
-        info!("Listing teams for {}", jwt_data.sub);
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        info!("Listing teams for {uid}");
         let page = dao
-            .list_user_teams(&jwt_data.sub, cursor.as_deref(), page_limit(limit))
+            .list_user_teams(&uid, cursor.as_deref(), page_limit(limit))
             .await
             .map_err(dao_internal)?;
 
@@ -2388,6 +2424,7 @@ impl Api {
         input: Json<CreateTeamInput>,
     ) -> Result<CreateTeamResponse> {
         info!("Creating team {}", input.name);
+        let uid = self.require_uid(dao, &jwt_data).await?;
         let now = now_iso();
         let team = dao::records::TeamRecord {
             id: new_id(),
@@ -2401,7 +2438,7 @@ impl Api {
         let creator = dao::records::TeamMemberRecord {
             team_id: team.id.clone(),
             membership_id: new_id(),
-            user_id: Some(jwt_data.sub.clone()),
+            user_id: Some(uid.clone()),
             display_name: None,
             role: String::from("admin"),
             invitation: None,
@@ -2429,10 +2466,11 @@ impl Api {
         Path(team_id): Path<String>,
     ) -> Result<GetTeamResponse> {
         info!("Getting team {team_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
         match dao.get_team(&team_id).await.map_err(dao_internal)? {
             Some(agg) => {
                 let is_followed_by_me = dao
-                    .is_following_team(&jwt_data.sub, &team_id)
+                    .is_following_team(&uid, &team_id)
                     .await
                     .map_err(dao_internal)?;
                 Ok(GetTeamResponse::Team(Json(team_from_records(
@@ -2572,6 +2610,7 @@ impl Api {
         input: Json<AddInvitationsInput>,
     ) -> Result<AddInvitationsResponse> {
         info!("Inviting to match {match_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
         // Match must exist.
         if dao
             .get_match(&match_id)
@@ -2587,9 +2626,7 @@ impl Api {
             match_id: match_id.clone(),
             match_name: String::new(), // snapshot label; TODO: read match name
         };
-        let created = self
-            .create_invitations(dao, &jwt_data.sub, ctx, &input.0)
-            .await?;
+        let created = self.create_invitations(dao, &uid, ctx, &input.0).await?;
         // TODO: also create the MatchPlayer roster slot per invitee (side_id from
         // input) — deferred with the roster-reconciliation work.
         Ok(AddInvitationsResponse::Invitations(Json(created)))
@@ -2604,6 +2641,7 @@ impl Api {
         input: Json<AddInvitationsInput>,
     ) -> Result<AddInvitationsResponse> {
         info!("Inviting to team {team_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
         let team = match dao.get_team_meta(&team_id).await.map_err(dao_internal)? {
             Some(t) => t,
             None => {
@@ -2616,9 +2654,7 @@ impl Api {
             team_id: team_id.clone(),
             team_name: team.name,
         };
-        let created = self
-            .create_invitations(dao, &jwt_data.sub, ctx, &input.0)
-            .await?;
+        let created = self.create_invitations(dao, &uid, ctx, &input.0).await?;
         // TODO: also create the TeamMember slot per invitee — deferred.
         Ok(AddInvitationsResponse::Invitations(Json(created)))
     }
@@ -2689,10 +2725,11 @@ impl Api {
         Query(limit): Query<Option<u32>>,
     ) -> Result<ListInvitationsResponse> {
         info!("Listing current user's invitations");
+        let uid = self.require_uid(dao, &jwt_data).await?;
         let status_str = status.as_ref().map(invitation_status_str);
         let page = dao
             .list_user_invitations(
-                &jwt_data.sub,
+                &uid,
                 status_str,
                 cursor.as_deref(),
                 page_limit(limit),
@@ -2720,9 +2757,10 @@ impl Api {
         /// Maximum number of items to return (defaults to 20, capped at 50).
         Query(limit): Query<Option<u32>>,
     ) -> Result<ListNotificationsResponse> {
-        info!("Listing notifications for {}", jwt_data.sub);
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        info!("Listing notifications for {uid}");
         let page = dao
-            .list_notifications(&jwt_data.sub, cursor.as_deref(), page_limit(limit))
+            .list_notifications(&uid, cursor.as_deref(), page_limit(limit))
             .await
             .map_err(dao_internal)?;
 
@@ -2765,9 +2803,10 @@ impl Api {
         Data(dao): Data<&dao::Dao>,
         AuthSchema(jwt_data): AuthSchema,
     ) -> Result<UnreadCountResponse> {
-        info!("Getting unread notification count for {}", jwt_data.sub);
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        info!("Getting unread notification count for {uid}");
         let count = dao
-            .unread_notification_count(&jwt_data.sub)
+            .unread_notification_count(&uid)
             .await
             .map_err(dao_internal)?;
         Ok(UnreadCountResponse::Count(Json(UnreadCount {
@@ -2781,8 +2820,9 @@ impl Api {
         Data(dao): Data<&dao::Dao>,
         AuthSchema(jwt_data): AuthSchema,
     ) -> Result<MarkNotificationReadResponse> {
-        info!("Marking all notifications read for {}", jwt_data.sub);
-        dao.mark_all_notifications_read(&jwt_data.sub)
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        info!("Marking all notifications read for {uid}");
+        dao.mark_all_notifications_read(&uid)
             .await
             .map_err(dao_internal)?;
         Ok(MarkNotificationReadResponse::Ok)
@@ -2796,7 +2836,8 @@ impl Api {
         Path(notification_id): Path<String>,
     ) -> Result<MarkNotificationReadResponse> {
         info!("Marking notification {notification_id} read");
-        dao.mark_notification_read(&jwt_data.sub, &notification_id)
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        dao.mark_notification_read(&uid, &notification_id)
             .await
             .map_err(dao_internal)?;
         Ok(MarkNotificationReadResponse::Ok)
@@ -2832,6 +2873,7 @@ impl Api {
         Path(invitation_id): Path<String>,
     ) -> Result<RevokeInvitationResponse> {
         info!("Revoking invitation {invitation_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
         match dao
             .get_invitation(&invitation_id)
             .await
@@ -2842,7 +2884,7 @@ impl Api {
                     "invitation not found".into(),
                 )));
             }
-            Some(rec) if rec.invited_by_user_id != jwt_data.sub => {
+            Some(rec) if rec.invited_by_user_id != uid => {
                 return Ok(RevokeInvitationResponse::Forbidden(PlainText(
                     "only the inviter can revoke this invitation".into(),
                 )));
@@ -2868,6 +2910,7 @@ impl Api {
             input.response
         );
 
+        let uid = self.require_uid(dao, &jwt_data).await?;
         let rec = match dao
             .get_invitation(&invitation_id)
             .await
@@ -2881,7 +2924,7 @@ impl Api {
             }
         };
         // Only the targeted user may respond (user-kind invitation).
-        if rec.invited_user_id.as_deref() != Some(jwt_data.sub.as_str()) {
+        if rec.invited_user_id.as_deref() != Some(uid.as_str()) {
             return Ok(RespondToInvitationResponse::Forbidden(PlainText(
                 "this invitation is not addressed to you".into(),
             )));
@@ -2964,8 +3007,9 @@ impl Api {
         AuthSchema(jwt_data): AuthSchema,
         Path(user_id): Path<String>,
     ) -> Result<FollowResponse> {
-        info!("User {} following user {user_id}", jwt_data.sub);
-        match dao.follow_user(&jwt_data.sub, &user_id, &now_iso()).await {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        info!("User {uid} following user {user_id}");
+        match dao.follow_user(&uid, &user_id, &now_iso()).await {
             Ok(()) => Ok(FollowResponse::Ok),
             Err(dao::DaoError::Conflict(msg)) => Ok(FollowResponse::NotFound(PlainText(msg))),
             Err(e) => Err(dao_internal(e)),
@@ -2979,8 +3023,9 @@ impl Api {
         AuthSchema(jwt_data): AuthSchema,
         Path(user_id): Path<String>,
     ) -> Result<FollowResponse> {
-        info!("User {} unfollowing user {user_id}", jwt_data.sub);
-        dao.unfollow_user(&jwt_data.sub, &user_id)
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        info!("User {uid} unfollowing user {user_id}");
+        dao.unfollow_user(&uid, &user_id)
             .await
             .map_err(dao_internal)?;
         Ok(FollowResponse::Ok)
@@ -3041,8 +3086,9 @@ impl Api {
         AuthSchema(jwt_data): AuthSchema,
         Path(team_id): Path<String>,
     ) -> Result<FollowResponse> {
-        info!("User {} following team {team_id}", jwt_data.sub);
-        dao.follow_team(&jwt_data.sub, &team_id, &now_iso())
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        info!("User {uid} following team {team_id}");
+        dao.follow_team(&uid, &team_id, &now_iso())
             .await
             .map_err(dao_internal)?;
         Ok(FollowResponse::Ok)
@@ -3055,8 +3101,9 @@ impl Api {
         AuthSchema(jwt_data): AuthSchema,
         Path(team_id): Path<String>,
     ) -> Result<FollowResponse> {
-        info!("User {} unfollowing team {team_id}", jwt_data.sub);
-        dao.unfollow_team(&jwt_data.sub, &team_id)
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        info!("User {uid} unfollowing team {team_id}");
+        dao.unfollow_team(&uid, &team_id)
             .await
             .map_err(dao_internal)?;
         Ok(FollowResponse::Ok)

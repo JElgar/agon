@@ -5,16 +5,14 @@
 //! notification generation. See docs/async-design.md.
 //!
 //! The inline slice always runs. Multi-step orchestration (feed fan-out, the
-//! accept-invitation saga) lives in the `temporal` module behind the
-//! off-by-default `temporal` feature; when enabled it runs a Temporal worker
-//! alongside the consumer loop in this same binary.
+//! accept-invitation saga) lives in the `temporal` module and runs a Temporal
+//! worker alongside the consumer loop in this same binary.
 
 mod config;
 mod consumer;
 mod error;
 mod event;
 mod handlers;
-#[cfg(feature = "temporal")]
 mod temporal;
 
 use agon_core::dao::Dao;
@@ -54,10 +52,8 @@ async fn main() {
 
     let consumer = Consumer::new(sqs, dao.clone(), search.clone(), config);
 
-    // With the `temporal` feature, attach a client so multi-step stream events
-    // start workflows. A connection failure here is fatal (the feature was
-    // explicitly enabled, so Temporal is expected to be reachable).
-    #[cfg(feature = "temporal")]
+    // Attach a client so multi-step stream events start workflows. A connection
+    // failure here is fatal — Temporal is a required dependency of the worker.
     let consumer = match temporal::client::TemporalClient::connect().await {
         Ok(client) => consumer.with_temporal(client),
         Err(e) => {
@@ -66,24 +62,17 @@ async fn main() {
         }
     };
 
-    // Without Temporal: just run the SQS consumer until shutdown.
-    #[cfg(not(feature = "temporal"))]
-    consumer.run(Box::pin(shutdown_signal())).await;
-
-    // With Temporal: run the SQS consumer AND the Temporal worker concurrently.
-    // The Temporal worker's futures are `!Send` (workflows run single-threaded
-    // by design, using Rc/RefCell internally), so it cannot be `tokio::spawn`ed
-    // — `join!` polls both on this same task, which doesn't require `Send`.
-    #[cfg(feature = "temporal")]
-    {
-        let consumer_fut = consumer.run(Box::pin(shutdown_signal()));
-        let temporal_fut = async {
-            if let Err(e) = temporal::worker::run(dao, search).await {
-                tracing::error!(error = %e, "temporal worker exited with error");
-            }
-        };
-        tokio::join!(consumer_fut, temporal_fut);
-    }
+    // Run the SQS consumer AND the Temporal worker concurrently. The Temporal
+    // worker's futures are `!Send` (workflows run single-threaded by design,
+    // using Rc/RefCell internally), so it cannot be `tokio::spawn`ed — `join!`
+    // polls both on this same task, which doesn't require `Send`.
+    let consumer_fut = consumer.run(Box::pin(shutdown_signal()));
+    let temporal_fut = async {
+        if let Err(e) = temporal::worker::run(dao, search).await {
+            tracing::error!(error = %e, "temporal worker exited with error");
+        }
+    };
+    tokio::join!(consumer_fut, temporal_fut);
 
     tracing::info!("worker stopped");
 }

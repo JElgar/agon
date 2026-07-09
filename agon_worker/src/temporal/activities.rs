@@ -1,12 +1,6 @@
 //! Temporal activities — the thin, idempotent, retryable units that touch the
 //! outside world. Each reuses the shared `agon_core` DAO / search client.
 //!
-//! ⚠️ UNVERIFIED: written against the Temporal Rust SDK **Public Preview** API
-//! (`temporalio-sdk` README as of 2026-07). That SDK is a churning git
-//! dependency with no crates.io release and cannot be compiled in this
-//! environment, so signatures here may need adjustment against the exact SDK
-//! revision you pin. Gated behind the `temporal` cargo feature.
-//!
 //! Activities take a single (de)serializable argument, so multi-field inputs are
 //! passed as structs.
 

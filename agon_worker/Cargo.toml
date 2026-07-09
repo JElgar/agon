@@ -8,26 +8,10 @@ edition = "2024"
 # (Meilisearch) and notification generation.
 #
 # Multi-step orchestration (feed fan-out, the accept-invitation saga) lives in
-# the `temporal` module behind the OFF-BY-DEFAULT `temporal` feature. That code
-# targets the Temporal Rust SDK Public Preview — a churning git dependency with
-# no crates.io release — so it is gated to keep the default build (the verified
-# inline worker) green. Enable with `--features temporal` once the SDK revision
-# is pinned and reconciled. See docs/async-design.md.
+# the `temporal` module and runs a Temporal worker alongside the consumer loop
+# in this same binary. See docs/async-design.md.
 #
 # Shares the DynamoDB data-access layer with the API via agon_core. No poem.
-
-[features]
-default = []
-# Enables the Temporal worker + client (feed fan-out, accept-invitation saga).
-# UNVERIFIED against a specific SDK revision — see src/temporal/mod.rs.
-temporal = [
-    "dep:temporalio-sdk",
-    "dep:temporalio-client",
-    "dep:temporalio-sdk-core",
-    "dep:temporalio-macros",
-    "dep:temporalio-workflow",
-    "dep:temporalio-common",
-]
 
 [dependencies]
 agon_core = { path = "../agon_core" }
@@ -46,12 +30,12 @@ tracing = "0.1.41"
 # Subscriber setup + OTLP export is centralised in agon_core::telemetry.
 futures = "0.3"
 
-# Temporal Rust SDK — optional, only pulled in by the `temporal` feature.
-temporalio-sdk = { version = "0.5.0", optional = true }
-temporalio-client = { version = "0.5.0", optional = true }
-temporalio-sdk-core = { version = "0.5.0", optional = true }
-temporalio-macros = { version = "0.5.0", optional = true }
+# Temporal Rust SDK (durable orchestration for the multi-step async work).
+temporalio-sdk = "0.5.0"
+temporalio-client = "0.5.0"
+temporalio-sdk-core = "0.5.0"
+temporalio-macros = "0.5.0"
 # Referenced by the workflow/activity macro expansions (`::temporalio_workflow::…`)
 # and for the WorkflowIdConflictPolicy enum, so both must be direct deps.
-temporalio-workflow = { version = "0.5.0", optional = true }
-temporalio-common = { version = "0.5.0", optional = true }
+temporalio-workflow = "0.5.0"
+temporalio-common = "0.5.0"

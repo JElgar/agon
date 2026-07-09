@@ -1,8 +1,6 @@
 //! Temporal worker bootstrap: connect a client, register the workflows +
 //! activities, and run the worker poll loop.
 //!
-//! ⚠️ UNVERIFIED — see `temporal/mod.rs`. Gated behind the `temporal` feature.
-//!
 //! This runs alongside the SQS consumer in the same binary (spawned as a
 //! separate task in `main`), sharing the same `agon_core` clients.
 

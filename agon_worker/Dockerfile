@@ -12,10 +12,9 @@ WORKDIR /app
 # Cargo.toml even when building a single package with -p.
 COPY . .
 
-# Build only the worker binary (and its dependencies). Default features only —
-# the `temporal` feature additionally needs `protoc` installed here (its deps
-# compile protobuf at build time); add `protobuf-compiler` + `--features
-# temporal` when/if that feature is enabled in the deployed image.
+# Build only the worker binary (and its dependencies). The Temporal SDK deps
+# compile protobuf at build time, so `protoc` must be present.
+RUN apt-get update && apt-get install -y protobuf-compiler && rm -rf /var/lib/apt/lists/*
 RUN cargo build --release -p agon_worker
 
 # Stage 2 - Runtime

@@ -2,10 +2,9 @@
 //! work (feed fan-out, the accept-invitation saga). Workflows call activities;
 //! they never touch DynamoDB / the network directly.
 //!
-//! Verified against the Temporal Rust SDK (Public Preview) source at the pinned
-//! git revision — the workflow/activity macros, `WorkflowContext::start_activity`
-//! and `workflow_time`, and the unit-struct + `#[run(ctx, input)]` shape all
-//! match the SDK's own examples. Still gated behind the `temporal` feature.
+//! Built against the Temporal Rust SDK (crates.io 0.5) — the workflow/activity
+//! macros, `WorkflowContext::start_activity` and `workflow_time`, and the
+//! unit-struct + `#[run(ctx, input)]` shape all match the SDK's own examples.
 //!
 //! Idempotency / determinism:
 //! - Workflow ids are deterministic (`fanout-<match_id>`, `accept-<inv_id>`) and
@@ -100,7 +99,7 @@ impl FanOutMatch {
 // ===========================================================================
 
 /// Inputs to the accept-invitation saga.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcceptInvitationInput {
     pub invitation_id: String,
     pub accepting_user_id: String,

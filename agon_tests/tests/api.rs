@@ -149,12 +149,8 @@ async fn create_user_and_get_me() {
     assert_eq!(me.email, user.email);
 }
 
-/// The user's email is taken from the verified JWT `email` claim, NOT from the
-/// request body — so a caller can't sign up as an arbitrary email. We create a
-/// user whose token carries a specific email and assert the account gets exactly
-/// that email (the body has no email field to override it with).
 #[tokio::test]
-async fn signup_email_comes_from_the_token_not_the_body() {
+async fn signup_email_comes_from_the_token() {
     let subject = Uuid::new_v4().to_string();
     let claimed_email = format!("claimed-{subject}@example.com");
     let config = config_with_email(&subject, &claimed_email);

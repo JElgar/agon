@@ -1,5 +1,4 @@
 import * as pulumi from "@pulumi/pulumi";
-import * as hcloud from "@pulumi/hcloud";
 import * as command from '@pulumi/command';
 import * as k8s from "@pulumi/kubernetes";
 import * as cloudflare from "@pulumi/cloudflare";
@@ -14,24 +13,26 @@ const baseDomain = `${subdomainPrefix}.get-agon.com`;
 const privateKeyBase64 = config.requireSecret("privateKeyBase64");
 const privateKey = privateKeyBase64.apply(key => Buffer.from(key, 'base64').toString('utf8'));
 
-// pulumi config set --secret publicKey "$(cat ~/.ssh/pulumi_agon_key.pub | tr -d '\n\r')"
-const publicKey = config.requireSecret("publicKey");
-
-const sshKey = new hcloud.SshKey("main", {
-	name: `${pulumi.getStack()}-ssh-key`,
-	publicKey: publicKey,
-});
-
-const node = new hcloud.Server("node", {
-	name: `${pulumi.getStack()}-node`,
-	image: "ubuntu-26.04",
-	serverType: "cpx22",
-	publicNets: [{
-		ipv4Enabled: true,
-		ipv6Enabled: true,
-	}],
-	sshKeys: [sshKey.name],
-});
+// ── OVH VPS (replaces the old Hetzner cpx22) ─────────────────────────────────
+// The VPS is provisioned and SSH-keyed OUT OF BAND (via the OVH control panel),
+// not by Pulumi: the @ovhcloud/pulumi-ovh provider (v2.15.0) can't read a VPS
+// back into state after ordering ("Could not find required property
+// 'display_name'"), and its import path is equally broken. Since the VPS is a
+// one-time monthly order we never want Pulumi to touch again (a re-order =
+// another month's charge), managing it here bought only downside.
+//
+// MANUAL PREREQUISITES per stack (before `pulumi up`):
+//   1. Order the VPS in the OVH panel.
+//   2. Reinstall it with Ubuntu 26.04 and inject the public key matching the
+//      `privateKeyBase64` stack secret (i.e. ~/.ssh/pulumi_agon_key.pub — paste
+//      it in the panel's reinstall dialog), so `ssh root@<ip>` works.
+//   3. Pin the node in config:
+//        pulumi config set nodeIp <ipv4>
+//        pulumi config set nodeServiceName <vpsXXXX.vps.ovh.net>
+// staging VPS: vps-2027-model3, 6 vCPU / 12GB / 100GB NVMe, ~£11.13/mo.
+// Teardown is a manual cancel in the OVH panel (deliberately not automated).
+const nodeIpv4 = config.require("nodeIp");
+const nodeServiceName = config.require("nodeServiceName");
 
 const cloudflareZoneId = '3d1b2636aa31acc40c4044830fe4982c';
 
@@ -39,13 +40,13 @@ const dnsRecord = new cloudflare.DnsRecord('record', {
 	zoneId: cloudflareZoneId,
 	name: `*.${baseDomain}`,
 	type: 'A',
-	content: node.ipv4Address,
+	content: nodeIpv4,
 	ttl: 300,
 	proxied: false,
 });
 
 const connection = {
-	host: node.ipv4Address,
+	host: nodeIpv4,
 	user: 'root',
 	privateKey,
 };
@@ -60,7 +61,7 @@ const getKubeconfig = new command.remote.Command('get-kubeconfig', {
 	create: 'cat /etc/rancher/k3s/k3s.yaml',
 }, { dependsOn: [installK3s] })
 
-const kubeconfig = pulumi.all([getKubeconfig.stdout, node.ipv4Address]).apply(([kubeconfig, serverIp]) => {
+const kubeconfig = pulumi.all([getKubeconfig.stdout, nodeIpv4]).apply(([kubeconfig, serverIp]) => {
 	return kubeconfig.replace('127.0.0.1', serverIp)
 });
 
@@ -309,7 +310,7 @@ const temporal = new k8s.helm.v4.Chart('temporal', {
 // ───────────────────────────────────────────────────────────────────────────
 
 // AWS credentials + region are read from the `aws:` config namespace by the
-// default provider, exactly like cloudflare:apiToken / hcloud:token. Set them
+// default provider, exactly like cloudflare:apiToken / ovh:applicationKey. Set them
 // as stack secrets (see the commented commands at the top of this file group):
 //   pulumi config set aws:region eu-west-1
 //   pulumi config set --secret aws:accessKey <id>
@@ -707,7 +708,7 @@ const meiliUrl = meiliService.metadata.name.apply(name => `http://${name}:7700`)
 // The apps push over OTLP/gRPC to `alloy.observability:4317`; only Alloy knows
 // the individual backends, so swapping/scaling them never touches the Rust.
 //
-// ⚠️ Sizing: this whole stack runs on the single cpx22 node (~4 GB). Every
+// ⚠️ Sizing: this whole stack runs on the single OVH VPS-3 node (12 GB). Every
 // component below sets tight resource requests/limits and short retention. If
 // the node starts OOMing, the first levers are bumping the node type or cutting
 // retention further. See docs/observability.md.
@@ -1275,6 +1276,14 @@ new k8s.apps.v1.Deployment("agon-worker-deployment", {
 									}
 								},
 							},
+							// Temporal connection. The SDK config loader reads these
+							// (TEMPORAL_ADDRESS / TEMPORAL_NAMESPACE); it otherwise defaults to
+							// http://localhost:7233, which would crash-loop the worker since a
+							// failed connect is fatal (see agon_worker/src/main.rs).
+							// `temporal-frontend` is the Helm chart gRPC frontend Service (7233);
+							// `temporal-web` (used by the ingress) is the UI only.
+							{ name: "TEMPORAL_ADDRESS", value: "temporal-frontend:7233" },
+							{ name: "TEMPORAL_NAMESPACE", value: "default" },
 							// OTLP export to the Alloy collector. Unset ⇒ stdout logs only.
 							{ name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: otlpEndpoint },
 							{ name: "OTEL_SERVICE_NAME", value: "agon-worker" },

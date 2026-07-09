@@ -131,9 +131,7 @@ fn team_doc(t: &TeamRecord) -> TeamDoc {
 }
 
 /// Build the match search document from a match aggregate. Public so the
-/// Temporal `index_match` activity can reuse the exact same doc shape. Only the
-/// `temporal` feature calls this, so it's gated to keep the default build clean.
-#[cfg(feature = "temporal")]
+/// Temporal `index_match` activity can reuse the exact same doc shape.
 pub fn match_search_doc(agg: &MatchAggregate) -> MatchDoc {
     match_doc(agg)
 }

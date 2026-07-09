@@ -1,8 +1,6 @@
 //! Temporal client wrapper the SQS consumer uses to *start* workflows on the
 //! relevant stream events, with deterministic (idempotent) workflow ids.
 //!
-//! ⚠️ UNVERIFIED — see `temporal/mod.rs`. Gated behind the `temporal` feature.
-//!
 //! Starting a workflow whose id already exists is treated as success (the point
 //! of deterministic ids): a redelivered stream event attaches to the existing
 //! run rather than erroring or double-processing.

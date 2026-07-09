@@ -49,6 +49,11 @@ pub enum Pk {
     User(String),
     /// Email uniqueness guard. `EMAIL#<lowercased-email>`
     EmailGuard(String),
+    /// Auth-identity mapping: the IdP `sub` claim → our internal user id.
+    /// `AUTH#<sub>`. Decouples the user's stable internal id from the auth
+    /// provider's subject so the provider can change without rewriting every
+    /// `USER#`/`UFEED#`/`FOLLOWER#` key (only these guards get rewritten).
+    AuthGuard(String),
     /// A team and its members/followers. `TEAM#<tid>`
     Team(String),
     /// A match and its sides/players/score/likes/top-level comments. `MATCH#<mid>`
@@ -69,6 +74,7 @@ impl Pk {
         match self {
             Pk::User(_) => "USER",
             Pk::EmailGuard(_) => "EMAIL",
+            Pk::AuthGuard(_) => "AUTH",
             Pk::Team(_) => "TEAM",
             Pk::Match(_) => "MATCH",
             Pk::CommentReplies(_) => "CMT",
@@ -90,6 +96,7 @@ impl fmt::Display for Pk {
         let value = match self {
             Pk::User(v)
             | Pk::EmailGuard(v)
+            | Pk::AuthGuard(v)
             | Pk::Team(v)
             | Pk::Match(v)
             | Pk::CommentReplies(v)
@@ -114,6 +121,7 @@ impl FromStr for Pk {
         match prefix {
             "USER" => Ok(Pk::User(value.into())),
             "EMAIL" => Ok(Pk::EmailGuard(value.into())),
+            "AUTH" => Ok(Pk::AuthGuard(value.into())),
             "TEAM" => Ok(Pk::Team(value.into())),
             "MATCH" => Ok(Pk::Match(value.into())),
             "CMT" => Ok(Pk::CommentReplies(value.into())),
@@ -299,6 +307,7 @@ mod tests {
             Pk::EmailGuard("sofia@example.com".into()),
             "EMAIL#sofia@example.com",
         );
+        pk_roundtrip(Pk::AuthGuard("sub-abc-123".into()), "AUTH#sub-abc-123");
         pk_roundtrip(Pk::Team("t1".into()), "TEAM#t1");
         pk_roundtrip(Pk::Match("m1".into()), "MATCH#m1");
         pk_roundtrip(Pk::CommentReplies("c1".into()), "CMT#c1");

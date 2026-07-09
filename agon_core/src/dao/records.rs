@@ -126,6 +126,18 @@ pub struct EmailGuardRecord {
     pub user_id: String,
 }
 
+/// `AUTH#<sub>` / `#GUARD` — maps an identity-provider subject (`sub`) to our
+/// stable internal user id.
+///
+/// The internal `user_id` never changes; only this mapping does when a user's
+/// `sub` changes (e.g. migrating auth providers). Resolving a request therefore
+/// looks up `AUTH#<sub>` to get the `user_id`, and everything downstream keys off
+/// that internal id. Migrating providers rewrites only these guard items.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AuthGuardRecord {
+    pub user_id: String,
+}
+
 /// `USER#<id>` / `#PROFILE` — the user profile item.
 ///
 /// Counts are denormalized and maintained via atomic `ADD` (see follow ops).

@@ -32,9 +32,9 @@ pub struct Consumer {
     dao: Dao,
     search: SearchClient,
     config: Arc<Config>,
-    /// Client for starting multi-step workflows. Only present with the
-    /// `temporal` feature; when absent, multi-step work is not started here.
-    #[cfg(feature = "temporal")]
+    /// Client for starting multi-step workflows. Attached in `main` after the
+    /// Temporal connection succeeds; when absent (e.g. in unit tests), multi-step
+    /// work is not started here.
     temporal: Option<crate::temporal::client::TemporalClient>,
 }
 
@@ -45,13 +45,11 @@ impl Consumer {
             dao,
             search,
             config: Arc::new(config),
-            #[cfg(feature = "temporal")]
             temporal: None,
         }
     }
 
     /// Attach a Temporal client so multi-step events start workflows.
-    #[cfg(feature = "temporal")]
     pub fn with_temporal(mut self, client: crate::temporal::client::TemporalClient) -> Self {
         self.temporal = Some(client);
         self
@@ -152,89 +150,32 @@ impl Consumer {
         handlers::route(&self.dao, &self.search, &event, &now).await?;
 
         // Multi-step work: start the relevant Temporal workflow (idempotent via
-        // deterministic ids). Only compiled/attempted with the `temporal`
-        // feature; a start failure is transient so the message redelivers.
-        #[cfg(feature = "temporal")]
+        // deterministic ids). A start failure is transient, so the message is left
+        // on the queue and redelivers.
         self.maybe_start_workflow(&event).await?;
 
         Ok(())
     }
 
-    /// Start a Temporal workflow for a multi-step event, if a client is attached:
-    /// a match meta write → fan-out; an invitation that just transitioned to
-    /// accepted → the accept saga.
-    #[cfg(feature = "temporal")]
+    /// Start the Temporal workflow this event calls for, if a client is attached.
+    /// The routing decision is factored out into [`workflow_for`] (pure, so it's
+    /// unit-tested); this method just performs the resulting start.
     async fn maybe_start_workflow(&self, event: &ChangeEvent) -> WorkerResult<()> {
-        use agon_core::dao::keys::{Pk, Sk};
-
         let Some(temporal) = &self.temporal else {
             return Ok(());
         };
 
-        match (&event.pk, &event.sk) {
-            // A match was created or updated → (re)fan it into feeds.
-            (Pk::Match(match_id), Sk::Meta) if !event.kind.is_remove() => {
-                temporal
-                    .start_fanout(match_id)
-                    .await
-                    .map_err(|e| WorkerError::Sqs(format!("start fanout: {e}")))?;
-            }
-            // An invitation whose status just became "accepted" → run the accept
-            // saga. Both images deserialize straight into InvitationRecord, so we
-            // detect the transition and read the full accepted record with no
-            // extra DynamoDB read. Firing on the *transition* means we start once,
-            // not on every subsequent modify of an already-accepted invitation.
-            (Pk::Invitation(_), Sk::Meta) if !event.kind.is_remove() => {
-                self.maybe_start_accept_saga(temporal, event).await?;
-            }
-            _ => {}
+        match workflow_for(event) {
+            Some(WorkflowStart::FanOut { match_id }) => temporal
+                .start_fanout(&match_id)
+                .await
+                .map_err(|e| WorkerError::Sqs(format!("start fanout: {e}")))?,
+            Some(WorkflowStart::Accept(input)) => temporal
+                .start_accept(input)
+                .await
+                .map_err(|e| WorkerError::Sqs(format!("start accept saga: {e}")))?,
+            None => {}
         }
-        Ok(())
-    }
-
-    /// Start the accept saga if this invitation event is a pending → accepted
-    /// transition. Uses the old/new images directly (no re-read): the new image
-    /// is the full accepted `InvitationRecord`.
-    #[cfg(feature = "temporal")]
-    async fn maybe_start_accept_saga(
-        &self,
-        temporal: &crate::temporal::client::TemporalClient,
-        event: &ChangeEvent,
-    ) -> WorkerResult<()> {
-        use agon_core::dao::records::{InvitationContextRecord, InvitationRecord};
-
-        let Some(new_inv) = event.new_record::<InvitationRecord>() else {
-            return Ok(());
-        };
-        // Only act on the transition into "accepted", not every modify of an
-        // already-accepted invitation.
-        let was_accepted = event
-            .old_record::<InvitationRecord>()
-            .map(|old| old.status == "accepted")
-            .unwrap_or(false);
-        if new_inv.status != "accepted" || was_accepted {
-            return Ok(());
-        }
-        // The accepter is the invited user. Skip if unidentified (unresolved token).
-        let Some(accepting_user_id) = new_inv.invited_user_id.clone() else {
-            return Ok(());
-        };
-        // Only match invites drive a re-fan-out; team invites have no feed impact.
-        let match_id = match &new_inv.context {
-            InvitationContextRecord::Match { match_id, .. } => Some(match_id.clone()),
-            InvitationContextRecord::Team { .. } => None,
-        };
-
-        let input = crate::temporal::workflows::AcceptInvitationInput {
-            invitation_id: new_inv.id.clone(),
-            accepting_user_id,
-            responded_at: new_inv.responded_at.clone().unwrap_or_default(),
-            match_id,
-        };
-        temporal
-            .start_accept(input)
-            .await
-            .map_err(|e| WorkerError::Sqs(format!("start accept saga: {e}")))?;
         Ok(())
     }
 
@@ -251,5 +192,229 @@ impl Consumer {
             // idempotent, so this is safe — just log it.
             tracing::error!(error = %e, "failed to delete message; it will redeliver");
         }
+    }
+}
+
+/// Which Temporal workflow a stream event should start, if any. Kept separate
+/// from [`Consumer`] so the routing decision is a pure function of the event —
+/// no live Temporal client — and can be asserted directly in unit tests.
+#[derive(Debug, Clone, PartialEq)]
+enum WorkflowStart {
+    /// (Re)fan a match into feeds.
+    FanOut { match_id: String },
+    /// Run the invitation-acceptance saga.
+    Accept(crate::temporal::workflows::AcceptInvitationInput),
+}
+
+/// Decide which workflow (if any) a change event should start:
+/// - a match meta write (not a remove) → fan-out;
+/// - an invitation that just transitioned *into* "accepted" → the accept saga.
+///
+/// For the invitation case both images deserialize straight into
+/// `InvitationRecord`, so we detect the transition and read the full accepted
+/// record with no extra DynamoDB read. Firing on the *transition* means we start
+/// once, not on every subsequent modify of an already-accepted invitation.
+fn workflow_for(event: &ChangeEvent) -> Option<WorkflowStart> {
+    use agon_core::dao::keys::{Pk, Sk};
+    use agon_core::dao::records::{InvitationContextRecord, InvitationRecord};
+
+    if event.kind.is_remove() {
+        return None;
+    }
+
+    match (&event.pk, &event.sk) {
+        // A match was created or updated → (re)fan it into feeds.
+        (Pk::Match(match_id), Sk::Meta) => Some(WorkflowStart::FanOut {
+            match_id: match_id.clone(),
+        }),
+        // An invitation meta write → start the accept saga iff this is a
+        // pending → accepted transition.
+        (Pk::Invitation(_), Sk::Meta) => {
+            let new_inv = event.new_record::<InvitationRecord>()?;
+            // Only act on the transition into "accepted", not every modify of an
+            // already-accepted invitation.
+            let was_accepted = event
+                .old_record::<InvitationRecord>()
+                .map(|old| old.status == "accepted")
+                .unwrap_or(false);
+            if new_inv.status != "accepted" || was_accepted {
+                return None;
+            }
+            // The accepter is the invited user. Skip if unidentified (unresolved
+            // token).
+            let accepting_user_id = new_inv.invited_user_id.clone()?;
+            // Only match invites drive a re-fan-out; team invites have no feed
+            // impact.
+            let match_id = match &new_inv.context {
+                InvitationContextRecord::Match { match_id, .. } => Some(match_id.clone()),
+                InvitationContextRecord::Team { .. } => None,
+            };
+            Some(WorkflowStart::Accept(
+                crate::temporal::workflows::AcceptInvitationInput {
+                    invitation_id: new_inv.id.clone(),
+                    accepting_user_id,
+                    responded_at: new_inv.responded_at.clone().unwrap_or_default(),
+                    match_id,
+                },
+            ))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{ChangeKind, Image};
+    use agon_core::dao::records::{
+        InvitationContextRecord, InvitationKindRecord, InvitationRecord,
+    };
+
+    /// Build a `ChangeEvent` from typed keys and optional old/new records, going
+    /// through the same attribute-value (de)serialization the stream uses.
+    fn event(
+        kind: ChangeKind,
+        pk: &str,
+        sk: &str,
+        old: Option<&InvitationRecord>,
+        new: Option<&InvitationRecord>,
+    ) -> ChangeEvent {
+        let to_image = |r: &InvitationRecord| -> Image { serde_dynamo::to_item(r).unwrap() };
+        ChangeEvent::from_envelope(&Envelope {
+            event: kind,
+            pk: pk.into(),
+            sk: sk.into(),
+            old_image: old.map(to_image),
+            new_image: new.map(to_image),
+        })
+        .unwrap()
+    }
+
+    fn invitation(status: &str, context: InvitationContextRecord) -> InvitationRecord {
+        InvitationRecord {
+            id: "inv1".into(),
+            status: status.into(),
+            invited_by_user_id: "u_host".into(),
+            invited_user_id: Some("u_guest".into()),
+            invite_token: None,
+            kind: InvitationKindRecord::User {
+                invited_user_id: "u_guest".into(),
+            },
+            context,
+            invited_at: "2026-07-01T10:00:00Z".into(),
+            responded_at: Some("2026-07-02T09:00:00Z".into()),
+        }
+    }
+
+    fn match_ctx() -> InvitationContextRecord {
+        InvitationContextRecord::Match {
+            match_id: "m1".into(),
+            match_name: "Tennis".into(),
+        }
+    }
+
+    fn team_ctx() -> InvitationContextRecord {
+        InvitationContextRecord::Team {
+            team_id: "t1".into(),
+            team_name: "Aces".into(),
+        }
+    }
+
+    #[test]
+    fn match_meta_write_starts_fanout() {
+        let ev = event(ChangeKind::Insert, "MATCH#m1", "#META", None, None);
+        assert_eq!(
+            workflow_for(&ev),
+            Some(WorkflowStart::FanOut {
+                match_id: "m1".into()
+            })
+        );
+    }
+
+    #[test]
+    fn match_meta_remove_starts_nothing() {
+        let ev = event(ChangeKind::Remove, "MATCH#m1", "#META", None, None);
+        assert_eq!(workflow_for(&ev), None);
+    }
+
+    #[test]
+    fn non_meta_match_write_starts_nothing() {
+        // A side write under the same match partition is not a fan-out trigger.
+        let ev = event(ChangeKind::Modify, "MATCH#m1", "SIDE#s1", None, None);
+        assert_eq!(workflow_for(&ev), None);
+    }
+
+    #[test]
+    fn accept_transition_starts_accept_saga_with_match_id() {
+        let old = invitation("pending", match_ctx());
+        let new = invitation("accepted", match_ctx());
+        let ev = event(
+            ChangeKind::Modify,
+            "INVITATION#inv1",
+            "#META",
+            Some(&old),
+            Some(&new),
+        );
+        assert_eq!(
+            workflow_for(&ev),
+            Some(WorkflowStart::Accept(
+                crate::temporal::workflows::AcceptInvitationInput {
+                    invitation_id: "inv1".into(),
+                    accepting_user_id: "u_guest".into(),
+                    responded_at: "2026-07-02T09:00:00Z".into(),
+                    match_id: Some("m1".into()),
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn team_invite_accept_has_no_match_fanout() {
+        let old = invitation("pending", team_ctx());
+        let new = invitation("accepted", team_ctx());
+        let ev = event(
+            ChangeKind::Modify,
+            "INVITATION#inv1",
+            "#META",
+            Some(&old),
+            Some(&new),
+        );
+        match workflow_for(&ev) {
+            Some(WorkflowStart::Accept(input)) => assert_eq!(input.match_id, None),
+            other => panic!("expected accept saga, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn already_accepted_modify_starts_nothing() {
+        // Both images already accepted → not a transition → no saga.
+        let old = invitation("accepted", match_ctx());
+        let new = invitation("accepted", match_ctx());
+        let ev = event(
+            ChangeKind::Modify,
+            "INVITATION#inv1",
+            "#META",
+            Some(&old),
+            Some(&new),
+        );
+        assert_eq!(workflow_for(&ev), None);
+    }
+
+    #[test]
+    fn pending_insert_starts_nothing() {
+        // A freshly-created pending invitation is not yet accepted.
+        let new = invitation("pending", match_ctx());
+        let ev = event(ChangeKind::Insert, "INVITATION#inv1", "#META", None, Some(&new));
+        assert_eq!(workflow_for(&ev), None);
+    }
+
+    #[test]
+    fn accept_without_invited_user_starts_nothing() {
+        // An accepted invitation with no resolved invitee (bare token) can't
+        // identify the accepter, so the saga is skipped.
+        let mut new = invitation("accepted", match_ctx());
+        new.invited_user_id = None;
+        let ev = event(ChangeKind::Modify, "INVITATION#inv1", "#META", None, Some(&new));
+        assert_eq!(workflow_for(&ev), None);
     }
 }

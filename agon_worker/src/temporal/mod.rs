@@ -1,14 +1,6 @@
 //! Temporal integration: durable orchestration for the multi-step async work
-//! (feed fan-out, the accept-invitation saga).
-//!
-//! ⚠️ ENTIRE MODULE IS UNVERIFIED and gated behind the `temporal` cargo feature
-//! (off by default). It targets the Temporal Rust SDK **Public Preview**
-//! (`temporalio-sdk` / `temporalio-client`), a churning git dependency with no
-//! crates.io release. It cannot be compiled in this environment (no SDK, no
-//! Temporal server), so the exact SDK surface (types, method names) must be
-//! reconciled against the revision you pin before enabling the feature. The
-//! feature-gate keeps the verified inline worker (indexing + notifications)
-//! building and shipping regardless.
+//! (feed fan-out, the accept-invitation saga). Built against the Temporal Rust
+//! SDK (`temporalio-sdk` / `temporalio-client`, crates.io 0.5).
 //!
 //! Split of responsibility (see docs/async-design.md §2/§4):
 //! - The **SQS consumer** owns *capture* — every committed write arrives via the

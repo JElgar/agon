@@ -8,65 +8,111 @@ use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, from_item, s, to_item};
 use super::keys::{Pk, Sk};
-use super::records::{EmailGuardRecord, UserRecord};
+use super::records::{AuthGuardRecord, EmailGuardRecord, UserRecord};
 
 pub const TYPE_USER: &str = "user";
 pub const TYPE_EMAIL_GUARD: &str = "email_guard";
+pub const TYPE_AUTH_GUARD: &str = "auth_guard";
 
 impl Dao {
-    /// Create a user profile, atomically reserving the (lowercased) email.
+    /// Create a user profile, atomically reserving the (lowercased) email and the
+    /// auth-identity mapping.
     ///
-    /// Uses a transaction of two conditional puts: the profile item and an
-    /// `EMAIL#<email>` guard item, each requiring `attribute_not_exists(PK)`. If
-    /// the email is taken (or the id collides) the whole transaction fails and we
-    /// return `Conflict`.
-    pub async fn create_user(&self, user: &UserRecord) -> DaoResult<()> {
+    /// Uses a transaction of three conditional puts: the profile item, an
+    /// `EMAIL#<email>` guard, and an `AUTH#<sub>` guard mapping the IdP subject to
+    /// this user's internal id — each requiring `attribute_not_exists(PK)`. If the
+    /// email, the `sub`, or the id already exists the whole transaction fails and
+    /// we return `Conflict`. `user.id` is the internal id (not the `sub`).
+    pub async fn create_user(&self, sub: &str, user: &UserRecord) -> DaoResult<()> {
         let profile_item = to_item(&Pk::User(user.id.clone()), &Sk::Profile, TYPE_USER, user)?;
 
-        // The guard item only needs to exist; it stores the owning user id so the
-        // guard can be traced back / released on email change. Serialized from a
-        // real record (a map) — `serde_dynamo` rejects unit `()` as "not
-        // map-like", so it can't be used as an empty-fields placeholder.
-        let guard_pk = Pk::email_guard(&user.email);
-        let guard = EmailGuardRecord {
+        // The guard items only need to exist; each stores the owning user id so
+        // the guard can be traced back (and released/rewritten on email or auth
+        // change). Serialized from a real record (a map) — `serde_dynamo` rejects
+        // unit `()` as "not map-like", so it can't be an empty-fields placeholder.
+        let email_guard_pk = Pk::email_guard(&user.email);
+        let email_guard = EmailGuardRecord {
             user_id: user.id.clone(),
         };
-        let guard_item = to_item(&guard_pk, &Sk::Guard, TYPE_EMAIL_GUARD, &guard)?;
+        let email_guard_item =
+            to_item(&email_guard_pk, &Sk::Guard, TYPE_EMAIL_GUARD, &email_guard)?;
 
-        let put_profile = Put::builder()
-            .table_name(self.table())
-            .set_item(Some(profile_item))
-            .condition_expression("attribute_not_exists(#pk)")
-            .expression_attribute_names("#pk", ATTR_PK)
-            .build()
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        let auth_guard = AuthGuardRecord {
+            user_id: user.id.clone(),
+        };
+        let auth_guard_item = to_item(
+            &Pk::AuthGuard(sub.to_string()),
+            &Sk::Guard,
+            TYPE_AUTH_GUARD,
+            &auth_guard,
+        )?;
 
-        let put_guard = Put::builder()
-            .table_name(self.table())
-            .set_item(Some(guard_item))
-            .condition_expression("attribute_not_exists(#pk)")
-            .expression_attribute_names("#pk", ATTR_PK)
-            .build()
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        let conditional_put = |item| {
+            Put::builder()
+                .table_name(self.table())
+                .set_item(Some(item))
+                .condition_expression("attribute_not_exists(#pk)")
+                .expression_attribute_names("#pk", ATTR_PK)
+                .build()
+                .map_err(|e| DaoError::Dynamo(e.to_string()))
+        };
+
+        let put_profile = conditional_put(profile_item)?;
+        let put_email_guard = conditional_put(email_guard_item)?;
+        let put_auth_guard = conditional_put(auth_guard_item)?;
 
         let result = self
             .client
             .transact_write_items()
             .transact_items(TransactWriteItem::builder().put(put_profile).build())
-            .transact_items(TransactWriteItem::builder().put(put_guard).build())
+            .transact_items(TransactWriteItem::builder().put(put_email_guard).build())
+            .transact_items(TransactWriteItem::builder().put(put_auth_guard).build())
             .send()
             .await;
 
         match result {
             Ok(_) => Ok(()),
-            Err(e) if super::is_transaction_conditional_failure(&e) => {
-                Err(DaoError::Conflict("email or user id already exists".into()))
-            }
+            Err(e) if super::is_transaction_conditional_failure(&e) => Err(DaoError::Conflict(
+                "email, auth subject, or user id already exists".into(),
+            )),
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
     }
 
-    /// Fetch a user profile by id. `None` if no such user.
+    /// Resolve an identity-provider `sub` to our internal user id.
+    ///
+    /// Looks up the `AUTH#<sub>` guard. Returns `None` if no user has signed up
+    /// with this `sub`.
+    pub async fn get_user_id_by_sub(&self, sub: &str) -> DaoResult<Option<String>> {
+        let out = self
+            .client
+            .get_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::AuthGuard(sub.into()).to_string()))
+            .key("SK", s(Sk::Guard.to_string()))
+            .send()
+            .await
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        match out.item {
+            Some(item) => {
+                let guard: AuthGuardRecord = from_item(item)?;
+                Ok(Some(guard.user_id))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Fetch a user profile by identity-provider `sub`, resolving through the
+    /// auth-identity mapping. `None` if the `sub` maps to no user.
+    pub async fn get_user_by_sub(&self, sub: &str) -> DaoResult<Option<UserRecord>> {
+        match self.get_user_id_by_sub(sub).await? {
+            Some(user_id) => self.get_user(&user_id).await,
+            None => Ok(None),
+        }
+    }
+
+    /// Fetch a user profile by internal id. `None` if no such user.
     pub async fn get_user(&self, user_id: &str) -> DaoResult<Option<UserRecord>> {
         let out = self
             .client

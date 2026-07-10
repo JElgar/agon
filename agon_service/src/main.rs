@@ -9,7 +9,7 @@
 
 use std::{fs::File, io::Write};
 
-use base64::{Engine, prelude::BASE64_URL_SAFE};
+use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use clap::{Parser, Subcommand};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use poem::http::Uri;
@@ -2182,24 +2182,31 @@ impl Api {
         };
 
         // A reply targets a top-level comment: validate the parent exists and is
-        // itself top-level (no replying to a reply).
+        // itself top-level (no replying to a reply). A top-level comment lives at
+        // `COMMENT#<id>`; a reply at `REPLY#<id>`. If the parent id resolves to a
+        // reply, it's a (rejected) second-level reply; if it resolves to neither,
+        // the parent doesn't exist.
         if let Some(parent_id) = &input.parent_id {
-            match dao
+            if dao
                 .get_comment(&match_id, parent_id)
                 .await
                 .map_err(dao_internal)?
+                .is_none()
             {
-                Some(p) if p.parent_id.is_none() => {}
-                Some(_) => {
+                // Not a top-level comment. Is it a reply (→ 400) or absent (→ 404)?
+                if dao
+                    .get_reply(&match_id, parent_id)
+                    .await
+                    .map_err(dao_internal)?
+                    .is_some()
+                {
                     return Ok(CreateCommentResponse::ValidationError(PlainText(
                         "cannot reply to a reply".into(),
                     )));
                 }
-                None => {
-                    return Ok(CreateCommentResponse::NotFound(PlainText(
-                        "parent comment not found".into(),
-                    )));
-                }
+                return Ok(CreateCommentResponse::NotFound(PlainText(
+                    "parent comment not found".into(),
+                )));
             }
             dao.create_reply(&record).await.map_err(dao_internal)?;
         } else {
@@ -3536,7 +3543,11 @@ fn new_id() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 16];
     rand::rng().fill_bytes(&mut bytes);
-    BASE64_URL_SAFE.encode(bytes)
+    // NO_PAD: the URL-safe alphabet (`-`/`_`) is fine, but trailing `=` padding is
+    // not — these ids are used verbatim as Meilisearch document ids, and Meili
+    // rejects `=` (only alphanumerics, `-`, `_` are allowed). See agon_worker
+    // search indexing.
+    BASE64_URL_SAFE_NO_PAD.encode(bytes)
 }
 
 /// A mock confirmed score submission with one confirm response.

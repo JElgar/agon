@@ -599,17 +599,34 @@ async fn notifications_endpoints_respond() {
 // Search & feed (shape smoke tests — content depends on the async worker)
 // ---------------------------------------------------------------------------
 
+/// A created match fans out into its participants' feeds. Exercises the full
+/// async path: match write → DynamoDB stream → SQS → worker → Temporal
+/// `FanOutMatch` workflow → `write_feed_items` → the match appears in the feed.
+///
+/// We assert on the *invitee's* feed: their player record carries `user_id` from
+/// creation (before acceptance), so the fan-out audience includes them and the
+/// match should surface without any further action. Eventual — polls until the
+/// pipeline delivers, matching the other async tests.
 #[tokio::test]
-async fn feed_returns_ok() {
-    let (config, _user) = new_user().await;
-    let page = feed_get(&config, None, None, None, None)
+async fn creating_a_match_fans_out_to_a_participants_feed() {
+    let (owner_config, _owner) = new_user().await;
+    let (invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, create_match_input(&invitee.profile.id))
         .await
-        .expect("get feed");
-    // Feed fan-out is delegated to Temporal, which is not enabled in the deployed
-    // build, so we can't assert feed content yet — only that the endpoint is
-    // wired and returns a well-formed page. (Promote to an `eventually` content
-    // assertion once fan-out ships.)
-    let _ = page.items.len();
+        .expect("create match");
+
+    let found = eventually("match to fan out into the invitee's feed", || {
+        let config = &invitee_config;
+        let match_id = &created.id;
+        async move {
+            let page = feed_get(config, None, None, None, None).await.ok()?;
+            page.items.into_iter().find(|item| &item.id == match_id)
+        }
+    })
+    .await;
+    assert_eq!(found.id, created.id);
+    assert_eq!(found.name, "Test Match");
 }
 
 // ---------------------------------------------------------------------------

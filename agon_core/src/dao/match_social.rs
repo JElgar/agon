@@ -167,16 +167,22 @@ impl Dao {
     }
 
     /// Create a reply to a top-level comment, updating the parent comment's
-    /// `reply_count` and the match's `comment_count`. The parent is addressed by
-    /// id (`COMMENT#<parentId>`) — no timestamp needed.
+    /// `reply_count` and the match's `comment_count`. The reply's base item lives
+    /// in the match partition (`MATCH#<mid>` / `REPLY#<rid>`) so it's fetchable by
+    /// id; the parent (`COMMENT#<parentId>`) is bumped in the same transaction.
     pub async fn create_reply(&self, reply: &CommentRecord) -> DaoResult<()> {
         let parent_id = reply
             .parent_id
             .as_ref()
             .ok_or_else(|| DaoError::Malformed("reply missing parent_id".into()))?;
 
+        // Base item lives in the match partition, addressed by the reply's own id
+        // (`MATCH#<mid>` / `REPLY#<rid>`) so it's directly fetchable by id — the
+        // create-comment handler reads it to reject a reply-to-a-reply. Per-parent
+        // time ordering for the list endpoint is the GSI1 `CREPLIES#<parentId>`
+        // projection below.
         let reply_item = ItemBuilder::new(to_item(
-            &Pk::CommentReplies(parent_id.clone()),
+            &Pk::Match(reply.match_id.clone()),
             &Sk::Reply(reply.comment_id.clone()),
             TYPE_REPLY,
             reply,
@@ -275,6 +281,30 @@ impl Dao {
             .table_name(self.table())
             .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
             .key("SK", s(Sk::Comment(comment_id.into()).to_string()))
+            .send()
+            .await
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        match out.item {
+            Some(item) => Ok(Some(super::item::from_item(item)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Fetch a single reply by id (`MATCH#<mid>` / `REPLY#<rid>`). Used to
+    /// distinguish "parent is a reply" (reject a second-level reply) from
+    /// "parent doesn't exist" when validating a new reply's target. `None` if
+    /// absent.
+    pub async fn get_reply(
+        &self,
+        match_id: &str,
+        reply_id: &str,
+    ) -> DaoResult<Option<CommentRecord>> {
+        let out = self
+            .client
+            .get_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key("SK", s(Sk::Reply(reply_id.into()).to_string()))
             .send()
             .await
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;

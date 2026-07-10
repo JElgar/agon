@@ -302,6 +302,31 @@ const temporal = new k8s.helm.v4.Chart('temporal', {
 	values: temporalHelmValues,
 }, { provider: k8sProvider })
 
+// Register the `default` Temporal namespace. The Helm chart's schema Jobs create
+// the DB *schema* but NOT any namespace, so a fresh cluster has none — the UI's
+// /namespaces/default/workflows 404s and the worker's task-queue poll has nowhere
+// to land. This makes that registration declarative (survives teardown/rebuild)
+// instead of a manual `tctl`/`temporal` step.
+//
+// Runs over the same SSH connection used to install k3s: k3s ships a working
+// kubectl + kubeconfig on the node. We `kubectl exec` into the chart's
+// admintools pod and create the namespace via its bundled `temporal` CLI.
+// Idempotent: `namespace create` errors if it already exists, so we swallow a
+// non-zero exit with `|| true` and let the wait-for-rollout be the real gate.
+const registerTemporalNamespace = new command.remote.Command("register-temporal-namespace", {
+	connection,
+	create: [
+		// Wait for the frontend to be reachable before registering (the namespace
+		// API is served by the frontend, which depends on history/matching).
+		"kubectl rollout status deploy/temporal-frontend --timeout=600s",
+		// Create `default` with the same 72h retention the rest of the stack uses.
+		"kubectl exec deploy/temporal-admintools -- temporal operator namespace create" +
+			" --namespace default --address temporal-frontend:7233 --retention 72h || true",
+	].join(" && "),
+	// Re-run if the connection or command text changes.
+	triggers: [nodeIpv4],
+}, { dependsOn: [temporal] });
+
 // ───────────────────────────────────────────────────────────────────────────
 // AWS: DynamoDB single-table + least-privilege app credentials
 // See docs/dynamodb-design.md. All entities live in one table addressed by
@@ -366,6 +391,10 @@ new aws.iam.UserPolicy("agon-app-dynamodb", {
 					"dynamodb:GetItem",
 					"dynamodb:BatchGetItem",
 					"dynamodb:PutItem",
+					// Used by the feed fan-out worker (write_feed_items -> BatchWriteItem);
+					// without it the FanOutMatch workflow's write_feed_chunk activity
+					// fails AccessDenied and retries forever.
+					"dynamodb:BatchWriteItem",
 					"dynamodb:UpdateItem",
 					"dynamodb:DeleteItem",
 					"dynamodb:Query",

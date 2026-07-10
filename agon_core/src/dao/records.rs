@@ -316,10 +316,11 @@ pub struct MatchLikeRecord {
     pub created_at: String,
 }
 
-/// A comment on a match. Stored as a top-level comment
-/// (`MATCH#<matchId>` / `COMMENT#<ts>#<cid>`) or a reply
-/// (`CMT#<parentId>` / `REPLY#<ts>#<rid>`). Tombstoned comments keep the row
-/// with `author_user_id`/`text` cleared and `deleted_at` set.
+/// A comment on a match. The base item lives in the match partition, addressed
+/// by id — a top-level comment (`MATCH#<matchId>` / `COMMENT#<cid>`) or a reply
+/// (`MATCH#<matchId>` / `REPLY#<rid>`); time-ordered listing is via GSI1
+/// (`MCOMMENTS#<matchId>` / `CREPLIES#<parentId>`, sort `<ts>#<id>`). Tombstoned
+/// comments keep the row with `author_user_id`/`text` cleared and `deleted_at` set.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CommentRecord {
     pub comment_id: String,

@@ -58,8 +58,6 @@ pub enum Pk {
     Team(String),
     /// A match and its sides/players/score/likes/top-level comments. `MATCH#<mid>`
     Match(String),
-    /// A top-level comment's replies collection. `CMT#<parentCommentId>`
-    CommentReplies(String),
     /// A user's fan-out feed. `UFEED#<viewerUid>`
     UserFeed(String),
     /// An invitation. `INVITATION#<invId>`
@@ -77,7 +75,6 @@ impl Pk {
             Pk::AuthGuard(_) => "AUTH",
             Pk::Team(_) => "TEAM",
             Pk::Match(_) => "MATCH",
-            Pk::CommentReplies(_) => "CMT",
             Pk::UserFeed(_) => "UFEED",
             Pk::Invitation(_) => "INVITATION",
             Pk::Asset(_) => "ASSET",
@@ -99,7 +96,6 @@ impl fmt::Display for Pk {
             | Pk::AuthGuard(v)
             | Pk::Team(v)
             | Pk::Match(v)
-            | Pk::CommentReplies(v)
             | Pk::UserFeed(v)
             | Pk::Invitation(v)
             | Pk::Asset(v) => v,
@@ -124,7 +120,6 @@ impl FromStr for Pk {
             "AUTH" => Ok(Pk::AuthGuard(value.into())),
             "TEAM" => Ok(Pk::Team(value.into())),
             "MATCH" => Ok(Pk::Match(value.into())),
-            "CMT" => Ok(Pk::CommentReplies(value.into())),
             "UFEED" => Ok(Pk::UserFeed(value.into())),
             "INVITATION" => Ok(Pk::Invitation(value.into())),
             "ASSET" => Ok(Pk::Asset(value.into())),
@@ -170,8 +165,9 @@ pub enum Sk {
     /// A top-level comment on a match. `COMMENT#<cid>` — addressed by id; time
     /// ordering is via GSI1 (`MCOMMENTS#<matchId>` / `<ts>#<cid>`).
     Comment(String),
-    /// A reply within a comment's collection. `REPLY#<rid>` — addressed by id;
-    /// time ordering is via GSI1 (`CREPLIES#<parentId>` / `<ts>#<rid>`).
+    /// A reply to a top-level comment, in the match partition. `REPLY#<rid>` —
+    /// addressed by id; per-parent time ordering is via GSI1
+    /// (`CREPLIES#<parentId>` / `<ts>#<rid>`).
     Reply(String),
     /// A notification. `NOTIF#<nid>` — addressed by id; time ordering is via
     /// GSI1 (`UNOTIFS#<uid>` / `<ts>#<nid>`).
@@ -310,7 +306,6 @@ mod tests {
         pk_roundtrip(Pk::AuthGuard("sub-abc-123".into()), "AUTH#sub-abc-123");
         pk_roundtrip(Pk::Team("t1".into()), "TEAM#t1");
         pk_roundtrip(Pk::Match("m1".into()), "MATCH#m1");
-        pk_roundtrip(Pk::CommentReplies("c1".into()), "CMT#c1");
         pk_roundtrip(Pk::UserFeed("u1".into()), "UFEED#u1");
         pk_roundtrip(Pk::Invitation("i1".into()), "INVITATION#i1");
         pk_roundtrip(Pk::Asset("a1".into()), "ASSET#a1");

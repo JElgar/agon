@@ -5,6 +5,14 @@ runs:
   steps:
     - uses: dtolnay/rust-toolchain@stable
 
+    # agon_worker depends on the Temporal SDK unconditionally; its transitive
+    # deps (temporalio-protos / prost-build) compile protobuf at build time and
+    # need `protoc`. Installed here so every job that compiles the workspace
+    # (lint's clippy, build's cargo build, and `make generate-schema` below) has
+    # it available.
+    - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      shell: bash
+
     - uses: Swatinem/rust-cache@v2
       with:
         shared-key: "rust-cache"

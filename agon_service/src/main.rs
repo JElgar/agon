@@ -2728,12 +2728,7 @@ impl Api {
         let uid = self.require_uid(dao, &jwt_data).await?;
         let status_str = status.as_ref().map(invitation_status_str);
         let page = dao
-            .list_user_invitations(
-                &uid,
-                status_str,
-                cursor.as_deref(),
-                page_limit(limit),
-            )
+            .list_user_invitations(&uid, status_str, cursor.as_deref(), page_limit(limit))
             .await
             .map_err(dao_internal)?;
         let items = page

@@ -32,22 +32,3 @@ jobs:
 
     # TODO cargo run and then make tests work against localhost (without docker maybe? - or build docke rand use taht)
 
-  # Compile the worker WITH the Temporal feature. The Temporal Rust SDK is
-  # Public Preview and pinned to a specific git rev (see agon_worker/Cargo.toml);
-  # this code compiles cleanly against that rev, so the check is enforced. The
-  # `temporal` feature is still OFF in the default build/deploy — this job only
-  # guards that the code keeps compiling (e.g. if the pinned rev is bumped).
-  check-temporal:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
-      # The Temporal SDK's transitive deps (prost-wkt-types) compile protobuf at
-      # build time and need the `protoc` compiler on the runner.
-      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-      - run: protoc --version
-      - run: cargo check -p agon_worker --features temporal
-

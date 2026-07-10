@@ -404,7 +404,13 @@ mod tests {
     fn pending_insert_starts_nothing() {
         // A freshly-created pending invitation is not yet accepted.
         let new = invitation("pending", match_ctx());
-        let ev = event(ChangeKind::Insert, "INVITATION#inv1", "#META", None, Some(&new));
+        let ev = event(
+            ChangeKind::Insert,
+            "INVITATION#inv1",
+            "#META",
+            None,
+            Some(&new),
+        );
         assert_eq!(workflow_for(&ev), None);
     }
 
@@ -414,7 +420,13 @@ mod tests {
         // identify the accepter, so the saga is skipped.
         let mut new = invitation("accepted", match_ctx());
         new.invited_user_id = None;
-        let ev = event(ChangeKind::Modify, "INVITATION#inv1", "#META", None, Some(&new));
+        let ev = event(
+            ChangeKind::Modify,
+            "INVITATION#inv1",
+            "#META",
+            None,
+            Some(&new),
+        );
         assert_eq!(workflow_for(&ev), None);
     }
 }

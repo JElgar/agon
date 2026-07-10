@@ -878,7 +878,34 @@ const kubePrometheusStack = new k8s.helm.v4.Chart("kube-prometheus-stack", {
 	// The operator's admission webhook now gets its TLS cert from cert-manager
 	// (see admissionWebhooks.certManager above), so cert-manager's CRDs + webhook
 	// must be ready before this chart applies.
-}, { provider: k8sProvider, dependsOn: [certManager] });
+}, {
+	provider: k8sProvider,
+	dependsOn: [certManager],
+	// Every `pulumi up` re-renders this chart, and two of its resources never
+	// converge — each diff would otherwise churn on every deploy:
+	//   * The Grafana PVC: the chart template omits `spec.volumeName`, but once
+	//     Kubernetes binds the PVC it stamps the bound PV name into that IMMUTABLE
+	//     field. Pulumi then sees desired(no volumeName) != live(bound) and, unable
+	//     to patch an immutable field, REPLACES the PVC — deleting the underlying
+	//     volume (reclaim policy Delete) and taking Grafana down with a 502 until it
+	//     reprovisions. Ignoring `spec.volumeName` keeps the bound PVC in place.
+	//   * The Grafana Role: the chart renders `rules: []`; the apiserver drops the
+	//     empty field, so Pulumi perpetually diffs `+ rules: []`. Harmless, but noise.
+	// Scope the ignore to just those two resources so real chart changes still apply.
+	transforms: [(args) => {
+		const ignore =
+			args.type === "kubernetes:core/v1:PersistentVolumeClaim" &&
+			args.name.includes("grafana")
+				? ["spec.volumeName"]
+				: args.type === "kubernetes:rbac.authorization.k8s.io/v1:Role" &&
+						args.name.includes("grafana")
+					? ["rules"]
+					: undefined;
+		return ignore
+			? { props: args.props, opts: pulumi.mergeOptions(args.opts, { ignoreChanges: ignore }) }
+			: undefined;
+	}],
+});
 
 // Loki — single-binary, filesystem-backed. Enough for one node; not HA. The
 // `test`/`lokiCanary` helpers and gateway are off to save resources.

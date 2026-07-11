@@ -7,6 +7,7 @@ import { ThemeProvider } from '@/hooks/useTheme'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { useQuery } from '@tanstack/react-query'
 import { fetchClient } from '@/lib/api-client'
+import { FeedPage } from '@/pages/FeedPage'
 
 function NavLink({ to, children }: { to: string; children: React.ReactNode }) {
   const location = useLocation()
@@ -72,7 +73,7 @@ function AppShell({ email, onSignOut }: { email: string; onSignOut: () => void }
       <main className="container mx-auto px-4 py-8">
         <Routes>
           <Route path="/" element={<Navigate to="/feed" replace />} />
-          <Route path="/feed" element={<ComingSoon title="Feed" />} />
+          <Route path="/feed" element={<FeedPage />} />
           <Route path="/matches/new" element={<ComingSoon title="Create match" />} />
           <Route path="/matches/:matchId" element={<ComingSoon title="Match" />} />
           <Route path="/teams" element={<ComingSoon title="Teams" />} />

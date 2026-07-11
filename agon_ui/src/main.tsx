@@ -1,3 +1,7 @@
+// Dev-only preview fetch stub — MUST be first so it overrides globalThis.fetch
+// before @/lib/api-client (imported transitively by App) captures it. No-op
+// unless a ?preview= param opts in.
+import './pages/preview-fetch-stub'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -6,6 +10,7 @@ import App from './App.tsx'
 import { ThemeProvider } from '@/hooks/useTheme'
 import { MatchCardPreview } from '@/components/agon/MatchCard.preview'
 import { ProfilePreview } from '@/components/agon/Profile.preview'
+import { FeedPagePreview } from '@/pages/FeedPage.preview'
 
 const queryClient = new QueryClient()
 
@@ -26,6 +31,12 @@ const root = (() => {
       return (
         <ThemeProvider defaultTheme="system" storageKey="agon-ui-theme">
           <ProfilePreview />
+        </ThemeProvider>
+      )
+    case 'feed':
+      return (
+        <ThemeProvider defaultTheme="system" storageKey="agon-ui-theme">
+          <FeedPagePreview />
         </ThemeProvider>
       )
     default:

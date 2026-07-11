@@ -73,7 +73,9 @@ impl JwtVerifier {
     /// (no test key) or only the static set (local/offline), but at least one
     /// must be present or every token is rejected — we warn loudly in that case.
     pub fn from_env() -> Self {
-        let jwks_url = std::env::var("SUPABASE_JWKS_URL").ok().filter(|s| !s.is_empty());
+        let jwks_url = std::env::var("SUPABASE_JWKS_URL")
+            .ok()
+            .filter(|s| !s.is_empty());
 
         let expected_audience =
             std::env::var("AGON_JWT_AUDIENCE").unwrap_or_else(|_| "authenticated".to_string());
@@ -111,7 +113,8 @@ impl JwtVerifier {
     /// Verify a bearer token and return its claims, or an error if no trusted key
     /// matches / the signature or claims are invalid.
     pub async fn verify(&self, token: &str) -> Result<JwtClaims, AuthError> {
-        let header = decode_header(token).map_err(|e| AuthError(format!("bad token header: {e}")))?;
+        let header =
+            decode_header(token).map_err(|e| AuthError(format!("bad token header: {e}")))?;
         let kid = header
             .kid
             .ok_or_else(|| AuthError("token has no `kid`".into()))?;
@@ -125,10 +128,10 @@ impl JwtVerifier {
         }
 
         // Unknown kid: refetch the remote JWKS once (handles key rotation) and retry.
-        if self.refresh_remote().await? {
-            if let Some(jwk) = self.find_remote_cached(&kid) {
-                return self.decode_with(token, &jwk, header.alg);
-            }
+        if self.refresh_remote().await?
+            && let Some(jwk) = self.find_remote_cached(&kid)
+        {
+            return self.decode_with(token, &jwk, header.alg);
         }
 
         Err(AuthError(format!("no trusted key for kid `{kid}`")))
@@ -186,7 +189,11 @@ impl JwtVerifier {
             .json()
             .await
             .map_err(|e| AuthError(format!("parse JWKS: {e}")))?;
-        *self.inner.remote_cache.write().expect("jwks cache poisoned") = set.keys;
+        *self
+            .inner
+            .remote_cache
+            .write()
+            .expect("jwks cache poisoned") = set.keys;
         Ok(true)
     }
 }
@@ -255,37 +262,60 @@ yuPC5L8ZcNr/wsPZHrn9SKPfMfhIiE9Ay0nj+7bSFLz3QafZDk6t6fbR\n\
 
     /// A valid token: trusted kid, ES256, future expiry, expected audience.
     fn valid_token() -> String {
-        sign_with(&claims(FUTURE, Some("authenticated")), Some("agon-test"), Algorithm::ES256)
+        sign_with(
+            &claims(FUTURE, Some("authenticated")),
+            Some("agon-test"),
+            Algorithm::ES256,
+        )
     }
 
     #[tokio::test]
     async fn verifies_valid_token() {
-        let out = static_verifier().verify(&valid_token()).await.expect("should verify");
+        let out = static_verifier()
+            .verify(&valid_token())
+            .await
+            .expect("should verify");
         assert_eq!(out.sub, "user-1");
         assert_eq!(out.email.as_deref(), Some("user-1@example.com"));
     }
 
     #[tokio::test]
     async fn rejects_unknown_kid() {
-        let token = sign_with(&claims(FUTURE, Some("authenticated")), Some("nope"), Algorithm::ES256);
+        let token = sign_with(
+            &claims(FUTURE, Some("authenticated")),
+            Some("nope"),
+            Algorithm::ES256,
+        );
         assert!(static_verifier().verify(&token).await.is_err());
     }
 
     #[tokio::test]
     async fn rejects_token_without_kid() {
-        let token = sign_with(&claims(FUTURE, Some("authenticated")), None, Algorithm::ES256);
+        let token = sign_with(
+            &claims(FUTURE, Some("authenticated")),
+            None,
+            Algorithm::ES256,
+        );
         assert!(static_verifier().verify(&token).await.is_err());
     }
 
     #[tokio::test]
     async fn rejects_expired_token() {
-        let token = sign_with(&claims(PAST, Some("authenticated")), Some("agon-test"), Algorithm::ES256);
+        let token = sign_with(
+            &claims(PAST, Some("authenticated")),
+            Some("agon-test"),
+            Algorithm::ES256,
+        );
         assert!(static_verifier().verify(&token).await.is_err());
     }
 
     #[tokio::test]
     async fn rejects_wrong_audience() {
-        let token = sign_with(&claims(FUTURE, Some("anon")), Some("agon-test"), Algorithm::ES256);
+        let token = sign_with(
+            &claims(FUTURE, Some("anon")),
+            Some("agon-test"),
+            Algorithm::ES256,
+        );
         assert!(static_verifier().verify(&token).await.is_err());
     }
 

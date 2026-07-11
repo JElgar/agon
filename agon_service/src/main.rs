@@ -3986,9 +3986,10 @@ async fn main() {
             // The `kid` must match the public JWK the service trusts via
             // AGON_STATIC_JWKS. This is the test/local counterpart to Supabase's
             // asymmetric signing — there is no shared-secret path.
-            let private_key_pem =
-                std::env::var("AGON_TEST_JWT_PRIVATE_KEY").expect("AGON_TEST_JWT_PRIVATE_KEY not set");
-            let kid = std::env::var("AGON_TEST_JWT_KID").unwrap_or_else(|_| "agon-test".to_string());
+            let private_key_pem = std::env::var("AGON_TEST_JWT_PRIVATE_KEY")
+                .expect("AGON_TEST_JWT_PRIVATE_KEY not set");
+            let kid =
+                std::env::var("AGON_TEST_JWT_KID").unwrap_or_else(|_| "agon-test".to_string());
 
             let audience =
                 std::env::var("AGON_JWT_AUDIENCE").unwrap_or_else(|_| "authenticated".to_string());

@@ -7,6 +7,9 @@ on:
       agon-worker-image:
         required: true
         type: string
+      agon-ui-image:
+        required: true
+        type: string
       stack-name:
         required: true
         type: string
@@ -44,14 +47,12 @@ jobs:
       - run: pnpm install
 
       # TODO Maybe only build a new image if there is a change to the code?
-      # NOTE: agonUiImage is intentionally NOT set here — the UI is dropped from
-      # the pipeline for now (see release.yml), so Pulumi keeps the value already
-      # pinned in Pulumi.<stack>.yaml and the UI Deployment is left untouched.
       - name: Update agon image in pulumi stack config
         run: >
           pulumi stack select ${{ inputs.stack-name }}
           && pulumi config set agonServiceImage ${{ inputs.agon-service-image }}
           && pulumi config set agonWorkerImage ${{ inputs.agon-worker-image }}
+          && pulumi config set agonUiImage ${{ inputs.agon-ui-image }}
         env:
           PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
 
@@ -63,6 +64,7 @@ jobs:
             ${{ inputs.stack-name }} release
             agon-service-image ${{ inputs.agon-service-image }}
             agon-worker-image ${{ inputs.agon-worker-image }}
+            agon-ui-image ${{ inputs.agon-ui-image }}
 
       - uses: pulumi/actions@v6
         id: pulumi-up

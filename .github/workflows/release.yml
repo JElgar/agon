@@ -9,14 +9,12 @@ permissions:
   packages: write
 
 jobs:
-  # NOTE: the UI (build-ui / publish-ui) is temporarily dropped from the
-  # pipeline. The UI is still built against the OLD API (Group/groups/username);
-  # after the teams/matches redesign its `tsc` build fails, which would block the
-  # backend deploy. The UI keeps running its last-deployed image (agonUiImage is
-  # already pinned in Pulumi.<stack>.yaml, and deploy no longer overwrites it).
-  # Re-add these jobs once the UI is rewritten against the new schema.
   build-service:
     uses: JElgar/agon/.github/workflows/build-service.yml@main
+    secrets: inherit
+
+  build-ui:
+    uses: JElgar/agon/.github/workflows/build-ui.yml@main
     secrets: inherit
 
   publish-service:
@@ -29,13 +27,19 @@ jobs:
     uses: JElgar/agon/.github/workflows/docker-worker.yml@main
     secrets: inherit
 
+  publish-ui:
+    needs: build-ui
+    uses: JElgar/agon/.github/workflows/docker-ui.yml@main
+    secrets: inherit
+
   deploy:
-    needs: [publish-service, publish-worker]
+    needs: [publish-service, publish-worker, publish-ui]
     uses: JElgar/agon/.github/workflows/deploy.yml@main
     secrets: inherit
     with:
       agon-service-image: ${{ needs.publish-service.outputs.image }}
       agon-worker-image: ${{ needs.publish-worker.outputs.image }}
+      agon-ui-image: ${{ needs.publish-ui.outputs.image }}
       stack-name: staging
 
   test:

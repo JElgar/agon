@@ -1,25 +1,18 @@
-import { useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, Link, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from '@/hooks/useAuth'
 import { LoginForm } from '@/components/auth/LoginForm'
 import { CreateProfileForm } from '@/components/auth/CreateProfileForm'
-import { GroupsPage } from '@/components/GroupsPage'
-import { GroupDetailsPage } from '@/components/GroupDetailsPage'
-import { CreateGroupPage } from '@/components/CreateGroupPage'
-import { GamesPage } from '@/components/GamesPage'
-import { CreateGamePage } from '@/components/CreateGamePage'
-import { GameDetailsPage } from '@/components/GameDetailsPage'
 import { Button } from '@/components/ui/button'
-import { useUserProfile } from '@/hooks/useUserProfile'
-import { useGetGroups } from '@/hooks/useApi'
 import { ThemeProvider } from '@/hooks/useTheme'
 import { ThemeToggle } from '@/components/ThemeToggle'
-import { getRuntimeEnv } from './utils/runtime-env'
+import { useQuery } from '@tanstack/react-query'
+import { fetchClient } from '@/lib/api-client'
 
 function NavLink({ to, children }: { to: string; children: React.ReactNode }) {
   const location = useLocation()
-  const isActive = location.pathname === to || (to !== '/' && location.pathname.startsWith(to))
-  
+  const isActive =
+    location.pathname === to || (to !== '/' && location.pathname.startsWith(to))
+
   return (
     <Link
       to={to}
@@ -34,95 +27,126 @@ function NavLink({ to, children }: { to: string; children: React.ReactNode }) {
   )
 }
 
+/** Full-screen centered content, used for the loading / error / auth gates. */
+function CenteredMessage({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="min-h-screen flex items-center justify-center">{children}</div>
+  )
+}
+
+/** Placeholder for a page not yet built in the rewrite. */
+function ComingSoon({ title }: { title: string }) {
+  return (
+    <div className="text-center py-16">
+      <h2 className="text-xl font-semibold mb-2">{title}</h2>
+      <p className="text-muted-foreground">This page is being rebuilt.</p>
+    </div>
+  )
+}
+
+/** The signed-in chrome: header nav + routed content. */
+function AppShell({ email, onSignOut }: { email: string; onSignOut: () => void }) {
+  return (
+    <div className="min-h-screen bg-background">
+      <header className="border-b">
+        <div className="container mx-auto px-4 py-4 flex justify-between items-center">
+          <div className="flex items-center space-x-8">
+            <h1 className="text-2xl font-bold">Agon</h1>
+            <nav className="flex space-x-2">
+              <NavLink to="/feed">Feed</NavLink>
+              <NavLink to="/teams">Teams</NavLink>
+              <NavLink to="/notifications">Notifications</NavLink>
+              <NavLink to="/profile">Profile</NavLink>
+            </nav>
+          </div>
+          <div className="flex items-center space-x-4">
+            <span className="text-sm text-muted-foreground">{email}</span>
+            <ThemeToggle />
+            <Button onClick={onSignOut} variant="outline">
+              Sign Out
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      <main className="container mx-auto px-4 py-8">
+        <Routes>
+          <Route path="/" element={<Navigate to="/feed" replace />} />
+          <Route path="/feed" element={<ComingSoon title="Feed" />} />
+          <Route path="/matches/new" element={<ComingSoon title="Create match" />} />
+          <Route path="/matches/:matchId" element={<ComingSoon title="Match" />} />
+          <Route path="/teams" element={<ComingSoon title="Teams" />} />
+          <Route path="/teams/:teamId" element={<ComingSoon title="Team" />} />
+          <Route path="/notifications" element={<ComingSoon title="Notifications" />} />
+          <Route path="/invitations" element={<ComingSoon title="Invitations" />} />
+          <Route path="/profile" element={<ComingSoon title="Profile" />} />
+          <Route path="*" element={<Navigate to="/feed" replace />} />
+        </Routes>
+      </main>
+    </div>
+  )
+}
+
+/** Whether the signed-in Supabase account has completed Agon signup. */
+type ProfileGate = 'has-profile' | 'needs-profile'
+
 function AuthenticatedApp() {
-  const { user, signOut, loading: authLoading } = useAuth()
-  const { hasProfile, loading: profileLoading, error: profileError, checkUserProfile } = useUserProfile()
-  const { getGroups } = useGetGroups()
+  const { user, session, signOut, loading: authLoading } = useAuth()
 
-  // Check user profile when user is authenticated
-  useEffect(() => {
-    console.log('App effect - user:', !!user, 'hasProfile:', hasProfile)
-    if (user && hasProfile === null) {
-      console.log('Triggering profile check...')
-      checkUserProfile()
-    }
-  }, [user, hasProfile, checkUserProfile])
-
-  // Load groups when user has profile
-  useEffect(() => {
-    if (hasProfile === true) {
-      getGroups()
-    }
-  }, [hasProfile, getGroups])
-
-  const env = getRuntimeEnv();
+  // Resolve the caller's Agon profile. A 404 means the Supabase account exists
+  // but hasn't completed signup (no `/users` record yet) → show profile creation.
+  // We use the raw fetch client here (not $api) because the gate decision hinges
+  // on the HTTP *status*, which openapi-react-query hides behind the parsed body.
+  const gate = useQuery({
+    queryKey: ['profile-gate'],
+    enabled: !!session,
+    retry: false,
+    queryFn: async (): Promise<ProfileGate> => {
+      const { data, response } = await fetchClient.GET('/users/me')
+      if (data) return 'has-profile'
+      if (response.status === 404) return 'needs-profile'
+      throw new Error(`Failed to load profile (${response.status})`)
+    },
+  })
 
   if (authLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div>Loading...</div>
-      </div>
-    )
+    return <CenteredMessage>Loading…</CenteredMessage>
   }
 
   if (!user) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <CenteredMessage>
         <div className="w-full max-w-md">
           <h1 className="text-3xl font-bold text-center mb-8">Welcome to Agon</h1>
-          {!env.VITE_SUPABASE_URL && (
-            <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-md">
-              <p className="text-sm text-yellow-800">
-                <strong>Development Mode:</strong> Configure Supabase credentials in your .env file to enable authentication.
-              </p>
-            </div>
-          )}
-          {env.VITE_SUPABASE_URL && (
-            <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-md">
-              <p className="text-sm text-yellow-800">
-                <strong>Development Mode:</strong> Supabase credentials { env.VITE_SUPABASE_URL }.
-              </p>
-            </div>
-          )}
           <LoginForm />
         </div>
-      </div>
+      </CenteredMessage>
     )
   }
 
-  // Show loading while checking profile
-  if (profileLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div>Checking your profile...</div>
-      </div>
-    )
+  if (gate.isLoading) {
+    return <CenteredMessage>Checking your profile…</CenteredMessage>
   }
 
-  // Show profile creation form if user doesn't have a profile
-  if (hasProfile === false) {
+  if (gate.data === 'needs-profile') {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <CreateProfileForm 
-          email={user.email || ''} 
-          onProfileCreated={() => {
-            // Directly check profile again after creation
-            checkUserProfile()
-          }} 
+      <CenteredMessage>
+        <CreateProfileForm
+          email={user.email || ''}
+          onProfileCreated={() => gate.refetch()}
         />
-      </div>
+      </CenteredMessage>
     )
   }
 
-  // Show error state if there was an issue checking profile
-  if (profileError) {
+  if (gate.isError) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
+      <CenteredMessage>
         <div className="text-center">
           <h2 className="text-xl font-semibold mb-4">Something went wrong</h2>
-          <p className="text-muted-foreground mb-4">{profileError}</p>
+          <p className="text-muted-foreground mb-4">Couldn't load your profile.</p>
           <div className="space-x-2">
-            <Button onClick={() => checkUserProfile()} variant="outline">
+            <Button onClick={() => gate.refetch()} variant="outline">
               Retry
             </Button>
             <Button onClick={signOut} variant="outline">
@@ -130,52 +154,11 @@ function AuthenticatedApp() {
             </Button>
           </div>
         </div>
-      </div>
+      </CenteredMessage>
     )
   }
 
-  // Debug info (temporary)
-  console.log('Current state - hasProfile:', hasProfile, 'profileLoading:', profileLoading, 'user:', !!user)
-
-  return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b">
-        <div className="container mx-auto px-4 py-4 flex justify-between items-center">
-          <div className="flex items-center space-x-8">
-            <h1 className="text-2xl font-bold">Agon</h1>
-            <nav className="flex space-x-6">
-              <NavLink to="/groups">Groups</NavLink>
-              <NavLink to="/games">Games</NavLink>
-            </nav>
-          </div>
-          <div className="flex items-center space-x-4">
-            <span className="text-sm text-muted-foreground">
-              {user.email}
-            </span>
-            <ThemeToggle />
-            <Button onClick={signOut} variant="outline">
-              Sign Out
-            </Button>
-          </div>
-        </div>
-      </header>
-      
-      <main className="container mx-auto px-4 py-8">
-        <Routes>
-          <Route path="/" element={<Navigate to="/groups" replace />} />
-          <Route path="/groups" element={<GroupsPage />} />
-          <Route path="/groups/create" element={<CreateGroupPage />} />
-          <Route 
-            path="/groups/:groupId" 
-            element={<GroupDetailsPage />} 
-          />
-          <Route path="/games" element={<GamesPage />} />
-          <Route path="/games/create" element={<CreateGamePage />} />
-          <Route path="/games/:gameId" element={<GameDetailsPage />} />
-        </Routes>
-      </main>
-    </div>
-  )
+  return <AppShell email={user.email || ''} onSignOut={signOut} />
 }
 
 function App() {

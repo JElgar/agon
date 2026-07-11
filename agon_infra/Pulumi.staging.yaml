@@ -10,12 +10,10 @@ config:
     secure: AAABAOHPLhnLxwES04NhLHmMCq4u/vww/OEXJ/Iw6LmBcrJBhvyQ4xn7qZyTPFXd74A5qu0465zpsh2gbIc5p6AA/2GwjY+uif0Rn0bn1duh1we/VQ==
   hcloud:token:
     secure: AAABAGj7oe9pnKlRP9flfZMIkQFRhh1AeaURflQNPIWwMEHebPAQtMykOcDvy3E9NEdoh0XeOnOwqHelr6jiNHwHaf1jN397UJGDdLvc4wF5Pyz4ccCXXdMzWm4Htu15
-  agon_infra:jwtSecret:
-    secure: AAABADBP9eHYuDTlHlcI6flRrRAXuRhBbmNxzCAWxT5+6AEcP6M3lftPCLvrcEHP3U3qcCFpYghv60PkY/qv8G7bLgBUyLEI9Fpt8U2z4D0uzOP1rWQKDUdnynvVoUZHcCZUi6vKrrIXGAh7WWRmGDV7PfhannkL
   agon_infra:agonServiceImage: ghcr.io/jelgar/agon_service:sha-606c68f
   agon_infra:agonUiImage: ghcr.io/jelgar/agon_ui:sha-260cd6c
   agon_infra:supabaseAnonKey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR2cW11a3J3cGlua2VkZ3ZybXB5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDU2ODgyNDIsImV4cCI6MjA2MTI2NDI0Mn0.yI1ctlfle2gcrZE7BhjwOFI9EVAQmd9JjPbGOqRsuVs
-  agon_infra:supabaseUrl: https://tvqmukrwpinkedgvrmpy.supabase.co
+  agon_infra:supabaseUrl: https://gkebmzhvdbsktamfdsil.supabase.co
   aws:region: eu-west-1
   aws:accessKey:
     secure: AAABAJBgfjzGVypxRD8oOluoYaZ6+rkRuJ0dvGpKYNzyRxepovpRkwDZli9rYS40frNSJg==
@@ -34,3 +32,7 @@ config:
     secure: AAABANAOlZN4I/ZaMhGF/kIg0w/S8cxq1jlx8xwHJUJZ7GoY/s+4PBPozsU42nP8CnaORv/kDYk7ujNHjXQTzw==
   agon_infra:nodeIp: 51.38.64.148
   agon_infra:nodeServiceName: vps-0a0d860d.vps.ovh.net
+  agon_infra:supabaseJwksUrl: https://gkebmzhvdbsktamfdsil.supabase.co/auth/v1/.well-known/jwks.json
+  agon_infra:agonStaticJwks: '{"keys":[{"kty":"EC","crv":"P-256","alg":"ES256","use":"sig","kid":"agon-test","x":"BfABiGvViutZXbhJ94phPDxQiSsx8srjwuS_GXDa_8I","y":"w9keuf1Io98x-EiIT0DLSeP7ttIUvPdBp9kOTq3p9tE"}]}'
+  agon_infra:agonTestJwtPrivateKey:
+    secure: AAABAP923pc6OZsaUFWAnpTHjytVeBFMvyTyE13JjtzA09rQldEacEkSi7BJzsg6K+qAfHS2af9vH8M4PNzrH37aSFSUrU2uurvNgRHsDA7ZncO8R0TiJ9zRLOf369YHua8gbEpNntutuddnx8qJMC5rTAxMvmWQYYmGADcZbK/3RYe0ACWGhcsy/5RrCsUi6XFDs4a38yFZ6/r1YqRmoXoh9RKWHtGczA71HsEy12sbb2r1FgkrbOZN6O5IqVT48rIwwkTTJ1Lb0AjCWEwC2h8eakaVCpFDSdOr0ztvtVgtBE5/jEhXSrdFT9ehXSE3NX09foX/OvnZ7KldfJqUD1s1yZdhk+JBUmsEjvXEbps=

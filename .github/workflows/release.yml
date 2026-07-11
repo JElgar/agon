@@ -43,5 +43,6 @@ jobs:
     uses: JElgar/agon/.github/workflows/test.yml@main
     with:
       agon-service-url: ${{ needs.deploy.outputs.agon-url }}/api
+      stack-name: staging
     secrets:
-      jwt-secret: ${{ secrets.SUPABASE_STAGING_JWT_SECRET }}
+      pulumi-access-token: ${{ secrets.PULUMI_ACCESS_TOKEN }}

@@ -11,7 +11,7 @@ use std::{fs::File, io::Write};
 
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use clap::{Parser, Subcommand};
-use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use poem::http::Uri;
 use poem::{Endpoint, IntoResponse, Response};
 use poem::{
@@ -25,12 +25,14 @@ use poem_openapi::{
     param::Path,
     payload::{Json, PlainText},
 };
-use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 
 // Data access layer for DynamoDB — now the shared `agon_core` crate. Aliased as
 // `dao` so existing `dao::…` paths in handlers keep working.
 use agon_core::dao;
+// JWT verification (asymmetric; Supabase JWKS + static test key).
+mod auth;
+use auth::{JwtClaims, JwtVerifier};
 // Boundary mapping between API models and DAO records.
 mod mapping;
 use mapping::{
@@ -66,22 +68,6 @@ use notification::{
     TeamInvitationNotification, UnreadCount,
 };
 
-#[derive(Debug, Deserialize, Serialize)]
-struct JwtClaims {
-    sub: String,
-    exp: usize,
-    iss: Option<String>,
-    aud: Option<String>,
-    role: Option<String>,
-    /// The authenticated email, from the identity provider. This is the trusted
-    /// source of a user's email — it is NOT taken from request bodies (which the
-    /// caller controls and could spoof). Top-level `email` is where Supabase and
-    /// most IdPs put it; if a future provider nests it elsewhere, map it here.
-    /// Optional so tokens without an email still authenticate for endpoints that
-    /// don't need it (only signup requires it).
-    email: Option<String>,
-}
-
 #[derive(SecurityScheme)]
 #[oai(
     ty = "bearer",
@@ -91,29 +77,16 @@ struct JwtClaims {
 )]
 struct AuthSchema(JwtClaims);
 
-async fn jwt_checker(_req: &Request, bearer: Bearer) -> Result<JwtClaims, poem::error::Error> {
-    info!("Attempting to validate JWT token");
-    info!(
-        "Token prefix: {}",
-        &bearer.token[..std::cmp::min(20, bearer.token.len())]
-    );
+async fn jwt_checker(req: &Request, bearer: Bearer) -> Result<JwtClaims, poem::error::Error> {
+    // The verifier is injected once at startup via `.data(..)`.
+    let verifier = req
+        .data::<JwtVerifier>()
+        .expect("JwtVerifier missing from request data");
 
-    // Change to change the validity of the token (set to false to fail the validation)
-    let secret_key = std::env::var("JWT_SECRET").expect("JWT Secret not found");
-    let decoding_key = DecodingKey::from_secret(secret_key.as_bytes());
-
-    let mut validation = Validation::new(Algorithm::HS256);
-    validation.validate_exp = false;
-    validation.validate_aud = false;
-    validation.validate_nbf = false;
-
-    let token_data =
-        decode::<JwtClaims>(&bearer.token, &decoding_key, &validation).map_err(|err| {
-            info!("JWT invalid {:?}", err);
-            Error::from_string("Invalid JWT", StatusCode::UNAUTHORIZED)
-        })?;
-
-    Ok(token_data.claims)
+    verifier.verify(&bearer.token).await.map_err(|err| {
+        info!("JWT invalid: {}", err.0);
+        Error::from_string("Invalid JWT", StatusCode::UNAUTHORIZED)
+    })
 }
 
 struct Api;
@@ -3854,7 +3827,10 @@ enum Commands {
     /// Generates service open api schema
     GenerateSchema,
 
-    /// Generates a signed JWT for local testing (signed with JWT_SECRET)
+    /// Generates a signed JWT for local testing. Signs ES256 with the test key
+    /// in AGON_TEST_JWT_PRIVATE_KEY (kid from AGON_TEST_JWT_KID, default
+    /// `agon-test`); the service must trust the matching public JWK via
+    /// AGON_STATIC_JWKS.
     GenerateToken {
         /// The subject (user id) to embed in the `sub` claim
         #[arg(default_value = "test-user")]
@@ -3980,12 +3956,17 @@ async fn main() {
                 .allow_headers(vec!["content-type", "authorization"])
                 .allow_credentials(true);
 
+            // JWT verifier: trusts the Supabase JWKS (real users) and/or the
+            // static test key (integration tests / local). Built once, shared.
+            let verifier = auth::JwtVerifier::from_env();
+
             let app = Route::new()
                 .nest("/", api_service)
                 .nest("/docs", ui)
                 .with(cors)
                 .data(dao)
                 .data(search)
+                .data(verifier)
                 .around(log_middleware);
 
             Server::new(TcpListener::bind("0.0.0.0:7000"))
@@ -4001,22 +3982,34 @@ async fn main() {
         }
 
         Commands::GenerateToken { sub, email } => {
-            let secret_key = std::env::var("JWT_SECRET").expect("JWT Secret not found");
+            // Sign with the ES256 test private key (PEM in AGON_TEST_JWT_PRIVATE_KEY).
+            // The `kid` must match the public JWK the service trusts via
+            // AGON_STATIC_JWKS. This is the test/local counterpart to Supabase's
+            // asymmetric signing — there is no shared-secret path.
+            let private_key_pem =
+                std::env::var("AGON_TEST_JWT_PRIVATE_KEY").expect("AGON_TEST_JWT_PRIVATE_KEY not set");
+            let kid = std::env::var("AGON_TEST_JWT_KID").unwrap_or_else(|_| "agon-test".to_string());
 
+            let audience =
+                std::env::var("AGON_JWT_AUDIENCE").unwrap_or_else(|_| "authenticated".to_string());
             let claims = JwtClaims {
                 sub,
-                // far-future expiry; `jwt_checker` disables exp validation anyway
+                // far-future expiry so local/dev tokens don't need refreshing.
                 exp: 9_999_999_999,
                 iss: None,
-                aud: None,
+                aud: Some(audience),
                 role: None,
                 email,
             };
 
+            let mut header = Header::new(Algorithm::ES256);
+            header.kid = Some(kid);
+
             let token = encode(
-                &Header::new(Algorithm::HS256),
+                &header,
                 &claims,
-                &EncodingKey::from_secret(secret_key.as_bytes()),
+                &EncodingKey::from_ec_pem(private_key_pem.as_bytes())
+                    .expect("AGON_TEST_JWT_PRIVATE_KEY is not a valid EC PEM"),
             )
             .expect("Failed to encode JWT");
 

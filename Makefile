@@ -31,16 +31,17 @@ build:
 test:
 	cargo test --manifest-path agon_tests/Cargo.toml
 
-# Run the integration tests against a deployed environment. Fetches the JWT
-# secret from the Pulumi stack (the same value the deployed service validates
-# tokens with) so tokens the tests mint are accepted. Override the target env:
+# Run the integration tests against a deployed environment. Fetches the ES256
+# test signing key from the Pulumi stack (Pulumi is the single source of truth);
+# the deployed service trusts its matching public JWK via `agonStaticJwks`, so
+# tokens the tests mint are accepted. Override the target env:
 #   make test-staging STAGING_URL=https://agon.staging.get-agon.com/api STACK=staging
 STACK ?= staging
 STAGING_URL ?= https://agon.staging.get-agon.com/api
 
 test-staging:
 	AGON_SERVICE_URL=$(STAGING_URL) \
-	JWT_SECRET="$$(cd agon_infra && pulumi config get jwtSecret --stack $(STACK))" \
+	AGON_TEST_JWT_PRIVATE_KEY="$$(cd agon_infra && pulumi config get agonTestJwtPrivateKey --stack $(STACK))" \
 	cargo test --manifest-path agon_tests/Cargo.toml -- --test-threads=1
 
 run:

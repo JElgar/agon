@@ -612,17 +612,18 @@ const awsSecret = new k8s.core.v1.Secret("aws-credentials", {
 	},
 }, { provider: k8sProvider });
 
-// Create a secret for JWT
-const jwtSecret = new k8s.core.v1.Secret("jwt-secret", {
-	metadata: {
-		name: "jwt-secret",
-		namespace: "default",
-	},
-	type: "Opaque",
-	data: {
-		"jwt-secret": config.requireSecret("jwtSecret").apply(val => Buffer.from(val).toString("base64")),
-	},
-}, { provider: k8sProvider });
+// ── JWT auth (asymmetric) ────────────────────────────────────────────────────
+// The service verifies tokens against public keys only — no shared secret:
+//   - `supabaseJwksUrl`: Supabase's JWKS endpoint (real user tokens).
+//   - `agonStaticJwks`:  a static JWK set trusting the integration-test signing
+//                        key (public half). Public → plain config, not secret.
+// The matching PRIVATE test key is the one real secret; it's stored encrypted in
+// Pulumi (`agonTestJwtPrivateKey`) so the whole keypair lives in one place, and
+// exported below for the CI test job to sign with. Rotate both together.
+//   pulumi config set supabaseJwksUrl https://<project>.supabase.co/auth/v1/.well-known/jwks.json
+//   pulumi config set agonStaticJwks '{"keys":[...]}'
+//   pulumi config set --secret agonTestJwtPrivateKey "$(cat test_ec_pkcs8.pem)"
+export const agonTestJwtPrivateKey = config.requireSecret("agonTestJwtPrivateKey");
 
 // ───────────────────────────────────────────────────────────────────────────
 // Meilisearch: search / discovery index
@@ -1263,14 +1264,16 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 						ports: [{ containerPort: 7000 }],
 							envFrom: [{ secretRef: { name: awsSecret.metadata.name } }],
 						env: [
+							// JWT auth is asymmetric: the service verifies tokens against
+							// Supabase's JWKS (real users) and a static JWK set (the test
+							// signing key). No shared secret.
 							{
-								name: "JWT_SECRET",
-								valueFrom: {
-									secretKeyRef: {
-										name: jwtSecret.metadata.name,
-										key: 'jwt-secret',
-									}
-								},
+								name: "SUPABASE_JWKS_URL",
+								value: config.get("supabaseJwksUrl"),
+							},
+							{
+								name: "AGON_STATIC_JWKS",
+								value: config.get("agonStaticJwks"),
 							},
 							{
 								name: "MEILI_URL",

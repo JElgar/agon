@@ -2,8 +2,10 @@
 //!
 //! These run against a live service (`AGON_SERVICE_URL`) backed by real
 //! DynamoDB, using the generated OpenAPI client. Each test authenticates as a
-//! freshly-created user (JWT minted from `JWT_SECRET`) so tests are independent
-//! and can run against a shared environment without colliding.
+//! freshly-created user, signing an ES256 JWT with the test private key
+//! (`AGON_TEST_JWT_PRIVATE_KEY`) that the service trusts via its static JWK set,
+//! so tests are independent and can run against a shared environment without
+//! colliding.
 //!
 //! Scope: the synchronously-working surface — users, teams, matches, comments,
 //! likes, follows, invitations, notifications. Search and feed depend on the
@@ -11,7 +13,7 @@
 //! shape (see the `search` and `feed` tests), not for eventual-consistency
 //! content.
 
-use jsonwebtoken::{EncodingKey, Header, encode};
+use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use openapi::apis::configuration::Configuration;
 use openapi::apis::default_api::*;
 use openapi::models;
@@ -26,6 +28,9 @@ use uuid::Uuid;
 struct JwtData {
     sub: String,
     exp: usize,
+    /// Audience. The service enforces this matches its expected audience
+    /// (`authenticated`, mirroring Supabase), so tokens must carry it.
+    aud: String,
     /// The identity provider's email claim. The service reads the user's email
     /// from here (not the request body), so tokens must carry it for signup.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -38,19 +43,34 @@ fn email_for(subject: &str) -> String {
     format!("{subject}@example.com")
 }
 
-fn generate_jwt(user_id: &str) -> String {
-    let claims = JwtData {
-        sub: user_id.to_string(),
-        exp: 9999999999,
-        email: Some(email_for(user_id)),
-    };
-    let secret_key = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+/// Sign a token with the ES256 test private key. The service trusts the matching
+/// public JWK (via `AGON_STATIC_JWKS`), so this is the asymmetric equivalent of
+/// the old shared-secret signing — an isolated, test-only key. `AGON_TEST_JWT_KID`
+/// must match the `kid` of that public JWK (defaults to `agon-test`).
+fn sign_es256(claims: &JwtData) -> String {
+    let private_key_pem =
+        std::env::var("AGON_TEST_JWT_PRIVATE_KEY").expect("AGON_TEST_JWT_PRIVATE_KEY must be set");
+    let kid = std::env::var("AGON_TEST_JWT_KID").unwrap_or_else(|_| "agon-test".to_string());
+
+    let mut header = Header::new(Algorithm::ES256);
+    header.kid = Some(kid);
+
     encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(secret_key.as_bytes()),
+        &header,
+        claims,
+        &EncodingKey::from_ec_pem(private_key_pem.as_bytes())
+            .expect("AGON_TEST_JWT_PRIVATE_KEY is not a valid EC PEM"),
     )
     .expect("failed to generate test jwt")
+}
+
+fn generate_jwt(user_id: &str) -> String {
+    sign_es256(&JwtData {
+        sub: user_id.to_string(),
+        exp: 9999999999,
+        aud: "authenticated".to_string(),
+        email: Some(email_for(user_id)),
+    })
 }
 
 /// A client configured to authenticate as the given subject (JWT `sub` + a
@@ -66,18 +86,12 @@ fn config_for(subject: &str) -> Configuration {
 /// A client for a specific subject with an explicit `email` claim — used to test
 /// two distinct identities presenting the same authenticated email.
 fn config_with_email(subject: &str, email: &str) -> Configuration {
-    let claims = JwtData {
+    let token = sign_es256(&JwtData {
         sub: subject.to_string(),
         exp: 9999999999,
+        aud: "authenticated".to_string(),
         email: Some(email.to_string()),
-    };
-    let secret_key = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
-    let token = encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(secret_key.as_bytes()),
-    )
-    .expect("failed to generate test jwt");
+    });
     Configuration {
         base_path: std::env::var("AGON_SERVICE_URL").expect("AGON_SERVICE_URL must be set"),
         bearer_access_token: Some(token),
@@ -175,18 +189,12 @@ async fn signup_email_comes_from_the_token() {
 async fn signup_without_an_email_claim_is_rejected() {
     // Build a token deliberately missing the email claim.
     let subject = Uuid::new_v4().to_string();
-    let claims = JwtData {
+    let token = sign_es256(&JwtData {
         sub: subject.clone(),
         exp: 9999999999,
+        aud: "authenticated".to_string(),
         email: None,
-    };
-    let secret_key = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
-    let token = encode(
-        &Header::default(),
-        &claims,
-        &EncodingKey::from_secret(secret_key.as_bytes()),
-    )
-    .expect("jwt");
+    });
     let config = Configuration {
         base_path: std::env::var("AGON_SERVICE_URL").expect("AGON_SERVICE_URL must be set"),
         bearer_access_token: Some(token),

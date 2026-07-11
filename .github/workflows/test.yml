@@ -4,8 +4,14 @@ on:
       agon-service-url:
         required: true
         type: string
+      stack-name:
+        required: true
+        type: string
     secrets:
-      jwt-secret:
+      # Pulumi is the single source of truth for secrets. The test job reads the
+      # ES256 test signing key from the stack config itself (see below), so the
+      # only secret CI needs is the Pulumi access token.
+      pulumi-access-token:
         required: true
 
 jobs:
@@ -21,8 +27,34 @@ jobs:
       - name: Setup
         uses: ./.github/actions/setup
 
+      # Fetch the ES256 test signing key from Pulumi (single source of truth).
+      # Its public half is trusted by the deployed service via `agonStaticJwks`.
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+      - run: pnpm install
+        working-directory: agon_infra
+      - name: Read test signing key from Pulumi
+        id: signing-key
+        working-directory: agon_infra
+        run: |
+          pulumi stack select ${{ inputs.stack-name }}
+          # `config get` decrypts secret values directly (no extra flag needed).
+          KEY="$(pulumi config get agonTestJwtPrivateKey)"
+          # Mask it in logs and stash it in the environment for the test step.
+          echo "::add-mask::$KEY"
+          {
+            echo "AGON_TEST_JWT_PRIVATE_KEY<<EOF"
+            echo "$KEY"
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.pulumi-access-token }}
+
       - name: Run tests
         run: cargo test --manifest-path agon_tests/Cargo.toml
         env:
-          JWT_SECRET: ${{ secrets.jwt-secret }}
           AGON_SERVICE_URL: ${{ inputs.agon-service-url }}

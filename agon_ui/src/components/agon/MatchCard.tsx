@@ -1,0 +1,143 @@
+import { Flame, MessageCircle, Share2 } from 'lucide-react'
+import type { components } from '@/types/api'
+import { cn } from '@/lib/utils'
+import { Avatar } from './Avatar'
+import { SportBadge } from './SportBadge'
+import { StatusBadge } from './StatusBadge'
+import {
+  displayScore,
+  headlineBySide,
+  headlineLabel,
+  setLine,
+} from '@/lib/score'
+
+type Match = components['schemas']['Match']
+type MatchSide = components['schemas']['MatchSide']
+
+export interface MatchCardProps extends React.HTMLAttributes<HTMLDivElement> {
+  match: Match
+  /** Called when the card body is activated (navigate to match detail). */
+  onOpen?: () => void
+}
+
+/** Display label for a side: its name, or a neutral fallback. */
+function sideName(side: MatchSide | undefined, fallback: string): string {
+  return side?.name?.trim() || fallback
+}
+
+/**
+ * A match card for the feed: the two sides, the score, sport, confirmation
+ * state, and social actions. Presentational — data comes from a `Match`
+ * (which the feed's `FeedItem_Match` extends); callers wire the action handlers.
+ */
+export function MatchCard({ match, onOpen, className, ...props }: MatchCardProps) {
+  const [sideA, sideB] = match.sides
+  const scoreInfo = displayScore(match)
+  const headline = scoreInfo ? headlineBySide(scoreInfo.score) : {}
+  const sets = scoreInfo ? setLine(scoreInfo.score, match.sides) : []
+
+  const nameA = sideName(sideA, 'Side A')
+  const nameB = sideName(sideB, 'Side B')
+  const aWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
+  const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
+
+  const { like_count, comment_count } = match.social
+
+  return (
+    <div
+      className={cn(
+        'overflow-hidden rounded-xl border bg-card text-card-foreground',
+        className,
+      )}
+      {...props}
+    >
+      {/* Header: who beat who + sport */}
+      <button
+        type="button"
+        onClick={onOpen}
+        className="flex w-full items-start justify-between gap-3 p-3.5 text-left"
+      >
+        <div className="flex items-start gap-2.5">
+          <Avatar name={nameA} size="lg" ring={aWon ? 'winner' : 'none'} />
+          <div className="min-w-0">
+            <p className="text-sm leading-snug">
+              <span className={cn(aWon && 'font-medium')}>{nameA}</span>
+              <span className="text-primary">
+                {' '}
+                {scoreInfo?.winnerSideId ? 'beat' : 'vs'}{' '}
+              </span>
+              <span className={cn(bWon && 'font-medium')}>{nameB}</span>
+            </p>
+            <p className="mt-0.5 text-xs text-muted-foreground">{match.name}</p>
+          </div>
+        </div>
+        <SportBadge sport={match.match_type} />
+      </button>
+
+      {/* Score block */}
+      {scoreInfo && (
+        <div className="mx-3.5 rounded-lg bg-muted/50 px-3.5 py-3">
+          <div className="flex items-center justify-between">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <Avatar name={nameA} size="md" ring={aWon ? 'winner' : 'none'} />
+              <span className="truncate text-xs font-medium">{nameA}</span>
+            </div>
+            <div className="px-3 text-center">
+              <div className="text-2xl font-medium leading-none tracking-tight">
+                {headline[sideA?.id ?? ''] ?? 0}
+                <span className="text-muted-foreground">–</span>
+                {headline[sideB?.id ?? ''] ?? 0}
+              </div>
+              <div className="mt-0.5 text-[9px] uppercase tracking-widest text-muted-foreground">
+                {headlineLabel(scoreInfo.score)}
+              </div>
+            </div>
+            <div className="flex min-w-0 flex-1 flex-row-reverse items-center gap-2 text-right">
+              <Avatar name={nameB} size="md" ring={bWon ? 'winner' : 'none'} />
+              <span className="truncate text-xs font-medium">{nameB}</span>
+            </div>
+          </div>
+          {sets.length > 0 && (
+            <div className="mt-2 border-t pt-2 text-center text-[11px] text-muted-foreground">
+              {sets.map((s, i) => (
+                <span key={i}>
+                  {i > 0 && <span className="mx-1.5 text-border">·</span>}
+                  Set {i + 1} <span className="font-medium text-foreground">{s}</span>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Meta: confirmation state */}
+      <div className="flex flex-wrap items-center gap-3 px-3.5 py-2.5">
+        <StatusBadge status={scoreInfo?.confirmed ? 'confirmed' : 'unconfirmed'} />
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center gap-4 border-t px-3.5 py-2 text-muted-foreground">
+        <button
+          type="button"
+          className="flex items-center gap-1.5 text-xs transition-colors hover:text-primary"
+        >
+          <Flame className="size-3.5" /> {like_count} kudos
+        </button>
+        <button
+          type="button"
+          onClick={onOpen}
+          className="flex items-center gap-1.5 text-xs transition-colors hover:text-primary"
+        >
+          <MessageCircle className="size-3.5" /> {comment_count} comments
+        </button>
+        <button
+          type="button"
+          className="ml-auto flex items-center transition-colors hover:text-primary"
+          aria-label="Share match"
+        >
+          <Share2 className="size-3.5" />
+        </button>
+      </div>
+    </div>
+  )
+}

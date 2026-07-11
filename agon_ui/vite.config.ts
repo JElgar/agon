@@ -33,7 +33,21 @@ export default defineConfig({
         ]
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,ico,png,svg}']
+        globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
+        // `runtime-env-*.js` holds the Supabase URL/key placeholders that the
+        // container's entrypoint rewrites at startup (envsubst). It must NOT be
+        // precached: workbox would otherwise serve the stale build-time copy from
+        // Cache Storage and ignore the runtime-substituted file nginx serves —
+        // which is exactly how an old Supabase project URL survived a redeploy.
+        // Exclude it from the precache and never let the SW serve a cached copy.
+        globIgnores: ['**/runtime-env*.js'],
+        navigateFallbackDenylist: [/runtime-env/],
+        runtimeCaching: [
+          {
+            urlPattern: /\/assets\/runtime-env.*\.js$/,
+            handler: 'NetworkOnly',
+          },
+        ],
       }
     })
   ],
@@ -43,11 +57,20 @@ export default defineConfig({
     },
   },
   server: {
+    // Pin the dev port so it stays stable — the Supabase Redirect URLs allowlist
+    // and OAuth `redirectTo` (window.location.origin) must match it exactly, and
+    // Vite otherwise drifts to 5174/5175 when 5173 is taken, breaking login.
+    port: 5173,
+    strictPort: true,
     proxy: {
+      // Local dev proxies /api to the staging backend, so the UI can run without
+      // a local agon_service (which needs DynamoDB/Meilisearch/AWS creds). Auth
+      // tokens validate against the same staging Supabase project the UI uses.
+      // Staging serves the API under /api (via the ingress), so — unlike a local
+      // server at root on :7000 — the /api prefix is kept, not stripped.
       '/api': {
-        target: 'http://localhost:7000',
+        target: 'https://agon.staging.get-agon.com',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ''),
       }
     },
   },

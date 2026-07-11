@@ -1422,9 +1422,11 @@ impl Api {
             }
         };
 
-        // Build the Meilisearch filter from the supplied facets. `starts_at` is
-        // stored as an ISO-8601 string, which compares correctly lexically, so
-        // the date range uses plain string comparisons.
+        // Build the Meilisearch filter from the supplied facets. The date range
+        // filters on `starts_at_ts` (a numeric Unix timestamp), because
+        // Meilisearch's `>=` / `<=` operators are numeric-only — they can't
+        // compare the ISO-8601 `starts_at` string (that raised
+        // `invalid_search_filter: invalid float literal`).
         let mut clauses: Vec<String> = Vec::new();
         if let Some(mt) = &match_type {
             clauses.push(format!("sport = \"{}\"", match_type_tag(mt)));
@@ -1433,17 +1435,17 @@ impl Api {
             clauses.push(format!("participant_ids = \"{p}\""));
         }
         if let Some(from) = from {
-            clauses.push(format!("starts_at >= \"{}\"", from.to_rfc3339()));
+            clauses.push(format!("starts_at_ts >= {}", from.timestamp()));
         }
         if let Some(to) = to {
-            clauses.push(format!("starts_at <= \"{}\"", to.to_rfc3339()));
+            clauses.push(format!("starts_at_ts <= {}", to.timestamp()));
         }
         let filter = (!clauses.is_empty()).then(|| clauses.join(" AND "));
 
         let q = agon_core::search::SearchQuery {
             q: query.unwrap_or_default(),
             filter,
-            sort: vec!["starts_at:desc".to_string()],
+            sort: vec!["starts_at_ts:desc".to_string()],
             offset,
             limit: page_limit(limit),
         };
@@ -3946,11 +3948,14 @@ async fn main() {
             let meili_key = std::env::var("MEILI_MASTER_KEY").unwrap_or_default();
             let search = agon_core::search::SearchClient::new(meili_url, meili_key);
 
+            // Explicit origin allowlist — NOT `*`. A wildcard origin is invalid
+            // combined with `allow_credentials(true)` (the CORS spec forbids it and
+            // browsers reject the preflight), and mixing `*` with specific origins
+            // in poem's Cors doesn't act as a catch-all anyway. Local dev is the
+            // Vite server, pinned to 5173; deployed origins match the get-agon.com
+            // regex.
             let cors = Cors::new()
-                .allow_origin("*")
-                .allow_origin("http://localhost:5174")
-                .allow_origin("http://localhost:5175")
-                .allow_origin("http://localhost:7003")
+                .allow_origin("http://localhost:5173")
                 .allow_origin_regex("https://*.get-agon.com")
                 .allow_methods(vec!["GET", "POST", "PUT", "DELETE", "OPTIONS"])
                 .allow_headers(vec!["content-type", "authorization"])

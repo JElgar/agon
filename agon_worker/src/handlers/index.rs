@@ -43,7 +43,12 @@ pub struct MatchDoc {
     name: String,
     sport: String,
     status: String,
+    /// ISO-8601 start time, for display / hydration.
     starts_at: String,
+    /// Start time as a Unix timestamp (seconds). Meilisearch range filters
+    /// (`>=` / `<=`) and sorts are numeric-only — they can't compare ISO
+    /// strings — so date filtering and ordering use this numeric field.
+    starts_at_ts: i64,
     /// Ids that identify a participant of this match — both linked user ids and
     /// the stable player ids — so the `participant` discovery filter matches
     /// either. Deduplicated.
@@ -147,12 +152,20 @@ fn match_doc(agg: &MatchAggregate) -> MatchDoc {
             participant_ids.insert(uid.clone());
         }
     }
+    // Parse the ISO-8601 start time to a Unix timestamp for numeric filter/sort.
+    // A malformed/absent timestamp falls back to 0 (epoch) rather than dropping
+    // the document — the match is still discoverable by text/sport, just sorts
+    // oldest.
+    let starts_at_ts = chrono::DateTime::parse_from_rfc3339(&m.starts_at)
+        .map(|dt| dt.timestamp())
+        .unwrap_or(0);
     MatchDoc {
         id: m.id.clone(),
         name: m.name.clone(),
         sport: m.match_type.clone(),
         status: m.status.clone(),
         starts_at: m.starts_at.clone(),
+        starts_at_ts,
         participant_ids: participant_ids.into_iter().collect(),
     }
 }

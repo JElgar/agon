@@ -8,6 +8,8 @@ import { ThemeToggle } from '@/components/ThemeToggle'
 import { useQuery } from '@tanstack/react-query'
 import { fetchClient } from '@/lib/api-client'
 import { FeedPage } from '@/pages/FeedPage'
+import { ProfilePage } from '@/pages/ProfilePage'
+import { LogMatchPage } from '@/pages/LogMatchPage'
 
 function NavLink({ to, children }: { to: string; children: React.ReactNode }) {
   const location = useLocation()
@@ -74,13 +76,14 @@ function AppShell({ email, onSignOut }: { email: string; onSignOut: () => void }
         <Routes>
           <Route path="/" element={<Navigate to="/feed" replace />} />
           <Route path="/feed" element={<FeedPage />} />
-          <Route path="/matches/new" element={<ComingSoon title="Create match" />} />
+          <Route path="/matches/new" element={<LogMatchPage />} />
           <Route path="/matches/:matchId" element={<ComingSoon title="Match" />} />
           <Route path="/teams" element={<ComingSoon title="Teams" />} />
           <Route path="/teams/:teamId" element={<ComingSoon title="Team" />} />
           <Route path="/notifications" element={<ComingSoon title="Notifications" />} />
           <Route path="/invitations" element={<ComingSoon title="Invitations" />} />
-          <Route path="/profile" element={<ComingSoon title="Profile" />} />
+          <Route path="/profile" element={<ProfilePage />} />
+          <Route path="/users/:userId" element={<ProfilePage />} />
           <Route path="*" element={<Navigate to="/feed" replace />} />
         </Routes>
       </main>

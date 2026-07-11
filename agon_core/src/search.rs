@@ -43,7 +43,9 @@ impl Index {
     /// sport / participant / date range in `GET /matches`).
     fn filterable_attributes(self) -> &'static [&'static str] {
         match self {
-            Index::Matches => &["sport", "participant_ids", "starts_at", "status"],
+            // `starts_at_ts` (numeric epoch) — not `starts_at` (ISO string) —
+            // because Meilisearch range filters are numeric-only.
+            Index::Matches => &["sport", "participant_ids", "starts_at_ts", "status"],
             Index::Users | Index::Teams => &[],
         }
     }
@@ -52,7 +54,9 @@ impl Index {
     /// search `sort`. Matches are sorted by start time (most recent first).
     fn sortable_attributes(self) -> &'static [&'static str] {
         match self {
-            Index::Matches => &["starts_at"],
+            // Numeric epoch: sorting an ISO string works lexically but the same
+            // field must be numeric for range filters, so use one numeric field.
+            Index::Matches => &["starts_at_ts"],
             Index::Users | Index::Teams => &[],
         }
     }

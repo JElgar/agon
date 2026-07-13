@@ -150,6 +150,45 @@ fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
     }
 }
 
+/// A two-sided match wiring specific users onto each side as invited players.
+/// Every invited user carries a `user_id` from creation, so all of them are
+/// fan-out participants immediately (before any acceptance) — which is what the
+/// feed-scenario tests rely on. `side_a`/`side_b` are the user ids to put on
+/// sides "a" and "b" respectively.
+///
+/// A creator wanting their *own* followers to receive the match simply includes
+/// their own id in one of the sides (self-invite): on this surface a participant
+/// is any player with a linked user id, and there's no self-invite guard.
+fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::CreateMatchInput {
+    let invite_side = |client_id: &str, ids: &[&str]| models::CreateMatchInviteInput {
+        side_client_id: Some(client_id.to_string()),
+        invited_user_ids: ids.iter().map(|id| id.to_string()).collect(),
+        invited_external_names: vec![],
+    };
+    models::CreateMatchInput {
+        name: name.to_string(),
+        description: "A test match".to_string(),
+        match_type: models::MatchType::Tennis,
+        starts_at: "2026-08-01T10:00:00Z".to_string(),
+        location: None,
+        sides: vec![
+            models::CreateMatchSideInput {
+                client_id: "a".to_string(),
+                team_id: None,
+                name: Some("Side A".to_string()),
+            },
+            models::CreateMatchSideInput {
+                client_id: "b".to_string(),
+                team_id: None,
+                name: Some("Side B".to_string()),
+            },
+        ],
+        invites: vec![invite_side("a", side_a), invite_side("b", side_b)],
+        score: None,
+        winner_side_id: None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Users
 // ---------------------------------------------------------------------------
@@ -635,6 +674,218 @@ async fn creating_a_match_fans_out_to_a_participants_feed() {
     .await;
     assert_eq!(found.id, created.id);
     assert_eq!(found.name, "Test Match");
+}
+
+// ---------------------------------------------------------------------------
+// Feed fan-out scenarios (multi-user end-to-end)
+//
+// The fan-out audience for a match is the deduplicated union of (see
+// docs/async-design.md / agon_core `resolve_fanout_audience`):
+//   - the participants themselves (players with a linked user id),
+//   - every follower of each participating user,
+//   - every follower of each involved team (a side with a team id).
+// So a match lands in a viewer's feed iff they participate, follow a
+// participant, or follow an involved team. These tests drive that whole path
+// through the real stream -> SQS -> worker -> feed pipeline and assert both the
+// users who SHOULD receive the match and those who should NOT.
+//
+// Note on the creator: on this surface the creator is only a participant if they
+// are themselves a player (a self-invite via `match_between`). A creator who
+// merely invites others is not in the audience, and neither are their followers
+// — the tests reflect that.
+// ---------------------------------------------------------------------------
+
+/// The scenario from the ask: two users follow a third (the poster), the poster
+/// creates a match against a fourth user, and a fifth user follows nobody.
+///
+/// Expected feed membership:
+///   - poster (participant via self-invite): yes
+///   - opponent (participant): yes
+///   - the poster's two followers: yes
+///   - the unrelated fifth user (follows nobody involved): no
+#[tokio::test]
+async fn match_fans_out_to_poster_and_their_followers_but_not_strangers() {
+    let (poster_config, poster) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+    let (follower1_config, _follower1) = new_user().await;
+    let (follower2_config, _follower2) = new_user().await;
+    let (stranger_config, _stranger) = new_user().await;
+
+    // follower1 and follower2 follow the poster; the stranger follows no one.
+    users_user_id_follow_post(&follower1_config, &poster.profile.id)
+        .await
+        .expect("follower1 follows poster");
+    users_user_id_follow_post(&follower2_config, &poster.profile.id)
+        .await
+        .expect("follower2 follows poster");
+
+    // Poster creates a match, putting themselves on side "a" (self-invite makes
+    // them a participant so their followers are fanned out to) and the opponent
+    // on side "b".
+    let created = matches_post(
+        &poster_config,
+        match_between(
+            "Followers Feed Match",
+            &[&poster.profile.id],
+            &[&opponent.profile.id],
+        ),
+    )
+    .await
+    .expect("create match");
+
+    // Everyone in the audience should eventually see it.
+    assert_match_reaches_feed(&poster_config, &created.id, "poster's own feed").await;
+    assert_match_reaches_feed(&opponent_config, &created.id, "opponent's feed").await;
+    assert_match_reaches_feed(&follower1_config, &created.id, "follower1's feed").await;
+    assert_match_reaches_feed(&follower2_config, &created.id, "follower2's feed").await;
+
+    // The stranger follows nobody involved, so it must never reach their feed.
+    // We only assert absence AFTER the fan-out has demonstrably completed (the
+    // participants above have received it), so this isn't just racing the
+    // pipeline.
+    assert_match_absent_from_feed(&stranger_config, &created.id, "stranger's feed").await;
+}
+
+/// Fan-out is the union across *all* participants' followers, not just the
+/// creator's: a user who follows the opponent (and not the poster) still
+/// receives the match, while a user who follows neither does not.
+#[tokio::test]
+async fn match_fans_out_to_followers_of_any_participant() {
+    let (poster_config, poster) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+    let (opp_follower_config, _opp_follower) = new_user().await;
+    let (unrelated_config, _unrelated) = new_user().await;
+
+    // This follower follows the OPPONENT, not the poster.
+    users_user_id_follow_post(&opp_follower_config, &opponent.profile.id)
+        .await
+        .expect("follow opponent");
+
+    let created = matches_post(
+        &poster_config,
+        match_between(
+            "Union Fanout Match",
+            &[&poster.profile.id],
+            &[&opponent.profile.id],
+        ),
+    )
+    .await
+    .expect("create match");
+
+    // The opponent's follower receives it (union of all participants' followers).
+    assert_match_reaches_feed(&opp_follower_config, &created.id, "opponent-follower feed").await;
+    // And the opponent themselves, as a participant.
+    assert_match_reaches_feed(&opponent_config, &created.id, "opponent feed").await;
+    // A user following neither participant does not.
+    assert_match_absent_from_feed(&unrelated_config, &created.id, "unrelated feed").await;
+}
+
+/// Following the poster only feeds you their *future* matches, not ones created
+/// before you followed — feed fan-out happens at creation time against the
+/// then-current follower set. A late follower doesn't retroactively receive it.
+#[tokio::test]
+async fn following_after_a_match_is_created_does_not_backfill_the_feed() {
+    let (poster_config, poster) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+    let (late_follower_config, _late_follower) = new_user().await;
+
+    // Match is created BEFORE the late follower follows.
+    let created = matches_post(
+        &poster_config,
+        match_between(
+            "Pre-Follow Match",
+            &[&poster.profile.id],
+            &[&opponent.profile.id],
+        ),
+    )
+    .await
+    .expect("create match");
+
+    // Confirm fan-out completed by waiting for a participant to receive it.
+    assert_match_reaches_feed(&opponent_config, &created.id, "opponent feed").await;
+
+    // Now they follow the poster — after the fact.
+    users_user_id_follow_post(&late_follower_config, &poster.profile.id)
+        .await
+        .expect("late follow");
+
+    // The already-created match is not backfilled into the late follower's feed.
+    assert_match_absent_from_feed(&late_follower_config, &created.id, "late-follower feed").await;
+}
+
+/// Unfollowing before the match is created removes you from the fan-out
+/// audience: a former follower does not receive the poster's new match.
+#[tokio::test]
+async fn unfollowing_removes_you_from_future_fan_out() {
+    let (poster_config, poster) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+    let (ex_follower_config, _ex_follower) = new_user().await;
+
+    // Follow, then unfollow, before any match exists.
+    users_user_id_follow_post(&ex_follower_config, &poster.profile.id)
+        .await
+        .expect("follow");
+    users_user_id_follow_delete(&ex_follower_config, &poster.profile.id)
+        .await
+        .expect("unfollow");
+
+    let created = matches_post(
+        &poster_config,
+        match_between(
+            "Post-Unfollow Match",
+            &[&poster.profile.id],
+            &[&opponent.profile.id],
+        ),
+    )
+    .await
+    .expect("create match");
+
+    // The participant receives it (fan-out ran)...
+    assert_match_reaches_feed(&opponent_config, &created.id, "opponent feed").await;
+    // ...but the ex-follower, no longer following at creation time, does not.
+    assert_match_absent_from_feed(&ex_follower_config, &created.id, "ex-follower feed").await;
+}
+
+/// Team fan-out: a match with a team on one side reaches that team's followers,
+/// even when they don't follow any of the individual players.
+#[tokio::test]
+async fn match_with_a_team_side_fans_out_to_team_followers() {
+    let (owner_config, owner) = new_user().await;
+    let (_opponent_config, opponent) = new_user().await;
+    let (team_follower_config, _team_follower) = new_user().await;
+    let (stranger_config, _stranger) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Fanout FC".to_string(),
+        },
+    )
+    .await
+    .expect("create team");
+
+    // team_follower follows the TEAM, not any player.
+    teams_team_id_follow_post(&team_follower_config, &team.id)
+        .await
+        .expect("follow team");
+
+    // A match with the team on side "a" and an individual opponent on side "b".
+    // The owner self-invites onto the team side so the match has a real player,
+    // and side "a" carries the team id so team followers are in the audience.
+    let mut input = match_between(
+        "Team Fanout Match",
+        &[&owner.profile.id],
+        &[&opponent.profile.id],
+    );
+    input.sides[0].team_id = Some(team.id.clone());
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("create match");
+
+    // The team's follower receives it via team fan-out.
+    assert_match_reaches_feed(&team_follower_config, &created.id, "team-follower feed").await;
+    // A stranger following neither the team nor any player does not.
+    assert_match_absent_from_feed(&stranger_config, &created.id, "stranger feed").await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1294,6 +1545,46 @@ where
         }
     }
     panic!("timed out after {ATTEMPTS}s waiting for: {what}");
+}
+
+/// Whether `match_id` is currently anywhere in the viewer's paged feed.
+async fn feed_contains(config: &Configuration, match_id: &str) -> bool {
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = feed_get(config, cursor.as_deref(), Some(50), None, None)
+            .await
+            .expect("list feed");
+        if page.items.iter().any(|item| item.id == match_id) {
+            return true;
+        }
+        match page.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => return false,
+        }
+    }
+}
+
+/// Assert `match_id` eventually fans out into the viewer's feed (polls through
+/// the async stream -> SQS -> worker -> feed pipeline).
+async fn assert_match_reaches_feed(config: &Configuration, match_id: &str, whose: &str) {
+    eventually(&format!("match to reach {whose}"), || async {
+        feed_contains(config, match_id).await.then_some(())
+    })
+    .await;
+}
+
+/// Assert `match_id` is NOT in the viewer's feed. Meant to be called only AFTER
+/// the fan-out has demonstrably completed for someone who *should* receive it
+/// (assert that first) — so a still-absent match reflects a real audience
+/// exclusion rather than the async pipeline simply not having run yet. A short
+/// extra settle avoids a same-moment race where the negative is checked before
+/// a (hypothetical) erroneous write lands.
+async fn assert_match_absent_from_feed(config: &Configuration, match_id: &str, whose: &str) {
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    assert!(
+        !feed_contains(config, match_id).await,
+        "match {match_id} should NOT be in {whose}"
+    );
 }
 
 // ---------------------------------------------------------------------------

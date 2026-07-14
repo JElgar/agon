@@ -4,16 +4,20 @@ import {
   Routes,
   Route,
   Navigate,
-  Link,
   useLocation,
 } from 'react-router-dom'
 import { AuthProvider, useAuth } from '@/hooks/useAuth'
 import { LoginForm } from '@/components/auth/LoginForm'
 import { CreateProfileForm } from '@/components/auth/CreateProfileForm'
 import { InvitePreviewBanner } from '@/components/auth/InvitePreviewBanner'
+import { AppSidebar } from '@/components/AppSidebar'
 import { Button } from '@/components/ui/button'
+import {
+  SidebarInset,
+  SidebarProvider,
+  SidebarTrigger,
+} from '@/components/ui/sidebar'
 import { ThemeProvider } from '@/hooks/useTheme'
-import { ThemeToggle } from '@/components/ThemeToggle'
 import { useQuery } from '@tanstack/react-query'
 import { fetchClient } from '@/lib/api-client'
 import { FeedPage } from '@/pages/FeedPage'
@@ -28,25 +32,6 @@ import {
   getPendingInvite,
   setPendingInvite,
 } from '@/lib/pendingInvite'
-
-function NavLink({ to, children }: { to: string; children: React.ReactNode }) {
-  const location = useLocation()
-  const isActive =
-    location.pathname === to || (to !== '/' && location.pathname.startsWith(to))
-
-  return (
-    <Link
-      to={to}
-      className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-        isActive
-          ? 'bg-primary/10 text-primary'
-          : 'text-muted-foreground hover:text-foreground hover:bg-muted'
-      }`}
-    >
-      {children}
-    </Link>
-  )
-}
 
 /** Full-screen centered content, used for the loading / error / auth gates. */
 function CenteredMessage({ children }: { children: React.ReactNode }) {
@@ -65,34 +50,22 @@ function ComingSoon({ title }: { title: string }) {
   )
 }
 
-/** The signed-in chrome: header nav + routed content. */
+/** The signed-in chrome: a responsive sidebar (off-canvas on mobile) + routed
+ *  content. A slim top bar carries the sidebar trigger on mobile. */
 function AppShell({ email, onSignOut }: { email: string; onSignOut: () => void }) {
   return (
-    <div className="min-h-screen bg-background">
-      <header className="border-b">
-        <div className="container mx-auto px-4 py-4 flex justify-between items-center">
-          <div className="flex items-center space-x-8">
-            <h1 className="text-2xl font-bold">Agon</h1>
-            <nav className="flex space-x-2">
-              <NavLink to="/feed">Feed</NavLink>
-              <NavLink to="/search">Find people</NavLink>
-              <NavLink to="/teams">Teams</NavLink>
-              <NavLink to="/notifications">Notifications</NavLink>
-              <NavLink to="/profile">Profile</NavLink>
-            </nav>
-          </div>
-          <div className="flex items-center space-x-4">
-            <span className="text-sm text-muted-foreground">{email}</span>
-            <ThemeToggle />
-            <Button onClick={onSignOut} variant="outline">
-              Sign Out
-            </Button>
-          </div>
-        </div>
-      </header>
+    <SidebarProvider>
+      <AppSidebar email={email} onSignOut={onSignOut} />
+      <SidebarInset>
+        {/* Mobile top bar: hamburger to open the nav sheet. Hidden on desktop,
+            where the sidebar is always visible. */}
+        <header className="flex h-14 items-center gap-2 border-b px-4 md:hidden">
+          <SidebarTrigger />
+          <span className="text-lg font-bold">Agon</span>
+        </header>
 
-      <main className="container mx-auto px-4 py-8">
-        <Routes>
+        <main className="container mx-auto px-4 py-8">
+          <Routes>
           <Route path="/" element={<HomeRedirect />} />
           <Route path="/feed" element={<FeedPage />} />
           <Route path="/matches/new" element={<LogMatchPage />} />
@@ -114,9 +87,10 @@ function AppShell({ email, onSignOut }: { email: string; onSignOut: () => void }
             element={<FollowListPage mode="following" />}
           />
           <Route path="*" element={<HomeRedirect />} />
-        </Routes>
-      </main>
-    </div>
+          </Routes>
+        </main>
+      </SidebarInset>
+    </SidebarProvider>
   )
 }
 

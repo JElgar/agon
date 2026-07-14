@@ -15,6 +15,8 @@ base64 = "0.22.1"
 chrono = { version = "0.4.41", features = ["serde"] }
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-dynamodb = "1"
+# Only the timer, for backoff between DynamoDB batch-retry attempts.
+tokio = { version = "1", features = ["time"] }
 serde_dynamo = { version = "4", features = ["aws-sdk-dynamodb+1"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 

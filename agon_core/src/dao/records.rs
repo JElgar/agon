@@ -421,6 +421,26 @@ pub enum NotificationKindRecord {
         comment_id: String,
         preview: String,
     },
+    /// A score was submitted for a match you played in. `needs_confirmation`
+    /// distinguishes the two messages: `true` => your side must confirm it,
+    /// `false` => informational (your side already implicitly confirmed, or the
+    /// score was set directly). `actor_user_id` is the submitter.
+    ScoreSubmitted {
+        actor_user_id: String,
+        match_id: String,
+        match_name: String,
+        submission_id: String,
+        needs_confirmation: bool,
+    },
+    /// A score you submitted was confirmed by the other side(s). Sent to the
+    /// submitter; `actor_user_id` is the participant whose confirmation completed
+    /// it.
+    ScoreConfirmed {
+        actor_user_id: String,
+        match_id: String,
+        match_name: String,
+        submission_id: String,
+    },
 }
 
 /// `ASSET#<assetId>` / `#META` — an uploadable asset.
@@ -474,4 +494,21 @@ pub struct UserSportStatsRecord {
     pub matches_played: u64,
     pub wins: u64,
     // Win percentage is derived (wins / matches_played) at the API layer.
+}
+
+/// `MATCH#<mid>` / `STATCONTRIB#<uid>` — what a single match currently
+/// contributes to one participant's per-sport stats. The stats reconciler
+/// stores this after applying it, then on any later match change diffs the new
+/// desired contribution against this to compute the delta to apply. Absent =>
+/// the match has never contributed for this user (treated as zero).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StatContributionRecord {
+    /// Sport the contribution counted under (matches the match's type at the
+    /// time it was applied). Kept so a sport change can move the counts to the
+    /// right `STATS#<sport>` item.
+    pub match_type: String,
+    /// 1 while the match is completed and the user played; 0 otherwise.
+    pub played: u64,
+    /// 1 while the user's side is the confirmed winner; 0 otherwise.
+    pub won: u64,
 }

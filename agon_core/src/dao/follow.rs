@@ -1,11 +1,13 @@
 //! Follow-graph operations (user→user and user→team), with atomic counter
 //! maintenance and cursor-paginated listing.
 
+use std::collections::{HashMap, HashSet};
+
 use aws_sdk_dynamodb::types::{Delete, Put, TransactWriteItem, Update};
 
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
-use super::item::{ATTR_GSI1PK, ATTR_GSI3PK, ATTR_PK, ItemBuilder, s, to_item};
+use super::item::{ATTR_GSI1PK, ATTR_GSI3PK, ATTR_PK, ATTR_SK, ItemBuilder, item_pk, s, to_item};
 use super::keys::{Pk, Sk};
 use super::page::Page;
 use super::records::{TeamFollowRecord, UserFollowRecord};
@@ -148,6 +150,51 @@ impl Dao {
             .await
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
         Ok(out.item.is_some())
+    }
+
+    /// Of `followee_ids`, which does `follower_id` follow? Returns the subset as
+    /// a set, for populating `is_followed_by_me` across a page of users in one
+    /// round-trip instead of one `is_following_user` call each.
+    ///
+    /// Each follow edge is an exact-key existence check (`USER#<followee>` /
+    /// `FOLLOWER#<follower>`), so these collapse into a single `BatchGetItem`
+    /// (see [`batch_get_all`] for the unprocessed-key retry); we project just the
+    /// `PK` since we only need existence, then recover which followees came back.
+    /// `follower_id` itself is skipped (you never follow yourself). Callers must
+    /// pass at most `BATCH_GET_MAX` ids — a single, service-capped page.
+    ///
+    /// [`batch_get_all`]: Dao::batch_get_all
+    pub async fn batch_is_following_users(
+        &self,
+        follower_id: &str,
+        followee_ids: &[String],
+    ) -> DaoResult<HashSet<String>> {
+        let mut seen = HashSet::new();
+        let keys: Vec<_> = followee_ids
+            .iter()
+            .filter(|id| id.as_str() != follower_id && seen.insert((*id).clone()))
+            .map(|followee| {
+                HashMap::from([
+                    (
+                        ATTR_PK.to_string(),
+                        s(Pk::User(followee.clone()).to_string()),
+                    ),
+                    (
+                        ATTR_SK.to_string(),
+                        s(Sk::Follower(follower_id.to_string()).to_string()),
+                    ),
+                ])
+            })
+            .collect();
+
+        let items = self.batch_get_all(keys, Some(ATTR_PK)).await?;
+        let mut following = HashSet::with_capacity(items.len());
+        for item in items {
+            if let Pk::User(followee) = item_pk(&item)? {
+                following.insert(followee);
+            }
+        }
+        Ok(following)
     }
 
     /// Whether `follower_id` follows the team `team_id`. Existence check on the

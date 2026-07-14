@@ -4,6 +4,7 @@ import type { components } from '@/types/api'
 import { MatchCard } from '@/components/agon/MatchCard'
 import { Button } from '@/components/ui/button'
 import { useNavigate } from 'react-router-dom'
+import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 
 type FeedPageData = components['schemas']['FeedPage']
 
@@ -18,6 +19,7 @@ const PAGE_SIZE = 20
  */
 export function FeedPage() {
   const navigate = useNavigate()
+  const currentUserId = useCurrentUserId()
 
   const query = useInfiniteQuery({
     queryKey: ['feed'],
@@ -69,6 +71,7 @@ export function FeedPage() {
         <MatchCard
           key={item.id}
           match={item}
+          currentUserId={currentUserId}
           onOpen={() => navigate(`/matches/${item.id}`)}
         />
       ))}

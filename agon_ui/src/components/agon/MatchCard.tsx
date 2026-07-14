@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils'
 import { Avatar } from './Avatar'
 import { SportBadge } from './SportBadge'
 import { StatusBadge } from './StatusBadge'
+import { ScoreConfirmationBar } from './ScoreConfirmationBar'
 import {
   displayScore,
   headlineBySide,
@@ -18,6 +19,9 @@ export interface MatchCardProps extends React.HTMLAttributes<HTMLDivElement> {
   match: Match
   /** Called when the card body is activated (navigate to match detail). */
   onOpen?: () => void
+  /** The signed-in user's id. When they're a participant with a pending score to
+   *  respond to, an inline confirm/dispute prompt is shown. */
+  currentUserId?: string
 }
 
 /** Display label for a side: its name, or a neutral fallback. */
@@ -30,7 +34,13 @@ function sideName(side: MatchSide | undefined, fallback: string): string {
  * state, and social actions. Presentational — data comes from a `Match`
  * (which the feed's `FeedItem_Match` extends); callers wire the action handlers.
  */
-export function MatchCard({ match, onOpen, className, ...props }: MatchCardProps) {
+export function MatchCard({
+  match,
+  onOpen,
+  currentUserId,
+  className,
+  ...props
+}: MatchCardProps) {
   const [sideA, sideB] = match.sides
   const scoreInfo = displayScore(match)
   const headline = scoreInfo ? headlineBySide(scoreInfo.score) : {}
@@ -114,6 +124,17 @@ export function MatchCard({ match, onOpen, className, ...props }: MatchCardProps
       <div className="flex flex-wrap items-center gap-3 px-3.5 py-2.5">
         <StatusBadge status={scoreInfo?.confirmed ? 'confirmed' : 'unconfirmed'} />
       </div>
+
+      {/* Confirm/dispute prompt when the viewer's side owes a response. */}
+      {match.pending_score && (
+        <div className="px-3.5 pb-2.5">
+          <ScoreConfirmationBar
+            match={match}
+            currentUserId={currentUserId}
+            variant="card"
+          />
+        </div>
+      )}
 
       {/* Actions */}
       <div className="flex items-center gap-4 border-t px-3.5 py-2 text-muted-foreground">

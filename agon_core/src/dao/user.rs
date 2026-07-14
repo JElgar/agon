@@ -1,12 +1,14 @@
 //! User operations: create (with unique-email guard), get, update.
 
+use std::collections::HashMap;
+
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 use aws_sdk_dynamodb::types::{AttributeValue, Put, TransactWriteItem};
 
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
-use super::item::{ATTR_PK, from_item, s, to_item};
+use super::item::{ATTR_PK, ATTR_SK, from_item, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::{AuthGuardRecord, EmailGuardRecord, UserRecord};
 
@@ -128,6 +130,42 @@ impl Dao {
             Some(item) => Ok(Some(from_item(item)?)),
             None => Ok(None),
         }
+    }
+
+    /// Fetch many user profiles by internal id in a single round-trip, returned
+    /// keyed by id. Missing ids are simply absent from the map (mirrors
+    /// [`get_user`] returning `None`), and duplicate ids collapse.
+    ///
+    /// Each profile is an exact-key point read, so this collapses what would be
+    /// N `get_user` calls into one `BatchGetItem` (see [`batch_get_all`] for the
+    /// unprocessed-key retry). Callers must pass at most `BATCH_GET_MAX` ids —
+    /// every current caller hydrates a single, service-capped page.
+    ///
+    /// [`batch_get_all`]: Dao::batch_get_all
+    pub async fn batch_get_users(
+        &self,
+        user_ids: &[String],
+    ) -> DaoResult<HashMap<String, UserRecord>> {
+        // De-dup — BatchGetItem rejects duplicate keys in one request.
+        let mut seen = std::collections::HashSet::new();
+        let keys: Vec<_> = user_ids
+            .iter()
+            .filter(|id| seen.insert((*id).clone()))
+            .map(|id| {
+                HashMap::from([
+                    (ATTR_PK.to_string(), s(Pk::User(id.clone()).to_string())),
+                    (ATTR_SK.to_string(), s(Sk::Profile.to_string())),
+                ])
+            })
+            .collect();
+
+        let items = self.batch_get_all(keys, None).await?;
+        let mut out = HashMap::with_capacity(items.len());
+        for item in items {
+            let record: UserRecord = from_item(item)?;
+            out.insert(record.id.clone(), record);
+        }
+        Ok(out)
     }
 
     /// Update a user's mutable profile fields (name, profile image). Email

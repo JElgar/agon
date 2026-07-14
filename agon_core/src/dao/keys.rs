@@ -172,6 +172,14 @@ pub enum Sk {
     /// A notification. `NOTIF#<nid>` — addressed by id; time ordering is via
     /// GSI1 (`UNOTIFS#<uid>` / `<ts>#<nid>`).
     Notification(String),
+    /// Records what a match contributed to one participant's per-sport stats
+    /// (`{ played, won }`), in the match's partition. `STATCONTRIB#<userId>`.
+    /// The async stats reconciler diffs the desired contribution (from the
+    /// match's current state) against this stored one and applies the delta to
+    /// the user's `STATS#<sport>` item in the same transaction — so re-scores,
+    /// roster changes and cancellations all self-correct, and redelivery is a
+    /// no-op (same state → zero delta).
+    StatContribution(String),
     /// A fan-out feed entry, ordered by match start time. `FEED#<starts_at>#<mid>`
     /// (only ever listed, never addressed by id — keeps ts in the key).
     Feed { starts_at: String, match_id: String },
@@ -197,6 +205,7 @@ impl Sk {
             Sk::Comment(_) => "COMMENT",
             Sk::Reply(_) => "REPLY",
             Sk::Notification(_) => "NOTIF",
+            Sk::StatContribution(_) => "STATCONTRIB",
             Sk::Feed { .. } => "FEED",
         }
     }
@@ -219,7 +228,8 @@ impl fmt::Display for Sk {
             | Sk::ScoreSubmission(v)
             | Sk::Comment(v)
             | Sk::Reply(v)
-            | Sk::Notification(v) => write!(f, "{}{}{}", self.prefix(), DELIMITER, v),
+            | Sk::Notification(v)
+            | Sk::StatContribution(v) => write!(f, "{}{}{}", self.prefix(), DELIMITER, v),
 
             // Feed entries keep the timestamp in the key (list-only).
             Sk::Feed {
@@ -270,6 +280,7 @@ impl FromStr for Sk {
             "COMMENT" => Ok(Sk::Comment(rest.into())),
             "REPLY" => Ok(Sk::Reply(rest.into())),
             "NOTIF" => Ok(Sk::Notification(rest.into())),
+            "STATCONTRIB" => Ok(Sk::StatContribution(rest.into())),
             "FEED" => {
                 let (starts_at, match_id) = two(rest)?;
                 Ok(Sk::Feed {
@@ -340,6 +351,7 @@ mod tests {
         sk_roundtrip(Sk::Comment("c1".into()), "COMMENT#c1");
         sk_roundtrip(Sk::Reply("r1".into()), "REPLY#r1");
         sk_roundtrip(Sk::Notification("n1".into()), "NOTIF#n1");
+        sk_roundtrip(Sk::StatContribution("u4".into()), "STATCONTRIB#u4");
     }
 
     #[test]

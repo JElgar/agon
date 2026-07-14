@@ -65,7 +65,8 @@ mod notification;
 use notification::{
     CommentNotification, FollowNotification, InvitationAcceptedNotification, LikeNotification,
     MatchInvitationNotification, Notification, NotificationKind, NotificationPage,
-    TeamInvitationNotification, UnreadCount,
+    ScoreConfirmedNotification, ScoreSubmittedNotification, TeamInvitationNotification,
+    UnreadCount,
 };
 
 #[derive(SecurityScheme)]
@@ -546,13 +547,20 @@ struct CreateMatchInput {
     name: String,
     description: String,
     match_type: MatchType,
-    /// When the match starts / started.
+    /// When the match starts / started. Must be in the future when no `score` is
+    /// supplied (an upcoming, Scheduled match) and in the past when a `score` is
+    /// supplied (an already-played, Completed match).
     starts_at: chrono::DateTime<chrono::Utc>,
     location: Option<Location>,
     /// The opposing sides. At least two are required.
     sides: Vec<CreateMatchSideInput>,
     /// Players to invite up front. Optional — more can be added later.
     invites: Vec<CreateMatchInviteInput>,
+    /// If set, the caller is added to the match as an already-accepted player on
+    /// this side (references a `CreateMatchSideInput.client_id`). This is how the
+    /// creator opts to play in their own match — no self-invitation is created.
+    /// None means the caller creates the match but doesn't play in it.
+    creator_side_client_id: Option<String>,
     /// If present, the match is created already played (status `Completed`) and
     /// the score enters the confirmation flow. `side_id`s reference the created
     /// sides' `client_id`s. Absent => an upcoming match.
@@ -1276,9 +1284,10 @@ impl Api {
         &self,
         Data(dao): Data<&dao::Dao>,
         Data(search): Data<&agon_core::search::SearchClient>,
-        AuthSchema(_jwt_data): AuthSchema,
+        AuthSchema(jwt_data): AuthSchema,
         #[oai(name = "q")] Query(query): Query<String>,
     ) -> Result<SearchUsersResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
         info!("Searching users with query: {}", query);
 
         // Search the users index for matching ids, then hydrate full profiles
@@ -1294,7 +1303,9 @@ impl Api {
             .await
             .map_err(search_internal)?;
 
-        let profiles = self.hydrate_user_profiles(dao, &hits.ids).await?;
+        let profiles = self
+            .hydrate_user_profiles(dao, &hits.ids, Some(&uid))
+            .await?;
         Ok(SearchUsersResponse::Users(Json(profiles)))
     }
 
@@ -1496,6 +1507,24 @@ impl Api {
             )));
         }
 
+        // The `starts_at` time must be consistent with whether a result is being
+        // recorded: a match created with a score is already played (Completed),
+        // so it must have started in the past; one without a score is upcoming
+        // (Scheduled), so it must start in the future. This keeps the two create
+        // modes ("scheduled" vs "complete") honest.
+        let now_ts = chrono::Utc::now();
+        if input.score.is_some() {
+            if input.starts_at > now_ts {
+                return Ok(CreateMatchResponse::ValidationError(PlainText(
+                    "a completed match's time must be in the past".to_string(),
+                )));
+            }
+        } else if input.starts_at <= now_ts {
+            return Ok(CreateMatchResponse::ValidationError(PlainText(
+                "a scheduled match's time must be in the future".to_string(),
+            )));
+        }
+
         let now = now_iso();
         let match_id = new_id();
 
@@ -1513,29 +1542,33 @@ impl Api {
             });
         }
 
-        // Resolve a score's client-side ids to the real side ids. Reject a score
-        // referencing an unknown side.
-        let confirmed_score = match &input.score {
+        // Resolve a create-time score's client-side ids to real side ids (reject
+        // an unknown side). This becomes a PENDING submission, not a confirmed
+        // score: the reported result awaits the other side(s)' confirmation via
+        // `POST /matches/:id/score-submissions/:sid/respond` (mirrors the
+        // post-creation flow). The submitter's side is implicitly confirmed.
+        let (resolved_score, resolved_winner) = match &input.score {
             Some(score) => match resolve_score_side_ids(score, &side_ids) {
-                Some(resolved) => Some(dao::records::ConfirmedScoreRecord {
-                    score: score_to_record(&resolved),
-                    winner_side_id: input
+                Some(resolved) => (
+                    Some(score_to_record(&resolved)),
+                    input
                         .winner_side_id
                         .as_ref()
                         .and_then(|c| side_ids.get(c).cloned()),
-                }),
+                ),
                 None => {
                     return Ok(CreateMatchResponse::ValidationError(PlainText(
                         "score references an unknown side".into(),
                     )));
                 }
             },
-            None => None,
+            None => (None, None),
         };
 
-        // A supplied score means the match is already played (Completed);
-        // otherwise it is Scheduled.
-        let status = if confirmed_score.is_some() {
+        // A supplied score means the match was already played (Completed);
+        // otherwise it is Scheduled. Confirmation is independent of status — a
+        // Completed match may still carry an unconfirmed (pending) score.
+        let status = if resolved_score.is_some() {
             "completed"
         } else {
             "scheduled"
@@ -1545,6 +1578,32 @@ impl Api {
         // and a standalone invitation record; users get a user-kind invitation.
         let mut player_records: Vec<dao::records::MatchPlayerRecord> = Vec::new();
         let mut invitation_records: Vec<dao::records::InvitationRecord> = Vec::new();
+
+        // If the creator opted to play, add them as an already-accepted player on
+        // the chosen side — no invitation (they're the source of truth, not an
+        // invitee, so there's no pending self-invite / notification to accept).
+        // Remember their player id + side so a create-time score submission can be
+        // attributed to them and their side pre-confirmed.
+        let mut creator_player_id: Option<String> = None;
+        let mut creator_side_id: Option<String> = None;
+        if let Some(client_id) = &input.creator_side_client_id {
+            let Some(side_id) = side_ids.get(client_id).cloned() else {
+                return Ok(CreateMatchResponse::ValidationError(PlainText(
+                    "creator_side_client_id references an unknown side".into(),
+                )));
+            };
+            let player_id = new_id();
+            creator_player_id = Some(player_id.clone());
+            creator_side_id = Some(side_id.clone());
+            player_records.push(dao::records::MatchPlayerRecord {
+                player_id,
+                user_id: Some(uid.clone()),
+                display_name: None,
+                side_id: Some(side_id),
+                is_member_of_team: None,
+                invitation: None,
+            });
+        }
         for invite in &input.invites {
             let side_id = invite
                 .side_client_id
@@ -1578,6 +1637,57 @@ impl Api {
             }
         }
 
+        // A create-time score becomes a PENDING submission attributed to the
+        // creator, with the creator's side pre-confirmed (mirrors the respond
+        // endpoint, which requires every side to confirm and treats the
+        // submitter's side as implicitly confirmed). It only promotes to a
+        // confirmed score once the other side(s) confirm. Submitting a score
+        // therefore requires the creator to be a participant (someone must own
+        // the submission); reject a score without `creator_side_client_id`.
+        let (pending_score, pending_submission) = match resolved_score {
+            Some(score_rec) => {
+                let (Some(player_id), Some(side_id)) =
+                    (creator_player_id.clone(), creator_side_id.clone())
+                else {
+                    return Ok(CreateMatchResponse::ValidationError(PlainText(
+                        "a score can only be submitted by a participant; set \
+                         creator_side_client_id to record the result"
+                            .into(),
+                    )));
+                };
+                let submission_id = new_id();
+                let confirmation = dao::records::ScoreConfirmationRecord {
+                    side_id: side_id.clone(),
+                    confirmed_by_player_id: player_id.clone(),
+                    confirmed_at: now.clone(),
+                };
+                let pending = dao::records::PendingScoreRecord {
+                    submission_id: submission_id.clone(),
+                    score: score_rec.clone(),
+                    winner_side_id: resolved_winner.clone(),
+                    confirmations: vec![confirmation],
+                };
+                let submission = dao::records::ScoreSubmissionRecord {
+                    submission_id,
+                    score: score_rec,
+                    winner_side_id: resolved_winner.clone(),
+                    status: String::from("pending"),
+                    submitted_by_player_id: player_id.clone(),
+                    submitted_at: now.clone(),
+                    // Seed the submitter's side as confirmed, so once the other
+                    // side responds "confirm" the submission is fully confirmed.
+                    responses: vec![dao::records::ScoreResponseRecord {
+                        side_id,
+                        responded_by_player_id: player_id,
+                        response: String::from("confirm"),
+                        responded_at: now.clone(),
+                    }],
+                };
+                (Some(pending), Some(submission))
+            }
+            None => (None, None),
+        };
+
         let match_record = dao::records::MatchRecord {
             id: match_id.clone(),
             name: input.name,
@@ -1592,8 +1702,8 @@ impl Api {
                 longitude: l.longitude,
             }),
             header_photo_urls: Vec::new(),
-            confirmed_score,
-            pending_score: None,
+            confirmed_score: None,
+            pending_score,
             like_count: 0,
             comment_count: 0,
             created_at: now.clone(),
@@ -1614,6 +1724,14 @@ impl Api {
         // already created). These drive the invitee inbox / token acceptance.
         for inv in &invitation_records {
             dao.create_invitation(inv).await.map_err(dao_internal)?;
+        }
+
+        // Persist the create-time score submission (the pending score's history
+        // record), so the other side can respond to it by id.
+        if let Some(submission) = &pending_submission {
+            dao.put_score_submission(&match_id, submission)
+                .await
+                .map_err(dao_internal)?;
         }
 
         Ok(CreateMatchResponse::Match(Json(match_from_records(
@@ -2097,7 +2215,7 @@ impl Api {
             .await
             .map_err(dao_internal)?;
         let ids: Vec<String> = page.items.into_iter().map(|l| l.user_id).collect();
-        let items = self.hydrate_user_profiles(dao, &ids).await?;
+        let items = self.hydrate_user_profiles(dao, &ids, None).await?;
         Ok(ListLikesResponse::Users(Json(UserPage {
             items,
             next_cursor: page.next_cursor,
@@ -3012,20 +3130,21 @@ impl Api {
     async fn list_user_followers(
         &self,
         Data(dao): Data<&dao::Dao>,
-        AuthSchema(_jwt_data): AuthSchema,
+        AuthSchema(jwt_data): AuthSchema,
         Path(user_id): Path<String>,
         /// Opaque cursor from the previous page's `next_cursor`.
         Query(cursor): Query<Option<String>>,
         /// Maximum number of items to return (defaults to 20, capped at 50).
         Query(limit): Query<Option<u32>>,
     ) -> Result<ListFollowsResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
         info!("Listing followers of user {user_id}");
         let page = dao
             .list_user_followers(&user_id, cursor.as_deref(), page_limit(limit))
             .await
             .map_err(dao_internal)?;
         let ids: Vec<String> = page.items.into_iter().map(|e| e.follower_id).collect();
-        let items = self.hydrate_user_profiles(dao, &ids).await?;
+        let items = self.hydrate_user_profiles(dao, &ids, Some(&uid)).await?;
         Ok(ListFollowsResponse::Users(Json(UserPage {
             items,
             next_cursor: page.next_cursor,
@@ -3036,20 +3155,21 @@ impl Api {
     async fn list_user_following(
         &self,
         Data(dao): Data<&dao::Dao>,
-        AuthSchema(_jwt_data): AuthSchema,
+        AuthSchema(jwt_data): AuthSchema,
         Path(user_id): Path<String>,
         /// Opaque cursor from the previous page's `next_cursor`.
         Query(cursor): Query<Option<String>>,
         /// Maximum number of items to return (defaults to 20, capped at 50).
         Query(limit): Query<Option<u32>>,
     ) -> Result<ListFollowsResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
         info!("Listing users that user {user_id} follows");
         let page = dao
             .list_user_following(&user_id, cursor.as_deref(), page_limit(limit))
             .await
             .map_err(dao_internal)?;
         let ids: Vec<String> = page.items.into_iter().map(|e| e.followee_id).collect();
-        let items = self.hydrate_user_profiles(dao, &ids).await?;
+        let items = self.hydrate_user_profiles(dao, &ids, Some(&uid)).await?;
         Ok(ListFollowsResponse::Users(Json(UserPage {
             items,
             next_cursor: page.next_cursor,
@@ -3090,20 +3210,21 @@ impl Api {
     async fn list_team_followers(
         &self,
         Data(dao): Data<&dao::Dao>,
-        AuthSchema(_jwt_data): AuthSchema,
+        AuthSchema(jwt_data): AuthSchema,
         Path(team_id): Path<String>,
         /// Opaque cursor from the previous page's `next_cursor`.
         Query(cursor): Query<Option<String>>,
         /// Maximum number of items to return (defaults to 20, capped at 50).
         Query(limit): Query<Option<u32>>,
     ) -> Result<ListFollowsResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
         info!("Listing followers of team {team_id}");
         let page = dao
             .list_team_followers(&team_id, cursor.as_deref(), page_limit(limit))
             .await
             .map_err(dao_internal)?;
         let ids: Vec<String> = page.items.into_iter().map(|e| e.follower_id).collect();
-        let items = self.hydrate_user_profiles(dao, &ids).await?;
+        let items = self.hydrate_user_profiles(dao, &ids, Some(&uid)).await?;
         Ok(ListFollowsResponse::Users(Json(UserPage {
             items,
             next_cursor: page.next_cursor,
@@ -3118,12 +3239,32 @@ impl Api {
         &self,
         dao: &dao::Dao,
         ids: &[String],
+        viewer_uid: Option<&str>,
     ) -> Result<Vec<UserProfile>> {
+        // Batch the two exact-key point reads across the whole page: the profile
+        // items, and (for a signed-in viewer) which of these the viewer follows.
+        // Per-user stats stay a per-user query — they're a `begins_with(STATS)`
+        // range read per partition, which BatchGetItem can't express.
+        let records = dao.batch_get_users(ids).await.map_err(dao_internal)?;
+        let followed = match viewer_uid {
+            Some(viewer) => dao
+                .batch_is_following_users(viewer, ids)
+                .await
+                .map_err(dao_internal)?,
+            None => std::collections::HashSet::new(),
+        };
+
+        // Preserve the caller's ordering; skip ids with no profile (matches the
+        // old per-id `get_user` returning `None`).
         let mut profiles = Vec::with_capacity(ids.len());
         for id in ids {
-            if let Some(record) = dao.get_user(id).await.map_err(dao_internal)? {
+            if let Some(record) = records.get(id) {
                 let stats = dao.list_user_stats(id).await.map_err(dao_internal)?;
-                profiles.push(user_profile_from_record(&record, &stats, false));
+                profiles.push(user_profile_from_record(
+                    record,
+                    &stats,
+                    followed.contains(id),
+                ));
             }
         }
         Ok(profiles)
@@ -3680,6 +3821,29 @@ fn mock_notifications() -> Vec<Notification> {
                 match_id: String::from("match_123"),
                 comment_id: String::from("comment_9"),
                 preview: String::from("Good game, rematch soon?"),
+            }),
+        },
+        Notification {
+            id: String::from("notif_score_submitted"),
+            is_read: false,
+            created_at: mock_timestamp(),
+            kind: NotificationKind::ScoreSubmitted(ScoreSubmittedNotification {
+                submitted_by: actor("user_2", "Raj Patel"),
+                match_id: String::from("match_123"),
+                match_name: String::from("Tennis vs Raj"),
+                submission_id: String::from("sub_abc"),
+                needs_confirmation: true,
+            }),
+        },
+        Notification {
+            id: String::from("notif_score_confirmed"),
+            is_read: true,
+            created_at: mock_timestamp(),
+            kind: NotificationKind::ScoreConfirmed(ScoreConfirmedNotification {
+                confirmed_by: actor("user_3", "Alex Morgan"),
+                match_id: String::from("match_123"),
+                match_name: String::from("Tennis vs Raj"),
+                submission_id: String::from("sub_abc"),
             }),
         },
     ]

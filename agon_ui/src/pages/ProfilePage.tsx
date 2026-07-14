@@ -1,13 +1,15 @@
 import { useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ChevronRight } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { ProfileHeader } from '@/components/agon/ProfileHeader'
+import { FollowButton } from '@/components/agon/FollowButton'
 import { SportStatsTable } from '@/components/agon/SportStatsTable'
 import { MatchCard } from '@/components/agon/MatchCard'
 import { Button } from '@/components/ui/button'
+import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 
 type UserProfile = components['schemas']['UserProfile']
 type Match = components['schemas']['Match']
@@ -30,8 +32,8 @@ const RECENT_LIMIT = 5
 export function ProfilePage() {
   const { userId } = useParams()
   const navigate = useNavigate()
-  const queryClient = useQueryClient()
   const isOwnProfile = !userId
+  const currentUserId = useCurrentUserId()
   const [showAllSports, setShowAllSports] = useState(false)
 
   const profileQuery = useQuery({
@@ -64,20 +66,6 @@ export function ProfilePage() {
     },
   })
 
-  const followMutation = useMutation({
-    mutationFn: async (follow: boolean) => {
-      if (!userId) return
-      const options = { params: { path: { user_id: userId } } }
-      const { error } = follow
-        ? await fetchClient.POST('/users/{user_id}/follow', options)
-        : await fetchClient.DELETE('/users/{user_id}/follow', options)
-      if (error) throw new Error('Failed to update follow')
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile', userId ?? 'me'] })
-    },
-  })
-
   if (profileQuery.isLoading) {
     return <ProfileSkeleton />
   }
@@ -94,20 +82,16 @@ export function ProfilePage() {
   }
 
   const profile = profileQuery.data
-  const isFollowing = profile.is_followed_by_me
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-8">
       <div className="flex flex-col gap-5">
         <ProfileHeader profile={profile} />
-        {!isOwnProfile && (
-          <Button
-            variant={isFollowing ? 'outline' : 'default'}
-            disabled={followMutation.isPending}
-            onClick={() => followMutation.mutate(!isFollowing)}
-          >
-            {isFollowing ? 'Following' : 'Follow'}
-          </Button>
+        {!isOwnProfile && userId && (
+          <FollowButton
+            userId={userId}
+            isFollowing={profile.is_followed_by_me}
+          />
         )}
       </div>
 
@@ -138,6 +122,7 @@ export function ProfilePage() {
         <RecentActivity
           query={activityQuery}
           onOpen={(id) => navigate(`/matches/${id}`)}
+          currentUserId={currentUserId}
         />
       </section>
     </div>
@@ -147,10 +132,11 @@ export function ProfilePage() {
 interface RecentActivityProps {
   query: ReturnType<typeof useQuery<Match[]>>
   onOpen: (matchId: string) => void
+  currentUserId?: string
 }
 
 /** Recent-activity list: loading / error / empty states, else the match cards. */
-function RecentActivity({ query, onOpen }: RecentActivityProps) {
+function RecentActivity({ query, onOpen, currentUserId }: RecentActivityProps) {
   if (query.isLoading) {
     return (
       <div className="flex flex-col gap-3">
@@ -191,7 +177,12 @@ function RecentActivity({ query, onOpen }: RecentActivityProps) {
   return (
     <div className="flex flex-col gap-3">
       {matches.map((match) => (
-        <MatchCard key={match.id} match={match} onOpen={() => onOpen(match.id)} />
+        <MatchCard
+          key={match.id}
+          match={match}
+          currentUserId={currentUserId}
+          onOpen={() => onOpen(match.id)}
+        />
       ))}
     </div>
   )

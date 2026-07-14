@@ -10,6 +10,10 @@ import { fetchClient } from '@/lib/api-client'
 import { FeedPage } from '@/pages/FeedPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { LogMatchPage } from '@/pages/LogMatchPage'
+import { MatchDetailPage } from '@/pages/MatchDetailPage'
+import { NotificationsPage } from '@/pages/NotificationsPage'
+import { UserSearchPage } from '@/pages/UserSearchPage'
+import { FollowListPage } from '@/pages/FollowListPage'
 
 function NavLink({ to, children }: { to: string; children: React.ReactNode }) {
   const location = useLocation()
@@ -57,6 +61,7 @@ function AppShell({ email, onSignOut }: { email: string; onSignOut: () => void }
             <h1 className="text-2xl font-bold">Agon</h1>
             <nav className="flex space-x-2">
               <NavLink to="/feed">Feed</NavLink>
+              <NavLink to="/search">Find people</NavLink>
               <NavLink to="/teams">Teams</NavLink>
               <NavLink to="/notifications">Notifications</NavLink>
               <NavLink to="/profile">Profile</NavLink>
@@ -77,13 +82,22 @@ function AppShell({ email, onSignOut }: { email: string; onSignOut: () => void }
           <Route path="/" element={<Navigate to="/feed" replace />} />
           <Route path="/feed" element={<FeedPage />} />
           <Route path="/matches/new" element={<LogMatchPage />} />
-          <Route path="/matches/:matchId" element={<ComingSoon title="Match" />} />
+          <Route path="/matches/:matchId" element={<MatchDetailPage />} />
           <Route path="/teams" element={<ComingSoon title="Teams" />} />
           <Route path="/teams/:teamId" element={<ComingSoon title="Team" />} />
-          <Route path="/notifications" element={<ComingSoon title="Notifications" />} />
+          <Route path="/notifications" element={<NotificationsPage />} />
           <Route path="/invitations" element={<ComingSoon title="Invitations" />} />
+          <Route path="/search" element={<UserSearchPage />} />
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="/users/:userId" element={<ProfilePage />} />
+          <Route
+            path="/users/:userId/followers"
+            element={<FollowListPage mode="followers" />}
+          />
+          <Route
+            path="/users/:userId/following"
+            element={<FollowListPage mode="following" />}
+          />
           <Route path="*" element={<Navigate to="/feed" replace />} />
         </Routes>
       </main>

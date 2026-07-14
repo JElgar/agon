@@ -10,6 +10,7 @@
 //! - `page`    — cursor pagination over Query.
 //! - `records` — the persisted record structs (DAO-owned, distinct from API).
 //! - `client`  — the `Dao` handle wrapping the SDK client.
+//! - `batch`   — shared `BatchGetItem` retry + backoff plumbing.
 //! - `user`, `follow`, … — per-entity operations (impl blocks on `Dao`).
 
 pub mod client;
@@ -22,6 +23,7 @@ pub mod records;
 pub mod accept;
 pub mod asset;
 pub mod audience;
+pub mod batch;
 pub mod feed;
 pub mod follow;
 pub mod invitation;

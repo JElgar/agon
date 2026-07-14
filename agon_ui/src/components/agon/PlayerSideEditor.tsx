@@ -25,8 +25,9 @@ export interface PlayerSideEditorProps {
   searchPlaceholder: string
   players: TaggedPlayer[]
   onChange: (players: TaggedPlayer[]) => void
-  /** When set, shown as a non-removable "you" chip above the tagged players. */
-  youName?: string
+  /** The signed-in user's id. A tagged player with this id is badged "you"; the
+   *  user is also excluded from search so they can't be added twice. */
+  currentUserId?: string
   /** Ids already tagged on the *other* side, so we don't offer them twice. */
   excludeUserIds?: string[]
 }
@@ -35,16 +36,17 @@ export interface PlayerSideEditorProps {
 const SEARCH_DEBOUNCE_MS = 300
 
 /**
- * One side of a match: the "you" chip (optional), the tagged players, and a
- * search box to add either a real Agon user (from `/users/search`) or an
- * external guest by name. Purely controlled — the parent owns the player list.
+ * One side of a match: the tagged players (the signed-in user, if on this side,
+ * is badged "you" but is a normal removable entry) and a search box to add
+ * either a real Agon user (from `/users/search`) or an external guest by name.
+ * Purely controlled — the parent owns the player list.
  */
 export function PlayerSideEditor({
   title,
   searchPlaceholder,
   players,
   onChange,
-  youName,
+  currentUserId,
   excludeUserIds = [],
 }: PlayerSideEditorProps) {
   const [term, setTerm] = useState('')
@@ -73,7 +75,10 @@ export function PlayerSideEditor({
   )
 
   const results = (search.data ?? []).filter(
-    (u) => !excludeUserIds.includes(u.id) && !taggedKeys.has(`user:${u.id}`),
+    (u) =>
+      u.id !== currentUserId &&
+      !excludeUserIds.includes(u.id) &&
+      !taggedKeys.has(`user:${u.id}`),
   )
 
   const addUser = (u: UserProfile) => {
@@ -111,42 +116,51 @@ export function PlayerSideEditor({
       </p>
 
       <div className="flex flex-col gap-1.5">
-        {youName && (
-          <div className="flex items-center gap-2 rounded-md bg-card px-2 py-1.5">
-            <Avatar name={youName} size="md" ring="you" />
-            <span className="flex-1 truncate text-sm">{youName}</span>
-            <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-              you
-            </span>
-          </div>
+        {players.length === 0 && (
+          <p className="px-1 py-1 text-xs text-muted-foreground">
+            No players yet.
+          </p>
         )}
 
-        {players.map((p, i) => (
-          <div
-            key={taggedPlayerKey(p)}
-            className="flex items-center gap-2 rounded-md bg-card px-2 py-1.5"
-          >
-            {p.kind === 'user' ? (
-              <Avatar name={p.name} imageUrl={p.imageUrl} size="md" />
-            ) : (
-              <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-full border border-dashed border-muted-foreground/50 bg-muted text-[10px] font-medium text-muted-foreground">
-                {p.name.slice(0, 2).toUpperCase()}
-              </span>
-            )}
-            <span className="flex-1 truncate text-sm">{p.name}</span>
-            {p.kind === 'external' && (
-              <span className="text-[10px] text-muted-foreground">Not on Agon</span>
-            )}
-            <button
-              type="button"
-              onClick={() => removeAt(i)}
-              className="text-muted-foreground transition-colors hover:text-foreground"
-              aria-label={`Remove ${p.name}`}
+        {players.map((p, i) => {
+          const isYou = p.kind === 'user' && p.id === currentUserId
+          return (
+            <div
+              key={taggedPlayerKey(p)}
+              className="flex items-center gap-2 rounded-md bg-card px-2 py-1.5"
             >
-              <X className="size-4" />
-            </button>
-          </div>
-        ))}
+              {p.kind === 'user' ? (
+                <Avatar
+                  name={p.name}
+                  imageUrl={p.imageUrl}
+                  size="md"
+                  ring={isYou ? 'you' : 'none'}
+                />
+              ) : (
+                <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-full border border-dashed border-muted-foreground/50 bg-muted text-[10px] font-medium text-muted-foreground">
+                  {p.name.slice(0, 2).toUpperCase()}
+                </span>
+              )}
+              <span className="flex-1 truncate text-sm">{p.name}</span>
+              {isYou && (
+                <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                  you
+                </span>
+              )}
+              {p.kind === 'external' && (
+                <span className="text-[10px] text-muted-foreground">Not on Agon</span>
+              )}
+              <button
+                type="button"
+                onClick={() => removeAt(i)}
+                className="text-muted-foreground transition-colors hover:text-foreground"
+                aria-label={`Remove ${p.name}`}
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+          )
+        })}
       </div>
 
       {/* Search / add */}

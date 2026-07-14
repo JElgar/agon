@@ -13,7 +13,8 @@ use crate::membership::{
 };
 use crate::notification::{
     CommentNotification, FollowNotification, InvitationAcceptedNotification, LikeNotification,
-    MatchInvitationNotification, Notification, NotificationKind, TeamInvitationNotification,
+    MatchInvitationNotification, Notification, NotificationKind, ScoreConfirmedNotification,
+    ScoreSubmittedNotification, TeamInvitationNotification,
 };
 use crate::team::{Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
@@ -574,6 +575,8 @@ pub fn notification_actor_id(kind: &NotificationKindRecord) -> &str {
         NotificationKindRecord::Follow { actor_user_id } => actor_user_id,
         NotificationKindRecord::Like { actor_user_id, .. } => actor_user_id,
         NotificationKindRecord::Comment { actor_user_id, .. } => actor_user_id,
+        NotificationKindRecord::ScoreSubmitted { actor_user_id, .. } => actor_user_id,
+        NotificationKindRecord::ScoreConfirmed { actor_user_id, .. } => actor_user_id,
     }
 }
 
@@ -634,6 +637,30 @@ pub fn notification_from_record(rec: &NotificationRecord, actor: UserProfile) ->
             match_id: match_id.clone(),
             comment_id: comment_id.clone(),
             preview: preview.clone(),
+        }),
+        NotificationKindRecord::ScoreSubmitted {
+            match_id,
+            match_name,
+            submission_id,
+            needs_confirmation,
+            ..
+        } => NotificationKind::ScoreSubmitted(ScoreSubmittedNotification {
+            submitted_by: actor,
+            match_id: match_id.clone(),
+            match_name: match_name.clone(),
+            submission_id: submission_id.clone(),
+            needs_confirmation: *needs_confirmation,
+        }),
+        NotificationKindRecord::ScoreConfirmed {
+            match_id,
+            match_name,
+            submission_id,
+            ..
+        } => NotificationKind::ScoreConfirmed(ScoreConfirmedNotification {
+            confirmed_by: actor,
+            match_id: match_id.clone(),
+            match_name: match_name.clone(),
+            submission_id: submission_id.clone(),
         }),
     };
     Notification {

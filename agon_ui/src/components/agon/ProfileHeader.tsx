@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { Avatar } from './Avatar'
@@ -5,15 +6,35 @@ import { overallWinRate, totalMatches, formatWinRate } from '@/lib/stats'
 
 type UserProfile = components['schemas']['UserProfile']
 
-function Stat({ value, label }: { value: string | number; label: string }) {
-  return (
-    <div className="text-center">
+function Stat({
+  value,
+  label,
+  to,
+}: {
+  value: string | number
+  label: string
+  /** When set, the stat becomes a link (e.g. to the followers/following list). */
+  to?: string
+}) {
+  const inner = (
+    <>
       <div className="text-xl font-medium">{value}</div>
       <div className="mt-0.5 text-[10px] tracking-wide text-muted-foreground">
         {label}
       </div>
-    </div>
+    </>
   )
+  if (to) {
+    return (
+      <Link
+        to={to}
+        className="rounded-md text-center transition-colors hover:text-primary"
+      >
+        {inner}
+      </Link>
+    )
+  }
+  return <div className="text-center">{inner}</div>
 }
 
 export interface ProfileHeaderProps
@@ -49,8 +70,16 @@ export function ProfileHeader({
       </div>
 
       <div className="flex justify-around">
-        <Stat value={profile.follower_count} label="Followers" />
-        <Stat value={profile.following_count} label="Following" />
+        <Stat
+          value={profile.follower_count}
+          label="Followers"
+          to={`/users/${profile.id}/followers`}
+        />
+        <Stat
+          value={profile.following_count}
+          label="Following"
+          to={`/users/${profile.id}/following`}
+        />
         <Stat value={matches} label="Matches" />
         <Stat value={winRate} label="Win rate" />
       </div>

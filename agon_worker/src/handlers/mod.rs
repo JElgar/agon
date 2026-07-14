@@ -11,6 +11,7 @@
 
 pub mod index;
 pub mod notify;
+pub mod stats;
 
 use agon_core::dao::Dao;
 
@@ -21,9 +22,9 @@ use agon_core::search::SearchClient;
 /// Run every inline handler applicable to one event. `now` is the processing
 /// timestamp (RFC3339), used where an event carries no timestamp of its own.
 ///
-/// Ordering: indexing then notifications. Both are independent and idempotent,
-/// so if the second fails after the first succeeded, redelivery re-runs both
-/// harmlessly.
+/// Ordering: indexing, notifications, then stats. All are independent and
+/// idempotent, so if a later one fails after an earlier succeeded, redelivery
+/// re-runs them all harmlessly.
 pub async fn route(
     dao: &Dao,
     search: &SearchClient,
@@ -32,5 +33,6 @@ pub async fn route(
 ) -> WorkerResult<()> {
     index::handle(dao, search, ev).await?;
     notify::handle(dao, ev, now).await?;
+    stats::handle(dao, ev).await?;
     Ok(())
 }

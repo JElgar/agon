@@ -40,6 +40,12 @@ pub enum NotificationKind {
     Like(LikeNotification),
     /// Someone commented on a match.
     Comment(CommentNotification),
+    /// A score was submitted for a match you played in. `needs_confirmation`
+    /// tells the client whether to render the confirm/dispute action (your side
+    /// must respond) or a plain informational row.
+    ScoreSubmitted(ScoreSubmittedNotification),
+    /// A score you submitted was confirmed by the other side(s).
+    ScoreConfirmed(ScoreConfirmedNotification),
 }
 
 #[derive(Object)]
@@ -96,6 +102,31 @@ pub struct CommentNotification {
     pub comment_id: String,
     /// A short snapshot of the comment text for the row.
     pub preview: String,
+}
+
+#[derive(Object)]
+pub struct ScoreSubmittedNotification {
+    /// The user who submitted the score.
+    pub submitted_by: UserProfile,
+    pub match_id: String,
+    /// Display label so the row renders without fetching the match.
+    pub match_name: String,
+    /// The submission to act on (Confirm/Dispute → the score-submission
+    /// respond endpoint) when `needs_confirmation` is true.
+    pub submission_id: String,
+    /// True => the recipient's side still needs to confirm/dispute; the client
+    /// should render the action. False => informational only.
+    pub needs_confirmation: bool,
+}
+
+#[derive(Object)]
+pub struct ScoreConfirmedNotification {
+    /// The participant whose confirmation completed the score.
+    pub confirmed_by: UserProfile,
+    pub match_id: String,
+    /// Display label so the row renders without fetching the match.
+    pub match_name: String,
+    pub submission_id: String,
 }
 
 /// One page of notifications. `next_cursor` absent => end.

@@ -25,6 +25,7 @@ dependencies = [
  "serde_dynamo",
  "serde_json",
  "thiserror 1.0.69",
+ "tokio",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",

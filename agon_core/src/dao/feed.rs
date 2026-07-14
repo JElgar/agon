@@ -102,14 +102,17 @@ impl Dao {
     }
 
     /// Submit a batch of write requests, retrying `UnprocessedItems` (which
-    /// DynamoDB returns under throttling) until the batch fully drains.
+    /// DynamoDB returns under throttling) with backoff until the batch fully
+    /// drains. Shares the attempt cap + backoff schedule with the batch-get side
+    /// (see `dao::batch`).
     async fn flush_batch_write(&self, requests: Vec<WriteRequest>) -> DaoResult<()> {
         let mut pending = requests;
-        // Bounded retry loop; DynamoDB drains unprocessed items across attempts.
-        for _ in 0..10 {
+        for attempt in 0..super::batch::MAX_BATCH_ATTEMPTS {
             if pending.is_empty() {
                 return Ok(());
             }
+            super::batch::backoff(attempt).await;
+
             let out = self
                 .client
                 .batch_write_item()

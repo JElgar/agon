@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { formatDistanceToNow } from 'date-fns'
 import {
   Bell,
+  CheckCircle2,
+  ClipboardCheck,
   Flame,
   MessageCircle,
   Swords,
@@ -414,6 +416,47 @@ function describe(kind: Kind): NotificationView {
         ),
         badgeIcon: MessageCircle,
         badgeClass: 'bg-muted-foreground',
+        href: `/matches/${kind.match_id}`,
+        actions: { viewLabel: 'View match' },
+      }
+    case 'ScoreSubmitted':
+      return {
+        actorName: kind.submitted_by.name,
+        actorImage: kind.submitted_by.profile_image?.image_url,
+        message: kind.needs_confirmation ? (
+          <>
+            <strong className="font-medium">{kind.submitted_by.name}</strong>{' '}
+            submitted a score for{' '}
+            <strong className="font-medium">{kind.match_name}</strong> — confirm
+            it?
+          </>
+        ) : (
+          <>
+            <strong className="font-medium">{kind.submitted_by.name}</strong>{' '}
+            updated the score for{' '}
+            <strong className="font-medium">{kind.match_name}</strong>.
+          </>
+        ),
+        badgeIcon: ClipboardCheck,
+        badgeClass: kind.needs_confirmation ? 'bg-primary' : 'bg-muted-foreground',
+        href: `/matches/${kind.match_id}`,
+        actions: {
+          viewLabel: kind.needs_confirmation ? 'Review score' : 'View match',
+        },
+      }
+    case 'ScoreConfirmed':
+      return {
+        actorName: kind.confirmed_by.name,
+        actorImage: kind.confirmed_by.profile_image?.image_url,
+        message: (
+          <>
+            <strong className="font-medium">{kind.confirmed_by.name}</strong>{' '}
+            confirmed the score for{' '}
+            <strong className="font-medium">{kind.match_name}</strong>.
+          </>
+        ),
+        badgeIcon: CheckCircle2,
+        badgeClass: 'bg-emerald-600',
         href: `/matches/${kind.match_id}`,
         actions: { viewLabel: 'View match' },
       }

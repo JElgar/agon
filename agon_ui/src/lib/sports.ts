@@ -44,3 +44,13 @@ export function sportLabel(type: MatchType): string {
 export function sportIcon(type: MatchType): LucideIcon {
   return SPORT_ICONS[type] ?? Circle
 }
+
+/** Racket sports are scored by sets; everything else by a single points total. */
+export function isSetsSport(sport: MatchType): boolean {
+  return (
+    sport === 'tennis' ||
+    sport === 'badminton' ||
+    sport === 'squash' ||
+    sport === 'table_tennis'
+  )
+}

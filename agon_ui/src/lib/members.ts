@@ -47,6 +47,25 @@ export function myPendingInvitation(
 }
 
 /**
+ * Whether the viewer is a participant in the match — a linked player who was
+ * either added ad-hoc (no invitation) or has accepted. Mirrors the server's
+ * `caller_is_participant`: participants may edit the match, invite others, and
+ * record the result. Pending/declined invitees are not participants.
+ */
+export function isParticipant(
+  match: Pick<Match, 'players'>,
+  currentUserId: string | undefined,
+): boolean {
+  if (!currentUserId) return false
+  return match.players.some((player) => {
+    if (player.member.type !== 'User') return false
+    if (player.member.user_id !== currentUserId) return false
+    const invitation = player.member.invitation
+    return !invitation || invitation.status === 'accepted'
+  })
+}
+
+/**
  * Display name for a match player. A linked Agon user's name is resolved from
  * their account (not present on the member itself yet), so until profiles are
  * hydrated we fall back to a short id; an external player carries a display name
@@ -60,8 +79,10 @@ export function memberName(member: Member): string {
 }
 
 /** Initials for an avatar, from a display name (e.g. "Sofia Lindqvist" → "SL"). */
-export function initials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean)
+export function initials(name: string | undefined | null): string {
+  // Defensive: a missing name (e.g. a not-yet-hydrated profile) yields a neutral
+  // placeholder rather than throwing — an avatar should never crash its page.
+  const parts = (name ?? '').trim().split(/\s+/).filter(Boolean)
   if (parts.length === 0) return '?'
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()

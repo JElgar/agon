@@ -789,6 +789,10 @@ enum UpdateMatchResponse {
     #[oai(status = 400)]
     ValidationError(PlainText<String>),
 
+    /// The caller is not a participant in this match, so may not edit it.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
     #[oai(status = 404)]
     NotFound(PlainText<String>),
 }
@@ -968,6 +972,10 @@ enum AddTeamMembersResponse {
 enum AddInvitationsResponse {
     #[oai(status = 200)]
     Invitations(Json<Vec<Invitation>>),
+
+    /// The caller is not a participant in this match, so may not invite others.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
 
     /// The team or match being invited to was not found.
     #[oai(status = 404)]
@@ -1792,6 +1800,13 @@ impl Api {
                 )));
             }
         };
+
+        // Only a participant may edit the match.
+        if !caller_is_participant(&agg.players, &uid) {
+            return Ok(UpdateMatchResponse::Forbidden(PlainText(
+                "only a participant can edit this match".into(),
+            )));
+        }
 
         // A cancelled match can't be scored.
         let resulting_status = input
@@ -2711,24 +2726,88 @@ impl Api {
     ) -> Result<AddInvitationsResponse> {
         info!("Inviting to match {match_id}");
         let uid = self.require_uid(dao, &jwt_data).await?;
+        let input = input.0;
+
         // Match must exist.
-        if dao
-            .get_match(&match_id)
-            .await
-            .map_err(dao_internal)?
-            .is_none()
-        {
-            return Ok(AddInvitationsResponse::NotFound(PlainText(
-                "match not found".into(),
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(AddInvitationsResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+
+        // Only a participant may invite others.
+        if !caller_is_participant(&agg.players, &uid) {
+            return Ok(AddInvitationsResponse::Forbidden(PlainText(
+                "only a participant can invite people to this match".into(),
             )));
         }
-        let ctx = dao::records::InvitationContextRecord::Match {
-            match_id: match_id.clone(),
-            match_name: String::new(), // snapshot label; TODO: read match name
-        };
-        let created = self.create_invitations(dao, &uid, ctx, &input.0).await?;
-        // TODO: also create the MatchPlayer roster slot per invitee (side_id from
-        // input) — deferred with the roster-reconciliation work.
+
+        // If a side was named, it must be one of this match's sides.
+        if let Some(side_id) = &input.side_id
+            && !agg.sides.iter().any(|s| &s.side_id == side_id)
+        {
+            return Ok(AddInvitationsResponse::NotFound(PlainText(
+                "side is not part of this match".into(),
+            )));
+        }
+
+        // Each invitee gets both a roster slot (with an embedded invitation) and
+        // a standalone invitation, exactly like a create-time invite — so they
+        // show up on the match roster immediately, pre-assigned to `side_id` if
+        // given. `build_invited_player` mints the ids and tokens.
+        let now = now_iso();
+        let invitees = input
+            .invited_user_ids
+            .iter()
+            .map(|u| (Some(u.clone()), None))
+            .chain(
+                input
+                    .invited_external_names
+                    .iter()
+                    .map(|n| (None, Some(n.clone()))),
+            );
+
+        let mut created = Vec::new();
+        for (user_id, display_name) in invitees {
+            let (player, invitation) = build_invited_player(
+                &match_id,
+                &agg.match_.name,
+                &uid,
+                input.side_id.clone(),
+                user_id,
+                display_name,
+                &now,
+            );
+            dao.put_match_player(&match_id, &player)
+                .await
+                .map_err(dao_internal)?;
+            dao.create_invitation(&invitation)
+                .await
+                .map_err(dao_internal)?;
+            created.push(invitation_from_record(&invitation));
+        }
+
+        // Roster/player writes don't trigger the stream (only `#META` does), so
+        // touch the match meta to re-run fan-out / search indexing with the new
+        // roster. Re-writing `name` to its current value is a real write to the
+        // item (an all-`None` update would no-op), so it emits a stream record.
+        if !created.is_empty() {
+            dao.update_match_meta(
+                &match_id,
+                Some(&agg.match_.name),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .map_err(dao_internal)?;
+        }
+
         Ok(AddInvitationsResponse::Invitations(Json(created)))
     }
 
@@ -3361,6 +3440,20 @@ fn resolve_score_side_ids(
 /// Build a match player record plus the standalone invitation entity for one
 /// invitee (an Agon user or an external). The player and invitation share the
 /// invitation id/status; externals get a minted token.
+/// Whether `uid` is a participant in the match — a player linked to this Agon
+/// user who has either been added ad-hoc (no invitation) or accepted their
+/// invitation. Pending/declined invitees are not participants. Drives who may
+/// edit a match (its metadata, roster, and result).
+fn caller_is_participant(players: &[dao::records::MatchPlayerRecord], uid: &str) -> bool {
+    players.iter().any(|p| {
+        p.user_id.as_deref() == Some(uid)
+            && match &p.invitation {
+                None => true,
+                Some(inv) => inv.status == "accepted",
+            }
+    })
+}
+
 fn build_invited_player(
     match_id: &str,
     match_name: &str,

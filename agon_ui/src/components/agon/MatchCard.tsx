@@ -1,9 +1,9 @@
-import { Flame, MessageCircle, Share2 } from 'lucide-react'
+import { Flame, MailOpen, MessageCircle, Share2 } from 'lucide-react'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { Avatar } from './Avatar'
 import { SportBadge } from './SportBadge'
-import { StatusBadge } from './StatusBadge'
+import { StatusBadge, matchBadgeStatus } from './StatusBadge'
 import { ScoreConfirmationBar } from './ScoreConfirmationBar'
 import {
   displayScore,
@@ -11,6 +11,7 @@ import {
   headlineLabel,
   setLine,
 } from '@/lib/score'
+import { myPendingInvitation } from '@/lib/members'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -27,6 +28,22 @@ export interface MatchCardProps extends React.HTMLAttributes<HTMLDivElement> {
 /** Display label for a side: its name, or a neutral fallback. */
 function sideName(side: MatchSide | undefined, fallback: string): string {
   return side?.name?.trim() || fallback
+}
+
+/** A small pill shown when the viewer has a pending invitation to this match. */
+function InvitedBadge({
+  match,
+  currentUserId,
+}: {
+  match: Match
+  currentUserId?: string
+}) {
+  if (!myPendingInvitation(match, currentUserId)) return null
+  return (
+    <span className="inline-flex items-center gap-1 rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+      <MailOpen className="size-3" /> You're invited
+    </span>
+  )
 }
 
 /**
@@ -120,9 +137,10 @@ export function MatchCard({
         </div>
       )}
 
-      {/* Meta: confirmation state */}
+      {/* Meta: lifecycle / confirmation state, and the viewer's invite state */}
       <div className="flex flex-wrap items-center gap-3 px-3.5 py-2.5">
-        <StatusBadge status={scoreInfo?.confirmed ? 'confirmed' : 'unconfirmed'} />
+        <StatusBadge status={matchBadgeStatus(match)} />
+        <InvitedBadge match={match} currentUserId={currentUserId} />
       </div>
 
       {/* Confirm/dispute prompt when the viewer's side owes a response. */}

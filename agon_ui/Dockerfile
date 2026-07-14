@@ -20,6 +20,10 @@ FROM nginx:alpine
 # Copy the built React files from the build stage to Nginx
 COPY --from=build /app/dist /usr/share/nginx/html
 
+# SPA-fallback server config so client-side routes (e.g. invite links) resolve
+# to index.html on a cold load rather than 404ing.
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

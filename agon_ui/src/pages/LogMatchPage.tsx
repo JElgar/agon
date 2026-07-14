@@ -14,6 +14,7 @@ import {
   type TaggedPlayer,
 } from '@/components/agon/PlayerSideEditor'
 import { cn } from '@/lib/utils'
+import { addPendingMatch } from '@/hooks/usePendingMatches'
 
 type CreateMatchInput = components['schemas']['CreateMatchInput']
 type UserProfile = components['schemas']['UserProfile']
@@ -211,8 +212,13 @@ export function LogMatchPage() {
         )
       return data
     },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['feed'] })
+    onSuccess: async (created) => {
+      // The feed is eventually consistent — the worker fans this match out to
+      // `GET /feed` a beat later. Stash it in the pending-match overlay so it
+      // shows in the feed instantly, and kick off a refetch that will reconcile
+      // (and prune the overlay) once the server catches up.
+      addPendingMatch(queryClient, created)
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
       navigate('/feed')
     },
   })

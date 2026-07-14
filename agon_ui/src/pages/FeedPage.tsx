@@ -1,12 +1,18 @@
-import { useInfiniteQuery } from '@tanstack/react-query'
+import { useEffect } from 'react'
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { MatchCard } from '@/components/agon/MatchCard'
 import { Button } from '@/components/ui/button'
 import { useNavigate } from 'react-router-dom'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
+import {
+  usePendingMatches,
+  prunePendingMatches,
+} from '@/hooks/usePendingMatches'
 
 type FeedPageData = components['schemas']['FeedPage']
+type FeedItem = components['schemas']['FeedItem']
 
 /** Page size for the feed. The API caps at 50; 20 matches its default. */
 const PAGE_SIZE = 20
@@ -20,6 +26,7 @@ const PAGE_SIZE = 20
 export function FeedPage() {
   const navigate = useNavigate()
   const currentUserId = useCurrentUserId()
+  const queryClient = useQueryClient()
 
   const query = useInfiniteQuery({
     queryKey: ['feed'],
@@ -36,6 +43,22 @@ export function FeedPage() {
     getNextPageParam: (lastPage) => lastPage.next_cursor,
   })
 
+  // Matches the viewer just created, shown on top of the fetched feed until the
+  // async fan-out lands them in `GET /feed` (see usePendingMatches).
+  const pending = usePendingMatches()
+  const serverItems = (query.data?.pages ?? []).flatMap((page) => page.items)
+
+  // Once the server feed contains a pending match, drop it from the overlay so
+  // it isn't rendered twice. Done in an effect — it mutates the query cache.
+  const serverIdsKey = serverItems.map((i) => i.id).join(',')
+  useEffect(() => {
+    if (pending.length === 0) return
+    const serverIds = new Set(serverItems.map((i) => i.id))
+    prunePendingMatches(queryClient, serverIds)
+    // serverIdsKey captures the set of ids; re-run only when it changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverIdsKey, pending.length, queryClient])
+
   if (query.isLoading) {
     return <FeedSkeleton />
   }
@@ -51,7 +74,13 @@ export function FeedPage() {
     )
   }
 
-  const items = (query.data?.pages ?? []).flatMap((page) => page.items)
+  // Merge the pending overlay ahead of the server feed, deduped by id (a match
+  // that's in both — mid-reconciliation — renders once, from the server copy).
+  const serverIds = new Set(serverItems.map((i) => i.id))
+  const pendingItems: FeedItem[] = pending
+    .filter((m) => !serverIds.has(m.id))
+    .map((m) => ({ ...m, type: 'Match' }) as FeedItem)
+  const items = [...pendingItems, ...serverItems]
 
   if (items.length === 0) {
     return (

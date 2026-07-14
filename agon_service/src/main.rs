@@ -2960,6 +2960,31 @@ impl Api {
         }
     }
 
+    /// Preview an invitation by its bearer token. Public (no auth): the token is
+    /// itself the credential, so anyone holding an invite link can see what it is
+    /// an invite *to* before signing in. Used by the invite-link landing/accept
+    /// flow to render context and to know which match/team to open on acceptance.
+    #[oai(path = "/invitations/by-token/:token", method = "get")]
+    async fn get_invitation_by_token(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        Path(token): Path<String>,
+    ) -> Result<GetInvitationResponse> {
+        info!("Getting invitation by token");
+        match dao
+            .get_invitation_by_token(&token)
+            .await
+            .map_err(dao_internal)?
+        {
+            Some(rec) => Ok(GetInvitationResponse::Invitation(Json(
+                invitation_detail_from_record(&rec),
+            ))),
+            None => Ok(GetInvitationResponse::NotFound(PlainText(
+                "invitation not found".into(),
+            ))),
+        }
+    }
+
     #[oai(path = "/invitations/:invitation_id", method = "delete")]
     async fn revoke_invitation(
         &self,

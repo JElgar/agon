@@ -1,17 +1,22 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ChevronLeft } from 'lucide-react'
+import { ChevronLeft, MailOpen } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Avatar } from '@/components/agon/Avatar'
 import { SportBadge } from '@/components/agon/SportBadge'
-import { StatusBadge } from '@/components/agon/StatusBadge'
+import { StatusBadge, matchBadgeStatus } from '@/components/agon/StatusBadge'
 import { ScoreConfirmationBar } from '@/components/agon/ScoreConfirmationBar'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { displayScore, headlineBySide, headlineLabel, setLine } from '@/lib/score'
-import { memberName } from '@/lib/members'
+import {
+  memberInviteToken,
+  memberName,
+  myPendingInvitation,
+} from '@/lib/members'
+import { CopyInviteButton } from '@/components/agon/CopyInviteButton'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -116,14 +121,13 @@ export function MatchDetailPage() {
           </div>
         )}
 
-        {scoreInfo && (
-          <div className="mt-3">
-            <StatusBadge
-              status={scoreInfo.confirmed ? 'confirmed' : 'unconfirmed'}
-            />
-          </div>
-        )}
+        <div className="mt-3">
+          <StatusBadge status={matchBadgeStatus(match)} />
+        </div>
       </div>
+
+      {/* Invitation banner: the viewer has a pending invite to this match. */}
+      <InviteBanner match={match} currentUserId={currentUserId} />
 
       {/* Confirm / dispute (only when the viewer's side owes a response) */}
       {match.pending_score && (
@@ -149,6 +153,86 @@ export function MatchDetailPage() {
   )
 }
 
+/**
+ * Shown when the signed-in viewer has a pending invitation to this match: a
+ * prominent Accept/Decline banner wired to `POST /invitations/:id/respond`.
+ * On success it refreshes the match (so the roster/badge update) and the
+ * notification badge (the matching invite notification is now handled).
+ */
+function InviteBanner({
+  match,
+  currentUserId,
+}: {
+  match: Match
+  currentUserId?: string
+}) {
+  const queryClient = useQueryClient()
+  const invitation = myPendingInvitation(match, currentUserId)
+
+  const respond = useMutation({
+    mutationFn: async (
+      response: components['schemas']['InvitationResponse'],
+    ) => {
+      if (!invitation) return
+      const { error } = await fetchClient.POST(
+        '/invitations/{invitation_id}/respond',
+        {
+          params: { path: { invitation_id: invitation.id } },
+          body: { response },
+        },
+      )
+      if (error) throw new Error('Failed to respond to invitation')
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['match', match.id] })
+      queryClient.invalidateQueries({ queryKey: ['notifications'] })
+      queryClient.invalidateQueries({
+        queryKey: ['notifications-unread-count'],
+      })
+    },
+  })
+
+  if (!invitation) return null
+
+  return (
+    <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
+      <div className="flex items-start gap-3">
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+          <MailOpen className="size-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium">You've been invited to this match</p>
+          <p className="text-xs text-muted-foreground">
+            Accept to join the roster, or decline if you can't make it.
+          </p>
+          {respond.isError && (
+            <p className="mt-1 text-xs text-red-600">
+              Something went wrong. Please try again.
+            </p>
+          )}
+          <div className="mt-3 flex gap-2">
+            <Button
+              size="sm"
+              disabled={respond.isPending}
+              onClick={() => respond.mutate('accepted')}
+            >
+              {respond.isPending ? 'Saving…' : 'Accept'}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={respond.isPending}
+              onClick={() => respond.mutate('declined')}
+            >
+              Decline
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function SideRoster({ title, players }: { title: string; players: MatchPlayer[] }) {
   return (
     <div className="rounded-xl border bg-card p-3">
@@ -163,12 +247,19 @@ function SideRoster({ title, players }: { title: string; players: MatchPlayer[] 
           const name = memberName(p.member)
           const pending =
             p.member.invitation && p.member.invitation.status === 'pending'
+          // Token-invited (external) players have a shareable link; offer to
+          // copy it instead of the bare "invited" label.
+          const inviteToken = memberInviteToken(p.member)
           return (
             <div key={i} className="flex items-center gap-2">
               <Avatar name={name} size="md" />
               <span className="flex-1 truncate text-sm">{name}</span>
-              {pending && (
-                <span className="text-[10px] text-muted-foreground">invited</span>
+              {inviteToken ? (
+                <CopyInviteButton token={inviteToken} />
+              ) : (
+                pending && (
+                  <span className="text-[10px] text-muted-foreground">invited</span>
+                )
               )}
             </div>
           )

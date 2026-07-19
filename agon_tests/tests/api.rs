@@ -569,6 +569,265 @@ async fn like_and_unlike_match() {
     assert_eq!(after_unlike.social.like_count, 0);
 }
 
+/// Liking is idempotent and `like_count` is per-distinct-user: a repeated like by
+/// the same user doesn't inflate the count, a repeated unlike doesn't drive it
+/// negative, and each viewer sees their own `i_liked` independent of the total.
+#[tokio::test]
+async fn like_count_is_idempotent_and_per_user() {
+    let (owner_config, _owner) = new_user().await;
+    let (other_config, _other) = new_user().await;
+    let (invitee_config, invitee) = new_user().await;
+    let match_ = matches_post(&owner_config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    // The owner likes twice — the second is a no-op (idempotent), so count == 1.
+    matches_match_id_likes_post(&owner_config, &match_.id)
+        .await
+        .expect("like");
+    matches_match_id_likes_post(&owner_config, &match_.id)
+        .await
+        .expect("like again (idempotent)");
+    let after = matches_match_id_get(&owner_config, &match_.id)
+        .await
+        .expect("get match");
+    assert_eq!(
+        after.social.like_count, 1,
+        "a repeated like doesn't inflate"
+    );
+    assert!(after.social.i_liked);
+
+    // A second, distinct user likes → count becomes 2.
+    matches_match_id_likes_post(&other_config, &match_.id)
+        .await
+        .expect("other likes");
+    let after_two = matches_match_id_get(&owner_config, &match_.id)
+        .await
+        .expect("get match");
+    assert_eq!(after_two.social.like_count, 2);
+
+    // `i_liked` is per-viewer: the invitee (who hasn't liked) sees the same
+    // count but i_liked == false.
+    let invitee_view = matches_match_id_get(&invitee_config, &match_.id)
+        .await
+        .expect("invitee view");
+    assert_eq!(invitee_view.social.like_count, 2);
+    assert!(!invitee_view.social.i_liked, "invitee hasn't liked");
+
+    // The owner unlikes twice — the second is a no-op and must not underflow.
+    matches_match_id_likes_delete(&owner_config, &match_.id)
+        .await
+        .expect("unlike");
+    matches_match_id_likes_delete(&owner_config, &match_.id)
+        .await
+        .expect("unlike again (idempotent)");
+    let after_unlike = matches_match_id_get(&owner_config, &match_.id)
+        .await
+        .expect("get match");
+    assert_eq!(
+        after_unlike.social.like_count, 1,
+        "only the other user's like remains; count didn't underflow"
+    );
+    assert!(!after_unlike.social.i_liked);
+}
+
+/// `comment_count` tracks the total of top-level comments AND replies (both are
+/// comments), while a parent's `reply_count` tracks only its replies. Posting a
+/// top-level comment and a reply moves both counters.
+#[tokio::test]
+async fn comment_and_reply_counts_track_the_thread() {
+    let (config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let match_ = matches_post(&config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    assert_eq!(
+        match_.social.comment_count, 0,
+        "fresh match has no comments"
+    );
+
+    // Top-level comment → comment_count == 1.
+    let parent = matches_match_id_comments_post(
+        &config,
+        &match_.id,
+        models::CreateCommentInput {
+            text: "Top level".to_string(),
+            parent_id: None,
+        },
+    )
+    .await
+    .expect("create comment");
+    assert_eq!(parent.reply_count, 0);
+    let after_comment = matches_match_id_get(&config, &match_.id)
+        .await
+        .expect("get match");
+    assert_eq!(after_comment.social.comment_count, 1);
+
+    // Reply → comment_count == 2 (a reply is also a comment) and the parent's
+    // reply_count == 1.
+    matches_match_id_comments_post(
+        &config,
+        &match_.id,
+        models::CreateCommentInput {
+            text: "A reply".to_string(),
+            parent_id: Some(parent.id.clone()),
+        },
+    )
+    .await
+    .expect("create reply");
+    let after_reply = matches_match_id_get(&config, &match_.id)
+        .await
+        .expect("get match");
+    assert_eq!(
+        after_reply.social.comment_count, 2,
+        "comment_count counts replies too"
+    );
+
+    // The parent's reply_count is reflected in the comment list.
+    let comments = matches_match_id_comments_get(&config, &match_.id, None, None)
+        .await
+        .expect("list comments");
+    let listed_parent = comments
+        .items
+        .iter()
+        .find(|c| c.id == parent.id)
+        .expect("parent in list");
+    assert_eq!(listed_parent.reply_count, 1, "parent tracks its one reply");
+}
+
+/// Deleting a reply-less comment hard-deletes it: it leaves the list and
+/// `comment_count` decrements back.
+#[tokio::test]
+async fn deleting_a_reply_less_comment_removes_it_and_decrements_count() {
+    let (config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let match_ = matches_post(&config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    let comment = matches_match_id_comments_post(
+        &config,
+        &match_.id,
+        models::CreateCommentInput {
+            text: "Delete me".to_string(),
+            parent_id: None,
+        },
+    )
+    .await
+    .expect("create comment");
+    assert_eq!(
+        matches_match_id_get(&config, &match_.id)
+            .await
+            .expect("get match")
+            .social
+            .comment_count,
+        1
+    );
+
+    matches_match_id_comments_comment_id_delete(&config, &match_.id, &comment.id)
+        .await
+        .expect("delete comment");
+
+    // Gone from the list entirely (no tombstone, since it had no replies).
+    let comments = matches_match_id_comments_get(&config, &match_.id, None, None)
+        .await
+        .expect("list comments");
+    assert!(
+        !comments.items.iter().any(|c| c.id == comment.id),
+        "a reply-less deleted comment is removed, not tombstoned"
+    );
+    // And the count is back to zero.
+    assert_eq!(
+        matches_match_id_get(&config, &match_.id)
+            .await
+            .expect("get match")
+            .social
+            .comment_count,
+        0
+    );
+}
+
+/// Deleting a comment that HAS replies tombstones it: the row is kept (so its
+/// replies stay reachable) with text/author cleared, `comment_count` is
+/// unchanged, and the replies remain listable under it.
+#[tokio::test]
+async fn deleting_a_comment_with_replies_tombstones_and_keeps_the_thread() {
+    let (config, _owner) = new_user().await;
+    let (replier_config, _replier) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let match_ = matches_post(&config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    let parent = matches_match_id_comments_post(
+        &config,
+        &match_.id,
+        models::CreateCommentInput {
+            text: "Parent to be deleted".to_string(),
+            parent_id: None,
+        },
+    )
+    .await
+    .expect("create comment");
+    // A different user replies, so the parent has a reply from someone else.
+    let reply = matches_match_id_comments_post(
+        &replier_config,
+        &match_.id,
+        models::CreateCommentInput {
+            text: "I'm a reply".to_string(),
+            parent_id: Some(parent.id.clone()),
+        },
+    )
+    .await
+    .expect("create reply");
+
+    // comment_count == 2 (parent + reply) before the delete.
+    let before = matches_match_id_get(&config, &match_.id)
+        .await
+        .expect("get match");
+    assert_eq!(before.social.comment_count, 2);
+
+    // The author deletes the parent → tombstone (it has a reply).
+    matches_match_id_comments_comment_id_delete(&config, &match_.id, &parent.id)
+        .await
+        .expect("delete parent");
+
+    // Count is unchanged (tombstone keeps the row).
+    let after = matches_match_id_get(&config, &match_.id)
+        .await
+        .expect("get match");
+    assert_eq!(
+        after.social.comment_count, 2,
+        "tombstoning doesn't change comment_count"
+    );
+
+    // The parent is still listed, but as a tombstone: text/author cleared,
+    // deleted_at set, and its reply_count preserved.
+    let comments = matches_match_id_comments_get(&config, &match_.id, None, None)
+        .await
+        .expect("list comments");
+    let tombstone = comments
+        .items
+        .iter()
+        .find(|c| c.id == parent.id)
+        .expect("tombstoned parent still listed");
+    assert!(tombstone.deleted_at.is_some(), "parent is a tombstone");
+    assert!(tombstone.text.is_none(), "tombstone text is cleared");
+    assert!(tombstone.author.is_none(), "tombstone author is cleared");
+    assert_eq!(tombstone.reply_count, 1, "reply_count survives tombstoning");
+
+    // The reply is still reachable under the tombstoned parent.
+    let replies = matches_match_id_comments_comment_id_replies_get(
+        &config, &match_.id, &parent.id, None, None,
+    )
+    .await
+    .expect("list replies");
+    assert!(
+        replies.items.iter().any(|c| c.id == reply.id),
+        "the reply outlives its tombstoned parent"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Follows
 // ---------------------------------------------------------------------------
@@ -713,8 +972,10 @@ async fn accepting_a_normal_invite_updates_feed_and_stats() {
     let detail = inbox
         .items
         .iter()
-        .find(|i| matches!(&*i.context,
-            models::InvitationContext::Match(ctx) if ctx.match_id == created.id))
+        .find(|i| {
+            matches!(&*i.context,
+            models::InvitationContext::Match(ctx) if ctx.match_id == created.id)
+        })
         .expect("match invitation in inbox");
     let responded = invitations_invitation_id_respond_post(
         &invitee_config,
@@ -726,7 +987,10 @@ async fn accepting_a_normal_invite_updates_feed_and_stats() {
     )
     .await
     .expect("accept invitation");
-    assert!(matches!(responded.status, models::InvitationStatus::Accepted));
+    assert!(matches!(
+        responded.status,
+        models::InvitationStatus::Accepted
+    ));
 
     // The match is now on the accepter's feed...
     assert_match_reaches_feed(&invitee_config, &created.id, "invitee's feed").await;
@@ -777,7 +1041,10 @@ async fn accepting_a_link_invite_updates_feed_and_stats() {
     )
     .await
     .expect("accept by token");
-    assert!(matches!(responded.status, models::InvitationStatus::Accepted));
+    assert!(matches!(
+        responded.status,
+        models::InvitationStatus::Accepted
+    ));
 
     // The match is on the accepter's feed and their stats credit the match.
     assert_match_reaches_feed(&accepter_config, &created.id, "token-accepter's feed").await;
@@ -1956,9 +2223,10 @@ async fn assert_matches_played_reaches(
     expected: i32,
     whose: &str,
 ) {
-    eventually(&format!("{whose} to have played {expected} match(es)"), || async {
-        (my_matches_played(config, sport).await == expected).then_some(())
-    })
+    eventually(
+        &format!("{whose} to have played {expected} match(es)"),
+        || async { (my_matches_played(config, sport).await == expected).then_some(()) },
+    )
     .await;
 }
 
@@ -1970,10 +2238,12 @@ fn external_invite_token(match_: &models::Match) -> String {
         .players
         .iter()
         .find_map(|p| match &*p.member {
-            models::Member::External(ext) => ext.invitation.as_ref().and_then(|inv| match &*inv.kind {
-                models::InvitationKind::Token(t) => Some(t.invite_token.clone()),
-                _ => None,
-            }),
+            models::Member::External(ext) => {
+                ext.invitation.as_ref().and_then(|inv| match &*inv.kind {
+                    models::InvitationKind::Token(t) => Some(t.invite_token.clone()),
+                    _ => None,
+                })
+            }
             _ => None,
         })
         .expect("an external player with a token invitation")

@@ -20,10 +20,7 @@ impl Dao {
     /// sorted `<status>#<invited_at>` so it can be filtered by status), and GSI2
     /// (`TOKEN#<token>`) if it has a token. Shared by `create_invitation` and the
     /// accept transaction so the two never diverge on projection rules.
-    pub(super) fn invitation_item(
-        &self,
-        inv: &InvitationRecord,
-    ) -> DaoResult<super::item::Item> {
+    pub(super) fn invitation_item(&self, inv: &InvitationRecord) -> DaoResult<super::item::Item> {
         let base = to_item(
             &Pk::Invitation(inv.id.clone()),
             &Sk::Meta,

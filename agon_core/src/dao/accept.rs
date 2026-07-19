@@ -68,7 +68,12 @@ impl Dao {
         let (roster_item, feed_put, match_id) = match &inv.context {
             InvitationContextRecord::Match { match_id, .. } => {
                 let (item, starts_at) = self
-                    .linked_match_player_item(match_id, invitation_id, accepting_user_id, responded_at)
+                    .linked_match_player_item(
+                        match_id,
+                        invitation_id,
+                        accepting_user_id,
+                        responded_at,
+                    )
                     .await?;
                 let feed_item = self.feed_item(accepting_user_id, match_id, &starts_at, now)?;
                 let feed_put = Put::builder()
@@ -80,7 +85,12 @@ impl Dao {
             }
             InvitationContextRecord::Team { team_id, .. } => {
                 let item = self
-                    .linked_team_member_item(team_id, invitation_id, accepting_user_id, responded_at)
+                    .linked_team_member_item(
+                        team_id,
+                        invitation_id,
+                        accepting_user_id,
+                        responded_at,
+                    )
                     .await?;
                 (item, None, None)
             }
@@ -200,13 +210,23 @@ impl Dao {
         match &inv.context {
             InvitationContextRecord::Match { match_id, .. } => {
                 let (item, _) = self
-                    .linked_match_player_item(match_id, invitation_id, accepting_user_id, responded_at)
+                    .linked_match_player_item(
+                        match_id,
+                        invitation_id,
+                        accepting_user_id,
+                        responded_at,
+                    )
                     .await?;
                 self.put_item(item).await
             }
             InvitationContextRecord::Team { team_id, .. } => {
                 let item = self
-                    .linked_team_member_item(team_id, invitation_id, accepting_user_id, responded_at)
+                    .linked_team_member_item(
+                        team_id,
+                        invitation_id,
+                        accepting_user_id,
+                        responded_at,
+                    )
                     .await?;
                 self.put_item(item).await
             }

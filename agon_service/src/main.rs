@@ -3218,14 +3218,20 @@ impl Api {
                 "accepted"
             }
             membership::InvitationResponse::Declined => {
-                dao.respond_to_invitation(&rec.id, "declined", &responded_at, &rec.invited_at, false)
-                    .await
-                    .map_err(|e| match e {
-                        dao::DaoError::NotFound(_) => {
-                            Error::from_string("not found", StatusCode::NOT_FOUND)
-                        }
-                        other => dao_internal(other),
-                    })?;
+                dao.respond_to_invitation(
+                    &rec.id,
+                    "declined",
+                    &responded_at,
+                    &rec.invited_at,
+                    false,
+                )
+                .await
+                .map_err(|e| match e {
+                    dao::DaoError::NotFound(_) => {
+                        Error::from_string("not found", StatusCode::NOT_FOUND)
+                    }
+                    other => dao_internal(other),
+                })?;
                 "declined"
             }
         };

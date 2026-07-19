@@ -40,6 +40,8 @@ pub enum NotificationKind {
     Like(LikeNotification),
     /// Someone commented on a match.
     Comment(CommentNotification),
+    /// Someone replied to a comment (to yours, or on a match you played in).
+    Reply(ReplyNotification),
     /// A score was submitted for a match you played in. `needs_confirmation`
     /// tells the client whether to render the confirm/dispute action (your side
     /// must respond) or a plain informational row.
@@ -101,6 +103,20 @@ pub struct CommentNotification {
     pub match_id: String,
     pub comment_id: String,
     /// A short snapshot of the comment text for the row.
+    pub preview: String,
+}
+
+#[derive(Object)]
+pub struct ReplyNotification {
+    /// The user who replied.
+    pub replier: UserProfile,
+    pub match_id: String,
+    /// The reply's own comment id.
+    pub comment_id: String,
+    /// The top-level comment whose thread the reply belongs to (so the client
+    /// can open the thread).
+    pub parent_comment_id: String,
+    /// A short snapshot of the reply text for the row.
     pub preview: String,
 }
 

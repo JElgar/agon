@@ -426,6 +426,16 @@ pub enum NotificationKindRecord {
         comment_id: String,
         preview: String,
     },
+    /// Someone replied to a comment on a match. `comment_id` is the reply's own
+    /// id; `parent_comment_id` is the top-level comment whose thread it belongs
+    /// to (so the client can open the thread).
+    Reply {
+        actor_user_id: String,
+        match_id: String,
+        comment_id: String,
+        parent_comment_id: String,
+        preview: String,
+    },
     /// A score was submitted for a match you played in. `needs_confirmation`
     /// distinguishes the two messages: `true` => your side must confirm it,
     /// `false` => informational (your side already implicitly confirmed, or the
@@ -460,6 +470,12 @@ pub struct AssetRecord {
     /// "profile_image" | "team_image" | "match_header".
     pub purpose: String,
     pub content_type: String,
+    /// Exact byte length the client declared at creation. Baked into the
+    /// presigned PUT so S3 rejects any upload that isn't this size (the server
+    /// validates it against a max before issuing the URL). `0` for assets created
+    /// before this field existed — treated as "no length constraint".
+    #[serde(default)]
+    pub content_length: i64,
     /// "pending" | "uploaded" | "failed".
     pub status: String,
     /// Storage object key, needed to generate presigned URLs / read the object.

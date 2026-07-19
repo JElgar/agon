@@ -209,6 +209,9 @@ impl Dao {
         starts_at: Option<&str>,
         confirmed_score: Option<ConfirmedScoreRecord>,
         pending_score: Option<Option<PendingScoreRecord>>,
+        // Replace the header photo URLs. `None` leaves them unchanged; `Some([])`
+        // clears them (removes the attribute); `Some([..])` overwrites.
+        header_photo_urls: Option<Vec<String>>,
     ) -> DaoResult<()> {
         let mut set: Vec<String> = Vec::new();
         let mut remove: Vec<String> = Vec::new();
@@ -253,6 +256,20 @@ impl Dao {
             Some(None) => {
                 remove.push("#ps".into());
                 names.insert("#ps".into(), "pending_score".into());
+            }
+            None => {}
+        }
+        match header_photo_urls {
+            Some(urls) if !urls.is_empty() => {
+                set.push("#hpu = :hpu".into());
+                names.insert("#hpu".into(), "header_photo_urls".into());
+                let list: Vec<AttributeValue> = urls.iter().map(s).collect();
+                values.insert(":hpu".into(), AttributeValue::L(list));
+            }
+            // Clearing: remove the attribute so a read defaults to an empty Vec.
+            Some(_) => {
+                remove.push("#hpu".into());
+                names.insert("#hpu".into(), "header_photo_urls".into());
             }
             None => {}
         }

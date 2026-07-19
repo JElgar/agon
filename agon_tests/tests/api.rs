@@ -157,6 +157,7 @@ fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
         creator_side_client_id: None,
         score: None,
         winner_side_id: None,
+        header_photo_asset_ids: None,
     }
 }
 
@@ -197,6 +198,7 @@ fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::Create
         creator_side_client_id: None,
         score: None,
         winner_side_id: None,
+        header_photo_asset_ids: None,
     }
 }
 
@@ -247,6 +249,7 @@ fn completed_match(invites: Vec<models::CreateMatchInviteInput>) -> models::Crea
         creator_side_client_id: Some("a".to_string()),
         score: Some(Box::new(simple_score("a", "b", 6, 3))),
         winner_side_id: Some("a".to_string()),
+        header_photo_asset_ids: None,
     }
 }
 
@@ -2280,4 +2283,257 @@ fn membership_id_for(team: &models::Team, user_id: &str) -> Option<String> {
         .into_iter()
         .find(|(uid, _)| uid == user_id)
         .map(|(_, membership_id)| membership_id)
+}
+
+// ---------------------------------------------------------------------------
+// Assets (image upload)
+// ---------------------------------------------------------------------------
+//
+// These exercise the full asset lifecycle against the real service + S3 + the
+// async storage-event worker:
+//   POST /assets            -> a pending asset with a presigned PUT target
+//   PUT bytes to that URL   -> object lands in the private bucket
+//   S3 -> EventBridge -> SQS -> worker flips the asset to `uploaded`
+//   attach the asset id     -> profile_image_asset_id / header_photo_asset_ids
+//
+// The attach-validation tests don't need a real upload; they assert the server
+// rejects assets that aren't uploaded / not owned by the caller / of the wrong
+// purpose, which is the security-critical surface.
+
+/// A tiny valid 1x1 PNG (67 bytes) used as upload payload.
+const TINY_PNG: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+    0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+    0x42, 0x60, 0x82,
+];
+
+/// Create a pending asset for the given purpose sized to `TINY_PNG`.
+async fn create_png_asset(
+    config: &Configuration,
+    purpose: models::UploadPurpose,
+) -> models::Asset {
+    assets_post(
+        config,
+        models::CreateAssetInput {
+            purpose,
+            content_type: "image/png".to_string(),
+            content_length: TINY_PNG.len() as i64,
+        },
+    )
+    .await
+    .expect("create asset")
+}
+
+/// Replay a presigned upload target against storage with the PNG bytes, then
+/// wait for the storage-event worker to flip the asset to `uploaded`. Returns the
+/// uploaded asset. This drives the real S3 PUT + async pipeline.
+async fn upload_and_confirm(config: &Configuration, asset: &models::Asset) -> models::Asset {
+    let target = asset.upload.as_ref().expect("pending asset has an upload target");
+    let client = reqwest::Client::new();
+    let mut req = client
+        .request(
+            target.method.parse().expect("valid upload method"),
+            &target.upload_url,
+        )
+        .body(TINY_PNG.to_vec());
+    // Replay exactly the headers the server signed (content-type, length, ...).
+    for h in &target.headers {
+        req = req.header(&h.name, &h.value);
+    }
+    let res = req.send().await.expect("PUT bytes to storage");
+    assert!(
+        res.status().is_success(),
+        "upload PUT failed: {} {}",
+        res.status(),
+        res.text().await.unwrap_or_default()
+    );
+
+    // The worker marks it uploaded off the S3 event — eventually consistent.
+    eventually("asset to be marked uploaded", || async {
+        let a = assets_asset_id_get(config, &asset.id).await.ok()?;
+        matches!(a.status, models::AssetStatus::Uploaded).then_some(a)
+    })
+    .await
+}
+
+#[tokio::test]
+async fn create_asset_returns_pending_with_upload_target() {
+    let (config, _user) = new_user().await;
+
+    let asset = create_png_asset(&config, models::UploadPurpose::ProfileImage).await;
+
+    assert!(matches!(asset.status, models::AssetStatus::Pending));
+    assert_eq!(asset.content_type, "image/png");
+    assert!(asset.url.is_none(), "a pending asset has no serving url yet");
+    let target = asset.upload.expect("pending asset carries an upload target");
+    assert_eq!(target.method, "PUT");
+    assert!(
+        target.upload_url.starts_with("http"),
+        "upload_url should be a real URL, got {:?}",
+        target.upload_url
+    );
+}
+
+#[tokio::test]
+async fn create_asset_rejects_non_image_content_type() {
+    let (config, _user) = new_user().await;
+
+    let response = assets_post(
+        &config,
+        models::CreateAssetInput {
+            purpose: models::UploadPurpose::ProfileImage,
+            content_type: "application/pdf".to_string(),
+            content_length: 1024,
+        },
+    )
+    .await;
+    assert_bad_request(response);
+}
+
+#[tokio::test]
+async fn create_asset_rejects_oversized_content_length() {
+    let (config, _user) = new_user().await;
+
+    // 11 MB — over the 10 MB server cap.
+    let response = assets_post(
+        &config,
+        models::CreateAssetInput {
+            purpose: models::UploadPurpose::ProfileImage,
+            content_type: "image/png".to_string(),
+            content_length: 11 * 1024 * 1024,
+        },
+    )
+    .await;
+    assert_bad_request(response);
+}
+
+#[tokio::test]
+async fn create_asset_rejects_zero_content_length() {
+    let (config, _user) = new_user().await;
+
+    let response = assets_post(
+        &config,
+        models::CreateAssetInput {
+            purpose: models::UploadPurpose::ProfileImage,
+            content_type: "image/png".to_string(),
+            content_length: 0,
+        },
+    )
+    .await;
+    assert_bad_request(response);
+}
+
+#[tokio::test]
+async fn get_missing_asset_returns_not_found() {
+    let (config, _user) = new_user().await;
+
+    let response = assets_asset_id_get(&config, "does-not-exist").await;
+    assert_not_found(response);
+}
+
+#[tokio::test]
+async fn upload_profile_image_end_to_end() {
+    let (config, _user) = new_user().await;
+
+    // Create -> PUT -> worker marks uploaded.
+    let asset = create_png_asset(&config, models::UploadPurpose::ProfileImage).await;
+    let uploaded = upload_and_confirm(&config, &asset).await;
+    assert!(uploaded.url.is_some(), "uploaded asset carries a serving url");
+    assert!(uploaded.upload.is_none(), "uploaded asset has no upload target");
+
+    // Attach it to the profile; it should surface on /users/me.
+    let updated = users_me_patch(
+        &config,
+        models::UpdateUserInput {
+            name: None,
+            profile_image_asset_id: Some(asset.id.clone()),
+        },
+    )
+    .await
+    .expect("attach profile image");
+    let photo = updated
+        .profile
+        .profile_image
+        .expect("profile image is set after attach");
+    assert!(!photo.image_url.is_empty());
+}
+
+#[tokio::test]
+async fn upload_match_header_end_to_end() {
+    let (config, _user) = new_user().await;
+
+    let asset = create_png_asset(&config, models::UploadPurpose::MatchHeader).await;
+    upload_and_confirm(&config, &asset).await;
+
+    // Create a match with the uploaded asset as its header.
+    let mut input = match_between("Header Match", &[], &[]);
+    input.header_photo_asset_ids = Some(vec![asset.id.clone()]);
+    let created = matches_post(&config, input).await.expect("create match");
+
+    assert_eq!(
+        created.header_photos.len(),
+        1,
+        "the uploaded header should be attached"
+    );
+    assert!(!created.header_photos[0].image_url.is_empty());
+}
+
+#[tokio::test]
+async fn attach_rejects_pending_asset() {
+    let (config, _user) = new_user().await;
+
+    // Created but never uploaded → still pending.
+    let asset = create_png_asset(&config, models::UploadPurpose::ProfileImage).await;
+
+    let response = users_me_patch(
+        &config,
+        models::UpdateUserInput {
+            name: None,
+            profile_image_asset_id: Some(asset.id.clone()),
+        },
+    )
+    .await;
+    assert_bad_request(response);
+}
+
+#[tokio::test]
+async fn attach_rejects_asset_owned_by_another_user() {
+    let (owner_config, _owner) = new_user().await;
+    let (other_config, _other) = new_user().await;
+
+    // Owner uploads a profile image.
+    let asset = create_png_asset(&owner_config, models::UploadPurpose::ProfileImage).await;
+    upload_and_confirm(&owner_config, &asset).await;
+
+    // A different user tries to attach it → rejected (ownership check).
+    let response = users_me_patch(
+        &other_config,
+        models::UpdateUserInput {
+            name: None,
+            profile_image_asset_id: Some(asset.id.clone()),
+        },
+    )
+    .await;
+    assert_bad_request(response);
+}
+
+#[tokio::test]
+async fn attach_rejects_wrong_purpose_asset() {
+    let (config, _user) = new_user().await;
+
+    // Upload a match_header asset, then try to use it as a profile image.
+    let asset = create_png_asset(&config, models::UploadPurpose::MatchHeader).await;
+    upload_and_confirm(&config, &asset).await;
+
+    let response = users_me_patch(
+        &config,
+        models::UpdateUserInput {
+            name: None,
+            profile_image_asset_id: Some(asset.id.clone()),
+        },
+    )
+    .await;
+    assert_bad_request(response);
 }

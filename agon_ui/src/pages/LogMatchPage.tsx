@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { SportPicker } from '@/components/agon/SportPicker'
+import { MultiImageUploadField } from '@/components/agon/MultiImageUploadField'
 import {
   PlayerSideEditor,
   type TaggedPlayer,
@@ -79,6 +80,9 @@ export function LogMatchPage() {
   ])
   const [pointsA, setPointsA] = useState('')
   const [pointsB, setPointsB] = useState('')
+  // Optional header images for the match, uploaded via the Asset API. Holds the
+  // ordered uploaded asset ids (attached as `header_photo_asset_ids` on submit).
+  const [headerAssetIds, setHeaderAssetIds] = useState<string[]>([])
 
   // The signed-in user's profile. Used to seed them onto their own side by
   // default (as a real, removable player) and to badge/exclude them in search.
@@ -306,6 +310,8 @@ export function LogMatchPage() {
     const creatorSide = creatorSideClientId()
     if (creatorSide) body.creator_side_client_id = creatorSide
 
+    if (headerAssetIds.length > 0) body.header_photo_asset_ids = headerAssetIds
+
     const scored = buildScore()
     if (scored) {
       body.score = scored.score
@@ -341,6 +347,15 @@ export function LogMatchPage() {
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="e.g. Tuesday night singles"
+        />
+      </Section>
+
+      {/* Header images (optional) */}
+      <Section title="Header images" done={headerAssetIds.length > 0}>
+        <MultiImageUploadField
+          purpose="match_header"
+          label="Add header images"
+          onChange={setHeaderAssetIds}
         />
       </Section>
 
@@ -551,7 +566,9 @@ function Section({
   done,
   children,
 }: {
-  num: number
+  /** The step number badge. Omit for optional/unnumbered sections (e.g. the
+   *  header image), which then show only a done tick or a neutral dot. */
+  num?: number
   title: string
   done?: boolean
   children: React.ReactNode
@@ -567,7 +584,7 @@ function Section({
               : 'bg-muted text-muted-foreground',
           )}
         >
-          {done ? <Check className="size-3" /> : num}
+          {done ? <Check className="size-3" /> : (num ?? '·')}
         </span>
         <h2 className="text-sm font-medium">{title}</h2>
       </div>

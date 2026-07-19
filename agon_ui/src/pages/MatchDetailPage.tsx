@@ -7,6 +7,7 @@ import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Avatar } from '@/components/agon/Avatar'
+import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
 import { SportBadge } from '@/components/agon/SportBadge'
 import { StatusBadge, matchBadgeStatus } from '@/components/agon/StatusBadge'
 import { ScoreConfirmationBar } from '@/components/agon/ScoreConfirmationBar'
@@ -117,6 +118,9 @@ function MatchDetail({
         </Button>
         <SportBadge sport={match.match_type} />
       </div>
+
+      {/* Header image(s): a banner for one, a swipeable carousel for several. */}
+      <MatchHeaderCarousel photos={match.header_photos} />
 
       {/* Details card — name + when + where, inline-editable by participants. */}
       {editingDetails ? (

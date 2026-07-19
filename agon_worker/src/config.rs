@@ -10,8 +10,15 @@ use crate::error::{WorkerError, WorkerResult};
 pub struct Config {
     /// DynamoDB single-table name (`AGON_TABLE_NAME`).
     pub table_name: String,
-    /// The SQS queue URL to long-poll (`AGON_EVENTS_QUEUE_URL`).
-    pub queue_url: String,
+    /// SQS queue URL for change events off the DynamoDB stream, long-polled by the
+    /// main consumer (`AGON_EVENTS_QUEUE_URL`).
+    pub events_queue_url: String,
+    /// SQS queue URL for S3 asset-upload events, long-polled by the asset consumer
+    /// (`AGON_ASSET_EVENTS_QUEUE_URL`).
+    pub asset_events_queue_url: String,
+    /// CloudFront base URL used to build the canonical serving URL stored on an
+    /// asset when it uploads (`AGON_ASSETS_CDN_URL`).
+    pub assets_cdn_url: String,
     /// Base URL of the Meilisearch instance (`MEILI_URL`).
     pub meili_url: String,
     /// Meilisearch API key (`MEILI_MASTER_KEY`).
@@ -30,7 +37,11 @@ impl Config {
     pub fn from_env() -> WorkerResult<Self> {
         Ok(Self {
             table_name: required("AGON_TABLE_NAME")?,
-            queue_url: required("AGON_EVENTS_QUEUE_URL")?,
+            events_queue_url: required("AGON_EVENTS_QUEUE_URL")?,
+            asset_events_queue_url: required("AGON_ASSET_EVENTS_QUEUE_URL")?,
+            assets_cdn_url: required("AGON_ASSETS_CDN_URL")?
+                .trim_end_matches('/')
+                .to_string(),
             meili_url: required("MEILI_URL")?,
             meili_key: required("MEILI_MASTER_KEY")?,
             batch_size: optional_parsed("AGON_WORKER_BATCH_SIZE", 10)?,

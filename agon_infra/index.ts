@@ -4,6 +4,7 @@ import * as k8s from "@pulumi/kubernetes";
 import * as cloudflare from "@pulumi/cloudflare";
 import * as nginx from "@pulumi/kubernetes-ingress-nginx";
 import * as aws from "@pulumi/aws";
+import * as tls from "@pulumi/tls";
 
 const config = new pulumi.Config();
 const subdomainPrefix = pulumi.getStack();
@@ -439,9 +440,9 @@ new aws.s3.BucketPublicAccessBlock("agon-assets", {
 	restrictPublicBuckets: true,
 });
 
-// Emit S3 events to EventBridge; the async pipeline (S3 → EventBridge → SQS →
-// worker) uses "object created" to flip a Pending asset to Uploaded. The rule
-// itself is added with the async infra pass (worker/queue don't exist yet).
+// Emit S3 events to EventBridge; the asset pipeline (S3 → EventBridge → SQS →
+// worker) uses "object created" to flip a Pending asset to Uploaded and record
+// its serving URL. The EventBridge rule + queue are defined further below.
 new aws.s3.BucketNotification("agon-assets", {
 	bucket: assetsBucket.id,
 	eventbridge: true,
@@ -473,6 +474,199 @@ new aws.iam.UserPolicy("agon-app-s3", {
 		],
 	}),
 });
+
+// ── CloudFront: private asset delivery ──────────────────────────────────────
+// The assets bucket stays fully private (public access blocked above). The ONLY
+// reader is this CloudFront distribution, granted via an Origin Access Control
+// (OAC) + a bucket policy scoped to this distribution's ARN. Nothing can hit the
+// S3 URL directly.
+//
+// Two behaviours, matching the app's serving model:
+//   - profile_image/* and team_image/* → PUBLIC (no trusted key group). Cacheable,
+//     shareable, cheap; these images aren't secret.
+//   - match_header/*                   → SIGNED (trusted key group). The service
+//     mints a short-lived signed URL at read time, so future per-match visibility
+//     (e.g. followers-only) is enforced there without changing the upload path.
+//
+// A custom domain would need an ACM cert in us-east-1; we use the default
+// *.cloudfront.net domain for now and expose it to the app as AGON_ASSETS_CDN_URL.
+
+// CloudFront key pair for signed URLs. The PRIVATE half is handed to the service
+// (via the k8s secret) to sign match-header URLs; the PUBLIC half is uploaded to
+// CloudFront as a public key and referenced by a key group. Generated in-stack so
+// the whole pair lives in Pulumi state (encrypted), like the JWT test key.
+const assetSigningKey = new tls.PrivateKey("agon-assets-signing", {
+	algorithm: "RSA",
+	rsaBits: 2048,
+});
+
+const assetPublicKey = new aws.cloudfront.PublicKey("agon-assets", {
+	name: `agon-assets-${pulumi.getStack()}`,
+	comment: "Signs match-header asset URLs",
+	encodedKey: assetSigningKey.publicKeyPem,
+});
+
+const assetKeyGroup = new aws.cloudfront.KeyGroup("agon-assets", {
+	name: `agon-assets-${pulumi.getStack()}`,
+	items: [assetPublicKey.id],
+});
+
+// OAC: lets CloudFront sign its origin requests to S3 with SigV4, so the bucket
+// can trust "requests from this distribution" without being public.
+const assetOac = new aws.cloudfront.OriginAccessControl("agon-assets", {
+	name: `agon-assets-${pulumi.getStack()}`,
+	originAccessControlOriginType: "s3",
+	signingBehavior: "always",
+	signingProtocol: "sigv4",
+});
+
+const assetsCdn = new aws.cloudfront.Distribution("agon-assets", {
+	enabled: true,
+	comment: `agon assets (${pulumi.getStack()})`,
+	// Assets are immutable (content-addressed by asset id), so cache hard.
+	defaultRootObject: "",
+	origins: [{
+		originId: "assets-s3",
+		domainName: assetsBucket.bucketRegionalDomainName,
+		originAccessControlId: assetOac.id,
+	}],
+	// Default behaviour = public (covers profile_image/* and team_image/*).
+	defaultCacheBehavior: {
+		targetOriginId: "assets-s3",
+		viewerProtocolPolicy: "redirect-to-https",
+		allowedMethods: ["GET", "HEAD"],
+		cachedMethods: ["GET", "HEAD"],
+		compress: true,
+		forwardedValues: {
+			queryString: false,
+			cookies: { forward: "none" },
+		},
+		minTtl: 0,
+		defaultTtl: 86400,
+		maxTtl: 31536000,
+	},
+	// match_header/* = signed: only requests bearing a valid signature from the
+	// key group are served.
+	orderedCacheBehaviors: [{
+		pathPattern: "match_header/*",
+		targetOriginId: "assets-s3",
+		viewerProtocolPolicy: "redirect-to-https",
+		allowedMethods: ["GET", "HEAD"],
+		cachedMethods: ["GET", "HEAD"],
+		compress: true,
+		trustedKeyGroups: [assetKeyGroup.id],
+		forwardedValues: {
+			queryString: false,
+			cookies: { forward: "none" },
+		},
+		minTtl: 0,
+		defaultTtl: 3600,
+		maxTtl: 86400,
+	}],
+	restrictions: {
+		geoRestriction: { restrictionType: "none" },
+	},
+	viewerCertificate: {
+		cloudfrontDefaultCertificate: true,
+	},
+	priceClass: "PriceClass_100",
+});
+
+// Bucket policy: allow ONLY this distribution to read objects (OAC principal +
+// SourceArn condition). This is what keeps the bucket private while CloudFront
+// serves it.
+new aws.s3.BucketPolicy("agon-assets-cloudfront", {
+	bucket: assetsBucket.id,
+	policy: pulumi.jsonStringify({
+		Version: "2012-10-17",
+		Statement: [{
+			Sid: "AllowCloudFrontRead",
+			Effect: "Allow",
+			Principal: { Service: "cloudfront.amazonaws.com" },
+			Action: "s3:GetObject",
+			Resource: pulumi.interpolate`${assetsBucket.arn}/*`,
+			Condition: {
+				StringEquals: { "AWS:SourceArn": assetsCdn.arn },
+			},
+		}],
+	}),
+});
+
+// The base serving URL handed to the service/worker. The service builds public
+// URLs and signs match-header URLs against this; the worker stores the canonical
+// URL on an asset when it uploads.
+const assetsCdnUrl = pulumi.interpolate`https://${assetsCdn.domainName}`;
+
+// ── Asset events: S3 → EventBridge → SQS → agon_worker ──────────────────────
+// On "Object Created" in the assets bucket, EventBridge routes the event to a
+// dedicated SQS queue the worker long-polls; the worker flips the asset to
+// Uploaded. Separate from the DynamoDB-stream events queue (different message
+// shape and failure domain).
+const assetEventsDlq = new aws.sqs.Queue("agon-asset-events-dlq", {
+	name: `agon-asset-events-dlq-${pulumi.getStack()}`,
+	messageRetentionSeconds: 1209600, // 14 days.
+});
+
+const assetEventsQueue = new aws.sqs.Queue("agon-asset-events", {
+	name: `agon-asset-events-${pulumi.getStack()}`,
+	visibilityTimeoutSeconds: 60,
+	messageRetentionSeconds: 345600, // 4 days.
+	redrivePolicy: pulumi.jsonStringify({
+		deadLetterTargetArn: assetEventsDlq.arn,
+		maxReceiveCount: 5,
+	}),
+});
+
+// EventBridge rule matching S3 object-created events for this bucket only.
+const assetEventsRule = new aws.cloudwatch.EventRule("agon-asset-events", {
+	name: `agon-asset-events-${pulumi.getStack()}`,
+	description: "S3 object-created in the assets bucket → asset events queue",
+	eventPattern: assetsBucket.bucket.apply(name => JSON.stringify({
+		source: ["aws.s3"],
+		"detail-type": ["Object Created"],
+		detail: { bucket: { name: [name] } },
+	})),
+});
+
+new aws.cloudwatch.EventTarget("agon-asset-events", {
+	rule: assetEventsRule.name,
+	arn: assetEventsQueue.arn,
+});
+
+// Allow EventBridge to send matched events to the queue.
+new aws.sqs.QueuePolicy("agon-asset-events", {
+	queueUrl: assetEventsQueue.id,
+	policy: pulumi.jsonStringify({
+		Version: "2012-10-17",
+		Statement: [{
+			Sid: "AllowEventBridge",
+			Effect: "Allow",
+			Principal: { Service: "events.amazonaws.com" },
+			Action: "sqs:SendMessage",
+			Resource: assetEventsQueue.arn,
+			Condition: { ArnEquals: { "aws:SourceArn": assetEventsRule.arn } },
+		}],
+	}),
+});
+
+// The worker consumes this queue too (in addition to the main events queue).
+new aws.iam.UserPolicy("agon-app-asset-events-sqs", {
+	user: appAwsUser.name,
+	policy: pulumi.jsonStringify({
+		Version: "2012-10-17",
+		Statement: [{
+			Sid: "ConsumeAssetEventsQueue",
+			Effect: "Allow",
+			Action: [
+				"sqs:ReceiveMessage",
+				"sqs:DeleteMessage",
+				"sqs:GetQueueAttributes",
+			],
+			Resource: [assetEventsQueue.arn],
+		}],
+	}),
+});
+
 
 // ───────────────────────────────────────────────────────────────────────────
 // Async pipeline: DynamoDB Streams → EventBridge Pipe → SQS → agon_worker
@@ -608,7 +802,13 @@ const awsSecret = new k8s.core.v1.Secret("aws-credentials", {
 		AWS_REGION: awsRegion,
 		AGON_TABLE_NAME: dynamoTable.name,
 		AGON_ASSETS_BUCKET: assetsBucket.bucket,
+		AGON_ASSETS_CDN_URL: assetsCdnUrl,
 		AGON_EVENTS_QUEUE_URL: eventsQueue.url,
+		AGON_ASSET_EVENTS_QUEUE_URL: assetEventsQueue.url,
+		// CloudFront signed-URL key pair for match-header serving. The service
+		// signs with the private half; the id names the public key CloudFront trusts.
+		AGON_CLOUDFRONT_KEY_PAIR_ID: assetPublicKey.id,
+		AGON_CLOUDFRONT_PRIVATE_KEY: assetSigningKey.privateKeyPem,
 	},
 }, { provider: k8sProvider });
 

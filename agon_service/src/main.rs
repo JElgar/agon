@@ -43,6 +43,10 @@ use mapping::{
     team_from_records, team_list_item_from_record, user_profile_from_record,
 };
 
+// Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
+mod assets;
+use assets::Assets;
+
 mod detailed_score;
 use detailed_score::{
     DetailedScore,
@@ -65,8 +69,8 @@ mod notification;
 use notification::{
     CommentNotification, FollowNotification, InvitationAcceptedNotification, LikeNotification,
     MatchInvitationNotification, Notification, NotificationKind, NotificationPage,
-    ScoreConfirmedNotification, ScoreSubmittedNotification, TeamInvitationNotification,
-    UnreadCount,
+    ReplyNotification, ScoreConfirmedNotification, ScoreSubmittedNotification,
+    TeamInvitationNotification, UnreadCount,
 };
 
 #[derive(SecurityScheme)]
@@ -204,6 +208,10 @@ struct CreateAssetInput {
     /// MIME type of the file to upload, e.g. "image/jpeg". The server validates
     /// it against the purpose and bakes it into the presigned URL.
     content_type: String,
+    /// Exact byte length of the file to upload. The server rejects anything over
+    /// its per-purpose max and bakes this exact length into the presigned URL, so
+    /// S3 refuses an upload of any other size.
+    content_length: i64,
 }
 
 /// Where and how to upload an asset's bytes. Provider-agnostic: the client just
@@ -566,6 +574,11 @@ struct CreateMatchInput {
     /// sides' `client_id`s. Absent => an upcoming match.
     score: Option<Score>,
     winner_side_id: Option<String>,
+    /// Header images for the match. Each references an `Asset` the caller created
+    /// via `POST /assets` (purpose `match_header`) and uploaded; the server
+    /// rejects any that aren't `Uploaded` and owned by the caller, and resolves
+    /// them to stored URLs. Omit/null for no header.
+    header_photo_asset_ids: Option<Vec<String>>,
 }
 
 /// The organiser's one-stop update for a match: edit metadata, reconcile the
@@ -600,6 +613,11 @@ struct UpdateMatchInput {
     /// Optional sport-specific breakdown (goals/assists, full scorecard),
     /// captured alongside the result.
     detailed_score: Option<DetailedScore>,
+    /// Replace the match's header images. Each references an `Asset` (purpose
+    /// `match_header`) the caller created and uploaded. `Some([])` clears the
+    /// headers; `None` leaves them unchanged. Any asset not `Uploaded`/owned by
+    /// the caller rejects the whole request.
+    header_photo_asset_ids: Option<Vec<String>>,
 }
 
 /// A single entry in the feed. Modelled as a union so new item types
@@ -1110,17 +1128,16 @@ impl Api {
         let input = input.0;
         let uid = self.require_uid(dao, &jwt_data).await?;
 
-        // Resolve an attached asset id to its stored URL (must be Uploaded and
-        // owned by the caller). Some(Some(url)) = set image; None = leave as-is.
+        // Resolve an attached asset id to its stored URL (must be Uploaded, owned
+        // by the caller, and of `profile_image` purpose). Some(Some(url)) = set
+        // image; None = leave as-is.
         let resolved_image: Option<Option<String>> = match &input.profile_image_asset_id {
             Some(asset_id) => {
-                let asset = dao.get_asset(asset_id).await.map_err(dao_internal)?;
-                match asset {
-                    Some(a) if a.status == "uploaded" && a.owner_user_id == uid => Some(a.url),
-                    _ => {
-                        return Ok(UpdateUserResponse::ValidationError(PlainText(
-                            "asset not found, not uploaded, or not owned by you".into(),
-                        )));
+                let ids = std::slice::from_ref(asset_id);
+                match resolve_asset_urls(dao, &uid, "profile_image", ids).await? {
+                    Ok(urls) => Some(urls.into_iter().next()),
+                    Err(msg) => {
+                        return Ok(UpdateUserResponse::ValidationError(PlainText(msg)));
                     }
                 }
             }
@@ -1158,6 +1175,7 @@ impl Api {
     async fn create_asset(
         &self,
         Data(dao): Data<&dao::Dao>,
+        Data(assets): Data<&Assets>,
         AuthSchema(jwt_data): AuthSchema,
         input: Json<CreateAssetInput>,
     ) -> Result<CreateAssetResponse> {
@@ -1172,6 +1190,15 @@ impl Api {
             )));
         }
 
+        // Enforce a size limit up front: the declared length must be positive and
+        // within the max. It's baked into the presigned PUT below, so S3 also
+        // rejects an upload whose actual size differs from what was declared.
+        if input.content_length <= 0 || input.content_length > MAX_UPLOAD_BYTES {
+            return Ok(CreateAssetResponse::ValidationError(PlainText(format!(
+                "content_length must be between 1 and {MAX_UPLOAD_BYTES} bytes"
+            ))));
+        }
+
         let id = new_id();
         // Provider-agnostic object key. A storage event later flips the asset to
         // Uploaded and sets the URL — none of the provider details leak here.
@@ -1181,19 +1208,23 @@ impl Api {
             owner_user_id: uid,
             purpose: upload_purpose_str(&input.purpose).to_string(),
             content_type: input.content_type,
+            content_length: input.content_length,
             status: String::from("pending"),
             storage_key,
             url: None,
             created_at: now_iso(),
         };
         dao.create_asset(&record).await.map_err(dao_internal)?;
-        Ok(CreateAssetResponse::Asset(Json(asset_from_record(&record))))
+        Ok(CreateAssetResponse::Asset(Json(
+            asset_from_record(assets, &record).await,
+        )))
     }
 
     #[oai(path = "/assets/:asset_id", method = "get")]
     async fn get_asset(
         &self,
         Data(dao): Data<&dao::Dao>,
+        Data(assets): Data<&Assets>,
         AuthSchema(_jwt_data): AuthSchema,
         Path(asset_id): Path<String>,
     ) -> Result<GetAssetResponse> {
@@ -1201,7 +1232,9 @@ impl Api {
         match dao.get_asset(&asset_id).await.map_err(dao_internal)? {
             // Pending assets get a fresh presigned upload target on each read
             // (the previous one may have expired) — that is the retry mechanism.
-            Some(record) => Ok(GetAssetResponse::Asset(Json(asset_from_record(&record)))),
+            Some(record) => Ok(GetAssetResponse::Asset(Json(
+                asset_from_record(assets, &record).await,
+            ))),
             None => Ok(GetAssetResponse::NotFound(PlainText(
                 "asset not found".into(),
             ))),
@@ -1321,6 +1354,7 @@ impl Api {
     async fn get_user_feed(
         &self,
         Data(dao): Data<&dao::Dao>,
+        Data(assets): Data<&Assets>,
         AuthSchema(jwt_data): AuthSchema,
         /// Opaque cursor from the previous page's `next_cursor`. Omit for the first page.
         Query(cursor): Query<Option<String>>,
@@ -1379,12 +1413,9 @@ impl Api {
                     .has_liked_match(&entry.ref_id, &uid)
                     .await
                     .map_err(dao_internal)?;
-                items.push(FeedItem::Match(match_from_records(
-                    &agg.match_,
-                    &agg.sides,
-                    &agg.players,
-                    i_liked,
-                )));
+                let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
+                sign_match_headers(assets, &mut m);
+                items.push(FeedItem::Match(m));
             }
         }
 
@@ -1399,6 +1430,7 @@ impl Api {
         &self,
         Data(dao): Data<&dao::Dao>,
         Data(search): Data<&agon_core::search::SearchClient>,
+        Data(assets): Data<&Assets>,
         AuthSchema(jwt_data): AuthSchema,
         /// Free-text query over match name / participants.
         #[oai(name = "q")]
@@ -1483,12 +1515,9 @@ impl Api {
                     .has_liked_match(id, &caller_uid)
                     .await
                     .map_err(dao_internal)?;
-                items.push(match_from_records(
-                    &agg.match_,
-                    &agg.sides,
-                    &agg.players,
-                    i_liked,
-                ));
+                let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
+                sign_match_headers(assets, &mut m);
+                items.push(m);
             }
         }
         Ok(ListMatchesResponse::Matches(Json(MatchPage {
@@ -1501,12 +1530,22 @@ impl Api {
     async fn create_match(
         &self,
         Data(dao): Data<&dao::Dao>,
+        Data(assets): Data<&Assets>,
         AuthSchema(jwt_data): AuthSchema,
         input: Json<CreateMatchInput>,
     ) -> Result<CreateMatchResponse> {
         info!("Creating match {}", input.name);
         let input = input.0;
         let uid = self.require_uid(dao, &jwt_data).await?;
+
+        // Resolve any header images to their stored URLs (must be uploaded,
+        // owned by the caller, and of `match_header` purpose).
+        let header_asset_ids = input.header_photo_asset_ids.clone().unwrap_or_default();
+        let header_photo_urls =
+            match resolve_asset_urls(dao, &uid, "match_header", &header_asset_ids).await? {
+                Ok(urls) => urls,
+                Err(msg) => return Ok(CreateMatchResponse::ValidationError(PlainText(msg))),
+            };
 
         // A match needs at least two sides for a score to be meaningful.
         if input.sides.len() < 2 {
@@ -1710,7 +1749,7 @@ impl Api {
                 latitude: l.latitude,
                 longitude: l.longitude,
             }),
-            header_photo_urls: Vec::new(),
+            header_photo_urls,
             confirmed_score: None,
             pending_score,
             like_count: 0,
@@ -1743,18 +1782,16 @@ impl Api {
                 .map_err(dao_internal)?;
         }
 
-        Ok(CreateMatchResponse::Match(Json(match_from_records(
-            &match_record,
-            &side_records,
-            &player_records,
-            false,
-        ))))
+        let mut m = match_from_records(&match_record, &side_records, &player_records, false);
+        sign_match_headers(assets, &mut m);
+        Ok(CreateMatchResponse::Match(Json(m)))
     }
 
     #[oai(path = "/matches/:match_id", method = "get")]
     async fn get_match(
         &self,
         Data(dao): Data<&dao::Dao>,
+        Data(assets): Data<&Assets>,
         AuthSchema(jwt_data): AuthSchema,
         Path(match_id): Path<String>,
     ) -> Result<GetMatchResponse> {
@@ -1772,18 +1809,16 @@ impl Api {
             .has_liked_match(&match_id, &uid)
             .await
             .map_err(dao_internal)?;
-        Ok(GetMatchResponse::Match(Json(match_from_records(
-            &agg.match_,
-            &agg.sides,
-            &agg.players,
-            i_liked,
-        ))))
+        let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
+        sign_match_headers(assets, &mut m);
+        Ok(GetMatchResponse::Match(Json(m)))
     }
 
     #[oai(path = "/matches/:match_id", method = "patch")]
     async fn update_match(
         &self,
         Data(dao): Data<&dao::Dao>,
+        Data(assets): Data<&Assets>,
         AuthSchema(jwt_data): AuthSchema,
         Path(match_id): Path<String>,
         input: Json<UpdateMatchInput>,
@@ -1808,6 +1843,16 @@ impl Api {
                 "only a participant can edit this match".into(),
             )));
         }
+
+        // Resolve any replacement header images (must be uploaded, owned by the
+        // caller, `match_header` purpose). `None` = leave unchanged.
+        let header_photo_urls: Option<Vec<String>> = match &input.header_photo_asset_ids {
+            Some(ids) => match resolve_asset_urls(dao, &uid, "match_header", ids).await? {
+                Ok(urls) => Some(urls),
+                Err(msg) => return Ok(UpdateMatchResponse::ValidationError(PlainText(msg))),
+            },
+            None => None,
+        };
 
         // A cancelled match can't be scored.
         let resulting_status = input
@@ -1899,6 +1944,7 @@ impl Api {
                 .as_deref(),
             confirmed_score,
             None,
+            header_photo_urls,
         )
         .await
         .map_err(|e| match e {
@@ -1955,12 +2001,9 @@ impl Api {
             .has_liked_match(&match_id, &uid)
             .await
             .map_err(dao_internal)?;
-        Ok(UpdateMatchResponse::Match(Json(match_from_records(
-            &agg.match_,
-            &agg.sides,
-            &agg.players,
-            i_liked,
-        ))))
+        let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
+        sign_match_headers(assets, &mut m);
+        Ok(UpdateMatchResponse::Match(Json(m)))
     }
 
     #[oai(path = "/matches/:match_id/detailed-score", method = "get")]
@@ -2116,7 +2159,7 @@ impl Api {
                     .await
                     .map_err(dao_internal)?;
                 // A disputed submission clears the pending score on the match.
-                dao.update_match_meta(&match_id, None, None, None, None, None, Some(None))
+                dao.update_match_meta(&match_id, None, None, None, None, None, Some(None), None)
                     .await
                     .map_err(dao_internal)?;
             }
@@ -2170,6 +2213,7 @@ impl Api {
                         None,
                         Some(confirmed),
                         Some(None),
+                        None,
                     )
                     .await
                     .map_err(dao_internal)?;
@@ -2799,6 +2843,7 @@ impl Api {
             dao.update_match_meta(
                 &match_id,
                 Some(&agg.match_.name),
+                None,
                 None,
                 None,
                 None,
@@ -3594,33 +3639,99 @@ fn asset_status_from_str(s: &str) -> AssetStatus {
 }
 
 /// Build the API `Asset` from a stored record. Pending assets get a freshly
-/// generated presigned upload target (short-lived, so regenerated on each read);
-/// uploaded assets carry their public `url` and no target.
-fn asset_from_record(record: &dao::records::AssetRecord) -> Asset {
+/// generated S3 presigned PUT (short-lived, so regenerated on each read — that is
+/// the upload-retry mechanism); uploaded assets carry their serving `url` and no
+/// target.
+///
+/// The stored `url` on an uploaded asset is the canonical CloudFront URL. For
+/// public purposes (profile/team) it is returned as-is; a match-header asset's
+/// url is signed here so the `Asset` view is directly usable. (Match headers are
+/// also signed when attached to a `Match`; signing both keeps `GET /assets/:id`
+/// consistent.)
+async fn asset_from_record(assets: &Assets, record: &dao::records::AssetRecord) -> Asset {
     let status = asset_status_from_str(&record.status);
     let upload = match status {
-        AssetStatus::Pending => Some(UploadTarget {
-            // TODO: generate a real provider-specific presigned PUT for
-            // `record.storage_key` (S3/R2/GCS/Supabase). The contract stays
-            // provider-agnostic: the client just replays method + headers.
-            upload_url: format!(
-                "https://storage.example.com/uploads/{}?signature=placeholder",
-                record.storage_key
-            ),
-            method: String::from("PUT"),
-            headers: vec![UploadHeader {
-                name: String::from("Content-Type"),
-                value: record.content_type.clone(),
-            }],
-        }),
+        AssetStatus::Pending => {
+            match assets
+                .presign_put(
+                    &record.storage_key,
+                    &record.content_type,
+                    record.content_length,
+                )
+                .await
+            {
+                Ok(target) => Some(target),
+                Err(e) => {
+                    // Don't fail the whole response: return the pending asset with
+                    // no upload target. The client can re-read to retry once the
+                    // transient issue clears.
+                    error!(error = %e, asset = %record.id, "failed to presign upload; returning asset without target");
+                    None
+                }
+            }
+        }
         _ => None,
     };
+    let url = record.url.as_ref().map(|url| {
+        if record.purpose == "match_header" {
+            assets.sign_get(url)
+        } else {
+            url.clone()
+        }
+    });
     Asset {
         id: record.id.clone(),
         status,
         content_type: record.content_type.clone(),
         upload,
-        url: record.url.clone(),
+        url,
+    }
+}
+
+/// Resolve a list of asset ids to their stored (canonical) URLs, enforcing that
+/// each is `Uploaded`, owned by `uid`, and of the expected `purpose`. Returns
+/// `Err` with a client-facing message on the first asset that fails a check, so
+/// the caller can surface a 400. An empty input yields an empty list.
+async fn resolve_asset_urls(
+    dao: &dao::Dao,
+    uid: &str,
+    purpose: &str,
+    asset_ids: &[String],
+) -> Result<std::result::Result<Vec<String>, String>> {
+    let mut urls = Vec::with_capacity(asset_ids.len());
+    for asset_id in asset_ids {
+        let asset = dao.get_asset(asset_id).await.map_err(dao_internal)?;
+        match asset {
+            Some(a) if a.status == "uploaded" && a.owner_user_id == uid && a.purpose == purpose => {
+                match a.url {
+                    Some(url) => urls.push(url),
+                    // Uploaded but no URL recorded — treat as not-yet-usable.
+                    None => {
+                        return Ok(Err(format!(
+                            "asset {asset_id} has no url yet; try again shortly"
+                        )));
+                    }
+                }
+            }
+            _ => {
+                return Ok(Err(format!(
+                    "asset {asset_id} not found, not uploaded, wrong type, or not owned by you"
+                )));
+            }
+        }
+    }
+    Ok(Ok(urls))
+}
+
+/// Sign a `Match`'s header-photo URLs for private serving. The mapping layer
+/// stores each photo's canonical (unsigned) CloudFront URL; match headers are a
+/// signed CloudFront behaviour, so we mint a short-lived signed URL at read time
+/// (and, in future, only after a per-match visibility check). A no-op in dev,
+/// where signing isn't configured. Call this on every `Match` returned to a
+/// client.
+fn sign_match_headers(assets: &Assets, m: &mut Match) {
+    for photo in &mut m.header_photos {
+        photo.image_url = assets.sign_get(&photo.image_url);
     }
 }
 
@@ -3992,6 +4103,18 @@ fn mock_notifications() -> Vec<Notification> {
             }),
         },
         Notification {
+            id: String::from("notif_reply"),
+            is_read: true,
+            created_at: mock_timestamp(),
+            kind: NotificationKind::Reply(ReplyNotification {
+                replier: actor("user_2", "Raj Patel"),
+                match_id: String::from("match_123"),
+                comment_id: String::from("comment_10"),
+                parent_comment_id: String::from("comment_9"),
+                preview: String::from("Definitely, next week?"),
+            }),
+        },
+        Notification {
             id: String::from("notif_score_submitted"),
             is_read: false,
             created_at: mock_timestamp(),
@@ -4110,6 +4233,10 @@ fn within_range(
 const DEFAULT_PAGE_LIMIT: u32 = 20;
 /// Hard cap so a client cannot request an unbounded page.
 const MAX_PAGE_LIMIT: u32 = 50;
+
+/// Maximum size of an uploaded asset, in bytes (10 MB). Enforced at asset
+/// creation and baked into the presigned PUT so S3 rejects a mismatch too.
+const MAX_UPLOAD_BYTES: i64 = 10 * 1024 * 1024;
 
 /// Clamps a client-supplied limit to `[_, MAX_PAGE_LIMIT]`, defaulting when absent.
 fn page_limit(limit: Option<u32>) -> u32 {
@@ -4272,6 +4399,9 @@ async fn main() {
             let table = std::env::var("AGON_TABLE_NAME").unwrap_or_else(|_| "agon".to_string());
             let dao = dao::Dao::from_env(table).await;
 
+            // Object storage: presigned S3 uploads + CloudFront serving URLs.
+            let assets = Assets::from_env().await;
+
             // Meilisearch client for discovery endpoints (users/teams/matches
             // search). Indexes are kept in sync by the async worker; the API only
             // queries them and hydrates results from DynamoDB.
@@ -4304,6 +4434,7 @@ async fn main() {
                 .data(dao)
                 .data(search)
                 .data(verifier)
+                .data(assets)
                 .around(log_middleware);
 
             Server::new(TcpListener::bind("0.0.0.0:7000"))

@@ -8,6 +8,7 @@
 //! accept-invitation saga) lives in the `temporal` module and runs a Temporal
 //! worker alongside the consumer loop in this same binary.
 
+mod asset_consumer;
 mod config;
 mod consumer;
 mod error;
@@ -50,6 +51,14 @@ async fn main() {
         std::process::exit(1);
     }
 
+    // The asset consumer shares the SQS client, DAO and config; build it before
+    // moving `config` into the main consumer.
+    let asset_consumer = asset_consumer::AssetConsumer::new(
+        sqs.clone(),
+        dao.clone(),
+        std::sync::Arc::new(config.clone()),
+    );
+
     let consumer = Consumer::new(sqs, dao.clone(), search.clone(), config);
 
     // Attach a client so multi-step stream events start workflows. A connection
@@ -62,19 +71,41 @@ async fn main() {
         }
     };
 
-    // Run the SQS consumer AND the Temporal worker concurrently. The Temporal
+    // Run the SQS consumers AND the Temporal worker concurrently. The Temporal
     // worker's futures are `!Send` (workflows run single-threaded by design,
     // using Rc/RefCell internally), so it cannot be `tokio::spawn`ed — `join!`
-    // polls both on this same task, which doesn't require `Send`.
-    let consumer_fut = consumer.run(Box::pin(shutdown_signal()));
+    // polls all of them on this same task, which doesn't require `Send`. Both
+    // consumers observe the same shutdown signal (fanned out below).
+    let (shutdown_tx, _) = tokio::sync::broadcast::channel::<()>(1);
+    let events_shutdown = subscribe_shutdown(&shutdown_tx);
+    let asset_shutdown = subscribe_shutdown(&shutdown_tx);
+    let signal_fut = async move {
+        shutdown_signal().await;
+        // Best-effort broadcast; receivers stop on the first (or a lagged) recv.
+        let _ = shutdown_tx.send(());
+    };
+
+    let consumer_fut = consumer.run(Box::pin(events_shutdown));
+    let asset_fut = asset_consumer.run(Box::pin(asset_shutdown));
     let temporal_fut = async {
         if let Err(e) = temporal::worker::run(dao, search).await {
             tracing::error!(error = %e, "temporal worker exited with error");
         }
     };
-    tokio::join!(consumer_fut, temporal_fut);
+    tokio::join!(signal_fut, consumer_fut, asset_fut, temporal_fut);
 
     tracing::info!("worker stopped");
+}
+
+/// A future that resolves when the shutdown broadcast fires (or the sender is
+/// dropped / the receiver lags), used to stop each consumer loop cleanly.
+fn subscribe_shutdown(
+    tx: &tokio::sync::broadcast::Sender<()>,
+) -> impl std::future::Future<Output = ()> + use<> {
+    let mut rx = tx.subscribe();
+    async move {
+        let _ = rx.recv().await;
+    }
 }
 
 /// Resolves on SIGTERM (k8s pod termination) or Ctrl-C, so in-flight messages

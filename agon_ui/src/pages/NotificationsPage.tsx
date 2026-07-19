@@ -419,6 +419,21 @@ function describe(kind: Kind): NotificationView {
         href: `/matches/${kind.match_id}`,
         actions: { viewLabel: 'View match' },
       }
+    case 'Reply':
+      return {
+        actorName: kind.replier.name,
+        actorImage: kind.replier.profile_image?.image_url,
+        message: (
+          <>
+            <strong className="font-medium">{kind.replier.name}</strong> replied: “
+            {kind.preview}”
+          </>
+        ),
+        badgeIcon: MessageCircle,
+        badgeClass: 'bg-muted-foreground',
+        href: `/matches/${kind.match_id}`,
+        actions: { viewLabel: 'View match' },
+      }
     case 'ScoreSubmitted':
       return {
         actorName: kind.submitted_by.name,

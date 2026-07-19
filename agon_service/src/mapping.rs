@@ -13,8 +13,8 @@ use crate::membership::{
 };
 use crate::notification::{
     CommentNotification, FollowNotification, InvitationAcceptedNotification, LikeNotification,
-    MatchInvitationNotification, Notification, NotificationKind, ScoreConfirmedNotification,
-    ScoreSubmittedNotification, TeamInvitationNotification,
+    MatchInvitationNotification, Notification, NotificationKind, ReplyNotification,
+    ScoreConfirmedNotification, ScoreSubmittedNotification, TeamInvitationNotification,
 };
 use crate::team::{Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
@@ -575,6 +575,7 @@ pub fn notification_actor_id(kind: &NotificationKindRecord) -> &str {
         NotificationKindRecord::Follow { actor_user_id } => actor_user_id,
         NotificationKindRecord::Like { actor_user_id, .. } => actor_user_id,
         NotificationKindRecord::Comment { actor_user_id, .. } => actor_user_id,
+        NotificationKindRecord::Reply { actor_user_id, .. } => actor_user_id,
         NotificationKindRecord::ScoreSubmitted { actor_user_id, .. } => actor_user_id,
         NotificationKindRecord::ScoreConfirmed { actor_user_id, .. } => actor_user_id,
     }
@@ -636,6 +637,19 @@ pub fn notification_from_record(rec: &NotificationRecord, actor: UserProfile) ->
             commenter: actor,
             match_id: match_id.clone(),
             comment_id: comment_id.clone(),
+            preview: preview.clone(),
+        }),
+        NotificationKindRecord::Reply {
+            match_id,
+            comment_id,
+            parent_comment_id,
+            preview,
+            ..
+        } => NotificationKind::Reply(ReplyNotification {
+            replier: actor,
+            match_id: match_id.clone(),
+            comment_id: comment_id.clone(),
+            parent_comment_id: parent_comment_id.clone(),
             preview: preview.clone(),
         }),
         NotificationKindRecord::ScoreSubmitted {

@@ -65,6 +65,9 @@ pub async fn handle(dao: &Dao, ev: &ChangeEvent, now: &str) -> WorkerResult<()> 
         (Pk::Match(match_id), Sk::Comment(comment_id)) => {
             notify_comment(dao, match_id, comment_id).await
         }
+        // A reply to a comment: notify the parent comment's author and the match
+        // participants.
+        (Pk::Match(match_id), Sk::Reply(reply_id)) => notify_reply(dao, match_id, reply_id).await,
         _ => Ok(()),
     }
 }
@@ -274,6 +277,62 @@ async fn notify_comment(dao: &Dao, match_id: &str, comment_id: &str) -> WorkerRe
                 actor_user_id: author_id.clone(),
                 match_id: match_id.to_string(),
                 comment_id: comment_id.to_string(),
+                preview: preview.clone(),
+            },
+        };
+        dao.create_notification(&notif).await?;
+    }
+    Ok(())
+}
+
+/// A reply to a comment: notify the parent comment's author plus the match
+/// participants (deduplicated), excluding the reply's author. The reply row is
+/// fetched by its own id (`Sk::Reply`); its `parent_id` names the top-level
+/// comment, whose author we resolve and include as a recipient.
+async fn notify_reply(dao: &Dao, match_id: &str, reply_id: &str) -> WorkerResult<()> {
+    let Some(reply) = dao.get_reply(match_id, reply_id).await? else {
+        return Ok(());
+    };
+    let Some(author_id) = reply.author_user_id.clone() else {
+        return Ok(());
+    };
+    let Some(parent_id) = reply.parent_id.clone() else {
+        // A reply without a parent is malformed — the write path always sets it.
+        return Err(WorkerError::Invariant(format!(
+            "reply {reply_id} on match {match_id} has no parent_id"
+        )));
+    };
+    let Some(agg) = dao.get_match(match_id).await? else {
+        return Ok(());
+    };
+
+    let preview = reply.text.as_deref().map(preview_of).unwrap_or_default();
+
+    // Recipients: match participants plus the parent comment's author, minus the
+    // reply author. Deduplicated so the parent author (who may also be a
+    // participant) is notified exactly once. Use a set for the union.
+    let mut recipients: std::collections::BTreeSet<String> =
+        participant_user_ids(&agg, &author_id).into_iter().collect();
+    // The parent comment may be tombstoned (author cleared) or gone; only add a
+    // live author, and never the reply's own author.
+    if let Some(parent) = dao.get_comment(match_id, &parent_id).await?
+        && let Some(parent_author) = parent.author_user_id
+        && parent_author != author_id
+    {
+        recipients.insert(parent_author);
+    }
+
+    for user_id in recipients {
+        let notif = NotificationRecord {
+            id: format!("notif-reply-{match_id}-{reply_id}-{user_id}"),
+            user_id,
+            is_read: false,
+            created_at: reply.created_at.clone(),
+            kind: NotificationKindRecord::Reply {
+                actor_user_id: author_id.clone(),
+                match_id: match_id.to_string(),
+                comment_id: reply_id.to_string(),
+                parent_comment_id: parent_id.clone(),
                 preview: preview.clone(),
             },
         };

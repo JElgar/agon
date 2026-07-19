@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ChevronRight } from 'lucide-react'
+import { ChevronRight, Pencil } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { ProfileHeader } from '@/components/agon/ProfileHeader'
+import { EditProfileDialog } from '@/components/agon/EditProfileDialog'
 import { FollowButton } from '@/components/agon/FollowButton'
 import { SportStatsTable } from '@/components/agon/SportStatsTable'
 import { MatchCard } from '@/components/agon/MatchCard'
@@ -87,11 +88,20 @@ export function ProfilePage() {
     <div className="mx-auto flex max-w-xl flex-col gap-8">
       <div className="flex flex-col gap-5">
         <ProfileHeader profile={profile} />
-        {!isOwnProfile && userId && (
-          <FollowButton
-            userId={userId}
-            isFollowing={profile.is_followed_by_me}
-          />
+        {isOwnProfile ? (
+          <EditProfileDialog profile={profile}>
+            <Button variant="outline" className="gap-2">
+              <Pencil className="size-4" />
+              Edit profile
+            </Button>
+          </EditProfileDialog>
+        ) : (
+          userId && (
+            <FollowButton
+              userId={userId}
+              isFollowing={profile.is_followed_by_me}
+            />
+          )
         )}
       </div>
 

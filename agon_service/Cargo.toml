@@ -7,7 +7,12 @@ edition = "2024"
 agon_core = { path = "../agon_core" }
 poem = "3"
 poem-openapi = { version = "5", features = ["scalar", "chrono"] }
+# CloudFront signed-URL generation (RSA-SHA1 over the canned policy) uses openssl.
 openssl = { version = "0.10" }
+# S3 presigned PUT for asset uploads. `aws-config` loads the ambient credentials
+# (same as agon_core's DAO); `aws-sdk-s3` builds the presigned request.
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-s3 = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 uuid = { version = "1.16.0", features = ["v4"] }
 thiserror = "1.0.64"

@@ -58,7 +58,7 @@ impl Consumer {
     /// Run the poll loop until `shutdown` resolves (e.g. SIGTERM). Each iteration
     /// long-polls for a batch, processes it concurrently, and ACKs successes.
     pub async fn run(&self, mut shutdown: impl std::future::Future<Output = ()> + Unpin) {
-        tracing::info!(queue = %self.config.queue_url, "worker consumer started");
+        tracing::info!(queue = %self.config.events_queue_url, "worker consumer started");
         loop {
             tokio::select! {
                 _ = &mut shutdown => {
@@ -83,7 +83,7 @@ impl Consumer {
         let out = self
             .sqs
             .receive_message()
-            .queue_url(&self.config.queue_url)
+            .queue_url(&self.config.events_queue_url)
             .max_number_of_messages(self.config.batch_size)
             .wait_time_seconds(self.config.wait_time_seconds)
             .visibility_timeout(self.config.visibility_timeout_seconds)
@@ -183,7 +183,7 @@ impl Consumer {
         if let Err(e) = self
             .sqs
             .delete_message()
-            .queue_url(&self.config.queue_url)
+            .queue_url(&self.config.events_queue_url)
             .receipt_handle(receipt_handle)
             .send()
             .await

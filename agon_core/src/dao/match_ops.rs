@@ -78,6 +78,25 @@ impl Dao {
                 .build()
                 .map_err(|e| DaoError::Dynamo(e.to_string()))?;
             tx = tx.transact_items(TransactWriteItem::builder().put(put).build());
+
+            // Write the participant's *own* feed row synchronously so a match
+            // they're playing in shows on their feed the moment it's created.
+            // Only for already-joined players — a linked user with no pending
+            // invitation (the creator who opted to play / a self-added player).
+            // Invitees get their row when they accept; followers via async
+            // fan-out. Idempotent on the feed sort key, so the fan-out re-write
+            // is harmless.
+            let joined = player.invitation.is_none();
+            if let (Some(uid), true) = (&player.user_id, joined) {
+                let feed_item =
+                    self.feed_item(uid, &match_.id, &match_.starts_at, &match_.created_at)?;
+                let feed_put = Put::builder()
+                    .table_name(self.table())
+                    .set_item(Some(feed_item))
+                    .build()
+                    .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+                tx = tx.transact_items(TransactWriteItem::builder().put(feed_put).build());
+            }
         }
 
         match tx.send().await {
@@ -345,7 +364,7 @@ impl Dao {
     /// (`UMATCHES#<userId>`) — not used for the feed (that's fan-out), but handy
     /// for "matches involving me" style reverse lookups if needed later. Players
     /// with no user id (external) are not projected.
-    fn match_player_item(
+    pub(super) fn match_player_item(
         &self,
         match_id: &str,
         player: &MatchPlayerRecord,

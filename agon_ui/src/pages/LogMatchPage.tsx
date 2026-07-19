@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Lock } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
-import type { MatchType } from '@/lib/sports'
+import { isSetsSport, type MatchType } from '@/lib/sports'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -14,6 +14,7 @@ import {
   type TaggedPlayer,
 } from '@/components/agon/PlayerSideEditor'
 import { cn } from '@/lib/utils'
+import { toDateTimeLocal } from '@/lib/datetime'
 import { addPendingMatch } from '@/hooks/usePendingMatches'
 
 type CreateMatchInput = components['schemas']['CreateMatchInput']
@@ -22,16 +23,6 @@ type UserProfile = components['schemas']['UserProfile']
 /** Client ids used to wire invites/score to the created sides (see CreateMatchSideInput). */
 const SIDE_A = 'side-a'
 const SIDE_B = 'side-b'
-
-/** Racket sports score by sets; everything else by a single points total. */
-function isSetsSport(sport: MatchType): boolean {
-  return (
-    sport === 'tennis' ||
-    sport === 'badminton' ||
-    sport === 'squash' ||
-    sport === 'table_tennis'
-  )
-}
 
 /** One row of the sets editor: games won by each side in a single set. */
 interface SetRow {
@@ -45,19 +36,6 @@ type MatchMode = 'scheduled' | 'completed'
 /** A display name for a side: the sole player's name, else a generic fallback. */
 function sideName(players: TaggedPlayer[], fallback: string): string {
   return players.length === 1 ? players[0].name : fallback
-}
-
-/**
- * Format a `Date` for a `<input type="datetime-local">` value: local wall-clock
- * "YYYY-MM-DDTHH:mm" (no timezone, no seconds). The native control speaks this
- * dialect only; ISO strings with a `Z` won't populate it.
- */
-function toDateTimeLocal(d: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return (
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
-    `T${pad(d.getHours())}:${pad(d.getMinutes())}`
-  )
 }
 
 /** Default scheduled time: the next whole hour, at least an hour from now. */

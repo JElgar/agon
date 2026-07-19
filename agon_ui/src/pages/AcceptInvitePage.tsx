@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Swords, Users } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
@@ -22,6 +22,7 @@ type InvitationResponse = components['schemas']['InvitationResponse']
 export function AcceptInvitePage() {
   const { token } = useParams<{ token: string }>()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
 
   // We're now on the invite URL itself; the stashed copy (used to survive login)
   // has done its job. Clear it so returning to "/" later doesn't bounce back to
@@ -53,6 +54,18 @@ export function AcceptInvitePage() {
     },
     onSuccess: (_data, response) => {
       clearPendingInvite()
+      // Refresh the destination so the roster/status reflect the acceptance when
+      // the visitor lands (they may have viewed the match while still pending),
+      // plus the feed and notification badge.
+      const context = preview.data?.context as InvitationContext | undefined
+      if (context?.type === 'Match') {
+        queryClient.invalidateQueries({ queryKey: ['match', context.match_id] })
+      }
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
+      queryClient.invalidateQueries({ queryKey: ['notifications'] })
+      queryClient.invalidateQueries({
+        queryKey: ['notifications-unread-count'],
+      })
       // On accept, drop the visitor at what they just joined; on decline, send
       // them to their feed.
       if (response === 'accepted') {

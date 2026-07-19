@@ -47,6 +47,36 @@ export function myPendingInvitation(
 }
 
 /**
+ * Return a copy of `match` with the given user's invitation marked with a new
+ * status — used to optimistically reflect an accept/decline before the server
+ * confirms, so the invite banner/badge update the instant the user clicks
+ * (mirroring the feed's immediate-update behaviour). Leaves the match untouched
+ * if the user has no matching player. Immutable: builds new player objects so
+ * react-query change-detection re-renders consumers.
+ */
+export function withInvitationStatus(
+  match: Match,
+  userId: string,
+  status: Invitation['status'],
+): Match {
+  return {
+    ...match,
+    players: match.players.map((player) => {
+      if (player.member.type !== 'User') return player
+      if (player.member.user_id !== userId) return player
+      if (!player.member.invitation) return player
+      return {
+        ...player,
+        member: {
+          ...player.member,
+          invitation: { ...player.member.invitation, status },
+        },
+      }
+    }),
+  }
+}
+
+/**
  * Whether the viewer is a participant in the match — a linked player who was
  * either added ad-hoc (no invitation) or has accepted. Mirrors the server's
  * `caller_is_participant`: participants may edit the match, invite others, and

@@ -120,7 +120,7 @@ export function NotificationsPage() {
         <Bell className="mx-auto mb-3 size-8 text-muted-foreground" />
         <h2 className="mb-1 text-lg font-medium">No notifications yet</h2>
         <p className="text-sm text-muted-foreground">
-          Match invites, follows, kudos and comments show up here.
+          Match invites, follows, likes and comments show up here.
         </p>
       </div>
     )
@@ -395,8 +395,8 @@ function describe(kind: Kind): NotificationView {
         actorImage: kind.liked_by.profile_image?.image_url,
         message: (
           <>
-            <strong className="font-medium">{kind.liked_by.name}</strong> gave
-            kudos to <strong className="font-medium">{kind.match_name}</strong>.
+            <strong className="font-medium">{kind.liked_by.name}</strong> liked{' '}
+            <strong className="font-medium">{kind.match_name}</strong>.
           </>
         ),
         badgeIcon: Flame,

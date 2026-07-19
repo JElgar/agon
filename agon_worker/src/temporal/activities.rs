@@ -117,6 +117,21 @@ impl AgonActivities {
         }
     }
 
+    /// Reconcile every participant's stat contribution for a match. Idempotent.
+    /// Used by the accept saga so accepting an invite into an already-completed
+    /// match credits the newly-linked player — a `PLAYER#` link alone doesn't
+    /// touch `#META`, so the stream-driven stats handler won't fire for it.
+    #[activity]
+    pub async fn reconcile_match_stats(
+        self: std::sync::Arc<Self>,
+        _ctx: ActivityContext,
+        match_id: String,
+    ) -> Result<(), ActivityError> {
+        crate::handlers::stats::reconcile_match_stats(&self.dao, &match_id)
+            .await
+            .map_err(worker_err)
+    }
+
     /// Link an accepted invitation's roster entry (match player / team member) to
     /// the accepting user. Idempotent.
     #[activity]
@@ -145,5 +160,11 @@ fn activity_err(err: agon_core::dao::error::DaoError) -> ActivityError {
 
 /// Same, for a Meilisearch error.
 fn search_err(err: agon_core::error::SearchError) -> ActivityError {
+    ActivityError::from(err)
+}
+
+/// Same, for a worker-handler error (used by activities that reuse an inline
+/// handler's logic, e.g. stats reconciliation).
+fn worker_err(err: crate::error::WorkerError) -> ActivityError {
     ActivityError::from(err)
 }

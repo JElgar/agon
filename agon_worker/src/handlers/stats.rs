@@ -30,7 +30,17 @@ pub async fn handle(dao: &Dao, ev: &ChangeEvent) -> WorkerResult<()> {
     let (Pk::Match(match_id), Sk::Meta) = (&ev.pk, &ev.sk) else {
         return Ok(());
     };
+    reconcile_match_stats(dao, match_id).await
+}
 
+/// Reconcile every participant's per-sport stat contribution against a match's
+/// current state. Shared by the `#META` stream handler and the accept saga: a
+/// roster link (a `PLAYER#` write) doesn't touch `#META`, so accepting an invite
+/// into an already-completed match must reconcile the newly-linked player here.
+///
+/// Idempotent (a diff against the stored contribution), so re-running it — from
+/// either caller, or a redelivery — converges to the same state.
+pub async fn reconcile_match_stats(dao: &Dao, match_id: &str) -> WorkerResult<()> {
     // Re-read the current aggregate rather than trusting the stream image, so we
     // reflect the latest committed sides/players/score. A missing match means
     // there's nothing to attribute (its contributions, if any, are orphaned but

@@ -15,10 +15,15 @@ use super::records::InvitationRecord;
 pub const TYPE_INVITATION: &str = "invitation";
 
 impl Dao {
-    /// Create an invitation. Projects to GSI1 (`UINV#<inviteeUserId>`) if it
-    /// targets a known user, and to GSI2 (`TOKEN#<token>`) if it has a token.
-    /// `Conflict` if the invitation id already exists.
-    pub async fn create_invitation(&self, inv: &InvitationRecord) -> DaoResult<()> {
+    /// Build the item map for an invitation, applying the GSI projections:
+    /// GSI1 (`UINV#<inviteeUserId>`) if it targets a known user (the inbox,
+    /// sorted `<status>#<invited_at>` so it can be filtered by status), and GSI2
+    /// (`TOKEN#<token>`) if it has a token. Shared by `create_invitation` and the
+    /// accept transaction so the two never diverge on projection rules.
+    pub(super) fn invitation_item(
+        &self,
+        inv: &InvitationRecord,
+    ) -> DaoResult<super::item::Item> {
         let base = to_item(
             &Pk::Invitation(inv.id.clone()),
             &Sk::Meta,
@@ -28,7 +33,6 @@ impl Dao {
 
         let mut builder = ItemBuilder::new(base);
         if let Some(uid) = &inv.invited_user_id {
-            // Inbox: sort by status then time so a client can filter by status.
             builder = builder.gsi1(
                 format!("UINV#{uid}"),
                 format!("{}#{}", inv.status, inv.invited_at),
@@ -37,7 +41,14 @@ impl Dao {
         if let Some(token) = &inv.invite_token {
             builder = builder.gsi2(format!("TOKEN#{token}"), "#".to_string());
         }
-        let item = builder.build();
+        Ok(builder.build())
+    }
+
+    /// Create an invitation. Projects to GSI1 (`UINV#<inviteeUserId>`) if it
+    /// targets a known user, and to GSI2 (`TOKEN#<token>`) if it has a token.
+    /// `Conflict` if the invitation id already exists.
+    pub async fn create_invitation(&self, inv: &InvitationRecord) -> DaoResult<()> {
+        let item = self.invitation_item(inv)?;
 
         let result = self
             .client

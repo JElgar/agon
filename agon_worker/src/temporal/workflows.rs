@@ -135,7 +135,10 @@ impl AcceptInvitation {
         .await?;
 
         // 2. For a match invite, re-fan-out so the newly-linked participant (and
-        //    their followers) pick the match up.
+        //    their followers) pick the match up, and reconcile stats in case the
+        //    match is already completed (accepting into a finished match must
+        //    credit the player — the roster link alone doesn't re-trigger the
+        //    stream-driven stats handler, which only fires on a `#META` write).
         if let Some(match_id) = input.match_id {
             let audience = ctx
                 .start_activity(
@@ -160,6 +163,15 @@ impl AcceptInvitation {
                     )
                     .await?;
                 }
+
+                // 3. Reconcile the newly-linked player's stat contribution
+                //    (idempotent; a no-op unless the match is completed).
+                ctx.start_activity(
+                    AgonActivities::reconcile_match_stats,
+                    match_id.clone(),
+                    activity_opts(),
+                )
+                .await?;
             }
         }
 

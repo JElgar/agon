@@ -225,6 +225,11 @@ pub struct TeamMemberRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MatchRecord {
     pub id: String,
+    /// The user who created (organizes) the match. They may manage it — edit,
+    /// invite, record the result — even when not playing in it themselves.
+    /// `#[serde(default)]` for records written before this field existed.
+    #[serde(default)]
+    pub created_by_user_id: String,
     pub name: String,
     pub description: String,
     /// Sport tag, e.g. "tennis" (the API's `MatchType`, stored as a string).

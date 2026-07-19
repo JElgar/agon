@@ -40,6 +40,13 @@ pub async fn handle(dao: &Dao, ev: &ChangeEvent, now: &str) -> WorkerResult<()> 
         return notify_score(dao, ev, match_id, submission_id, now).await;
     }
 
+    // Invitations, like score submissions, react to both INSERT (the invite was
+    // sent → notify the invitee) and MODIFY (a `pending → accepted` transition →
+    // notify the inviter). Handle before the INSERT-only guard below.
+    if let (Pk::Invitation(invitation_id), Sk::Meta) = (&ev.pk, &ev.sk) {
+        return notify_invitation_event(dao, ev, invitation_id, now).await;
+    }
+
     // Every other notification is generated only on the creation of the edge.
     if ev.kind != ChangeKind::Insert {
         return Ok(());
@@ -58,13 +65,79 @@ pub async fn handle(dao: &Dao, ev: &ChangeEvent, now: &str) -> WorkerResult<()> 
         (Pk::Match(match_id), Sk::Comment(comment_id)) => {
             notify_comment(dao, match_id, comment_id).await
         }
-        // A new invitation was created: notify the invited user (if it's a
-        // user-kind invite — token/external invites have no Agon user to notify).
-        (Pk::Invitation(invitation_id), Sk::Meta) => {
-            notify_invitation(dao, ev, invitation_id, now).await
-        }
         _ => Ok(()),
     }
+}
+
+/// Dispatch an invitation change event. INSERT (invite sent) notifies the
+/// invitee; MODIFY notifies the inviter when the invitation transitions into
+/// `accepted`. A decline, a revoke (REMOVE), or any other modify is ignored.
+async fn notify_invitation_event(
+    dao: &Dao,
+    ev: &ChangeEvent,
+    invitation_id: &str,
+    now: &str,
+) -> WorkerResult<()> {
+    match ev.kind {
+        ChangeKind::Insert => notify_invitation(dao, ev, invitation_id, now).await,
+        ChangeKind::Modify => notify_invitation_accepted(dao, ev, invitation_id, now).await,
+        ChangeKind::Remove => Ok(()),
+    }
+}
+
+/// An invitation transitioned into "accepted": notify the inviter that their
+/// invitee joined. Fires only on the `!accepted → accepted` transition, so a
+/// later re-modify of an already-accepted invitation is a no-op (idempotent
+/// alongside the deterministic notification id).
+async fn notify_invitation_accepted(
+    dao: &Dao,
+    ev: &ChangeEvent,
+    invitation_id: &str,
+    now: &str,
+) -> WorkerResult<()> {
+    let Some(inv) = ev.new_record::<InvitationRecord>() else {
+        return Ok(());
+    };
+    if inv.status != "accepted" {
+        return Ok(());
+    }
+    // Only fire on the transition into "accepted" — not on a modify of an
+    // already-accepted invitation (e.g. an unrelated field rewrite / redelivery).
+    let was_accepted = ev
+        .old_record::<InvitationRecord>()
+        .map(|old| old.status == "accepted")
+        .unwrap_or(false);
+    if was_accepted {
+        return Ok(());
+    }
+
+    // The accepter: the invited user for a user-kind invite. Token/external
+    // invites carry no linked user id at accept time (the external member is
+    // reconciled to an account separately), so there's no coherent actor to
+    // attribute — skip until that linking exists.
+    let Some(accepter_user_id) = inv.invited_user_id.clone() else {
+        return Ok(());
+    };
+    // Never notify the inviter about accepting their own invite (degenerate
+    // self-invite).
+    if accepter_user_id == inv.invited_by_user_id {
+        return Ok(());
+    }
+
+    let notif = NotificationRecord {
+        // Deterministic id → idempotent under redelivery (one row per invite).
+        id: format!("notif-invitationaccepted-{invitation_id}"),
+        user_id: inv.invited_by_user_id.clone(),
+        is_read: false,
+        created_at: now.to_string(),
+        kind: NotificationKindRecord::InvitationAccepted {
+            actor_user_id: accepter_user_id,
+            invitation_id: invitation_id.to_string(),
+            context: inv.context.clone(),
+        },
+    };
+    dao.create_notification(&notif).await?;
+    Ok(())
 }
 
 async fn notify_invitation(

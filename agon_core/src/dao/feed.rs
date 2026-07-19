@@ -41,24 +41,7 @@ impl Dao {
         for chunk in viewer_ids.chunks(BATCH_WRITE_MAX) {
             let mut requests = Vec::with_capacity(chunk.len());
             for viewer_id in chunk {
-                let record = FeedItemRecord {
-                    viewer_id: viewer_id.clone(),
-                    ref_type: "match".into(),
-                    ref_id: match_id.into(),
-                    starts_at: starts_at.into(),
-                    created_at: now.into(),
-                };
-                let item = ItemBuilder::new(to_item(
-                    &Pk::UserFeed(viewer_id.clone()),
-                    &Sk::Feed {
-                        starts_at: starts_at.into(),
-                        match_id: match_id.into(),
-                    },
-                    TYPE_FEED_ITEM,
-                    &record,
-                )?)
-                .build();
-
+                let item = self.feed_item(viewer_id, match_id, starts_at, now)?;
                 let put = PutRequest::builder()
                     .set_item(Some(item))
                     .build()
@@ -69,6 +52,36 @@ impl Dao {
             self.flush_batch_write(requests).await?;
         }
         Ok(())
+    }
+
+    /// Build one viewer's feed-entry item for a match. Idempotent on the sort key
+    /// `<starts_at>#<matchId>`, so writing it again (via fan-out) overwrites the
+    /// identical row. Shared with the accept / create transactions, which write a
+    /// participant's *own* row synchronously.
+    pub(super) fn feed_item(
+        &self,
+        viewer_id: &str,
+        match_id: &str,
+        starts_at: &str,
+        now: &str,
+    ) -> DaoResult<super::item::Item> {
+        let record = FeedItemRecord {
+            viewer_id: viewer_id.into(),
+            ref_type: "match".into(),
+            ref_id: match_id.into(),
+            starts_at: starts_at.into(),
+            created_at: now.into(),
+        };
+        Ok(ItemBuilder::new(to_item(
+            &Pk::UserFeed(viewer_id.into()),
+            &Sk::Feed {
+                starts_at: starts_at.into(),
+                match_id: match_id.into(),
+            },
+            TYPE_FEED_ITEM,
+            &record,
+        )?)
+        .build())
     }
 
     /// List a viewer's feed newest-first (by match `starts_at`), paginated.

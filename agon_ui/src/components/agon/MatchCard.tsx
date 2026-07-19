@@ -1,6 +1,7 @@
 import { Flame, MailOpen, MessageCircle, Share2 } from 'lucide-react'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
+import { useToggleLike } from '@/hooks/useToggleLike'
 import { Avatar } from './Avatar'
 import { SportBadge } from './SportBadge'
 import { StatusBadge, matchBadgeStatus } from './StatusBadge'
@@ -68,7 +69,8 @@ export function MatchCard({
   const aWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
   const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
 
-  const { like_count, comment_count } = match.social
+  const { like_count, comment_count, i_liked } = match.social
+  const toggleLike = useToggleLike(match)
 
   return (
     <div
@@ -158,16 +160,24 @@ export function MatchCard({
       <div className="flex items-center gap-4 border-t px-3.5 py-2 text-muted-foreground">
         <button
           type="button"
-          className="flex items-center gap-1.5 text-xs transition-colors hover:text-primary"
+          onClick={() => toggleLike.mutate(!i_liked)}
+          aria-pressed={i_liked}
+          aria-label={i_liked ? 'Unlike match' : 'Like match'}
+          className={cn(
+            'flex items-center gap-1.5 text-xs transition-colors hover:text-primary',
+            i_liked && 'text-primary',
+          )}
         >
-          <Flame className="size-3.5" /> {like_count} kudos
+          <Flame className={cn('size-3.5', i_liked && 'fill-current')} />{' '}
+          {like_count} {like_count === 1 ? 'like' : 'likes'}
         </button>
         <button
           type="button"
           onClick={onOpen}
           className="flex items-center gap-1.5 text-xs transition-colors hover:text-primary"
         >
-          <MessageCircle className="size-3.5" /> {comment_count} comments
+          <MessageCircle className="size-3.5" /> {comment_count}{' '}
+          {comment_count === 1 ? 'comment' : 'comments'}
         </button>
         <button
           type="button"

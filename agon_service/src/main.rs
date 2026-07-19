@@ -1698,6 +1698,7 @@ impl Api {
 
         let match_record = dao::records::MatchRecord {
             id: match_id.clone(),
+            created_by_user_id: uid.clone(),
             name: input.name,
             description: input.description,
             match_type: match_type_tag(&input.match_type).to_string(),
@@ -1801,8 +1802,8 @@ impl Api {
             }
         };
 
-        // Only a participant may edit the match.
-        if !caller_is_participant(&agg.players, &uid) {
+        // The creator (organizer) or a participant may edit the match.
+        if !caller_can_manage_match(&agg, &uid) {
             return Ok(UpdateMatchResponse::Forbidden(PlainText(
                 "only a participant can edit this match".into(),
             )));
@@ -2738,8 +2739,8 @@ impl Api {
             }
         };
 
-        // Only a participant may invite others.
-        if !caller_is_participant(&agg.players, &uid) {
+        // The creator (organizer) or a participant may invite others.
+        if !caller_can_manage_match(&agg, &uid) {
             return Ok(AddInvitationsResponse::Forbidden(PlainText(
                 "only a participant can invite people to this match".into(),
             )));
@@ -3129,28 +3130,45 @@ impl Api {
             )));
         }
 
-        let status = match input.0.response {
-            membership::InvitationResponse::Accepted => "accepted",
-            membership::InvitationResponse::Declined => "declined",
-        };
         let responded_at = now_iso();
-        dao.respond_to_invitation(
-            &invitation_id,
-            status,
-            &responded_at,
-            &rec.invited_at,
-            true, // has a user inbox (GSI1) to realign
-        )
-        .await
-        .map_err(|e| match e {
-            dao::DaoError::NotFound(_) => Error::from_string("not found", StatusCode::NOT_FOUND),
-            other => dao_internal(other),
-        })?;
+        let status = match input.0.response {
+            // Accept synchronously and atomically: bind the accepter to the
+            // invitation, link the roster entry, and (match) write the accepter's
+            // own feed row so the game is on their feed immediately. Follower
+            // fan-out + notification happen async off the resulting stream event.
+            membership::InvitationResponse::Accepted => {
+                dao.accept_invitation_tx(&invitation_id, &uid, &responded_at, &responded_at)
+                    .await
+                    .map_err(|e| match e {
+                        dao::DaoError::NotFound(_) => {
+                            Error::from_string("not found", StatusCode::NOT_FOUND)
+                        }
+                        other => dao_internal(other),
+                    })?;
+                "accepted"
+            }
+            membership::InvitationResponse::Declined => {
+                dao.respond_to_invitation(
+                    &invitation_id,
+                    "declined",
+                    &responded_at,
+                    &rec.invited_at,
+                    true, // has a user inbox (GSI1) to realign
+                )
+                .await
+                .map_err(|e| match e {
+                    dao::DaoError::NotFound(_) => {
+                        Error::from_string("not found", StatusCode::NOT_FOUND)
+                    }
+                    other => dao_internal(other),
+                })?;
+                "declined"
+            }
+        };
 
         let mut invitation = invitation_from_record(&rec);
         invitation.status = invitation_status_from_str(status);
         invitation.responded_at = Some(mapping::parse_ts(&responded_at));
-        // TODO: on accept, the async worker links/rosters the member + fans out.
         Ok(RespondToInvitationResponse::Invitation(Json(invitation)))
     }
 
@@ -3158,11 +3176,17 @@ impl Api {
     async fn respond_to_invitation_by_token(
         &self,
         Data(dao): Data<&dao::Dao>,
-        AuthSchema(_jwt_data): AuthSchema,
+        AuthSchema(jwt_data): AuthSchema,
         input: Json<RespondByTokenInput>,
     ) -> Result<RespondByTokenResponse> {
         info!("Responding to invitation by token: {:?}", input.response);
         let input = input.0;
+
+        // The caller (holder of the invite link) becomes the accepting account.
+        // Resolving their uid is what lets a bare-token invite be linked to a
+        // real user — without it the acceptance can't be attributed and never
+        // reaches the roster / feed / stats.
+        let uid = self.require_uid(dao, &jwt_data).await?;
 
         let rec = match dao
             .get_invitation_by_token(&input.invite_token)
@@ -3177,25 +3201,38 @@ impl Api {
             }
         };
 
-        let status = match input.response {
-            membership::InvitationResponse::Accepted => "accepted",
-            membership::InvitationResponse::Declined => "declined",
-        };
         let responded_at = now_iso();
-        dao.respond_to_invitation(&rec.id, status, &responded_at, &rec.invited_at, false)
-            .await
-            .map_err(|e| match e {
-                dao::DaoError::NotFound(_) => {
-                    Error::from_string("not found", StatusCode::NOT_FOUND)
-                }
-                other => dao_internal(other),
-            })?;
+        let status = match input.response {
+            // Accept synchronously: bind this account onto the (previously
+            // userless) token invitation, link the roster entry, and write the
+            // accepter's own feed row. Follower fan-out follows async.
+            membership::InvitationResponse::Accepted => {
+                dao.accept_invitation_tx(&rec.id, &uid, &responded_at, &responded_at)
+                    .await
+                    .map_err(|e| match e {
+                        dao::DaoError::NotFound(_) => {
+                            Error::from_string("not found", StatusCode::NOT_FOUND)
+                        }
+                        other => dao_internal(other),
+                    })?;
+                "accepted"
+            }
+            membership::InvitationResponse::Declined => {
+                dao.respond_to_invitation(&rec.id, "declined", &responded_at, &rec.invited_at, false)
+                    .await
+                    .map_err(|e| match e {
+                        dao::DaoError::NotFound(_) => {
+                            Error::from_string("not found", StatusCode::NOT_FOUND)
+                        }
+                        other => dao_internal(other),
+                    })?;
+                "declined"
+            }
+        };
 
         let mut invitation = invitation_from_record(&rec);
         invitation.status = invitation_status_from_str(status);
         invitation.responded_at = Some(mapping::parse_ts(&responded_at));
-        // TODO: on accept, the async worker links the external member to the
-        // accepting account (external→user) and performs roster/fan-out.
         Ok(RespondByTokenResponse::Invitation(Json(invitation)))
     }
 
@@ -3452,6 +3489,13 @@ fn caller_is_participant(players: &[dao::records::MatchPlayerRecord], uid: &str)
                 Some(inv) => inv.status == "accepted",
             }
     })
+}
+
+/// Whether the caller may manage the match (edit, invite, record the result):
+/// the creator who organized it, or any participant. The creator can manage a
+/// match they set up between other people without playing in it themselves.
+fn caller_can_manage_match(agg: &dao::match_ops::MatchAggregate, uid: &str) -> bool {
+    agg.match_.created_by_user_id == uid || caller_is_participant(&agg.players, uid)
 }
 
 fn build_invited_player(

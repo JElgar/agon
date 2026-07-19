@@ -194,7 +194,7 @@ impl Dao {
     /// Build a team-member item, projecting members with a linked user into GSI1
     /// (`UTEAMS#<userId>`) so the user can list their teams. External-only
     /// members (no `user_id`) are not projected — they don't have a "my teams".
-    fn team_member_item(
+    pub(super) fn team_member_item(
         &self,
         team_id: &str,
         member: &TeamMemberRecord,

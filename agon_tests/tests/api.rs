@@ -200,6 +200,56 @@ fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::Create
     }
 }
 
+/// Invite one or more Agon users onto a side.
+fn invite_users(side_client_id: &str, ids: &[&str]) -> models::CreateMatchInviteInput {
+    models::CreateMatchInviteInput {
+        side_client_id: Some(side_client_id.to_string()),
+        invited_user_ids: ids.iter().map(|id| id.to_string()).collect(),
+        invited_external_names: vec![],
+    }
+}
+
+/// Invite one or more external (unaccounted) people by name onto a side. Each
+/// gets a minted invite token, surfaced on the created match's external player —
+/// the credential the by-token accept flow (invite link) uses.
+fn invite_externals(side_client_id: &str, names: &[&str]) -> models::CreateMatchInviteInput {
+    models::CreateMatchInviteInput {
+        side_client_id: Some(side_client_id.to_string()),
+        invited_user_ids: vec![],
+        invited_external_names: names.iter().map(|n| n.to_string()).collect(),
+    }
+}
+
+/// A completed (already-played) tennis match: the creator plays on side "a" and
+/// submits a final score (creator wins), with `invites` placing the opponent(s)
+/// on side "b". A past `starts_at` + a score => status Completed, so accepting an
+/// invitation into it credits the accepter's stats (a scheduled match wouldn't).
+fn completed_match(invites: Vec<models::CreateMatchInviteInput>) -> models::CreateMatchInput {
+    models::CreateMatchInput {
+        name: "Completed Match".to_string(),
+        description: "already played".to_string(),
+        match_type: models::MatchType::Tennis,
+        starts_at: iso_offset_hours(-2),
+        location: None,
+        sides: vec![
+            models::CreateMatchSideInput {
+                client_id: "a".to_string(),
+                team_id: None,
+                name: Some("Side A".to_string()),
+            },
+            models::CreateMatchSideInput {
+                client_id: "b".to_string(),
+                team_id: None,
+                name: Some("Side B".to_string()),
+            },
+        ],
+        invites,
+        creator_side_client_id: Some("a".to_string()),
+        score: Some(Box::new(simple_score("a", "b", 6, 3))),
+        winner_side_id: Some("a".to_string()),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Users
 // ---------------------------------------------------------------------------
@@ -630,6 +680,114 @@ async fn match_invitation_appears_in_inbox_and_can_be_accepted() {
         responded.status,
         models::InvitationStatus::Accepted
     ));
+}
+
+/// End-to-end for a *normal* (user-addressed) invite acceptance into an
+/// already-completed match: after the invitee accepts, the match must land on
+/// their feed and their stats must credit the played match.
+///
+/// - Feed row is written synchronously inside the accept transaction, so it's
+///   present essentially immediately (polled anyway to avoid read races).
+/// - Stats are reconciled asynchronously by the accept saga (a roster link
+///   doesn't touch match `#META`, so only the saga credits the newly-linked
+///   player) — hence the eventual assertion.
+#[tokio::test]
+async fn accepting_a_normal_invite_updates_feed_and_stats() {
+    let (owner_config, _owner) = new_user().await;
+    let (invitee_config, invitee) = new_user().await;
+
+    // A completed match with the invitee invited (by user id) onto the losing
+    // side "b". Until they accept, they didn't "play", so no stat is credited.
+    let created = matches_post(
+        &owner_config,
+        completed_match(vec![invite_users("b", &[&invitee.profile.id])]),
+    )
+    .await
+    .expect("create match");
+    assert!(matches!(created.status, models::MatchStatus::Completed));
+
+    // Find the invitation in the invitee's inbox and accept it.
+    let inbox = users_me_invitations_get(&invitee_config, None, None, None)
+        .await
+        .expect("inbox");
+    let detail = inbox
+        .items
+        .iter()
+        .find(|i| matches!(&*i.context,
+            models::InvitationContext::Match(ctx) if ctx.match_id == created.id))
+        .expect("match invitation in inbox");
+    let responded = invitations_invitation_id_respond_post(
+        &invitee_config,
+        &detail.invitation.id,
+        models::RespondToInvitationInput {
+            response: models::InvitationResponse::Accepted,
+            side_id: None,
+        },
+    )
+    .await
+    .expect("accept invitation");
+    assert!(matches!(responded.status, models::InvitationStatus::Accepted));
+
+    // The match is now on the accepter's feed...
+    assert_match_reaches_feed(&invitee_config, &created.id, "invitee's feed").await;
+    // ...and their stats credit the completed match they played in (they were on
+    // the losing side, so one played, zero wins).
+    assert_matches_played_reaches(&invitee_config, models::MatchType::Tennis, 1, "invitee").await;
+    let stats = users_me_get(&invitee_config)
+        .await
+        .expect("get me")
+        .profile
+        .stats;
+    let tennis = stats
+        .iter()
+        .find(|s| s.match_type == models::MatchType::Tennis)
+        .expect("a tennis stat row");
+    assert_eq!(tennis.win_percentage, 0.0, "invitee was on the losing side");
+}
+
+/// End-to-end for the *invite-link* (bearer token) acceptance flow into an
+/// already-completed match: an external invitee is created with a minted token,
+/// a real account then accepts by token, and afterwards the match is on that
+/// account's feed and their stats credit the played match.
+#[tokio::test]
+async fn accepting_a_link_invite_updates_feed_and_stats() {
+    let (owner_config, _owner) = new_user().await;
+
+    // A completed match with an EXTERNAL invitee (by name) on side "b". The
+    // external player carries a minted invite token — the link credential.
+    let created = matches_post(
+        &owner_config,
+        completed_match(vec![invite_externals("b", &["Ringer Rita"])]),
+    )
+    .await
+    .expect("create match");
+    let token = external_invite_token(&created);
+
+    // A brand-new real account accepts the invitation by its token. This binds
+    // the account onto the previously-userless invitation and links the roster
+    // entry, writing their feed row synchronously.
+    let (accepter_config, _accepter) = new_user().await;
+    let responded = invitations_respond_by_token_post(
+        &accepter_config,
+        models::RespondByTokenInput {
+            invite_token: token,
+            response: models::InvitationResponse::Accepted,
+            side_id: None,
+        },
+    )
+    .await
+    .expect("accept by token");
+    assert!(matches!(responded.status, models::InvitationStatus::Accepted));
+
+    // The match is on the accepter's feed and their stats credit the match.
+    assert_match_reaches_feed(&accepter_config, &created.id, "token-accepter's feed").await;
+    assert_matches_played_reaches(
+        &accepter_config,
+        models::MatchType::Tennis,
+        1,
+        "token-accepter",
+    )
+    .await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1774,6 +1932,51 @@ async fn assert_match_absent_from_feed(config: &Configuration, match_id: &str, w
         !feed_contains(config, match_id).await,
         "match {match_id} should NOT be in {whose}"
     );
+}
+
+/// The caller's own `matches_played` for a sport (0 if they have no stat row for
+/// it yet). Reads `/users/me`, whose profile carries the per-sport stats.
+async fn my_matches_played(config: &Configuration, sport: models::MatchType) -> i32 {
+    let me = users_me_get(config).await.expect("get me");
+    me.profile
+        .stats
+        .iter()
+        .find(|s| s.match_type == sport)
+        .map(|s| s.matches_played)
+        .unwrap_or(0)
+}
+
+/// Poll the caller's own stats until they've played `expected` matches of a
+/// sport. Stats are reconciled asynchronously by the accept saga (a roster link
+/// doesn't touch match `#META`, so the stream-driven stats handler doesn't fire —
+/// the saga reconciles the newly-linked player explicitly), so this is eventual.
+async fn assert_matches_played_reaches(
+    config: &Configuration,
+    sport: models::MatchType,
+    expected: i32,
+    whose: &str,
+) {
+    eventually(&format!("{whose} to have played {expected} match(es)"), || async {
+        (my_matches_played(config, sport).await == expected).then_some(())
+    })
+    .await;
+}
+
+/// The bearer token minted for an external (unaccounted) invitee, pulled off a
+/// created match's players. Panics if no external player carries a token invite —
+/// the by-token accept flow depends on this credential existing.
+fn external_invite_token(match_: &models::Match) -> String {
+    match_
+        .players
+        .iter()
+        .find_map(|p| match &*p.member {
+            models::Member::External(ext) => ext.invitation.as_ref().and_then(|inv| match &*inv.kind {
+                models::InvitationKind::Token(t) => Some(t.invite_token.clone()),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .expect("an external player with a token invitation")
 }
 
 // ---------------------------------------------------------------------------

@@ -98,6 +98,11 @@ export function MatchCard({
               <span className={cn(bWon && 'font-medium')}>{nameB}</span>
             </p>
             <p className="mt-0.5 text-xs text-muted-foreground">{match.name}</p>
+            {match.description.trim() && (
+              <p className="mt-1 line-clamp-2 text-xs text-foreground/90">
+                {match.description}
+              </p>
+            )}
           </div>
         </div>
         <SportBadge sport={match.match_type} />

@@ -127,7 +127,14 @@ function MatchDetail({
       ) : (
         <div className="rounded-xl border bg-card p-4">
           <div className="flex items-start justify-between gap-2">
-            <p className="text-sm text-muted-foreground">{match.name}</p>
+            <div className="min-w-0">
+              <p className="text-sm text-muted-foreground">{match.name}</p>
+              {match.description.trim() && (
+                <p className="mt-1 whitespace-pre-line text-sm">
+                  {match.description}
+                </p>
+              )}
+            </div>
             {canEdit && !cancelled && (
               <Button
                 variant="ghost"

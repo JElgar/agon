@@ -1454,6 +1454,19 @@ fn simple_score(side_a: &str, side_b: &str, a: i32, b: i32) -> models::Score {
     }))
 }
 
+/// Extract `(side_id, points)` pairs from a simple score, for asserting on the
+/// value of a `confirmed_score`/`pending_score`/submission's score.
+fn simple_score_points(score: &models::Score) -> Vec<(String, i32)> {
+    match score {
+        models::Score::Simple(s) => s
+            .entries
+            .iter()
+            .map(|e| (e.side_id.clone(), e.points))
+            .collect(),
+        models::Score::Sets(_) => panic!("expected a simple score"),
+    }
+}
+
 #[tokio::test]
 async fn scoring_a_match_completes_it_and_records_a_pending_submission() {
     let (config, _owner) = new_user().await;
@@ -1612,6 +1625,198 @@ async fn rejecting_a_score_and_resubmitting_requires_approval_again() {
         .confirmed_score
         .expect("resubmitted score is confirmed after opponent approves");
     assert_eq!(confirmed.winner_side_id.as_deref(), Some(side_a.as_str()));
+}
+
+/// Sets up a match with a confirmed score (owner on side "a", opponent on side
+/// "b", 6-3 to the owner), for tests that edit an already-confirmed score.
+/// Returns (owner_config, owner, opponent_config, opponent, match, side_a, side_b).
+async fn match_with_a_confirmed_score() -> (
+    Configuration,
+    models::User,
+    Configuration,
+    models::User,
+    models::Match,
+    String,
+    String,
+) {
+    let (owner_config, owner) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+
+    let mut input = create_match_input(&opponent.profile.id);
+    input.invites = vec![models::CreateMatchInviteInput {
+        side_client_id: Some("b".to_string()),
+        invited_user_ids: vec![opponent.profile.id.clone()],
+        invited_external_names: vec![],
+    }];
+    input.starts_at = iso_offset_hours(-2);
+    input.creator_side_client_id = Some("a".to_string());
+    input.score = Some(Box::new(simple_score("a", "b", 6, 3)));
+    input.winner_side_id = Some("a".to_string());
+
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+    let first_submission_id = created
+        .pending_score
+        .as_ref()
+        .expect("pending at create time")
+        .submission_id
+        .clone();
+
+    matches_match_id_score_submissions_submission_id_respond_post(
+        &opponent_config,
+        &created.id,
+        &first_submission_id,
+        models::RespondToScoreInput {
+            response: models::ScoreResponseKind::Confirm,
+        },
+    )
+    .await
+    .expect("confirm original score");
+
+    let confirmed = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match");
+    assert!(confirmed.confirmed_score.is_some(), "setup: score confirmed");
+
+    (
+        owner_config,
+        owner,
+        opponent_config,
+        opponent,
+        confirmed,
+        side_a,
+        side_b,
+    )
+}
+
+#[tokio::test]
+async fn editing_a_confirmed_score_stays_pending_until_the_other_side_confirms() {
+    let (owner_config, _owner, opponent_config, _opponent, created, side_a, side_b) =
+        match_with_a_confirmed_score().await;
+
+    // The owner edits the match with a new, different score.
+    let edited = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 4))),
+            winner_side_id: Some(side_a.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("patch edited score");
+
+    // The old confirmed score is untouched; the new one shows up as pending.
+    let still_confirmed = edited
+        .confirmed_score
+        .expect("confirmed score is unaffected by an unapproved edit");
+    assert_eq!(
+        simple_score_points(&still_confirmed.score),
+        vec![(side_a.clone(), 6), (side_b.clone(), 3)],
+        "the previously-confirmed score must not change until the edit is approved"
+    );
+    let pending = edited
+        .pending_score
+        .expect("the edit is pending, not applied immediately");
+    assert_eq!(
+        simple_score_points(&pending.score),
+        vec![(side_a.clone(), 6), (side_b.clone(), 4)]
+    );
+
+    // History now has the confirmed original plus the new pending edit.
+    let submissions = matches_match_id_score_submissions_get(&owner_config, &created.id)
+        .await
+        .expect("list submissions");
+    assert_eq!(submissions.len(), 2);
+
+    // The opponent confirms the edit, promoting it to the confirmed score.
+    matches_match_id_score_submissions_submission_id_respond_post(
+        &opponent_config,
+        &created.id,
+        &pending.submission_id,
+        models::RespondToScoreInput {
+            response: models::ScoreResponseKind::Confirm,
+        },
+    )
+    .await
+    .expect("confirm edited score");
+
+    let final_match = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match");
+    let final_confirmed = final_match
+        .confirmed_score
+        .expect("edited score is confirmed");
+    assert_eq!(
+        simple_score_points(&final_confirmed.score),
+        vec![(side_a.clone(), 6), (side_b.clone(), 4)]
+    );
+    assert!(final_match.pending_score.is_none());
+}
+
+#[tokio::test]
+async fn disputing_an_edit_to_a_confirmed_score_leaves_the_original_confirmed_score_intact() {
+    let (owner_config, _owner, opponent_config, _opponent, created, side_a, side_b) =
+        match_with_a_confirmed_score().await;
+
+    let edited = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 4))),
+            winner_side_id: Some(side_a.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("patch edited score");
+    let pending = edited.pending_score.expect("the edit is pending");
+
+    // The opponent disputes the edit.
+    matches_match_id_score_submissions_submission_id_respond_post(
+        &opponent_config,
+        &created.id,
+        &pending.submission_id,
+        models::RespondToScoreInput {
+            response: models::ScoreResponseKind::Dispute,
+        },
+    )
+    .await
+    .expect("dispute edited score");
+
+    let after_dispute = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match");
+    assert!(
+        after_dispute.pending_score.is_none(),
+        "a disputed edit clears the pending score"
+    );
+    let confirmed = after_dispute
+        .confirmed_score
+        .expect("the original confirmed score still stands");
+    assert_eq!(
+        simple_score_points(&confirmed.score),
+        vec![(side_a.clone(), 6), (side_b.clone(), 3)],
+        "a disputed edit must not change the previously-confirmed score"
+    );
+
+    // History has the original confirmed submission and the disputed edit.
+    let submissions = matches_match_id_score_submissions_get(&owner_config, &created.id)
+        .await
+        .expect("list submissions");
+    assert_eq!(submissions.len(), 2);
+    let disputed_submission = submissions
+        .iter()
+        .find(|s| s.id == pending.submission_id)
+        .expect("edited submission present in history");
+    assert!(matches!(
+        disputed_submission.status,
+        models::ScoreSubmissionStatus::Disputed
+    ));
 }
 
 #[tokio::test]

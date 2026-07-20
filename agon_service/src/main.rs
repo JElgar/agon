@@ -1873,8 +1873,15 @@ impl Api {
         // A supplied score creates a new submission only when it differs from
         // the current confirmed score. For a not-yet-played match, a new score
         // also completes it.
-        let mut confirmed_score: Option<dao::records::ConfirmedScoreRecord> = None;
         let mut status_override: Option<&str> = input.status.as_ref().map(match_status_str);
+
+        // A score submitted here is a PENDING submission, not a confirmed one:
+        // it awaits the other side(s)' confirmation via
+        // `POST /matches/:id/score-submissions/:sid/respond`, exactly like a
+        // create-time score (mirrors `create_match`/`respond_to_score_submission`).
+        // This is what makes a resubmission after a dispute require fresh
+        // approval instead of silently overriding the rejection.
+        let mut pending_score: Option<dao::records::PendingScoreRecord> = None;
 
         if let Some(score) = &input.score {
             // Validate every scored side exists on the match.
@@ -1897,25 +1904,62 @@ impl Api {
                 .unwrap_or(true);
 
             if differs {
-                // Record a score submission (history) attributed to the caller.
+                // The submission is attributed to the caller's own player/side
+                // (needed so their side can be pre-confirmed, same as at
+                // create time), so the caller must be an assigned participant.
+                let caller_player = agg
+                    .players
+                    .iter()
+                    .find(|p| p.user_id.as_deref() == Some(uid.as_str()));
+                let (caller_player_id, caller_side_id) = match caller_player.and_then(|p| {
+                    p.side_id
+                        .as_ref()
+                        .map(|sid| (p.player_id.clone(), sid.clone()))
+                }) {
+                    Some(pair) => pair,
+                    None => {
+                        return Ok(UpdateMatchResponse::ValidationError(PlainText(
+                            "a score can only be submitted by a participant assigned \
+                             to a side"
+                                .into(),
+                        )));
+                    }
+                };
+
+                let submission_id = new_id();
                 let submitted_at = now_iso();
-                let submission = dao::records::ScoreSubmissionRecord {
-                    submission_id: new_id(),
+                let confirmation = dao::records::ScoreConfirmationRecord {
+                    side_id: caller_side_id.clone(),
+                    confirmed_by_player_id: caller_player_id.clone(),
+                    confirmed_at: submitted_at.clone(),
+                };
+                let pending = dao::records::PendingScoreRecord {
+                    submission_id: submission_id.clone(),
                     score: new_record.clone(),
                     winner_side_id: input.winner_side_id.clone(),
-                    status: String::from("confirmed"),
-                    submitted_by_player_id: uid.clone(),
-                    submitted_at,
-                    responses: Vec::new(),
+                    confirmations: vec![confirmation],
+                };
+                let submission = dao::records::ScoreSubmissionRecord {
+                    submission_id,
+                    score: new_record,
+                    winner_side_id: input.winner_side_id.clone(),
+                    status: String::from("pending"),
+                    submitted_by_player_id: caller_player_id.clone(),
+                    submitted_at: submitted_at.clone(),
+                    // Seed the submitter's side as confirmed, so once the other
+                    // side(s) confirm, the submission becomes fully confirmed.
+                    responses: vec![dao::records::ScoreResponseRecord {
+                        side_id: caller_side_id,
+                        responded_by_player_id: caller_player_id,
+                        response: String::from("confirm"),
+                        responded_at: submitted_at,
+                    }],
                 };
                 dao.put_score_submission(&match_id, &submission)
                     .await
                     .map_err(dao_internal)?;
 
-                confirmed_score = Some(dao::records::ConfirmedScoreRecord {
-                    score: new_record,
-                    winner_side_id: input.winner_side_id.clone(),
-                });
+                pending_score = Some(pending);
 
                 // A not-yet-played match becomes Completed when first scored.
                 if status_override.is_none() && agg.match_.status != "completed" {
@@ -1942,8 +1986,8 @@ impl Api {
                 .starts_at
                 .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
                 .as_deref(),
-            confirmed_score,
             None,
+            pending_score.map(Some),
             header_photo_urls,
         )
         .await

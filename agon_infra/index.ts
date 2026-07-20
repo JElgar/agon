@@ -440,6 +440,25 @@ new aws.s3.BucketPublicAccessBlock("agon-assets", {
 	restrictPublicBuckets: true,
 });
 
+// CORS: browsers upload the bytes directly to S3 via the presigned PUT, which is
+// a cross-origin request from the app. Without this the preflight/PUT is blocked
+// with "Access-Control-Allow-Origin missing". Mirrors the service's own CORS
+// allowlist (local Vite + the get-agon.com apps). Reads aren't listed because
+// objects are served through CloudFront, not the S3 origin, and only GET/PUT are
+// used. `ExposeHeaders: ETag` lets the client read the upload response.
+new aws.s3.BucketCorsConfigurationV2("agon-assets", {
+	bucket: assetsBucket.id,
+	corsRules: [
+		{
+			allowedMethods: ["PUT", "GET", "HEAD"],
+			allowedOrigins: ["http://localhost:5173", "https://*.get-agon.com"],
+			allowedHeaders: ["*"],
+			exposeHeaders: ["ETag"],
+			maxAgeSeconds: 3000,
+		},
+	],
+});
+
 // Emit S3 events to EventBridge; the asset pipeline (S3 → EventBridge → SQS →
 // worker) uses "object created" to flip a Pending asset to Uploaded and record
 // its serving URL. The EventBridge rule + queue are defined further below.

@@ -24,6 +24,11 @@ pub struct UserMember {
     /// The invitation to this context. Pending until the user accepts (which
     /// they can do in-app). None only if added without an invite.
     pub invitation: Option<Invitation>,
+    /// The linked account's display name, hydrated at read time from the
+    /// user profile. Empty if the account could no longer be found.
+    pub name: String,
+    /// The linked account's profile image, if they've set one.
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Object)]

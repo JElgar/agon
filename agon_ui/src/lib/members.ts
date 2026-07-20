@@ -96,16 +96,16 @@ export function isParticipant(
 }
 
 /**
- * Display name for a match player. A linked Agon user's name is resolved from
- * their account (not present on the member itself yet), so until profiles are
- * hydrated we fall back to a short id; an external player carries a display name
- * directly.
+ * Display name for a match player: a linked Agon user's name is hydrated onto
+ * the member server-side, an external player carries a display name directly.
  */
 export function memberName(member: Member): string {
-  if (member.type === 'External') return member.display_name
-  // UserMember has only user_id here; the display name comes from the account.
-  // Callers that have the resolved profile should pass its name instead.
-  return 'Player'
+  return member.type === 'External' ? member.display_name : member.name
+}
+
+/** Avatar image for a match player, if the linked Agon user has one set. */
+export function memberAvatarUrl(member: Member): string | undefined {
+  return member.type === 'User' ? member.avatar_url : undefined
 }
 
 /** Initials for an avatar, from a display name (e.g. "Sofia Lindqvist" → "SL"). */

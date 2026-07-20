@@ -368,7 +368,9 @@ pub fn invitation_from_embedded(rec: &EmbeddedInvitationRecord) -> Invitation {
 
 /// Build the shared `Member` union from the fields common to a team member /
 /// match player record: a linked user id or an external display name, plus an
-/// optional embedded invitation.
+/// optional embedded invitation. A linked user's `name`/`avatar_url` are left
+/// blank here — callers that need them hydrated (e.g. a match roster) fill
+/// them in afterwards with a batch profile lookup.
 pub fn member_from_parts(
     membership_id: &str,
     user_id: Option<&str>,
@@ -381,6 +383,8 @@ pub fn member_from_parts(
             id: membership_id.to_string(),
             user_id: uid.to_string(),
             invitation,
+            name: String::new(),
+            avatar_url: None,
         }),
         None => Member::External(ExternalMember {
             id: membership_id.to_string(),

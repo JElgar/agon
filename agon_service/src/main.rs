@@ -1415,6 +1415,7 @@ impl Api {
                     .map_err(dao_internal)?;
                 let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
                 sign_match_headers(assets, &mut m);
+                self.hydrate_match_player_profiles(dao, &mut m).await?;
                 items.push(FeedItem::Match(m));
             }
         }
@@ -1517,6 +1518,7 @@ impl Api {
                     .map_err(dao_internal)?;
                 let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
                 sign_match_headers(assets, &mut m);
+                self.hydrate_match_player_profiles(dao, &mut m).await?;
                 items.push(m);
             }
         }
@@ -1784,6 +1786,7 @@ impl Api {
 
         let mut m = match_from_records(&match_record, &side_records, &player_records, false);
         sign_match_headers(assets, &mut m);
+        self.hydrate_match_player_profiles(dao, &mut m).await?;
         Ok(CreateMatchResponse::Match(Json(m)))
     }
 
@@ -1811,6 +1814,7 @@ impl Api {
             .map_err(dao_internal)?;
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
         sign_match_headers(assets, &mut m);
+        self.hydrate_match_player_profiles(dao, &mut m).await?;
         Ok(GetMatchResponse::Match(Json(m)))
     }
 
@@ -2003,6 +2007,7 @@ impl Api {
             .map_err(dao_internal)?;
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
         sign_match_headers(assets, &mut m);
+        self.hydrate_match_player_profiles(dao, &mut m).await?;
         Ok(UpdateMatchResponse::Match(Json(m)))
     }
 
@@ -3462,6 +3467,33 @@ impl Api {
         Ok(profiles)
     }
 
+    /// Fill in each `User` match player's `name`/`avatar_url` from their
+    /// account, via one batch read for the whole roster (external players
+    /// already carry their display name inline, so are left alone).
+    async fn hydrate_match_player_profiles(&self, dao: &dao::Dao, m: &mut Match) -> Result<()> {
+        let ids: Vec<String> = m
+            .players
+            .iter()
+            .filter_map(|p| match &p.member {
+                Member::User(u) => Some(u.user_id.clone()),
+                Member::External(_) => None,
+            })
+            .collect();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let records = dao.batch_get_users(&ids).await.map_err(dao_internal)?;
+        for player in &mut m.players {
+            if let Member::User(u) = &mut player.member
+                && let Some(record) = records.get(&u.user_id)
+            {
+                u.name = record.name.clone();
+                u.avatar_url = record.profile_image_url.clone();
+            }
+        }
+        Ok(())
+    }
+
     /// Fetch a single user's public profile, or `None` if absent. Used to embed
     /// an author/actor inline. (N+1 in list contexts — batch later.)
     async fn try_user_profile(&self, dao: &dao::Dao, user_id: &str) -> Result<Option<UserProfile>> {
@@ -3833,6 +3865,8 @@ fn mock_match(id: String) -> Match {
                     id: String::from("player_red_1"),
                     user_id: String::from("user_1"),
                     invitation: None,
+                    name: String::from("Alex Kim"),
+                    avatar_url: None,
                 }),
                 side_id: Some(String::from("side_red")),
                 is_member_of_team: Some(true),
@@ -3842,6 +3876,8 @@ fn mock_match(id: String) -> Match {
                     id: String::from("player_red_2"),
                     user_id: String::from("user_2"),
                     invitation: None,
+                    name: String::from("Jordan Lee"),
+                    avatar_url: None,
                 }),
                 side_id: Some(String::from("side_red")),
                 is_member_of_team: Some(true),
@@ -3851,6 +3887,8 @@ fn mock_match(id: String) -> Match {
                     id: String::from("player_blue_1"),
                     user_id: String::from("user_3"),
                     invitation: None,
+                    name: String::from("Sam Rivera"),
+                    avatar_url: None,
                 }),
                 side_id: Some(String::from("side_blue")),
                 is_member_of_team: Some(true),
@@ -4173,6 +4211,8 @@ fn mock_team(id: String, name: String) -> Team {
                             invited_user_id: String::from("user_1"),
                         }),
                     }),
+                    name: String::from("Alex Kim"),
+                    avatar_url: None,
                 }),
                 role: TeamRole::Admin,
             },

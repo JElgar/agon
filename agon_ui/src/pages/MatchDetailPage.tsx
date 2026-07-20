@@ -15,6 +15,7 @@ import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { displayScore, headlineBySide, headlineLabel, setLine } from '@/lib/score'
 import {
   isParticipant,
+  memberAvatarUrl,
   memberInviteToken,
   memberName,
   myPendingInvitation,
@@ -469,6 +470,7 @@ function SideRoster({ title, players }: { title: string; players: MatchPlayer[] 
         )}
         {players.map((p, i) => {
           const name = memberName(p.member)
+          const avatarUrl = memberAvatarUrl(p.member)
           const pending =
             p.member.invitation && p.member.invitation.status === 'pending'
           // Token-invited (external) players have a shareable link; offer to
@@ -476,7 +478,7 @@ function SideRoster({ title, players }: { title: string; players: MatchPlayer[] 
           const inviteToken = memberInviteToken(p.member)
           return (
             <div key={i} className="flex items-center gap-2">
-              <Avatar name={name} size="md" />
+              <Avatar name={name} imageUrl={avatarUrl} size="md" />
               <span className="flex-1 truncate text-sm">{name}</span>
               {inviteToken ? (
                 <CopyInviteButton token={inviteToken} />

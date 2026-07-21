@@ -3471,12 +3471,11 @@ impl Api {
     }
 
     /// Hydrate a list of user ids into `UserProfile`s via two batched
-    /// exact-key reads across the whole page (the profile items, and — for a
-    /// signed-in viewer — which of them the viewer follows); stats live inline
-    /// on the profile item, so there's no per-user query left to N+1 on.
-    /// Missing users are skipped. `is_followed_by_me` is left false when
-    /// there's no viewer (a follow-list view rarely needs it per-row);
-    /// compute it if a screen requires it.
+    /// exact-key reads across the whole page: the profile items, and — for a
+    /// signed-in viewer — which of them the viewer follows. Missing users are
+    /// skipped. `is_followed_by_me` is left false when there's no viewer (a
+    /// follow-list view rarely needs it per-row); compute it if a screen
+    /// requires it.
     async fn hydrate_user_profiles(
         &self,
         dao: &dao::Dao,

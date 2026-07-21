@@ -144,11 +144,10 @@ pub struct AuthGuardRecord {
 ///
 /// Counts are denormalized and maintained via atomic `ADD` (see follow ops).
 /// `email` is duplicated here for reads; uniqueness is enforced by a separate
-/// `EMAIL#<email>` guard item. `stats` is kept inline (rather than its own
-/// `STATS#<sport>` item per sport) so a profile read/batch-read returns
-/// everything in one point read — always present (an empty map for a brand
-/// new user) so the stats reconciler's nested-attribute updates always have a
-/// map to write into.
+/// `EMAIL#<email>` guard item. `stats` holds per-sport aggregates inline, so a
+/// profile read/batch-read returns everything in one point read — always
+/// present (an empty map for a brand new user) so the stats reconciler's
+/// nested-attribute updates always have a map to write into.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UserRecord {
     pub id: String,

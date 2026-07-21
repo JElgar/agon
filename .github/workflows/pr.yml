@@ -4,6 +4,10 @@ on:
   pull_request:
 
 jobs:
-  build:
-    uses: JElgar/agon_service/.github/workflows/build.yml@main
+  build-service:
+    uses: JElgar/agon/.github/workflows/build-service.yml@main
+    secrets: inherit
+
+  build-ui:
+    uses: JElgar/agon/.github/workflows/build-ui.yml@main
     secrets: inherit

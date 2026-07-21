@@ -4,6 +4,8 @@
 //! persistence shape and the API layer maps to/from these. Records hold data
 //! fields only; keys/GSI attributes are stamped by the `item` layer.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 // ===========================================================================
@@ -142,7 +144,10 @@ pub struct AuthGuardRecord {
 ///
 /// Counts are denormalized and maintained via atomic `ADD` (see follow ops).
 /// `email` is duplicated here for reads; uniqueness is enforced by a separate
-/// `EMAIL#<email>` guard item.
+/// `EMAIL#<email>` guard item. `stats` holds per-sport aggregates inline, so a
+/// profile read/batch-read returns everything in one point read — always
+/// present (an empty map for a brand new user) so the stats reconciler's
+/// nested-attribute updates always have a map to write into.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UserRecord {
     pub id: String,
@@ -156,6 +161,8 @@ pub struct UserRecord {
     pub following_count: u64,
     #[serde(default)]
     pub unread_count: u64,
+    #[serde(default)]
+    pub stats: HashMap<String, UserSportStatsRecord>,
     pub created_at: String,
 }
 
@@ -507,11 +514,11 @@ pub struct FeedItemRecord {
     pub created_at: String,
 }
 
-/// `USER#<uid>` / `STATS#<sport>` — per-sport aggregate stats for a user.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Aggregate stats for one sport, stored inline on `UserRecord::stats` keyed
+/// by sport tag (e.g. "tennis") — the key carries the sport, so it isn't
+/// duplicated in the value.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct UserSportStatsRecord {
-    /// Sport tag, e.g. "tennis".
-    pub match_type: String,
     pub matches_played: u64,
     pub wins: u64,
     // Win percentage is derived (wins / matches_played) at the API layer.
@@ -526,7 +533,7 @@ pub struct UserSportStatsRecord {
 pub struct StatContributionRecord {
     /// Sport the contribution counted under (matches the match's type at the
     /// time it was applied). Kept so a sport change can move the counts to the
-    /// right `STATS#<sport>` item.
+    /// right sport's counters in `UserRecord::stats`.
     pub match_type: String,
     /// 1 while the match is completed and the user played; 0 otherwise.
     pub played: u64,

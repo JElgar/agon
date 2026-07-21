@@ -79,20 +79,24 @@ pub fn match_type_tag(mt: &MatchType) -> &'static str {
     }
 }
 
-/// Build the public `UserProfile` from a stored user record, its per-sport
-/// stats, and the viewer-relative follow flag.
-pub fn user_profile_from_record(
-    user: &UserRecord,
-    stats: &[UserSportStatsRecord],
-    is_followed_by_me: bool,
-) -> UserProfile {
+/// Build the public `UserProfile` from a stored user record (its inline
+/// per-sport `stats` map) and the viewer-relative follow flag.
+pub fn user_profile_from_record(user: &UserRecord, is_followed_by_me: bool) -> UserProfile {
+    // Sort by sport tag for a deterministic response order (a `HashMap`'s
+    // iteration order isn't).
+    let mut entries: Vec<(&String, &UserSportStatsRecord)> = user.stats.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+
     UserProfile {
         id: user.id.clone(),
         name: user.name.clone(),
         profile_image: user.profile_image_url.as_ref().map(|url| Photo {
             image_url: url.clone(),
         }),
-        stats: stats.iter().map(sport_stats_from_record).collect(),
+        stats: entries
+            .into_iter()
+            .map(|(sport, rec)| sport_stats_from_record(sport, rec))
+            .collect(),
         follower_count: user.follower_count as u32,
         following_count: user.following_count as u32,
         is_followed_by_me,
@@ -100,14 +104,14 @@ pub fn user_profile_from_record(
 }
 
 /// Map a stored per-sport stats record to the API model, deriving win %.
-pub fn sport_stats_from_record(rec: &UserSportStatsRecord) -> UserSportStats {
+pub fn sport_stats_from_record(sport: &str, rec: &UserSportStatsRecord) -> UserSportStats {
     let win_percentage = if rec.matches_played == 0 {
         0.0
     } else {
         (rec.wins as f32 / rec.matches_played as f32) * 100.0
     };
     UserSportStats {
-        match_type: match_type_from_tag(&rec.match_type),
+        match_type: match_type_from_tag(sport),
         matches_played: rec.matches_played as i32,
         win_percentage,
     }

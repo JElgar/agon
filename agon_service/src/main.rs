@@ -1108,9 +1108,8 @@ impl Api {
                 )));
             }
         };
-        let stats = dao.list_user_stats(&uid).await.map_err(dao_internal)?;
         // Own profile: not "followed by me".
-        let profile = user_profile_from_record(&record, &stats, false);
+        let profile = user_profile_from_record(&record, false);
         Ok(GetUserResponse::User(Json(User {
             email: record.email,
             profile,
@@ -1163,8 +1162,7 @@ impl Api {
             .await
             .map_err(dao_internal)?
             .ok_or_else(|| Error::from_string("user not found", StatusCode::NOT_FOUND))?;
-        let stats = dao.list_user_stats(&uid).await.map_err(dao_internal)?;
-        let profile = user_profile_from_record(&record, &stats, false);
+        let profile = user_profile_from_record(&record, false);
         Ok(UpdateUserResponse::User(Json(User {
             email: record.email,
             profile,
@@ -1257,7 +1255,6 @@ impl Api {
                 )));
             }
         };
-        let stats = dao.list_user_stats(&user_id).await.map_err(dao_internal)?;
         let caller_uid = self.require_uid(dao, &jwt_data).await?;
         let is_followed = if caller_uid == user_id {
             false
@@ -1267,7 +1264,7 @@ impl Api {
                 .map_err(dao_internal)?
         };
         Ok(GetUserProfileResponse::User(Json(
-            user_profile_from_record(&record, &stats, is_followed),
+            user_profile_from_record(&record, is_followed),
         )))
     }
 
@@ -1302,6 +1299,7 @@ impl Api {
             follower_count: 0,
             following_count: 0,
             unread_count: 0,
+            stats: std::collections::HashMap::new(),
             created_at: now_iso(),
         };
         match dao.create_user(&jwt_data.sub, &record).await {
@@ -1313,7 +1311,7 @@ impl Api {
             }
             Err(e) => return Err(dao_internal(e)),
         }
-        let profile = user_profile_from_record(&record, &[], false);
+        let profile = user_profile_from_record(&record, false);
         Ok(CreateUserResponse::User(Json(User {
             email: record.email,
             profile,
@@ -3049,9 +3047,9 @@ impl Api {
                             follower_count: 0,
                             following_count: 0,
                             unread_count: 0,
+                            stats: std::collections::HashMap::new(),
                             created_at: String::new(),
                         },
-                        &[],
                         false,
                     )
                 });
@@ -3472,20 +3470,19 @@ impl Api {
         })))
     }
 
-    /// Hydrate a list of user ids into `UserProfile`s. TODO: batch these with
-    /// BatchGetItem; currently a per-id fetch (N+1). Missing users are skipped.
-    /// `is_followed_by_me` is left false here (a follow-list view rarely needs
-    /// it per-row); compute it if a screen requires it.
+    /// Hydrate a list of user ids into `UserProfile`s via two batched
+    /// exact-key reads across the whole page (the profile items, and — for a
+    /// signed-in viewer — which of them the viewer follows); stats live inline
+    /// on the profile item, so there's no per-user query left to N+1 on.
+    /// Missing users are skipped. `is_followed_by_me` is left false when
+    /// there's no viewer (a follow-list view rarely needs it per-row);
+    /// compute it if a screen requires it.
     async fn hydrate_user_profiles(
         &self,
         dao: &dao::Dao,
         ids: &[String],
         viewer_uid: Option<&str>,
     ) -> Result<Vec<UserProfile>> {
-        // Batch the two exact-key point reads across the whole page: the profile
-        // items, and (for a signed-in viewer) which of these the viewer follows.
-        // Per-user stats stay a per-user query — they're a `begins_with(STATS)`
-        // range read per partition, which BatchGetItem can't express.
         let records = dao.batch_get_users(ids).await.map_err(dao_internal)?;
         let followed = match viewer_uid {
             Some(viewer) => dao
@@ -3500,12 +3497,7 @@ impl Api {
         let mut profiles = Vec::with_capacity(ids.len());
         for id in ids {
             if let Some(record) = records.get(id) {
-                let stats = dao.list_user_stats(id).await.map_err(dao_internal)?;
-                profiles.push(user_profile_from_record(
-                    record,
-                    &stats,
-                    followed.contains(id),
-                ));
+                profiles.push(user_profile_from_record(record, followed.contains(id)));
             }
         }
         Ok(profiles)
@@ -3542,10 +3534,7 @@ impl Api {
     /// an author/actor inline. (N+1 in list contexts — batch later.)
     async fn try_user_profile(&self, dao: &dao::Dao, user_id: &str) -> Result<Option<UserProfile>> {
         match dao.get_user(user_id).await.map_err(dao_internal)? {
-            Some(record) => {
-                let stats = dao.list_user_stats(user_id).await.map_err(dao_internal)?;
-                Ok(Some(user_profile_from_record(&record, &stats, false)))
-            }
+            Some(record) => Ok(Some(user_profile_from_record(&record, false))),
             None => Ok(None),
         }
     }

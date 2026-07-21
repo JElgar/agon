@@ -1,5 +1,4 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
 import {
   Bell,
   LogOut,
@@ -9,9 +8,10 @@ import {
   User,
   Users,
 } from 'lucide-react'
-import { fetchClient } from '@/lib/api-client'
+import { useUnreadNotificationsCount } from '@/hooks/useUnreadCount'
 import { Button } from '@/components/ui/button'
 import { ThemeToggle } from '@/components/ThemeToggle'
+import { Logo } from '@/components/agon/Logo'
 import {
   Sidebar,
   SidebarContent,
@@ -58,15 +58,8 @@ export function AppSidebar({
   const navigate = useNavigate()
   const { isMobile, setOpenMobile } = useSidebar()
 
-  // Live unread-notification count for the nav badge. Shares the query key the
-  // notifications page invalidates, so acting on notifications updates it.
-  const { data: unread } = useQuery({
-    queryKey: ['notifications-unread-count'],
-    queryFn: async (): Promise<number> => {
-      const { data } = await fetchClient.GET('/notifications/unread-count')
-      return data?.unread_count ?? 0
-    },
-  })
+  // Live unread-notification count for the nav badge.
+  const { data: unread } = useUnreadNotificationsCount()
 
   /** Close the mobile sheet after navigating, so it doesn't cover the page. */
   const closeOnMobile = () => {
@@ -80,7 +73,7 @@ export function AppSidebar({
   return (
     <Sidebar>
       <SidebarHeader className="gap-3 p-4">
-        <h1 className="text-2xl font-bold">Agon</h1>
+        <Logo />
         <Button
           className="w-full justify-start gap-2"
           onClick={() => {

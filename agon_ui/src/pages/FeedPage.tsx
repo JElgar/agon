@@ -6,6 +6,7 @@ import { MatchCard } from '@/components/agon/MatchCard'
 import { Button } from '@/components/ui/button'
 import { useNavigate } from 'react-router-dom'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
+import { dayLabel } from '@/lib/datetime'
 import {
   usePendingMatches,
   prunePendingMatches,
@@ -94,15 +95,24 @@ export function FeedPage() {
     )
   }
 
+  const sections = groupByDay(items)
+
   return (
-    <div className="mx-auto flex max-w-xl flex-col gap-3">
-      {items.map((item) => (
-        <MatchCard
-          key={item.id}
-          match={item}
-          currentUserId={currentUserId}
-          onOpen={() => navigate(`/matches/${item.id}`)}
-        />
+    <div className="mx-auto flex max-w-xl flex-col gap-6">
+      {sections.map((section) => (
+        <div key={section.label} className="flex flex-col gap-3">
+          <h2 className="font-serif text-lg italic text-muted-foreground">
+            {section.label}
+          </h2>
+          {section.items.map((item) => (
+            <MatchCard
+              key={item.id}
+              match={item}
+              currentUserId={currentUserId}
+              onOpen={() => navigate(`/matches/${item.id}`)}
+            />
+          ))}
+        </div>
       ))}
 
       {query.hasNextPage && (
@@ -117,6 +127,26 @@ export function FeedPage() {
       )}
     </div>
   )
+}
+
+/**
+ * Bucket feed items into day-labelled sections ("Today", "Yesterday", …),
+ * preserving the feed's existing newest-first order — items already arrive
+ * sorted by `starts_at`, so this only needs to notice when the label changes,
+ * not re-sort anything.
+ */
+function groupByDay(items: FeedItem[]): { label: string; items: FeedItem[] }[] {
+  const sections: { label: string; items: FeedItem[] }[] = []
+  for (const item of items) {
+    const label = dayLabel(item.starts_at)
+    const last = sections[sections.length - 1]
+    if (last && last.label === label) {
+      last.items.push(item)
+    } else {
+      sections.push({ label, items: [item] })
+    }
+  }
+  return sections
 }
 
 /** Placeholder cards while the first page loads. */

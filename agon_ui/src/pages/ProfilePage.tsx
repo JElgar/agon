@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useNavigate, useParams } from 'react-router-dom'
-import { ChevronRight, Pencil } from 'lucide-react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import { ChevronRight, LogOut, Pencil, Users } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { ProfileHeader } from '@/components/agon/ProfileHeader'
@@ -10,6 +10,8 @@ import { FollowButton } from '@/components/agon/FollowButton'
 import { SportStatsTable } from '@/components/agon/SportStatsTable'
 import { MatchCard } from '@/components/agon/MatchCard'
 import { Button } from '@/components/ui/button'
+import { ThemeToggle } from '@/components/ThemeToggle'
+import { useAuth } from '@/hooks/useAuth'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 
 type UserProfile = components['schemas']['UserProfile']
@@ -135,7 +137,38 @@ export function ProfilePage() {
           currentUserId={currentUserId}
         />
       </section>
+
+      {/* Account settings live here rather than in a nav item — on mobile the
+          bottom tab bar only has Feed / Create / Profile, so this is the one
+          reachable place for them. Desktop still has the sidebar too. */}
+      {isOwnProfile && <AccountSettings />}
     </div>
+  )
+}
+
+/** Sign-out, theme, and the (mobile-only) Teams link — see the comment above. */
+function AccountSettings() {
+  const { signOut } = useAuth()
+  return (
+    <section className="flex flex-col gap-2">
+      <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        Account
+      </h2>
+      <div className="flex flex-col gap-2 rounded-xl border bg-card p-3 md:hidden">
+        <Button variant="ghost" className="justify-start gap-2" asChild>
+          <Link to="/teams">
+            <Users className="size-4" /> Teams
+          </Link>
+        </Button>
+      </div>
+      <div className="flex items-center justify-between gap-2 rounded-xl border bg-card p-3">
+        <span className="text-sm text-muted-foreground">Appearance</span>
+        <ThemeToggle />
+      </div>
+      <Button variant="outline" className="w-full gap-2" onClick={signOut}>
+        <LogOut className="size-4" /> Sign out
+      </Button>
+    </section>
   )
 }
 

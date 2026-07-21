@@ -1,4 +1,7 @@
-//! Per-user, per-sport stats: list, and reconcile from a match's current state.
+//! Per-user, per-sport stats (stored inline on the user's profile item) and
+//! reconciling them from a match's current state.
+
+use std::collections::HashMap;
 
 use aws_sdk_dynamodb::types::{AttributeValue, Delete, Put, TransactWriteItem, Update};
 
@@ -6,37 +9,12 @@ use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, ATTR_SK, from_item, item_sk, s, to_item};
 use super::keys::{Pk, Sk};
-use super::records::{StatContributionRecord, UserSportStatsRecord};
+use super::records::StatContributionRecord;
 
 /// Type tag for the per-match stat-contribution item.
 pub const TYPE_STAT_CONTRIBUTION: &str = "stat_contribution";
 
 impl Dao {
-    /// List all of a user's per-sport stats (one item per sport). Unpaginated —
-    /// a user only has a handful of sports.
-    pub async fn list_user_stats(&self, user_id: &str) -> DaoResult<Vec<UserSportStatsRecord>> {
-        let out = self
-            .client
-            .query()
-            .table_name(self.table())
-            .key_condition_expression("#pk = :pk AND begins_with(SK, :sk)")
-            .expression_attribute_names("#pk", ATTR_PK)
-            .expression_attribute_values(":pk", s(Pk::User(user_id.into()).to_string()))
-            .expression_attribute_values(":sk", s(Sk::Stats(String::new()).prefix()))
-            .send()
-            .await
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-
-        let mut stats = Vec::new();
-        for item in out.items.unwrap_or_default() {
-            // Every item under this range is a stats item, but guard anyway.
-            if let Sk::Stats(_) = item_sk(&item)? {
-                stats.push(from_item(item)?);
-            }
-        }
-        Ok(stats)
-    }
-
     /// User ids that currently have a stored stat contribution for this match.
     /// The reconciler unions these with the match's current participants so a
     /// player removed from the roster still gets their contribution backed out.
@@ -68,7 +46,7 @@ impl Dao {
     /// now (`played` = completed && the user played; `won` = their side is the
     /// confirmed winner). This is diffed against the contribution we last stored
     /// for `(match, user)` and only the delta is applied to the user's
-    /// `STATS#<sport>` counters — so the same call is:
+    /// `stats.<sport>` counters on their profile item — so the same call is:
     ///
     /// - **idempotent**: unchanged state → zero delta → no write (safe under
     ///   at-least-once delivery and the match-meta events fired by every
@@ -171,22 +149,27 @@ impl Dao {
         //    contribution out of the old sport and add the new one; otherwise
         //    apply the net delta on the single sport.
         if old_sport != sport {
-            if let Some(u) =
-                self.stats_delta(user_id, &old_sport, -(old_played as i64), -(old_won as i64))?
+            if let Some(u) = self
+                .stats_delta(user_id, &old_sport, -(old_played as i64), -(old_won as i64))
+                .await?
             {
                 tx.push(TransactWriteItem::builder().update(u).build());
             }
-            if let Some(u) =
-                self.stats_delta(user_id, sport, desired_played as i64, desired_won as i64)?
+            if let Some(u) = self
+                .stats_delta(user_id, sport, desired_played as i64, desired_won as i64)
+                .await?
             {
                 tx.push(TransactWriteItem::builder().update(u).build());
             }
-        } else if let Some(u) = self.stats_delta(
-            user_id,
-            sport,
-            desired_played as i64 - old_played as i64,
-            desired_won as i64 - old_won as i64,
-        )? {
+        } else if let Some(u) = self
+            .stats_delta(
+                user_id,
+                sport,
+                desired_played as i64 - old_played as i64,
+                desired_won as i64 - old_won as i64,
+            )
+            .await?
+        {
             tx.push(TransactWriteItem::builder().update(u).build());
         }
 
@@ -208,10 +191,14 @@ impl Dao {
         }
     }
 
-    /// An `ADD matches_played/wins` update on `STATS#<sport>`, or `None` when both
-    /// deltas are zero. Stamps `match_type` so a freshly-created item carries its
-    /// sport.
-    fn stats_delta(
+    /// An `ADD stats.<sport>.matches_played/wins` update on the user's profile
+    /// item, or `None` when both deltas are zero. `stats.<sport>` must already
+    /// be a map for a nested `ADD` to resolve, so this first ensures it exists
+    /// (a separate, unconditionally idempotent call — `TransactWriteItems`
+    /// can't touch the profile item twice in the one transaction below it
+    /// joins). That extra round trip only happens on a real stats change
+    /// (a completed match, a re-score, ...), which is rare per user.
+    async fn stats_delta(
         &self,
         user_id: &str,
         sport: &str,
@@ -221,17 +208,44 @@ impl Dao {
         if played_delta == 0 && won_delta == 0 {
             return Ok(None);
         }
+        self.ensure_stats_sport(user_id, sport).await?;
         let u = Update::builder()
             .table_name(self.table())
             .key(ATTR_PK, s(Pk::User(user_id.into()).to_string()))
-            .key(ATTR_SK, s(Sk::Stats(sport.into()).to_string()))
-            .update_expression("ADD matches_played :p, wins :w SET match_type = :mt")
+            .key(ATTR_SK, s(Sk::Profile.to_string()))
+            .update_expression("ADD stats.#sport.matches_played :p, stats.#sport.wins :w")
+            .expression_attribute_names("#sport", sport)
             .expression_attribute_values(":p", AttributeValue::N(played_delta.to_string()))
             .expression_attribute_values(":w", AttributeValue::N(won_delta.to_string()))
-            .expression_attribute_values(":mt", s(sport))
             .build()
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
         Ok(Some(u))
+    }
+
+    /// Make sure `stats.<sport>` exists as a `{matches_played, wins}` map on
+    /// the user's profile item, so the nested `ADD` in [`Self::stats_delta`]
+    /// always has a map to resolve into. A no-op if it's already there
+    /// (`if_not_exists`), so safe to call unconditionally on every real delta.
+    async fn ensure_stats_sport(&self, user_id: &str, sport: &str) -> DaoResult<()> {
+        let empty_sport_stats = AttributeValue::M(HashMap::from([
+            (
+                "matches_played".to_string(),
+                AttributeValue::N("0".to_string()),
+            ),
+            ("wins".to_string(), AttributeValue::N("0".to_string())),
+        ]));
+        self.client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::User(user_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Profile.to_string()))
+            .update_expression("SET stats.#sport = if_not_exists(stats.#sport, :empty)")
+            .expression_attribute_names("#sport", sport)
+            .expression_attribute_values(":empty", empty_sport_stats)
+            .send()
+            .await
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        Ok(())
     }
 }
 

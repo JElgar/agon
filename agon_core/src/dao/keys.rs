@@ -144,8 +144,6 @@ pub enum Sk {
     /// Uniqueness guard marker (e.g. under an email guard PK). `#GUARD`
     Guard,
 
-    /// Per-sport stats for a user. `STATS#<sport>`
-    Stats(String),
     /// A follower edge (who follows this user/team). `FOLLOWER#<followerUid>`
     Follower(String),
     /// A team membership. `MEMBER#<membershipId>`
@@ -176,9 +174,9 @@ pub enum Sk {
     /// (`{ played, won }`), in the match's partition. `STATCONTRIB#<userId>`.
     /// The async stats reconciler diffs the desired contribution (from the
     /// match's current state) against this stored one and applies the delta to
-    /// the user's `STATS#<sport>` item in the same transaction — so re-scores,
-    /// roster changes and cancellations all self-correct, and redelivery is a
-    /// no-op (same state → zero delta).
+    /// the user's profile item (`stats.<sport>`) in the same transaction — so
+    /// re-scores, roster changes and cancellations all self-correct, and
+    /// redelivery is a no-op (same state → zero delta).
     StatContribution(String),
     /// A fan-out feed entry, ordered by match start time. `FEED#<starts_at>#<mid>`
     /// (only ever listed, never addressed by id — keeps ts in the key).
@@ -194,7 +192,6 @@ impl Sk {
             Sk::Profile => "#PROFILE",
             Sk::Meta => "#META",
             Sk::Guard => "#GUARD",
-            Sk::Stats(_) => "STATS",
             Sk::Follower(_) => "FOLLOWER",
             Sk::Member(_) => "MEMBER",
             Sk::Side(_) => "SIDE",
@@ -218,8 +215,7 @@ impl fmt::Display for Sk {
             Sk::Profile | Sk::Meta | Sk::Guard => write!(f, "{}", self.prefix()),
 
             // Single-value keys.
-            Sk::Stats(v)
-            | Sk::Follower(v)
+            Sk::Follower(v)
             | Sk::Member(v)
             | Sk::Side(v)
             | Sk::Player(v)
@@ -269,7 +265,6 @@ impl FromStr for Sk {
         };
 
         match prefix {
-            "STATS" => Ok(Sk::Stats(rest.into())),
             "FOLLOWER" => Ok(Sk::Follower(rest.into())),
             "MEMBER" => Ok(Sk::Member(rest.into())),
             "SIDE" => Ok(Sk::Side(rest.into())),
@@ -339,7 +334,6 @@ mod tests {
 
     #[test]
     fn sk_single_value_variants_roundtrip() {
-        sk_roundtrip(Sk::Stats("tennis".into()), "STATS#tennis");
         sk_roundtrip(Sk::Follower("u2".into()), "FOLLOWER#u2");
         sk_roundtrip(Sk::Member("mem1".into()), "MEMBER#mem1");
         sk_roundtrip(Sk::Side("side_red".into()), "SIDE#side_red");

@@ -44,3 +44,33 @@ export function relativeTime(iso: string): string {
     day: 'numeric',
   })
 }
+
+/** Whether two dates fall on the same local calendar day. */
+function isSameDay(a: Date, b: Date): boolean {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  )
+}
+
+/**
+ * A day-grouping label for an ISO instant: "Today" / "Yesterday", else a
+ * localized date (with the year only when it isn't the current one). Used to
+ * group the feed into date sections.
+ */
+export function dayLabel(iso: string): string {
+  const date = new Date(iso)
+  const now = new Date()
+  if (isSameDay(date, now)) return 'Today'
+
+  const yesterday = new Date(now)
+  yesterday.setDate(now.getDate() - 1)
+  if (isSameDay(date, yesterday)) return 'Yesterday'
+
+  return date.toLocaleDateString(undefined, {
+    month: 'long',
+    day: 'numeric',
+    year: date.getFullYear() === now.getFullYear() ? undefined : 'numeric',
+  })
+}

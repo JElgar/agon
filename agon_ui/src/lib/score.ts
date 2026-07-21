@@ -75,7 +75,7 @@ export function setLine(score: Score, sides: MatchSide[]): string[] {
   return lines
 }
 
-/** Short label for the headline unit, e.g. "sets" for racket sports, "FT" otherwise. */
+/** Short label for the headline unit, e.g. "sets" for racket sports, "full time" otherwise. */
 export function headlineLabel(score: Score): string {
-  return score.type === 'Sets' ? 'sets' : 'FT'
+  return score.type === 'Sets' ? 'sets' : 'full time'
 }

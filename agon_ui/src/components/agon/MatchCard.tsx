@@ -2,10 +2,12 @@ import { Flame, MailOpen, MessageCircle, Share2 } from 'lucide-react'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { useToggleLike } from '@/hooks/useToggleLike'
+import { relativeTime } from '@/lib/datetime'
 import { Avatar } from './Avatar'
 import { SportBadge } from './SportBadge'
 import { StatusBadge, matchBadgeStatus } from './StatusBadge'
 import { ScoreConfirmationBar } from './ScoreConfirmationBar'
+import { MatchHeaderCarousel } from './MatchHeaderCarousel'
 import {
   displayScore,
   headlineBySide,
@@ -80,7 +82,7 @@ export function MatchCard({
       )}
       {...props}
     >
-      {/* Header: who beat who + sport */}
+      {/* Header: who beat who + when + sport */}
       <button
         type="button"
         onClick={onOpen}
@@ -88,20 +90,33 @@ export function MatchCard({
       >
         <div className="flex items-start gap-2.5">
           <Avatar name={nameA} size="lg" ring={aWon ? 'winner' : 'none'} />
-          <div className="min-w-0">
-            <p className="text-sm leading-snug">
-              <span className={cn(aWon && 'font-medium')}>{nameA}</span>
-              <span className="text-primary">
-                {' '}
-                {scoreInfo?.winnerSideId ? 'beat' : 'vs'}{' '}
-              </span>
-              <span className={cn(bWon && 'font-medium')}>{nameB}</span>
-            </p>
-            <p className="mt-0.5 text-xs text-muted-foreground">{match.name}</p>
-          </div>
+          <p className="text-sm leading-snug">
+            <span className={cn(aWon && 'font-medium')}>{nameA}</span>
+            <span className="text-primary">
+              {' '}
+              {scoreInfo?.winnerSideId ? 'beat' : 'vs'}{' '}
+            </span>
+            <span className={cn(bWon && 'font-medium')}>{nameB}</span>
+            <span className="text-muted-foreground"> · {relativeTime(match.starts_at)}</span>
+          </p>
         </div>
-        <SportBadge sport={match.match_type} />
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
+          <SportBadge sport={match.match_type} />
+          <InvitedBadge match={match} currentUserId={currentUserId} />
+        </div>
       </button>
+
+      {/* Title + description */}
+      {(match.name || match.description) && (
+        <div className="px-3.5 pb-3">
+          {match.name && <p className="font-medium leading-snug">{match.name}</p>}
+          {match.description && (
+            <p className="mt-0.5 text-sm text-muted-foreground">
+              {match.description}
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Score block */}
       {scoreInfo && (
@@ -139,11 +154,12 @@ export function MatchCard({
         </div>
       )}
 
-      {/* Meta: lifecycle / confirmation state, and the viewer's invite state */}
-      <div className="flex flex-wrap items-center gap-3 px-3.5 py-2.5">
-        <StatusBadge status={matchBadgeStatus(match)} />
-        <InvitedBadge match={match} currentUserId={currentUserId} />
-      </div>
+      {/* Header photo, when the match has one. */}
+      {match.header_photos.length > 0 && (
+        <div className="px-3.5 pb-3 pt-3">
+          <MatchHeaderCarousel photos={match.header_photos} />
+        </div>
+      )}
 
       {/* Confirm/dispute prompt when the viewer's side owes a response. */}
       {match.pending_score && (
@@ -156,36 +172,36 @@ export function MatchCard({
         </div>
       )}
 
-      {/* Actions */}
-      <div className="flex items-center gap-4 border-t px-3.5 py-2 text-muted-foreground">
+      {/* Footer: kudos + comments on the left, lifecycle/confirmation state on the right. */}
+      <div className="flex items-center gap-4 border-t px-3.5 py-2.5 text-muted-foreground">
         <button
           type="button"
           onClick={() => toggleLike.mutate(!i_liked)}
           aria-pressed={i_liked}
-          aria-label={i_liked ? 'Unlike match' : 'Like match'}
+          aria-label={i_liked ? 'Remove kudos' : 'Give kudos'}
           className={cn(
             'flex items-center gap-1.5 text-xs transition-colors hover:text-primary',
             i_liked && 'text-primary',
           )}
         >
           <Flame className={cn('size-3.5', i_liked && 'fill-current')} />{' '}
-          {like_count} {like_count === 1 ? 'like' : 'likes'}
+          {like_count} kudos
         </button>
         <button
           type="button"
           onClick={onOpen}
           className="flex items-center gap-1.5 text-xs transition-colors hover:text-primary"
         >
-          <MessageCircle className="size-3.5" /> {comment_count}{' '}
-          {comment_count === 1 ? 'comment' : 'comments'}
+          <MessageCircle className="size-3.5" /> {comment_count}
         </button>
         <button
           type="button"
-          className="ml-auto flex items-center transition-colors hover:text-primary"
+          className="flex items-center transition-colors hover:text-primary"
           aria-label="Share match"
         >
           <Share2 className="size-3.5" />
         </button>
+        <StatusBadge status={matchBadgeStatus(match)} className="ml-auto" />
       </div>
     </div>
   )

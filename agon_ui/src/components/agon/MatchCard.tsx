@@ -1,4 +1,5 @@
-import { Flame, MailOpen, MessageCircle, Share2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Check, Flame, MailOpen, MessageCircle, Share2 } from 'lucide-react'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { useToggleLike } from '@/hooks/useToggleLike'
@@ -46,6 +47,57 @@ function InvitedBadge({
     <span className="inline-flex items-center gap-1 rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
       <MailOpen className="size-3" /> You're invited
     </span>
+  )
+}
+
+/**
+ * Shares a match's detail link via the native share sheet, falling back to a
+ * clipboard copy (then a manual prompt) where that's unavailable — mirrors
+ * `CopyInviteButton`'s fallback chain, with a transient checkmark standing in
+ * for its "Copied!" label since this is an icon-only button.
+ */
+function ShareMatchButton({ match }: { match: Match }) {
+  const [copied, setCopied] = useState(false)
+
+  useEffect(() => {
+    if (!copied) return
+    const id = setTimeout(() => setCopied(false), 2000)
+    return () => clearTimeout(id)
+  }, [copied])
+
+  const share = async () => {
+    const url = `${window.location.origin}/matches/${match.id}`
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: match.name, url })
+        return
+      } catch {
+        // User dismissed the sheet, or share failed — fall through to copy.
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(url)
+      setCopied(true)
+    } catch {
+      // Clipboard blocked (e.g. insecure context) — surface the link so the
+      // user can copy it manually rather than failing silently.
+      window.prompt('Copy this match link:', url)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={share}
+      className="flex items-center transition-colors hover:text-primary"
+      aria-label="Share match"
+    >
+      {copied ? (
+        <Check className="size-3.5 text-primary" />
+      ) : (
+        <Share2 className="size-3.5" />
+      )}
+    </button>
   )
 }
 
@@ -194,13 +246,7 @@ export function MatchCard({
         >
           <MessageCircle className="size-3.5" /> {comment_count}
         </button>
-        <button
-          type="button"
-          className="flex items-center transition-colors hover:text-primary"
-          aria-label="Share match"
-        >
-          <Share2 className="size-3.5" />
-        </button>
+        <ShareMatchButton match={match} />
         <StatusBadge status={matchBadgeStatus(match)} className="ml-auto" />
       </div>
     </div>

@@ -946,43 +946,60 @@ const meiliUrl = meiliService.metadata.name.apply(name => `http://${name}:7700`)
 // ───────────────────────────────────────────────────────────────────────────
 // GCP: Firebase Cloud Messaging (push notifications)
 //
-// MANUAL PREREQUISITE (same convention as the OVH VPS above): the GCP project
-// itself is created + billing attached out of band, once, via the GCP
-// console — Pulumi never creates or deletes the project, only what's safely
-// convergent inside it (API enablement, the Firebase attachment, the sender
-// service account). This keeps "project" out of the blast radius of a normal
-// `pulumi up`/`destroy`.
-//   pulumi config set gcp:project <project-id>
+// Pulumi fully manages the GCP project here (unlike the OVH VPS above, which
+// is manual because of a genuine `pulumi-ovh` provider bug — that limitation
+// doesn't apply to the GCP provider). Creating the project needs:
+//   pulumi config set gcp:project <new-project-id>
 //   pulumi config set gcp:region europe-west2
+//   pulumi config set gcp:orgId <org-id>
+//   pulumi config set gcp:billingAccount <billing-account-id>
+// and ambient GCP credentials with `roles/resourcemanager.projectCreator` on
+// the org plus `roles/billing.user` on the billing account. `deletionPolicy:
+// "PREVENT"` blocks the one genuinely dangerous accident this unlocks — a
+// `pulumi destroy` (or a projectId change forcing replacement) taking the
+// whole project, and everything in it, with it.
 //
 // The worker (agon_worker) is the only consumer: device registration just
 // writes to DynamoDB (see agon_service's /devices endpoints), and only the
 // worker's push handler calls FCM to actually send.
 // ───────────────────────────────────────────────────────────────────────────
-const gcpProjectId = new pulumi.Config("gcp").require("project");
+const gcpConfig = new pulumi.Config("gcp");
+const gcpProjectId = gcpConfig.require("project");
+const gcpOrgId = gcpConfig.require("orgId");
+const gcpBillingAccount = gcpConfig.require("billingAccount");
+
+const gcpProject = new gcp.organizations.Project("agon-firebase-project", {
+	projectId: gcpProjectId,
+	name: `agon-${pulumi.getStack()}`,
+	orgId: gcpOrgId,
+	billingAccount: gcpBillingAccount,
+	deletionPolicy: "PREVENT",
+});
 
 const fcmApi = new gcp.projects.Service("fcm-api", {
+	project: gcpProject.projectId,
 	service: "fcm.googleapis.com",
-	// Never let a `destroy` disable the API on the shared GCP project — only
-	// Pulumi's own resources here should be torn down.
+	// Never let a `destroy` disable the API on the project — only Pulumi's own
+	// resources here should be torn down (the project itself is guarded above).
 	disableOnDestroy: false,
 });
 
 const firebaseApi = new gcp.projects.Service("firebase-api", {
+	project: gcpProject.projectId,
 	service: "firebase.googleapis.com",
 	disableOnDestroy: false,
 });
 
-// Attaches Firebase to the (pre-existing) GCP project. Idempotent: safe to
-// import/re-apply against a project that already has Firebase enabled.
-const firebaseProject = new gcp.firebase.Project("agon-firebase", {}, {
-	dependsOn: [firebaseApi],
-});
+// Attaches Firebase to the project just created.
+const firebaseProject = new gcp.firebase.Project("agon-firebase", {
+	project: gcpProject.projectId,
+}, { dependsOn: [firebaseApi] });
 
 // Registers the PWA as a Firebase Web App, which is what the client SDK needs
 // to request an FCM token. Future: gcp.firebase.AndroidApp / AppleApp once
 // those clients exist — same project, no changes needed here.
 new gcp.firebase.WebApp("agon-pwa", {
+	project: gcpProject.projectId,
 	displayName: `agon-${pulumi.getStack()}`,
 }, { dependsOn: [firebaseProject] });
 
@@ -990,12 +1007,13 @@ new gcp.firebase.WebApp("agon-pwa", {
 // service-account flow). Scoped to exactly one role — sending messages — not
 // general Firebase admin.
 const fcmServiceAccount = new gcp.serviceaccount.Account("agon-fcm-sender", {
+	project: gcpProject.projectId,
 	accountId: `agon-fcm-${pulumi.getStack()}`,
 	displayName: `agon FCM sender (${pulumi.getStack()})`,
 }, { dependsOn: [firebaseApi] });
 
 new gcp.projects.IAMMember("agon-fcm-sender-role", {
-	project: gcpProjectId,
+	project: gcpProject.projectId,
 	role: "roles/firebasecloudmessaging.admin",
 	member: pulumi.interpolate`serviceAccount:${fcmServiceAccount.email}`,
 });

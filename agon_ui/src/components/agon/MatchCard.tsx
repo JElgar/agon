@@ -140,18 +140,15 @@ export function MatchCard({
         onClick={onOpen}
         className="flex w-full items-start justify-between gap-3 p-3.5 text-left"
       >
-        <div className="flex items-start gap-2.5">
-          <Avatar name={nameA} size="lg" ring={aWon ? 'winner' : 'none'} />
-          <p className="text-sm leading-snug">
-            <span className={cn(aWon && 'font-medium')}>{nameA}</span>
-            <span className="text-primary">
-              {' '}
-              {scoreInfo?.winnerSideId ? 'beat' : 'vs'}{' '}
-            </span>
-            <span className={cn(bWon && 'font-medium')}>{nameB}</span>
-            <span className="text-muted-foreground"> · {relativeTime(match.starts_at)}</span>
-          </p>
-        </div>
+        <p className="text-sm leading-snug">
+          <span className={cn(aWon && 'font-medium')}>{nameA}</span>
+          <span className="text-primary">
+            {' '}
+            {scoreInfo?.winnerSideId ? 'beat' : 'vs'}{' '}
+          </span>
+          <span className={cn(bWon && 'font-medium')}>{nameB}</span>
+          <span className="text-muted-foreground"> · {relativeTime(match.starts_at)}</span>
+        </p>
         <div className="flex shrink-0 flex-col items-end gap-1.5">
           <SportBadge sport={match.match_type} />
           <InvitedBadge match={match} currentUserId={currentUserId} />

@@ -169,7 +169,7 @@ export function MatchCard({
 
       {/* Score block */}
       {scoreInfo && (
-        <div className="mx-3.5 rounded-lg bg-muted/50 px-3.5 py-3">
+        <div className="mx-3.5 mb-3 rounded-lg bg-muted/50 px-3.5 py-3">
           <div className="flex items-center justify-between">
             <div className="flex min-w-0 flex-1 items-center gap-2">
               <Avatar name={nameA} size="md" ring={aWon ? 'winner' : 'none'} />
@@ -203,9 +203,11 @@ export function MatchCard({
         </div>
       )}
 
-      {/* Header photo, when the match has one. */}
+      {/* Header photo, when the match has one. The gap above comes from the
+          preceding block's own bottom margin (score box / title), so this
+          only needs to provide the gap below itself. */}
       {match.header_photos.length > 0 && (
-        <div className="px-3.5 pb-3 pt-3">
+        <div className="px-3.5 pb-3">
           <MatchHeaderCarousel photos={match.header_photos} />
         </div>
       )}

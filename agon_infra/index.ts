@@ -959,7 +959,18 @@ const meiliUrl = meiliService.metadata.name.apply(name => `http://${name}:7700`)
 // `pulumi destroy` (or a projectId change forcing replacement) taking the
 // whole project, and everything in it, with it.
 //
-// The worker (agon_worker) is the only consumer: device registration just
+// Each full stage (staging, prod) gets its own, fully separate GCP project —
+// same principle as the per-stack DynamoDB table / S3 bucket above, so a
+// staging change can be tested before it ever touches prod, and a new stage
+// needs zero manual GCP setup. This is deliberately NOT shared across stages,
+// and NOT meant to be created per lightweight/preview stack (a future PR-
+// preview stack kind should attach to an existing stage's project instead of
+// minting a new one — out of scope here).
+//
+// The project also carries the OAuth consent screen ("Brand") used by
+// Supabase's Google sign-in — see the "Supabase Google Auth" block below.
+//
+// The worker (agon_worker) is the only FCM consumer: device registration just
 // writes to DynamoDB (see agon_service's /devices endpoints), and only the
 // worker's push handler calls FCM to actually send.
 // ───────────────────────────────────────────────────────────────────────────
@@ -1002,6 +1013,43 @@ new gcp.firebase.WebApp("agon-pwa", {
 	project: gcpProject.projectId,
 	displayName: `agon-${pulumi.getStack()}`,
 }, { dependsOn: [firebaseProject] });
+
+// ── Supabase Google Auth: OAuth consent screen ──────────────────────────────
+// Supabase's Google sign-in needs a "Web application" OAuth 2.0 Client ID
+// (Client ID + Secret) with a redirect URI Google doesn't let any IaC tool set
+// — there is no public Google API for creating that specific client type
+// outside the Cloud Console; `gcp.iap.Client` looks like a fit but its
+// redirect URI is hard-locked to IAP's own callback, not Supabase's, so it
+// can't be used here. That one step stays manual, per project:
+//   1. Console → APIs & Services → Credentials → Create Credentials →
+//      OAuth client ID → Web application.
+//   2. Authorized redirect URI: https://<supabase-project-ref>.supabase.co/auth/v1/callback
+//   3. Paste the resulting Client ID + Secret into the Supabase dashboard
+//      (Authentication → Providers → Google).
+//
+// What IS automatable, and what this manages: the OAuth consent screen
+// ("Brand") itself — the project-wide support email + app name Google shows
+// on that screen — which every OAuth client in the project shares regardless
+// of how it was created. A project gets exactly one Brand, and Google's API
+// does not support deleting one once created, so this is a permanent,
+// one-shot-per-project resource (same caution as the project itself above).
+//   pulumi config set gcp:oauthSupportEmail <support@yourdomain>
+// supportEmail must be either a Workspace group the deploying identity owns,
+// or the deploying user's own account email — a mismatched email fails at
+// apply time, not silently.
+const gcpOauthSupportEmail = gcpConfig.require("oauthSupportEmail");
+
+const iapApi = new gcp.projects.Service("iap-api", {
+	project: gcpProject.projectId,
+	service: "iap.googleapis.com",
+	disableOnDestroy: false,
+});
+
+new gcp.iap.Brand("agon-oauth-brand", {
+	project: gcpProject.projectId,
+	supportEmail: gcpOauthSupportEmail,
+	applicationTitle: `Agon (${pulumi.getStack()})`,
+}, { dependsOn: [iapApi] });
 
 // The service account the worker authenticates as (FCM HTTP v1's OAuth2
 // service-account flow). Scoped to exactly one role — sending messages — not

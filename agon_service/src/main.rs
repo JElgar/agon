@@ -37,10 +37,10 @@ use auth::{JwtClaims, JwtVerifier};
 mod mapping;
 use mapping::{
     comment_from_record, dao_internal, detailed_score_from_record, detailed_score_to_record,
-    invitation_detail_from_record, invitation_from_record, invitation_status_from_str,
-    invitation_status_str, match_from_records, match_status_str, match_type_tag,
-    notification_actor_id, notification_from_record, score_submission_from_record, score_to_record,
-    team_from_records, team_list_item_from_record, user_profile_from_record,
+    device_platform_to_record, invitation_detail_from_record, invitation_from_record,
+    invitation_status_from_str, invitation_status_str, match_from_records, match_status_str,
+    match_type_tag, notification_actor_id, notification_from_record, score_submission_from_record,
+    score_to_record, team_from_records, team_list_item_from_record, user_profile_from_record,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -941,6 +941,39 @@ enum MarkNotificationReadResponse {
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
+}
+
+/// The client platform a registered push token belongs to.
+#[derive(Enum)]
+#[oai(rename_all = "snake_case")]
+enum DevicePlatform {
+    Web,
+    Android,
+    Ios,
+}
+
+#[derive(Object)]
+struct RegisterDeviceInput {
+    /// The FCM registration token issued to this device/browser.
+    push_token: String,
+    platform: DevicePlatform,
+}
+
+#[derive(Object)]
+struct UnregisterDeviceInput {
+    push_token: String,
+}
+
+#[derive(ApiResponse)]
+enum RegisterDeviceResponse {
+    #[oai(status = 204)]
+    Ok,
+}
+
+#[derive(ApiResponse)]
+enum UnregisterDeviceResponse {
+    #[oai(status = 204)]
+    Ok,
 }
 
 #[derive(ApiResponse)]
@@ -3108,6 +3141,42 @@ impl Api {
             .await
             .map_err(dao_internal)?;
         Ok(MarkNotificationReadResponse::Ok)
+    }
+
+    #[oai(path = "/devices", method = "post")]
+    async fn register_device(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        input: Json<RegisterDeviceInput>,
+    ) -> Result<RegisterDeviceResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        info!("Registering device for {uid}");
+        let now = chrono::Utc::now().to_rfc3339();
+        dao.register_device(
+            &uid,
+            &input.push_token,
+            device_platform_to_record(&input.platform),
+            &now,
+        )
+        .await
+        .map_err(dao_internal)?;
+        Ok(RegisterDeviceResponse::Ok)
+    }
+
+    #[oai(path = "/devices/unregister", method = "post")]
+    async fn unregister_device(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        input: Json<UnregisterDeviceInput>,
+    ) -> Result<UnregisterDeviceResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        info!("Unregistering device for {uid}");
+        dao.delete_device(&uid, &input.push_token)
+            .await
+            .map_err(dao_internal)?;
+        Ok(UnregisterDeviceResponse::Ok)
     }
 
     #[oai(path = "/invitations/:invitation_id", method = "get")]

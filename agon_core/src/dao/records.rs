@@ -465,6 +465,35 @@ pub enum NotificationKindRecord {
     },
 }
 
+/// The client platform a registered push token belongs to. Distinguishes how
+/// a device's token is expected to behave (e.g. web tokens can go stale on
+/// service-worker reinstall) rather than changing the send path itself — FCM
+/// HTTP v1 accepts all three the same way.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DevicePlatform {
+    Web,
+    Android,
+    Ios,
+}
+
+/// `USER#<uid>` / `DEVICE#<token>` — a registered push destination.
+///
+/// The FCM registration token is the key value itself, so re-registering the
+/// same token (e.g. on every app open) is a plain upsert — no separate id
+/// layer, no conditional guard needed.
+///
+/// Future: a per-user (or per-user + notification kind / per-followed team)
+/// mute preference would be looked up in the worker's push handler right
+/// before the send loop — additive, doesn't change this record shape.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DeviceRecord {
+    pub user_id: String,
+    pub push_token: String,
+    pub platform: DevicePlatform,
+    pub created_at: String,
+}
+
 /// `ASSET#<assetId>` / `#META` — an uploadable asset.
 ///
 /// `status` is "pending" | "uploaded" | "failed". `url` is set once uploaded.

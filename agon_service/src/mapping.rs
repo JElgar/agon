@@ -18,19 +18,19 @@ use crate::notification::{
 };
 use crate::team::{Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
-    Comment, ConfirmedScore, Location, Match, MatchPlayer, MatchSide, MatchSocial, MatchStatus,
-    MatchType, PendingScore, Photo, Score, ScoreConfirmation, ScoreResponseKind, ScoreSubmission,
-    ScoreSubmissionResponse, ScoreSubmissionStatus, SetsScore, SetsScoreEntry, SimpleScore,
-    SimpleScoreEntry, UserProfile, UserSportStats,
+    Comment, ConfirmedScore, DevicePlatform, Location, Match, MatchPlayer, MatchSide, MatchSocial,
+    MatchStatus, MatchType, PendingScore, Photo, Score, ScoreConfirmation, ScoreResponseKind,
+    ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus, SetsScore, SetsScoreEntry,
+    SimpleScore, SimpleScoreEntry, UserProfile, UserSportStats,
 };
 use agon_core::dao::error::DaoError;
 use agon_core::dao::records::{
-    CommentRecord, ConfirmedScoreRecord, EmbeddedInvitationRecord, InvitationContextRecord,
-    InvitationKindRecord, InvitationRecord, MatchDetailedScoreRecord, MatchLikeRecord,
-    MatchPlayerRecord, MatchRecord, MatchSideRecord, NotificationKindRecord, NotificationRecord,
-    PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord,
-    ScoreSubmissionRecord, SetsScoreEntryRecord, SimpleScoreEntryRecord, TeamMemberRecord,
-    TeamRecord, UserRecord, UserSportStatsRecord,
+    CommentRecord, ConfirmedScoreRecord, DevicePlatform as DevicePlatformRecord,
+    EmbeddedInvitationRecord, InvitationContextRecord, InvitationKindRecord, InvitationRecord,
+    MatchDetailedScoreRecord, MatchLikeRecord, MatchPlayerRecord, MatchRecord, MatchSideRecord,
+    NotificationKindRecord, NotificationRecord, PendingScoreRecord, ScoreConfirmationRecord,
+    ScoreRecord, ScoreResponseRecord, ScoreSubmissionRecord, SetsScoreEntryRecord,
+    SimpleScoreEntryRecord, TeamMemberRecord, TeamRecord, UserRecord, UserSportStatsRecord,
 };
 use poem_openapi::types::{ParseFromJSON, ToJSON};
 
@@ -76,6 +76,15 @@ pub fn match_type_tag(mt: &MatchType) -> &'static str {
         MatchType::Football => "football",
         MatchType::Cricket => "cricket",
         MatchType::Other => "other",
+    }
+}
+
+/// Map the API's device-platform enum to the DAO-owned one.
+pub fn device_platform_to_record(p: &DevicePlatform) -> DevicePlatformRecord {
+    match p {
+        DevicePlatform::Web => DevicePlatformRecord::Web,
+        DevicePlatform::Android => DevicePlatformRecord::Android,
+        DevicePlatform::Ios => DevicePlatformRecord::Ios,
     }
 }
 

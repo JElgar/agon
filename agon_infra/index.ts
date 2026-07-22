@@ -4,6 +4,7 @@ import * as k8s from "@pulumi/kubernetes";
 import * as cloudflare from "@pulumi/cloudflare";
 import * as nginx from "@pulumi/kubernetes-ingress-nginx";
 import * as aws from "@pulumi/aws";
+import * as gcp from "@pulumi/gcp";
 import * as tls from "@pulumi/tls";
 
 const config = new pulumi.Config();
@@ -943,6 +944,84 @@ const meiliUrl = meiliService.metadata.name.apply(name => `http://${name}:7700`)
 
 
 // ───────────────────────────────────────────────────────────────────────────
+// GCP: Firebase Cloud Messaging (push notifications)
+//
+// MANUAL PREREQUISITE (same convention as the OVH VPS above): the GCP project
+// itself is created + billing attached out of band, once, via the GCP
+// console — Pulumi never creates or deletes the project, only what's safely
+// convergent inside it (API enablement, the Firebase attachment, the sender
+// service account). This keeps "project" out of the blast radius of a normal
+// `pulumi up`/`destroy`.
+//   pulumi config set gcp:project <project-id>
+//   pulumi config set gcp:region europe-west2
+//
+// The worker (agon_worker) is the only consumer: device registration just
+// writes to DynamoDB (see agon_service's /devices endpoints), and only the
+// worker's push handler calls FCM to actually send.
+// ───────────────────────────────────────────────────────────────────────────
+const gcpProjectId = new pulumi.Config("gcp").require("project");
+
+const fcmApi = new gcp.projects.Service("fcm-api", {
+	service: "fcm.googleapis.com",
+	// Never let a `destroy` disable the API on the shared GCP project — only
+	// Pulumi's own resources here should be torn down.
+	disableOnDestroy: false,
+});
+
+const firebaseApi = new gcp.projects.Service("firebase-api", {
+	service: "firebase.googleapis.com",
+	disableOnDestroy: false,
+});
+
+// Attaches Firebase to the (pre-existing) GCP project. Idempotent: safe to
+// import/re-apply against a project that already has Firebase enabled.
+const firebaseProject = new gcp.firebase.Project("agon-firebase", {}, {
+	dependsOn: [firebaseApi],
+});
+
+// Registers the PWA as a Firebase Web App, which is what the client SDK needs
+// to request an FCM token. Future: gcp.firebase.AndroidApp / AppleApp once
+// those clients exist — same project, no changes needed here.
+new gcp.firebase.WebApp("agon-pwa", {
+	displayName: `agon-${pulumi.getStack()}`,
+}, { dependsOn: [firebaseProject] });
+
+// The service account the worker authenticates as (FCM HTTP v1's OAuth2
+// service-account flow). Scoped to exactly one role — sending messages — not
+// general Firebase admin.
+const fcmServiceAccount = new gcp.serviceaccount.Account("agon-fcm-sender", {
+	accountId: `agon-fcm-${pulumi.getStack()}`,
+	displayName: `agon FCM sender (${pulumi.getStack()})`,
+}, { dependsOn: [firebaseApi] });
+
+new gcp.projects.IAMMember("agon-fcm-sender-role", {
+	project: gcpProjectId,
+	role: "roles/firebasecloudmessaging.admin",
+	member: pulumi.interpolate`serviceAccount:${fcmServiceAccount.email}`,
+});
+
+// The actual credential the worker signs its OAuth2 JWT bearer assertions
+// with. Pulumi state holds it encrypted, same as the CloudFront signing key
+// and the test JWT private key above.
+const fcmServiceAccountKey = new gcp.serviceaccount.Key("agon-fcm-sender-key", {
+	serviceAccountId: fcmServiceAccount.name,
+});
+
+// A standalone k8s Secret (mirrors `meiliSecret`, not folded into
+// `awsSecret`) so the FCM credential is separately rotatable. GCP returns the
+// key already base64-encoded; decode it so the env var is the raw JSON the
+// worker's `serde_json::from_str` expects.
+const fcmSecret = new k8s.core.v1.Secret("fcm-credentials", {
+	metadata: { name: "fcm-credentials", namespace: "default" },
+	type: "Opaque",
+	stringData: {
+		AGON_FCM_SERVICE_ACCOUNT_JSON: fcmServiceAccountKey.privateKey.apply(
+			key => Buffer.from(key, "base64").toString("utf8")),
+	},
+}, { provider: k8sProvider });
+
+
+// ───────────────────────────────────────────────────────────────────────────
 // Observability: LGTM stack (Loki, Grafana, Tempo, Mimir-less) + kube-prometheus
 //
 // Grafana is the single UI. Behind it:
@@ -1521,9 +1600,10 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 // ───────────────────────────────────────────────────────────────────────────
 // agon_worker: async processing worker
 // Long-polls the SQS events queue (fed by the EventBridge Pipe above) and runs
-// the inline handlers — search indexing (Meilisearch) and notification
-// generation. Shares the aws-credentials secret (now carrying the queue URL)
-// plus the Meilisearch URL/key. No ports / ingress — it only consumes SQS.
+// the inline handlers — search indexing (Meilisearch), notification
+// generation, and FCM push delivery. Shares the aws-credentials secret (now
+// carrying the queue URL) plus the Meilisearch URL/key and the fcm-credentials
+// secret above. No ports / ingress — it only consumes SQS.
 // ───────────────────────────────────────────────────────────────────────────
 const workerAppLabels = { app: "agon-worker" };
 new k8s.apps.v1.Deployment("agon-worker-deployment", {
@@ -1551,6 +1631,17 @@ new k8s.apps.v1.Deployment("agon-worker-deployment", {
 									secretKeyRef: {
 										name: meiliSecret.metadata.name,
 										key: "MEILI_MASTER_KEY",
+									}
+								},
+							},
+							// FCM sender credential — only the worker calls FCM (device
+							// registration itself is a plain DynamoDB write from agon_service).
+							{
+								name: "AGON_FCM_SERVICE_ACCOUNT_JSON",
+								valueFrom: {
+									secretKeyRef: {
+										name: fcmSecret.metadata.name,
+										key: "AGON_FCM_SERVICE_ACCOUNT_JSON",
 									}
 								},
 							},

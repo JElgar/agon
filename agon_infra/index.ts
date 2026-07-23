@@ -946,107 +946,66 @@ const meiliUrl = meiliService.metadata.name.apply(name => `http://${name}:7700`)
 // ───────────────────────────────────────────────────────────────────────────
 // GCP: Firebase Cloud Messaging (push notifications)
 //
-// Pulumi fully manages the GCP project here (unlike the OVH VPS above, which
-// is manual because of a genuine `pulumi-ovh` provider bug — that limitation
-// doesn't apply to the GCP provider). Creating the project needs:
-//   pulumi config set gcp:project <new-project-id>
-//   pulumi config set gcp:region europe-west2
-// `gcp:orgId` and `gcp:billingAccount` are both OPTIONAL:
-//   pulumi config set gcp:orgId <org-id>            # only if under a formal GCP Organization
-//   pulumi config set gcp:billingAccount <billing-account-id>  # only if something here needs the Blaze plan
-// Leave `orgId` unset for a personal-account project (Console shows "No
-// Organization" / org id `0`) — same as the existing "agon" project. Leave
-// `billingAccount` unset too: FCM (and Firebase's Spark/no-cost plan
-// generally) doesn't require billing, and setting up a billing account needs
-// a real payment method — not worth forcing on someone just for push
-// notifications. Both create the project the same way, just narrower.
-// Also needs ambient GCP credentials with `roles/resourcemanager.projectCreator`
-// (at the org level if `orgId` is set, otherwise on the calling account).
-// `deletionPolicy: "PREVENT"` blocks the one genuinely dangerous accident
-// this unlocks — a `pulumi destroy` (or a projectId change forcing
-// replacement) taking the whole project, and everything in it, with it.
+// Reuses the single "agon" GCP project already created manually (the same one
+// Supabase's Google Auth uses) — Pulumi does NOT create or own the project
+// itself here. Shared across all stages for now, deliberately: a proper
+// per-stage split (separate GCP projects, a GCP Organization so it can be
+// fully IaC, Pulumi-managed Supabase projects) was scoped out as a follow-up,
+// not because it isn't worth doing — see git history on this file for that
+// design discussion. Keeping this shared for now means:
+//   - Apply this section from ONE stack only. Every resource below is scoped
+//     to the single shared project, so running `pulumi up` from a second
+//     stack would fight the first over ownership of the same physical
+//     resources (Firebase attachment, the API-enablement toggles). Pick
+//     whichever stack you actually deploy from (e.g. `staging`, since that's
+//     what CI drives) and only ever apply from there until the per-stage
+//     migration happens.
+//   - The FCM sender service account + key below are likewise shared, not
+//     per-environment — every stage's worker would authenticate as the same
+//     identity. Fine for now; revisit alongside the project split.
 //
-// Each full stage (staging, prod) gets its own, fully separate GCP project —
-// same principle as the per-stack DynamoDB table / S3 bucket above, so a
-// staging change can be tested before it ever touches prod, and a new stage
-// needs zero manual GCP setup. This is deliberately NOT shared across stages,
-// and NOT meant to be created per lightweight/preview stack (a future PR-
-// preview stack kind should attach to an existing stage's project instead of
-// minting a new one — out of scope here).
+//   pulumi config set gcp:project agon   # defaults to "agon" if unset
 //
-// The project is also where Supabase's Google-sign-in OAuth client lives —
-// see the "Supabase Google Auth" block below, which is entirely manual
-// (Google shut down the only API for automating it in July 2025).
+// Needs ambient GCP credentials (e.g. `gcloud auth application-default
+// login`) with edit access on the existing "agon" project — no
+// project-creator/org/billing permissions required, since nothing here
+// creates a project.
 //
 // The worker (agon_worker) is the only FCM consumer: device registration just
 // writes to DynamoDB (see agon_service's /devices endpoints), and only the
 // worker's push handler calls FCM to actually send.
 // ───────────────────────────────────────────────────────────────────────────
 const gcpConfig = new pulumi.Config("gcp");
-// Defaults to `agon-<stage>` — matches the DynamoDB table / S3 bucket naming
-// above — so a new stage needs no GCP config at all by default. Still
-// overridable (e.g. if `agon-<stage>` collides with someone else's project —
-// project ids are unique across all of GCP, not just this account).
-const gcpProjectId = gcpConfig.get("project") ?? `agon-${pulumi.getStack()}`;
-// europe-west2 is London — as close as GCP's region list gets. Also
-// overridable, but nothing here needs to be anywhere else.
-const gcpRegion = gcpConfig.get("region") ?? "europe-west2";
-// Optional: omitted entirely (not just passed as undefined-but-present) for a
-// personal-account project with no GCP Organization.
-const gcpOrgId = gcpConfig.get("orgId");
-// Optional too: FCM (and Firebase's Spark/no-cost plan generally) doesn't
-// need a billing account, and creating one requires a real payment method —
-// not something to force on someone just to ship push notifications. Set
-// gcp:billingAccount later if some other API this project ends up using
-// requires the Blaze plan.
-const gcpBillingAccount = gcpConfig.get("billingAccount");
-
-const gcpProject = new gcp.organizations.Project("agon-firebase-project", {
-	projectId: gcpProjectId,
-	name: `agon-${pulumi.getStack()}`,
-	...(gcpOrgId ? { orgId: gcpOrgId } : {}),
-	...(gcpBillingAccount ? { billingAccount: gcpBillingAccount } : {}),
-	deletionPolicy: "PREVENT",
-});
-
-// Explicit provider (rather than the ambient default, which would need
-// `gcp:project`/`gcp:region` stack config to know either value) for
-// everything created *inside* the project below: pins the region so any
-// future regional resource (Cloud Run, a regional bucket, ...) defaults to
-// London instead of silently landing in us-central1. Not used for
-// `gcpProject` itself — that's an org-level create, the project doesn't exist
-// yet to scope a provider to it.
-const gcpProvider = new gcp.Provider("agon-gcp", {
-	project: gcpProjectId,
-	region: gcpRegion,
-});
+const gcpProjectId = gcpConfig.get("project") ?? "agon";
 
 const fcmApi = new gcp.projects.Service("fcm-api", {
-	project: gcpProject.projectId,
+	project: gcpProjectId,
 	service: "fcm.googleapis.com",
-	// Never let a `destroy` disable the API on the project — only Pulumi's own
-	// resources here should be torn down (the project itself is guarded above).
+	// Never let a `destroy` disable the API on the shared project — only
+	// Pulumi's own resources here should be torn down.
 	disableOnDestroy: false,
-}, { provider: gcpProvider });
+});
 
 const firebaseApi = new gcp.projects.Service("firebase-api", {
-	project: gcpProject.projectId,
+	project: gcpProjectId,
 	service: "firebase.googleapis.com",
 	disableOnDestroy: false,
-}, { provider: gcpProvider });
+});
 
-// Attaches Firebase to the project just created.
+// Attaches Firebase to the project. If "agon" already has Firebase attached
+// (e.g. from prior manual clicking-around), this create may fail with
+// "already exists" — `pulumi import` it instead in that case, one-time.
 const firebaseProject = new gcp.firebase.Project("agon-firebase", {
-	project: gcpProject.projectId,
-}, { provider: gcpProvider, dependsOn: [firebaseApi] });
+	project: gcpProjectId,
+}, { dependsOn: [firebaseApi] });
 
 // Registers the PWA as a Firebase Web App, which is what the client SDK needs
 // to request an FCM token. Future: gcp.firebase.AndroidApp / AppleApp once
 // those clients exist — same project, no changes needed here.
 new gcp.firebase.WebApp("agon-pwa", {
-	project: gcpProject.projectId,
-	displayName: `agon-${pulumi.getStack()}`,
-}, { provider: gcpProvider, dependsOn: [firebaseProject] });
+	project: gcpProjectId,
+	displayName: "agon-pwa",
+}, { dependsOn: [firebaseProject] });
 
 // ── Supabase Google Auth: OAuth consent screen + client ─────────────────────
 // Fully manual, per project — and NOT automatable at all right now, not even
@@ -1069,25 +1028,26 @@ new gcp.firebase.WebApp("agon-pwa", {
 
 // The service account the worker authenticates as (FCM HTTP v1's OAuth2
 // service-account flow). Scoped to exactly one role — sending messages — not
-// general Firebase admin.
+// general Firebase admin. Shared across stages for now (see the section
+// comment above) — every stage's worker authenticates as this same identity.
 const fcmServiceAccount = new gcp.serviceaccount.Account("agon-fcm-sender", {
-	project: gcpProject.projectId,
-	accountId: `agon-fcm-${pulumi.getStack()}`,
-	displayName: `agon FCM sender (${pulumi.getStack()})`,
-}, { provider: gcpProvider, dependsOn: [firebaseApi] });
+	project: gcpProjectId,
+	accountId: "agon-fcm-sender",
+	displayName: "agon FCM sender",
+}, { dependsOn: [firebaseApi] });
 
 new gcp.projects.IAMMember("agon-fcm-sender-role", {
-	project: gcpProject.projectId,
+	project: gcpProjectId,
 	role: "roles/firebasecloudmessaging.admin",
 	member: pulumi.interpolate`serviceAccount:${fcmServiceAccount.email}`,
-}, { provider: gcpProvider });
+});
 
 // The actual credential the worker signs its OAuth2 JWT bearer assertions
 // with. Pulumi state holds it encrypted, same as the CloudFront signing key
 // and the test JWT private key above.
 const fcmServiceAccountKey = new gcp.serviceaccount.Key("agon-fcm-sender-key", {
 	serviceAccountId: fcmServiceAccount.name,
-}, { provider: gcpProvider });
+});
 
 // A standalone k8s Secret (mirrors `meiliSecret`, not folded into
 // `awsSecret`) so the FCM credential is separately rotatable. GCP returns the

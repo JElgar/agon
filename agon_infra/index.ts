@@ -951,13 +951,19 @@ const meiliUrl = meiliService.metadata.name.apply(name => `http://${name}:7700`)
 // doesn't apply to the GCP provider). Creating the project needs:
 //   pulumi config set gcp:project <new-project-id>
 //   pulumi config set gcp:region europe-west2
-//   pulumi config set gcp:orgId <org-id>
 //   pulumi config set gcp:billingAccount <billing-account-id>
-// and ambient GCP credentials with `roles/resourcemanager.projectCreator` on
-// the org plus `roles/billing.user` on the billing account. `deletionPolicy:
-// "PREVENT"` blocks the one genuinely dangerous accident this unlocks — a
-// `pulumi destroy` (or a projectId change forcing replacement) taking the
-// whole project, and everything in it, with it.
+// `gcp:orgId` is OPTIONAL — only set it if the project should live under a
+// formal GCP Organization:
+//   pulumi config set gcp:orgId <org-id>
+// Leave it unset for a personal-account project (Console shows "No
+// Organization" / org id `0`) — same as the existing "agon" project — and
+// this creates the new project the same way, standalone.
+// Also needs ambient GCP credentials with `roles/resourcemanager.projectCreator`
+// (at the org level if `orgId` is set, otherwise on the calling account/
+// billing account) plus `roles/billing.user` on the billing account.
+// `deletionPolicy: "PREVENT"` blocks the one genuinely dangerous accident
+// this unlocks — a `pulumi destroy` (or a projectId change forcing
+// replacement) taking the whole project, and everything in it, with it.
 //
 // Each full stage (staging, prod) gets its own, fully separate GCP project —
 // same principle as the per-stack DynamoDB table / S3 bucket above, so a
@@ -976,13 +982,15 @@ const meiliUrl = meiliService.metadata.name.apply(name => `http://${name}:7700`)
 // ───────────────────────────────────────────────────────────────────────────
 const gcpConfig = new pulumi.Config("gcp");
 const gcpProjectId = gcpConfig.require("project");
-const gcpOrgId = gcpConfig.require("orgId");
+// Optional: omitted entirely (not just passed as undefined-but-present) for a
+// personal-account project with no GCP Organization.
+const gcpOrgId = gcpConfig.get("orgId");
 const gcpBillingAccount = gcpConfig.require("billingAccount");
 
 const gcpProject = new gcp.organizations.Project("agon-firebase-project", {
 	projectId: gcpProjectId,
 	name: `agon-${pulumi.getStack()}`,
-	orgId: gcpOrgId,
+	...(gcpOrgId ? { orgId: gcpOrgId } : {}),
 	billingAccount: gcpBillingAccount,
 	deletionPolicy: "PREVENT",
 });

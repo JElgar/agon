@@ -15,10 +15,14 @@ base64 = "0.22.1"
 chrono = { version = "0.4.41", features = ["serde"] }
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-dynamodb = "1"
-# Only the timer, for backoff between DynamoDB batch-retry attempts.
-tokio = { version = "1", features = ["time"] }
+# Timer (backoff between DynamoDB batch-retry attempts) + sync (cached FCM
+# OAuth2 token, guarded by a RwLock in `push`).
+tokio = { version = "1", features = ["time", "sync"] }
 serde_dynamo = { version = "4", features = ["aws-sdk-dynamodb+1"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Signs the FCM service-account JWT bearer assertion (RS256) for the OAuth2
+# token exchange in `push`. Same version already pinned in agon_service.
+jsonwebtoken = "9.3.1"
 
 # Observability: OTLP export of logs, traces and metrics. `telemetry::init`
 # wires the `tracing` ecosystem to an OTLP collector (Grafana Alloy in prod);

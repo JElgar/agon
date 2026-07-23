@@ -23,6 +23,7 @@ use crate::config::Config;
 use crate::error::{WorkerError, WorkerResult};
 use crate::event::{ChangeEvent, Envelope};
 use crate::handlers;
+use agon_core::push::PushClient;
 use agon_core::search::SearchClient;
 
 /// Shared, cheaply-cloneable dependencies for message processing.
@@ -31,6 +32,9 @@ pub struct Consumer {
     sqs: SqsClient,
     dao: Dao,
     search: SearchClient,
+    /// `None` when push isn't configured (e.g. local dev) — handled the same
+    /// way as the Temporal client's absence in tests: handlers no-op.
+    push: Option<PushClient>,
     config: Arc<Config>,
     /// Client for starting multi-step workflows. Attached in `main` after the
     /// Temporal connection succeeds; when absent (e.g. in unit tests), multi-step
@@ -39,11 +43,18 @@ pub struct Consumer {
 }
 
 impl Consumer {
-    pub fn new(sqs: SqsClient, dao: Dao, search: SearchClient, config: Config) -> Self {
+    pub fn new(
+        sqs: SqsClient,
+        dao: Dao,
+        search: SearchClient,
+        push: Option<PushClient>,
+        config: Config,
+    ) -> Self {
         Self {
             sqs,
             dao,
             search,
+            push,
             config: Arc::new(config),
             temporal: None,
         }
@@ -147,7 +158,7 @@ impl Consumer {
         let event = ChangeEvent::from_envelope(&envelope)?;
 
         let now = Utc::now().to_rfc3339();
-        handlers::route(&self.dao, &self.search, &event, &now).await?;
+        handlers::route(&self.dao, &self.search, self.push.as_ref(), &event, &now).await?;
 
         // Multi-step work: start the relevant Temporal workflow (idempotent via
         // deterministic ids). A start failure is transient, so the message is left

@@ -4,6 +4,7 @@ import * as k8s from "@pulumi/kubernetes";
 import * as cloudflare from "@pulumi/cloudflare";
 import * as nginx from "@pulumi/kubernetes-ingress-nginx";
 import * as aws from "@pulumi/aws";
+import * as gcp from "@pulumi/gcp";
 import * as tls from "@pulumi/tls";
 
 const config = new pulumi.Config();
@@ -943,6 +944,126 @@ const meiliUrl = meiliService.metadata.name.apply(name => `http://${name}:7700`)
 
 
 // ───────────────────────────────────────────────────────────────────────────
+// GCP: Firebase Cloud Messaging (push notifications)
+//
+// Reuses the single "agon" GCP project already created manually (the same one
+// Supabase's Google Auth uses) — Pulumi does NOT create or own the project
+// itself here. Shared across all stages for now, deliberately: a proper
+// per-stage split (separate GCP projects, a GCP Organization so it can be
+// fully IaC, Pulumi-managed Supabase projects) was scoped out as a follow-up,
+// not because it isn't worth doing — see git history on this file for that
+// design discussion. Keeping this shared for now means:
+//   - Apply this section from ONE stack only. Every resource below is scoped
+//     to the single shared project, so running `pulumi up` from a second
+//     stack would fight the first over ownership of the same physical
+//     resources (Firebase attachment, the API-enablement toggles). Pick
+//     whichever stack you actually deploy from (e.g. `staging`, since that's
+//     what CI drives) and only ever apply from there until the per-stage
+//     migration happens.
+//   - The FCM sender service account + key below are likewise shared, not
+//     per-environment — every stage's worker would authenticate as the same
+//     identity. Fine for now; revisit alongside the project split.
+//
+//   pulumi config set gcp:project agon   # defaults to "agon" if unset
+//
+// Needs ambient GCP credentials (e.g. `gcloud auth application-default
+// login`) with edit access on the existing "agon" project — no
+// project-creator/org/billing permissions required, since nothing here
+// creates a project.
+//
+// The worker (agon_worker) is the only FCM consumer: device registration just
+// writes to DynamoDB (see agon_service's /devices endpoints), and only the
+// worker's push handler calls FCM to actually send.
+// ───────────────────────────────────────────────────────────────────────────
+const gcpConfig = new pulumi.Config("gcp");
+const gcpProjectId = gcpConfig.get("project") ?? "agon";
+
+const fcmApi = new gcp.projects.Service("fcm-api", {
+	project: gcpProjectId,
+	service: "fcm.googleapis.com",
+	// Never let a `destroy` disable the API on the shared project — only
+	// Pulumi's own resources here should be torn down.
+	disableOnDestroy: false,
+});
+
+const firebaseApi = new gcp.projects.Service("firebase-api", {
+	project: gcpProjectId,
+	service: "firebase.googleapis.com",
+	disableOnDestroy: false,
+});
+
+// Attaches Firebase to the project. If "agon" already has Firebase attached
+// (e.g. from prior manual clicking-around), this create may fail with
+// "already exists" — `pulumi import` it instead in that case, one-time.
+const firebaseProject = new gcp.firebase.Project("agon-firebase", {
+	project: gcpProjectId,
+}, { dependsOn: [firebaseApi] });
+
+// Registers the PWA as a Firebase Web App, which is what the client SDK needs
+// to request an FCM token. Future: gcp.firebase.AndroidApp / AppleApp once
+// those clients exist — same project, no changes needed here.
+new gcp.firebase.WebApp("agon-pwa", {
+	project: gcpProjectId,
+	displayName: "agon-pwa",
+}, { dependsOn: [firebaseProject] });
+
+// ── Supabase Google Auth: OAuth consent screen + client ─────────────────────
+// Fully manual, per project — and NOT automatable at all right now, not even
+// partially. This used to create the OAuth consent screen ("Brand") via
+// `gcp.iap.Brand`, but that resource depends on the IAP OAuth Admin API,
+// which Google shut down entirely in July 2025 (see
+// https://docs.cloud.google.com/iap/docs/deprecations/migrate-oauth-client) —
+// `gcp.iap.Brand`/`gcp.iap.Client` no longer function for anyone, regardless
+// of billing/org status. There is currently no replacement API for
+// programmatic OAuth consent screen or client creation outside the Console.
+// One-time steps per project:
+//   1. Console → APIs & Services → OAuth consent screen → configure the
+//      support email + app name (this is the "Brand" — one per project,
+//      permanent, can't be deleted via API or Console once created).
+//   2. Console → APIs & Services → Credentials → Create Credentials →
+//      OAuth client ID → Web application.
+//   3. Authorized redirect URI: https://<supabase-project-ref>.supabase.co/auth/v1/callback
+//   4. Paste the resulting Client ID + Secret into the Supabase dashboard
+//      (Authentication → Providers → Google).
+
+// The service account the worker authenticates as (FCM HTTP v1's OAuth2
+// service-account flow). Scoped to exactly one role — sending messages — not
+// general Firebase admin. Shared across stages for now (see the section
+// comment above) — every stage's worker authenticates as this same identity.
+const fcmServiceAccount = new gcp.serviceaccount.Account("agon-fcm-sender", {
+	project: gcpProjectId,
+	accountId: "agon-fcm-sender",
+	displayName: "agon FCM sender",
+}, { dependsOn: [firebaseApi] });
+
+new gcp.projects.IAMMember("agon-fcm-sender-role", {
+	project: gcpProjectId,
+	role: "roles/firebasecloudmessaging.admin",
+	member: pulumi.interpolate`serviceAccount:${fcmServiceAccount.email}`,
+});
+
+// The actual credential the worker signs its OAuth2 JWT bearer assertions
+// with. Pulumi state holds it encrypted, same as the CloudFront signing key
+// and the test JWT private key above.
+const fcmServiceAccountKey = new gcp.serviceaccount.Key("agon-fcm-sender-key", {
+	serviceAccountId: fcmServiceAccount.name,
+});
+
+// A standalone k8s Secret (mirrors `meiliSecret`, not folded into
+// `awsSecret`) so the FCM credential is separately rotatable. GCP returns the
+// key already base64-encoded; decode it so the env var is the raw JSON the
+// worker's `serde_json::from_str` expects.
+const fcmSecret = new k8s.core.v1.Secret("fcm-credentials", {
+	metadata: { name: "fcm-credentials", namespace: "default" },
+	type: "Opaque",
+	stringData: {
+		AGON_FCM_SERVICE_ACCOUNT_JSON: fcmServiceAccountKey.privateKey.apply(
+			key => Buffer.from(key, "base64").toString("utf8")),
+	},
+}, { provider: k8sProvider });
+
+
+// ───────────────────────────────────────────────────────────────────────────
 // Observability: LGTM stack (Loki, Grafana, Tempo, Mimir-less) + kube-prometheus
 //
 // Grafana is the single UI. Behind it:
@@ -1521,9 +1642,10 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 // ───────────────────────────────────────────────────────────────────────────
 // agon_worker: async processing worker
 // Long-polls the SQS events queue (fed by the EventBridge Pipe above) and runs
-// the inline handlers — search indexing (Meilisearch) and notification
-// generation. Shares the aws-credentials secret (now carrying the queue URL)
-// plus the Meilisearch URL/key. No ports / ingress — it only consumes SQS.
+// the inline handlers — search indexing (Meilisearch), notification
+// generation, and FCM push delivery. Shares the aws-credentials secret (now
+// carrying the queue URL) plus the Meilisearch URL/key and the fcm-credentials
+// secret above. No ports / ingress — it only consumes SQS.
 // ───────────────────────────────────────────────────────────────────────────
 const workerAppLabels = { app: "agon-worker" };
 new k8s.apps.v1.Deployment("agon-worker-deployment", {
@@ -1551,6 +1673,17 @@ new k8s.apps.v1.Deployment("agon-worker-deployment", {
 									secretKeyRef: {
 										name: meiliSecret.metadata.name,
 										key: "MEILI_MASTER_KEY",
+									}
+								},
+							},
+							// FCM sender credential — only the worker calls FCM (device
+							// registration itself is a plain DynamoDB write from agon_service).
+							{
+								name: "AGON_FCM_SERVICE_ACCOUNT_JSON",
+								valueFrom: {
+									secretKeyRef: {
+										name: fcmSecret.metadata.name,
+										key: "AGON_FCM_SERVICE_ACCOUNT_JSON",
 									}
 								},
 							},

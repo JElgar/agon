@@ -170,6 +170,10 @@ pub enum Sk {
     /// A notification. `NOTIF#<nid>` — addressed by id; time ordering is via
     /// GSI1 (`UNOTIFS#<uid>` / `<ts>#<nid>`).
     Notification(String),
+    /// A registered push destination, in the user partition. `DEVICE#<token>`
+    /// — the FCM registration token is itself the key value, so re-registering
+    /// the same token is a natural upsert (no separate id layer needed).
+    Device(String),
     /// Records what a match contributed to one participant's per-sport stats
     /// (`{ played, won }`), in the match's partition. `STATCONTRIB#<userId>`.
     /// The async stats reconciler diffs the desired contribution (from the
@@ -202,6 +206,7 @@ impl Sk {
             Sk::Comment(_) => "COMMENT",
             Sk::Reply(_) => "REPLY",
             Sk::Notification(_) => "NOTIF",
+            Sk::Device(_) => "DEVICE",
             Sk::StatContribution(_) => "STATCONTRIB",
             Sk::Feed { .. } => "FEED",
         }
@@ -225,6 +230,7 @@ impl fmt::Display for Sk {
             | Sk::Comment(v)
             | Sk::Reply(v)
             | Sk::Notification(v)
+            | Sk::Device(v)
             | Sk::StatContribution(v) => write!(f, "{}{}{}", self.prefix(), DELIMITER, v),
 
             // Feed entries keep the timestamp in the key (list-only).
@@ -275,6 +281,7 @@ impl FromStr for Sk {
             "COMMENT" => Ok(Sk::Comment(rest.into())),
             "REPLY" => Ok(Sk::Reply(rest.into())),
             "NOTIF" => Ok(Sk::Notification(rest.into())),
+            "DEVICE" => Ok(Sk::Device(rest.into())),
             "STATCONTRIB" => Ok(Sk::StatContribution(rest.into())),
             "FEED" => {
                 let (starts_at, match_id) = two(rest)?;
@@ -345,6 +352,7 @@ mod tests {
         sk_roundtrip(Sk::Comment("c1".into()), "COMMENT#c1");
         sk_roundtrip(Sk::Reply("r1".into()), "REPLY#r1");
         sk_roundtrip(Sk::Notification("n1".into()), "NOTIF#n1");
+        sk_roundtrip(Sk::Device("token-abc".into()), "DEVICE#token-abc");
         sk_roundtrip(Sk::StatContribution("u4".into()), "STATCONTRIB#u4");
     }
 

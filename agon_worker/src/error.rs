@@ -11,7 +11,7 @@
 
 use agon_core::dao::error::DaoError;
 use agon_core::dao::keys::KeyError;
-use agon_core::error::SearchError;
+use agon_core::error::{PushError, SearchError};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -42,6 +42,10 @@ pub enum WorkerError {
     /// A Meilisearch call failed. Usually transient → retry.
     #[error(transparent)]
     Search(#[from] SearchError),
+
+    /// An FCM call failed. Usually transient → retry.
+    #[error(transparent)]
+    Push(#[from] PushError),
 
     /// An SQS operation failed.
     #[error("sqs error: {0}")]

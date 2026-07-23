@@ -951,16 +951,17 @@ const meiliUrl = meiliService.metadata.name.apply(name => `http://${name}:7700`)
 // doesn't apply to the GCP provider). Creating the project needs:
 //   pulumi config set gcp:project <new-project-id>
 //   pulumi config set gcp:region europe-west2
-//   pulumi config set gcp:billingAccount <billing-account-id>
-// `gcp:orgId` is OPTIONAL — only set it if the project should live under a
-// formal GCP Organization:
-//   pulumi config set gcp:orgId <org-id>
-// Leave it unset for a personal-account project (Console shows "No
-// Organization" / org id `0`) — same as the existing "agon" project — and
-// this creates the new project the same way, standalone.
+// `gcp:orgId` and `gcp:billingAccount` are both OPTIONAL:
+//   pulumi config set gcp:orgId <org-id>            # only if under a formal GCP Organization
+//   pulumi config set gcp:billingAccount <billing-account-id>  # only if something here needs the Blaze plan
+// Leave `orgId` unset for a personal-account project (Console shows "No
+// Organization" / org id `0`) — same as the existing "agon" project. Leave
+// `billingAccount` unset too: FCM (and Firebase's Spark/no-cost plan
+// generally) doesn't require billing, and setting up a billing account needs
+// a real payment method — not worth forcing on someone just for push
+// notifications. Both create the project the same way, just narrower.
 // Also needs ambient GCP credentials with `roles/resourcemanager.projectCreator`
-// (at the org level if `orgId` is set, otherwise on the calling account/
-// billing account) plus `roles/billing.user` on the billing account.
+// (at the org level if `orgId` is set, otherwise on the calling account).
 // `deletionPolicy: "PREVENT"` blocks the one genuinely dangerous accident
 // this unlocks — a `pulumi destroy` (or a projectId change forcing
 // replacement) taking the whole project, and everything in it, with it.
@@ -973,8 +974,9 @@ const meiliUrl = meiliService.metadata.name.apply(name => `http://${name}:7700`)
 // preview stack kind should attach to an existing stage's project instead of
 // minting a new one — out of scope here).
 //
-// The project also carries the OAuth consent screen ("Brand") used by
-// Supabase's Google sign-in — see the "Supabase Google Auth" block below.
+// The project is also where Supabase's Google-sign-in OAuth client lives —
+// see the "Supabase Google Auth" block below, which is entirely manual
+// (Google shut down the only API for automating it in July 2025).
 //
 // The worker (agon_worker) is the only FCM consumer: device registration just
 // writes to DynamoDB (see agon_service's /devices endpoints), and only the
@@ -985,13 +987,18 @@ const gcpProjectId = gcpConfig.require("project");
 // Optional: omitted entirely (not just passed as undefined-but-present) for a
 // personal-account project with no GCP Organization.
 const gcpOrgId = gcpConfig.get("orgId");
-const gcpBillingAccount = gcpConfig.require("billingAccount");
+// Optional too: FCM (and Firebase's Spark/no-cost plan generally) doesn't
+// need a billing account, and creating one requires a real payment method —
+// not something to force on someone just to ship push notifications. Set
+// gcp:billingAccount later if some other API this project ends up using
+// requires the Blaze plan.
+const gcpBillingAccount = gcpConfig.get("billingAccount");
 
 const gcpProject = new gcp.organizations.Project("agon-firebase-project", {
 	projectId: gcpProjectId,
 	name: `agon-${pulumi.getStack()}`,
 	...(gcpOrgId ? { orgId: gcpOrgId } : {}),
-	billingAccount: gcpBillingAccount,
+	...(gcpBillingAccount ? { billingAccount: gcpBillingAccount } : {}),
 	deletionPolicy: "PREVENT",
 });
 
@@ -1022,42 +1029,24 @@ new gcp.firebase.WebApp("agon-pwa", {
 	displayName: `agon-${pulumi.getStack()}`,
 }, { dependsOn: [firebaseProject] });
 
-// ── Supabase Google Auth: OAuth consent screen ──────────────────────────────
-// Supabase's Google sign-in needs a "Web application" OAuth 2.0 Client ID
-// (Client ID + Secret) with a redirect URI Google doesn't let any IaC tool set
-// — there is no public Google API for creating that specific client type
-// outside the Cloud Console; `gcp.iap.Client` looks like a fit but its
-// redirect URI is hard-locked to IAP's own callback, not Supabase's, so it
-// can't be used here. That one step stays manual, per project:
-//   1. Console → APIs & Services → Credentials → Create Credentials →
+// ── Supabase Google Auth: OAuth consent screen + client ─────────────────────
+// Fully manual, per project — and NOT automatable at all right now, not even
+// partially. This used to create the OAuth consent screen ("Brand") via
+// `gcp.iap.Brand`, but that resource depends on the IAP OAuth Admin API,
+// which Google shut down entirely in July 2025 (see
+// https://docs.cloud.google.com/iap/docs/deprecations/migrate-oauth-client) —
+// `gcp.iap.Brand`/`gcp.iap.Client` no longer function for anyone, regardless
+// of billing/org status. There is currently no replacement API for
+// programmatic OAuth consent screen or client creation outside the Console.
+// One-time steps per project:
+//   1. Console → APIs & Services → OAuth consent screen → configure the
+//      support email + app name (this is the "Brand" — one per project,
+//      permanent, can't be deleted via API or Console once created).
+//   2. Console → APIs & Services → Credentials → Create Credentials →
 //      OAuth client ID → Web application.
-//   2. Authorized redirect URI: https://<supabase-project-ref>.supabase.co/auth/v1/callback
-//   3. Paste the resulting Client ID + Secret into the Supabase dashboard
+//   3. Authorized redirect URI: https://<supabase-project-ref>.supabase.co/auth/v1/callback
+//   4. Paste the resulting Client ID + Secret into the Supabase dashboard
 //      (Authentication → Providers → Google).
-//
-// What IS automatable, and what this manages: the OAuth consent screen
-// ("Brand") itself — the project-wide support email + app name Google shows
-// on that screen — which every OAuth client in the project shares regardless
-// of how it was created. A project gets exactly one Brand, and Google's API
-// does not support deleting one once created, so this is a permanent,
-// one-shot-per-project resource (same caution as the project itself above).
-//   pulumi config set gcp:oauthSupportEmail <support@yourdomain>
-// supportEmail must be either a Workspace group the deploying identity owns,
-// or the deploying user's own account email — a mismatched email fails at
-// apply time, not silently.
-const gcpOauthSupportEmail = gcpConfig.require("oauthSupportEmail");
-
-const iapApi = new gcp.projects.Service("iap-api", {
-	project: gcpProject.projectId,
-	service: "iap.googleapis.com",
-	disableOnDestroy: false,
-});
-
-new gcp.iap.Brand("agon-oauth-brand", {
-	project: gcpProject.projectId,
-	supportEmail: gcpOauthSupportEmail,
-	applicationTitle: `Agon (${pulumi.getStack()})`,
-}, { dependsOn: [iapApi] });
 
 // The service account the worker authenticates as (FCM HTTP v1's OAuth2
 // service-account flow). Scoped to exactly one role — sending messages — not

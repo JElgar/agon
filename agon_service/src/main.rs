@@ -968,6 +968,10 @@ struct UnregisterDeviceInput {
 enum RegisterDeviceResponse {
     #[oai(status = 204)]
     Ok,
+
+    /// The user already has the maximum number of registered devices.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -3153,15 +3157,21 @@ impl Api {
         let uid = self.require_uid(dao, &jwt_data).await?;
         info!("Registering device for {uid}");
         let now = chrono::Utc::now().to_rfc3339();
-        dao.register_device(
-            &uid,
-            &input.push_token,
-            device_platform_to_record(&input.platform),
-            &now,
-        )
-        .await
-        .map_err(dao_internal)?;
-        Ok(RegisterDeviceResponse::Ok)
+        match dao
+            .register_device(
+                &uid,
+                &input.push_token,
+                device_platform_to_record(&input.platform),
+                &now,
+            )
+            .await
+        {
+            Ok(()) => Ok(RegisterDeviceResponse::Ok),
+            Err(dao::DaoError::Conflict(msg)) => {
+                Ok(RegisterDeviceResponse::ValidationError(PlainText(msg)))
+            }
+            Err(e) => Err(dao_internal(e)),
+        }
     }
 
     #[oai(path = "/devices/unregister", method = "post")]

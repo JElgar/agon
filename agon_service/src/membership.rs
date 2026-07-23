@@ -110,6 +110,10 @@ pub enum InvitationContext {
 pub struct InvitationMatchContext {
     pub match_id: String,
     pub match_name: String,
+    /// The pending score submission awaiting confirmation from this
+    /// invitation's side, if any. Lets the client offer to confirm the score
+    /// in the same action as accepting the invite.
+    pub pending_score_submission_id: Option<String>,
 }
 
 #[derive(Object)]

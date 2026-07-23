@@ -321,6 +321,9 @@ pub fn invitation_context_from_record(rec: &InvitationContextRecord) -> Invitati
         } => InvitationContext::Match(InvitationMatchContext {
             match_id: match_id.clone(),
             match_name: match_name.clone(),
+            // Resolved by the caller (needs a DAO lookup) via
+            // `invitation_detail_from_record`; left unset by default here.
+            pending_score_submission_id: None,
         }),
         InvitationContextRecord::Team { team_id, team_name } => {
             InvitationContext::Team(InvitationTeamContext {
@@ -344,13 +347,20 @@ pub fn invitation_from_record(rec: &InvitationRecord) -> Invitation {
 }
 
 /// Build the standalone `InvitationDetail` (invitation + its context) from a
-/// stored invitation record.
+/// stored invitation record. `pending_score_submission_id` is resolved by the
+/// caller (it needs a DAO lookup of the match) and is only applied to a Match
+/// context; ignored for a Team context.
 pub fn invitation_detail_from_record(
     rec: &InvitationRecord,
+    pending_score_submission_id: Option<String>,
 ) -> crate::membership::InvitationDetail {
+    let mut context = invitation_context_from_record(&rec.context);
+    if let InvitationContext::Match(ref mut match_context) = context {
+        match_context.pending_score_submission_id = pending_score_submission_id;
+    }
     crate::membership::InvitationDetail {
         invitation: invitation_from_record(rec),
-        context: invitation_context_from_record(&rec.context),
+        context,
     }
 }
 
@@ -589,9 +599,16 @@ pub fn notification_actor_id(kind: &NotificationKindRecord) -> &str {
     }
 }
 
-/// Build the API `Notification` from a record, given the resolved actor profile
-/// (already hydrated by the caller).
-pub fn notification_from_record(rec: &NotificationRecord, actor: UserProfile) -> Notification {
+/// Build the API `Notification` from a record, given the resolved actor
+/// profile (already hydrated by the caller) and, for a `MatchInvitation`
+/// kind, the pending score submission awaiting confirmation from the
+/// invitation's side (also resolved by the caller — it needs a DAO lookup of
+/// the match). Ignored for every other kind.
+pub fn notification_from_record(
+    rec: &NotificationRecord,
+    actor: UserProfile,
+    pending_score_submission_id: Option<String>,
+) -> Notification {
     let kind = match &rec.kind {
         NotificationKindRecord::MatchInvitation {
             invitation_id,
@@ -603,6 +620,7 @@ pub fn notification_from_record(rec: &NotificationRecord, actor: UserProfile) ->
             invitation_id: invitation_id.clone(),
             match_id: match_id.clone(),
             match_name: match_name.clone(),
+            pending_score_submission_id,
         }),
         NotificationKindRecord::TeamInvitation {
             invitation_id,

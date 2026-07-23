@@ -10,8 +10,8 @@ config:
     secure: AAABAOHPLhnLxwES04NhLHmMCq4u/vww/OEXJ/Iw6LmBcrJBhvyQ4xn7qZyTPFXd74A5qu0465zpsh2gbIc5p6AA/2GwjY+uif0Rn0bn1duh1we/VQ==
   hcloud:token:
     secure: AAABAGj7oe9pnKlRP9flfZMIkQFRhh1AeaURflQNPIWwMEHebPAQtMykOcDvy3E9NEdoh0XeOnOwqHelr6jiNHwHaf1jN397UJGDdLvc4wF5Pyz4ccCXXdMzWm4Htu15
-  agon_infra:agonServiceImage: ghcr.io/jelgar/agon_service:sha-e497a2b
-  agon_infra:agonUiImage: ghcr.io/jelgar/agon_ui:sha-e497a2b
+  agon_infra:agonServiceImage: ghcr.io/jelgar/agon_service:sha-f296a16
+  agon_infra:agonUiImage: ghcr.io/jelgar/agon_ui:sha-f296a16
   agon_infra:supabaseAnonKey: sb_publishable_snWJggcOaut2Cce4srqJ2w_CqJhHTRx
   agon_infra:supabaseUrl: https://gkebmzhvdbsktamfdsil.supabase.co
   aws:region: eu-west-1
@@ -19,7 +19,7 @@ config:
     secure: AAABAJBgfjzGVypxRD8oOluoYaZ6+rkRuJ0dvGpKYNzyRxepovpRkwDZli9rYS40frNSJg==
   aws:secretKey:
     secure: AAABAB5yiLg3l2kvn0TCSA4JzJzhTJqK6+QRfGRdMo8YJv+hm9ANZwwgCA9fiiY0hlYJOZz4pNrB4aBhSjqTliVsLoq3KsBW
-  agon_infra:agonWorkerImage: ghcr.io/jelgar/agon_worker:sha-e497a2b
+  agon_infra:agonWorkerImage: ghcr.io/jelgar/agon_worker:sha-f296a16
   agon_infra:meiliMasterKey:
     secure: AAABAIf2qyWw1sfYjtropRzh9Vxt8GcUV5QhvNiratSoOr7aYh0LSgqjNM3URoXvUlu1jN63KCwtOn/Ngtp1NaArVTwI3Ayy+IEBcPxaVaXpSNmTrkv/i5YKJhP/g5hG
   agon_infra:grafanaAdminPassword:

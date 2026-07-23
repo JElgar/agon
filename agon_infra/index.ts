@@ -983,7 +983,14 @@ const meiliUrl = meiliService.metadata.name.apply(name => `http://${name}:7700`)
 // worker's push handler calls FCM to actually send.
 // ───────────────────────────────────────────────────────────────────────────
 const gcpConfig = new pulumi.Config("gcp");
-const gcpProjectId = gcpConfig.require("project");
+// Defaults to `agon-<stage>` — matches the DynamoDB table / S3 bucket naming
+// above — so a new stage needs no GCP config at all by default. Still
+// overridable (e.g. if `agon-<stage>` collides with someone else's project —
+// project ids are unique across all of GCP, not just this account).
+const gcpProjectId = gcpConfig.get("project") ?? `agon-${pulumi.getStack()}`;
+// europe-west2 is London — as close as GCP's region list gets. Also
+// overridable, but nothing here needs to be anywhere else.
+const gcpRegion = gcpConfig.get("region") ?? "europe-west2";
 // Optional: omitted entirely (not just passed as undefined-but-present) for a
 // personal-account project with no GCP Organization.
 const gcpOrgId = gcpConfig.get("orgId");
@@ -1002,24 +1009,36 @@ const gcpProject = new gcp.organizations.Project("agon-firebase-project", {
 	deletionPolicy: "PREVENT",
 });
 
+// Explicit provider (rather than the ambient default, which would need
+// `gcp:project`/`gcp:region` stack config to know either value) for
+// everything created *inside* the project below: pins the region so any
+// future regional resource (Cloud Run, a regional bucket, ...) defaults to
+// London instead of silently landing in us-central1. Not used for
+// `gcpProject` itself — that's an org-level create, the project doesn't exist
+// yet to scope a provider to it.
+const gcpProvider = new gcp.Provider("agon-gcp", {
+	project: gcpProjectId,
+	region: gcpRegion,
+});
+
 const fcmApi = new gcp.projects.Service("fcm-api", {
 	project: gcpProject.projectId,
 	service: "fcm.googleapis.com",
 	// Never let a `destroy` disable the API on the project — only Pulumi's own
 	// resources here should be torn down (the project itself is guarded above).
 	disableOnDestroy: false,
-});
+}, { provider: gcpProvider });
 
 const firebaseApi = new gcp.projects.Service("firebase-api", {
 	project: gcpProject.projectId,
 	service: "firebase.googleapis.com",
 	disableOnDestroy: false,
-});
+}, { provider: gcpProvider });
 
 // Attaches Firebase to the project just created.
 const firebaseProject = new gcp.firebase.Project("agon-firebase", {
 	project: gcpProject.projectId,
-}, { dependsOn: [firebaseApi] });
+}, { provider: gcpProvider, dependsOn: [firebaseApi] });
 
 // Registers the PWA as a Firebase Web App, which is what the client SDK needs
 // to request an FCM token. Future: gcp.firebase.AndroidApp / AppleApp once
@@ -1027,7 +1046,7 @@ const firebaseProject = new gcp.firebase.Project("agon-firebase", {
 new gcp.firebase.WebApp("agon-pwa", {
 	project: gcpProject.projectId,
 	displayName: `agon-${pulumi.getStack()}`,
-}, { dependsOn: [firebaseProject] });
+}, { provider: gcpProvider, dependsOn: [firebaseProject] });
 
 // ── Supabase Google Auth: OAuth consent screen + client ─────────────────────
 // Fully manual, per project — and NOT automatable at all right now, not even
@@ -1055,20 +1074,20 @@ const fcmServiceAccount = new gcp.serviceaccount.Account("agon-fcm-sender", {
 	project: gcpProject.projectId,
 	accountId: `agon-fcm-${pulumi.getStack()}`,
 	displayName: `agon FCM sender (${pulumi.getStack()})`,
-}, { dependsOn: [firebaseApi] });
+}, { provider: gcpProvider, dependsOn: [firebaseApi] });
 
 new gcp.projects.IAMMember("agon-fcm-sender-role", {
 	project: gcpProject.projectId,
 	role: "roles/firebasecloudmessaging.admin",
 	member: pulumi.interpolate`serviceAccount:${fcmServiceAccount.email}`,
-});
+}, { provider: gcpProvider });
 
 // The actual credential the worker signs its OAuth2 JWT bearer assertions
 // with. Pulumi state holds it encrypted, same as the CloudFront signing key
 // and the test JWT private key above.
 const fcmServiceAccountKey = new gcp.serviceaccount.Key("agon-fcm-sender-key", {
 	serviceAccountId: fcmServiceAccount.name,
-});
+}, { provider: gcpProvider });
 
 // A standalone k8s Secret (mirrors `meiliSecret`, not folded into
 // `awsSecret`) so the FCM credential is separately rotatable. GCP returns the

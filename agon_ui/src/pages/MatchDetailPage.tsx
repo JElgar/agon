@@ -27,6 +27,8 @@ import { MatchResultEditor } from '@/components/agon/MatchResultEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
 import { MatchComments } from '@/components/agon/MatchComments'
 import { useToggleLike } from '@/hooks/useToggleLike'
+import { confirmationState } from '@/lib/confirmation'
+import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -286,9 +288,12 @@ function LikeBar({ match }: { match: Match }) {
 
 /**
  * Shown when the signed-in viewer has a pending invitation to this match: a
- * prominent Accept/Decline banner wired to `POST /invitations/:id/respond`.
- * On success it refreshes the match (so the roster/badge update) and the
- * notification badge (the matching invite notification is now handled).
+ * prominent Accept/Decline banner. Both actions open the shared response
+ * dialog, wired to `POST /invitations/:id/respond`; accepting also offers to
+ * confirm the match's score in the same step when one is already pending on
+ * the viewer's side. On success it refreshes the match (so the roster/badge/
+ * score update) and the notification badge (the matching invite notification
+ * is now handled).
  */
 function InviteBanner({
   match,
@@ -300,6 +305,7 @@ function InviteBanner({
   const queryClient = useQueryClient()
   const invitation = myPendingInvitation(match, currentUserId)
   const matchKey = ['match', match.id]
+  const [action, setAction] = useState<'accept' | 'decline' | null>(null)
 
   const respond = useMutation({
     mutationFn: async (
@@ -351,42 +357,58 @@ function InviteBanner({
 
   if (!invitation) return null
 
+  // A pending score already awaiting the viewer's side → the dialog offers to
+  // confirm it in the same action as accepting.
+  const score = confirmationState(match, currentUserId)
+  const pendingScore =
+    score.canRespond && score.submissionId
+      ? { matchId: match.id, submissionId: score.submissionId }
+      : null
+
   return (
-    <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
-      <div className="flex items-start gap-3">
-        <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-          <MailOpen className="size-5" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium">You've been invited to this match</p>
-          <p className="text-xs text-muted-foreground">
-            Accept to join the roster, or decline if you can't make it.
-          </p>
-          {respond.isError && (
-            <p className="mt-1 text-xs text-red-600">
-              Something went wrong. Please try again.
+    <>
+      <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
+        <div className="flex items-start gap-3">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+            <MailOpen className="size-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">You've been invited to this match</p>
+            <p className="text-xs text-muted-foreground">
+              Accept to join the roster, or decline if you can't make it.
             </p>
-          )}
-          <div className="mt-3 flex gap-2">
-            <Button
-              size="sm"
-              disabled={respond.isPending}
-              onClick={() => respond.mutate('accepted')}
-            >
-              {respond.isPending ? 'Saving…' : 'Accept'}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={respond.isPending}
-              onClick={() => respond.mutate('declined')}
-            >
-              Decline
-            </Button>
+            <div className="mt-3 flex gap-2">
+              <Button size="sm" onClick={() => setAction('accept')}>
+                Accept
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setAction('decline')}
+              >
+                Decline
+              </Button>
+            </div>
           </div>
         </div>
       </div>
-    </div>
+
+      <InvitationResponseDialog
+        open={action !== null}
+        onOpenChange={(open) => !open && setAction(null)}
+        action={action}
+        name={match.name}
+        pendingScore={pendingScore}
+        respond={(response) => respond.mutateAsync(response)}
+        onSuccess={() => {
+          setAction(null)
+          // Cover the score-confirm sub-step, which the mutation above doesn't
+          // know about (it only reconciles the invitation response itself).
+          queryClient.invalidateQueries({ queryKey: matchKey })
+          queryClient.invalidateQueries({ queryKey: ['profile-activity'] })
+        }}
+      />
+    </>
   )
 }
 

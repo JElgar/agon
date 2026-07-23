@@ -3003,11 +3003,12 @@ impl Api {
             .list_user_invitations(&uid, status_str, cursor.as_deref(), page_limit(limit))
             .await
             .map_err(dao_internal)?;
-        let items = page
-            .items
-            .iter()
-            .map(invitation_detail_from_record)
-            .collect();
+        let mut items = Vec::with_capacity(page.items.len());
+        for rec in &page.items {
+            let pending_score_submission_id =
+                pending_score_submission_for_invitation(dao, rec).await?;
+            items.push(invitation_detail_from_record(rec, pending_score_submission_id));
+        }
         Ok(ListInvitationsResponse::Invitations(Json(InvitationPage {
             items,
             next_cursor: page.next_cursor,
@@ -3053,7 +3054,18 @@ impl Api {
                         false,
                     )
                 });
-            items.push(notification_from_record(&rec, actor));
+            let pending_score_submission_id = match &rec.kind {
+                dao::records::NotificationKindRecord::MatchInvitation {
+                    match_id,
+                    invitation_id,
+                    ..
+                } => {
+                    pending_score_submission_for_match_invitation(dao, match_id, invitation_id)
+                        .await?
+                }
+                _ => None,
+            };
+            items.push(notification_from_record(&rec, actor, pending_score_submission_id));
         }
 
         Ok(ListNotificationsResponse::Notifications(Json(
@@ -3123,9 +3135,13 @@ impl Api {
             .await
             .map_err(dao_internal)?
         {
-            Some(rec) => Ok(GetInvitationResponse::Invitation(Json(
-                invitation_detail_from_record(&rec),
-            ))),
+            Some(rec) => {
+                let pending_score_submission_id =
+                    pending_score_submission_for_invitation(dao, &rec).await?;
+                Ok(GetInvitationResponse::Invitation(Json(
+                    invitation_detail_from_record(&rec, pending_score_submission_id),
+                )))
+            }
             None => Ok(GetInvitationResponse::NotFound(PlainText(
                 "invitation not found".into(),
             ))),
@@ -3148,9 +3164,13 @@ impl Api {
             .await
             .map_err(dao_internal)?
         {
-            Some(rec) => Ok(GetInvitationResponse::Invitation(Json(
-                invitation_detail_from_record(&rec),
-            ))),
+            Some(rec) => {
+                let pending_score_submission_id =
+                    pending_score_submission_for_invitation(dao, &rec).await?;
+                Ok(GetInvitationResponse::Invitation(Json(
+                    invitation_detail_from_record(&rec, pending_score_submission_id),
+                )))
+            }
             None => Ok(GetInvitationResponse::NotFound(PlainText(
                 "invitation not found".into(),
             ))),
@@ -3702,6 +3722,53 @@ fn asset_status_from_str(s: &str) -> AssetStatus {
     }
 }
 
+/// Resolve the pending score submission (if any) awaiting confirmation from a
+/// match invitation's side — matched via the invitation id embedded on the
+/// match player row, so it works for both user- and token-kind invitations,
+/// whether or not the invitation has been accepted yet. `None` if the
+/// invitation isn't for a match, the match has no pending score, the
+/// invitation's side can't be resolved, or that side already confirmed.
+async fn pending_score_submission_for_invitation(
+    dao: &dao::Dao,
+    rec: &dao::records::InvitationRecord,
+) -> Result<Option<String>> {
+    let match_id = match &rec.context {
+        dao::records::InvitationContextRecord::Match { match_id, .. } => match_id,
+        dao::records::InvitationContextRecord::Team { .. } => return Ok(None),
+    };
+    pending_score_submission_for_match_invitation(dao, match_id, &rec.id).await
+}
+
+/// As above, starting from a bare match id + invitation id — used by the
+/// notifications list, which only has a `MatchInvitation` notification
+/// snapshot rather than the full invitation record.
+async fn pending_score_submission_for_match_invitation(
+    dao: &dao::Dao,
+    match_id: &str,
+    invitation_id: &str,
+) -> Result<Option<String>> {
+    let Some(agg) = dao.get_match(match_id).await.map_err(dao_internal)? else {
+        return Ok(None);
+    };
+    let Some(pending) = &agg.match_.pending_score else {
+        return Ok(None);
+    };
+    let side_id = agg.players.iter().find_map(|p| {
+        let invited = p.invitation.as_ref()?;
+        if invited.id != invitation_id {
+            return None;
+        }
+        p.side_id.clone()
+    });
+    let Some(side_id) = side_id else {
+        return Ok(None);
+    };
+    if pending.confirmations.iter().any(|c| c.side_id == side_id) {
+        return Ok(None);
+    }
+    Ok(Some(pending.submission_id.clone()))
+}
+
 /// Build the API `Asset` from a stored record. Pending assets get a freshly
 /// generated S3 presigned PUT (short-lived, so regenerated on each read — that is
 /// the upload-retry mechanism); uploaded assets carry their serving `url` and no
@@ -4100,6 +4167,7 @@ fn mock_invitation_detail() -> InvitationDetail {
         context: InvitationContext::Match(InvitationMatchContext {
             match_id: String::from("match_123"),
             match_name: String::from("Sunday League 5-a-side"),
+            pending_score_submission_id: Some(String::from("sub_1")),
         }),
     }
 }
@@ -4117,6 +4185,7 @@ fn mock_notifications() -> Vec<Notification> {
                 invitation_id: String::from("inv_abc"),
                 match_id: String::from("match_123"),
                 match_name: String::from("Tennis vs Raj"),
+                pending_score_submission_id: Some(String::from("sub_1")),
             }),
         },
         Notification {
@@ -4140,6 +4209,7 @@ fn mock_notifications() -> Vec<Notification> {
                 context: InvitationContext::Match(InvitationMatchContext {
                     match_id: String::from("match_123"),
                     match_name: String::from("Tennis vs Raj"),
+                    pending_score_submission_id: None,
                 }),
             }),
         },

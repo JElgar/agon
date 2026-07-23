@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Swords, Users } from 'lucide-react'
@@ -6,6 +6,7 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { clearPendingInvite } from '@/lib/pendingInvite'
+import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
 
 type InvitationDetail = components['schemas']['InvitationDetail']
 // The generated `context`/`kind` types erase the discriminant; cast to the real
@@ -23,6 +24,7 @@ export function AcceptInvitePage() {
   const { token } = useParams<{ token: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const [action, setAction] = useState<'accept' | 'decline' | null>(null)
 
   // We're now on the invite URL itself; the stashed copy (used to survive login)
   // has done its job. Clear it so returning to "/" later doesn't bounce back to
@@ -45,34 +47,14 @@ export function AcceptInvitePage() {
     },
   })
 
+  // The invite acceptance/decline itself; the dialog's `onSuccess` (below)
+  // handles the score follow-up, cache invalidation and navigation.
   const respond = useMutation({
     mutationFn: async (response: InvitationResponse) => {
       const { error } = await fetchClient.POST('/invitations/respond-by-token', {
         body: { invite_token: token!, response },
       })
       if (error) throw new Error('Failed to respond to invitation')
-    },
-    onSuccess: (_data, response) => {
-      clearPendingInvite()
-      // Refresh the destination so the roster/status reflect the acceptance when
-      // the visitor lands (they may have viewed the match while still pending),
-      // plus the feed and notification badge.
-      const context = preview.data?.context as InvitationContext | undefined
-      if (context?.type === 'Match') {
-        queryClient.invalidateQueries({ queryKey: ['match', context.match_id] })
-      }
-      queryClient.invalidateQueries({ queryKey: ['feed'] })
-      queryClient.invalidateQueries({ queryKey: ['notifications'] })
-      queryClient.invalidateQueries({
-        queryKey: ['notifications-unread-count'],
-      })
-      // On accept, drop the visitor at what they just joined; on decline, send
-      // them to their feed.
-      if (response === 'accepted') {
-        navigate(destinationFor(preview.data), { replace: true })
-      } else {
-        navigate('/feed', { replace: true })
-      }
     },
   })
 
@@ -119,6 +101,13 @@ export function AcceptInvitePage() {
 
   const label = contextLabel(context)
   const Icon = context.type === 'Match' ? Swords : Users
+  const pendingScore =
+    context.type === 'Match' && context.pending_score_submission_id
+      ? {
+          matchId: context.match_id,
+          submissionId: context.pending_score_submission_id,
+        }
+      : null
 
   return (
     <InviteCard>
@@ -131,29 +120,55 @@ export function AcceptInvitePage() {
         {label.kind}.
       </p>
 
-      {respond.isError && (
-        <p className="mb-4 text-sm text-red-600">
-          Something went wrong. Please try again.
-        </p>
-      )}
-
       <div className="flex w-full gap-2">
-        <Button
-          className="flex-1"
-          disabled={respond.isPending}
-          onClick={() => respond.mutate('accepted')}
-        >
-          {respond.isPending ? 'Joining…' : 'Accept'}
+        <Button className="flex-1" onClick={() => setAction('accept')}>
+          Accept
         </Button>
         <Button
           variant="outline"
           className="flex-1"
-          disabled={respond.isPending}
-          onClick={() => respond.mutate('declined')}
+          onClick={() => setAction('decline')}
         >
           Decline
         </Button>
       </div>
+
+      <InvitationResponseDialog
+        open={action !== null}
+        onOpenChange={(open) => !open && setAction(null)}
+        action={action}
+        name={label.name}
+        suffix={label.kind}
+        pendingScore={pendingScore}
+        respond={(response) => respond.mutateAsync(response)}
+        onSuccess={(response) => {
+          setAction(null)
+          clearPendingInvite()
+          // Refresh the destination so the roster/status reflect the
+          // acceptance when the visitor lands (they may have viewed the
+          // match while still pending), plus the feed and notification badge.
+          if (context.type === 'Match') {
+            queryClient.invalidateQueries({
+              queryKey: ['match', context.match_id],
+            })
+          }
+          queryClient.invalidateQueries({ queryKey: ['feed'] })
+          queryClient.invalidateQueries({ queryKey: ['notifications'] })
+          queryClient.invalidateQueries({
+            queryKey: ['notifications-unread-count'],
+          })
+          if (pendingScore) {
+            queryClient.invalidateQueries({ queryKey: ['profile-activity'] })
+          }
+          // On accept, drop the visitor at what they just joined; on
+          // decline, send them to their feed.
+          if (response === 'accepted') {
+            navigate(destinationFor(detail), { replace: true })
+          } else {
+            navigate('/feed', { replace: true })
+          }
+        }}
+      />
     </InviteCard>
   )
 }

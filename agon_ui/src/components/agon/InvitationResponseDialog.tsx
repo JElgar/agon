@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
@@ -12,13 +12,13 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog'
+import { SportBadge } from '@/components/agon/SportBadge'
+import { useCurrentUserId } from '@/hooks/useCurrentUserId'
+import { confirmationState } from '@/lib/confirmation'
+import { displayScore, headlineBySide, headlineLabel } from '@/lib/score'
 
 type InvitationResponse = components['schemas']['InvitationResponse']
-
-export interface PendingScoreRef {
-  matchId: string
-  submissionId: string
-}
+type Match = components['schemas']['Match']
 
 export interface InvitationResponseDialogProps {
   open: boolean
@@ -29,9 +29,9 @@ export interface InvitationResponseDialogProps {
   name: string
   /** Trailing qualifier appended after the name, e.g. ' as a member' for a team. */
   suffix?: string
-  /** Present only for a match invite whose score is already awaiting this
-   *  invitee's side to confirm it — offers the "also confirm the score" toggle. */
-  pendingScore?: PendingScoreRef | null
+  /** Present only for a match invite — fetched to preview the score and, if
+   *  one's already pending on the invitee's side, offer to confirm it too. */
+  matchId?: string
   /** Perform the invitation accept/decline call itself (by-id vs by-token
    *  differs per surface). Should throw on failure. */
   respond: (response: InvitationResponse) => Promise<void>
@@ -41,12 +41,14 @@ export interface InvitationResponseDialogProps {
 }
 
 /**
- * Shared accept/decline dialog for match and team invitations. Accepting a
- * match invite whose score is already submitted and awaiting the invitee's
- * side offers a toggle (on by default) to confirm that score in the same
- * action, instead of a separate trip to the match page afterwards. A failed
- * score confirmation doesn't undo the (already-succeeded) invite response —
- * the score can still be confirmed separately from the match page.
+ * Shared accept/decline dialog for match and team invitations. For a match
+ * invite it fetches the match (reusing the cache if it's already loaded
+ * elsewhere, e.g. the match detail page) to preview the score, and — when
+ * that score is already submitted and awaiting the invitee's side — offers a
+ * toggle (on by default) to confirm it in the same action as accepting,
+ * instead of a separate trip to the match page afterwards. A failed score
+ * confirmation doesn't undo the (already-succeeded) invite response — the
+ * score can still be confirmed separately from the match page.
  */
 export function InvitationResponseDialog({
   open,
@@ -54,16 +56,37 @@ export function InvitationResponseDialog({
   action,
   name,
   suffix = '',
-  pendingScore,
+  matchId,
   respond,
   onSuccess,
 }: InvitationResponseDialogProps) {
   const [confirmScore, setConfirmScore] = useState(true)
+  const currentUserId = useCurrentUserId()
 
   // Default the toggle back on each time the dialog opens.
   useEffect(() => {
     if (open) setConfirmScore(true)
   }, [open])
+
+  const matchQuery = useQuery({
+    queryKey: ['match', matchId],
+    enabled: open && !!matchId,
+    queryFn: async (): Promise<Match> => {
+      const { data, error } = await fetchClient.GET('/matches/{match_id}', {
+        params: { path: { match_id: matchId! } },
+      })
+      if (error || !data) throw new Error('Failed to load match')
+      return data
+    },
+  })
+
+  const match = matchQuery.data
+  const score = match ? confirmationState(match, currentUserId) : null
+  const pendingScore =
+    score?.canRespond && score.submissionId
+      ? { matchId: matchId!, submissionId: score.submissionId }
+      : null
+  const preview = match ? displayScore(match) : null
 
   const mutation = useMutation({
     mutationFn: async (): Promise<InvitationResponse | undefined> => {
@@ -113,13 +136,41 @@ export function InvitationResponseDialog({
           </DialogDescription>
         </DialogHeader>
 
+        {matchId && match && preview && (
+          <div className="flex items-center justify-between gap-3 rounded-lg border bg-muted/40 px-3 py-2.5">
+            <div className="flex items-center gap-3 text-sm">
+              <span className="font-medium">
+                {match.sides[0]?.name}
+                <span className="text-muted-foreground"> vs </span>
+                {match.sides[1]?.name}
+              </span>
+            </div>
+            <div className="text-right">
+              <div className="text-lg font-medium tracking-tight">
+                {headlineBySide(preview.score)[match.sides[0]?.id ?? ''] ?? 0}
+                <span className="text-muted-foreground">–</span>
+                {headlineBySide(preview.score)[match.sides[1]?.id ?? ''] ?? 0}
+              </div>
+              <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                {preview.confirmed ? headlineLabel(preview.score) : 'pending'}
+              </div>
+            </div>
+          </div>
+        )}
+        {matchId && match && !preview && (
+          <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2.5 text-sm text-muted-foreground">
+            <SportBadge sport={match.match_type} />
+            No score recorded yet.
+          </div>
+        )}
+
         {isAccept && pendingScore && (
           <div className="flex items-center justify-between gap-3 rounded-lg border bg-muted/40 px-3 py-2.5">
             <div>
               <p className="text-sm font-medium">Also confirm the score</p>
               <p className="text-xs text-muted-foreground">
-                A result's already been submitted — confirm it now instead of
-                separately.
+                The result above is awaiting your confirmation — confirm it
+                now instead of separately.
               </p>
             </div>
             <Switch

@@ -101,13 +101,7 @@ export function AcceptInvitePage() {
 
   const label = contextLabel(context)
   const Icon = context.type === 'Match' ? Swords : Users
-  const pendingScore =
-    context.type === 'Match' && context.pending_score_submission_id
-      ? {
-          matchId: context.match_id,
-          submissionId: context.pending_score_submission_id,
-        }
-      : null
+  const matchId = context.type === 'Match' ? context.match_id : undefined
 
   return (
     <InviteCard>
@@ -139,7 +133,7 @@ export function AcceptInvitePage() {
         action={action}
         name={label.name}
         suffix={label.kind}
-        pendingScore={pendingScore}
+        matchId={matchId}
         respond={(response) => respond.mutateAsync(response)}
         onSuccess={(response) => {
           setAction(null)
@@ -157,7 +151,7 @@ export function AcceptInvitePage() {
           queryClient.invalidateQueries({
             queryKey: ['notifications-unread-count'],
           })
-          if (pendingScore) {
+          if (matchId) {
             queryClient.invalidateQueries({ queryKey: ['profile-activity'] })
           }
           // On accept, drop the visitor at what they just joined; on

@@ -27,7 +27,6 @@ import { MatchResultEditor } from '@/components/agon/MatchResultEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
 import { MatchComments } from '@/components/agon/MatchComments'
 import { useToggleLike } from '@/hooks/useToggleLike'
-import { confirmationState } from '@/lib/confirmation'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
 
 type Match = components['schemas']['Match']
@@ -357,14 +356,6 @@ function InviteBanner({
 
   if (!invitation) return null
 
-  // A pending score already awaiting the viewer's side → the dialog offers to
-  // confirm it in the same action as accepting.
-  const score = confirmationState(match, currentUserId)
-  const pendingScore =
-    score.canRespond && score.submissionId
-      ? { matchId: match.id, submissionId: score.submissionId }
-      : null
-
   return (
     <>
       <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
@@ -398,7 +389,7 @@ function InviteBanner({
         onOpenChange={(open) => !open && setAction(null)}
         action={action}
         name={match.name}
-        pendingScore={pendingScore}
+        matchId={match.id}
         respond={(response) => respond.mutateAsync(response)}
         onSuccess={() => {
           setAction(null)

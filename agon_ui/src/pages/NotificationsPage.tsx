@@ -18,10 +18,7 @@ import { Avatar } from '@/components/agon/Avatar'
 import { FollowButton } from '@/components/agon/FollowButton'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
-import {
-  InvitationResponseDialog,
-  type PendingScoreRef,
-} from '@/components/agon/InvitationResponseDialog'
+import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
 
 type NotificationPage = components['schemas']['NotificationPage']
 type Notification = components['schemas']['Notification']
@@ -285,17 +282,15 @@ function NotificationRow({
           action={action}
           name={view.actions.invitation.name}
           suffix={view.actions.invitation.suffix}
-          pendingScore={view.actions.invitation.pendingScore}
+          matchId={view.actions.invitation.matchId}
           respond={(response) =>
             respondToInvitation(view.actions!.invitation!.id, response)
           }
           onSuccess={() => {
             setAction(null)
-            const pendingScore = view.actions?.invitation?.pendingScore
-            if (pendingScore) {
-              queryClient.invalidateQueries({
-                queryKey: ['match', pendingScore.matchId],
-              })
+            const matchId = view.actions?.invitation?.matchId
+            if (matchId) {
+              queryClient.invalidateQueries({ queryKey: ['match', matchId] })
               queryClient.invalidateQueries({ queryKey: ['profile-activity'] })
             }
           }}
@@ -325,9 +320,9 @@ interface NotificationView {
       name: string
       /** Trailing qualifier after the name, e.g. ' as a member' for a team. */
       suffix?: string
-      /** Present only for a match invite whose score is already awaiting this
-       *  invitee's side — lets the dialog offer to confirm it in one step. */
-      pendingScore?: PendingScoreRef | null
+      /** Present only for a match invite — lets the dialog fetch the match to
+       *  preview the score and offer to confirm it in the same step. */
+      matchId?: string
     }
     /** Label for the plain "View" jump. */
     viewLabel: string
@@ -363,12 +358,7 @@ function describe(kind: Kind): NotificationView {
           invitation: {
             id: kind.invitation_id,
             name: kind.match_name,
-            pendingScore: kind.pending_score_submission_id
-              ? {
-                  matchId: kind.match_id,
-                  submissionId: kind.pending_score_submission_id,
-                }
-              : null,
+            matchId: kind.match_id,
           },
           viewLabel: 'View match',
         },

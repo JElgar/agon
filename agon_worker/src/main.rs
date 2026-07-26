@@ -21,7 +21,7 @@ use aws_sdk_sqs::Client as SqsClient;
 
 use crate::config::Config;
 use crate::consumer::Consumer;
-use agon_core::push::{PushClient, ServiceAccountJson};
+use agon_core::push::PushClient;
 use agon_core::search::SearchClient;
 
 #[tokio::main]
@@ -60,22 +60,13 @@ async fn main() {
             tracing::info!("AGON_FCM_SERVICE_ACCOUNT_JSON unset; push notifications disabled");
             None
         }
-        Some(json) => {
-            let service_account: ServiceAccountJson = match serde_json::from_str(json) {
-                Ok(sa) => sa,
-                Err(e) => {
-                    tracing::error!(error = %e, "invalid AGON_FCM_SERVICE_ACCOUNT_JSON; exiting");
-                    std::process::exit(1);
-                }
-            };
-            match PushClient::new(service_account) {
-                Ok(p) => Some(p),
-                Err(e) => {
-                    tracing::error!(error = %e, "failed to build FCM push client; exiting");
-                    std::process::exit(1);
-                }
+        Some(json) => match PushClient::new(json).await {
+            Ok(p) => Some(p),
+            Err(e) => {
+                tracing::error!(error = %e, "failed to build FCM push client; exiting");
+                std::process::exit(1);
             }
-        }
+        },
     };
 
     // The asset consumer shares the SQS client, DAO and config; build it before

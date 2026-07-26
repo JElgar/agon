@@ -208,16 +208,19 @@ function MatchDetail({
         />
       )}
 
-      {/* Invitation banner: the viewer has a pending invite to this match. */}
-      <InviteBanner match={match} currentUserId={currentUserId} />
-
-      {/* Confirm / dispute (only when the viewer's side owes a response) */}
-      {match.pending_score && (
-        <ScoreConfirmationBar
-          match={match}
-          currentUserId={currentUserId}
-          variant="detail"
-        />
+      {/* Respond to a pending invite first; only once joined does the score
+          confirm/dispute prompt apply — the two are mutually exclusive (same
+          logic as the feed/profile match card). */}
+      {myPendingInvitation(match, currentUserId) ? (
+        <InviteBanner match={match} currentUserId={currentUserId} />
+      ) : (
+        match.pending_score && (
+          <ScoreConfirmationBar
+            match={match}
+            currentUserId={currentUserId}
+            variant="detail"
+          />
+        )
       )}
 
       {/* Rosters, one column per side */}

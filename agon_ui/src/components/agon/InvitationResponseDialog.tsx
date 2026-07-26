@@ -169,8 +169,7 @@ export function InvitationResponseDialog({
             <div>
               <p className="text-sm font-medium">Also confirm the score</p>
               <p className="text-xs text-muted-foreground">
-                The result above is awaiting your confirmation — confirm it
-                now instead of separately.
+                The result above is still waiting on your side.
               </p>
             </div>
             <Switch

@@ -1,14 +1,18 @@
 import { useEffect, useState } from 'react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, Flame, MailOpen, MessageCircle, Share2 } from 'lucide-react'
+import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { useToggleLike } from '@/hooks/useToggleLike'
 import { relativeTime } from '@/lib/datetime'
 import { Avatar } from './Avatar'
+import { Button } from '@/components/ui/button'
 import { SportBadge } from './SportBadge'
 import { StatusBadge, matchBadgeStatus } from './StatusBadge'
 import { ScoreConfirmationBar } from './ScoreConfirmationBar'
 import { MatchHeaderCarousel } from './MatchHeaderCarousel'
+import { InvitationResponseDialog } from './InvitationResponseDialog'
 import {
   displayScore,
   headlineBySide,
@@ -34,19 +38,81 @@ function sideName(side: MatchSide | undefined, fallback: string): string {
   return side?.name?.trim() || fallback
 }
 
-/** A small pill shown when the viewer has a pending invitation to this match. */
-function InvitedBadge({
+/**
+ * Accept/decline prompt for the feed card, shown when the viewer has a
+ * pending invitation to this match — takes the same slot as the score
+ * confirm bar below, since only one applies at a time: respond to the invite
+ * first, and only once joined does confirming the score apply.
+ */
+function InviteResponseBar({
   match,
   currentUserId,
 }: {
   match: Match
   currentUserId?: string
 }) {
-  if (!myPendingInvitation(match, currentUserId)) return null
+  const queryClient = useQueryClient()
+  const [action, setAction] = useState<'accept' | 'decline' | null>(null)
+  const invitation = myPendingInvitation(match, currentUserId)
+
+  const respond = useMutation({
+    mutationFn: async (response: components['schemas']['InvitationResponse']) => {
+      if (!invitation) return
+      const { error } = await fetchClient.POST(
+        '/invitations/{invitation_id}/respond',
+        {
+          params: { path: { invitation_id: invitation.id } },
+          body: { response },
+        },
+      )
+      if (error) throw new Error('Failed to respond to invitation')
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['match', match.id] })
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
+      queryClient.invalidateQueries({ queryKey: ['notifications'] })
+      queryClient.invalidateQueries({
+        queryKey: ['notifications-unread-count'],
+      })
+    },
+  })
+
+  if (!invitation) return null
+
   return (
-    <span className="inline-flex items-center gap-1 rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-      <MailOpen className="size-3" /> You're invited
-    </span>
+    <>
+      <div className="flex items-center justify-between gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2">
+        <p className="flex items-center gap-1.5 text-xs font-medium text-primary">
+          <MailOpen className="size-3.5" /> You're invited
+        </p>
+        <div className="flex gap-1.5">
+          <Button
+            size="sm"
+            className="h-7 px-2.5 text-xs"
+            onClick={() => setAction('accept')}
+          >
+            Accept
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 px-2.5 text-xs"
+            onClick={() => setAction('decline')}
+          >
+            Decline
+          </Button>
+        </div>
+      </div>
+      <InvitationResponseDialog
+        open={action !== null}
+        onOpenChange={(open) => !open && setAction(null)}
+        action={action}
+        name={match.name}
+        matchId={match.id}
+        respond={(response) => respond.mutateAsync(response)}
+        onSuccess={() => setAction(null)}
+      />
+    </>
   )
 }
 
@@ -151,7 +217,6 @@ export function MatchCard({
         </p>
         <div className="flex shrink-0 flex-col items-end gap-1.5">
           <SportBadge sport={match.match_type} />
-          <InvitedBadge match={match} currentUserId={currentUserId} />
         </div>
       </button>
 
@@ -212,15 +277,22 @@ export function MatchCard({
         </div>
       )}
 
-      {/* Confirm/dispute prompt when the viewer's side owes a response. */}
-      {match.pending_score && (
+      {/* Respond to a pending invite first; only once joined does the score
+          confirm/dispute prompt apply — the two are mutually exclusive. */}
+      {myPendingInvitation(match, currentUserId) ? (
         <div className="px-3.5 pb-2.5">
-          <ScoreConfirmationBar
-            match={match}
-            currentUserId={currentUserId}
-            variant="card"
-          />
+          <InviteResponseBar match={match} currentUserId={currentUserId} />
         </div>
+      ) : (
+        match.pending_score && (
+          <div className="px-3.5 pb-2.5">
+            <ScoreConfirmationBar
+              match={match}
+              currentUserId={currentUserId}
+              variant="card"
+            />
+          </div>
+        )
       )}
 
       {/* Footer: kudos + comments on the left, lifecycle/confirmation state on the right. */}

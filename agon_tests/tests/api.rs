@@ -1824,24 +1824,63 @@ async fn submitting_a_score_notifies_the_other_side_to_confirm() {
     let (owner_config, owner) = new_user().await;
     let (opponent_config, opponent) = new_user().await;
 
-    // Owner plays on side "a" and submits a create-time score; the opponent is
-    // invited onto the opposing side "b". The submission is therefore pending on
-    // the opponent's side (the owner's side is pre-confirmed).
+    // Owner plays on side "a", opponent invited onto side "b" — no score at
+    // creation. The opponent accepts the invite first, so the score PATCHed in
+    // below is unambiguously "submitted after accept", which must always
+    // notify (unlike a create-time score arriving alongside a still-pending
+    // invite — see `inviting_with_a_score_does_not_duplicate_the_invite_notification`
+    // for that deliberately-deduped case).
     let mut input = create_match_input(&opponent.profile.id);
     input.invites = vec![models::CreateMatchInviteInput {
         side_client_id: Some("b".to_string()),
         invited_user_ids: vec![opponent.profile.id.clone()],
         invited_external_names: vec![],
     }];
-    input.starts_at = iso_offset_hours(-2);
     input.creator_side_client_id = Some("a".to_string());
-    input.score = Some(Box::new(simple_score("a", "b", 6, 3)));
-    input.winner_side_id = Some("a".to_string());
 
     let created = matches_post(&owner_config, input)
         .await
         .expect("create match");
-    assert!(created.confirmed_score.is_none(), "score starts pending");
+    assert!(created.confirmed_score.is_none(), "no score yet");
+
+    // The opponent accepts their invite before any score exists.
+    let inbox = users_me_invitations_get(&opponent_config, None, None, None)
+        .await
+        .expect("inbox");
+    let detail = inbox
+        .items
+        .iter()
+        .find(|i| {
+            matches!(&*i.context,
+            models::InvitationContext::Match(ctx) if ctx.match_id == created.id)
+        })
+        .expect("match invitation in inbox");
+    invitations_invitation_id_respond_post(
+        &opponent_config,
+        &detail.invitation.id,
+        models::RespondToInvitationInput {
+            response: models::InvitationResponse::Accepted,
+            side_id: None,
+        },
+    )
+    .await
+    .expect("accept invitation");
+
+    // Now the owner submits a score (post-creation, via PATCH) — pending on
+    // the opponent's (already-joined) side.
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+    matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 3))),
+            winner_side_id: Some(side_a.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("patch score");
 
     // The opponent gets a ScoreSubmitted notification asking them to confirm, with
     // the owner as the submitter.
@@ -1898,6 +1937,64 @@ async fn submitting_a_score_notifies_the_other_side_to_confirm() {
     })
     .await;
     assert!(!confirmed.is_read, "a fresh notification is unread");
+}
+
+/// A match created with a score already attached (e.g. logging a completed
+/// match and inviting the opponent in the same action) must not duplicate the
+/// invite notification with a separate "score submitted, confirm it?" one —
+/// the invitee's accept flow already surfaces the pending score in the same
+/// step. Once they accept, a later submission notifies as normal (covered by
+/// `submitting_a_score_notifies_the_other_side_to_confirm`).
+#[tokio::test]
+async fn inviting_with_a_score_does_not_duplicate_the_invite_notification() {
+    let (owner_config, _owner) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+
+    // Owner plays on side "a" and submits a create-time score; the opponent is
+    // invited (left pending — never accepted in this test) onto side "b".
+    let mut input = create_match_input(&opponent.profile.id);
+    input.invites = vec![models::CreateMatchInviteInput {
+        side_client_id: Some("b".to_string()),
+        invited_user_ids: vec![opponent.profile.id.clone()],
+        invited_external_names: vec![],
+    }];
+    input.starts_at = iso_offset_hours(-2);
+    input.creator_side_client_id = Some("a".to_string());
+    input.score = Some(Box::new(simple_score("a", "b", 6, 3)));
+    input.winner_side_id = Some("a".to_string());
+
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("create match");
+
+    // Wait for the invite notification — proves the worker has processed this
+    // match's events, so a still-absent score-submitted notification below
+    // reflects the dedup rather than the async pipeline simply not having run.
+    eventually("match invitation notification to be generated", || {
+        let config = &opponent_config;
+        let match_id = &created.id;
+        async move {
+            let page = notifications_get(config, None, None).await.ok()?;
+            page.items.into_iter().find(|n| match &*n.kind {
+                models::NotificationKind::MatchInvitation(m) => m.match_id == *match_id,
+                _ => false,
+            })
+        }
+    })
+    .await;
+
+    // A short extra settle (same idiom as `assert_match_absent_from_feed`),
+    // then confirm no score-submitted notification arrived for the invitee —
+    // their invite is still pending, so it was deliberately deduped.
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    let page = notifications_get(&opponent_config, None, None)
+        .await
+        .expect("list notifications");
+    assert!(
+        !page.items.iter().any(|n| matches!(&*n.kind,
+            models::NotificationKind::ScoreSubmitted(s) if s.match_id == created.id)),
+        "a still-pending invitee should not get a separate score-submitted notification"
+    );
 }
 
 // ---------------------------------------------------------------------------

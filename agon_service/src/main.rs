@@ -2282,7 +2282,7 @@ impl Api {
             .list_live_events(&match_id)
             .await
             .map_err(dao_internal)?;
-        let events: Vec<LiveEvent> = records.iter().filter_map(live_event_from_record).collect();
+        let events: Vec<LiveEvent> = records.iter().map(live_event_from_record).collect();
         Ok(ListLiveEventsResponse::Events(Json(events)))
     }
 

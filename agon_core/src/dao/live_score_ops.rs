@@ -14,7 +14,7 @@ use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, ATTR_SK, from_item, s, to_item};
 use super::keys::{Pk, Sk};
-use super::records::{LiveEventRecord, LiveStateRecord};
+use super::records::{LiveEventPayloadRecord, LiveEventRecord, LiveStateRecord};
 
 pub const TYPE_LIVE_EVENT: &str = "live_event";
 pub const TYPE_LIVE_STATE: &str = "live_state";
@@ -27,8 +27,7 @@ pub const MAX_LIVE_EVENTS_PER_BATCH: usize = 99;
 /// One event to append, before a seq has been assigned by the DAO.
 #[derive(Debug, Clone)]
 pub struct NewLiveEvent {
-    pub sport: String,
-    pub payload: serde_json::Value,
+    pub payload: LiveEventPayloadRecord,
     pub client_event_id: String,
     pub recorded_by_user_id: String,
     pub occurred_at: String,
@@ -101,7 +100,6 @@ impl Dao {
             let seq = expected_last_seq + 1 + i as u32;
             let record = LiveEventRecord {
                 seq,
-                sport: event.sport.clone(),
                 payload: event.payload.clone(),
                 client_event_id: event.client_event_id.clone(),
                 recorded_by_user_id: event.recorded_by_user_id.clone(),

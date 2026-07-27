@@ -1,13 +1,18 @@
+import { useEffect, useState } from 'react'
 import type { components } from '@/types/api'
 import { Avatar } from '@/components/agon/Avatar'
 import { LiveIndicator } from './LiveIndicator'
 import {
   describeEvent,
   eventEmoji,
-  latestMinuteLabel,
+  liveClockLabel,
   recentEvents,
   type FootballLiveState,
 } from '@/lib/liveScore'
+
+/** How often the clock label re-renders. Minute-granularity, so this just
+ *  needs to be frequent enough to feel live, not per-second. */
+const CLOCK_TICK_MS = 15_000
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -41,6 +46,14 @@ export function LiveMatchBlock({
 
   const events = recentEvents(state, tickerLimit)
 
+  // Ticks every viewer's clock in lockstep — the minute is computed from the
+  // shared kickoff/half-time timestamps on `state`, not a per-device clock.
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), CLOCK_TICK_MS)
+    return () => clearInterval(id)
+  }, [])
+
   return (
     <div className="rounded-lg bg-muted/50 px-3.5 py-3">
       <div className="flex items-center justify-between">
@@ -56,8 +69,8 @@ export function LiveMatchBlock({
           </div>
           <div className="mt-1 flex items-center justify-center">
             {(() => {
-              const minute = latestMinuteLabel(state)
-              return <LiveIndicator>{minute === 'LIVE' ? undefined : minute}</LiveIndicator>
+              const label = liveClockLabel(state, now)
+              return <LiveIndicator>{label === 'LIVE' ? undefined : label}</LiveIndicator>
             })()}
           </div>
         </div>

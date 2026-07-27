@@ -6,7 +6,8 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
-import { loadTrackPrefs, saveTrackPrefs, type TrackPrefs } from '@/lib/liveScore'
+import { useAppendFootballEvent, useLiveScore } from '@/hooks/useLiveScore'
+import { footballLiveState, loadTrackPrefs, saveTrackPrefs, type TrackPrefs } from '@/lib/liveScore'
 
 type Match = components['schemas']['Match']
 
@@ -83,6 +84,14 @@ export function LiveScoringSetupPage() {
     })
   }
 
+  // Whether the match's live clock has already started (a KickOff period
+  // marker already recorded) — determines whether "Start scoring" needs to
+  // record one, and whether the button reads "Start" vs "Continue".
+  const live = useLiveScore(matchId)
+  const liveState = footballLiveState(live.data)
+  const alreadyKickedOff = !!liveState?.kickoff_at
+  const appendEvent = useAppendFootballEvent(matchId ?? '')
+
   const start = useMutation({
     mutationFn: async () => {
       if (!matchId || !query.data) return
@@ -92,6 +101,11 @@ export function LiveScoringSetupPage() {
           body: { status: 'in_progress' },
         })
         if (error) throw new Error('Failed to start the match')
+      }
+      // The live clock starts now, once — recorded as a real event so every
+      // viewer (not just this device) can compute the same running minute.
+      if (!alreadyKickedOff) {
+        await appendEvent.mutateAsync({ kind: 'Period', period: 'kick_off' })
       }
     },
     onSuccess: () => {
@@ -123,7 +137,6 @@ export function LiveScoringSetupPage() {
   const match = query.data
   const nameA = sideName(match, 0, 'Side A')
   const nameB = sideName(match, 1, 'Side B')
-  const alreadyStarted = match.status === 'in_progress'
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
@@ -181,7 +194,7 @@ export function LiveScoringSetupPage() {
       <Button size="lg" disabled={start.isPending} onClick={() => start.mutate()}>
         {start.isPending
           ? 'Starting…'
-          : alreadyStarted
+          : alreadyKickedOff
             ? 'Continue scoring'
             : 'Start scoring'}
       </Button>

@@ -403,7 +403,9 @@ pub struct FootballPeriodEventRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum FootballPeriodRecord {
+    KickOff,
     HalfTime,
+    SecondHalfKickOff,
     FullTime,
     ExtraTimeHalfTime,
     ExtraTimeFullTime,

@@ -912,7 +912,6 @@ pub fn new_live_event_to_dao(
 ) -> NewLiveEvent {
     NewLiveEvent {
         payload: live_event_input_to_record(&input.event),
-        client_event_id: input.client_event_id.clone(),
         recorded_by_user_id: recorded_by_user_id.to_string(),
         occurred_at: input
             .occurred_at
@@ -926,7 +925,6 @@ pub fn new_live_event_to_dao(
 pub fn live_event_from_record(rec: &LiveEventRecord) -> LiveEvent {
     LiveEvent {
         seq: rec.seq,
-        client_event_id: rec.client_event_id.clone(),
         recorded_by_user_id: rec.recorded_by_user_id.clone(),
         occurred_at: parse_ts(&rec.occurred_at),
         recorded_at: parse_ts(&rec.recorded_at),

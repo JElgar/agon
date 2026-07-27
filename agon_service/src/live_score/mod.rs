@@ -42,10 +42,6 @@ pub struct VoidEvent {
 /// One event to append, before the server has assigned it a `seq`.
 #[derive(Object)]
 pub struct NewLiveEventInput {
-    /// Client-generated id (e.g. a UUID), unique per match. Carried through
-    /// to the stored event so a client can recognise its own event after a
-    /// resync without relying on `seq` alone.
-    pub client_event_id: String,
     /// When this actually happened on the recording device — may be well
     /// before the server receives it, if the device was offline.
     pub occurred_at: chrono::DateTime<chrono::Utc>,
@@ -58,8 +54,13 @@ pub struct NewLiveEventInput {
 pub struct AppendLiveEventsInput {
     /// The seq this device last saw for this match (0 if it has never synced
     /// this match's log). Must match the server's current tip or the whole
-    /// batch is rejected as a conflict — the concurrency + idempotency gate
-    /// for concurrent or retried submissions.
+    /// batch is rejected as a conflict, rather than silently reordering or
+    /// duplicating events. On conflict, the caller fetches the log since its
+    /// old tip and diffs it against what it was about to send: identical
+    /// content means its own (already-applied) submission just lost its
+    /// response, so those events are dropped from the retry; a mismatch is a
+    /// real conflict (another device, a genuine double-entry) for the caller
+    /// to resolve before resubmitting whatever's left.
     pub expected_last_seq: u32,
     pub events: Vec<NewLiveEventInput>,
 }
@@ -69,7 +70,6 @@ pub struct AppendLiveEventsInput {
 #[derive(Object)]
 pub struct LiveEvent {
     pub seq: u32,
-    pub client_event_id: String,
     pub recorded_by_user_id: String,
     pub occurred_at: chrono::DateTime<chrono::Utc>,
     pub recorded_at: chrono::DateTime<chrono::Utc>,

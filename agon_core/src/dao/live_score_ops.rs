@@ -28,7 +28,6 @@ pub const MAX_LIVE_EVENTS_PER_BATCH: usize = 99;
 #[derive(Debug, Clone)]
 pub struct NewLiveEvent {
     pub payload: LiveEventPayloadRecord,
-    pub client_event_id: String,
     pub recorded_by_user_id: String,
     pub occurred_at: String,
     pub recorded_at: String,
@@ -101,7 +100,6 @@ impl Dao {
             let record = LiveEventRecord {
                 seq,
                 payload: event.payload.clone(),
-                client_event_id: event.client_event_id.clone(),
                 recorded_by_user_id: event.recorded_by_user_id.clone(),
                 occurred_at: event.occurred_at.clone(),
                 recorded_at: event.recorded_at.clone(),

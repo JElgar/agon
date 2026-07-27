@@ -325,13 +325,6 @@ pub struct MatchDetailedScoreRecord {
 pub struct LiveEventRecord {
     pub seq: u32,
     pub payload: LiveEventPayloadRecord,
-    /// Client-generated id, unique per match. Lets a client recognise its own
-    /// queued event after a resync/retry without depending on `seq` alone —
-    /// `seq` is only known *after* a successful round trip, so it can't help
-    /// a client whose batch committed but whose response was lost; the
-    /// client can still look up its own `client_event_id` in the log to tell
-    /// "already landed" apart from "genuine conflict" before retrying.
-    pub client_event_id: String,
     pub recorded_by_user_id: String,
     /// When this actually happened on the recording device — may be well
     /// before `recorded_at` if the device was offline when it was recorded.

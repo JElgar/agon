@@ -1,13 +1,16 @@
 //! Live-scoring event log: batched, transactional append with optimistic
-//! concurrency (so an offline device can catch up safely), plus the derived
-//! state cache.
+//! concurrency (so an offline device can catch up safely), direct
+//! delete/amend for corrections, plus the derived state cache.
 //!
 //! The event log (`LIVEEVT#<seq>`) is the source of truth; `#LIVESTATE` is a
-//! rebuildable cache, never trusted as authoritative on its own. Appending is
-//! the only mutation this module offers — corrections are recorded as new
-//! events (e.g. a `void` payload referencing an earlier seq, interpreted by
-//! the API layer), never edits to history.
+//! rebuildable cache, never trusted as authoritative on its own. Corrections
+//! are direct mutations of the log — `delete_live_event` removes an item
+//! outright, `amend_live_event` overwrites its payload in place — not a
+//! layered "this is void" marker to filter out on every read.
 
+use aws_sdk_dynamodb::error::SdkError;
+use aws_sdk_dynamodb::operation::delete_item::DeleteItemError;
+use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 use aws_sdk_dynamodb::types::{AttributeValue, Put, TransactWriteItem, Update};
 
 use super::client::Dao;
@@ -129,6 +132,67 @@ impl Dao {
         }
     }
 
+    /// Delete a single live event outright — a correction for "this never
+    /// happened" (a duplicate, a wrong-match entry), not an edit. `NotFound`
+    /// if it's already gone. Doesn't touch `live_seq`: that counter only
+    /// ever tracks the highest seq ever assigned, which stays a valid fact
+    /// regardless of which earlier seqs still physically exist.
+    pub async fn delete_live_event(&self, match_id: &str, seq: u32) -> DaoResult<()> {
+        let result = self
+            .client
+            .delete_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::LiveEvent(seq).to_string()))
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_delete_conditional_failure(&e) => Err(DaoError::NotFound(format!(
+                "live event {seq} on match {match_id}"
+            ))),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// Overwrite a single live event's payload in place — a correction for
+    /// "this happened, but I recorded the wrong facts" (wrong bowler, wrong
+    /// runs, wrong dismissal), keeping its position in the log. `NotFound` if
+    /// the seq doesn't exist. Unconditional beyond that: two people amending
+    /// the exact same ball at the exact same moment is not a case this app's
+    /// usage pattern (one active scorer at a time) needs to guard against.
+    pub async fn amend_live_event(
+        &self,
+        match_id: &str,
+        seq: u32,
+        payload: &LiveEventPayloadRecord,
+    ) -> DaoResult<()> {
+        let payload_attr = to_attr(payload)?;
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::LiveEvent(seq).to_string()))
+            .update_expression("SET payload = :payload")
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_values(":payload", payload_attr)
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => Err(DaoError::NotFound(format!(
+                "live event {seq} on match {match_id}"
+            ))),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
     /// Read every live event in the match's log, in seq order. Drains all
     /// query pages — event logs are small (low hundreds at most for a single
     /// match) so this is never a 1 MB-page concern.
@@ -173,4 +237,25 @@ impl Dao {
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
         Ok(())
     }
+}
+
+/// Serialize a record value into a DynamoDB `AttributeValue` (nested map).
+fn to_attr<T: serde::Serialize>(value: &T) -> DaoResult<AttributeValue> {
+    Ok(serde_dynamo::to_attribute_value(value)?)
+}
+
+fn is_delete_conditional_failure(err: &SdkError<DeleteItemError>) -> bool {
+    matches!(
+        err,
+        SdkError::ServiceError(se)
+            if matches!(se.err(), DeleteItemError::ConditionalCheckFailedException(_))
+    )
+}
+
+fn is_update_conditional_failure(err: &SdkError<UpdateItemError>) -> bool {
+    matches!(
+        err,
+        SdkError::ServiceError(se)
+            if matches!(se.err(), UpdateItemError::ConditionalCheckFailedException(_))
+    )
 }

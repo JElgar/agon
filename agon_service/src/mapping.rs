@@ -12,7 +12,7 @@ use crate::detailed_score::cricket::{
     CricketExtraKind,
 };
 use crate::live_score::{
-    LiveEvent, LiveEventInput, LiveScoreState, NewLiveEventInput, VoidEvent,
+    LiveEvent, LiveEventInput, LiveScoreState, NewLiveEventInput,
     cricket::{
         CricketInningsEndEvent, CricketInningsStartEvent, CricketLiveEvent, CricketRetireEvent,
         InningsEndReason,
@@ -52,7 +52,7 @@ use agon_core::dao::records::{
     MatchPlayerRecord, MatchRecord, MatchSideRecord, NotificationKindRecord, NotificationRecord,
     PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord,
     ScoreSubmissionRecord, SetsScoreEntryRecord, SimpleScoreEntryRecord, TeamMemberRecord,
-    TeamRecord, UserRecord, UserSportStatsRecord, VoidEventRecord,
+    TeamRecord, UserRecord, UserSportStatsRecord,
 };
 use poem_openapi::types::{ParseFromJSON, ToJSON};
 
@@ -631,18 +631,6 @@ pub fn live_event_payload_from_record(rec: &LiveEventPayloadRecord) -> LiveEvent
     }
 }
 
-fn void_event_to_record(v: &VoidEvent) -> VoidEventRecord {
-    VoidEventRecord {
-        target_seq: v.target_seq,
-    }
-}
-
-fn void_event_from_record(rec: &VoidEventRecord) -> VoidEvent {
-    VoidEvent {
-        target_seq: rec.target_seq,
-    }
-}
-
 // ---- Football ---------------------------------------------------------
 
 fn football_live_event_to_record(event: &FootballLiveEvent) -> FootballLiveEventRecord {
@@ -683,7 +671,6 @@ fn football_live_event_to_record(event: &FootballLiveEvent) -> FootballLiveEvent
                 },
             })
         }
-        FootballLiveEvent::Void(v) => FootballLiveEventRecord::Void(void_event_to_record(v)),
     }
 }
 
@@ -723,7 +710,6 @@ fn football_live_event_from_record(rec: &FootballLiveEventRecord) -> FootballLiv
                 FootballPeriodRecord::PenaltiesComplete => FootballPeriod::PenaltiesComplete,
             },
         }),
-        FootballLiveEventRecord::Void(v) => FootballLiveEvent::Void(void_event_from_record(v)),
     }
 }
 
@@ -749,7 +735,6 @@ fn cricket_live_event_to_record(event: &CricketLiveEvent) -> CricketLiveEventRec
                 reason: innings_end_reason_to_record(&e.reason),
             })
         }
-        CricketLiveEvent::Void(v) => CricketLiveEventRecord::Void(void_event_to_record(v)),
     }
 }
 
@@ -773,7 +758,6 @@ fn cricket_live_event_from_record(rec: &CricketLiveEventRecord) -> CricketLiveEv
                 reason: innings_end_reason_from_record(&e.reason),
             })
         }
-        CricketLiveEventRecord::Void(v) => CricketLiveEvent::Void(void_event_from_record(v)),
     }
 }
 
@@ -936,25 +920,20 @@ pub fn live_event_from_record(rec: &LiveEventRecord) -> LiveEvent {
 /// `match_type` isn't a sport live scoring supports yet (only football and
 /// cricket so far — see `LiveEventInput`).
 ///
-/// Voided events (and the `Void` markers themselves) are stripped before
-/// folding — see `live_score::effective_events`.
+/// `records` is whatever the DAO currently has on record, in seq order — a
+/// deleted event is already absent from it and an amended one already shows
+/// its corrected content, so there's no filtering pass needed here.
 pub fn derive_live_score_state(
     match_type: &str,
     records: &[LiveEventRecord],
 ) -> Option<LiveScoreState> {
-    let parsed: Vec<(u32, LiveEventInput)> = records
-        .iter()
-        .map(|r| (r.seq, live_event_payload_from_record(&r.payload)))
-        .collect();
-    let effective = crate::live_score::effective_events(parsed);
-
     match match_type {
         "football" => {
-            let events: Vec<FootballLiveEvent> = effective
-                .into_iter()
-                .filter_map(|(_, e)| match e {
-                    LiveEventInput::Football(f) => Some(f),
-                    _ => None,
+            let events: Vec<FootballLiveEvent> = records
+                .iter()
+                .filter_map(|r| match &r.payload {
+                    LiveEventPayloadRecord::Football(f) => Some(football_live_event_from_record(f)),
+                    LiveEventPayloadRecord::Cricket(_) => None,
                 })
                 .collect();
             Some(LiveScoreState::Football(
@@ -962,11 +941,11 @@ pub fn derive_live_score_state(
             ))
         }
         "cricket" => {
-            let events: Vec<CricketLiveEvent> = effective
-                .into_iter()
-                .filter_map(|(_, e)| match e {
-                    LiveEventInput::Cricket(c) => Some(c),
-                    _ => None,
+            let events: Vec<CricketLiveEvent> = records
+                .iter()
+                .filter_map(|r| match &r.payload {
+                    LiveEventPayloadRecord::Cricket(c) => Some(cricket_live_event_from_record(c)),
+                    LiveEventPayloadRecord::Football(_) => None,
                 })
                 .collect();
             Some(LiveScoreState::Cricket(
@@ -1136,7 +1115,6 @@ mod tests {
             FootballLiveEvent::Period(FootballPeriodEvent {
                 period: FootballPeriod::ExtraTimeFullTime,
             }),
-            FootballLiveEvent::Void(VoidEvent { target_seq: 3 }),
         ];
 
         for event in events {
@@ -1179,7 +1157,6 @@ mod tests {
             CricketLiveEvent::InningsEnd(CricketInningsEndEvent {
                 reason: InningsEndReason::Declared,
             }),
-            CricketLiveEvent::Void(VoidEvent { target_seq: 12 }),
         ];
 
         for event in events {

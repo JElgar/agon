@@ -312,8 +312,11 @@ pub struct MatchDetailedScoreRecord {
 }
 
 /// `MATCH#<matchId>` / `LIVEEVT#<seq>` — one live-scoring event, in append
-/// order. The source of truth for live scoring; never mutated once written
-/// (a correction is a later event, not an edit — see the API layer's `Void`).
+/// order. The source of truth for live scoring. Corrections are direct
+/// mutations of this log — `delete_live_event` removes an item outright,
+/// `amend_live_event` overwrites its `payload` in place — not a layered
+/// "void" event; there's nothing else in this record to distinguish an
+/// original entry from a corrected one.
 ///
 /// `payload` is a DAO-owned mirror of `agon_service::live_score::LiveEventInput`
 /// (see `LiveEventPayloadRecord` below) — unlike `MatchDetailedScoreRecord`,
@@ -342,12 +345,6 @@ pub enum LiveEventPayloadRecord {
     Cricket(CricketLiveEventRecord),
 }
 
-/// Mirrors `agon_service::live_score::VoidEvent`, shared by both sports.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct VoidEventRecord {
-    pub target_seq: u32,
-}
-
 // ---- Football live events --------------------------------------------------
 
 /// Mirrors `agon_service::live_score::football::FootballLiveEvent`.
@@ -358,7 +355,6 @@ pub enum FootballLiveEventRecord {
     Card(FootballCardEventRecord),
     Substitution(FootballSubstitutionEventRecord),
     Period(FootballPeriodEventRecord),
-    Void(VoidEventRecord),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -424,7 +420,6 @@ pub enum CricketLiveEventRecord {
     Retire(CricketRetireEventRecord),
     InningsStart(CricketInningsStartEventRecord),
     InningsEnd(CricketInningsEndEventRecord),
-    Void(VoidEventRecord),
 }
 
 /// Mirrors `detailed_score::cricket::CricketDelivery` (reused verbatim as the

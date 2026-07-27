@@ -55,7 +55,7 @@ use detailed_score::{
 };
 
 mod live_score;
-use live_score::{AppendLiveEventsInput, LiveEvent, LiveScoreSnapshot};
+use live_score::{AppendLiveEventsInput, LiveEvent, LiveEventInput, LiveScoreSnapshot};
 
 mod membership;
 use membership::{
@@ -990,6 +990,35 @@ enum ListLiveEventsResponse {
     #[oai(status = 200)]
     Events(Json<Vec<LiveEvent>>),
 
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum DeleteLiveEventResponse {
+    /// Deleted; the returned state has already been recomputed without it.
+    #[oai(status = 200)]
+    Ok(Json<LiveScoreSnapshot>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// Either the match or that specific seq doesn't exist.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum AmendLiveEventResponse {
+    /// Amended; the returned state has already been recomputed with the
+    /// corrected content.
+    #[oai(status = 200)]
+    Ok(Json<LiveScoreSnapshot>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// Either the match or that specific seq doesn't exist.
     #[oai(status = 404)]
     NotFound(PlainText<String>),
 }
@@ -2257,7 +2286,7 @@ impl Api {
     }
 
     /// The raw live event log, in order — for reconstructing the full
-    /// scorecard client-side or for the scorer's own undo/void picker. Not
+    /// scorecard client-side or for the scorer's own delete/amend picker. Not
     /// paginated: a single match's log is small (low hundreds of events at
     /// most).
     #[oai(path = "/matches/:match_id/live/events", method = "get")]
@@ -2284,6 +2313,112 @@ impl Api {
             .map_err(dao_internal)?;
         let events: Vec<LiveEvent> = records.iter().map(live_event_from_record).collect();
         Ok(ListLiveEventsResponse::Events(Json(events)))
+    }
+
+    /// Delete a single live event outright — "this never happened" (a
+    /// duplicate, a wrong-match entry). History is genuinely removed, not
+    /// marked; the returned state reflects the log as if it had never been
+    /// recorded (e.g. deleting a wrongly-placed innings boundary re-flows the
+    /// surrounding deliveries back into one innings automatically).
+    #[oai(path = "/matches/:match_id/live/events/:seq", method = "delete")]
+    async fn delete_live_event(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        Path(seq): Path<u32>,
+    ) -> Result<DeleteLiveEventResponse> {
+        self.require_uid(dao, &jwt_data).await?;
+        info!("Deleting live event {seq} on match {match_id}");
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(DeleteLiveEventResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+
+        match dao.delete_live_event(&match_id, seq).await {
+            Ok(()) => {}
+            Err(dao::DaoError::NotFound(_)) => {
+                return Ok(DeleteLiveEventResponse::NotFound(PlainText(
+                    "live event not found".into(),
+                )));
+            }
+            Err(e) => return Err(dao_internal(e)),
+        }
+
+        match self
+            .recompute_live_state(dao, &match_id, &agg.match_.match_type)
+            .await?
+        {
+            Some(snapshot) => Ok(DeleteLiveEventResponse::Ok(Json(snapshot))),
+            None => Ok(DeleteLiveEventResponse::ValidationError(PlainText(
+                format!(
+                    "sport `{}` does not support live scoring",
+                    agg.match_.match_type
+                ),
+            ))),
+        }
+    }
+
+    /// Overwrite a single live event's content in place — "this happened,
+    /// but I recorded the wrong facts" (wrong bowler, wrong runs, wrong
+    /// dismissal). Keeps its position in the log; can even change kind (e.g.
+    /// "that wasn't a goal, it was a card").
+    #[oai(path = "/matches/:match_id/live/events/:seq", method = "patch")]
+    async fn amend_live_event(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        Path(seq): Path<u32>,
+        input: Json<LiveEventInput>,
+    ) -> Result<AmendLiveEventResponse> {
+        self.require_uid(dao, &jwt_data).await?;
+        let input = input.0;
+        info!("Amending live event {seq} on match {match_id}");
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(AmendLiveEventResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+
+        let tag = mapping::live_event_sport_tag(&input);
+        if tag != agg.match_.match_type {
+            return Ok(AmendLiveEventResponse::ValidationError(PlainText(format!(
+                "event has sport `{tag}` but match is `{}`",
+                agg.match_.match_type
+            ))));
+        }
+
+        let payload = mapping::live_event_input_to_record(&input);
+        match dao.amend_live_event(&match_id, seq, &payload).await {
+            Ok(()) => {}
+            Err(dao::DaoError::NotFound(_)) => {
+                return Ok(AmendLiveEventResponse::NotFound(PlainText(
+                    "live event not found".into(),
+                )));
+            }
+            Err(e) => return Err(dao_internal(e)),
+        }
+
+        match self
+            .recompute_live_state(dao, &match_id, &agg.match_.match_type)
+            .await?
+        {
+            Some(snapshot) => Ok(AmendLiveEventResponse::Ok(Json(snapshot))),
+            None => Ok(AmendLiveEventResponse::ValidationError(PlainText(format!(
+                "sport `{}` does not support live scoring",
+                agg.match_.match_type
+            )))),
+        }
     }
 
     /// Re-derives the live state from the full event log and refreshes the

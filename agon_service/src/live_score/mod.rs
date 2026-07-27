@@ -9,6 +9,12 @@
 //! that derived state — the same shapes `detailed_score` already defines,
 //! since a live match's final scorecard is exactly what live scoring builds
 //! up to.
+//!
+//! Corrections are direct mutations of the log, not layered on top of it:
+//! `DELETE /matches/:id/live/events/:seq` removes an event outright, `PATCH`
+//! overwrites one seq's content in place. There's no soft-delete/void marker
+//! to filter out on every fold — `derive_state` folds whatever the DAO
+//! actually returns, in order.
 
 use poem_openapi::{Object, Union};
 
@@ -27,16 +33,6 @@ pub use football::FootballLiveEvent;
 pub enum LiveEventInput {
     Football(FootballLiveEvent),
     Cricket(CricketLiveEvent),
-}
-
-/// Voids an earlier event in the same match's log — the only way to correct a
-/// mistake. History is never edited or deleted; voiding is itself just
-/// another appended event. Shared by every sport's inner union. A `Void`
-/// event can't itself be voided.
-#[derive(Object)]
-pub struct VoidEvent {
-    /// The `seq` of the event being voided (see `LiveEvent.seq` on read).
-    pub target_seq: u32,
 }
 
 /// One event to append, before the server has assigned it a `seq`.
@@ -94,39 +90,9 @@ pub struct LiveScoreSnapshot {
     pub state: LiveScoreState,
 }
 
-/// Removes voided events (and the `Void` markers themselves) from an ordered
-/// `(seq, event)` log, leaving only what should actually be folded into the
-/// derived state. `Void` events reference their target by `seq` regardless of
-/// sport, so this runs once over the whole log rather than per sport.
-pub fn effective_events(events: Vec<(u32, LiveEventInput)>) -> Vec<(u32, LiveEventInput)> {
-    let mut voided = std::collections::HashSet::new();
-    for (_, event) in &events {
-        let target = match event {
-            LiveEventInput::Football(FootballLiveEvent::Void(v)) => Some(v.target_seq),
-            LiveEventInput::Cricket(CricketLiveEvent::Void(v)) => Some(v.target_seq),
-            _ => None,
-        };
-        if let Some(target_seq) = target {
-            voided.insert(target_seq);
-        }
-    }
-    events
-        .into_iter()
-        .filter(|(seq, event)| {
-            !voided.contains(seq)
-                && !matches!(
-                    event,
-                    LiveEventInput::Football(FootballLiveEvent::Void(_))
-                        | LiveEventInput::Cricket(CricketLiveEvent::Void(_))
-                )
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::live_score::cricket::CricketInningsStartEvent;
     use crate::live_score::football::{FootballCardColor, FootballCardEvent};
     use poem_openapi::types::{ParseFromJSON, ToJSON};
 
@@ -162,97 +128,5 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
-    }
-
-    #[test]
-    fn voiding_a_wrongly_placed_innings_end_re_flows_events_into_the_earlier_innings() {
-        use crate::detailed_score::cricket::CricketDelivery;
-        use crate::live_score::cricket::{
-            CricketInningsEndEvent, CricketLiveEvent, InningsEndReason, derive_state,
-        };
-
-        let ball = |runs: u32| CricketDelivery {
-            over: 0,
-            ball: 1,
-            bowler_player_id: "patel".into(),
-            striker_player_id: "sharma".into(),
-            non_striker_player_id: "verma".into(),
-            runs_off_bat: runs,
-            extra: None,
-            wicket: None,
-        };
-
-        // A scorer wrongly taps "end innings" after one ball, immediately
-        // voids it, and carries on scoring the same innings.
-        let raw = vec![
-            (
-                1,
-                LiveEventInput::Cricket(CricketLiveEvent::InningsStart(CricketInningsStartEvent {
-                    batting_side_id: "warriors".into(),
-                    bowling_side_id: "mill_lane".into(),
-                })),
-            ),
-            (
-                2,
-                LiveEventInput::Cricket(CricketLiveEvent::Delivery(ball(4))),
-            ),
-            (
-                3,
-                LiveEventInput::Cricket(CricketLiveEvent::InningsEnd(CricketInningsEndEvent {
-                    reason: InningsEndReason::Declared,
-                })),
-            ),
-            (
-                4,
-                LiveEventInput::Cricket(CricketLiveEvent::Void(VoidEvent { target_seq: 3 })),
-            ),
-            (
-                5,
-                LiveEventInput::Cricket(CricketLiveEvent::Delivery(ball(2))),
-            ),
-        ];
-
-        let effective = effective_events(raw);
-        let cricket_events: Vec<_> = effective
-            .into_iter()
-            .filter_map(|(_, e)| match e {
-                LiveEventInput::Cricket(c) => Some(c),
-                _ => None,
-            })
-            .collect();
-        let state = derive_state(&cricket_events);
-
-        assert_eq!(
-            state.innings.len(),
-            1,
-            "the voided end must not split the log into two innings"
-        );
-        assert_eq!(state.innings[0].runs, 6);
-        assert!(
-            !state.awaiting_next_innings,
-            "the innings is still open once its End is voided away"
-        );
-    }
-
-    #[test]
-    fn voiding_strips_target_and_the_void_marker_itself() {
-        let events = vec![
-            (
-                1,
-                LiveEventInput::Cricket(CricketLiveEvent::InningsStart(CricketInningsStartEvent {
-                    batting_side_id: "a".into(),
-                    bowling_side_id: "b".into(),
-                })),
-            ),
-            (
-                2,
-                LiveEventInput::Cricket(CricketLiveEvent::Void(VoidEvent { target_seq: 1 })),
-            ),
-        ];
-        let effective = effective_events(events);
-        assert!(
-            effective.is_empty(),
-            "both the target and the void itself should be gone"
-        );
     }
 }

@@ -1,12 +1,13 @@
 use poem_openapi::{Enum, Object, Union};
 
-use super::VoidEvent;
 use crate::detailed_score::cricket::{
     CricketDelivery, CricketDismissal, CricketDismissalKind, CricketFallOfWicket, CricketInnings,
 };
 
 /// Cricket live-scoring events, nested under the outer sport union
-/// (`LiveEventInput::Cricket`), discriminated by `kind`.
+/// (`LiveEventInput::Cricket`), discriminated by `kind`. Corrections are
+/// handled by directly deleting or amending the stored event (see
+/// `DELETE`/`PATCH /matches/:id/live/events/:seq`), not a variant here.
 #[derive(Union)]
 #[oai(one_of, discriminator_name = "kind")]
 pub enum CricketLiveEvent {
@@ -17,7 +18,6 @@ pub enum CricketLiveEvent {
     Retire(CricketRetireEvent),
     InningsStart(CricketInningsStartEvent),
     InningsEnd(CricketInningsEndEvent),
-    Void(VoidEvent),
 }
 
 #[derive(Object)]
@@ -50,10 +50,10 @@ pub struct CricketInningsEndEvent {
     pub reason: InningsEndReason,
 }
 
-/// The live-scoring state derived by folding a match's (devoided) cricket
-/// event log. `innings` reuses `detailed_score::cricket::CricketInnings`
-/// verbatim, one entry per `InningsStart`...`InningsEnd` span (plus a still-
-/// open trailing innings, if the match is mid-innings).
+/// The live-scoring state derived by folding a match's cricket event log.
+/// `innings` reuses `detailed_score::cricket::CricketInnings` verbatim, one
+/// entry per `InningsStart`...`InningsEnd` span (plus a still-open trailing
+/// innings, if the match is mid-innings).
 #[derive(Object)]
 pub struct CricketLiveState {
     pub innings: Vec<CricketInnings>,
@@ -70,12 +70,13 @@ struct OpenInnings {
     retirements: Vec<(String, bool)>,
 }
 
-/// Folds an ordered, already-devoided list of events into the derived live
-/// state. Callers get `events` from `super::effective_events` (which strips
-/// voided entries and `Void` markers before this ever sees them).
+/// Folds an ordered list of events into the derived live state. Callers pass
+/// whatever the DAO currently has on record — a deleted event is simply
+/// absent from that list, and an amended one shows up with its corrected
+/// content, so this never needs to know a correction happened at all.
 ///
 /// Innings boundaries come entirely from `InningsStart`/`InningsEnd` markers,
-/// not a stored index — so voiding a wrongly-placed boundary automatically
+/// not a stored index — so deleting a wrongly-placed boundary automatically
 /// re-flows every event after it back into the earlier innings on the next
 /// fold, with nothing to rewrite.
 pub fn derive_state(events: &[CricketLiveEvent]) -> CricketLiveState {
@@ -113,9 +114,6 @@ pub fn derive_state(events: &[CricketLiveEvent]) -> CricketLiveState {
                     let declared = matches!(end.reason, InningsEndReason::Declared);
                     innings.push(finish_innings(open, declared));
                 }
-            }
-            CricketLiveEvent::Void(_) => {
-                unreachable!("voided events are filtered out before folding")
             }
         }
     }
@@ -291,5 +289,34 @@ mod tests {
             !state.awaiting_next_innings,
             "second innings is still open (no matching InningsEnd)"
         );
+    }
+
+    #[test]
+    fn deleting_a_wrongly_placed_innings_end_re_flows_events_into_the_earlier_innings() {
+        // A scorer wrongly taps "end innings" after one ball and deletes that
+        // event (DELETE /matches/:id/live/events/:seq) rather than voiding
+        // it — from derive_state's point of view that's indistinguishable
+        // from it never having been recorded: the deleted event is just
+        // absent from the list it's given.
+        let events = vec![
+            CricketLiveEvent::InningsStart(CricketInningsStartEvent {
+                batting_side_id: "warriors".into(),
+                bowling_side_id: "mill_lane".into(),
+            }),
+            CricketLiveEvent::Delivery(ball("patel", "sharma", "verma", 4)),
+            // The wrongly-placed InningsEnd has already been deleted, so it
+            // never appears here at all.
+            CricketLiveEvent::Delivery(ball("patel", "sharma", "verma", 2)),
+        ];
+
+        let state = derive_state(&events);
+
+        assert_eq!(
+            state.innings.len(),
+            1,
+            "the deleted end must not have split the log into two innings"
+        );
+        assert_eq!(state.innings[0].runs, 6);
+        assert!(!state.awaiting_next_innings);
     }
 }

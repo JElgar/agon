@@ -1,10 +1,11 @@
 use poem_openapi::{Enum, Object, Union};
 
-use super::VoidEvent;
 use crate::detailed_score::football::{FootballEvent, FootballEventKind};
 
 /// Football live-scoring events, nested under the outer sport union
-/// (`LiveEventInput::Football`), discriminated by `kind`.
+/// (`LiveEventInput::Football`), discriminated by `kind`. Corrections are
+/// handled by directly deleting or amending the stored event (see
+/// `DELETE`/`PATCH /matches/:id/live/events/:seq`), not a variant here.
 #[derive(Union)]
 #[oai(one_of, discriminator_name = "kind")]
 pub enum FootballLiveEvent {
@@ -12,7 +13,6 @@ pub enum FootballLiveEvent {
     Card(FootballCardEvent),
     Substitution(FootballSubstitutionEvent),
     Period(FootballPeriodEvent),
-    Void(VoidEvent),
 }
 
 #[derive(Object)]
@@ -74,9 +74,9 @@ pub struct FootballSideGoals {
     pub goals: u32,
 }
 
-/// The live-scoring state derived by folding a match's (devoided) football
-/// event log. `events` reuses `detailed_score::football::FootballEvent`
-/// verbatim — this *is* that timeline, just built up incrementally.
+/// The live-scoring state derived by folding a match's football event log.
+/// `events` reuses `detailed_score::football::FootballEvent` verbatim — this
+/// *is* that timeline, just built up incrementally.
 #[derive(Object)]
 pub struct FootballLiveState {
     /// The most recent period marker seen, if any.
@@ -85,9 +85,10 @@ pub struct FootballLiveState {
     pub events: Vec<FootballEvent>,
 }
 
-/// Folds an ordered, already-devoided list of events into the derived live
-/// state. Callers get `events` from `super::effective_events` (which strips
-/// voided entries and `Void` markers before this ever sees them).
+/// Folds an ordered list of events into the derived live state. Callers pass
+/// whatever the DAO currently has on record — a deleted event is simply
+/// absent from that list, and an amended one shows up with its corrected
+/// content, so this never needs to know a correction happened at all.
 pub fn derive_state(events: &[FootballLiveEvent]) -> FootballLiveState {
     let mut period = None;
     let mut score: Vec<FootballSideGoals> = Vec::new();
@@ -145,9 +146,6 @@ pub fn derive_state(events: &[FootballLiveEvent]) -> FootballLiveState {
             }
             FootballLiveEvent::Period(p) => {
                 period = Some(p.period.clone());
-            }
-            FootballLiveEvent::Void(_) => {
-                unreachable!("voided events are filtered out before folding")
             }
         }
     }

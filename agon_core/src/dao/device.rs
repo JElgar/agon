@@ -3,7 +3,8 @@
 //! Devices live under the user partition (`USER#<uid>` / `DEVICE#<token>`).
 //! Re-registering an existing token (e.g. on every app open) is a plain
 //! refresh, not a new device, and never touches the counter below.
-//! Unregistering a token that's already gone is a harmless no-op.
+//! Unregistering a token that isn't registered to the caller is a 404
+//! ([`DaoError::NotFound`]), not a silent no-op — see `delete_device`.
 //!
 //! `list_devices` relies on a user's device count staying small (it reads one
 //! unpaginated page), so `register_device` enforces [`MAX_DEVICES_PER_USER`]
@@ -122,8 +123,12 @@ impl Dao {
         Ok(page.items)
     }
 
-    /// Unregister a push token. A no-op if the token isn't registered (already
-    /// removed, or belonged to another user) — the counter is only
+    /// Unregister a push token. Errors with [`DaoError::NotFound`] if the
+    /// token isn't registered to this user (already removed, never
+    /// registered, or belongs to someone else) — not idempotent, deliberately:
+    /// unlike a social edge (follow/unfollow), "unregister this exact token"
+    /// is a delete-by-id, and a caller unregistering something that was never
+    /// there is worth surfacing, not swallowing. The counter is only
     /// decremented when a device was actually removed, atomically with that
     /// removal.
     pub async fn delete_device(&self, user_id: &str, push_token: &str) -> DaoResult<()> {
@@ -150,9 +155,9 @@ impl Dao {
 
         match result {
             Ok(_) => Ok(()),
-            // No device existed → nothing to undo; treat as success
-            // (idempotent), matching `unfollow_user`'s convention.
-            Err(e) if super::is_transaction_conditional_failure(&e) => Ok(()),
+            Err(e) if super::is_transaction_conditional_failure(&e) => Err(DaoError::NotFound(
+                format!("device {push_token} for user {user_id}"),
+            )),
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
     }

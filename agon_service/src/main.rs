@@ -978,6 +978,9 @@ enum RegisterDeviceResponse {
 enum UnregisterDeviceResponse {
     #[oai(status = 204)]
     Ok,
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -3183,10 +3186,13 @@ impl Api {
     ) -> Result<UnregisterDeviceResponse> {
         let uid = self.require_uid(dao, &jwt_data).await?;
         info!("Unregistering device for {uid}");
-        dao.delete_device(&uid, &input.push_token)
-            .await
-            .map_err(dao_internal)?;
-        Ok(UnregisterDeviceResponse::Ok)
+        match dao.delete_device(&uid, &input.push_token).await {
+            Ok(()) => Ok(UnregisterDeviceResponse::Ok),
+            Err(dao::DaoError::NotFound(_)) => Ok(UnregisterDeviceResponse::NotFound(PlainText(
+                "device not registered".into(),
+            ))),
+            Err(e) => Err(dao_internal(e)),
+        }
     }
 
     #[oai(path = "/invitations/:invitation_id", method = "get")]

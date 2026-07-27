@@ -15,6 +15,7 @@
 //! whether the in-app `NotificationRecord` (the bell entry) gets created.
 
 use agon_core::dao::Dao;
+use agon_core::dao::error::DaoError;
 use agon_core::dao::keys::{Pk, Sk};
 use agon_core::dao::records::{NotificationKindRecord, NotificationRecord};
 use agon_core::push::{PushClient, PushOutcome};
@@ -43,8 +44,13 @@ pub async fn handle(dao: &Dao, push: Option<&PushClient>, ev: &ChangeEvent) -> W
             PushOutcome::Sent => {}
             // FCM rejected the token itself (unregistered/not found) — the
             // device is gone (app uninstalled, service worker replaced, etc.);
-            // stop sending to it.
-            PushOutcome::Stale => dao.delete_device(user_id, &device.push_token).await?,
+            // stop sending to it. A redelivery racing another cleanup (or the
+            // user unregistering it themselves) may find it already gone —
+            // that's the outcome we wanted, not a failure.
+            PushOutcome::Stale => match dao.delete_device(user_id, &device.push_token).await {
+                Ok(()) | Err(DaoError::NotFound(_)) => {}
+                Err(e) => return Err(e.into()),
+            },
         }
     }
     Ok(())

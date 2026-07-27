@@ -40,7 +40,11 @@ pub struct CricketInnings {
 }
 
 /// A single delivery (ball) in an innings. The atomic unit of in-app scoring.
-#[derive(Object)]
+/// Also the live-scoring "delivery" event payload verbatim (see
+/// `crate::live_score::cricket::CricketLiveEvent::Delivery`) — a live match's
+/// ball-by-ball log *is* a sequence of these, folded incrementally instead of
+/// submitted whole.
+#[derive(Object, Clone)]
 pub struct CricketDelivery {
     /// Over number, 0-based.
     pub over: u32,
@@ -60,14 +64,14 @@ pub struct CricketDelivery {
     pub wicket: Option<CricketDeliveryWicket>,
 }
 
-#[derive(Object)]
+#[derive(Object, Clone)]
 pub struct CricketDeliveryExtra {
     pub kind: CricketExtraKind,
     /// Extra runs awarded for this delivery.
     pub runs: u32,
 }
 
-#[derive(Enum)]
+#[derive(Enum, Clone)]
 #[oai(rename_all = "snake_case")]
 pub enum CricketExtraKind {
     Wide,
@@ -77,7 +81,7 @@ pub enum CricketExtraKind {
     Penalty,
 }
 
-#[derive(Object)]
+#[derive(Object, Clone)]
 pub struct CricketDeliveryWicket {
     pub kind: CricketDismissalKind,
     /// The batter dismissed (usually the striker, but run-outs can be either).
@@ -119,6 +123,13 @@ pub enum CricketDismissalKind {
     RunOut,
     Stumped,
     HitWicket,
+    /// Left the field (injury/illness) and did not return. Counts as a
+    /// wicket, unlike `RetiredHurt`. Recorded via a live `Retire` event with
+    /// `retired_out: true` (see `crate::live_score::cricket`).
+    RetiredOut,
+    /// Left the field (injury/illness) but may return — the same
+    /// `player_id` simply reappears on a later delivery. Does not count as a
+    /// wicket. Recorded via a live `Retire` event with `retired_out: false`.
     RetiredHurt,
 }
 

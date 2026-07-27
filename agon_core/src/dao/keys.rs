@@ -157,6 +157,16 @@ pub enum Sk {
     /// A like on a match. `LIKE#<uid>`
     Like(String),
 
+    /// A live-scoring event, in append order — the source of truth for live
+    /// scoring. `LIVEEVT#<10-digit zero-padded seq>`; zero-padding keeps
+    /// lexicographic order equal to numeric order. Never mutated once written;
+    /// corrections are later events (a `void` payload referencing an earlier
+    /// seq), not edits.
+    LiveEvent(u32),
+    /// Cached live-scoring state derived by folding the `LIVEEVT#` log — a
+    /// rebuildable cache, never authoritative. `#LIVESTATE`
+    LiveState,
+
     /// A score submission. `SCORESUB#<subId>` — addressed by id; time ordering
     /// is via GSI1 (`MSUBMISSIONS#<matchId>` / `<ts>#<subId>`).
     ScoreSubmission(String),
@@ -198,6 +208,8 @@ impl Sk {
             Sk::Player(_) => "PLAYER",
             Sk::Detail(_) => "DETAIL",
             Sk::Like(_) => "LIKE",
+            Sk::LiveEvent(_) => "LIVEEVT",
+            Sk::LiveState => "#LIVESTATE",
             Sk::ScoreSubmission(_) => "SCORESUB",
             Sk::Comment(_) => "COMMENT",
             Sk::Reply(_) => "REPLY",
@@ -212,7 +224,7 @@ impl fmt::Display for Sk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             // Marker keys (the prefix is the whole key).
-            Sk::Profile | Sk::Meta | Sk::Guard => write!(f, "{}", self.prefix()),
+            Sk::Profile | Sk::Meta | Sk::Guard | Sk::LiveState => write!(f, "{}", self.prefix()),
 
             // Single-value keys.
             Sk::Follower(v)
@@ -226,6 +238,9 @@ impl fmt::Display for Sk {
             | Sk::Reply(v)
             | Sk::Notification(v)
             | Sk::StatContribution(v) => write!(f, "{}{}{}", self.prefix(), DELIMITER, v),
+
+            // Zero-padded so lexicographic order matches numeric seq order.
+            Sk::LiveEvent(seq) => write!(f, "LIVEEVT{DELIMITER}{seq:010}"),
 
             // Feed entries keep the timestamp in the key (list-only).
             Sk::Feed {
@@ -250,6 +265,7 @@ impl FromStr for Sk {
             "#PROFILE" => return Ok(Sk::Profile),
             "#META" => return Ok(Sk::Meta),
             "#GUARD" => return Ok(Sk::Guard),
+            "#LIVESTATE" => return Ok(Sk::LiveState),
             _ => {}
         }
 
@@ -271,6 +287,10 @@ impl FromStr for Sk {
             "PLAYER" => Ok(Sk::Player(rest.into())),
             "DETAIL" => Ok(Sk::Detail(rest.into())),
             "LIKE" => Ok(Sk::Like(rest.into())),
+            "LIVEEVT" => rest
+                .parse::<u32>()
+                .map(Sk::LiveEvent)
+                .map_err(|_| KeyError::Malformed(s.into())),
             "SCORESUB" => Ok(Sk::ScoreSubmission(rest.into())),
             "COMMENT" => Ok(Sk::Comment(rest.into())),
             "REPLY" => Ok(Sk::Reply(rest.into())),
@@ -330,6 +350,21 @@ mod tests {
         sk_roundtrip(Sk::Profile, "#PROFILE");
         sk_roundtrip(Sk::Meta, "#META");
         sk_roundtrip(Sk::Guard, "#GUARD");
+        sk_roundtrip(Sk::LiveState, "#LIVESTATE");
+    }
+
+    #[test]
+    fn sk_live_event_roundtrips_zero_padded() {
+        sk_roundtrip(Sk::LiveEvent(0), "LIVEEVT#0000000000");
+        sk_roundtrip(Sk::LiveEvent(42), "LIVEEVT#0000000042");
+        sk_roundtrip(Sk::LiveEvent(4_294_967_295), "LIVEEVT#4294967295");
+    }
+
+    #[test]
+    fn sk_live_event_order_matches_numeric_order() {
+        let a = Sk::LiveEvent(9).to_string();
+        let b = Sk::LiveEvent(10).to_string();
+        assert!(a < b, "{a} should sort before {b}");
     }
 
     #[test]

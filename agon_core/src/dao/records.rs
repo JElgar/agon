@@ -259,6 +259,13 @@ pub struct MatchRecord {
     pub like_count: u64,
     #[serde(default)]
     pub comment_count: u64,
+    /// The seq of the last appended `LIVEEVT#` (0 = no live events yet).
+    /// Doubles as the optimistic-concurrency + ordering gate for
+    /// `append_live_events`: a batch must state the tip it last saw, and the
+    /// counter bump that reserves its seq range is conditioned on this value.
+    /// `#[serde(default)]` for matches written before live scoring existed.
+    #[serde(default)]
+    pub live_seq: u32,
     pub created_at: String,
 }
 
@@ -302,6 +309,45 @@ pub struct MatchPlayerRecord {
 pub struct MatchDetailedScoreRecord {
     pub sport: String,
     pub detail: serde_json::Value,
+}
+
+/// `MATCH#<matchId>` / `LIVEEVT#<seq>` — one live-scoring event, in append
+/// order. The source of truth for live scoring; never mutated once written
+/// (a correction is a later event, not an edit — see the API layer's `Void`).
+///
+/// `payload` is intentionally `serde_json::Value`: a sport- and kind-
+/// polymorphic event (a cricket delivery, a football goal, ...) that the DAO
+/// only ever stores and returns verbatim. Same deliberate exception as
+/// `MatchDetailedScoreRecord.detail`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LiveEventRecord {
+    pub seq: u32,
+    pub sport: String,
+    pub payload: serde_json::Value,
+    /// Client-generated id, unique per match. Lets a client recognise its own
+    /// queued event after a resync/retry without depending on `seq` alone
+    /// (useful for an offline device reconciling its local queue).
+    pub client_event_id: String,
+    pub recorded_by_user_id: String,
+    /// When this actually happened on the recording device — may be well
+    /// before `recorded_at` if the device was offline when it was recorded.
+    pub occurred_at: String,
+    /// When the server received/persisted the event.
+    pub recorded_at: String,
+}
+
+/// `MATCH#<matchId>` / `#LIVESTATE` — cached live-scoring state, derived by
+/// folding the `LIVEEVT#` log. A cache, not a source of truth: safe to
+/// recompute or go briefly stale (e.g. after a crash between an event write
+/// and the cache rewrite) — the next append recomputes it from the full log.
+/// `state` is opaque per the same rule as `MatchDetailedScoreRecord.detail`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LiveStateRecord {
+    pub sport: String,
+    pub state: serde_json::Value,
+    /// The seq of the last event folded into `state`, so a reader can tell
+    /// whether the cache might be behind the current log tip.
+    pub last_seq: u32,
 }
 
 /// `MATCH#<matchId>` / `SCORESUB#<ts>#<subId>` — a score submission and its

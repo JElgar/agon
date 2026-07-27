@@ -36,9 +36,10 @@ use auth::{JwtClaims, JwtVerifier};
 // Boundary mapping between API models and DAO records.
 mod mapping;
 use mapping::{
-    comment_from_record, dao_internal, detailed_score_from_record, detailed_score_to_record,
-    invitation_detail_from_record, invitation_from_record, invitation_status_from_str,
-    invitation_status_str, match_from_records, match_status_str, match_type_tag,
+    comment_from_record, dao_internal, derive_live_score_state, detailed_score_from_record,
+    detailed_score_to_record, invitation_detail_from_record, invitation_from_record,
+    invitation_status_from_str, invitation_status_str, live_event_from_record,
+    match_from_records, match_status_str, match_type_tag, new_live_event_to_dao,
     notification_actor_id, notification_from_record, score_submission_from_record, score_to_record,
     team_from_records, team_list_item_from_record, user_profile_from_record,
 };
@@ -52,6 +53,9 @@ use detailed_score::{
     DetailedScore,
     football::{FootballDetail, FootballEvent, FootballEventKind},
 };
+
+mod live_score;
+use live_score::{AppendLiveEventsInput, LiveEvent, LiveScoreSnapshot};
 
 mod membership;
 use membership::{
@@ -954,6 +958,43 @@ enum GetMatchDetailedScoreResponse {
 }
 
 #[derive(ApiResponse)]
+enum AppendLiveEventsResponse {
+    #[oai(status = 200)]
+    Ok(Json<LiveScoreSnapshot>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+
+    /// `expected_last_seq` doesn't match the match's current log tip —
+    /// another device advanced it, or this is a stale retry. The caller
+    /// should re-fetch the log/state and reconcile before retrying.
+    #[oai(status = 409)]
+    Conflict(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum GetLiveScoreResponse {
+    #[oai(status = 200)]
+    State(Json<LiveScoreSnapshot>),
+
+    /// The match exists but has no live events recorded yet.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum ListLiveEventsResponse {
+    #[oai(status = 200)]
+    Events(Json<Vec<LiveEvent>>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
 enum CreateTeamResponse {
     #[oai(status = 200)]
     Team(Json<Team>),
@@ -1754,6 +1795,7 @@ impl Api {
             pending_score,
             like_count: 0,
             comment_count: 0,
+            live_seq: 0,
             created_at: now.clone(),
         };
 
@@ -2083,6 +2125,197 @@ impl Api {
                 "match has no detailed score".into(),
             ))),
         }
+    }
+
+    /// Append a batch of live-scoring events (1 to
+    /// [`dao::live_score_ops::MAX_LIVE_EVENTS_PER_BATCH`]) to a match's live
+    /// event log, atomically. `expected_last_seq` gates ordering and
+    /// idempotency: a device with an offline backlog resubmits with whatever
+    /// tip it last saw, and a mismatch (another device moved the log on, or
+    /// this is a stale retry) comes back as `409 Conflict` rather than
+    /// silently reordering or duplicating events.
+    #[oai(path = "/matches/:match_id/live/events", method = "post")]
+    async fn append_live_events(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        input: Json<AppendLiveEventsInput>,
+    ) -> Result<AppendLiveEventsResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let input = input.0;
+        info!(
+            "Appending {} live event(s) to match {match_id} from seq {}",
+            input.events.len(),
+            input.expected_last_seq
+        );
+
+        if input.events.is_empty() {
+            return Ok(AppendLiveEventsResponse::ValidationError(PlainText(
+                "events must not be empty".into(),
+            )));
+        }
+        if input.events.len() > dao::live_score_ops::MAX_LIVE_EVENTS_PER_BATCH {
+            return Ok(AppendLiveEventsResponse::ValidationError(PlainText(
+                format!(
+                    "batch of {} exceeds the {}-event limit per request; split larger \
+                     offline backlogs into multiple calls",
+                    input.events.len(),
+                    dao::live_score_ops::MAX_LIVE_EVENTS_PER_BATCH
+                ),
+            )));
+        }
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(AppendLiveEventsResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        let sport = agg.match_.match_type.clone();
+
+        // Every event in the batch must match the match's own sport — a
+        // client bug (or stale roster) shouldn't be able to write a football
+        // event onto a cricket match's log.
+        for (i, e) in input.events.iter().enumerate() {
+            let tag = mapping::live_event_sport_tag(&e.event);
+            if tag != sport {
+                return Ok(AppendLiveEventsResponse::ValidationError(PlainText(
+                    format!("event {i} has sport `{tag}` but match is `{sport}`"),
+                )));
+            }
+        }
+
+        let recorded_at = now_iso();
+        let new_events: Vec<dao::live_score_ops::NewLiveEvent> = input
+            .events
+            .iter()
+            .map(|e| new_live_event_to_dao(e, &uid, &recorded_at))
+            .collect();
+
+        match dao
+            .append_live_events(&match_id, input.expected_last_seq, &new_events)
+            .await
+        {
+            Ok(_) => {}
+            Err(dao::DaoError::Conflict(msg)) => {
+                return Ok(AppendLiveEventsResponse::Conflict(PlainText(msg)));
+            }
+            Err(e) => return Err(dao_internal(e)),
+        }
+
+        match self.recompute_live_state(dao, &match_id, &sport).await? {
+            Some(snapshot) => Ok(AppendLiveEventsResponse::Ok(Json(snapshot))),
+            None => Ok(AppendLiveEventsResponse::ValidationError(PlainText(
+                format!("sport `{sport}` does not support live scoring"),
+            ))),
+        }
+    }
+
+    /// The current derived live-scoring state (score/clock/scorecard so
+    /// far), for a feed card or the scorer's own view to poll. Served from
+    /// the `#LIVESTATE` cache, recomputing it from the event log on a miss.
+    #[oai(path = "/matches/:match_id/live", method = "get")]
+    async fn get_live_score(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(_jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+    ) -> Result<GetLiveScoreResponse> {
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(GetLiveScoreResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+
+        if let Some(cached) = dao.get_live_state(&match_id).await.map_err(dao_internal)?
+            && let Ok(state) =
+                poem_openapi::types::ParseFromJSON::parse_from_json(Some(cached.state))
+        {
+            return Ok(GetLiveScoreResponse::State(Json(LiveScoreSnapshot {
+                last_seq: cached.last_seq,
+                state,
+            })));
+            // Otherwise fall through to a full recompute — it's just a
+            // cache, never trusted blindly if it's somehow unparseable.
+        }
+
+        match self
+            .recompute_live_state(dao, &match_id, &agg.match_.match_type)
+            .await?
+        {
+            Some(snapshot) => Ok(GetLiveScoreResponse::State(Json(snapshot))),
+            None => Ok(GetLiveScoreResponse::NotFound(PlainText(
+                "match has no live events recorded yet".into(),
+            ))),
+        }
+    }
+
+    /// The raw live event log, in order — for reconstructing the full
+    /// scorecard client-side or for the scorer's own undo/void picker. Not
+    /// paginated: a single match's log is small (low hundreds of events at
+    /// most).
+    #[oai(path = "/matches/:match_id/live/events", method = "get")]
+    async fn list_live_events(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(_jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+    ) -> Result<ListLiveEventsResponse> {
+        if dao
+            .get_match(&match_id)
+            .await
+            .map_err(dao_internal)?
+            .is_none()
+        {
+            return Ok(ListLiveEventsResponse::NotFound(PlainText(
+                "match not found".into(),
+            )));
+        }
+
+        let records = dao.list_live_events(&match_id).await.map_err(dao_internal)?;
+        let events: Vec<LiveEvent> = records.iter().filter_map(live_event_from_record).collect();
+        Ok(ListLiveEventsResponse::Events(Json(events)))
+    }
+
+    /// Re-derives the live state from the full event log and refreshes the
+    /// `#LIVESTATE` cache. The cache write is best-effort — it's always
+    /// safely recomputable, so a failure here doesn't fail the caller's
+    /// request. Returns `None` if `sport` doesn't support live scoring.
+    async fn recompute_live_state(
+        &self,
+        dao: &dao::Dao,
+        match_id: &str,
+        sport: &str,
+    ) -> Result<Option<LiveScoreSnapshot>> {
+        let records = dao.list_live_events(match_id).await.map_err(dao_internal)?;
+        let last_seq = records.iter().map(|r| r.seq).max().unwrap_or(0);
+
+        let Some(state) = derive_live_score_state(sport, &records) else {
+            return Ok(None);
+        };
+
+        let state_json = poem_openapi::types::ToJSON::to_json(&state).unwrap_or(serde_json::Value::Null);
+        if let Err(e) = dao
+            .put_live_state(
+                match_id,
+                &dao::records::LiveStateRecord {
+                    sport: sport.to_string(),
+                    state: state_json,
+                    last_seq,
+                },
+            )
+            .await
+        {
+            error!("Failed to refresh live-state cache for match {match_id}: {e}");
+        }
+
+        Ok(Some(LiveScoreSnapshot { last_seq, state }))
     }
 
     #[oai(path = "/matches/:match_id/score-submissions", method = "get")]

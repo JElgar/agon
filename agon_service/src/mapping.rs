@@ -7,6 +7,10 @@
 use poem::error::InternalServerError;
 
 use crate::detailed_score::DetailedScore;
+use crate::live_score::{
+    LiveEvent, LiveEventInput, LiveScoreState, NewLiveEventInput, cricket::CricketLiveEvent,
+    football::FootballLiveEvent,
+};
 use crate::membership::{
     ExternalMember, Invitation, InvitationContext, InvitationKind, InvitationMatchContext,
     InvitationStatus, InvitationTeamContext, Member, TokenInvitation, UserInvitation, UserMember,
@@ -24,13 +28,14 @@ use crate::{
     SimpleScoreEntry, UserProfile, UserSportStats,
 };
 use agon_core::dao::error::DaoError;
+use agon_core::dao::live_score_ops::NewLiveEvent;
 use agon_core::dao::records::{
     CommentRecord, ConfirmedScoreRecord, EmbeddedInvitationRecord, InvitationContextRecord,
-    InvitationKindRecord, InvitationRecord, MatchDetailedScoreRecord, MatchLikeRecord,
-    MatchPlayerRecord, MatchRecord, MatchSideRecord, NotificationKindRecord, NotificationRecord,
-    PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord,
-    ScoreSubmissionRecord, SetsScoreEntryRecord, SimpleScoreEntryRecord, TeamMemberRecord,
-    TeamRecord, UserRecord, UserSportStatsRecord,
+    InvitationKindRecord, InvitationRecord, LiveEventRecord, MatchDetailedScoreRecord,
+    MatchLikeRecord, MatchPlayerRecord, MatchRecord, MatchSideRecord, NotificationKindRecord,
+    NotificationRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord,
+    ScoreResponseRecord, ScoreSubmissionRecord, SetsScoreEntryRecord, SimpleScoreEntryRecord,
+    TeamMemberRecord, TeamRecord, UserRecord, UserSportStatsRecord,
 };
 use poem_openapi::types::{ParseFromJSON, ToJSON};
 
@@ -567,6 +572,103 @@ pub fn detailed_score_to_record(ds: &DetailedScore) -> MatchDetailedScoreRecord 
 /// Returns None if the stored blob can't be parsed (treated as "no detail").
 pub fn detailed_score_from_record(rec: &MatchDetailedScoreRecord) -> Option<DetailedScore> {
     DetailedScore::parse_from_json(Some(rec.detail.clone())).ok()
+}
+
+// ===========================================================================
+// Live scoring
+// ===========================================================================
+
+/// The stored sport tag for a live event, mirroring the union variant so a
+/// read can pick the right variant back out (same convention as
+/// `detailed_score_to_record`).
+pub fn live_event_sport_tag(event: &LiveEventInput) -> &'static str {
+    match event {
+        LiveEventInput::Football(_) => "football",
+        LiveEventInput::Cricket(_) => "cricket",
+    }
+}
+
+/// Build the DAO-layer append input from one API-level new-event input.
+/// `recorded_at` is stamped once per batch by the caller so every event in a
+/// batch shares the same server-receipt time (only `occurred_at`, the
+/// device's own clock, varies per event).
+pub fn new_live_event_to_dao(
+    input: &NewLiveEventInput,
+    recorded_by_user_id: &str,
+    recorded_at: &str,
+) -> NewLiveEvent {
+    NewLiveEvent {
+        sport: live_event_sport_tag(&input.event).to_string(),
+        payload: input.event.to_json().unwrap_or(serde_json::Value::Null),
+        client_event_id: input.client_event_id.clone(),
+        recorded_by_user_id: recorded_by_user_id.to_string(),
+        occurred_at: input
+            .occurred_at
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        recorded_at: recorded_at.to_string(),
+    }
+}
+
+/// Parse a stored live event back into the API union. `None` if the stored
+/// payload can't be parsed — treated as absent rather than failing the whole
+/// read (defensive; every write goes through `to_json` on the same type, so
+/// this should never actually happen).
+pub fn live_event_from_record(rec: &LiveEventRecord) -> Option<LiveEvent> {
+    let event = LiveEventInput::parse_from_json(Some(rec.payload.clone())).ok()?;
+    Some(LiveEvent {
+        seq: rec.seq,
+        client_event_id: rec.client_event_id.clone(),
+        recorded_by_user_id: rec.recorded_by_user_id.clone(),
+        occurred_at: parse_ts(&rec.occurred_at),
+        recorded_at: parse_ts(&rec.recorded_at),
+        event,
+    })
+}
+
+/// Folds a match's live event log into its derived state. `None` if
+/// `match_type` isn't a sport live scoring supports yet (only football and
+/// cricket so far — see `LiveEventInput`).
+///
+/// Voided events (and the `Void` markers themselves) are stripped before
+/// folding — see `live_score::effective_events`.
+pub fn derive_live_score_state(match_type: &str, records: &[LiveEventRecord]) -> Option<LiveScoreState> {
+    let parsed: Vec<(u32, LiveEventInput)> = records
+        .iter()
+        .filter_map(|r| {
+            LiveEventInput::parse_from_json(Some(r.payload.clone()))
+                .ok()
+                .map(|e| (r.seq, e))
+        })
+        .collect();
+    let effective = crate::live_score::effective_events(parsed);
+
+    match match_type {
+        "football" => {
+            let events: Vec<FootballLiveEvent> = effective
+                .into_iter()
+                .filter_map(|(_, e)| match e {
+                    LiveEventInput::Football(f) => Some(f),
+                    _ => None,
+                })
+                .collect();
+            Some(LiveScoreState::Football(
+                crate::live_score::football::derive_state(&events),
+            ))
+        }
+        "cricket" => {
+            let events: Vec<CricketLiveEvent> = effective
+                .into_iter()
+                .filter_map(|(_, e)| match e {
+                    LiveEventInput::Cricket(c) => Some(c),
+                    _ => None,
+                })
+                .collect();
+            Some(LiveScoreState::Cricket(
+                crate::live_score::cricket::derive_state(&events),
+            ))
+        }
+        _ => None,
+    }
 }
 
 // ===========================================================================

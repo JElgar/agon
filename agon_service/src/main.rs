@@ -2571,9 +2571,17 @@ impl Api {
                 .await
                 .map_err(dao_internal)?;
         } else {
-            dao.delete_comment_hard(&match_id, &comment_id)
-                .await
-                .map_err(dao_internal)?;
+            match dao.delete_comment_hard(&match_id, &comment_id).await {
+                Ok(()) => {}
+                // Deleted by a concurrent request between the check above and
+                // here.
+                Err(dao::DaoError::NotFound(_)) => {
+                    return Ok(DeleteCommentResponse::NotFound(PlainText(
+                        "comment not found".into(),
+                    )));
+                }
+                Err(e) => return Err(dao_internal(e)),
+            }
         }
         Ok(DeleteCommentResponse::Ok)
     }
@@ -2833,9 +2841,15 @@ impl Api {
                 "team not found".into(),
             )));
         }
-        dao.remove_team_member(&team_id, &member_id)
-            .await
-            .map_err(dao_internal)?;
+        match dao.remove_team_member(&team_id, &member_id).await {
+            Ok(()) => {}
+            Err(dao::DaoError::NotFound(_)) => {
+                return Ok(RemoveTeamMemberResponse::NotFound(PlainText(
+                    "member not found".into(),
+                )));
+            }
+            Err(e) => return Err(dao_internal(e)),
+        }
         match dao.get_team(&team_id).await.map_err(dao_internal)? {
             Some(agg) => Ok(RemoveTeamMemberResponse::Team(Json(team_from_records(
                 &agg.team,
@@ -3268,10 +3282,14 @@ impl Api {
             }
             Some(_) => {}
         }
-        dao.delete_invitation(&invitation_id)
-            .await
-            .map_err(dao_internal)?;
-        Ok(RevokeInvitationResponse::Ok)
+        match dao.delete_invitation(&invitation_id).await {
+            Ok(()) => Ok(RevokeInvitationResponse::Ok),
+            // Revoked by a concurrent request between the check above and here.
+            Err(dao::DaoError::NotFound(_)) => Ok(RevokeInvitationResponse::NotFound(PlainText(
+                "invitation not found".into(),
+            ))),
+            Err(e) => Err(dao_internal(e)),
+        }
     }
 
     #[oai(path = "/invitations/:invitation_id/respond", method = "post")]

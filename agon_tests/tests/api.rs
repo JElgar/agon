@@ -423,6 +423,42 @@ async fn add_and_remove_team_member() {
     assert!(!member_ids(&after_remove).contains(&member.profile.id));
 }
 
+/// Removing a member that's already gone (or never existed) returns 404 on a
+/// real team, rather than silently succeeding with the roster unchanged —
+/// membership removal is delete-by-id, not a toggle.
+#[tokio::test]
+async fn removing_an_already_removed_team_member_returns_not_found() {
+    let (config, _owner) = new_user().await;
+    let (_other_config, member) = new_user().await;
+
+    let team = teams_post(
+        &config,
+        models::CreateTeamInput {
+            name: "Roster Test".to_string(),
+        },
+    )
+    .await
+    .expect("create team");
+
+    let with_member = teams_team_id_members_post(
+        &config,
+        &team.id,
+        models::AddTeamMembersInput {
+            user_ids: vec![member.profile.id.clone()],
+        },
+    )
+    .await
+    .expect("add member");
+    let member_id = membership_id_for(&with_member, &member.profile.id).expect("membership id");
+
+    teams_team_id_members_member_id_delete(&config, &team.id, &member_id)
+        .await
+        .expect("first remove");
+
+    let response = teams_team_id_members_member_id_delete(&config, &team.id, &member_id).await;
+    assert_not_found(response);
+}
+
 // ---------------------------------------------------------------------------
 // Matches
 // ---------------------------------------------------------------------------
@@ -748,6 +784,37 @@ async fn deleting_a_reply_less_comment_removes_it_and_decrements_count() {
             .comment_count,
         0
     );
+}
+
+/// Deleting an already-deleted comment returns 404 rather than silently
+/// succeeding — comments are delete-by-id (creating one always mints a new
+/// id, never idempotent), unlike a follow/like toggle.
+#[tokio::test]
+async fn deleting_an_already_deleted_comment_returns_not_found() {
+    let (config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let match_ = matches_post(&config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    let comment = matches_match_id_comments_post(
+        &config,
+        &match_.id,
+        models::CreateCommentInput {
+            text: "Delete me".to_string(),
+            parent_id: None,
+        },
+    )
+    .await
+    .expect("create comment");
+
+    matches_match_id_comments_comment_id_delete(&config, &match_.id, &comment.id)
+        .await
+        .expect("first delete");
+
+    let response =
+        matches_match_id_comments_comment_id_delete(&config, &match_.id, &comment.id).await;
+    assert_not_found(response);
 }
 
 /// Deleting a comment that HAS replies tombstones it: the row is kept (so its
@@ -2323,6 +2390,38 @@ async fn inviter_can_revoke_an_invitation() {
 
     // Now gone.
     let response = invitations_invitation_id_get(&owner_config, &inv_id).await;
+    assert_not_found(response);
+}
+
+/// Revoking an already-revoked invitation is not idempotent, unlike
+/// follow/like: an invitation has no idempotent-create counterpart to stay
+/// symmetric with, so a second revoke is a genuine 404, not a silent no-op.
+#[tokio::test]
+async fn revoking_an_already_revoked_invitation_returns_not_found() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let match_ = matches_post(&owner_config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    let created = matches_match_id_invitations_post(
+        &owner_config,
+        &match_.id,
+        models::AddInvitationsInput {
+            invited_user_ids: vec![invitee.profile.id.clone()],
+            invited_external_names: vec![],
+            side_id: None,
+        },
+    )
+    .await
+    .expect("add invitation");
+    let inv_id = created.first().expect("one invitation").id.clone();
+
+    invitations_invitation_id_delete(&owner_config, &inv_id)
+        .await
+        .expect("first revoke");
+
+    let response = invitations_invitation_id_delete(&owner_config, &inv_id).await;
     assert_not_found(response);
 }
 

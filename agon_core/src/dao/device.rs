@@ -1,22 +1,22 @@
 //! Device (push-token) registration: register, list, unregister.
 //!
 //! Devices live under the user partition (`USER#<uid>` / `DEVICE#<token>`).
-//! Unlike most collections here there's no uniqueness guard or counter to
-//! maintain — the token itself is the key, so re-registering the same token
-//! (e.g. on every app open) is a plain overwrite, and unregistering a token
-//! that's already gone is a harmless no-op.
+//! Re-registering an existing token (e.g. on every app open) is a plain
+//! refresh, not a new device, and never touches the counter below.
+//! Unregistering a token that's already gone is a harmless no-op.
 //!
 //! `list_devices` relies on a user's device count staying small (it reads one
 //! unpaginated page), so `register_device` enforces [`MAX_DEVICES_PER_USER`]
-//! as a cap on *new* tokens — re-registering an existing one never counts
-//! against it. The two are tied to the same constant so `list_devices` can
-//! never silently truncate a user's real device list. The cap check is
-//! best-effort, not atomic (a `get` + a count `Query`, no transaction): two
-//! concurrent registrations from a genuinely new user could both pass and
-//! push the count one over. That's an acceptable race for a hygiene limit,
-//! not a security boundary.
+//! as a hard cap on *new* tokens, tracked via a `device_count` counter on the
+//! user's profile item (same pattern as `follower_count`/`unread_count`
+//! elsewhere). The cap check and the increment happen in a single
+//! conditional `Update` inside one transaction with the device write itself
+//! — there's no read-then-write gap for two concurrent registrations to race
+//! through, unlike a separate "count, then decide" step would have.
 
-use aws_sdk_dynamodb::types::Select;
+use aws_sdk_dynamodb::error::SdkError;
+use aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError;
+use aws_sdk_dynamodb::types::{AttributeValue, Delete, Put, TransactWriteItem, Update};
 
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
@@ -33,8 +33,9 @@ pub const MAX_DEVICES_PER_USER: u32 = 20;
 
 impl Dao {
     /// Register (or re-register) a push token for a user. Idempotent: writing
-    /// the same token again just refreshes its fields. Rejects a genuinely
-    /// new token once the user is already at [`MAX_DEVICES_PER_USER`].
+    /// the same token again just refreshes its fields, no counter change.
+    /// Rejects a genuinely new token once the user is already at
+    /// [`MAX_DEVICES_PER_USER`].
     pub async fn register_device(
         &self,
         user_id: &str,
@@ -42,29 +43,6 @@ impl Dao {
         platform: DevicePlatform,
         now: &str,
     ) -> DaoResult<()> {
-        let already_registered = self
-            .client
-            .get_item()
-            .table_name(self.table())
-            .key(ATTR_PK, s(Pk::User(user_id.into()).to_string()))
-            .key("SK", s(Sk::Device(push_token.into()).to_string()))
-            .projection_expression(ATTR_PK) // existence check only
-            .send()
-            .await
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?
-            .item
-            .is_some();
-
-        if !already_registered
-            && self
-                .device_count_at_least(user_id, MAX_DEVICES_PER_USER)
-                .await?
-        {
-            return Err(DaoError::Conflict(format!(
-                "user {user_id} already has the maximum of {MAX_DEVICES_PER_USER} registered devices"
-            )));
-        }
-
         let record = DeviceRecord {
             user_id: user_id.to_string(),
             push_token: push_token.to_string(),
@@ -77,35 +55,51 @@ impl Dao {
             TYPE_DEVICE,
             &record,
         )?;
-        self.client
-            .put_item()
-            .table_name(self.table())
-            .set_item(Some(item))
-            .send()
-            .await
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-        Ok(())
-    }
 
-    /// Whether a user has at least `limit` registered devices. Uses
-    /// `Select::Count` (no item bodies transferred) with `Limit` capping the
-    /// read at exactly `limit`, so this is cheap regardless of how large the
-    /// real collection is.
-    async fn device_count_at_least(&self, user_id: &str, limit: u32) -> DaoResult<bool> {
-        let out = self
-            .client
-            .query()
+        // Attempt: create the device item (only if it doesn't already exist)
+        // and bump the counter (only if under cap) atomically. Which of the
+        // two conditions failed — if either did — is read back from the
+        // cancellation reasons below, so both branches stay race-free: we
+        // never act on a separate, possibly-stale read of either fact.
+        let put_new_device = Put::builder()
             .table_name(self.table())
-            .key_condition_expression("#pk = :pk AND begins_with(SK, :sk)")
+            .set_item(Some(item.clone()))
+            .condition_expression("attribute_not_exists(#pk)")
             .expression_attribute_names("#pk", ATTR_PK)
-            .expression_attribute_values(":pk", s(Pk::User(user_id.into()).to_string()))
-            .expression_attribute_values(":sk", s(Sk::Device(String::new()).prefix()))
-            .select(Select::Count)
-            .limit(limit as i32)
-            .send()
-            .await
+            .build()
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-        Ok(out.count >= limit as i32)
+
+        let result = self
+            .client
+            .transact_write_items()
+            .transact_items(TransactWriteItem::builder().put(put_new_device).build())
+            .transact_items(
+                TransactWriteItem::builder()
+                    .update(device_count_increment(self.table(), user_id)?)
+                    .build(),
+            )
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if item_condition_failed(&e, 0) => {
+                // The device item already existed — this is a refresh, not a
+                // new registration. Plain upsert, counter untouched.
+                self.client
+                    .put_item()
+                    .table_name(self.table())
+                    .set_item(Some(item))
+                    .send()
+                    .await
+                    .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+                Ok(())
+            }
+            Err(e) if item_condition_failed(&e, 1) => Err(DaoError::Conflict(format!(
+                "user {user_id} already has the maximum of {MAX_DEVICES_PER_USER} registered devices"
+            ))),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
     }
 
     /// List every device registered for a user. Unpaginated — capped at
@@ -129,16 +123,90 @@ impl Dao {
     }
 
     /// Unregister a push token. A no-op if the token isn't registered (already
-    /// removed, or belonged to another user).
+    /// removed, or belonged to another user) — the counter is only
+    /// decremented when a device was actually removed, atomically with that
+    /// removal.
     pub async fn delete_device(&self, user_id: &str, push_token: &str) -> DaoResult<()> {
-        self.client
-            .delete_item()
+        let delete_device = Delete::builder()
             .table_name(self.table())
             .key(ATTR_PK, s(Pk::User(user_id.into()).to_string()))
             .key("SK", s(Sk::Device(push_token.into()).to_string()))
-            .send()
-            .await
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .build()
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-        Ok(())
+
+        let result = self
+            .client
+            .transact_write_items()
+            .transact_items(TransactWriteItem::builder().delete(delete_device).build())
+            .transact_items(
+                TransactWriteItem::builder()
+                    .update(device_count_delta(self.table(), user_id, -1)?)
+                    .build(),
+            )
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            // No device existed → nothing to undo; treat as success
+            // (idempotent), matching `unfollow_user`'s convention.
+            Err(e) if super::is_transaction_conditional_failure(&e) => Ok(()),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+}
+
+/// An `Update` that atomically increments the user's `device_count` — but
+/// only if it's currently below [`MAX_DEVICES_PER_USER`]. The check and the
+/// increment are one DynamoDB operation, so there's no gap between "read the
+/// count" and "write the increment" for a second concurrent registration to
+/// land in. `attribute_not_exists` covers a profile that's never had a
+/// device registered (no `device_count` attribute yet, i.e. implicitly 0).
+fn device_count_increment(table: &str, user_id: &str) -> DaoResult<Update> {
+    Update::builder()
+        .table_name(table)
+        .key(ATTR_PK, s(Pk::User(user_id.into()).to_string()))
+        .key("SK", s(Sk::Profile.to_string()))
+        .update_expression("ADD device_count :one")
+        .condition_expression("attribute_not_exists(device_count) OR device_count < :max")
+        .expression_attribute_values(":one", AttributeValue::N("1".into()))
+        .expression_attribute_values(":max", AttributeValue::N(MAX_DEVICES_PER_USER.to_string()))
+        .build()
+        .map_err(|e| DaoError::Dynamo(e.to_string()))
+}
+
+/// An `Update` that unconditionally adds `delta` to the user's
+/// `device_count`. Safe to leave unconditional itself because it's always
+/// paired, in the same transaction, with a `Delete` guarded by
+/// `attribute_exists` — the whole transaction (and so this decrement) only
+/// ever commits when a device was actually removed.
+fn device_count_delta(table: &str, user_id: &str, delta: i64) -> DaoResult<Update> {
+    Update::builder()
+        .table_name(table)
+        .key(ATTR_PK, s(Pk::User(user_id.into()).to_string()))
+        .key("SK", s(Sk::Profile.to_string()))
+        .update_expression("ADD device_count :d")
+        .expression_attribute_values(":d", AttributeValue::N(delta.to_string()))
+        .build()
+        .map_err(|e| DaoError::Dynamo(e.to_string()))
+}
+
+/// Whether the transact-item at `index` (0-based, matching the order items
+/// were added via `transact_items`) failed its own `ConditionExpression`, for
+/// a cancelled `TransactWriteItems`. `false` for any other kind of failure
+/// (network, throttling, ...) — those should propagate as real errors, not
+/// get misread as "the condition failed".
+fn item_condition_failed(err: &SdkError<TransactWriteItemsError>, index: usize) -> bool {
+    match err {
+        SdkError::ServiceError(se) => match se.err() {
+            TransactWriteItemsError::TransactionCanceledException(e) => {
+                e.cancellation_reasons().get(index).and_then(|r| r.code())
+                    == Some("ConditionalCheckFailed")
+            }
+            _ => false,
+        },
+        _ => false,
     }
 }

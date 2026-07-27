@@ -7,6 +7,21 @@
 use poem::error::InternalServerError;
 
 use crate::detailed_score::DetailedScore;
+use crate::detailed_score::cricket::{
+    CricketDelivery, CricketDeliveryExtra, CricketDeliveryWicket, CricketDismissalKind,
+    CricketExtraKind,
+};
+use crate::live_score::{
+    LiveEvent, LiveEventInput, LiveScoreState, NewLiveEventInput,
+    cricket::{
+        CricketInningsEndEvent, CricketInningsStartEvent, CricketLiveEvent, CricketRetireEvent,
+        InningsEndReason,
+    },
+    football::{
+        FootballCardColor, FootballCardEvent, FootballGoalEvent, FootballLiveEvent, FootballPeriod,
+        FootballPeriodEvent, FootballSubstitutionEvent,
+    },
+};
 use crate::membership::{
     ExternalMember, Invitation, InvitationContext, InvitationKind, InvitationMatchContext,
     InvitationStatus, InvitationTeamContext, Member, TokenInvitation, UserInvitation, UserMember,
@@ -24,9 +39,16 @@ use crate::{
     SimpleScoreEntry, UserProfile, UserSportStats,
 };
 use agon_core::dao::error::DaoError;
+use agon_core::dao::live_score_ops::NewLiveEvent;
 use agon_core::dao::records::{
-    CommentRecord, ConfirmedScoreRecord, EmbeddedInvitationRecord, InvitationContextRecord,
-    InvitationKindRecord, InvitationRecord, MatchDetailedScoreRecord, MatchLikeRecord,
+    CommentRecord, ConfirmedScoreRecord, CricketDeliveryExtraRecord, CricketDeliveryRecord,
+    CricketDeliveryWicketRecord, CricketDismissalKindRecord, CricketExtraKindRecord,
+    CricketInningsEndEventRecord, CricketInningsStartEventRecord, CricketLiveEventRecord,
+    CricketRetireEventRecord, EmbeddedInvitationRecord, FootballCardColorRecord,
+    FootballCardEventRecord, FootballGoalEventRecord, FootballLiveEventRecord,
+    FootballPeriodEventRecord, FootballPeriodRecord, FootballSubstitutionEventRecord,
+    InningsEndReasonRecord, InvitationContextRecord, InvitationKindRecord, InvitationRecord,
+    LiveEventPayloadRecord, LiveEventRecord, MatchDetailedScoreRecord, MatchLikeRecord,
     MatchPlayerRecord, MatchRecord, MatchSideRecord, NotificationKindRecord, NotificationRecord,
     PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord,
     ScoreSubmissionRecord, SetsScoreEntryRecord, SimpleScoreEntryRecord, TeamMemberRecord,
@@ -570,6 +592,371 @@ pub fn detailed_score_from_record(rec: &MatchDetailedScoreRecord) -> Option<Deta
 }
 
 // ===========================================================================
+// Live scoring: LiveEventInput (API, poem-openapi) <-> LiveEventPayloadRecord
+// (DAO, plain serde). Two hand-synced enum trees rather than an opaque JSON
+// blob — see LiveEventRecord's doc comment for why. The compiler catches a
+// variant added on one side and forgotten on the other; a missing match arm
+// below is a build failure, not a silent runtime drop.
+// ===========================================================================
+
+/// The stored sport tag for a live event, mirroring the union variant so a
+/// read can pick the right variant back out (same convention as
+/// `detailed_score_to_record`).
+pub fn live_event_sport_tag(event: &LiveEventInput) -> &'static str {
+    match event {
+        LiveEventInput::Football(_) => "football",
+        LiveEventInput::Cricket(_) => "cricket",
+    }
+}
+
+pub fn live_event_input_to_record(event: &LiveEventInput) -> LiveEventPayloadRecord {
+    match event {
+        LiveEventInput::Football(f) => {
+            LiveEventPayloadRecord::Football(football_live_event_to_record(f))
+        }
+        LiveEventInput::Cricket(c) => {
+            LiveEventPayloadRecord::Cricket(cricket_live_event_to_record(c))
+        }
+    }
+}
+
+pub fn live_event_payload_from_record(rec: &LiveEventPayloadRecord) -> LiveEventInput {
+    match rec {
+        LiveEventPayloadRecord::Football(f) => {
+            LiveEventInput::Football(football_live_event_from_record(f))
+        }
+        LiveEventPayloadRecord::Cricket(c) => {
+            LiveEventInput::Cricket(cricket_live_event_from_record(c))
+        }
+    }
+}
+
+// ---- Football ---------------------------------------------------------
+
+fn football_live_event_to_record(event: &FootballLiveEvent) -> FootballLiveEventRecord {
+    match event {
+        FootballLiveEvent::Goal(g) => FootballLiveEventRecord::Goal(FootballGoalEventRecord {
+            side_id: g.side_id.clone(),
+            scorer_player_id: g.scorer_player_id.clone(),
+            assist_player_id: g.assist_player_id.clone(),
+            own_goal: g.own_goal,
+            penalty: g.penalty,
+            minute: g.minute,
+        }),
+        FootballLiveEvent::Card(c) => FootballLiveEventRecord::Card(FootballCardEventRecord {
+            side_id: c.side_id.clone(),
+            player_id: c.player_id.clone(),
+            color: match c.color {
+                FootballCardColor::Yellow => FootballCardColorRecord::Yellow,
+                FootballCardColor::Red => FootballCardColorRecord::Red,
+            },
+            minute: c.minute,
+        }),
+        FootballLiveEvent::Substitution(s) => {
+            FootballLiveEventRecord::Substitution(FootballSubstitutionEventRecord {
+                side_id: s.side_id.clone(),
+                player_in_id: s.player_in_id.clone(),
+                player_out_id: s.player_out_id.clone(),
+                minute: s.minute,
+            })
+        }
+        FootballLiveEvent::Period(p) => {
+            FootballLiveEventRecord::Period(FootballPeriodEventRecord {
+                period: match p.period {
+                    FootballPeriod::HalfTime => FootballPeriodRecord::HalfTime,
+                    FootballPeriod::FullTime => FootballPeriodRecord::FullTime,
+                    FootballPeriod::ExtraTimeHalfTime => FootballPeriodRecord::ExtraTimeHalfTime,
+                    FootballPeriod::ExtraTimeFullTime => FootballPeriodRecord::ExtraTimeFullTime,
+                    FootballPeriod::PenaltiesComplete => FootballPeriodRecord::PenaltiesComplete,
+                },
+            })
+        }
+    }
+}
+
+fn football_live_event_from_record(rec: &FootballLiveEventRecord) -> FootballLiveEvent {
+    match rec {
+        FootballLiveEventRecord::Goal(g) => FootballLiveEvent::Goal(FootballGoalEvent {
+            side_id: g.side_id.clone(),
+            scorer_player_id: g.scorer_player_id.clone(),
+            assist_player_id: g.assist_player_id.clone(),
+            own_goal: g.own_goal,
+            penalty: g.penalty,
+            minute: g.minute,
+        }),
+        FootballLiveEventRecord::Card(c) => FootballLiveEvent::Card(FootballCardEvent {
+            side_id: c.side_id.clone(),
+            player_id: c.player_id.clone(),
+            color: match c.color {
+                FootballCardColorRecord::Yellow => FootballCardColor::Yellow,
+                FootballCardColorRecord::Red => FootballCardColor::Red,
+            },
+            minute: c.minute,
+        }),
+        FootballLiveEventRecord::Substitution(s) => {
+            FootballLiveEvent::Substitution(FootballSubstitutionEvent {
+                side_id: s.side_id.clone(),
+                player_in_id: s.player_in_id.clone(),
+                player_out_id: s.player_out_id.clone(),
+                minute: s.minute,
+            })
+        }
+        FootballLiveEventRecord::Period(p) => FootballLiveEvent::Period(FootballPeriodEvent {
+            period: match p.period {
+                FootballPeriodRecord::HalfTime => FootballPeriod::HalfTime,
+                FootballPeriodRecord::FullTime => FootballPeriod::FullTime,
+                FootballPeriodRecord::ExtraTimeHalfTime => FootballPeriod::ExtraTimeHalfTime,
+                FootballPeriodRecord::ExtraTimeFullTime => FootballPeriod::ExtraTimeFullTime,
+                FootballPeriodRecord::PenaltiesComplete => FootballPeriod::PenaltiesComplete,
+            },
+        }),
+    }
+}
+
+// ---- Cricket ------------------------------------------------------------
+
+fn cricket_live_event_to_record(event: &CricketLiveEvent) -> CricketLiveEventRecord {
+    match event {
+        CricketLiveEvent::Delivery(d) => {
+            CricketLiveEventRecord::Delivery(cricket_delivery_to_record(d))
+        }
+        CricketLiveEvent::Retire(r) => CricketLiveEventRecord::Retire(CricketRetireEventRecord {
+            batter_player_id: r.batter_player_id.clone(),
+            retired_out: r.retired_out,
+        }),
+        CricketLiveEvent::InningsStart(s) => {
+            CricketLiveEventRecord::InningsStart(CricketInningsStartEventRecord {
+                batting_side_id: s.batting_side_id.clone(),
+                bowling_side_id: s.bowling_side_id.clone(),
+            })
+        }
+        CricketLiveEvent::InningsEnd(e) => {
+            CricketLiveEventRecord::InningsEnd(CricketInningsEndEventRecord {
+                reason: innings_end_reason_to_record(&e.reason),
+            })
+        }
+    }
+}
+
+fn cricket_live_event_from_record(rec: &CricketLiveEventRecord) -> CricketLiveEvent {
+    match rec {
+        CricketLiveEventRecord::Delivery(d) => {
+            CricketLiveEvent::Delivery(cricket_delivery_from_record(d))
+        }
+        CricketLiveEventRecord::Retire(r) => CricketLiveEvent::Retire(CricketRetireEvent {
+            batter_player_id: r.batter_player_id.clone(),
+            retired_out: r.retired_out,
+        }),
+        CricketLiveEventRecord::InningsStart(s) => {
+            CricketLiveEvent::InningsStart(CricketInningsStartEvent {
+                batting_side_id: s.batting_side_id.clone(),
+                bowling_side_id: s.bowling_side_id.clone(),
+            })
+        }
+        CricketLiveEventRecord::InningsEnd(e) => {
+            CricketLiveEvent::InningsEnd(CricketInningsEndEvent {
+                reason: innings_end_reason_from_record(&e.reason),
+            })
+        }
+    }
+}
+
+fn innings_end_reason_to_record(reason: &InningsEndReason) -> InningsEndReasonRecord {
+    match reason {
+        InningsEndReason::AllOut => InningsEndReasonRecord::AllOut,
+        InningsEndReason::OversComplete => InningsEndReasonRecord::OversComplete,
+        InningsEndReason::Declared => InningsEndReasonRecord::Declared,
+        InningsEndReason::TargetReached => InningsEndReasonRecord::TargetReached,
+    }
+}
+
+fn innings_end_reason_from_record(rec: &InningsEndReasonRecord) -> InningsEndReason {
+    match rec {
+        InningsEndReasonRecord::AllOut => InningsEndReason::AllOut,
+        InningsEndReasonRecord::OversComplete => InningsEndReason::OversComplete,
+        InningsEndReasonRecord::Declared => InningsEndReason::Declared,
+        InningsEndReasonRecord::TargetReached => InningsEndReason::TargetReached,
+    }
+}
+
+fn cricket_delivery_to_record(d: &CricketDelivery) -> CricketDeliveryRecord {
+    CricketDeliveryRecord {
+        over: d.over,
+        ball: d.ball,
+        bowler_player_id: d.bowler_player_id.clone(),
+        striker_player_id: d.striker_player_id.clone(),
+        non_striker_player_id: d.non_striker_player_id.clone(),
+        runs_off_bat: d.runs_off_bat,
+        extra: d.extra.as_ref().map(cricket_delivery_extra_to_record),
+        wicket: d.wicket.as_ref().map(cricket_delivery_wicket_to_record),
+    }
+}
+
+fn cricket_delivery_from_record(rec: &CricketDeliveryRecord) -> CricketDelivery {
+    CricketDelivery {
+        over: rec.over,
+        ball: rec.ball,
+        bowler_player_id: rec.bowler_player_id.clone(),
+        striker_player_id: rec.striker_player_id.clone(),
+        non_striker_player_id: rec.non_striker_player_id.clone(),
+        runs_off_bat: rec.runs_off_bat,
+        extra: rec.extra.as_ref().map(cricket_delivery_extra_from_record),
+        wicket: rec.wicket.as_ref().map(cricket_delivery_wicket_from_record),
+    }
+}
+
+fn cricket_delivery_extra_to_record(e: &CricketDeliveryExtra) -> CricketDeliveryExtraRecord {
+    CricketDeliveryExtraRecord {
+        kind: cricket_extra_kind_to_record(&e.kind),
+        runs: e.runs,
+    }
+}
+
+fn cricket_delivery_extra_from_record(rec: &CricketDeliveryExtraRecord) -> CricketDeliveryExtra {
+    CricketDeliveryExtra {
+        kind: cricket_extra_kind_from_record(&rec.kind),
+        runs: rec.runs,
+    }
+}
+
+fn cricket_extra_kind_to_record(kind: &CricketExtraKind) -> CricketExtraKindRecord {
+    match kind {
+        CricketExtraKind::Wide => CricketExtraKindRecord::Wide,
+        CricketExtraKind::NoBall => CricketExtraKindRecord::NoBall,
+        CricketExtraKind::Bye => CricketExtraKindRecord::Bye,
+        CricketExtraKind::LegBye => CricketExtraKindRecord::LegBye,
+        CricketExtraKind::Penalty => CricketExtraKindRecord::Penalty,
+    }
+}
+
+fn cricket_extra_kind_from_record(rec: &CricketExtraKindRecord) -> CricketExtraKind {
+    match rec {
+        CricketExtraKindRecord::Wide => CricketExtraKind::Wide,
+        CricketExtraKindRecord::NoBall => CricketExtraKind::NoBall,
+        CricketExtraKindRecord::Bye => CricketExtraKind::Bye,
+        CricketExtraKindRecord::LegBye => CricketExtraKind::LegBye,
+        CricketExtraKindRecord::Penalty => CricketExtraKind::Penalty,
+    }
+}
+
+fn cricket_delivery_wicket_to_record(w: &CricketDeliveryWicket) -> CricketDeliveryWicketRecord {
+    CricketDeliveryWicketRecord {
+        kind: cricket_dismissal_kind_to_record(&w.kind),
+        dismissed_player_id: w.dismissed_player_id.clone(),
+        bowler_player_id: w.bowler_player_id.clone(),
+        fielder_player_id: w.fielder_player_id.clone(),
+    }
+}
+
+fn cricket_delivery_wicket_from_record(rec: &CricketDeliveryWicketRecord) -> CricketDeliveryWicket {
+    CricketDeliveryWicket {
+        kind: cricket_dismissal_kind_from_record(&rec.kind),
+        dismissed_player_id: rec.dismissed_player_id.clone(),
+        bowler_player_id: rec.bowler_player_id.clone(),
+        fielder_player_id: rec.fielder_player_id.clone(),
+    }
+}
+
+fn cricket_dismissal_kind_to_record(kind: &CricketDismissalKind) -> CricketDismissalKindRecord {
+    match kind {
+        CricketDismissalKind::Bowled => CricketDismissalKindRecord::Bowled,
+        CricketDismissalKind::Caught => CricketDismissalKindRecord::Caught,
+        CricketDismissalKind::LegBeforeWicket => CricketDismissalKindRecord::LegBeforeWicket,
+        CricketDismissalKind::RunOut => CricketDismissalKindRecord::RunOut,
+        CricketDismissalKind::Stumped => CricketDismissalKindRecord::Stumped,
+        CricketDismissalKind::HitWicket => CricketDismissalKindRecord::HitWicket,
+        CricketDismissalKind::RetiredOut => CricketDismissalKindRecord::RetiredOut,
+        CricketDismissalKind::RetiredHurt => CricketDismissalKindRecord::RetiredHurt,
+    }
+}
+
+fn cricket_dismissal_kind_from_record(rec: &CricketDismissalKindRecord) -> CricketDismissalKind {
+    match rec {
+        CricketDismissalKindRecord::Bowled => CricketDismissalKind::Bowled,
+        CricketDismissalKindRecord::Caught => CricketDismissalKind::Caught,
+        CricketDismissalKindRecord::LegBeforeWicket => CricketDismissalKind::LegBeforeWicket,
+        CricketDismissalKindRecord::RunOut => CricketDismissalKind::RunOut,
+        CricketDismissalKindRecord::Stumped => CricketDismissalKind::Stumped,
+        CricketDismissalKindRecord::HitWicket => CricketDismissalKind::HitWicket,
+        CricketDismissalKindRecord::RetiredOut => CricketDismissalKind::RetiredOut,
+        CricketDismissalKindRecord::RetiredHurt => CricketDismissalKind::RetiredHurt,
+    }
+}
+
+// ---- Batch append / read / derive ---------------------------------------
+
+/// Build the DAO-layer append input from one API-level new-event input.
+/// `recorded_at` is stamped once per batch by the caller so every event in a
+/// batch shares the same server-receipt time (only `occurred_at`, the
+/// device's own clock, varies per event).
+pub fn new_live_event_to_dao(
+    input: &NewLiveEventInput,
+    recorded_by_user_id: &str,
+    recorded_at: &str,
+) -> NewLiveEvent {
+    NewLiveEvent {
+        payload: live_event_input_to_record(&input.event),
+        recorded_by_user_id: recorded_by_user_id.to_string(),
+        occurred_at: input
+            .occurred_at
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        recorded_at: recorded_at.to_string(),
+    }
+}
+
+/// Build the API `LiveEvent` from a stored record. Infallible — `payload` is
+/// a typed DAO enum, not JSON, so there's no parse step that can fail.
+pub fn live_event_from_record(rec: &LiveEventRecord) -> LiveEvent {
+    LiveEvent {
+        seq: rec.seq,
+        recorded_by_user_id: rec.recorded_by_user_id.clone(),
+        occurred_at: parse_ts(&rec.occurred_at),
+        recorded_at: parse_ts(&rec.recorded_at),
+        event: live_event_payload_from_record(&rec.payload),
+    }
+}
+
+/// Folds a match's live event log into its derived state. `None` if
+/// `match_type` isn't a sport live scoring supports yet (only football and
+/// cricket so far — see `LiveEventInput`).
+///
+/// `records` is whatever the DAO currently has on record, in seq order — a
+/// deleted event is already absent from it and an amended one already shows
+/// its corrected content, so there's no filtering pass needed here.
+pub fn derive_live_score_state(
+    match_type: &str,
+    records: &[LiveEventRecord],
+) -> Option<LiveScoreState> {
+    match match_type {
+        "football" => {
+            let events: Vec<FootballLiveEvent> = records
+                .iter()
+                .filter_map(|r| match &r.payload {
+                    LiveEventPayloadRecord::Football(f) => Some(football_live_event_from_record(f)),
+                    LiveEventPayloadRecord::Cricket(_) => None,
+                })
+                .collect();
+            Some(LiveScoreState::Football(
+                crate::live_score::football::derive_state(&events),
+            ))
+        }
+        "cricket" => {
+            let events: Vec<CricketLiveEvent> = records
+                .iter()
+                .filter_map(|r| match &r.payload {
+                    LiveEventPayloadRecord::Cricket(c) => Some(cricket_live_event_from_record(c)),
+                    LiveEventPayloadRecord::Football(_) => None,
+                })
+                .collect();
+            Some(LiveScoreState::Cricket(
+                crate::live_score::cricket::derive_state(&events),
+            ))
+        }
+        _ => None,
+    }
+}
+
+// ===========================================================================
 // Notifications
 // ===========================================================================
 
@@ -690,5 +1077,93 @@ pub fn notification_from_record(rec: &NotificationRecord, actor: UserProfile) ->
         is_read: rec.is_read,
         created_at: parse_ts(&rec.created_at),
         kind,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Round-tripping through the DAO mirror must reproduce the same wire
+    /// JSON as the original — the property that actually matters here, since
+    /// a mapping bug is a value silently changing shape or going missing.
+    /// Compared via JSON rather than a derived `PartialEq` (the API types
+    /// don't derive it) so this doesn't need extra derives just for testing.
+    #[test]
+    fn football_live_event_round_trips_through_dao_mirror() {
+        let events = vec![
+            FootballLiveEvent::Goal(FootballGoalEvent {
+                side_id: "riverside".into(),
+                scorer_player_id: Some("alvarez".into()),
+                assist_player_id: None,
+                own_goal: true,
+                penalty: false,
+                minute: Some(63),
+            }),
+            FootballLiveEvent::Card(FootballCardEvent {
+                side_id: "oak_park".into(),
+                player_id: "khan".into(),
+                color: FootballCardColor::Red,
+                minute: None,
+            }),
+            FootballLiveEvent::Substitution(FootballSubstitutionEvent {
+                side_id: "oak_park".into(),
+                player_in_id: "moreno".into(),
+                player_out_id: "khan".into(),
+                minute: Some(70),
+            }),
+            FootballLiveEvent::Period(FootballPeriodEvent {
+                period: FootballPeriod::ExtraTimeFullTime,
+            }),
+        ];
+
+        for event in events {
+            let input = LiveEventInput::Football(event);
+            let original_json = input.to_json();
+            let round_tripped = live_event_payload_from_record(&live_event_input_to_record(&input));
+            assert_eq!(original_json, round_tripped.to_json());
+        }
+    }
+
+    #[test]
+    fn cricket_live_event_round_trips_through_dao_mirror() {
+        let events = vec![
+            CricketLiveEvent::Delivery(CricketDelivery {
+                over: 4,
+                ball: 3,
+                bowler_player_id: "patel".into(),
+                striker_player_id: "sharma".into(),
+                non_striker_player_id: "verma".into(),
+                runs_off_bat: 0,
+                extra: Some(CricketDeliveryExtra {
+                    kind: CricketExtraKind::Wide,
+                    runs: 1,
+                }),
+                wicket: Some(CricketDeliveryWicket {
+                    kind: CricketDismissalKind::Caught,
+                    dismissed_player_id: "sharma".into(),
+                    bowler_player_id: Some("patel".into()),
+                    fielder_player_id: Some("cole".into()),
+                }),
+            }),
+            CricketLiveEvent::Retire(CricketRetireEvent {
+                batter_player_id: "sharma".into(),
+                retired_out: false,
+            }),
+            CricketLiveEvent::InningsStart(CricketInningsStartEvent {
+                batting_side_id: "warriors".into(),
+                bowling_side_id: "mill_lane".into(),
+            }),
+            CricketLiveEvent::InningsEnd(CricketInningsEndEvent {
+                reason: InningsEndReason::Declared,
+            }),
+        ];
+
+        for event in events {
+            let input = LiveEventInput::Cricket(event);
+            let original_json = input.to_json();
+            let round_tripped = live_event_payload_from_record(&live_event_input_to_record(&input));
+            assert_eq!(original_json, round_tripped.to_json());
+        }
     }
 }

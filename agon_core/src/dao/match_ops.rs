@@ -161,7 +161,7 @@ impl Dao {
     /// Read every item in a match's partition whose SK starts with `sk_prefix`
     /// (e.g. `SIDE#`, `PLAYER#`), draining all query pages so a large collection
     /// is never truncated at the 1 MB page limit. Deserializes each into `T`.
-    async fn query_match_collection<T: serde::de::DeserializeOwned>(
+    pub(super) async fn query_match_collection<T: serde::de::DeserializeOwned>(
         &self,
         match_id: &str,
         sk_prefix: &str,

@@ -13,6 +13,10 @@ import { StatusBadge, matchBadgeStatus } from './StatusBadge'
 import { ScoreConfirmationBar } from './ScoreConfirmationBar'
 import { MatchHeaderCarousel } from './MatchHeaderCarousel'
 import { InvitationResponseDialog } from './InvitationResponseDialog'
+import { LiveMatchBlock } from './live/LiveMatchBlock'
+import { LiveIndicator } from './live/LiveIndicator'
+import { useLiveScore } from '@/hooks/useLiveScore'
+import { footballLiveState } from '@/lib/liveScore'
 import {
   displayScore,
   headlineBySide,
@@ -189,6 +193,12 @@ export function MatchCard({
   const aWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
   const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
 
+  const live = useLiveScore(match.id, {
+    enabled: match.match_type === 'football' && match.status === 'in_progress',
+    refetchInterval: 20000,
+  })
+  const liveState = footballLiveState(live.data)
+
   const { like_count, comment_count, i_liked } = match.social
   const toggleLike = useToggleLike(match)
 
@@ -232,40 +242,47 @@ export function MatchCard({
         </div>
       )}
 
-      {/* Score block */}
-      {scoreInfo && (
-        <div className="mx-3.5 mb-3 rounded-lg bg-muted/50 px-3.5 py-3">
-          <div className="flex items-center justify-between">
-            <div className="flex min-w-0 flex-1 items-center gap-2">
-              <Avatar name={nameA} size="md" ring={aWon ? 'winner' : 'none'} />
-              <span className="truncate text-xs font-medium">{nameA}</span>
-            </div>
-            <div className="px-3 text-center">
-              <div className="text-2xl font-medium leading-none tracking-tight">
-                {headline[sideA?.id ?? ''] ?? 0}
-                <span className="text-muted-foreground">–</span>
-                {headline[sideB?.id ?? ''] ?? 0}
-              </div>
-              <div className="mt-0.5 text-[9px] uppercase tracking-widest text-muted-foreground">
-                {headlineLabel(scoreInfo.score)}
-              </div>
-            </div>
-            <div className="flex min-w-0 flex-1 flex-row-reverse items-center gap-2 text-right">
-              <Avatar name={nameB} size="md" ring={bWon ? 'winner' : 'none'} />
-              <span className="truncate text-xs font-medium">{nameB}</span>
-            </div>
-          </div>
-          {sets.length > 0 && (
-            <div className="mt-2 border-t pt-2 text-center text-[11px] text-muted-foreground">
-              {sets.map((s, i) => (
-                <span key={i}>
-                  {i > 0 && <span className="mx-1.5 text-border">·</span>}
-                  Set {i + 1} <span className="font-medium text-foreground">{s}</span>
-                </span>
-              ))}
-            </div>
-          )}
+      {/* Score block — a live-scored football match shows the mini-ticker
+          instead of the usual confirmed/pending result. */}
+      {liveState ? (
+        <div className="mx-3.5 mb-3">
+          <LiveMatchBlock match={match} state={liveState} />
         </div>
+      ) : (
+        scoreInfo && (
+          <div className="mx-3.5 mb-3 rounded-lg bg-muted/50 px-3.5 py-3">
+            <div className="flex items-center justify-between">
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <Avatar name={nameA} size="md" ring={aWon ? 'winner' : 'none'} />
+                <span className="truncate text-xs font-medium">{nameA}</span>
+              </div>
+              <div className="px-3 text-center">
+                <div className="text-2xl font-medium leading-none tracking-tight">
+                  {headline[sideA?.id ?? ''] ?? 0}
+                  <span className="text-muted-foreground">–</span>
+                  {headline[sideB?.id ?? ''] ?? 0}
+                </div>
+                <div className="mt-0.5 text-[9px] uppercase tracking-widest text-muted-foreground">
+                  {headlineLabel(scoreInfo.score)}
+                </div>
+              </div>
+              <div className="flex min-w-0 flex-1 flex-row-reverse items-center gap-2 text-right">
+                <Avatar name={nameB} size="md" ring={bWon ? 'winner' : 'none'} />
+                <span className="truncate text-xs font-medium">{nameB}</span>
+              </div>
+            </div>
+            {sets.length > 0 && (
+              <div className="mt-2 border-t pt-2 text-center text-[11px] text-muted-foreground">
+                {sets.map((s, i) => (
+                  <span key={i}>
+                    {i > 0 && <span className="mx-1.5 text-border">·</span>}
+                    Set {i + 1} <span className="font-medium text-foreground">{s}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )
       )}
 
       {/* Header photo, when the match has one. The gap above comes from the
@@ -318,7 +335,11 @@ export function MatchCard({
           <MessageCircle className="size-3.5" /> {comment_count}
         </button>
         <ShareMatchButton match={match} />
-        <StatusBadge status={matchBadgeStatus(match)} className="ml-auto" />
+        {liveState ? (
+          <LiveIndicator className="ml-auto" />
+        ) : (
+          <StatusBadge status={matchBadgeStatus(match)} className="ml-auto" />
+        )}
       </div>
     </div>
   )

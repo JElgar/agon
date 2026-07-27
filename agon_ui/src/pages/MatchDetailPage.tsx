@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate, useParams } from 'react-router-dom'
-import { ChevronLeft, Flame, MailOpen, Pencil, UserPlus } from 'lucide-react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import { ChevronLeft, Flame, MailOpen, Pencil, Radio, UserPlus } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
@@ -11,6 +11,10 @@ import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
 import { SportBadge } from '@/components/agon/SportBadge'
 import { StatusBadge, matchBadgeStatus } from '@/components/agon/StatusBadge'
 import { ScoreConfirmationBar } from '@/components/agon/ScoreConfirmationBar'
+import { LiveMatchBlock } from '@/components/agon/live/LiveMatchBlock'
+import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
+import { useLiveScore } from '@/hooks/useLiveScore'
+import { footballLiveState } from '@/lib/liveScore'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { displayScore, headlineBySide, headlineLabel, setLine } from '@/lib/score'
 import {
@@ -101,6 +105,7 @@ function MatchDetail({
 
   const canEdit = isParticipant(match, currentUserId)
   const cancelled = match.status === 'cancelled'
+  const isLiveSport = match.match_type === 'football'
 
   const [sideA, sideB] = match.sides
   const nameA = sideName(sideA, 'Side A')
@@ -111,6 +116,16 @@ function MatchDetail({
   const sets = scoreInfo ? setLine(scoreInfo.score, match.sides) : []
   const aWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
   const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
+
+  // Live-scoring state, when this is a football match currently being scored
+  // live — takes over the score block below (and the entry button becomes
+  // "Continue scoring"). Not fetched for other sports/statuses, which don't
+  // have a live event log to speak of.
+  const live = useLiveScore(match.id, {
+    enabled: isLiveSport && match.status === 'in_progress',
+    refetchInterval: 15000,
+  })
+  const liveState = footballLiveState(live.data)
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
@@ -146,8 +161,14 @@ function MatchDetail({
             )}
           </div>
 
-          {/* Score header */}
-          {scoreInfo ? (
+          {/* Score header — the live block (score + mini-ticker) takes over
+              while a football match is being scored live; otherwise the
+              usual confirmed/pending result. */}
+          {liveState ? (
+            <div className="mt-3">
+              <LiveMatchBlock match={match} state={liveState} tickerLimit={3} />
+            </div>
+          ) : scoreInfo ? (
             <div className="mt-3 flex items-center justify-between">
               <div className="flex-1">
                 <p className={cn('text-sm', aWon && 'font-medium')}>{nameA}</p>
@@ -185,17 +206,26 @@ function MatchDetail({
           )}
 
           <div className="mt-3 flex items-center justify-between">
-            <StatusBadge status={matchBadgeStatus(match)} />
-            {canEdit && !cancelled && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2 text-xs text-muted-foreground"
-                onClick={() => setEditingResult(true)}
-              >
-                {scoreInfo ? 'Edit result' : 'Add result'}
-              </Button>
-            )}
+            {liveState ? <LiveIndicator /> : <StatusBadge status={matchBadgeStatus(match)} />}
+            <div className="flex items-center gap-1">
+              {canEdit && isLiveSport && !cancelled && match.status !== 'completed' && (
+                <Button asChild variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs text-primary">
+                  <Link to={`/matches/${match.id}/live/setup`}>
+                    <Radio className="size-3" /> {liveState ? 'Continue scoring' : 'Score live'}
+                  </Link>
+                </Button>
+              )}
+              {canEdit && !cancelled && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs text-muted-foreground"
+                  onClick={() => setEditingResult(true)}
+                >
+                  {scoreInfo ? 'Edit result' : 'Add result'}
+                </Button>
+              )}
+            </div>
           </div>
         </div>
       )}

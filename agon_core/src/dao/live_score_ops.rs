@@ -126,11 +126,9 @@ impl Dao {
 
         match tx.send().await {
             Ok(_) => Ok(new_tip),
-            Err(e) if super::is_transaction_conditional_failure(&e) => {
-                Err(DaoError::Conflict(format!(
-                    "match {match_id} live log has moved on from seq {expected_last_seq}"
-                )))
-            }
+            Err(e) if super::is_transaction_conditional_failure(&e) => Err(DaoError::Conflict(
+                format!("match {match_id} live log has moved on from seq {expected_last_seq}"),
+            )),
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
     }

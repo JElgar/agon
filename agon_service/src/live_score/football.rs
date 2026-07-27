@@ -208,6 +208,9 @@ mod tests {
         assert_eq!(state.events.len(), 4);
         assert!(matches!(state.period, Some(FootballPeriod::FullTime)));
         assert!(matches!(state.events[2].kind, FootballEventKind::OwnGoal));
-        assert!(matches!(state.events[3].kind, FootballEventKind::Substitution));
+        assert!(matches!(
+            state.events[3].kind,
+            FootballEventKind::Substitution
+        ));
     }
 }

@@ -104,7 +104,8 @@ pub fn derive_state(events: &[CricketLiveEvent]) -> CricketLiveState {
             }
             CricketLiveEvent::Retire(r) => {
                 if let Some(open) = &mut current {
-                    open.retirements.push((r.batter_player_id.clone(), r.retired_out));
+                    open.retirements
+                        .push((r.batter_player_id.clone(), r.retired_out));
                 }
             }
             CricketLiveEvent::InningsEnd(end) => {
@@ -146,7 +147,11 @@ fn finish_innings(open: OpenInnings, declared: bool) -> CricketInnings {
 /// takes precedence over an earlier retirement note for the same batter.
 fn apply_retirements(innings: &mut CricketInnings, retirements: &[(String, bool)]) {
     for (player_id, retired_out) in retirements {
-        let Some(entry) = innings.batting.iter_mut().find(|b| &b.player_id == player_id) else {
+        let Some(entry) = innings
+            .batting
+            .iter_mut()
+            .find(|b| &b.player_id == player_id)
+        else {
             // The batter retired without ever facing a ball (e.g. injured
             // before their first delivery) — no batting-card row exists yet
             // to annotate. Rare enough in practice not to synthesize one.
@@ -213,13 +218,19 @@ mod tests {
         let state = derive_state(&events);
         assert_eq!(state.innings.len(), 1);
         let innings = &state.innings[0];
-        assert_eq!(innings.wickets, 0, "retiring hurt must not count as a wicket");
+        assert_eq!(
+            innings.wickets, 0,
+            "retiring hurt must not count as a wicket"
+        );
         let sharma = innings
             .batting
             .iter()
             .find(|b| b.player_id == "sharma")
             .unwrap();
-        assert_eq!(sharma.runs, 5, "runs from before and after the retirement both count");
+        assert_eq!(
+            sharma.runs, 5,
+            "runs from before and after the retirement both count"
+        );
         assert!(matches!(
             sharma.dismissal.as_ref().map(|d| &d.kind),
             Some(CricketDismissalKind::RetiredHurt)
@@ -281,5 +292,4 @@ mod tests {
             "second innings is still open (no matching InningsEnd)"
         );
     }
-
 }

@@ -166,10 +166,10 @@ mod tests {
 
     #[test]
     fn voiding_a_wrongly_placed_innings_end_re_flows_events_into_the_earlier_innings() {
+        use crate::detailed_score::cricket::CricketDelivery;
         use crate::live_score::cricket::{
             CricketInningsEndEvent, CricketLiveEvent, InningsEndReason, derive_state,
         };
-        use crate::detailed_score::cricket::CricketDelivery;
 
         let ball = |runs: u32| CricketDelivery {
             over: 0,
@@ -187,22 +187,29 @@ mod tests {
         let raw = vec![
             (
                 1,
-                LiveEventInput::Cricket(CricketLiveEvent::InningsStart(
-                    CricketInningsStartEvent {
-                        batting_side_id: "warriors".into(),
-                        bowling_side_id: "mill_lane".into(),
-                    },
-                )),
+                LiveEventInput::Cricket(CricketLiveEvent::InningsStart(CricketInningsStartEvent {
+                    batting_side_id: "warriors".into(),
+                    bowling_side_id: "mill_lane".into(),
+                })),
             ),
-            (2, LiveEventInput::Cricket(CricketLiveEvent::Delivery(ball(4)))),
+            (
+                2,
+                LiveEventInput::Cricket(CricketLiveEvent::Delivery(ball(4))),
+            ),
             (
                 3,
                 LiveEventInput::Cricket(CricketLiveEvent::InningsEnd(CricketInningsEndEvent {
                     reason: InningsEndReason::Declared,
                 })),
             ),
-            (4, LiveEventInput::Cricket(CricketLiveEvent::Void(VoidEvent { target_seq: 3 }))),
-            (5, LiveEventInput::Cricket(CricketLiveEvent::Delivery(ball(2)))),
+            (
+                4,
+                LiveEventInput::Cricket(CricketLiveEvent::Void(VoidEvent { target_seq: 3 })),
+            ),
+            (
+                5,
+                LiveEventInput::Cricket(CricketLiveEvent::Delivery(ball(2))),
+            ),
         ];
 
         let effective = effective_events(raw);
@@ -232,12 +239,10 @@ mod tests {
         let events = vec![
             (
                 1,
-                LiveEventInput::Cricket(CricketLiveEvent::InningsStart(
-                    CricketInningsStartEvent {
-                        batting_side_id: "a".into(),
-                        bowling_side_id: "b".into(),
-                    },
-                )),
+                LiveEventInput::Cricket(CricketLiveEvent::InningsStart(CricketInningsStartEvent {
+                    batting_side_id: "a".into(),
+                    bowling_side_id: "b".into(),
+                })),
             ),
             (
                 2,
@@ -245,6 +250,9 @@ mod tests {
             ),
         ];
         let effective = effective_events(events);
-        assert!(effective.is_empty(), "both the target and the void itself should be gone");
+        assert!(
+            effective.is_empty(),
+            "both the target and the void itself should be gone"
+        );
     }
 }

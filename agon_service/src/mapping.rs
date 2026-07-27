@@ -631,7 +631,10 @@ pub fn live_event_from_record(rec: &LiveEventRecord) -> Option<LiveEvent> {
 ///
 /// Voided events (and the `Void` markers themselves) are stripped before
 /// folding — see `live_score::effective_events`.
-pub fn derive_live_score_state(match_type: &str, records: &[LiveEventRecord]) -> Option<LiveScoreState> {
+pub fn derive_live_score_state(
+    match_type: &str,
+    records: &[LiveEventRecord],
+) -> Option<LiveScoreState> {
     let parsed: Vec<(u32, LiveEventInput)> = records
         .iter()
         .filter_map(|r| {

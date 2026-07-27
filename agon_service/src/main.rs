@@ -38,10 +38,10 @@ mod mapping;
 use mapping::{
     comment_from_record, dao_internal, derive_live_score_state, detailed_score_from_record,
     detailed_score_to_record, invitation_detail_from_record, invitation_from_record,
-    invitation_status_from_str, invitation_status_str, live_event_from_record,
-    match_from_records, match_status_str, match_type_tag, new_live_event_to_dao,
-    notification_actor_id, notification_from_record, score_submission_from_record, score_to_record,
-    team_from_records, team_list_item_from_record, user_profile_from_record,
+    invitation_status_from_str, invitation_status_str, live_event_from_record, match_from_records,
+    match_status_str, match_type_tag, new_live_event_to_dao, notification_actor_id,
+    notification_from_record, score_submission_from_record, score_to_record, team_from_records,
+    team_list_item_from_record, user_profile_from_record,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -2278,7 +2278,10 @@ impl Api {
             )));
         }
 
-        let records = dao.list_live_events(&match_id).await.map_err(dao_internal)?;
+        let records = dao
+            .list_live_events(&match_id)
+            .await
+            .map_err(dao_internal)?;
         let events: Vec<LiveEvent> = records.iter().filter_map(live_event_from_record).collect();
         Ok(ListLiveEventsResponse::Events(Json(events)))
     }
@@ -2300,7 +2303,8 @@ impl Api {
             return Ok(None);
         };
 
-        let state_json = poem_openapi::types::ToJSON::to_json(&state).unwrap_or(serde_json::Value::Null);
+        let state_json =
+            poem_openapi::types::ToJSON::to_json(&state).unwrap_or(serde_json::Value::Null);
         if let Err(e) = dao
             .put_live_state(
                 match_id,

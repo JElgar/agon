@@ -1,0 +1,238 @@
+import { useEffect, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate, useParams, Link } from 'react-router-dom'
+import { ChevronLeft, CircleDot, Flag, Repeat2, TimerReset } from 'lucide-react'
+import { fetchClient } from '@/lib/api-client'
+import type { components } from '@/types/api'
+import { Button } from '@/components/ui/button'
+import { useLiveScore, useAppendFootballEvent } from '@/hooks/useLiveScore'
+import { RecordEventDialog, type EventKind } from '@/components/agon/live/RecordEventDialog'
+import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
+import {
+  advanceClock,
+  currentMinute,
+  describeEvent,
+  eventEmoji,
+  footballLiveState,
+  loadClock,
+  loadTrackPrefs,
+  nextPhaseActionLabel,
+  phaseLabel,
+  type ClockState,
+} from '@/lib/liveScore'
+
+type Match = components['schemas']['Match']
+
+function sideName(match: Match, index: number, fallback: string): string {
+  return match.sides[index]?.name?.trim() || fallback
+}
+
+/** How often the on-screen clock re-renders while a half is running. */
+const CLOCK_TICK_MS = 15_000
+
+/**
+ * The live scoring screen: quick actions to log goals/cards/subs as they
+ * happen, a running clock, and the event log so far. The clock is a local
+ * stopwatch (see `lib/liveScore`) — the backend only stores discrete,
+ * optionally minute-stamped events, not a running kickoff time.
+ */
+export function LiveScoringPage() {
+  const { matchId } = useParams()
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+
+  const matchQuery = useQuery({
+    queryKey: ['match', matchId],
+    enabled: !!matchId,
+    queryFn: async (): Promise<Match> => {
+      const { data, error } = await fetchClient.GET('/matches/{match_id}', {
+        params: { path: { match_id: matchId! } },
+      })
+      if (error || !data) throw new Error('Failed to load match')
+      return data
+    },
+  })
+
+  const live = useLiveScore(matchId, { refetchInterval: 8000 })
+  const append = useAppendFootballEvent(matchId ?? '')
+
+  const [clock, setClock] = useState<ClockState>(() => loadClock(matchId ?? ''))
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), CLOCK_TICK_MS)
+    return () => clearInterval(id)
+  }, [])
+
+  const prefs = loadTrackPrefs(matchId ?? '')
+  const [dialogKind, setDialogKind] = useState<EventKind | null>(null)
+
+  if (matchQuery.isLoading || live.isLoading) {
+    return (
+      <div className="mx-auto max-w-xl">
+        <div className="h-64 animate-pulse rounded-xl border bg-card" aria-hidden />
+      </div>
+    )
+  }
+
+  if (matchQuery.isError || !matchQuery.data) {
+    return (
+      <div className="py-16 text-center">
+        <p className="mb-4 text-muted-foreground">Couldn't load this match.</p>
+        <Button variant="outline" onClick={() => matchQuery.refetch()}>
+          Retry
+        </Button>
+      </div>
+    )
+  }
+
+  const match = matchQuery.data
+  const nameA = sideName(match, 0, 'Side A')
+  const nameB = sideName(match, 1, 'Side B')
+  const state = footballLiveState(live.data)
+  const goalsFor = (sideId: string | undefined) =>
+    state?.score.find((s) => s.side_id === sideId)?.goals ?? 0
+
+  const minute = currentMinute(clock, now)
+
+  const handleHalfFt = () => {
+    if (!matchId) return
+    const { clock: nextClock, period } = advanceClock(matchId, clock, new Date())
+    setClock(nextClock)
+    if (period) {
+      append.mutate({ kind: 'Period', period })
+    }
+  }
+
+  const actions: {
+    key: EventKind | 'half_ft'
+    label: string
+    icon: React.ReactNode
+    onClick: () => void
+    disabled?: boolean
+  }[] = [
+    { key: 'goal', label: 'Goal', icon: <CircleDot className="size-5" />, onClick: () => setDialogKind('goal') },
+    ...(prefs.cards
+      ? [{ key: 'card' as const, label: 'Card', icon: <Flag className="size-5" />, onClick: () => setDialogKind('card') }]
+      : []),
+    ...(prefs.substitutions
+      ? [
+          {
+            key: 'substitution' as const,
+            label: 'Sub',
+            icon: <Repeat2 className="size-5" />,
+            onClick: () => setDialogKind('substitution'),
+          },
+        ]
+      : []),
+    {
+      key: 'half_ft',
+      label: nextPhaseActionLabel(clock.phase),
+      icon: <TimerReset className="size-5" />,
+      onClick: handleHalfFt,
+      disabled: clock.phase === 'full_time',
+    },
+  ]
+
+  const events = state ? [...state.events].reverse() : []
+
+  return (
+    <div className="mx-auto flex max-w-xl flex-col gap-4">
+      <div className="flex items-center justify-between">
+        <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${matchId}`)}>
+          <ChevronLeft className="size-4" /> Back
+        </Button>
+        <LiveIndicator />
+      </div>
+
+      <div>
+        <h1 className="text-lg font-semibold">
+          {nameA} vs {nameB}
+        </h1>
+        <p className="text-sm text-muted-foreground">You're scoring this match</p>
+      </div>
+
+      <div className="rounded-xl border bg-card p-4">
+        <div className="flex items-center justify-between">
+          <p className="flex-1 truncate text-sm font-medium">{nameA}</p>
+          <div className="px-3 text-center">
+            <div className="text-3xl font-medium tracking-tight">
+              {goalsFor(match.sides[0]?.id)}
+              <span className="text-muted-foreground">–</span>
+              {goalsFor(match.sides[1]?.id)}
+            </div>
+            <div className="mt-0.5 text-xs text-primary">
+              {minute}' · {phaseLabel(clock.phase)}
+            </div>
+          </div>
+          <p className="flex-1 truncate text-right text-sm font-medium">{nameB}</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        {actions.map((a) => (
+          <button
+            key={a.key}
+            type="button"
+            disabled={a.disabled}
+            onClick={a.onClick}
+            className="flex flex-col items-center gap-1.5 rounded-xl border bg-card p-5 text-sm font-medium transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {a.icon}
+            {a.label}
+          </button>
+        ))}
+      </div>
+
+      <Link
+        to={`/matches/${matchId}/live/setup`}
+        className="text-center text-sm text-primary hover:underline"
+      >
+        + Track more (cards, subs)
+      </Link>
+
+      <div className="border-t pt-3">
+        <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+          Match events
+        </p>
+        {events.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No events recorded yet.</p>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {events.map((event, i) => (
+              <div key={i} className="flex items-baseline gap-2 text-sm">
+                <span className="w-8 shrink-0 text-xs text-muted-foreground">
+                  {event.minute !== undefined ? `${event.minute}'` : ''}
+                </span>
+                <span aria-hidden>{eventEmoji(event.kind)}</span>
+                <span className="min-w-0 truncate">{describeEvent(event, match)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {append.isError && (
+        <p className="text-center text-xs text-destructive">
+          Failed to record that event — try again.
+        </p>
+      )}
+
+      <RecordEventDialog
+        open={dialogKind !== null}
+        kind={dialogKind}
+        match={match}
+        initialMinute={minute}
+        onOpenChange={(open) => !open && setDialogKind(null)}
+        submitting={append.isPending}
+        onSubmit={(event) => {
+          append.mutate(event, {
+            onSuccess: () => {
+              setDialogKind(null)
+              queryClient.invalidateQueries({ queryKey: ['feed'] })
+            },
+          })
+        }}
+      />
+    </div>
+  )
+}

@@ -47,12 +47,27 @@ export function CricketMatchBlock({ match, state }: { match: Match; state: Crick
   const innings = currentInnings(state)
 
   if (!innings) {
-    // Between innings, or nothing bowled yet — still worth surfacing that
-    // the match is live, just without a score to show.
+    // Between innings, or nothing bowled yet. Every innings played so far
+    // is still worth showing rather than discarding — just without the
+    // ball-by-ball detail that needs an open innings.
     return (
-      <div className="flex items-center justify-between rounded-lg bg-muted/50 px-3.5 py-3">
-        <p className="text-sm text-muted-foreground">Innings break</p>
-        <LiveIndicator />
+      <div className="rounded-lg bg-muted/50 px-3.5 py-3">
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-muted-foreground">Innings break</p>
+          <LiveIndicator />
+        </div>
+        {state.innings.length > 0 && (
+          <div className="mt-1 space-y-0.5">
+            {state.innings.map((inn, i) => (
+              <p key={i} className="text-lg font-medium leading-tight tracking-tight">
+                {sideNameFor(match, inn.batting_side_id)} {inn.runs}/{inn.wickets}
+                <span className="ml-1.5 text-sm font-normal text-muted-foreground">
+                  ({inn.overs.toFixed(1)} ov)
+                </span>
+              </p>
+            ))}
+          </div>
+        )}
       </div>
     )
   }

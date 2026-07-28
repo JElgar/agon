@@ -134,6 +134,12 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   // No innings open — either the match hasn't started, or we're between
   // innings. Either way: pick who's batting (the other side bowls).
   if (!innings) {
+    // Every innings the format allows has been played (e.g. both sides have
+    // had their one T20 innings) — there's no "next innings" to start, so
+    // don't offer to start one. Just let the scorer finish the match.
+    const inningsQuota = match.sides.length * format.innings_per_side
+    const allInningsComplete = !!state && state.innings.length >= inningsQuota
+
     return (
       <div className="mx-auto flex max-w-xl flex-col gap-4">
         {header}
@@ -142,44 +148,73 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
             {match.sides[0]?.name?.trim() || 'Side A'} vs {match.sides[1]?.name?.trim() || 'Side B'}
           </h1>
           <p className="text-sm text-muted-foreground">
-            {state && state.innings.length > 0 ? 'Start the next innings' : "You're scoring this match"}
+            {allInningsComplete
+              ? 'All innings complete'
+              : state && state.innings.length > 0
+                ? 'Start the next innings'
+                : "You're scoring this match"}
           </p>
         </div>
-        <div className="rounded-xl border bg-card p-4">
-          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            Who's batting?
-          </p>
-          <SidePicker sides={match.sides} value={startBattingSide} onChange={setStartBattingSide} />
-        </div>
-        <Button
-          size="lg"
-          disabled={!startBattingSide || appendEvent.isPending}
-          onClick={() => {
-            const bowlingSideId = match.sides.find((s) => s.id !== startBattingSide)?.id
-            if (!startBattingSide || !bowlingSideId) return
-            appendEvent.mutate(
-              {
-                kind: 'InningsStart',
-                batting_side_id: startBattingSide,
-                bowling_side_id: bowlingSideId,
-              },
-              { onSuccess: () => setStartBattingSide(undefined) },
-            )
-          }}
-        >
-          {appendEvent.isPending ? 'Starting…' : 'Start innings'}
-        </Button>
+        {state && state.innings.length > 0 && (
+          <div className="rounded-xl border bg-card p-4">
+            <div className="space-y-3">
+              {state.innings.map((inn, i) => (
+                <div key={i}>
+                  <p className="mb-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                    {match.sides.find((s) => s.id === inn.batting_side_id)?.name?.trim() ||
+                      'This side'}
+                  </p>
+                  <p className="text-2xl font-medium tracking-tight">
+                    {inn.runs}/{inn.wickets}
+                    <span className="ml-2 text-sm font-normal text-muted-foreground">
+                      ({inn.overs.toFixed(1)} ov)
+                    </span>
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {!allInningsComplete && (
+          <>
+            <div className="rounded-xl border bg-card p-4">
+              <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                Who's batting?
+              </p>
+              <SidePicker sides={match.sides} value={startBattingSide} onChange={setStartBattingSide} />
+            </div>
+            <Button
+              size="lg"
+              disabled={!startBattingSide || appendEvent.isPending}
+              onClick={() => {
+                const bowlingSideId = match.sides.find((s) => s.id !== startBattingSide)?.id
+                if (!startBattingSide || !bowlingSideId) return
+                appendEvent.mutate(
+                  {
+                    kind: 'InningsStart',
+                    batting_side_id: startBattingSide,
+                    bowling_side_id: bowlingSideId,
+                  },
+                  { onSuccess: () => setStartBattingSide(undefined) },
+                )
+              }}
+            >
+              {appendEvent.isPending ? 'Starting…' : 'Start innings'}
+            </Button>
+          </>
+        )}
 
         {state && state.innings.length > 0 && (
           <>
-            <p className="text-center text-xs text-muted-foreground">or</p>
+            {!allInningsComplete && <p className="text-center text-xs text-muted-foreground">or</p>}
             {finishMatch.isError && (
               <p className="text-center text-xs text-destructive">
                 {(finishMatch.error as Error).message}
               </p>
             )}
             <Button
-              variant="outline"
+              variant={allInningsComplete ? 'default' : 'outline'}
               size="lg"
               disabled={finishMatch.isPending}
               onClick={() => finishMatch.mutate()}

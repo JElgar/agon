@@ -29,6 +29,7 @@ import {
 } from '@/lib/members'
 import { CopyInviteButton } from '@/components/agon/CopyInviteButton'
 import { MatchDetailsEditor } from '@/components/agon/MatchDetailsEditor'
+import { MatchFormatCard } from '@/components/agon/MatchFormatCard'
 import { MatchResultEditor } from '@/components/agon/MatchResultEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
 import { MatchComments } from '@/components/agon/MatchComments'
@@ -249,6 +250,10 @@ function MatchDetail({
           onDone={() => setEditingResult(false)}
         />
       )}
+
+      {/* Match format — half length/overs limit/penalty runs, football and
+          cricket only. Renders nothing for other sports. */}
+      <MatchFormatCard match={match} canEdit={canEdit && !cancelled} />
 
       {/* Respond to a pending invite first; only once joined does the score
           confirm/dispute prompt apply — the two are mutually exclusive (same

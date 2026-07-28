@@ -38,15 +38,19 @@ mod mapping;
 use mapping::{
     comment_from_record, dao_internal, derive_live_score_state, detailed_score_from_record,
     detailed_score_to_record, invitation_detail_from_record, invitation_from_record,
-    invitation_status_from_str, invitation_status_str, live_event_from_record, match_from_records,
-    match_status_str, match_type_tag, new_live_event_to_dao, notification_actor_id,
-    notification_from_record, score_submission_from_record, score_to_record, team_from_records,
-    team_list_item_from_record, user_profile_from_record,
+    invitation_status_from_str, invitation_status_str, live_event_from_record,
+    match_format_sport_tag, match_format_to_json, match_from_records, match_status_str,
+    match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
+    score_submission_from_record, score_to_record, team_from_records, team_list_item_from_record,
+    user_profile_from_record,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
 mod assets;
 use assets::Assets;
+
+mod match_format;
+use match_format::MatchFormat;
 
 mod detailed_score;
 use detailed_score::{
@@ -372,6 +376,10 @@ struct Match {
     /// Like/comment counts and the viewer's own like state, so feed and detail
     /// cards render without extra requests.
     social: MatchSocial,
+    /// Sport-specific format/rules (half length, overs limit, penalty runs,
+    /// ...), if configured. `None` means the creator didn't set one — clients
+    /// should fall back to their own sensible per-sport defaults.
+    format: Option<MatchFormat>,
 }
 
 /// Social engagement summary for a match. Counts plus whether the requesting
@@ -583,6 +591,9 @@ struct CreateMatchInput {
     /// rejects any that aren't `Uploaded` and owned by the caller, and resolves
     /// them to stored URLs. Omit/null for no header.
     header_photo_asset_ids: Option<Vec<String>>,
+    /// Sport-specific format/rules. Optional — omit for the app's own
+    /// defaults; must match `match_type`'s sport if supplied.
+    format: Option<MatchFormat>,
 }
 
 /// The organiser's one-stop update for a match: edit metadata, reconcile the
@@ -622,6 +633,9 @@ struct UpdateMatchInput {
     /// headers; `None` leaves them unchanged. Any asset not `Uploaded`/owned by
     /// the caller rejects the whole request.
     header_photo_asset_ids: Option<Vec<String>>,
+    /// Replace the match's format/rules. `None` leaves it unchanged; must
+    /// match the match's sport if supplied.
+    format: Option<MatchFormat>,
 }
 
 /// A single entry in the feed. Modelled as a union so new item types
@@ -1624,6 +1638,18 @@ impl Api {
             )));
         }
 
+        // A supplied format must be for this match's own sport — a football
+        // match can't carry cricket's overs-per-innings setting, say.
+        if let Some(fmt) = &input.format {
+            let tag = match_format_sport_tag(fmt);
+            if tag != match_type_tag(&input.match_type) {
+                return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
+                    "format is for `{tag}` but match is `{}`",
+                    match_type_tag(&input.match_type)
+                ))));
+            }
+        }
+
         // The `starts_at` time must be consistent with whether a result is being
         // recorded: a match created with a score is already played (Completed),
         // so it must have started in the past; one without a score is upcoming
@@ -1825,6 +1851,7 @@ impl Api {
             like_count: 0,
             comment_count: 0,
             live_seq: 0,
+            format: input.format.as_ref().map(match_format_to_json),
             created_at: now.clone(),
         };
 
@@ -1915,6 +1942,17 @@ impl Api {
             return Ok(UpdateMatchResponse::Forbidden(PlainText(
                 "only a participant can edit this match".into(),
             )));
+        }
+
+        // A supplied format must be for this match's own sport.
+        if let Some(fmt) = &input.format {
+            let tag = match_format_sport_tag(fmt);
+            if tag != agg.match_.match_type {
+                return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                    "format is for `{tag}` but match is `{}`",
+                    agg.match_.match_type
+                ))));
+            }
         }
 
         // Resolve any replacement header images (must be uploaded, owned by the
@@ -2062,6 +2100,7 @@ impl Api {
             None,
             pending_score.map(Some),
             header_photo_urls,
+            input.format.as_ref().map(match_format_to_json),
         )
         .await
         .map_err(|e| match e {
@@ -2597,9 +2636,19 @@ impl Api {
                     .await
                     .map_err(dao_internal)?;
                 // A disputed submission clears the pending score on the match.
-                dao.update_match_meta(&match_id, None, None, None, None, None, Some(None), None)
-                    .await
-                    .map_err(dao_internal)?;
+                dao.update_match_meta(
+                    &match_id,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(None),
+                    None,
+                    None,
+                )
+                .await
+                .map_err(dao_internal)?;
             }
             ScoreResponseKind::Confirm => {
                 // Record this side's confirmation (idempotent per side).
@@ -2651,6 +2700,7 @@ impl Api {
                         None,
                         Some(confirmed),
                         Some(None),
+                        None,
                         None,
                     )
                     .await
@@ -3281,6 +3331,7 @@ impl Api {
             dao.update_match_meta(
                 &match_id,
                 Some(&agg.match_.name),
+                None,
                 None,
                 None,
                 None,
@@ -4338,6 +4389,7 @@ fn mock_match(id: String) -> Match {
             comment_count: 2,
             i_liked: false,
         },
+        format: None,
     }
 }
 

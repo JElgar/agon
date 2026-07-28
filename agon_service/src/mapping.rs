@@ -22,6 +22,7 @@ use crate::live_score::{
         FootballPeriodEvent, FootballSubstitutionEvent,
     },
 };
+use crate::match_format::MatchFormat;
 use crate::membership::{
     ExternalMember, Invitation, InvitationContext, InvitationKind, InvitationMatchContext,
     InvitationStatus, InvitationTeamContext, Member, TokenInvitation, UserInvitation, UserMember,
@@ -533,6 +534,7 @@ pub fn match_from_records(
             comment_count: rec.comment_count as u32,
             i_liked,
         },
+        format: rec.format.as_ref().and_then(match_format_from_json),
     }
 }
 
@@ -589,6 +591,31 @@ pub fn detailed_score_to_record(ds: &DetailedScore) -> MatchDetailedScoreRecord 
 /// Returns None if the stored blob can't be parsed (treated as "no detail").
 pub fn detailed_score_from_record(rec: &MatchDetailedScoreRecord) -> Option<DetailedScore> {
     DetailedScore::parse_from_json(Some(rec.detail.clone())).ok()
+}
+
+// ===========================================================================
+// Match format <-> serde_json::Value (embedded directly on MatchRecord, same
+// JSON-via-poem-openapi technique as detailed_score above).
+// ===========================================================================
+
+pub fn match_format_to_json(fmt: &MatchFormat) -> serde_json::Value {
+    fmt.to_json().unwrap_or(serde_json::Value::Null)
+}
+
+/// Parse a stored format blob back into `MatchFormat`. Returns None if the
+/// stored blob can't be parsed (treated as "no format configured").
+pub fn match_format_from_json(v: &serde_json::Value) -> Option<MatchFormat> {
+    MatchFormat::parse_from_json(Some(v.clone())).ok()
+}
+
+/// The sport tag a `MatchFormat` is for, mirroring the union variant (same
+/// convention as `live_event_sport_tag`) — used to reject a format that
+/// doesn't match the match's own sport.
+pub fn match_format_sport_tag(fmt: &MatchFormat) -> &'static str {
+    match fmt {
+        MatchFormat::Football(_) => "football",
+        MatchFormat::Cricket(_) => "cricket",
+    }
 }
 
 // ===========================================================================

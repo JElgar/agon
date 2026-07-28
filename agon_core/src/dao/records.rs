@@ -266,6 +266,14 @@ pub struct MatchRecord {
     /// `#[serde(default)]` for matches written before live scoring existed.
     #[serde(default)]
     pub live_seq: u32,
+    /// Match format/rules configuration (overs per innings, half length, and
+    /// so on) — opaque JSON like `MatchDetailedScoreRecord.detail`, since
+    /// it's small and sport-polymorphic, and unlike the detailed score it's
+    /// embedded directly on the match record (not a separate item) because
+    /// live scoring wants it on the same fetch as everything else. `None`
+    /// until a format is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<serde_json::Value>,
     pub created_at: String,
 }
 

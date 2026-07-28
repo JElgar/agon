@@ -10,6 +10,7 @@ import { WicketDialog } from '@/components/agon/live/WicketDialog'
 import { ExtraRunsDialog } from '@/components/agon/live/ExtraRunsDialog'
 import { NoBallDialog } from '@/components/agon/live/NoBallDialog'
 import { playersOnSide } from '@/lib/members'
+import { cricketFormat } from '@/lib/matchFormat'
 import {
   battingEntryFor,
   battingLine,
@@ -159,6 +160,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   }
 
   const crr = runRate(innings.runs, innings.overs)
+  const format = cricketFormat(match.format)
   const strikerEntry = battingEntryFor(innings, effectiveStriker)
   const nonStrikerEntry = battingEntryFor(innings, effectiveNonStriker)
   const bowlerEntry = bowlingEntryFor(innings, effectiveBowler)
@@ -181,7 +183,9 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
         <p className="mt-0.5 text-3xl font-medium tracking-tight">
           {innings.runs}/{innings.wickets}
           <span className="ml-2 text-sm font-normal text-muted-foreground">
-            ({innings.overs.toFixed(1)} ov · CRR {crr.toFixed(2)})
+            ({innings.overs.toFixed(1)}
+            {format.overs_per_innings ? `/${format.overs_per_innings}` : ''} ov · CRR{' '}
+            {crr.toFixed(2)})
           </span>
         </p>
 
@@ -409,10 +413,14 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
           />
           <NoBallDialog
             open={extraDialog === 'no_ball'}
+            penaltyRuns={format.no_ball_penalty_runs}
             submitting={appendEvent.isPending}
             onOpenChange={(open) => !open && setExtraDialog(null)}
             onPick={(runsOffBat) => {
-              recordDelivery({ runs_off_bat: runsOffBat, extra: { kind: 'no_ball', runs: 1 } })
+              recordDelivery({
+                runs_off_bat: runsOffBat,
+                extra: { kind: 'no_ball', runs: format.no_ball_penalty_runs },
+              })
               setExtraDialog(null)
             }}
           />

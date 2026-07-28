@@ -11,11 +11,15 @@ import { cn } from '@/lib/utils'
  */
 export function NoBallDialog({
   open,
+  penaltyRuns,
   onOpenChange,
   onPick,
   submitting,
 }: {
   open: boolean
+  /** The configured no-ball penalty (see `lib/matchFormat`'s
+   *  `no_ball_penalty_runs`, 1 by default). */
+  penaltyRuns: number
   onOpenChange: (open: boolean) => void
   onPick: (runsOffBat: number) => void
   submitting: boolean
@@ -43,7 +47,7 @@ export function NoBallDialog({
           ))}
         </div>
         <p className="text-xs text-muted-foreground">
-          Plus the mandatory 1-run penalty, charged to the bowler either way.
+          Plus the mandatory {penaltyRuns}-run penalty, charged to the bowler either way.
         </p>
       </DialogContent>
     </Dialog>

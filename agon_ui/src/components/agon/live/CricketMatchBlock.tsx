@@ -13,6 +13,7 @@ import {
   runRate,
   type CricketLiveState,
 } from '@/lib/cricketScore'
+import { cricketFormat } from '@/lib/matchFormat'
 
 type Match = components['schemas']['Match']
 
@@ -63,6 +64,7 @@ export function CricketMatchBlock({ match, state }: { match: Match; state: Crick
   const nonStriker = battingEntryFor(innings, next.nonStrikerPlayerId)
   const overBalls = currentOverDeliveries(innings)
   const crr = runRate(innings.runs, innings.overs)
+  const format = cricketFormat(match.format)
 
   return (
     <div className="rounded-lg bg-muted/50 px-3.5 py-3">
@@ -72,7 +74,9 @@ export function CricketMatchBlock({ match, state }: { match: Match; state: Crick
           <p className="text-2xl font-medium leading-tight tracking-tight">
             {innings.runs}/{innings.wickets}
             <span className="ml-1.5 text-sm font-normal text-muted-foreground">
-              ({innings.overs.toFixed(1)} ov · CRR {crr.toFixed(2)})
+              ({innings.overs.toFixed(1)}
+              {format.overs_per_innings ? `/${format.overs_per_innings}` : ''} ov · CRR{' '}
+              {crr.toFixed(2)})
             </span>
           </p>
           {(striker || nonStriker) && (

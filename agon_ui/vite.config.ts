@@ -30,6 +30,25 @@ export default defineConfig({
             sizes: '512x512',
             type: 'image/png'
           }
+        ],
+        // form_factor: 'wide' is required for the richer install UI on
+        // desktop; a screenshot without it (narrow/mobile) is required for
+        // the richer install UI on mobile. Chrome needs at least one of each.
+        screenshots: [
+          {
+            src: 'screenshots/desktop-wide.png',
+            sizes: '1280x800',
+            type: 'image/png',
+            form_factor: 'wide',
+            label: 'Sign in to Agon on desktop'
+          },
+          {
+            src: 'screenshots/mobile-narrow.png',
+            sizes: '390x844',
+            type: 'image/png',
+            form_factor: 'narrow',
+            label: 'Sign in to Agon on mobile'
+          }
         ]
       },
       workbox: {

@@ -12,9 +12,11 @@ import { SportBadge } from '@/components/agon/SportBadge'
 import { StatusBadge, matchBadgeStatus } from '@/components/agon/StatusBadge'
 import { ScoreConfirmationBar } from '@/components/agon/ScoreConfirmationBar'
 import { LiveMatchBlock } from '@/components/agon/live/LiveMatchBlock'
+import { CricketMatchBlock } from '@/components/agon/live/CricketMatchBlock'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { useLiveScore } from '@/hooks/useLiveScore'
 import { footballLiveState } from '@/lib/liveScore'
+import { cricketLiveState } from '@/lib/cricketScore'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { displayScore, headlineBySide, headlineLabel, setLine } from '@/lib/score'
 import {
@@ -105,7 +107,7 @@ function MatchDetail({
 
   const canEdit = isParticipant(match, currentUserId)
   const cancelled = match.status === 'cancelled'
-  const isLiveSport = match.match_type === 'football'
+  const isLiveSport = match.match_type === 'football' || match.match_type === 'cricket'
 
   const [sideA, sideB] = match.sides
   const nameA = sideName(sideA, 'Side A')
@@ -125,7 +127,13 @@ function MatchDetail({
     enabled: isLiveSport && match.status === 'in_progress',
     refetchInterval: 15000,
   })
-  const liveState = footballLiveState(live.data)
+  const footballState = footballLiveState(live.data)
+  const cricketState = cricketLiveState(live.data)
+  const hasLiveState = !!footballState || !!cricketState
+  // Football's setup screen also gates starting the clock; cricket has no
+  // equivalent preferences step, so it goes straight into scoring.
+  const liveEntryPath =
+    match.match_type === 'cricket' ? `/matches/${match.id}/live` : `/matches/${match.id}/live/setup`
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
@@ -162,11 +170,15 @@ function MatchDetail({
           </div>
 
           {/* Score header — the live block (score + mini-ticker) takes over
-              while a football match is being scored live; otherwise the
-              usual confirmed/pending result. */}
-          {liveState ? (
+              while a football/cricket match is being scored live; otherwise
+              the usual confirmed/pending result. */}
+          {footballState ? (
             <div className="mt-3">
-              <LiveMatchBlock match={match} state={liveState} tickerLimit={3} />
+              <LiveMatchBlock match={match} state={footballState} tickerLimit={3} />
+            </div>
+          ) : cricketState ? (
+            <div className="mt-3">
+              <CricketMatchBlock match={match} state={cricketState} />
             </div>
           ) : scoreInfo ? (
             <div className="mt-3 flex items-center justify-between">
@@ -206,12 +218,12 @@ function MatchDetail({
           )}
 
           <div className="mt-3 flex items-center justify-between">
-            {liveState ? <LiveIndicator /> : <StatusBadge status={matchBadgeStatus(match)} />}
+            {hasLiveState ? <LiveIndicator /> : <StatusBadge status={matchBadgeStatus(match)} />}
             <div className="flex items-center gap-1">
               {canEdit && isLiveSport && !cancelled && match.status !== 'completed' && (
                 <Button asChild variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs text-primary">
-                  <Link to={`/matches/${match.id}/live/setup`}>
-                    <Radio className="size-3" /> {liveState ? 'Continue scoring' : 'Score live'}
+                  <Link to={liveEntryPath}>
+                    <Radio className="size-3" /> {hasLiveState ? 'Continue scoring' : 'Score live'}
                   </Link>
                 </Button>
               )}

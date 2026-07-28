@@ -2235,6 +2235,25 @@ impl Api {
             Err(e) => return Err(dao_internal(e)),
         }
 
+        // Recording a live event is what "starting" a match means, whatever
+        // the sport (kickoff for football, the first ball for cricket) — flip
+        // a still-scheduled match to `in_progress` here rather than relying
+        // on each sport's client to remember a separate status PATCH.
+        if agg.match_.status == "scheduled" {
+            dao.update_match_meta(
+                &match_id,
+                None,
+                None,
+                Some("in_progress"),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .map_err(dao_internal)?;
+        }
+
         match self.recompute_live_state(dao, &match_id, &sport).await? {
             Some(snapshot) => Ok(AppendLiveEventsResponse::Ok(Json(snapshot))),
             None => Ok(AppendLiveEventsResponse::ValidationError(PlainText(

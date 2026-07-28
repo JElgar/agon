@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ChevronLeft } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
@@ -60,7 +60,6 @@ function TrackRow({
 export function LiveScoringSetupPage() {
   const { matchId } = useParams()
   const navigate = useNavigate()
-  const queryClient = useQueryClient()
 
   const query = useQuery({
     queryKey: ['match', matchId],
@@ -94,23 +93,18 @@ export function LiveScoringSetupPage() {
 
   const start = useMutation({
     mutationFn: async () => {
-      if (!matchId || !query.data) return
-      if (query.data.status !== 'in_progress') {
-        const { error } = await fetchClient.PATCH('/matches/{match_id}', {
-          params: { path: { match_id: matchId } },
-          body: { status: 'in_progress' },
-        })
-        if (error) throw new Error('Failed to start the match')
-      }
+      if (!matchId) return
       // The live clock starts now, once — recorded as a real event so every
       // viewer (not just this device) can compute the same running minute.
+      // Appending it is also what flips the match from `scheduled` to
+      // `in_progress` server-side (see `append_live_events`), which is what
+      // makes the live score visible on other viewers' feed/detail screens —
+      // no separate status PATCH needed here.
       if (!alreadyKickedOff) {
         await appendEvent.mutateAsync({ kind: 'Period', period: 'kick_off' })
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['match', matchId] })
-      queryClient.invalidateQueries({ queryKey: ['feed'] })
       navigate(`/matches/${matchId}/live`, { replace: true })
     },
   })

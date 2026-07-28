@@ -125,7 +125,7 @@ export function bowlingEntryFor(
  *  before the bowler has sent down a delivery. */
 export function bowlingFigures(entry: CricketBowlingEntry | null): string {
   if (!entry) return '—'
-  return `${entry.overs}-${entry.maidens}-${entry.runs_conceded}-${entry.wickets}`
+  return `${entry.overs.toFixed(1)}-${entry.maidens}-${entry.runs_conceded}-${entry.wickets}`
 }
 
 /** "46 (32)" — runs and balls faced, or "0 (0)" before a batter's first ball. */

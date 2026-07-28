@@ -39,7 +39,7 @@ use mapping::{
     comment_from_record, dao_internal, derive_live_score_state, detailed_score_from_record,
     detailed_score_to_record, invitation_detail_from_record, invitation_from_record,
     invitation_status_from_str, invitation_status_str, live_event_from_record,
-    match_format_sport_tag, match_format_to_json, match_from_records, match_status_str,
+    match_format_sport_tag, match_format_to_record, match_from_records, match_status_str,
     match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
     score_submission_from_record, score_to_record, team_from_records, team_list_item_from_record,
     user_profile_from_record,
@@ -1851,7 +1851,7 @@ impl Api {
             like_count: 0,
             comment_count: 0,
             live_seq: 0,
-            format: input.format.as_ref().map(match_format_to_json),
+            format: input.format.as_ref().map(match_format_to_record),
             created_at: now.clone(),
         };
 
@@ -2100,7 +2100,7 @@ impl Api {
             None,
             pending_score.map(Some),
             header_photo_urls,
-            input.format.as_ref().map(match_format_to_json),
+            input.format.as_ref().map(match_format_to_record),
         )
         .await
         .map_err(|e| match e {

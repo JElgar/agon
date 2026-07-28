@@ -10,8 +10,8 @@ use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::{
-    ConfirmedScoreRecord, MatchDetailedScoreRecord, MatchPlayerRecord, MatchRecord,
-    MatchSideRecord, PendingScoreRecord,
+    ConfirmedScoreRecord, MatchDetailedScoreRecord, MatchFormatRecord, MatchPlayerRecord,
+    MatchRecord, MatchSideRecord, PendingScoreRecord,
 };
 
 pub const TYPE_MATCH: &str = "match";
@@ -215,7 +215,7 @@ impl Dao {
         // Replace the match format. `None` leaves it unchanged; `Some(value)`
         // overwrites. No "clear" case yet (Phase 1 doesn't need one — a
         // match's sport, and so its format shape, doesn't change).
-        format: Option<serde_json::Value>,
+        format: Option<MatchFormatRecord>,
     ) -> DaoResult<()> {
         let mut set: Vec<String> = Vec::new();
         let mut remove: Vec<String> = Vec::new();

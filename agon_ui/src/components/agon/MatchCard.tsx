@@ -14,9 +14,11 @@ import { ScoreConfirmationBar } from './ScoreConfirmationBar'
 import { MatchHeaderCarousel } from './MatchHeaderCarousel'
 import { InvitationResponseDialog } from './InvitationResponseDialog'
 import { LiveMatchBlock } from './live/LiveMatchBlock'
+import { CricketMatchBlock } from './live/CricketMatchBlock'
 import { LiveIndicator } from './live/LiveIndicator'
 import { useLiveScore } from '@/hooks/useLiveScore'
 import { footballLiveState } from '@/lib/liveScore'
+import { cricketLiveState } from '@/lib/cricketScore'
 import {
   displayScore,
   headlineBySide,
@@ -193,11 +195,14 @@ export function MatchCard({
   const aWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
   const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
 
+  const isLiveSport = match.match_type === 'football' || match.match_type === 'cricket'
   const live = useLiveScore(match.id, {
-    enabled: match.match_type === 'football' && match.status === 'in_progress',
+    enabled: isLiveSport && match.status === 'in_progress',
     refetchInterval: 20000,
   })
-  const liveState = footballLiveState(live.data)
+  const footballState = footballLiveState(live.data)
+  const cricketState = cricketLiveState(live.data)
+  const hasLiveState = !!footballState || !!cricketState
 
   const { like_count, comment_count, i_liked } = match.social
   const toggleLike = useToggleLike(match)
@@ -242,11 +247,15 @@ export function MatchCard({
         </div>
       )}
 
-      {/* Score block — a live-scored football match shows the mini-ticker
-          instead of the usual confirmed/pending result. */}
-      {liveState ? (
+      {/* Score block — a live-scored match shows the mini-ticker instead of
+          the usual confirmed/pending result. */}
+      {footballState ? (
         <div className="mx-3.5 mb-3">
-          <LiveMatchBlock match={match} state={liveState} />
+          <LiveMatchBlock match={match} state={footballState} />
+        </div>
+      ) : cricketState ? (
+        <div className="mx-3.5 mb-3">
+          <CricketMatchBlock match={match} state={cricketState} />
         </div>
       ) : (
         scoreInfo && (
@@ -335,7 +344,7 @@ export function MatchCard({
           <MessageCircle className="size-3.5" /> {comment_count}
         </button>
         <ShareMatchButton match={match} />
-        {liveState ? (
+        {hasLiveState ? (
           <LiveIndicator className="ml-auto" />
         ) : (
           <StatusBadge status={matchBadgeStatus(match)} className="ml-auto" />

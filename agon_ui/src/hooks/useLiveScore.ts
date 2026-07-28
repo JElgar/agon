@@ -5,6 +5,7 @@ import type { components } from '@/types/api'
 type LiveScoreSnapshot = components['schemas']['LiveScoreSnapshot']
 type NewLiveEventInput = components['schemas']['NewLiveEventInput']
 type FootballLiveEvent = components['schemas']['FootballLiveEvent']
+type CricketLiveEvent = components['schemas']['CricketLiveEvent']
 
 export function liveScoreQueryKey(matchId: string | undefined) {
   return ['live', matchId] as const
@@ -35,21 +36,26 @@ export function useLiveScore(
 }
 
 /**
- * Appends one football live event to a match's log. Reads `expected_last_seq`
- * off the current cached snapshot (0 if scoring hasn't started yet) so the
- * server can detect a lost update; on success the returned snapshot replaces
- * the cache directly (cheaper and more current than invalidating + refetching).
+ * Appends one sport-tagged live event to a match's log. Reads
+ * `expected_last_seq` off the current cached snapshot (0 if scoring hasn't
+ * started yet) so the server can detect a lost update; on success the
+ * returned snapshot replaces the cache directly (cheaper and more current
+ * than invalidating + refetching). Shared by the per-sport wrappers below —
+ * each just tags its event with the right `sport` discriminator.
  */
-export function useAppendFootballEvent(matchId: string) {
+function useAppendLiveEvent<T extends { kind: string }>(
+  matchId: string,
+  sport: NewLiveEventInput['event']['sport'],
+) {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: async (event: FootballLiveEvent) => {
+    mutationFn: async (event: T) => {
       const key = liveScoreQueryKey(matchId)
       const current = queryClient.getQueryData<LiveScoreSnapshot | null>(key)
       const input: NewLiveEventInput = {
         occurred_at: new Date().toISOString(),
-        event: { sport: 'Football', ...event } as NewLiveEventInput['event'],
+        event: { sport, ...event } as NewLiveEventInput['event'],
       }
       const { data, error } = await fetchClient.POST('/matches/{match_id}/live/events', {
         params: { path: { match_id: matchId } },
@@ -65,4 +71,12 @@ export function useAppendFootballEvent(matchId: string) {
       queryClient.setQueryData(liveScoreQueryKey(matchId), data)
     },
   })
+}
+
+export function useAppendFootballEvent(matchId: string) {
+  return useAppendLiveEvent<FootballLiveEvent>(matchId, 'Football')
+}
+
+export function useAppendCricketEvent(matchId: string) {
+  return useAppendLiveEvent<CricketLiveEvent>(matchId, 'Cricket')
 }

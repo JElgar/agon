@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { useLiveScore, useAppendFootballEvent } from '@/hooks/useLiveScore'
 import { RecordEventDialog, type EventKind } from '@/components/agon/live/RecordEventDialog'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
+import { CricketLiveScoringPage } from './CricketLiveScoringPage'
 import {
   currentMinute,
   describeEvent,
@@ -26,19 +27,14 @@ function sideName(match: Match, index: number, fallback: string): string {
   return match.sides[index]?.name?.trim() || fallback
 }
 
-/** How often the on-screen clock re-renders while a half is running. */
-const CLOCK_TICK_MS = 15_000
-
 /**
- * The live scoring screen: quick actions to log goals/cards/subs as they
- * happen, a running clock, and the event log so far. The clock is computed
- * from the server-recorded kickoff/half-time timestamps (see `lib/liveScore`),
- * so it's the same for every viewer, not just this device.
+ * Route entry for `/matches/:matchId/live`: fetches the match once and
+ * dispatches to the sport-specific scoring screen. Football and cricket have
+ * different live-scoring shapes entirely (a running clock vs. overs/wickets),
+ * so past the match fetch they don't share a component.
  */
 export function LiveScoringPage() {
   const { matchId } = useParams()
-  const navigate = useNavigate()
-  const queryClient = useQueryClient()
 
   const matchQuery = useQuery({
     queryKey: ['match', matchId],
@@ -52,19 +48,7 @@ export function LiveScoringPage() {
     },
   })
 
-  const live = useLiveScore(matchId, { refetchInterval: 8000 })
-  const append = useAppendFootballEvent(matchId ?? '')
-
-  const [now, setNow] = useState(() => new Date())
-  useEffect(() => {
-    const id = setInterval(() => setNow(new Date()), CLOCK_TICK_MS)
-    return () => clearInterval(id)
-  }, [])
-
-  const prefs = loadTrackPrefs(matchId ?? '')
-  const [dialogKind, setDialogKind] = useState<EventKind | null>(null)
-
-  if (matchQuery.isLoading || live.isLoading) {
+  if (matchQuery.isLoading) {
     return (
       <div className="mx-auto max-w-xl">
         <div className="h-64 animate-pulse rounded-xl border bg-card" aria-hidden />
@@ -84,6 +68,45 @@ export function LiveScoringPage() {
   }
 
   const match = matchQuery.data
+  if (match.match_type === 'cricket') {
+    return <CricketLiveScoringPage match={match} />
+  }
+  return <FootballLiveScoringPage match={match} />
+}
+
+/** How often the on-screen clock re-renders while a half is running. */
+const CLOCK_TICK_MS = 15_000
+
+/**
+ * The live scoring screen: quick actions to log goals/cards/subs as they
+ * happen, a running clock, and the event log so far. The clock is computed
+ * from the server-recorded kickoff/half-time timestamps (see `lib/liveScore`),
+ * so it's the same for every viewer, not just this device.
+ */
+function FootballLiveScoringPage({ match }: { match: Match }) {
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+
+  const live = useLiveScore(match.id, { refetchInterval: 8000 })
+  const append = useAppendFootballEvent(match.id)
+
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), CLOCK_TICK_MS)
+    return () => clearInterval(id)
+  }, [])
+
+  const prefs = loadTrackPrefs(match.id)
+  const [dialogKind, setDialogKind] = useState<EventKind | null>(null)
+
+  if (live.isLoading) {
+    return (
+      <div className="mx-auto max-w-xl">
+        <div className="h-64 animate-pulse rounded-xl border bg-card" aria-hidden />
+      </div>
+    )
+  }
+
   const nameA = sideName(match, 0, 'Side A')
   const nameB = sideName(match, 1, 'Side B')
   const state = footballLiveState(live.data)
@@ -136,7 +159,7 @@ export function LiveScoringPage() {
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
       <div className="flex items-center justify-between">
-        <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${matchId}`)}>
+        <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${match.id}`)}>
           <ChevronLeft className="size-4" /> Back
         </Button>
         <LiveIndicator />
@@ -183,7 +206,7 @@ export function LiveScoringPage() {
       </div>
 
       <Link
-        to={`/matches/${matchId}/live/setup`}
+        to={`/matches/${match.id}/live/setup`}
         className="text-center text-sm text-primary hover:underline"
       >
         + Track more (cards, subs)

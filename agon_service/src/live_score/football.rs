@@ -181,7 +181,9 @@ pub fn derive_state(
                 match p.period {
                     FootballPeriod::KickOff => kickoff_at = Some(*occurred_at),
                     FootballPeriod::HalfTime => half_time_at = Some(*occurred_at),
-                    FootballPeriod::SecondHalfKickOff => second_half_kickoff_at = Some(*occurred_at),
+                    FootballPeriod::SecondHalfKickOff => {
+                        second_half_kickoff_at = Some(*occurred_at)
+                    }
                     FootballPeriod::FullTime => full_time_at = Some(*occurred_at),
                     // Extra time / penalties aren't clocked yet — only the
                     // marker itself is tracked, same as before.
@@ -310,6 +312,9 @@ mod tests {
         assert_eq!(state.half_time_at, Some(ts(46)));
         assert_eq!(state.second_half_kickoff_at, Some(ts(60)));
         assert_eq!(state.full_time_at, None);
-        assert!(matches!(state.period, Some(FootballPeriod::SecondHalfKickOff)));
+        assert!(matches!(
+            state.period,
+            Some(FootballPeriod::SecondHalfKickOff)
+        ));
     }
 }

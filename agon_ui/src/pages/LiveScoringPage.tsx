@@ -9,16 +9,15 @@ import { useLiveScore, useAppendFootballEvent } from '@/hooks/useLiveScore'
 import { RecordEventDialog, type EventKind } from '@/components/agon/live/RecordEventDialog'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import {
-  advanceClock,
   currentMinute,
   describeEvent,
   eventEmoji,
   footballLiveState,
-  loadClock,
   loadTrackPrefs,
+  nextPeriodForPhase,
   nextPhaseActionLabel,
+  phaseFromState,
   phaseLabel,
-  type ClockState,
 } from '@/lib/liveScore'
 
 type Match = components['schemas']['Match']
@@ -32,9 +31,9 @@ const CLOCK_TICK_MS = 15_000
 
 /**
  * The live scoring screen: quick actions to log goals/cards/subs as they
- * happen, a running clock, and the event log so far. The clock is a local
- * stopwatch (see `lib/liveScore`) — the backend only stores discrete,
- * optionally minute-stamped events, not a running kickoff time.
+ * happen, a running clock, and the event log so far. The clock is computed
+ * from the server-recorded kickoff/half-time timestamps (see `lib/liveScore`),
+ * so it's the same for every viewer, not just this device.
  */
 export function LiveScoringPage() {
   const { matchId } = useParams()
@@ -56,7 +55,6 @@ export function LiveScoringPage() {
   const live = useLiveScore(matchId, { refetchInterval: 8000 })
   const append = useAppendFootballEvent(matchId ?? '')
 
-  const [clock, setClock] = useState<ClockState>(() => loadClock(matchId ?? ''))
   const [now, setNow] = useState(() => new Date())
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), CLOCK_TICK_MS)
@@ -92,15 +90,15 @@ export function LiveScoringPage() {
   const goalsFor = (sideId: string | undefined) =>
     state?.score.find((s) => s.side_id === sideId)?.goals ?? 0
 
-  const minute = currentMinute(clock, now)
+  // Before the first event, there's no snapshot yet at all — treat that the
+  // same as an explicit "not started" phase (kickoff just hasn't happened).
+  const phase = state ? phaseFromState(state) : 'not_started'
+  const minute = state ? currentMinute(state, now) : null
 
   const handleHalfFt = () => {
-    if (!matchId) return
-    const { clock: nextClock, period } = advanceClock(matchId, clock, new Date())
-    setClock(nextClock)
-    if (period) {
-      append.mutate({ kind: 'Period', period })
-    }
+    const period = nextPeriodForPhase(phase)
+    if (!period) return
+    append.mutate({ kind: 'Period', period })
   }
 
   const actions: {
@@ -126,10 +124,10 @@ export function LiveScoringPage() {
       : []),
     {
       key: 'half_ft',
-      label: nextPhaseActionLabel(clock.phase),
+      label: nextPhaseActionLabel(phase),
       icon: <TimerReset className="size-5" />,
       onClick: handleHalfFt,
-      disabled: clock.phase === 'full_time',
+      disabled: nextPeriodForPhase(phase) === null,
     },
   ]
 
@@ -161,7 +159,8 @@ export function LiveScoringPage() {
               {goalsFor(match.sides[1]?.id)}
             </div>
             <div className="mt-0.5 text-xs text-primary">
-              {minute}' · {phaseLabel(clock.phase)}
+              {minute !== null && `${minute}' · `}
+              {phaseLabel(phase)}
             </div>
           </div>
           <p className="flex-1 truncate text-right text-sm font-medium">{nameB}</p>
@@ -221,7 +220,7 @@ export function LiveScoringPage() {
         open={dialogKind !== null}
         kind={dialogKind}
         match={match}
-        initialMinute={minute}
+        initialMinute={minute ?? 0}
         onOpenChange={(open) => !open && setDialogKind(null)}
         submitting={append.isPending}
         onSubmit={(event) => {

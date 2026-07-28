@@ -663,7 +663,9 @@ fn football_live_event_to_record(event: &FootballLiveEvent) -> FootballLiveEvent
         FootballLiveEvent::Period(p) => {
             FootballLiveEventRecord::Period(FootballPeriodEventRecord {
                 period: match p.period {
+                    FootballPeriod::KickOff => FootballPeriodRecord::KickOff,
                     FootballPeriod::HalfTime => FootballPeriodRecord::HalfTime,
+                    FootballPeriod::SecondHalfKickOff => FootballPeriodRecord::SecondHalfKickOff,
                     FootballPeriod::FullTime => FootballPeriodRecord::FullTime,
                     FootballPeriod::ExtraTimeHalfTime => FootballPeriodRecord::ExtraTimeHalfTime,
                     FootballPeriod::ExtraTimeFullTime => FootballPeriodRecord::ExtraTimeFullTime,
@@ -703,7 +705,9 @@ fn football_live_event_from_record(rec: &FootballLiveEventRecord) -> FootballLiv
         }
         FootballLiveEventRecord::Period(p) => FootballLiveEvent::Period(FootballPeriodEvent {
             period: match p.period {
+                FootballPeriodRecord::KickOff => FootballPeriod::KickOff,
                 FootballPeriodRecord::HalfTime => FootballPeriod::HalfTime,
+                FootballPeriodRecord::SecondHalfKickOff => FootballPeriod::SecondHalfKickOff,
                 FootballPeriodRecord::FullTime => FootballPeriod::FullTime,
                 FootballPeriodRecord::ExtraTimeHalfTime => FootballPeriod::ExtraTimeHalfTime,
                 FootballPeriodRecord::ExtraTimeFullTime => FootballPeriod::ExtraTimeFullTime,
@@ -929,10 +933,12 @@ pub fn derive_live_score_state(
 ) -> Option<LiveScoreState> {
     match match_type {
         "football" => {
-            let events: Vec<FootballLiveEvent> = records
+            let events: Vec<(chrono::DateTime<chrono::Utc>, FootballLiveEvent)> = records
                 .iter()
                 .filter_map(|r| match &r.payload {
-                    LiveEventPayloadRecord::Football(f) => Some(football_live_event_from_record(f)),
+                    LiveEventPayloadRecord::Football(f) => {
+                        Some((parse_ts(&r.occurred_at), football_live_event_from_record(f)))
+                    }
                     LiveEventPayloadRecord::Cricket(_) => None,
                 })
                 .collect();

@@ -50,7 +50,9 @@ export function minuteLabel(minute: number | undefined): string {
 }
 
 const PERIOD_LABEL: Record<FootballPeriod, string> = {
+  kick_off: 'Kick-off',
   half_time: 'Half-time',
+  second_half_kick_off: 'Second-half kick-off',
   full_time: 'Full-time',
   extra_time_half_time: 'Extra time: half-time',
   extra_time_full_time: 'Extra time: full-time',
@@ -59,24 +61,6 @@ const PERIOD_LABEL: Record<FootballPeriod, string> = {
 
 export function periodLabel(period: FootballPeriod): string {
   return PERIOD_LABEL[period]
-}
-
-/**
- * A short clock label for read-only viewers (feed card, match detail) who
- * have no local clock of their own — just the scorer's device does (see
- * below). Derived from what's actually on the log: the last period marker if
- * the match is between/after halves, else the latest recorded event minute,
- * else a plain "LIVE".
- */
-export function latestMinuteLabel(state: FootballLiveState): string {
-  if (state.period === 'half_time') return 'HT'
-  if (state.period === 'full_time') return 'FT'
-  if (state.period === 'extra_time_half_time') return 'ET · HT'
-  if (state.period === 'extra_time_full_time') return 'ET · FT'
-  if (state.period === 'penalties_complete') return 'Pens'
-  const minutes = state.events.map((e) => e.minute).filter((m): m is number => m !== undefined)
-  if (minutes.length === 0) return 'LIVE'
-  return `${Math.max(...minutes)}'`
 }
 
 /** The most recent events first, capped to `limit` — for a mini-ticker. */
@@ -172,73 +156,81 @@ export function saveTrackPrefs(matchId: string, prefs: TrackPrefs): void {
 }
 
 // ---------------------------------------------------------------------------
-// Local match clock — the backend's live-event log has no notion of kickoff
-// time or a running clock, only discrete events (optionally minute-stamped)
-// plus a "last period marker seen" (`FootballLiveState.period`). The running
-// 63'-style clock shown while scoring is purely a client-side stopwatch, kept
-// in localStorage so it survives a refresh on the scorer's device; other
-// viewers just see the discrete event log/derived score, not this clock.
+// Match clock — derived entirely from `FootballLiveState`'s phase-boundary
+// timestamps (`kickoff_at`/`half_time_at`/`second_half_kickoff_at`/
+// `full_time_at`), each the `occurred_at` of the period marker that recorded
+// it server-side (see `agon_service::live_score::football::derive_state`).
+// Because it's computed from shared server data rather than a per-device
+// stopwatch, the scorer's own screen and every other viewer (feed card, match
+// detail) tick the exact same clock.
 // ---------------------------------------------------------------------------
 
-export type ClockPhase = 'first_half' | 'half_time' | 'second_half' | 'full_time'
+export type ClockPhase =
+  | 'not_started'
+  | 'first_half'
+  | 'half_time'
+  | 'second_half'
+  | 'full_time'
+  /** An extra-time/penalties marker was recorded — those phases aren't
+   *  clocked yet (see `FootballPeriod`), so just the marker itself is shown. */
+  | 'other'
 
-export interface ClockState {
-  phase: ClockPhase
-  /** ISO timestamp the current running phase started, null while paused. */
-  runningSince: string | null
-  /** Match minutes already elapsed before `runningSince` (frozen carry-over). */
-  baseMinutes: number
+/** Which phase the match is in right now, purely from recorded timestamps. */
+export function phaseFromState(state: FootballLiveState): ClockPhase {
+  if (state.full_time_at) return 'full_time'
+  if (state.second_half_kickoff_at) return 'second_half'
+  if (state.half_time_at) return 'half_time'
+  if (state.kickoff_at) return 'first_half'
+  if (state.period) return 'other'
+  return 'not_started'
 }
 
-function clockKey(matchId: string): string {
-  return `agon:live-clock:${matchId}`
+function minutesBetween(from: string, to: Date | string): number {
+  return Math.max(0, Math.floor((new Date(to).getTime() - new Date(from).getTime()) / 60_000))
 }
 
-function freshClock(): ClockState {
-  return { phase: 'first_half', runningSince: new Date().toISOString(), baseMinutes: 0 }
-}
+/**
+ * The current match minute, e.g. for the live clock display or to prefill an
+ * event's minute field (still overridable — see `RecordEventDialog`). `null`
+ * before kickoff or during an unclocked phase (extra time/penalties).
+ * Added time in the first half carries over automatically: the second half's
+ * minute count continues from wherever the first half actually left off,
+ * rather than resetting to a fixed 45'.
+ */
+export function currentMinute(state: FootballLiveState, now: Date = new Date()): number | null {
+  const phase = phaseFromState(state)
+  const firstHalfMinutes =
+    state.kickoff_at && state.half_time_at
+      ? minutesBetween(state.kickoff_at, state.half_time_at)
+      : 0
 
-export function loadClock(matchId: string): ClockState {
-  try {
-    const raw = localStorage.getItem(clockKey(matchId))
-    if (!raw) return freshClock()
-    const parsed = JSON.parse(raw)
-    if (
-      typeof parsed.phase === 'string' &&
-      typeof parsed.baseMinutes === 'number' &&
-      (parsed.runningSince === null || typeof parsed.runningSince === 'string')
-    ) {
-      return parsed as ClockState
-    }
-    return freshClock()
-  } catch {
-    return freshClock()
+  switch (phase) {
+    case 'first_half':
+      return state.kickoff_at ? minutesBetween(state.kickoff_at, now) : null
+    case 'half_time':
+      return state.kickoff_at && state.half_time_at ? firstHalfMinutes : null
+    case 'second_half':
+      return state.second_half_kickoff_at
+        ? firstHalfMinutes + minutesBetween(state.second_half_kickoff_at, now)
+        : null
+    case 'full_time':
+      if (!state.full_time_at) return null
+      return state.second_half_kickoff_at
+        ? firstHalfMinutes + minutesBetween(state.second_half_kickoff_at, state.full_time_at)
+        : state.kickoff_at
+          ? minutesBetween(state.kickoff_at, state.full_time_at)
+          : null
+    case 'not_started':
+    case 'other':
+      return null
   }
-}
-
-function saveClock(matchId: string, clock: ClockState): void {
-  try {
-    localStorage.setItem(clockKey(matchId), JSON.stringify(clock))
-  } catch {
-    // Best-effort, as above.
-  }
-}
-
-/** Minutes elapsed in the running phase (0 while paused). */
-function runningMinutes(clock: ClockState, now: Date): number {
-  if (!clock.runningSince) return 0
-  const ms = now.getTime() - new Date(clock.runningSince).getTime()
-  return Math.max(0, Math.floor(ms / 60_000))
-}
-
-/** The current display minute, e.g. for prefilling an event's minute field. */
-export function currentMinute(clock: ClockState, now: Date = new Date()): number {
-  return clock.baseMinutes + runningMinutes(clock, now)
 }
 
 /** Human label for the current phase, e.g. "2nd half" / "Half-time". */
 export function phaseLabel(phase: ClockPhase): string {
   switch (phase) {
+    case 'not_started':
+      return 'Not started'
     case 'first_half':
       return '1st half'
     case 'half_time':
@@ -247,56 +239,46 @@ export function phaseLabel(phase: ClockPhase): string {
       return '2nd half'
     case 'full_time':
       return 'Full-time'
+    case 'other':
+      return 'Live'
   }
 }
 
-/**
- * Advances the clock to its next phase, returning the new state and — when
- * the transition corresponds to a real period marker (end of a half) — the
- * `FootballPeriod` to record on the server. The half-time → second-half
- * transition has no backend marker (kickoff isn't modelled), so it advances
- * the local clock only.
- */
-export function advanceClock(
-  matchId: string,
-  clock: ClockState,
-  now: Date = new Date(),
-): { clock: ClockState; period: FootballPeriod | null } {
-  let next: ClockState
-  let period: FootballPeriod | null = null
+/** A compact clock label for a score box, e.g. "63'", "HT", "FT", "LIVE". */
+export function liveClockLabel(state: FootballLiveState, now: Date = new Date()): string {
+  const phase = phaseFromState(state)
+  if (phase === 'half_time') return 'HT'
+  if (phase === 'full_time') return 'FT'
+  if (phase === 'other') return state.period ? periodLabel(state.period) : 'LIVE'
+  const minute = currentMinute(state, now)
+  return minute === null ? 'LIVE' : `${minute}'`
+}
 
-  switch (clock.phase) {
+/** The `FootballPeriod` marker to record for "the next thing that happens"
+ *  from the current phase (kickoff, end of a half, full time) — what the
+ *  live scoring screen's Half/FT-style quick action should send. `null` once
+ *  the match is done, or during an unclocked phase. */
+export function nextPeriodForPhase(phase: ClockPhase): FootballPeriod | null {
+  switch (phase) {
+    case 'not_started':
+      return 'kick_off'
     case 'first_half':
-      next = {
-        phase: 'half_time',
-        runningSince: null,
-        baseMinutes: currentMinute(clock, now),
-      }
-      period = 'half_time'
-      break
+      return 'half_time'
     case 'half_time':
-      next = { phase: 'second_half', runningSince: now.toISOString(), baseMinutes: 45 }
-      break
+      return 'second_half_kick_off'
     case 'second_half':
-      next = {
-        phase: 'full_time',
-        runningSince: null,
-        baseMinutes: currentMinute(clock, now),
-      }
-      period = 'full_time'
-      break
+      return 'full_time'
     case 'full_time':
-      next = clock
-      break
+    case 'other':
+      return null
   }
-
-  saveClock(matchId, next)
-  return { clock: next, period }
 }
 
 /** Label for the clock's quick-action button, contextual to the current phase. */
 export function nextPhaseActionLabel(phase: ClockPhase): string {
   switch (phase) {
+    case 'not_started':
+      return 'Kick off'
     case 'first_half':
       return 'End 1st half'
     case 'half_time':
@@ -304,6 +286,7 @@ export function nextPhaseActionLabel(phase: ClockPhase): string {
     case 'second_half':
       return 'End match'
     case 'full_time':
+    case 'other':
       return 'Full-time'
   }
 }

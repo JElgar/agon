@@ -34,12 +34,13 @@ export function isLegalDelivery(d: CricketDelivery): boolean {
 }
 
 /** Run rate so far, from the display-format `overs` (e.g. 18.2 = 18 overs +
- *  2 balls, not 18.2 decimal overs). */
-export function runRate(runs: number, oversDisplay: number): number {
+ *  2 balls, not 18.2 decimal overs) and the match's configured over length
+ *  (6 for almost everything, 5 for The Hundred). */
+export function runRate(runs: number, oversDisplay: number, ballsPerOver: number): number {
   const wholeOvers = Math.floor(oversDisplay)
   const balls = Math.round((oversDisplay - wholeOvers) * 10)
-  const totalBalls = wholeOvers * 6 + balls
-  return totalBalls > 0 ? (runs / totalBalls) * 6 : 0
+  const totalBalls = wholeOvers * ballsPerOver + balls
+  return totalBalls > 0 ? (runs / totalBalls) * ballsPerOver : 0
 }
 
 /** This over's deliveries — everything recorded against the innings' latest
@@ -133,6 +134,17 @@ export function battingLine(entry: CricketBattingEntry | null): string {
   return `${entry?.runs ?? 0} (${entry?.balls_faced ?? 0})`
 }
 
+/** Total runs scored by each side across every completed innings so far —
+ *  the input to a final result once the match is done (sums across both
+ *  innings for a two-innings-per-side format, not just the latest one). */
+export function matchTotalsBySide(state: CricketLiveState): Record<string, number> {
+  const totals: Record<string, number> = {}
+  for (const innings of state.innings) {
+    totals[innings.batting_side_id] = (totals[innings.batting_side_id] ?? 0) + innings.runs
+  }
+  return totals
+}
+
 /** Batters who can't be picked as a new arrival — already dismissed for a
  *  reason other than "retired hurt" (which lets the same batter resume). */
 export function outBattersFor(innings: CricketInnings): string[] {
@@ -183,7 +195,7 @@ export interface NextBallContext {
   previousOverBowlerPlayerId: string | null
 }
 
-export function nextBallContext(innings: CricketInnings): NextBallContext {
+export function nextBallContext(innings: CricketInnings, ballsPerOver: number): NextBallContext {
   let striker: string | null = null
   let nonStriker: string | null = null
   let bowler: string | null = null
@@ -213,7 +225,7 @@ export function nextBallContext(innings: CricketInnings): NextBallContext {
       if (rotatingRuns % 2 === 1) {
         ;[striker, nonStriker] = [nonStriker, striker]
       }
-      if (legalInOver === 6) {
+      if (legalInOver === ballsPerOver) {
         ;[striker, nonStriker] = [nonStriker, striker]
         previousOverBowler = bowler
         bowler = null

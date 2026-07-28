@@ -2294,7 +2294,10 @@ impl Api {
             .map_err(dao_internal)?;
         }
 
-        match self.recompute_live_state(dao, &match_id, &sport).await? {
+        match self
+            .recompute_live_state(dao, &match_id, &sport, agg.match_.format.as_ref())
+            .await?
+        {
             Some(snapshot) => Ok(AppendLiveEventsResponse::Ok(Json(snapshot))),
             None => Ok(AppendLiveEventsResponse::ValidationError(PlainText(
                 format!("sport `{sport}` does not support live scoring"),
@@ -2334,7 +2337,12 @@ impl Api {
         }
 
         match self
-            .recompute_live_state(dao, &match_id, &agg.match_.match_type)
+            .recompute_live_state(
+                dao,
+                &match_id,
+                &agg.match_.match_type,
+                agg.match_.format.as_ref(),
+            )
             .await?
         {
             Some(snapshot) => Ok(GetLiveScoreResponse::State(Json(snapshot))),
@@ -2410,7 +2418,12 @@ impl Api {
         }
 
         match self
-            .recompute_live_state(dao, &match_id, &agg.match_.match_type)
+            .recompute_live_state(
+                dao,
+                &match_id,
+                &agg.match_.match_type,
+                agg.match_.format.as_ref(),
+            )
             .await?
         {
             Some(snapshot) => Ok(DeleteLiveEventResponse::Ok(Json(snapshot))),
@@ -2469,7 +2482,12 @@ impl Api {
         }
 
         match self
-            .recompute_live_state(dao, &match_id, &agg.match_.match_type)
+            .recompute_live_state(
+                dao,
+                &match_id,
+                &agg.match_.match_type,
+                agg.match_.format.as_ref(),
+            )
             .await?
         {
             Some(snapshot) => Ok(AmendLiveEventResponse::Ok(Json(snapshot))),
@@ -2489,11 +2507,12 @@ impl Api {
         dao: &dao::Dao,
         match_id: &str,
         sport: &str,
+        format: Option<&dao::records::MatchFormatRecord>,
     ) -> Result<Option<LiveScoreSnapshot>> {
         let records = dao.list_live_events(match_id).await.map_err(dao_internal)?;
         let last_seq = records.iter().map(|r| r.seq).max().unwrap_or(0);
 
-        let Some(state) = derive_live_score_state(sport, &records) else {
+        let Some(state) = derive_live_score_state(sport, &records, format) else {
             return Ok(None);
         };
 

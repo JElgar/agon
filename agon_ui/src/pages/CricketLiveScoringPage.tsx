@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { ChevronLeft } from 'lucide-react'
+import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { useAppendCricketEvent, useLiveScore } from '@/hooks/useLiveScore'
@@ -21,6 +23,7 @@ import {
   currentOverDeliveries,
   deliveryChipLabel,
   isChipHighlighted,
+  matchTotalsBySide,
   nextBallContext,
   outBattersFor,
   playerNameFor,
@@ -31,6 +34,7 @@ type Match = components['schemas']['Match']
 type CricketDelivery = components['schemas']['CricketDelivery']
 type CricketDeliveryWicket = components['schemas']['CricketDeliveryWicket']
 type InningsEndReason = components['schemas']['InningsEndReason']
+type UpdateMatchInput = components['schemas']['UpdateMatchInput']
 
 const END_REASONS: { value: InningsEndReason; label: string }[] = [
   { value: 'all_out', label: 'All out' },
@@ -48,12 +52,14 @@ const END_REASONS: { value: InningsEndReason; label: string }[] = [
  */
 export function CricketLiveScoringPage({ match }: { match: Match }) {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
 
   const live = useLiveScore(match.id, { refetchInterval: 8000 })
   const appendEvent = useAppendCricketEvent(match.id)
   const state = cricketLiveState(live.data)
   const innings = state ? currentInnings(state) : null
-  const next = innings ? nextBallContext(innings) : null
+  const format = cricketFormat(match.format)
+  const next = innings ? nextBallContext(innings, format.balls_per_over) : null
 
   // Locally-picked openers/replacement batter/next bowler — only used until
   // the server confirms them via an actual delivery, at which point
@@ -68,9 +74,45 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   }, [next?.strikerPlayerId, next?.nonStrikerPlayerId, next?.bowlerPlayerId])
 
   const [wicketOpen, setWicketOpen] = useState(false)
-  const [extraDialog, setExtraDialog] = useState<'wide' | 'no_ball' | 'bye' | null>(null)
+  const [extraDialog, setExtraDialog] = useState<'no_ball' | 'bye' | null>(null)
   const [endInningsOpen, setEndInningsOpen] = useState(false)
   const [startBattingSide, setStartBattingSide] = useState<string | undefined>(undefined)
+
+  // Concludes the match: derives the final score from every completed
+  // innings' totals (summed per side, so a two-innings format adds up both)
+  // and submits it the same way a manual "Add result" would, so it enters
+  // the normal confirmation flow rather than being auto-confirmed.
+  const finishMatch = useMutation({
+    mutationFn: async () => {
+      if (!state) throw new Error('No score recorded yet')
+      const totals = matchTotalsBySide(state)
+      const [sideA, sideB] = match.sides
+      const aId = sideA?.id ?? ''
+      const bId = sideB?.id ?? ''
+      const a = totals[aId] ?? 0
+      const b = totals[bId] ?? 0
+      const score = {
+        type: 'Simple',
+        entries: [
+          { side_id: aId, points: a },
+          { side_id: bId, points: b },
+        ],
+      } as unknown as UpdateMatchInput['score']
+      const winner_side_id = a === b ? undefined : a > b ? aId : bId
+      const body: UpdateMatchInput = { score, status: 'completed' }
+      if (winner_side_id) body.winner_side_id = winner_side_id
+      const { error } = await fetchClient.PATCH('/matches/{match_id}', {
+        params: { path: { match_id: match.id } },
+        body,
+      })
+      if (error) throw new Error('Failed to finish the match')
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['match', match.id] })
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
+      navigate(`/matches/${match.id}`)
+    },
+  })
 
   if (live.isLoading) {
     return (
@@ -127,6 +169,25 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
         >
           {appendEvent.isPending ? 'Starting…' : 'Start innings'}
         </Button>
+
+        {state && state.innings.length > 0 && (
+          <>
+            <p className="text-center text-xs text-muted-foreground">or</p>
+            {finishMatch.isError && (
+              <p className="text-center text-xs text-destructive">
+                {(finishMatch.error as Error).message}
+              </p>
+            )}
+            <Button
+              variant="outline"
+              size="lg"
+              disabled={finishMatch.isPending}
+              onClick={() => finishMatch.mutate()}
+            >
+              {finishMatch.isPending ? 'Finishing…' : 'Finish match'}
+            </Button>
+          </>
+        )}
       </div>
     )
   }
@@ -159,8 +220,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
     )
   }
 
-  const crr = runRate(innings.runs, innings.overs)
-  const format = cricketFormat(match.format)
+  const crr = runRate(innings.runs, innings.overs, format.balls_per_over)
   const strikerEntry = battingEntryFor(innings, effectiveStriker)
   const nonStrikerEntry = battingEntryFor(innings, effectiveNonStriker)
   const bowlerEntry = bowlingEntryFor(innings, effectiveBowler)
@@ -322,7 +382,9 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
             <button
               type="button"
               disabled={appendEvent.isPending}
-              onClick={() => setExtraDialog('wide')}
+              onClick={() =>
+                recordDelivery({ extra: { kind: 'wide', runs: format.wide_penalty_runs } })
+              }
               className="rounded-xl border bg-card p-3 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50"
             >
               Wide
@@ -400,17 +462,6 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
             }}
           />
 
-          <ExtraRunsDialog
-            open={extraDialog === 'wide'}
-            title="Wide"
-            kinds={[{ value: 'wide', label: 'Wide' }]}
-            submitting={appendEvent.isPending}
-            onOpenChange={(open) => !open && setExtraDialog(null)}
-            onPick={(kind, runs) => {
-              recordDelivery({ extra: { kind, runs } })
-              setExtraDialog(null)
-            }}
-          />
           <NoBallDialog
             open={extraDialog === 'no_ball'}
             penaltyRuns={format.no_ball_penalty_runs}

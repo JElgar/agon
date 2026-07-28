@@ -59,12 +59,12 @@ export function CricketMatchBlock({ match, state }: { match: Match; state: Crick
 
   const battingName = sideNameFor(match, innings.batting_side_id)
   const bowlingName = sideNameFor(match, innings.bowling_side_id)
-  const next = nextBallContext(innings)
+  const format = cricketFormat(match.format)
+  const next = nextBallContext(innings, format.balls_per_over)
   const striker = battingEntryFor(innings, next.strikerPlayerId)
   const nonStriker = battingEntryFor(innings, next.nonStrikerPlayerId)
   const overBalls = currentOverDeliveries(innings)
-  const crr = runRate(innings.runs, innings.overs)
-  const format = cricketFormat(match.format)
+  const crr = runRate(innings.runs, innings.overs, format.balls_per_over)
 
   return (
     <div className="rounded-lg bg-muted/50 px-3.5 py-3">

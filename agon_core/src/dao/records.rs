@@ -304,6 +304,7 @@ pub struct CricketFormatRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overs_per_innings: Option<u32>,
     pub innings_per_side: u32,
+    pub balls_per_over: u32,
     pub no_ball_penalty_runs: u32,
     pub wide_penalty_runs: u32,
     pub free_hit_after_no_ball: bool,

@@ -614,6 +614,7 @@ pub fn match_format_to_record(fmt: &MatchFormat) -> MatchFormatRecord {
         MatchFormat::Cricket(f) => MatchFormatRecord::Cricket(CricketFormatRecord {
             overs_per_innings: f.overs_per_innings,
             innings_per_side: f.innings_per_side,
+            balls_per_over: f.balls_per_over,
             no_ball_penalty_runs: f.no_ball_penalty_runs,
             wide_penalty_runs: f.wide_penalty_runs,
             free_hit_after_no_ball: f.free_hit_after_no_ball,
@@ -635,6 +636,7 @@ pub fn match_format_from_record(rec: &MatchFormatRecord) -> MatchFormat {
         MatchFormatRecord::Cricket(f) => MatchFormat::Cricket(CricketFormat {
             overs_per_innings: f.overs_per_innings,
             innings_per_side: f.innings_per_side,
+            balls_per_over: f.balls_per_over,
             no_ball_penalty_runs: f.no_ball_penalty_runs,
             wide_penalty_runs: f.wide_penalty_runs,
             free_hit_after_no_ball: f.free_hit_after_no_ball,
@@ -991,6 +993,7 @@ pub fn live_event_from_record(rec: &LiveEventRecord) -> LiveEvent {
 pub fn derive_live_score_state(
     match_type: &str,
     records: &[LiveEventRecord],
+    format: Option<&MatchFormatRecord>,
 ) -> Option<LiveScoreState> {
     match match_type {
         "football" => {
@@ -1015,8 +1018,14 @@ pub fn derive_live_score_state(
                     LiveEventPayloadRecord::Football(_) => None,
                 })
                 .collect();
+            // Standard 6-ball over unless the match configured something else
+            // (e.g. The Hundred's 5).
+            let balls_per_over = match format {
+                Some(MatchFormatRecord::Cricket(f)) => f.balls_per_over,
+                _ => 6,
+            };
             Some(LiveScoreState::Cricket(
-                crate::live_score::cricket::derive_state(&events),
+                crate::live_score::cricket::derive_state(&events, balls_per_over),
             ))
         }
         _ => None,
@@ -1247,6 +1256,7 @@ mod tests {
             MatchFormat::Cricket(CricketFormat {
                 overs_per_innings: None,
                 innings_per_side: 2,
+                balls_per_over: 6,
                 no_ball_penalty_runs: 2,
                 wide_penalty_runs: 1,
                 free_hit_after_no_ball: false,

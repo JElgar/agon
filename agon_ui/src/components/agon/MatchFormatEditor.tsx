@@ -126,6 +126,14 @@ export function CricketFields({
       </div>
       <div className="grid grid-cols-2 gap-2">
         <NumberField
+          label="Balls per over"
+          value={value.balls_per_over}
+          min={1}
+          onChange={(v) => onChange({ ...value, balls_per_over: v ?? 6 })}
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <NumberField
           label="No-ball penalty (runs)"
           value={value.no_ball_penalty_runs}
           min={1}

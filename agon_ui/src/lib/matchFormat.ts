@@ -22,6 +22,7 @@ export const DEFAULT_FOOTBALL_FORMAT: FootballFormat = {
 export const DEFAULT_CRICKET_FORMAT: CricketFormat = {
   overs_per_innings: 20,
   innings_per_side: 1,
+  balls_per_over: 6,
   no_ball_penalty_runs: 1,
   wide_penalty_runs: 1,
   free_hit_after_no_ball: true,

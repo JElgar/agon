@@ -41,6 +41,12 @@ pub struct CricketFormat {
     pub overs_per_innings: Option<u32>,
     /// Innings per side — 1 (limited-overs) or 2 (first-class/test-style).
     pub innings_per_side: u32,
+    /// Legal deliveries per over — 6 for almost everything, 5 for The
+    /// Hundred. Unlike the rest of this struct, this one *is* load-bearing
+    /// on the server: it drives the overs-bowled math in
+    /// `detailed_score::cricket::CricketInnings::from_deliveries` (and so
+    /// the live-scoring fold that builds on it), not just client display.
+    pub balls_per_over: u32,
     /// Runs awarded for a no-ball's mandatory penalty (excludes any runs off
     /// the bat, which are recorded separately).
     pub no_ball_penalty_runs: u32,

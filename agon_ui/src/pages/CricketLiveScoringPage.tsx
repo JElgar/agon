@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { ChevronLeft } from 'lucide-react'
 import type { components } from '@/types/api'
@@ -47,7 +46,6 @@ const END_REASONS: { value: InningsEndReason; label: string }[] = [
  */
 export function CricketLiveScoringPage({ match }: { match: Match }) {
   const navigate = useNavigate()
-  const queryClient = useQueryClient()
 
   const live = useLiveScore(match.id, { refetchInterval: 8000 })
   const appendEvent = useAppendCricketEvent(match.id)
@@ -155,12 +153,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   const endInnings = (reason: InningsEndReason) => {
     appendEvent.mutate(
       { kind: 'InningsEnd', reason },
-      {
-        onSuccess: () => {
-          setEndInningsOpen(false)
-          queryClient.invalidateQueries({ queryKey: ['feed'] })
-        },
-      },
+      { onSuccess: () => setEndInningsOpen(false) },
     )
   }
 

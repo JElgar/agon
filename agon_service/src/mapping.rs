@@ -22,6 +22,7 @@ use crate::live_score::{
         FootballPeriodEvent, FootballSubstitutionEvent,
     },
 };
+use crate::match_format::{CricketFormat, FootballFormat, MatchFormat};
 use crate::membership::{
     ExternalMember, Invitation, InvitationContext, InvitationKind, InvitationMatchContext,
     InvitationStatus, InvitationTeamContext, Member, TokenInvitation, UserInvitation, UserMember,
@@ -43,12 +44,13 @@ use agon_core::dao::live_score_ops::NewLiveEvent;
 use agon_core::dao::records::{
     CommentRecord, ConfirmedScoreRecord, CricketDeliveryExtraRecord, CricketDeliveryRecord,
     CricketDeliveryWicketRecord, CricketDismissalKindRecord, CricketExtraKindRecord,
-    CricketInningsEndEventRecord, CricketInningsStartEventRecord, CricketLiveEventRecord,
-    CricketRetireEventRecord, EmbeddedInvitationRecord, FootballCardColorRecord,
-    FootballCardEventRecord, FootballGoalEventRecord, FootballLiveEventRecord,
-    FootballPeriodEventRecord, FootballPeriodRecord, FootballSubstitutionEventRecord,
-    InningsEndReasonRecord, InvitationContextRecord, InvitationKindRecord, InvitationRecord,
-    LiveEventPayloadRecord, LiveEventRecord, MatchDetailedScoreRecord, MatchLikeRecord,
+    CricketFormatRecord, CricketInningsEndEventRecord, CricketInningsStartEventRecord,
+    CricketLiveEventRecord, CricketRetireEventRecord, EmbeddedInvitationRecord,
+    FootballCardColorRecord, FootballCardEventRecord, FootballFormatRecord,
+    FootballGoalEventRecord, FootballLiveEventRecord, FootballPeriodEventRecord,
+    FootballPeriodRecord, FootballSubstitutionEventRecord, InningsEndReasonRecord,
+    InvitationContextRecord, InvitationKindRecord, InvitationRecord, LiveEventPayloadRecord,
+    LiveEventRecord, MatchDetailedScoreRecord, MatchFormatRecord, MatchLikeRecord,
     MatchPlayerRecord, MatchRecord, MatchSideRecord, NotificationKindRecord, NotificationRecord,
     PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord,
     ScoreSubmissionRecord, SetsScoreEntryRecord, SimpleScoreEntryRecord, TeamMemberRecord,
@@ -533,6 +535,7 @@ pub fn match_from_records(
             comment_count: rec.comment_count as u32,
             i_liked,
         },
+        format: rec.format.as_ref().map(match_format_from_record),
     }
 }
 
@@ -589,6 +592,66 @@ pub fn detailed_score_to_record(ds: &DetailedScore) -> MatchDetailedScoreRecord 
 /// Returns None if the stored blob can't be parsed (treated as "no detail").
 pub fn detailed_score_from_record(rec: &MatchDetailedScoreRecord) -> Option<DetailedScore> {
     DetailedScore::parse_from_json(Some(rec.detail.clone())).ok()
+}
+
+// ===========================================================================
+// Match format: MatchFormat (API, poem-openapi) <-> MatchFormatRecord (DAO,
+// plain serde). A hand-mirrored DAO enum rather than opaque JSON, same
+// convention as live scoring (see LiveEventPayloadRecord's doc comment) and
+// for the same reason: a variant added on the API side and forgotten here is
+// a compile error, not a silently-dropped setting on read.
+// ===========================================================================
+
+pub fn match_format_to_record(fmt: &MatchFormat) -> MatchFormatRecord {
+    match fmt {
+        MatchFormat::Football(f) => MatchFormatRecord::Football(FootballFormatRecord {
+            half_length_minutes: f.half_length_minutes,
+            num_halves: f.num_halves,
+            extra_time: f.extra_time,
+            extra_time_half_length_minutes: f.extra_time_half_length_minutes,
+            penalties: f.penalties,
+        }),
+        MatchFormat::Cricket(f) => MatchFormatRecord::Cricket(CricketFormatRecord {
+            overs_per_innings: f.overs_per_innings,
+            innings_per_side: f.innings_per_side,
+            balls_per_over: f.balls_per_over,
+            no_ball_penalty_runs: f.no_ball_penalty_runs,
+            wide_penalty_runs: f.wide_penalty_runs,
+            free_hit_after_no_ball: f.free_hit_after_no_ball,
+        }),
+    }
+}
+
+/// Build the API `MatchFormat` from a stored record. Infallible — `format`
+/// is a typed DAO enum, not JSON, so there's no parse step that can fail.
+pub fn match_format_from_record(rec: &MatchFormatRecord) -> MatchFormat {
+    match rec {
+        MatchFormatRecord::Football(f) => MatchFormat::Football(FootballFormat {
+            half_length_minutes: f.half_length_minutes,
+            num_halves: f.num_halves,
+            extra_time: f.extra_time,
+            extra_time_half_length_minutes: f.extra_time_half_length_minutes,
+            penalties: f.penalties,
+        }),
+        MatchFormatRecord::Cricket(f) => MatchFormat::Cricket(CricketFormat {
+            overs_per_innings: f.overs_per_innings,
+            innings_per_side: f.innings_per_side,
+            balls_per_over: f.balls_per_over,
+            no_ball_penalty_runs: f.no_ball_penalty_runs,
+            wide_penalty_runs: f.wide_penalty_runs,
+            free_hit_after_no_ball: f.free_hit_after_no_ball,
+        }),
+    }
+}
+
+/// The sport tag a `MatchFormat` is for, mirroring the union variant (same
+/// convention as `live_event_sport_tag`) — used to reject a format that
+/// doesn't match the match's own sport.
+pub fn match_format_sport_tag(fmt: &MatchFormat) -> &'static str {
+    match fmt {
+        MatchFormat::Football(_) => "football",
+        MatchFormat::Cricket(_) => "cricket",
+    }
 }
 
 // ===========================================================================
@@ -930,6 +993,7 @@ pub fn live_event_from_record(rec: &LiveEventRecord) -> LiveEvent {
 pub fn derive_live_score_state(
     match_type: &str,
     records: &[LiveEventRecord],
+    format: Option<&MatchFormatRecord>,
 ) -> Option<LiveScoreState> {
     match match_type {
         "football" => {
@@ -954,8 +1018,14 @@ pub fn derive_live_score_state(
                     LiveEventPayloadRecord::Football(_) => None,
                 })
                 .collect();
+            // Standard 6-ball over unless the match configured something else
+            // (e.g. The Hundred's 5).
+            let balls_per_over = match format {
+                Some(MatchFormatRecord::Cricket(f)) => f.balls_per_over,
+                _ => 6,
+            };
             Some(LiveScoreState::Cricket(
-                crate::live_score::cricket::derive_state(&events),
+                crate::live_score::cricket::derive_state(&events, balls_per_over),
             ))
         }
         _ => None,
@@ -1169,6 +1239,33 @@ mod tests {
             let input = LiveEventInput::Cricket(event);
             let original_json = input.to_json();
             let round_tripped = live_event_payload_from_record(&live_event_input_to_record(&input));
+            assert_eq!(original_json, round_tripped.to_json());
+        }
+    }
+
+    #[test]
+    fn match_format_round_trips_through_dao_mirror() {
+        let formats = vec![
+            MatchFormat::Football(FootballFormat {
+                half_length_minutes: 40,
+                num_halves: 2,
+                extra_time: true,
+                extra_time_half_length_minutes: Some(15),
+                penalties: true,
+            }),
+            MatchFormat::Cricket(CricketFormat {
+                overs_per_innings: None,
+                innings_per_side: 2,
+                balls_per_over: 6,
+                no_ball_penalty_runs: 2,
+                wide_penalty_runs: 1,
+                free_hit_after_no_ball: false,
+            }),
+        ];
+
+        for format in formats {
+            let original_json = format.to_json();
+            let round_tripped = match_format_from_record(&match_format_to_record(&format));
             assert_eq!(original_json, round_tripped.to_json());
         }
     }

@@ -9,6 +9,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { SportPicker } from '@/components/agon/SportPicker'
+import { MatchFormatEditor } from '@/components/agon/MatchFormatEditor'
+import type { MatchFormat } from '@/lib/matchFormat'
 import { MultiImageUploadField } from '@/components/agon/MultiImageUploadField'
 import {
   PlayerSideEditor,
@@ -62,6 +64,7 @@ export function LogMatchPage() {
   const queryClient = useQueryClient()
 
   const [sport, setSport] = useState<MatchType | null>(null)
+  const [format, setFormat] = useState<MatchFormat | null>(null)
   const [name, setName] = useState('')
   const [sideA, setSideA] = useState<TaggedPlayer[]>([])
   const [sideB, setSideB] = useState<TaggedPlayer[]>([])
@@ -311,6 +314,7 @@ export function LogMatchPage() {
     if (creatorSide) body.creator_side_client_id = creatorSide
 
     if (headerAssetIds.length > 0) body.header_photo_asset_ids = headerAssetIds
+    if (format) body.format = format
 
     const scored = buildScore()
     if (scored) {
@@ -334,8 +338,21 @@ export function LogMatchPage() {
 
       {/* 1 · Sport */}
       <Section num={1} title="Sport" done={sport !== null}>
-        <SportPicker value={sport} onChange={setSport} />
+        <SportPicker
+          value={sport}
+          onChange={(s) => {
+            setSport(s)
+            setFormat(null)
+          }}
+        />
       </Section>
+
+      {/* Format (optional, football/cricket only) */}
+      {sport !== null && (sport === 'football' || sport === 'cricket') && (
+        <Section title="Match format">
+          <MatchFormatEditor sport={sport} value={format} onChange={setFormat} />
+        </Section>
+      )}
 
       {/* Match name */}
       <Section num={2} title="Match name" done={name.trim().length > 0}>

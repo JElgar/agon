@@ -208,20 +208,27 @@ fn runs_charged_to_bowler(delivery: &CricketDelivery) -> u32 {
 }
 
 /// Converts a count of legal balls into the conventional overs float, e.g.
-/// 13 balls -> 2.1 (two complete overs and one ball).
-fn balls_to_overs(balls: u32) -> f32 {
-    (balls / 6) as f32 + (balls % 6) as f32 / 10.0
+/// 13 balls -> 2.1 (two complete overs and one ball), given how many legal
+/// deliveries make an over (6 for almost everything, 5 for The Hundred).
+fn balls_to_overs(balls: u32, balls_per_over: u32) -> f32 {
+    (balls / balls_per_over) as f32 + (balls % balls_per_over) as f32 / 10.0
 }
 
 impl CricketInnings {
     /// Builds the innings overview (totals, batting/bowling cards, extras,
     /// fall-of-wickets) from a ball-by-ball delivery log. The deliveries are
     /// retained on the returned innings as the source of truth.
+    /// `balls_per_over` is the match's configured over length (see
+    /// `agon_service::match_format::CricketFormat::balls_per_over`) — it's
+    /// the only piece of match format the DAO-agnostic scoring math actually
+    /// needs, so it's threaded in as a plain argument rather than the whole
+    /// format.
     pub fn from_deliveries(
         batting_side_id: String,
         bowling_side_id: String,
         declared: bool,
         deliveries: Vec<CricketDelivery>,
+        balls_per_over: u32,
     ) -> Self {
         // First-appearance-ordered accumulators keyed by player_id.
         let mut batting: Vec<CricketBattingEntry> = Vec::new();
@@ -348,7 +355,7 @@ impl CricketInnings {
                     wicket: wickets,
                     runs: total_runs,
                     player_id: wicket.dismissed_player_id.clone(),
-                    overs: Some(balls_to_overs(legal_balls)),
+                    overs: Some(balls_to_overs(legal_balls, balls_per_over)),
                 });
                 if dismissal_credited_to_bowler(&wicket.kind) {
                     bowler(&mut bowling, &delivery.bowler_player_id).wickets += 1;
@@ -368,7 +375,7 @@ impl CricketInnings {
                 .iter()
                 .filter(|d| d.bowler_player_id == bw.player_id && is_legal_delivery(d))
                 .count() as u32;
-            bw.overs = balls_to_overs(balls);
+            bw.overs = balls_to_overs(balls, balls_per_over);
             bw.maidens = over_runs
                 .iter()
                 .filter(|((bowler_id, _), runs)| *bowler_id == bw.player_id && *runs == 0)
@@ -380,7 +387,7 @@ impl CricketInnings {
             bowling_side_id,
             runs: total_runs,
             wickets,
-            overs: balls_to_overs(legal_balls),
+            overs: balls_to_overs(legal_balls, balls_per_over),
             declared,
             batting,
             bowling,
@@ -455,7 +462,7 @@ mod tests {
         ];
 
         let innings =
-            CricketInnings::from_deliveries("team_a".into(), "team_b".into(), false, deliveries);
+            CricketInnings::from_deliveries("team_a".into(), "team_b".into(), false, deliveries, 6);
 
         // Total runs: 4 + 6 + 1(wide) + 0 + 1 + 0 = 12.
         assert_eq!(innings.runs, 12);
@@ -490,5 +497,29 @@ mod tests {
         assert_eq!(b1.wickets, 1);
         assert_eq!(b1.wides, 1);
         assert_eq!(b1.maidens, 0);
+    }
+
+    #[test]
+    fn respects_a_configured_balls_per_over_other_than_six() {
+        // The Hundred-style 5-ball over: 5 legal deliveries should complete
+        // exactly one over (1.0), not 0.5 as it would under a 6-ball over.
+        let deliveries = vec![
+            ball(0, 1, "B1", "S1", "S2", 1),
+            ball(0, 2, "B1", "S1", "S2", 1),
+            ball(0, 3, "B1", "S1", "S2", 1),
+            ball(0, 4, "B1", "S1", "S2", 1),
+            ball(0, 5, "B1", "S1", "S2", 1),
+        ];
+
+        let innings =
+            CricketInnings::from_deliveries("team_a".into(), "team_b".into(), false, deliveries, 5);
+
+        assert_eq!(innings.overs, 1.0);
+        let b1 = innings
+            .bowling
+            .iter()
+            .find(|b| b.player_id == "B1")
+            .expect("B1 bowling entry");
+        assert_eq!(b1.overs, 1.0);
     }
 }

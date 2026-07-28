@@ -3,6 +3,7 @@ import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 
 type CricketExtraKind = components['schemas']['CricketExtraKind']
 
@@ -11,8 +12,9 @@ type CricketExtraKind = components['schemas']['CricketExtraKind']
  * every wide/no-ball/bye/leg-bye carries at least 1 run by definition. The
  * mockup's quick-action row has a single "Bye" button, so byes vs leg-byes is
  * folded into this dialog as a toggle rather than a separate grid button.
- * Capped to a simple 1-4 picker; a rarer 5+ run extra can be corrected later
- * via the existing delete/amend-by-seq API (no dedicated UI for that yet).
+ * 1-4 are one-tap buttons for the common case; "Other" covers the rarer 5+
+ * (an overthrown wide reaching the boundary, say) without capping what can be
+ * entered.
  */
 export function ExtraRunsDialog({
   open,
@@ -30,10 +32,17 @@ export function ExtraRunsDialog({
   submitting: boolean
 }) {
   const [kind, setKind] = useState<CricketExtraKind | undefined>(kinds[0]?.value)
+  const [customRuns, setCustomRuns] = useState('')
 
   useEffect(() => {
-    if (open) setKind(kinds[0]?.value)
+    if (open) {
+      setKind(kinds[0]?.value)
+      setCustomRuns('')
+    }
   }, [open, kinds])
+
+  const custom = Number(customRuns)
+  const customValid = customRuns !== '' && Number.isFinite(custom) && custom >= 1
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -74,6 +83,24 @@ export function ExtraRunsDialog({
                 {runs}
               </Button>
             ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <Input
+              type="number"
+              min={1}
+              inputMode="numeric"
+              placeholder="Other"
+              className="h-9"
+              value={customRuns}
+              onChange={(e) => setCustomRuns(e.target.value)}
+            />
+            <Button
+              variant="outline"
+              disabled={submitting || !kind || !customValid}
+              onClick={() => kind && onPick(kind, custom)}
+            >
+              Add
+            </Button>
           </div>
         </div>
       </DialogContent>

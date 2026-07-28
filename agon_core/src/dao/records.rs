@@ -266,7 +266,48 @@ pub struct MatchRecord {
     /// `#[serde(default)]` for matches written before live scoring existed.
     #[serde(default)]
     pub live_seq: u32,
+    /// Match format/rules configuration (overs per innings, half length, and
+    /// so on). Embedded directly on the match record (not a separate item,
+    /// unlike the detailed score) because live scoring wants it on the same
+    /// fetch as everything else. `None` until a format is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<MatchFormatRecord>,
     pub created_at: String,
+}
+
+/// Mirrors `agon_service::match_format::MatchFormat`, sport-first
+/// discriminated like `LiveEventPayloadRecord` — a typed DAO enum rather
+/// than opaque JSON, so a variant added on the API side and forgotten here
+/// is a compile error, not a silent runtime data loss. New sport = new
+/// variant on both sides.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "sport", rename_all = "snake_case")]
+pub enum MatchFormatRecord {
+    Football(FootballFormatRecord),
+    Cricket(CricketFormatRecord),
+}
+
+/// Mirrors `agon_service::match_format::FootballFormat`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FootballFormatRecord {
+    pub half_length_minutes: u32,
+    pub num_halves: u32,
+    pub extra_time: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_time_half_length_minutes: Option<u32>,
+    pub penalties: bool,
+}
+
+/// Mirrors `agon_service::match_format::CricketFormat`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CricketFormatRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overs_per_innings: Option<u32>,
+    pub innings_per_side: u32,
+    pub balls_per_over: u32,
+    pub no_ball_penalty_runs: u32,
+    pub wide_penalty_runs: u32,
+    pub free_hit_after_no_ball: bool,
 }
 
 /// `MATCH#<matchId>` / `SIDE#<sideId>` — one side of a match.

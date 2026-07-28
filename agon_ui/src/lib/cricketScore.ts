@@ -34,12 +34,13 @@ export function isLegalDelivery(d: CricketDelivery): boolean {
 }
 
 /** Run rate so far, from the display-format `overs` (e.g. 18.2 = 18 overs +
- *  2 balls, not 18.2 decimal overs). */
-export function runRate(runs: number, oversDisplay: number): number {
+ *  2 balls, not 18.2 decimal overs) and the match's configured over length
+ *  (6 for almost everything, 5 for The Hundred). */
+export function runRate(runs: number, oversDisplay: number, ballsPerOver: number): number {
   const wholeOvers = Math.floor(oversDisplay)
   const balls = Math.round((oversDisplay - wholeOvers) * 10)
-  const totalBalls = wholeOvers * 6 + balls
-  return totalBalls > 0 ? (runs / totalBalls) * 6 : 0
+  const totalBalls = wholeOvers * ballsPerOver + balls
+  return totalBalls > 0 ? (runs / totalBalls) * ballsPerOver : 0
 }
 
 /** This over's deliveries — everything recorded against the innings' latest
@@ -133,6 +134,17 @@ export function battingLine(entry: CricketBattingEntry | null): string {
   return `${entry?.runs ?? 0} (${entry?.balls_faced ?? 0})`
 }
 
+/** Total runs scored by each side across every completed innings so far —
+ *  the input to a final result once the match is done (sums across both
+ *  innings for a two-innings-per-side format, not just the latest one). */
+export function matchTotalsBySide(state: CricketLiveState): Record<string, number> {
+  const totals: Record<string, number> = {}
+  for (const innings of state.innings) {
+    totals[innings.batting_side_id] = (totals[innings.batting_side_id] ?? 0) + innings.runs
+  }
+  return totals
+}
+
 /** Batters who can't be picked as a new arrival — already dismissed for a
  *  reason other than "retired hurt" (which lets the same batter resume). */
 export function outBattersFor(innings: CricketInnings): string[] {
@@ -161,10 +173,14 @@ export function playerNameFor(
  *
  * Strike rotates automatically on an odd number of the ball's rotating runs
  * (off the bat, or byes/leg-byes — wides/no-balls don't rotate strike here)
- * and always at the end of an over. One simplification: if the striker is
- * dismissed on an over's final ball, the incoming batter is just placed in
- * the now-open slot rather than fully modelling which physical end each
- * player ends up at — a rare edge case not worth the added complexity here.
+ * and always at the end of an over — including when one slot is already
+ * vacant from a wicket on that same ball (e.g. dismissed on the over's final
+ * ball): the swap still applies to whichever slot the survivor occupies, so
+ * the vacancy lands in the correct slot for the next ball rather than always
+ * defaulting to "striker". One remaining simplification: a mid-run run-out's
+ * rotation is inferred from the parity of runs completed before the
+ * dismissal (as entered in the wicket dialog), not an explicit "had they
+ * crossed?" flag — the two agree in the vast majority of real dismissals.
  */
 export interface NextBallContext {
   strikerPlayerId: string | null
@@ -179,7 +195,7 @@ export interface NextBallContext {
   previousOverBowlerPlayerId: string | null
 }
 
-export function nextBallContext(innings: CricketInnings): NextBallContext {
+export function nextBallContext(innings: CricketInnings, ballsPerOver: number): NextBallContext {
   let striker: string | null = null
   let nonStriker: string | null = null
   let bowler: string | null = null
@@ -202,11 +218,15 @@ export function nextBallContext(innings: CricketInnings): NextBallContext {
       legalInOver += 1
       const rotatingRuns =
         d.runs_off_bat + (d.extra && (d.extra.kind === 'bye' || d.extra.kind === 'leg_bye') ? d.extra.runs : 0)
-      if (rotatingRuns % 2 === 1 && striker && nonStriker) {
+      // Not guarded on both being non-null: swapping a real id with a `null`
+      // vacancy still means something — it moves *which slot* is vacant, so
+      // a wicket that falls alongside a rotation (odd runs, or an over
+      // boundary) leaves the opening in the correct slot for the next ball.
+      if (rotatingRuns % 2 === 1) {
         ;[striker, nonStriker] = [nonStriker, striker]
       }
-      if (legalInOver === 6) {
-        if (striker && nonStriker) [striker, nonStriker] = [nonStriker, striker]
+      if (legalInOver === ballsPerOver) {
+        ;[striker, nonStriker] = [nonStriker, striker]
         previousOverBowler = bowler
         bowler = null
         over += 1

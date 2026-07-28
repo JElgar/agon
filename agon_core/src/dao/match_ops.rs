@@ -10,8 +10,8 @@ use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::{
-    ConfirmedScoreRecord, MatchDetailedScoreRecord, MatchPlayerRecord, MatchRecord,
-    MatchSideRecord, PendingScoreRecord,
+    ConfirmedScoreRecord, MatchDetailedScoreRecord, MatchFormatRecord, MatchPlayerRecord,
+    MatchRecord, MatchSideRecord, PendingScoreRecord,
 };
 
 pub const TYPE_MATCH: &str = "match";
@@ -212,6 +212,10 @@ impl Dao {
         // Replace the header photo URLs. `None` leaves them unchanged; `Some([])`
         // clears them (removes the attribute); `Some([..])` overwrites.
         header_photo_urls: Option<Vec<String>>,
+        // Replace the match format. `None` leaves it unchanged; `Some(value)`
+        // overwrites. No "clear" case yet (Phase 1 doesn't need one — a
+        // match's sport, and so its format shape, doesn't change).
+        format: Option<MatchFormatRecord>,
     ) -> DaoResult<()> {
         let mut set: Vec<String> = Vec::new();
         let mut remove: Vec<String> = Vec::new();
@@ -272,6 +276,11 @@ impl Dao {
                 names.insert("#hpu".into(), "header_photo_urls".into());
             }
             None => {}
+        }
+        if let Some(fmt) = format {
+            set.push("#fmt = :fmt".into());
+            names.insert("#fmt".into(), "format".into());
+            values.insert(":fmt".into(), to_attr(&fmt)?);
         }
 
         if set.is_empty() && remove.is_empty() {

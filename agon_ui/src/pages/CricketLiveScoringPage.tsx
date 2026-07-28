@@ -134,7 +134,6 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   // No innings open — either the match hasn't started, or we're between
   // innings. Either way: pick who's batting (the other side bowls).
   if (!innings) {
-    const lastInnings = state && state.innings[state.innings.length - 1]
     // Every innings the format allows has been played (e.g. both sides have
     // had their one T20 innings) — there's no "next innings" to start, so
     // don't offer to start one. Just let the scorer finish the match.
@@ -156,18 +155,24 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
                 : "You're scoring this match"}
           </p>
         </div>
-        {lastInnings && (
+        {state && state.innings.length > 0 && (
           <div className="rounded-xl border bg-card p-4">
-            <p className="mb-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-              {match.sides.find((s) => s.id === lastInnings.batting_side_id)?.name?.trim() ||
-                'This side'}
-            </p>
-            <p className="text-2xl font-medium tracking-tight">
-              {lastInnings.runs}/{lastInnings.wickets}
-              <span className="ml-2 text-sm font-normal text-muted-foreground">
-                ({lastInnings.overs.toFixed(1)} ov)
-              </span>
-            </p>
+            <div className="space-y-3">
+              {state.innings.map((inn, i) => (
+                <div key={i}>
+                  <p className="mb-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                    {match.sides.find((s) => s.id === inn.batting_side_id)?.name?.trim() ||
+                      'This side'}
+                  </p>
+                  <p className="text-2xl font-medium tracking-tight">
+                    {inn.runs}/{inn.wickets}
+                    <span className="ml-2 text-sm font-normal text-muted-foreground">
+                      ({inn.overs.toFixed(1)} ov)
+                    </span>
+                  </p>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 

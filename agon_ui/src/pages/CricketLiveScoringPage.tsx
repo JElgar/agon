@@ -8,6 +8,7 @@ import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { SidePicker, PlayerPicker, sideName } from '@/components/agon/live/Pickers'
 import { WicketDialog } from '@/components/agon/live/WicketDialog'
 import { ExtraRunsDialog } from '@/components/agon/live/ExtraRunsDialog'
+import { NoBallDialog } from '@/components/agon/live/NoBallDialog'
 import { playersOnSide } from '@/lib/members'
 import {
   battingEntryFor,
@@ -406,14 +407,12 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
               setExtraDialog(null)
             }}
           />
-          <ExtraRunsDialog
+          <NoBallDialog
             open={extraDialog === 'no_ball'}
-            title="No ball"
-            kinds={[{ value: 'no_ball', label: 'No ball' }]}
             submitting={appendEvent.isPending}
             onOpenChange={(open) => !open && setExtraDialog(null)}
-            onPick={(kind, runs) => {
-              recordDelivery({ extra: { kind, runs } })
+            onPick={(runsOffBat) => {
+              recordDelivery({ runs_off_bat: runsOffBat, extra: { kind: 'no_ball', runs: 1 } })
               setExtraDialog(null)
             }}
           />

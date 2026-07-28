@@ -134,6 +134,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   // No innings open — either the match hasn't started, or we're between
   // innings. Either way: pick who's batting (the other side bowls).
   if (!innings) {
+    const lastInnings = state && state.innings[state.innings.length - 1]
     return (
       <div className="mx-auto flex max-w-xl flex-col gap-4">
         {header}
@@ -145,6 +146,20 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
             {state && state.innings.length > 0 ? 'Start the next innings' : "You're scoring this match"}
           </p>
         </div>
+        {lastInnings && (
+          <div className="rounded-xl border bg-card p-4">
+            <p className="mb-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              {match.sides.find((s) => s.id === lastInnings.batting_side_id)?.name?.trim() ||
+                'This side'}
+            </p>
+            <p className="text-2xl font-medium tracking-tight">
+              {lastInnings.runs}/{lastInnings.wickets}
+              <span className="ml-2 text-sm font-normal text-muted-foreground">
+                ({lastInnings.overs.toFixed(1)} ov)
+              </span>
+            </p>
+          </div>
+        )}
         <div className="rounded-xl border bg-card p-4">
           <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Who's batting?

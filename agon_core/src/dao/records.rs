@@ -332,7 +332,18 @@ pub struct CricketFormatRecord {
     pub balls_per_over: u32,
     pub no_ball_penalty_runs: u32,
     pub wide_penalty_runs: u32,
+    /// `#[serde(default = "default_true")]` for records written before these
+    /// two fields existed — the standard rule (extra ball) is the safe
+    /// default for a match that never configured otherwise.
+    #[serde(default = "default_true")]
+    pub wide_is_extra_ball: bool,
+    #[serde(default = "default_true")]
+    pub no_ball_is_extra_ball: bool,
     pub free_hit_after_no_ball: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// `MATCH#<matchId>` / `SIDE#<sideId>` — one side of a match.

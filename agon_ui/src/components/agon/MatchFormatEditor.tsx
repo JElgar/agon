@@ -147,6 +147,16 @@ export function CricketFields({
         />
       </div>
       <ToggleRow
+        label="Wide costs an extra ball"
+        checked={value.wide_is_extra_ball}
+        onChange={(wide_is_extra_ball) => onChange({ ...value, wide_is_extra_ball })}
+      />
+      <ToggleRow
+        label="No-ball costs an extra ball"
+        checked={value.no_ball_is_extra_ball}
+        onChange={(no_ball_is_extra_ball) => onChange({ ...value, no_ball_is_extra_ball })}
+      />
+      <ToggleRow
         label="Free hit after a no-ball"
         checked={value.free_hit_after_no_ball}
         onChange={(free_hit_after_no_ball) => onChange({ ...value, free_hit_after_no_ball })}

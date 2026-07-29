@@ -25,6 +25,8 @@ export const DEFAULT_CRICKET_FORMAT: CricketFormat = {
   balls_per_over: 6,
   no_ball_penalty_runs: 1,
   wide_penalty_runs: 1,
+  wide_is_extra_ball: true,
+  no_ball_is_extra_ball: true,
   free_hit_after_no_ball: true,
 }
 

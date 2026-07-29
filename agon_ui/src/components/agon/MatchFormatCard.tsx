@@ -25,7 +25,9 @@ function FormatSummary({ match }: { match: Match }) {
       <p className="text-xs text-muted-foreground">
         {oversLimitLabel(fmt)} · {fmt.innings_per_side === 1 ? 'single' : 'two'} innings ·
         no-ball {fmt.no_ball_penalty_runs} run{fmt.no_ball_penalty_runs === 1 ? '' : 's'}
+        {!fmt.no_ball_is_extra_ball && ' (no extra ball)'}
         {fmt.free_hit_after_no_ball && ' + free hit'}
+        {!fmt.wide_is_extra_ball && ' · wide: no extra ball'}
       </p>
     )
   }

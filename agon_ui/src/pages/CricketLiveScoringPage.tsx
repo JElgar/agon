@@ -60,7 +60,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   const state = cricketLiveState(live.data)
   const innings = state ? currentInnings(state) : null
   const format = cricketFormat(match.format)
-  const next = innings ? nextBallContext(innings, format.balls_per_over) : null
+  const next = innings ? nextBallContext(innings, format) : null
 
   // Locally-picked openers/replacement batter/next bowler — only used until
   // the server confirms them via an actual delivery, at which point

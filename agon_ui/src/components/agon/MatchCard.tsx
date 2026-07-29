@@ -222,7 +222,10 @@ export function MatchCard({
       )}
       {...props}
     >
-      {/* Header: who beat who + when + sport */}
+      {/* Header: who beat who + when + sport. Cricket skips "beat" — its
+          score block below already states the result in its own terms
+          ("won by 4 wickets" / "by 100 runs"), so repeating it here would
+          just be the same fact said twice. */}
       <button
         type="button"
         onClick={onOpen}
@@ -232,7 +235,7 @@ export function MatchCard({
           <span className={cn(aWon && 'font-medium')}>{nameA}</span>
           <span className="text-primary">
             {' '}
-            {scoreInfo?.winnerSideId ? 'beat' : 'vs'}{' '}
+            {match.match_type !== 'cricket' && scoreInfo?.winnerSideId ? 'beat' : 'vs'}{' '}
           </span>
           <span className={cn(bWon && 'font-medium')}>{nameB}</span>
           <span className="text-muted-foreground"> · {relativeTime(match.starts_at)}</span>

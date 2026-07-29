@@ -18,7 +18,8 @@ import { CricketMatchBlock } from './live/CricketMatchBlock'
 import { LiveIndicator } from './live/LiveIndicator'
 import { useLiveScore } from '@/hooks/useLiveScore'
 import { footballLiveState } from '@/lib/liveScore'
-import { cricketLiveState } from '@/lib/cricketScore'
+import { cricketLiveState, cricketStateDescription } from '@/lib/cricketScore'
+import { cricketFormat } from '@/lib/matchFormat'
 import {
   displayScore,
   headlineBySide,
@@ -210,6 +211,13 @@ export function MatchCard({
   const footballState = footballLiveState(live.data)
   const cricketState = cricketLiveState(live.data)
   const hasLiveState = (!!footballState || !!cricketState) && isReallyLive
+  // Cricket's own state-of-game line ("England won by 4 wickets" / "...need
+  // 200 to win" / "...lead by 30 runs") is a strictly better headline than
+  // the generic "beat"/"vs" — it carries the margin, not just the winner —
+  // so it takes over the header whenever there's a live log to derive it
+  // from, and the score block below skips repeating it (`showDescription`).
+  const cricketDescription =
+    cricketState && cricketStateDescription(match, cricketState, cricketFormat(match.format))
 
   const { like_count, comment_count, i_liked } = match.social
   const toggleLike = useToggleLike(match)
@@ -222,22 +230,26 @@ export function MatchCard({
       )}
       {...props}
     >
-      {/* Header: who beat who + when + sport. Cricket skips "beat" — its
-          score block below already states the result in its own terms
-          ("won by 4 wickets" / "by 100 runs"), so repeating it here would
-          just be the same fact said twice. */}
+      {/* Header: the cricket state-of-game line when there is one, else the
+          usual "who beat who" + when + sport. */}
       <button
         type="button"
         onClick={onOpen}
         className="flex w-full items-start justify-between gap-3 p-3.5 text-left"
       >
         <p className="text-sm leading-snug">
-          <span className={cn(aWon && 'font-medium')}>{nameA}</span>
-          <span className="text-primary">
-            {' '}
-            {match.match_type !== 'cricket' && scoreInfo?.winnerSideId ? 'beat' : 'vs'}{' '}
-          </span>
-          <span className={cn(bWon && 'font-medium')}>{nameB}</span>
+          {cricketDescription ? (
+            <span>{cricketDescription}</span>
+          ) : (
+            <>
+              <span className={cn(aWon && 'font-medium')}>{nameA}</span>
+              <span className="text-primary">
+                {' '}
+                {match.match_type !== 'cricket' && scoreInfo?.winnerSideId ? 'beat' : 'vs'}{' '}
+              </span>
+              <span className={cn(bWon && 'font-medium')}>{nameB}</span>
+            </>
+          )}
           <span className="text-muted-foreground"> · {relativeTime(match.starts_at)}</span>
         </p>
         <div className="flex shrink-0 flex-col items-end gap-1.5">
@@ -265,7 +277,12 @@ export function MatchCard({
         </div>
       ) : cricketState ? (
         <div className="mx-3.5 mb-3">
-          <CricketMatchBlock match={match} state={cricketState} live={isReallyLive} />
+          <CricketMatchBlock
+            match={match}
+            state={cricketState}
+            live={isReallyLive}
+            showDescription={false}
+          />
         </div>
       ) : (
         scoreInfo && (

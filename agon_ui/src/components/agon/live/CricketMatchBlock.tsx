@@ -45,6 +45,7 @@ export function CricketMatchBlock({
   match,
   state,
   live = true,
+  showDescription = true,
 }: {
   match: Match
   state: CricketLiveState
@@ -52,6 +53,11 @@ export function CricketMatchBlock({
    *  pulsing "LIVE" pill. A finished match still renders through this
    *  component (for its overs/wickets detail and result line) but isn't live. */
   live?: boolean
+  /** Whether to show the state-of-game line (target/leading/result) here.
+   *  Callers that already surface it elsewhere (the feed card's header)
+   *  pass `false` so it isn't said twice — the innings-break heading then
+   *  falls back to a neutral "Innings break"/"Match complete" instead. */
+  showDescription?: boolean
 }) {
   const innings = currentInnings(state)
   const format = cricketFormat(match.format)
@@ -60,12 +66,24 @@ export function CricketMatchBlock({
   if (!innings) {
     // Between innings, or nothing bowled yet. Every innings played so far
     // is still worth showing rather than discarding — just without the
-    // ball-by-ball detail that needs an open innings.
+    // ball-by-ball detail that needs an open innings. `description` is only
+    // ever non-null here once the match is complete (a target only applies
+    // to an *open* final innings), so its presence doubles as that signal.
+    const heading = showDescription
+      ? description || 'Innings break'
+      : description
+        ? 'Match complete'
+        : 'Innings break'
     return (
       <div className="rounded-lg bg-muted/50 px-3.5 py-3">
         <div className="flex items-center justify-between">
-          <p className={cn('text-sm font-medium', description ? 'text-primary' : 'text-muted-foreground')}>
-            {description || 'Innings break'}
+          <p
+            className={cn(
+              'text-sm font-medium',
+              showDescription && description ? 'text-primary' : 'text-muted-foreground',
+            )}
+          >
+            {heading}
           </p>
           {live && <LiveIndicator />}
         </div>
@@ -121,7 +139,7 @@ export function CricketMatchBlock({
               )}
             </p>
           )}
-          {description && (
+          {showDescription && description && (
             <p className="mt-0.5 text-xs font-medium text-primary">{description}</p>
           )}
         </div>

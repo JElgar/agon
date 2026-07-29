@@ -13,6 +13,7 @@ export type CricketScore = components['schemas']['CricketScore']
 export type CricketScoreInnings = components['schemas']['CricketScoreInnings']
 export type Overs = components['schemas']['Overs']
 type LiveScoreSnapshot = components['schemas']['LiveScoreSnapshot']
+type DetailedScore = components['schemas']['DetailedScore']
 type Score = components['schemas']['Score']
 type Match = components['schemas']['Match']
 
@@ -32,6 +33,15 @@ export function cricketLiveState(
 export function cricketScoreFrom(score: Score | null | undefined): CricketScore | null {
   if (!score || score.type !== 'Cricket') return null
   return score
+}
+
+/** Narrows a match's detailed score to its cricket innings, or `null` when
+ *  there's none yet or it's for a different sport. */
+export function cricketDetail(
+  detail: DetailedScore | null | undefined,
+): CricketInnings[] | null {
+  if (!detail || detail.type !== 'Cricket') return null
+  return detail.innings
 }
 
 /** The minimal per-innings shape match-aggregate math and the state-of-game
@@ -94,6 +104,49 @@ export function formatOvers(overs: Overs): string {
 export function runRate(runs: number, overs: Overs, ballsPerOver: number): number {
   const totalBalls = overs.overs * ballsPerOver + overs.balls
   return totalBalls > 0 ? (runs / totalBalls) * ballsPerOver : 0
+}
+
+/** One point on a run-progression graph: the cumulative state immediately
+ *  after a delivery. `overDecimal` is a continuous x-axis value (whole overs
+ *  plus a fraction of the current one, scaled by the format's
+ *  `balls_per_over`) — a graph needs a single number to plot against, unlike
+ *  `overs`'s exact whole-overs-plus-balls count. */
+export interface RunProgressionPoint {
+  overs: Overs
+  overDecimal: number
+  runs: number
+  wickets: number
+  /** True if this delivery was a wicket — for marking the point distinctly. */
+  isWicket: boolean
+}
+
+/** Cumulative runs/wickets after each delivery, in order — the data behind a
+ *  run-rate/worm graph. Only legal deliveries (per the match's format —
+ *  wides/no-balls may or may not count, see `isLegalDelivery`) advance the
+ *  overs count; extras still add to `runs` at the same over position as the
+ *  previous legal ball. */
+export function runProgression(
+  deliveries: CricketDelivery[],
+  format: Pick<CricketFormat, 'wide_is_extra_ball' | 'no_ball_is_extra_ball' | 'balls_per_over'>,
+): RunProgressionPoint[] {
+  let runs = 0
+  let wickets = 0
+  let legalBalls = 0
+  return deliveries.map((d) => {
+    const extraRuns = d.extra?.runs ?? 0
+    runs += d.runs_off_bat + extraRuns
+    if (isLegalDelivery(d, format)) legalBalls += 1
+    if (d.wicket) wickets += 1
+    const overs = Math.floor(legalBalls / format.balls_per_over)
+    const balls = legalBalls % format.balls_per_over
+    return {
+      overs: { overs, balls },
+      overDecimal: overs + balls / format.balls_per_over,
+      runs,
+      wickets,
+      isWicket: !!d.wicket,
+    }
+  })
 }
 
 /** This over's deliveries — everything recorded against the innings' latest

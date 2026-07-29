@@ -1067,17 +1067,21 @@ pub fn derive_live_score_state(
             // 6-ball over (e.g. The Hundred's 5), and both wides and no-balls
             // as extra (re-bowled) deliveries.
             let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) = match format {
-                Some(MatchFormatRecord::Cricket(f)) => {
-                    (f.balls_per_over, f.wide_is_extra_ball, f.no_ball_is_extra_ball)
-                }
+                Some(MatchFormatRecord::Cricket(f)) => (
+                    f.balls_per_over,
+                    f.wide_is_extra_ball,
+                    f.no_ball_is_extra_ball,
+                ),
                 _ => (6, true, true),
             };
-            Some(LiveScoreState::Cricket(crate::live_score::cricket::derive_state(
-                &events,
-                balls_per_over,
-                wide_is_extra_ball,
-                no_ball_is_extra_ball,
-            )))
+            Some(LiveScoreState::Cricket(
+                crate::live_score::cricket::derive_state(
+                    &events,
+                    balls_per_over,
+                    wide_is_extra_ball,
+                    no_ball_is_extra_ball,
+                ),
+            ))
         }
         _ => None,
     }

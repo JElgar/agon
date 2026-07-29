@@ -15,10 +15,16 @@ import { MatchHeaderCarousel } from './MatchHeaderCarousel'
 import { InvitationResponseDialog } from './InvitationResponseDialog'
 import { LiveMatchBlock } from './live/LiveMatchBlock'
 import { CricketMatchBlock } from './live/CricketMatchBlock'
+import { CricketScoreBlock } from './CricketScoreBlock'
 import { LiveIndicator } from './live/LiveIndicator'
 import { useLiveScore } from '@/hooks/useLiveScore'
 import { footballLiveState } from '@/lib/liveScore'
-import { cricketLiveState, cricketStateDescription } from '@/lib/cricketScore'
+import {
+  cricketLiveState,
+  cricketProgressFromScore,
+  cricketScoreFrom,
+  cricketStateDescription,
+} from '@/lib/cricketScore'
 import { cricketFormat } from '@/lib/matchFormat'
 import {
   displayScore,
@@ -197,27 +203,30 @@ export function MatchCard({
   const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
 
   const isLiveSport = match.match_type === 'football' || match.match_type === 'cricket'
-  const isReallyLive = match.status === 'in_progress'
-  // Cricket's completed score is nowhere but the live event log (finishing a
-  // match only submits a total-runs summary, see `CricketLiveScoringPage`),
-  // so keep reading it after the match ends too — otherwise the overs/wickets
-  // detail and result line vanish the moment the status flips.
   const live = useLiveScore(match.id, {
-    enabled:
-      isLiveSport &&
-      (isReallyLive || (match.match_type === 'cricket' && match.status === 'completed')),
+    enabled: isLiveSport && match.status === 'in_progress',
     refetchInterval: 20000,
   })
   const footballState = footballLiveState(live.data)
   const cricketState = cricketLiveState(live.data)
-  const hasLiveState = (!!footballState || !!cricketState) && isReallyLive
+  const hasLiveState = !!footballState || !!cricketState
+  // A cricket match's confirmed score carries its own per-innings detail once
+  // it's been live-scored (`Score::Cricket`; see `finishMatch` in
+  // `CricketLiveScoringPage`) — a manually-logged result still degrades to
+  // the generic totals-only `Score::Simple`.
+  const cricketScore = scoreInfo ? cricketScoreFrom(scoreInfo.score) : null
   // Cricket's own state-of-game line ("England won by 4 wickets" / "...need
   // 200 to win" / "...lead by 30 runs") is a strictly better headline than
   // the generic "beat"/"vs" — it carries the margin, not just the winner —
-  // so it takes over the header whenever there's a live log to derive it
-  // from, and the score block below skips repeating it (`showDescription`).
-  const cricketDescription =
-    cricketState && cricketStateDescription(match, cricketState, cricketFormat(match.format))
+  // so it takes over the header whenever there's cricket detail (live or
+  // confirmed) to derive it from, and the score block below skips repeating
+  // it (`showDescription`).
+  const cricketFmt = cricketFormat(match.format)
+  const cricketDescription = cricketState
+    ? cricketStateDescription(match, cricketState, cricketFmt)
+    : cricketScore
+      ? cricketStateDescription(match, cricketProgressFromScore(cricketScore), cricketFmt)
+      : null
 
   const { like_count, comment_count, i_liked } = match.social
   const toggleLike = useToggleLike(match)
@@ -270,19 +279,19 @@ export function MatchCard({
       )}
 
       {/* Score block — a live-scored match shows the mini-ticker instead of
-          the usual confirmed/pending result. */}
+          the usual confirmed/pending result; a finished cricket match with
+          per-innings detail gets its own tile too. */}
       {footballState ? (
         <div className="mx-3.5 mb-3">
           <LiveMatchBlock match={match} state={footballState} />
         </div>
       ) : cricketState ? (
         <div className="mx-3.5 mb-3">
-          <CricketMatchBlock
-            match={match}
-            state={cricketState}
-            live={isReallyLive}
-            showDescription={false}
-          />
+          <CricketMatchBlock match={match} state={cricketState} showDescription={false} />
+        </div>
+      ) : cricketScore ? (
+        <div className="mx-3.5 mb-3">
+          <CricketScoreBlock match={match} score={cricketScore} showDescription={false} />
         </div>
       ) : (
         scoreInfo && (

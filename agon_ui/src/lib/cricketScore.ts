@@ -9,7 +9,10 @@ export type CricketExtraKind = components['schemas']['CricketExtraKind']
 export type CricketDismissalKind = components['schemas']['CricketDismissalKind']
 export type CricketBattingEntry = components['schemas']['CricketBattingEntry']
 export type CricketBowlingEntry = components['schemas']['CricketBowlingEntry']
+export type CricketScore = components['schemas']['CricketScore']
+export type CricketScoreInnings = components['schemas']['CricketScoreInnings']
 type LiveScoreSnapshot = components['schemas']['LiveScoreSnapshot']
+type Score = components['schemas']['Score']
 type Match = components['schemas']['Match']
 
 /** Narrows a live-score snapshot to its cricket state, or `null` when there's
@@ -19,6 +22,43 @@ export function cricketLiveState(
 ): CricketLiveState | null {
   if (!snapshot || snapshot.state.sport !== 'Cricket') return null
   return snapshot.state
+}
+
+/** Narrows a match score to its cricket variant, or `null` when there's no
+ *  score yet or it's the plain totals-only shape a manually-logged (not
+ *  live-scored) cricket result degrades to (see `Score::Simple`'s doc
+ *  comment on the backend). */
+export function cricketScoreFrom(score: Score | null | undefined): CricketScore | null {
+  if (!score || score.type !== 'Cricket') return null
+  return score
+}
+
+/** The minimal per-innings shape match-aggregate math and the state-of-game
+ *  sentence need — both `CricketLiveState.innings` (rich, ball-by-ball
+ *  derived, while a match is actually being scored) and a confirmed
+ *  `CricketScore.innings` (the persisted summary, once it's over) satisfy
+ *  this structurally, so the same functions work on either. */
+interface CricketInningsTotal {
+  batting_side_id: string
+  bowling_side_id: string
+  runs: number
+  wickets: number
+}
+
+/** Ditto, for the match-level progress shape: a live snapshot's own state, or
+ *  a finished match's confirmed score reframed as one (see
+ *  `cricketProgressFromScore`) — it has no notion of "in progress", so it's
+ *  always `awaiting_next_innings: true`. */
+export interface CricketMatchProgress {
+  innings: CricketInningsTotal[]
+  awaiting_next_innings: boolean
+}
+
+/** Reframes a completed match's `CricketScore` as a `CricketMatchProgress` —
+ *  there's no currently-open innings once the score is confirmed, so this is
+ *  always "awaiting the next innings" (there won't be one). */
+export function cricketProgressFromScore(score: CricketScore): CricketMatchProgress {
+  return { innings: score.innings, awaiting_next_innings: true }
 }
 
 /** The innings currently being played, or `null` when the match hasn't
@@ -138,7 +178,7 @@ export function battingLine(entry: CricketBattingEntry | null): string {
 /** Total runs scored by each side across every completed innings so far —
  *  the input to a final result once the match is done (sums across both
  *  innings for a two-innings-per-side format, not just the latest one). */
-export function matchTotalsBySide(state: CricketLiveState): Record<string, number> {
+export function matchTotalsBySide(state: CricketMatchProgress): Record<string, number> {
   const totals: Record<string, number> = {}
   for (const innings of state.innings) {
     totals[innings.batting_side_id] = (totals[innings.batting_side_id] ?? 0) + innings.runs
@@ -165,14 +205,14 @@ export function matchTotalsBySide(state: CricketLiveState): Record<string, numbe
  */
 export function cricketStateDescription(
   match: Pick<Match, 'sides' | 'players'>,
-  state: CricketLiveState,
+  state: CricketMatchProgress,
   format: Pick<CricketFormat, 'innings_per_side'>,
 ): string | null {
   if (state.innings.length === 0) return null
   const quota = match.sides.length * format.innings_per_side
   const totals = matchTotalsBySide(state)
 
-  const open = currentInnings(state)
+  const open = state.awaiting_next_innings ? null : state.innings[state.innings.length - 1]
   if (open) {
     const battingTotal = totals[open.batting_side_id] ?? 0
     const bowlingTotal = totals[open.bowling_side_id] ?? 0

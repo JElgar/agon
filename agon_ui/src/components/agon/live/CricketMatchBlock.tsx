@@ -44,15 +44,10 @@ function BallChip({ label, kind }: { label: string; kind: 'boundary' | 'wicket' 
 export function CricketMatchBlock({
   match,
   state,
-  live = true,
   showDescription = true,
 }: {
   match: Match
   state: CricketLiveState
-  /** Whether the match is actually being played right now — gates the
-   *  pulsing "LIVE" pill. A finished match still renders through this
-   *  component (for its overs/wickets detail and result line) but isn't live. */
-  live?: boolean
   /** Whether to show the state-of-game line (target/leading/result) here.
    *  Callers that already surface it elsewhere (the feed card's header)
    *  pass `false` so it isn't said twice — the innings-break heading then
@@ -85,7 +80,7 @@ export function CricketMatchBlock({
           >
             {heading}
           </p>
-          {live && <LiveIndicator />}
+          <LiveIndicator />
         </div>
         {state.innings.length > 0 && (
           <div className="mt-1 space-y-0.5">
@@ -143,7 +138,7 @@ export function CricketMatchBlock({
             <p className="mt-0.5 text-xs font-medium text-primary">{description}</p>
           )}
         </div>
-        {live && <LiveIndicator />}
+        <LiveIndicator />
       </div>
 
       {overBalls.length > 0 && (

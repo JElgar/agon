@@ -55,6 +55,7 @@ use match_format::MatchFormat;
 mod detailed_score;
 use detailed_score::{
     DetailedScore,
+    cricket::Overs,
     football::{FootballDetail, FootballEvent, FootballEventKind},
 };
 
@@ -340,8 +341,8 @@ struct CricketScoreInnings {
     runs: u32,
     /// Wickets lost (0-10).
     wickets: u32,
-    /// Overs bowled, e.g. 19.4 (4 balls into the 20th over).
-    overs: f32,
+    /// Overs bowled, e.g. 19 overs + 4 balls into the 20th.
+    overs: Overs,
     /// Whether the innings was declared closed rather than bowled/timed out.
     declared: bool,
 }

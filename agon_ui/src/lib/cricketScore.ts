@@ -11,6 +11,7 @@ export type CricketBattingEntry = components['schemas']['CricketBattingEntry']
 export type CricketBowlingEntry = components['schemas']['CricketBowlingEntry']
 export type CricketScore = components['schemas']['CricketScore']
 export type CricketScoreInnings = components['schemas']['CricketScoreInnings']
+export type Overs = components['schemas']['Overs']
 type LiveScoreSnapshot = components['schemas']['LiveScoreSnapshot']
 type Score = components['schemas']['Score']
 type Match = components['schemas']['Match']
@@ -74,13 +75,16 @@ export function isLegalDelivery(d: CricketDelivery): boolean {
   return !(d.extra && (d.extra.kind === 'wide' || d.extra.kind === 'no_ball'))
 }
 
-/** Run rate so far, from the display-format `overs` (e.g. 18.2 = 18 overs +
- *  2 balls, not 18.2 decimal overs) and the match's configured over length
- *  (6 for almost everything, 5 for The Hundred). */
-export function runRate(runs: number, oversDisplay: number, ballsPerOver: number): number {
-  const wholeOvers = Math.floor(oversDisplay)
-  const balls = Math.round((oversDisplay - wholeOvers) * 10)
-  const totalBalls = wholeOvers * ballsPerOver + balls
+/** "19.4" — the conventional overs-and-balls display, e.g. 4 balls into the
+ *  20th over. */
+export function formatOvers(overs: Overs): string {
+  return `${overs.overs}.${overs.balls}`
+}
+
+/** Run rate so far, from an overs-and-balls count and the match's configured
+ *  over length (6 for almost everything, 5 for The Hundred). */
+export function runRate(runs: number, overs: Overs, ballsPerOver: number): number {
+  const totalBalls = overs.overs * ballsPerOver + overs.balls
   return totalBalls > 0 ? (runs / totalBalls) * ballsPerOver : 0
 }
 
@@ -167,7 +171,7 @@ export function bowlingEntryFor(
  *  before the bowler has sent down a delivery. */
 export function bowlingFigures(entry: CricketBowlingEntry | null): string {
   if (!entry) return '—'
-  return `${entry.overs.toFixed(1)}-${entry.maidens}-${entry.runs_conceded}-${entry.wickets}`
+  return `${formatOvers(entry.overs)}-${entry.maidens}-${entry.runs_conceded}-${entry.wickets}`
 }
 
 /** "46 (32)" — runs and balls faced, or "0 (0)" before a batter's first ball. */

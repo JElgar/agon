@@ -8,6 +8,7 @@ import {
   currentInnings,
   currentOverDeliveries,
   deliveryChipLabel,
+  formatOvers,
   isChipHighlighted,
   nextBallContext,
   playerNameFor,
@@ -88,7 +89,7 @@ export function CricketMatchBlock({
               <p key={i} className="text-lg font-medium leading-tight tracking-tight">
                 {sideNameFor(match, inn.batting_side_id)} {inn.runs}/{inn.wickets}
                 <span className="ml-1.5 text-sm font-normal text-muted-foreground">
-                  ({inn.overs.toFixed(1)} ov)
+                  ({formatOvers(inn.overs)} ov)
                 </span>
               </p>
             ))}
@@ -114,7 +115,7 @@ export function CricketMatchBlock({
           <p className="text-2xl font-medium leading-tight tracking-tight">
             {innings.runs}/{innings.wickets}
             <span className="ml-1.5 text-sm font-normal text-muted-foreground">
-              ({innings.overs.toFixed(1)}
+              ({formatOvers(innings.overs)}
               {format.overs_per_innings ? `/${format.overs_per_innings}` : ''} ov · CRR{' '}
               {crr.toFixed(2)})
             </span>

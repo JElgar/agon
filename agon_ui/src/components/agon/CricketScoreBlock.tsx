@@ -3,6 +3,7 @@ import { cn } from '@/lib/utils'
 import {
   cricketProgressFromScore,
   cricketStateDescription,
+  formatOvers,
   sideNameFor,
   type CricketScore,
 } from '@/lib/cricketScore'
@@ -48,7 +49,7 @@ export function CricketScoreBlock({
             <p key={i} className="text-lg font-medium leading-tight tracking-tight">
               {sideNameFor(match, inn.batting_side_id)} {inn.runs}/{inn.wickets}
               <span className="ml-1.5 text-sm font-normal text-muted-foreground">
-                ({inn.overs.toFixed(1)} ov)
+                ({formatOvers(inn.overs)} ov)
               </span>
             </p>
           ))}

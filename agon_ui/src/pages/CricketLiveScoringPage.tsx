@@ -22,6 +22,7 @@ import {
   currentInnings,
   currentOverDeliveries,
   deliveryChipLabel,
+  formatOvers,
   isChipHighlighted,
   matchTotalsBySide,
   nextBallContext,
@@ -173,7 +174,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
                   <p className="text-2xl font-medium tracking-tight">
                     {inn.runs}/{inn.wickets}
                     <span className="ml-2 text-sm font-normal text-muted-foreground">
-                      ({inn.overs.toFixed(1)} ov)
+                      ({formatOvers(inn.overs)} ov)
                     </span>
                   </p>
                 </div>
@@ -284,7 +285,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
         <p className="mt-0.5 text-3xl font-medium tracking-tight">
           {innings.runs}/{innings.wickets}
           <span className="ml-2 text-sm font-normal text-muted-foreground">
-            ({innings.overs.toFixed(1)}
+            ({formatOvers(innings.overs)}
             {format.overs_per_innings ? `/${format.overs_per_innings}` : ''} ov · CRR{' '}
             {crr.toFixed(2)})
           </span>

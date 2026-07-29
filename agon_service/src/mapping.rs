@@ -9,7 +9,7 @@ use poem::error::InternalServerError;
 use crate::detailed_score::DetailedScore;
 use crate::detailed_score::cricket::{
     CricketDelivery, CricketDeliveryExtra, CricketDeliveryWicket, CricketDismissalKind,
-    CricketExtraKind,
+    CricketExtraKind, Overs,
 };
 use crate::live_score::{
     LiveEvent, LiveEventInput, LiveScoreState, NewLiveEventInput,
@@ -52,7 +52,7 @@ use agon_core::dao::records::{
     InningsEndReasonRecord, InvitationContextRecord, InvitationKindRecord, InvitationRecord,
     LiveEventPayloadRecord, LiveEventRecord, MatchDetailedScoreRecord, MatchFormatRecord,
     MatchLikeRecord, MatchPlayerRecord, MatchRecord, MatchSideRecord, NotificationKindRecord,
-    NotificationRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord,
+    NotificationRecord, OversRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord,
     ScoreResponseRecord, ScoreSubmissionRecord, SetsScoreEntryRecord, SimpleScoreEntryRecord,
     TeamMemberRecord, TeamRecord, UserRecord, UserSportStatsRecord,
 };
@@ -196,11 +196,25 @@ pub fn score_from_record(rec: &ScoreRecord) -> Score {
                     bowling_side_id: i.bowling_side_id.clone(),
                     runs: i.runs,
                     wickets: i.wickets,
-                    overs: i.overs,
+                    overs: overs_from_record(&i.overs),
                     declared: i.declared,
                 })
                 .collect(),
         }),
+    }
+}
+
+fn overs_from_record(rec: &OversRecord) -> Overs {
+    Overs {
+        overs: rec.overs,
+        balls: rec.balls,
+    }
+}
+
+fn overs_to_record(overs: &Overs) -> OversRecord {
+    OversRecord {
+        overs: overs.overs,
+        balls: overs.balls,
     }
 }
 
@@ -235,7 +249,7 @@ pub fn score_to_record(score: &Score) -> ScoreRecord {
                     bowling_side_id: i.bowling_side_id.clone(),
                     runs: i.runs,
                     wickets: i.wickets,
-                    overs: i.overs,
+                    overs: overs_to_record(&i.overs),
                     declared: i.declared,
                 })
                 .collect(),
@@ -1331,7 +1345,7 @@ mod tests {
                         bowling_side_id: "mill_lane".into(),
                         runs: 180,
                         wickets: 6,
-                        overs: 20.0,
+                        overs: Overs { overs: 20, balls: 0 },
                         declared: false,
                     },
                     CricketScoreInnings {
@@ -1339,7 +1353,7 @@ mod tests {
                         bowling_side_id: "warriors".into(),
                         runs: 165,
                         wickets: 10,
-                        overs: 19.3,
+                        overs: Overs { overs: 19, balls: 3 },
                         declared: false,
                     },
                 ],

@@ -2,10 +2,12 @@ import type { components } from '@/types/api'
 import {
   bowlingFigures,
   dismissalLabel,
+  formatOvers,
   playerNameFor,
   runProgression,
   type CricketInnings,
 } from '@/lib/cricketScore'
+import { cricketFormat } from '@/lib/matchFormat'
 import { CricketRunRateChart, type RunRateSeries } from './CricketRunRateChart'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
@@ -26,13 +28,14 @@ function sideNameFor(match: Match, sideId: string): string {
 export function CricketScorecard({ match, innings }: { match: Match; innings: CricketInnings[] }) {
   if (innings.length === 0) return null
 
+  const format = cricketFormat(match.format)
   const series: RunRateSeries[] = innings
     .filter((inn) => inn.deliveries.length > 0)
     .map((inn, i) => ({
       key: `${inn.batting_side_id}-${i}`,
       label: sideNameFor(match, inn.batting_side_id),
       color: SERIES_COLORS[i % SERIES_COLORS.length],
-      points: runProgression(inn.deliveries),
+      points: runProgression(inn.deliveries, format),
       finalRuns: inn.runs,
       finalWickets: inn.wickets,
     }))
@@ -64,7 +67,7 @@ function InningsCard({ match, innings }: { match: Match; innings: CricketInnings
       <div className="border-b px-4 py-3">
         <p className="text-sm font-medium">{battingName}</p>
         <p className="text-xs text-muted-foreground">
-          {innings.runs}/{innings.wickets} ({innings.overs.toFixed(1)} ov) vs {bowlingName}
+          {innings.runs}/{innings.wickets} ({formatOvers(innings.overs)} ov) vs {bowlingName}
         </p>
       </div>
 

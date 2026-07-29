@@ -42,6 +42,11 @@ export function useLiveScore(
  * returned snapshot replaces the cache directly (cheaper and more current
  * than invalidating + refetching). Shared by the per-sport wrappers below —
  * each just tags its event with the right `sport` discriminator.
+ *
+ * The server flips a still-`scheduled` match to `in_progress` the first time
+ * any live event is recorded, so every append also invalidates the match and
+ * feed queries — that's the only signal the scorer's own client has that the
+ * status (and therefore other viewers' "Live" gate) may have just changed.
  */
 function useAppendLiveEvent<T extends { kind: string }>(
   matchId: string,
@@ -69,6 +74,8 @@ function useAppendLiveEvent<T extends { kind: string }>(
     },
     onSuccess: (data) => {
       queryClient.setQueryData(liveScoreQueryKey(matchId), data)
+      queryClient.invalidateQueries({ queryKey: ['match', matchId] })
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
     },
   })
 }

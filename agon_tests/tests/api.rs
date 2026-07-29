@@ -158,6 +158,7 @@ fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
         score: None,
         winner_side_id: None,
         header_photo_asset_ids: None,
+        format: None,
     }
 }
 
@@ -199,6 +200,7 @@ fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::Create
         score: None,
         winner_side_id: None,
         header_photo_asset_ids: None,
+        format: None,
     }
 }
 
@@ -250,6 +252,7 @@ fn completed_match(invites: Vec<models::CreateMatchInviteInput>) -> models::Crea
         score: Some(Box::new(simple_score("a", "b", 6, 3))),
         winner_side_id: Some("a".to_string()),
         header_photo_asset_ids: None,
+        format: None,
     }
 }
 
@@ -1464,6 +1467,7 @@ fn simple_score_points(score: &models::Score) -> Vec<(String, i32)> {
             .map(|e| (e.side_id.clone(), e.points))
             .collect(),
         models::Score::Sets(_) => panic!("expected a simple score"),
+        models::Score::Cricket(_) => panic!("expected a simple score"),
     }
 }
 

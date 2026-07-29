@@ -9,7 +9,7 @@ use poem::error::InternalServerError;
 use crate::detailed_score::DetailedScore;
 use crate::detailed_score::cricket::{
     CricketDelivery, CricketDeliveryExtra, CricketDeliveryWicket, CricketDismissalKind,
-    CricketExtraKind,
+    CricketExtraKind, Overs,
 };
 use crate::live_score::{
     LiveEvent, LiveEventInput, LiveScoreState, NewLiveEventInput,
@@ -22,6 +22,7 @@ use crate::live_score::{
         FootballPeriodEvent, FootballSubstitutionEvent,
     },
 };
+use crate::match_format::{CricketFormat, FootballFormat, MatchFormat};
 use crate::membership::{
     ExternalMember, Invitation, InvitationContext, InvitationKind, InvitationMatchContext,
     InvitationStatus, InvitationTeamContext, Member, TokenInvitation, UserInvitation, UserMember,
@@ -33,26 +34,27 @@ use crate::notification::{
 };
 use crate::team::{Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
-    Comment, ConfirmedScore, Location, Match, MatchPlayer, MatchSide, MatchSocial, MatchStatus,
-    MatchType, PendingScore, Photo, Score, ScoreConfirmation, ScoreResponseKind, ScoreSubmission,
-    ScoreSubmissionResponse, ScoreSubmissionStatus, SetsScore, SetsScoreEntry, SimpleScore,
-    SimpleScoreEntry, UserProfile, UserSportStats,
+    Comment, ConfirmedScore, CricketScore, CricketScoreInnings, Location, Match, MatchPlayer,
+    MatchSide, MatchSocial, MatchStatus, MatchType, PendingScore, Photo, Score, ScoreConfirmation,
+    ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus, SetsScore,
+    SetsScoreEntry, SimpleScore, SimpleScoreEntry, UserProfile, UserSportStats,
 };
 use agon_core::dao::error::DaoError;
 use agon_core::dao::live_score_ops::NewLiveEvent;
 use agon_core::dao::records::{
     CommentRecord, ConfirmedScoreRecord, CricketDeliveryExtraRecord, CricketDeliveryRecord,
     CricketDeliveryWicketRecord, CricketDismissalKindRecord, CricketExtraKindRecord,
-    CricketInningsEndEventRecord, CricketInningsStartEventRecord, CricketLiveEventRecord,
-    CricketRetireEventRecord, EmbeddedInvitationRecord, FootballCardColorRecord,
-    FootballCardEventRecord, FootballGoalEventRecord, FootballLiveEventRecord,
+    CricketFormatRecord, CricketInningsEndEventRecord, CricketInningsStartEventRecord,
+    CricketLiveEventRecord, CricketRetireEventRecord, CricketScoreInningsRecord,
+    EmbeddedInvitationRecord, FootballCardColorRecord, FootballCardEventRecord,
+    FootballFormatRecord, FootballGoalEventRecord, FootballLiveEventRecord,
     FootballPeriodEventRecord, FootballPeriodRecord, FootballSubstitutionEventRecord,
     InningsEndReasonRecord, InvitationContextRecord, InvitationKindRecord, InvitationRecord,
-    LiveEventPayloadRecord, LiveEventRecord, MatchDetailedScoreRecord, MatchLikeRecord,
-    MatchPlayerRecord, MatchRecord, MatchSideRecord, NotificationKindRecord, NotificationRecord,
-    PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord,
-    ScoreSubmissionRecord, SetsScoreEntryRecord, SimpleScoreEntryRecord, TeamMemberRecord,
-    TeamRecord, UserRecord, UserSportStatsRecord,
+    LiveEventPayloadRecord, LiveEventRecord, MatchDetailedScoreRecord, MatchFormatRecord,
+    MatchLikeRecord, MatchPlayerRecord, MatchRecord, MatchSideRecord, NotificationKindRecord,
+    NotificationRecord, OversRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord,
+    ScoreResponseRecord, ScoreSubmissionRecord, SetsScoreEntryRecord, SimpleScoreEntryRecord,
+    TeamMemberRecord, TeamRecord, UserRecord, UserSportStatsRecord,
 };
 use poem_openapi::types::{ParseFromJSON, ToJSON};
 
@@ -186,6 +188,33 @@ pub fn score_from_record(rec: &ScoreRecord) -> Score {
                 })
                 .collect(),
         }),
+        ScoreRecord::Cricket { innings } => Score::Cricket(CricketScore {
+            innings: innings
+                .iter()
+                .map(|i| CricketScoreInnings {
+                    batting_side_id: i.batting_side_id.clone(),
+                    bowling_side_id: i.bowling_side_id.clone(),
+                    runs: i.runs,
+                    wickets: i.wickets,
+                    overs: overs_from_record(&i.overs),
+                    declared: i.declared,
+                })
+                .collect(),
+        }),
+    }
+}
+
+fn overs_from_record(rec: &OversRecord) -> Overs {
+    Overs {
+        overs: rec.overs,
+        balls: rec.balls,
+    }
+}
+
+fn overs_to_record(overs: &Overs) -> OversRecord {
+    OversRecord {
+        overs: overs.overs,
+        balls: overs.balls,
     }
 }
 
@@ -208,6 +237,20 @@ pub fn score_to_record(score: &Score) -> ScoreRecord {
                 .map(|e| SetsScoreEntryRecord {
                     side_id: e.side_id.clone(),
                     sets: e.sets.clone(),
+                })
+                .collect(),
+        },
+        Score::Cricket(s) => ScoreRecord::Cricket {
+            innings: s
+                .innings
+                .iter()
+                .map(|i| CricketScoreInningsRecord {
+                    batting_side_id: i.batting_side_id.clone(),
+                    bowling_side_id: i.bowling_side_id.clone(),
+                    runs: i.runs,
+                    wickets: i.wickets,
+                    overs: overs_to_record(&i.overs),
+                    declared: i.declared,
                 })
                 .collect(),
         },
@@ -533,6 +576,7 @@ pub fn match_from_records(
             comment_count: rec.comment_count as u32,
             i_liked,
         },
+        format: rec.format.as_ref().map(match_format_from_record),
     }
 }
 
@@ -589,6 +633,70 @@ pub fn detailed_score_to_record(ds: &DetailedScore) -> MatchDetailedScoreRecord 
 /// Returns None if the stored blob can't be parsed (treated as "no detail").
 pub fn detailed_score_from_record(rec: &MatchDetailedScoreRecord) -> Option<DetailedScore> {
     DetailedScore::parse_from_json(Some(rec.detail.clone())).ok()
+}
+
+// ===========================================================================
+// Match format: MatchFormat (API, poem-openapi) <-> MatchFormatRecord (DAO,
+// plain serde). A hand-mirrored DAO enum rather than opaque JSON, same
+// convention as live scoring (see LiveEventPayloadRecord's doc comment) and
+// for the same reason: a variant added on the API side and forgotten here is
+// a compile error, not a silently-dropped setting on read.
+// ===========================================================================
+
+pub fn match_format_to_record(fmt: &MatchFormat) -> MatchFormatRecord {
+    match fmt {
+        MatchFormat::Football(f) => MatchFormatRecord::Football(FootballFormatRecord {
+            half_length_minutes: f.half_length_minutes,
+            num_halves: f.num_halves,
+            extra_time: f.extra_time,
+            extra_time_half_length_minutes: f.extra_time_half_length_minutes,
+            penalties: f.penalties,
+        }),
+        MatchFormat::Cricket(f) => MatchFormatRecord::Cricket(CricketFormatRecord {
+            overs_per_innings: f.overs_per_innings,
+            innings_per_side: f.innings_per_side,
+            balls_per_over: f.balls_per_over,
+            no_ball_penalty_runs: f.no_ball_penalty_runs,
+            wide_penalty_runs: f.wide_penalty_runs,
+            wide_is_extra_ball: f.wide_is_extra_ball,
+            no_ball_is_extra_ball: f.no_ball_is_extra_ball,
+            free_hit_after_no_ball: f.free_hit_after_no_ball,
+        }),
+    }
+}
+
+/// Build the API `MatchFormat` from a stored record. Infallible — `format`
+/// is a typed DAO enum, not JSON, so there's no parse step that can fail.
+pub fn match_format_from_record(rec: &MatchFormatRecord) -> MatchFormat {
+    match rec {
+        MatchFormatRecord::Football(f) => MatchFormat::Football(FootballFormat {
+            half_length_minutes: f.half_length_minutes,
+            num_halves: f.num_halves,
+            extra_time: f.extra_time,
+            extra_time_half_length_minutes: f.extra_time_half_length_minutes,
+            penalties: f.penalties,
+        }),
+        MatchFormatRecord::Cricket(f) => MatchFormat::Cricket(CricketFormat {
+            overs_per_innings: f.overs_per_innings,
+            innings_per_side: f.innings_per_side,
+            balls_per_over: f.balls_per_over,
+            no_ball_penalty_runs: f.no_ball_penalty_runs,
+            wide_penalty_runs: f.wide_penalty_runs,
+            wide_is_extra_ball: f.wide_is_extra_ball,
+            no_ball_is_extra_ball: f.no_ball_is_extra_ball,
+            free_hit_after_no_ball: f.free_hit_after_no_ball,
+        }),
+    }
+}
+
+/// The sport tag a `MatchFormat` is for, mirroring the union variant (same
+/// convention as `live_event_sport_tag`) — used to reject a format that
+/// doesn't match the match's own sport.
+pub fn match_format_sport_tag(fmt: &MatchFormat) -> &'static str {
+    match fmt {
+        MatchFormat::Football(_) => "football",
+        MatchFormat::Cricket(_) => "cricket",
+    }
 }
 
 // ===========================================================================
@@ -930,6 +1038,7 @@ pub fn live_event_from_record(rec: &LiveEventRecord) -> LiveEvent {
 pub fn derive_live_score_state(
     match_type: &str,
     records: &[LiveEventRecord],
+    format: Option<&MatchFormatRecord>,
 ) -> Option<LiveScoreState> {
     match match_type {
         "football" => {
@@ -954,9 +1063,21 @@ pub fn derive_live_score_state(
                     LiveEventPayloadRecord::Football(_) => None,
                 })
                 .collect();
-            Some(LiveScoreState::Cricket(
-                crate::live_score::cricket::derive_state(&events),
-            ))
+            // Standard rules unless the match configured something else: a
+            // 6-ball over (e.g. The Hundred's 5), and both wides and no-balls
+            // as extra (re-bowled) deliveries.
+            let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) = match format {
+                Some(MatchFormatRecord::Cricket(f)) => {
+                    (f.balls_per_over, f.wide_is_extra_ball, f.no_ball_is_extra_ball)
+                }
+                _ => (6, true, true),
+            };
+            Some(LiveScoreState::Cricket(crate::live_score::cricket::derive_state(
+                &events,
+                balls_per_over,
+                wide_is_extra_ball,
+                no_ball_is_extra_ball,
+            )))
         }
         _ => None,
     }
@@ -1169,6 +1290,97 @@ mod tests {
             let input = LiveEventInput::Cricket(event);
             let original_json = input.to_json();
             let round_tripped = live_event_payload_from_record(&live_event_input_to_record(&input));
+            assert_eq!(original_json, round_tripped.to_json());
+        }
+    }
+
+    #[test]
+    fn match_format_round_trips_through_dao_mirror() {
+        let formats = vec![
+            MatchFormat::Football(FootballFormat {
+                half_length_minutes: 40,
+                num_halves: 2,
+                extra_time: true,
+                extra_time_half_length_minutes: Some(15),
+                penalties: true,
+            }),
+            MatchFormat::Cricket(CricketFormat {
+                overs_per_innings: None,
+                innings_per_side: 2,
+                balls_per_over: 6,
+                no_ball_penalty_runs: 2,
+                wide_penalty_runs: 1,
+                wide_is_extra_ball: true,
+                no_ball_is_extra_ball: false,
+                free_hit_after_no_ball: false,
+            }),
+        ];
+
+        for format in formats {
+            let original_json = format.to_json();
+            let round_tripped = match_format_from_record(&match_format_to_record(&format));
+            assert_eq!(original_json, round_tripped.to_json());
+        }
+    }
+
+    #[test]
+    fn score_round_trips_through_dao_mirror() {
+        let scores = vec![
+            Score::Simple(SimpleScore {
+                entries: vec![
+                    SimpleScoreEntry {
+                        side_id: "side_red".into(),
+                        points: 3,
+                    },
+                    SimpleScoreEntry {
+                        side_id: "side_blue".into(),
+                        points: 1,
+                    },
+                ],
+            }),
+            Score::Sets(SetsScore {
+                entries: vec![
+                    SetsScoreEntry {
+                        side_id: "side_red".into(),
+                        sets: vec![6, 4, 7],
+                    },
+                    SetsScoreEntry {
+                        side_id: "side_blue".into(),
+                        sets: vec![4, 6, 5],
+                    },
+                ],
+            }),
+            Score::Cricket(CricketScore {
+                innings: vec![
+                    CricketScoreInnings {
+                        batting_side_id: "warriors".into(),
+                        bowling_side_id: "mill_lane".into(),
+                        runs: 180,
+                        wickets: 6,
+                        overs: Overs {
+                            overs: 20,
+                            balls: 0,
+                        },
+                        declared: false,
+                    },
+                    CricketScoreInnings {
+                        batting_side_id: "mill_lane".into(),
+                        bowling_side_id: "warriors".into(),
+                        runs: 165,
+                        wickets: 10,
+                        overs: Overs {
+                            overs: 19,
+                            balls: 3,
+                        },
+                        declared: false,
+                    },
+                ],
+            }),
+        ];
+
+        for score in scores {
+            let original_json = score.to_json();
+            let round_tripped = score_from_record(&score_to_record(&score));
             assert_eq!(original_json, round_tripped.to_json());
         }
     }

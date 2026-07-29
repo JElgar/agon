@@ -4,21 +4,21 @@ import { LiveIndicator } from './LiveIndicator'
 import {
   battingEntryFor,
   battingLine,
+  cricketStateDescription,
   currentInnings,
   currentOverDeliveries,
   deliveryChipLabel,
+  formatOvers,
   isChipHighlighted,
   nextBallContext,
   playerNameFor,
   runRate,
+  sideNameFor,
   type CricketLiveState,
 } from '@/lib/cricketScore'
+import { cricketFormat } from '@/lib/matchFormat'
 
 type Match = components['schemas']['Match']
-
-function sideNameFor(match: Match, sideId: string): string {
-  return match.sides.find((s) => s.id === sideId)?.name?.trim() || 'This side'
-}
 
 /** One ball's chip in the "this over" row (mockup: "1  4  W  ·  2"). */
 function BallChip({ label, kind }: { label: string; kind: 'boundary' | 'wicket' | null }) {
@@ -42,27 +42,70 @@ function BallChip({ label, kind }: { label: string; kind: 'boundary' | 'wicket' 
  * caller fetches the live snapshot (`useLiveScore`) and passes the derived
  * cricket state down.
  */
-export function CricketMatchBlock({ match, state }: { match: Match; state: CricketLiveState }) {
+export function CricketMatchBlock({
+  match,
+  state,
+  showDescription = true,
+}: {
+  match: Match
+  state: CricketLiveState
+  /** Whether to show the state-of-game line (target/leading/result) here.
+   *  Callers that already surface it elsewhere (the feed card's header)
+   *  pass `false` so it isn't said twice — the innings-break heading then
+   *  falls back to a neutral "Innings break"/"Match complete" instead. */
+  showDescription?: boolean
+}) {
   const innings = currentInnings(state)
+  const format = cricketFormat(match.format)
+  const description = cricketStateDescription(match, state, format)
 
   if (!innings) {
-    // Between innings, or nothing bowled yet — still worth surfacing that
-    // the match is live, just without a score to show.
+    // Between innings, or nothing bowled yet. Every innings played so far
+    // is still worth showing rather than discarding — just without the
+    // ball-by-ball detail that needs an open innings. `description` is only
+    // ever non-null here once the match is complete (a target only applies
+    // to an *open* final innings), so its presence doubles as that signal.
+    const heading = showDescription
+      ? description || 'Innings break'
+      : description
+        ? 'Match complete'
+        : 'Innings break'
     return (
-      <div className="flex items-center justify-between rounded-lg bg-muted/50 px-3.5 py-3">
-        <p className="text-sm text-muted-foreground">Innings break</p>
-        <LiveIndicator />
+      <div className="rounded-lg bg-muted/50 px-3.5 py-3">
+        <div className="flex items-center justify-between">
+          <p
+            className={cn(
+              'text-sm font-medium',
+              showDescription && description ? 'text-primary' : 'text-muted-foreground',
+            )}
+          >
+            {heading}
+          </p>
+          <LiveIndicator />
+        </div>
+        {state.innings.length > 0 && (
+          <div className="mt-1 space-y-0.5">
+            {state.innings.map((inn, i) => (
+              <p key={i} className="text-lg font-medium leading-tight tracking-tight">
+                {sideNameFor(match, inn.batting_side_id)} {inn.runs}/{inn.wickets}
+                <span className="ml-1.5 text-sm font-normal text-muted-foreground">
+                  ({formatOvers(inn.overs)} ov)
+                </span>
+              </p>
+            ))}
+          </div>
+        )}
       </div>
     )
   }
 
   const battingName = sideNameFor(match, innings.batting_side_id)
   const bowlingName = sideNameFor(match, innings.bowling_side_id)
-  const next = nextBallContext(innings)
+  const next = nextBallContext(innings, format)
   const striker = battingEntryFor(innings, next.strikerPlayerId)
   const nonStriker = battingEntryFor(innings, next.nonStrikerPlayerId)
   const overBalls = currentOverDeliveries(innings)
-  const crr = runRate(innings.runs, innings.overs)
+  const crr = runRate(innings.runs, innings.overs, format.balls_per_over)
 
   return (
     <div className="rounded-lg bg-muted/50 px-3.5 py-3">
@@ -72,7 +115,9 @@ export function CricketMatchBlock({ match, state }: { match: Match; state: Crick
           <p className="text-2xl font-medium leading-tight tracking-tight">
             {innings.runs}/{innings.wickets}
             <span className="ml-1.5 text-sm font-normal text-muted-foreground">
-              ({innings.overs.toFixed(1)} ov · CRR {crr.toFixed(2)})
+              ({formatOvers(innings.overs)}
+              {format.overs_per_innings ? `/${format.overs_per_innings}` : ''} ov · CRR{' '}
+              {crr.toFixed(2)})
             </span>
           </p>
           {(striker || nonStriker) && (
@@ -89,6 +134,9 @@ export function CricketMatchBlock({ match, state }: { match: Match; state: Crick
                 </>
               )}
             </p>
+          )}
+          {showDescription && description && (
+            <p className="mt-0.5 text-xs font-medium text-primary">{description}</p>
           )}
         </div>
         <LiveIndicator />

@@ -31,6 +31,9 @@ pub enum ScoreRecord {
     Sets {
         entries: Vec<SetsScoreEntryRecord>,
     },
+    Cricket {
+        innings: Vec<CricketScoreInningsRecord>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -43,6 +46,28 @@ pub struct SimpleScoreEntryRecord {
 pub struct SetsScoreEntryRecord {
     pub side_id: String,
     pub sets: Vec<u32>,
+}
+
+/// One innings' final totals, as stored on a match's confirmed/pending
+/// `Score` — mirrors the API's `CricketScoreInnings`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CricketScoreInningsRecord {
+    pub batting_side_id: String,
+    pub bowling_side_id: String,
+    pub runs: u32,
+    pub wickets: u32,
+    pub overs: OversRecord,
+    pub declared: bool,
+}
+
+/// A count of overs bowled/faced: whole overs plus balls into the current
+/// over — mirrors the API's `detailed_score::cricket::Overs`. Two integer
+/// fields rather than a single float, which can't safely represent a ball
+/// count that doesn't fit in one decimal digit.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OversRecord {
+    pub overs: u32,
+    pub balls: u32,
 }
 
 /// The agreed, settled score of a match.
@@ -266,7 +291,59 @@ pub struct MatchRecord {
     /// `#[serde(default)]` for matches written before live scoring existed.
     #[serde(default)]
     pub live_seq: u32,
+    /// Match format/rules configuration (overs per innings, half length, and
+    /// so on). Embedded directly on the match record (not a separate item,
+    /// unlike the detailed score) because live scoring wants it on the same
+    /// fetch as everything else. `None` until a format is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<MatchFormatRecord>,
     pub created_at: String,
+}
+
+/// Mirrors `agon_service::match_format::MatchFormat`, sport-first
+/// discriminated like `LiveEventPayloadRecord` — a typed DAO enum rather
+/// than opaque JSON, so a variant added on the API side and forgotten here
+/// is a compile error, not a silent runtime data loss. New sport = new
+/// variant on both sides.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "sport", rename_all = "snake_case")]
+pub enum MatchFormatRecord {
+    Football(FootballFormatRecord),
+    Cricket(CricketFormatRecord),
+}
+
+/// Mirrors `agon_service::match_format::FootballFormat`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FootballFormatRecord {
+    pub half_length_minutes: u32,
+    pub num_halves: u32,
+    pub extra_time: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_time_half_length_minutes: Option<u32>,
+    pub penalties: bool,
+}
+
+/// Mirrors `agon_service::match_format::CricketFormat`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CricketFormatRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overs_per_innings: Option<u32>,
+    pub innings_per_side: u32,
+    pub balls_per_over: u32,
+    pub no_ball_penalty_runs: u32,
+    pub wide_penalty_runs: u32,
+    /// `#[serde(default = "default_true")]` for records written before these
+    /// two fields existed — the standard rule (extra ball) is the safe
+    /// default for a match that never configured otherwise.
+    #[serde(default = "default_true")]
+    pub wide_is_extra_ball: bool,
+    #[serde(default = "default_true")]
+    pub no_ball_is_extra_ball: bool,
+    pub free_hit_after_no_ball: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// `MATCH#<matchId>` / `SIDE#<sideId>` — one side of a match.

@@ -1,5 +1,6 @@
 import type { components } from '@/types/api'
 import { memberName } from './members'
+import type { CricketFormat } from './matchFormat'
 
 export type CricketDelivery = components['schemas']['CricketDelivery']
 export type CricketInnings = components['schemas']['CricketInnings']
@@ -8,8 +9,12 @@ export type CricketExtraKind = components['schemas']['CricketExtraKind']
 export type CricketDismissalKind = components['schemas']['CricketDismissalKind']
 export type CricketBattingEntry = components['schemas']['CricketBattingEntry']
 export type CricketBowlingEntry = components['schemas']['CricketBowlingEntry']
+export type CricketScore = components['schemas']['CricketScore']
+export type CricketScoreInnings = components['schemas']['CricketScoreInnings']
+export type Overs = components['schemas']['Overs']
 type LiveScoreSnapshot = components['schemas']['LiveScoreSnapshot']
 type DetailedScore = components['schemas']['DetailedScore']
+type Score = components['schemas']['Score']
 type Match = components['schemas']['Match']
 
 /** Narrows a live-score snapshot to its cricket state, or `null` when there's
@@ -21,6 +26,15 @@ export function cricketLiveState(
   return snapshot.state
 }
 
+/** Narrows a match score to its cricket variant, or `null` when there's no
+ *  score yet or it's the plain totals-only shape a manually-logged (not
+ *  live-scored) cricket result degrades to (see `Score::Simple`'s doc
+ *  comment on the backend). */
+export function cricketScoreFrom(score: Score | null | undefined): CricketScore | null {
+  if (!score || score.type !== 'Cricket') return null
+  return score
+}
+
 /** Narrows a match's detailed score to its cricket innings, or `null` when
  *  there's none yet or it's for a different sport. */
 export function cricketDetail(
@@ -28,6 +42,34 @@ export function cricketDetail(
 ): CricketInnings[] | null {
   if (!detail || detail.type !== 'Cricket') return null
   return detail.innings
+}
+
+/** The minimal per-innings shape match-aggregate math and the state-of-game
+ *  sentence need — both `CricketLiveState.innings` (rich, ball-by-ball
+ *  derived, while a match is actually being scored) and a confirmed
+ *  `CricketScore.innings` (the persisted summary, once it's over) satisfy
+ *  this structurally, so the same functions work on either. */
+interface CricketInningsTotal {
+  batting_side_id: string
+  bowling_side_id: string
+  runs: number
+  wickets: number
+}
+
+/** Ditto, for the match-level progress shape: a live snapshot's own state, or
+ *  a finished match's confirmed score reframed as one (see
+ *  `cricketProgressFromScore`) — it has no notion of "in progress", so it's
+ *  always `awaiting_next_innings: true`. */
+export interface CricketMatchProgress {
+  innings: CricketInningsTotal[]
+  awaiting_next_innings: boolean
+}
+
+/** Reframes a completed match's `CricketScore` as a `CricketMatchProgress` —
+ *  there's no currently-open innings once the score is confirmed, so this is
+ *  always "awaiting the next innings" (there won't be one). */
+export function cricketProgressFromScore(score: CricketScore): CricketMatchProgress {
+  return { innings: score.innings, awaiting_next_innings: true }
 }
 
 /** The innings currently being played, or `null` when the match hasn't
@@ -38,25 +80,40 @@ export function currentInnings(state: CricketLiveState): CricketInnings | null {
   return state.innings[state.innings.length - 1] ?? null
 }
 
-/** Whether a delivery counts toward the over (wides/no-balls don't). */
-export function isLegalDelivery(d: CricketDelivery): boolean {
-  return !(d.extra && (d.extra.kind === 'wide' || d.extra.kind === 'no_ball'))
+/** Whether a delivery counts toward the over. Wides/no-balls don't under the
+ *  standard rules, but a match format can configure either one to just count
+ *  as a legal ball instead (see `CricketFormat.wide_is_extra_ball` /
+ *  `no_ball_is_extra_ball`). */
+export function isLegalDelivery(
+  d: CricketDelivery,
+  format: Pick<CricketFormat, 'wide_is_extra_ball' | 'no_ball_is_extra_ball'>,
+): boolean {
+  if (d.extra?.kind === 'wide') return !format.wide_is_extra_ball
+  if (d.extra?.kind === 'no_ball') return !format.no_ball_is_extra_ball
+  return true
 }
 
-/** Run rate so far, from the display-format `overs` (e.g. 18.2 = 18 overs +
- *  2 balls, not 18.2 decimal overs). */
-export function runRate(runs: number, oversDisplay: number): number {
-  const wholeOvers = Math.floor(oversDisplay)
-  const balls = Math.round((oversDisplay - wholeOvers) * 10)
-  const totalBalls = wholeOvers * 6 + balls
-  return totalBalls > 0 ? (runs / totalBalls) * 6 : 0
+/** "19.4" — the conventional overs-and-balls display, e.g. 4 balls into the
+ *  20th over. */
+export function formatOvers(overs: Overs): string {
+  return `${overs.overs}.${overs.balls}`
+}
+
+/** Run rate so far, from an overs-and-balls count and the match's configured
+ *  over length (6 for almost everything, 5 for The Hundred). */
+export function runRate(runs: number, overs: Overs, ballsPerOver: number): number {
+  const totalBalls = overs.overs * ballsPerOver + overs.balls
+  return totalBalls > 0 ? (runs / totalBalls) * ballsPerOver : 0
 }
 
 /** One point on a run-progression graph: the cumulative state immediately
- *  after a delivery. `overs` is the display format (e.g. 4.3 = 4 overs + 3
- *  balls), matching `CricketInnings.overs`. */
+ *  after a delivery. `overDecimal` is a continuous x-axis value (whole overs
+ *  plus a fraction of the current one, scaled by the format's
+ *  `balls_per_over`) — a graph needs a single number to plot against, unlike
+ *  `overs`'s exact whole-overs-plus-balls count. */
 export interface RunProgressionPoint {
-  overs: number
+  overs: Overs
+  overDecimal: number
   runs: number
   wickets: number
   /** True if this delivery was a wicket — for marking the point distinctly. */
@@ -64,22 +121,27 @@ export interface RunProgressionPoint {
 }
 
 /** Cumulative runs/wickets after each delivery, in order — the data behind a
- *  run-rate/worm graph. Only legal deliveries advance the overs count (wides
- *  and no-balls still add to `runs`, at the same `overs` value as the
- *  previous legal ball), mirroring the backend's `balls_to_overs`. */
-export function runProgression(deliveries: CricketDelivery[]): RunProgressionPoint[] {
+ *  run-rate/worm graph. Only legal deliveries (per the match's format —
+ *  wides/no-balls may or may not count, see `isLegalDelivery`) advance the
+ *  overs count; extras still add to `runs` at the same over position as the
+ *  previous legal ball. */
+export function runProgression(
+  deliveries: CricketDelivery[],
+  format: Pick<CricketFormat, 'wide_is_extra_ball' | 'no_ball_is_extra_ball' | 'balls_per_over'>,
+): RunProgressionPoint[] {
   let runs = 0
   let wickets = 0
   let legalBalls = 0
   return deliveries.map((d) => {
     const extraRuns = d.extra?.runs ?? 0
     runs += d.runs_off_bat + extraRuns
-    if (isLegalDelivery(d)) legalBalls += 1
+    if (isLegalDelivery(d, format)) legalBalls += 1
     if (d.wicket) wickets += 1
-    const wholeOvers = Math.floor(legalBalls / 6)
-    const ballsIntoOver = legalBalls % 6
+    const overs = Math.floor(legalBalls / format.balls_per_over)
+    const balls = legalBalls % format.balls_per_over
     return {
-      overs: wholeOvers + ballsIntoOver / 10,
+      overs: { overs, balls },
+      overDecimal: overs + balls / format.balls_per_over,
       runs,
       wickets,
       isWicket: !!d.wicket,
@@ -170,12 +232,92 @@ export function bowlingEntryFor(
  *  before the bowler has sent down a delivery. */
 export function bowlingFigures(entry: CricketBowlingEntry | null): string {
   if (!entry) return '—'
-  return `${entry.overs}-${entry.maidens}-${entry.runs_conceded}-${entry.wickets}`
+  return `${formatOvers(entry.overs)}-${entry.maidens}-${entry.runs_conceded}-${entry.wickets}`
 }
 
 /** "46 (32)" — runs and balls faced, or "0 (0)" before a batter's first ball. */
 export function battingLine(entry: CricketBattingEntry | null): string {
   return `${entry?.runs ?? 0} (${entry?.balls_faced ?? 0})`
+}
+
+/** Total runs scored by each side across every completed innings so far —
+ *  the input to a final result once the match is done (sums across both
+ *  innings for a two-innings-per-side format, not just the latest one). */
+export function matchTotalsBySide(state: CricketMatchProgress): Record<string, number> {
+  const totals: Record<string, number> = {}
+  for (const innings of state.innings) {
+    totals[innings.batting_side_id] = (totals[innings.batting_side_id] ?? 0) + innings.runs
+  }
+  return totals
+}
+
+/**
+ * A one-line summary of where the match stands:
+ *   - Mid-match, once the bowling side has a score on the board to compare
+ *     against: who's ahead on the match aggregate ("England lead by 30 runs").
+ *   - In the match's final innings: the run target for the side chasing
+ *     ("England need 200 to win").
+ *   - Once every innings the format allows has been played: the result
+ *     ("England won by 4 wickets" / "Australia won by 100 runs" / "Match
+ *     tied").
+ * `null` when none of these apply yet — e.g. the match's very first innings,
+ * with nothing yet to lead or chase.
+ *
+ * The wickets margin is "wickets not yet lost" against the batting side's
+ * own roster size (players registered on that side, minus one — the last
+ * batter has no partner left to bat with), falling back to the standard 10
+ * if the roster looks too small to make sense of (e.g. not fully set up).
+ */
+export function cricketStateDescription(
+  match: Pick<Match, 'sides' | 'players'>,
+  state: CricketMatchProgress,
+  format: Pick<CricketFormat, 'innings_per_side'>,
+): string | null {
+  if (state.innings.length === 0) return null
+  const quota = match.sides.length * format.innings_per_side
+  const totals = matchTotalsBySide(state)
+
+  const open = state.awaiting_next_innings ? null : state.innings[state.innings.length - 1]
+  if (open) {
+    const battingTotal = totals[open.batting_side_id] ?? 0
+    const bowlingTotal = totals[open.bowling_side_id] ?? 0
+
+    // Only the match's final innings has a fixed target — every earlier
+    // innings (including any the batting side has already had, in a
+    // multi-innings format) is done, so what's left to chase is known.
+    if (state.innings.length === quota) {
+      const runsNeeded = bowlingTotal + 1 - battingTotal
+      if (runsNeeded <= 0) return null
+      return `${sideNameFor(match, open.batting_side_id)} need ${runsNeeded} to win`
+    }
+
+    // Not the decider yet — show who's ahead on the match aggregate, once
+    // the bowling side actually has a score on the board to compare against
+    // (there's nothing to lead in the match's very first innings).
+    const bowlingHasBatted = state.innings
+      .slice(0, -1)
+      .some((i) => i.batting_side_id === open.bowling_side_id)
+    if (!bowlingHasBatted) return null
+    const diff = battingTotal - bowlingTotal
+    if (diff === 0) return 'Scores level'
+    const leadingSideId = diff > 0 ? open.batting_side_id : open.bowling_side_id
+    const margin = Math.abs(diff)
+    return `${sideNameFor(match, leadingSideId)} lead by ${margin} run${margin === 1 ? '' : 's'}`
+  }
+
+  if (!state.awaiting_next_innings || state.innings.length < quota) return null
+  const last = state.innings[state.innings.length - 1]
+  const battingTotal = totals[last.batting_side_id] ?? 0
+  const bowlingTotal = totals[last.bowling_side_id] ?? 0
+  if (battingTotal === bowlingTotal) return 'Match tied'
+  if (battingTotal > bowlingTotal) {
+    const rosterSize = match.players.filter((p) => p.side_id === last.batting_side_id).length
+    const maxWickets = rosterSize > 1 ? rosterSize - 1 : 10
+    const remaining = Math.max(maxWickets - last.wickets, 0)
+    return `${sideNameFor(match, last.batting_side_id)} won by ${remaining} wicket${remaining === 1 ? '' : 's'}`
+  }
+  const margin = bowlingTotal - battingTotal
+  return `${sideNameFor(match, last.bowling_side_id)} won by ${margin} run${margin === 1 ? '' : 's'}`
 }
 
 /** Batters who can't be picked as a new arrival — already dismissed for a
@@ -184,6 +326,11 @@ export function outBattersFor(innings: CricketInnings): string[] {
   return innings.batting
     .filter((b) => b.dismissal && b.dismissal.kind !== 'retired_hurt')
     .map((b) => b.player_id)
+}
+
+/** Display name for a side id: its name, or a neutral fallback. */
+export function sideNameFor(match: Pick<Match, 'sides'>, sideId: string): string {
+  return match.sides.find((s) => s.id === sideId)?.name?.trim() || 'This side'
 }
 
 /** Player display name for a member id, if it's on the roster. */
@@ -206,10 +353,14 @@ export function playerNameFor(
  *
  * Strike rotates automatically on an odd number of the ball's rotating runs
  * (off the bat, or byes/leg-byes — wides/no-balls don't rotate strike here)
- * and always at the end of an over. One simplification: if the striker is
- * dismissed on an over's final ball, the incoming batter is just placed in
- * the now-open slot rather than fully modelling which physical end each
- * player ends up at — a rare edge case not worth the added complexity here.
+ * and always at the end of an over — including when one slot is already
+ * vacant from a wicket on that same ball (e.g. dismissed on the over's final
+ * ball): the swap still applies to whichever slot the survivor occupies, so
+ * the vacancy lands in the correct slot for the next ball rather than always
+ * defaulting to "striker". One remaining simplification: a mid-run run-out's
+ * rotation is inferred from the parity of runs completed before the
+ * dismissal (as entered in the wicket dialog), not an explicit "had they
+ * crossed?" flag — the two agree in the vast majority of real dismissals.
  */
 export interface NextBallContext {
   strikerPlayerId: string | null
@@ -224,7 +375,10 @@ export interface NextBallContext {
   previousOverBowlerPlayerId: string | null
 }
 
-export function nextBallContext(innings: CricketInnings): NextBallContext {
+export function nextBallContext(
+  innings: CricketInnings,
+  format: Pick<CricketFormat, 'balls_per_over' | 'wide_is_extra_ball' | 'no_ball_is_extra_ball'>,
+): NextBallContext {
   let striker: string | null = null
   let nonStriker: string | null = null
   let bowler: string | null = null
@@ -243,15 +397,19 @@ export function nextBallContext(innings: CricketInnings): NextBallContext {
       else if (d.wicket.dismissed_player_id === nonStriker) nonStriker = null
     }
 
-    if (isLegalDelivery(d)) {
+    if (isLegalDelivery(d, format)) {
       legalInOver += 1
       const rotatingRuns =
         d.runs_off_bat + (d.extra && (d.extra.kind === 'bye' || d.extra.kind === 'leg_bye') ? d.extra.runs : 0)
-      if (rotatingRuns % 2 === 1 && striker && nonStriker) {
+      // Not guarded on both being non-null: swapping a real id with a `null`
+      // vacancy still means something — it moves *which slot* is vacant, so
+      // a wicket that falls alongside a rotation (odd runs, or an over
+      // boundary) leaves the opening in the correct slot for the next ball.
+      if (rotatingRuns % 2 === 1) {
         ;[striker, nonStriker] = [nonStriker, striker]
       }
-      if (legalInOver === 6) {
-        if (striker && nonStriker) [striker, nonStriker] = [nonStriker, striker]
+      if (legalInOver === format.balls_per_over) {
+        ;[striker, nonStriker] = [nonStriker, striker]
         previousOverBowler = bowler
         bowler = null
         over += 1

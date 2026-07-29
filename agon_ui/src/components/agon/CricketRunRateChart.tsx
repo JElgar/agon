@@ -40,7 +40,7 @@ function nearestIndex(points: RunProgressionPoint[], overs: number): number {
   let best = 0
   let bestDist = Infinity
   points.forEach((p, i) => {
-    const dist = Math.abs(p.overs - overs)
+    const dist = Math.abs(p.overDecimal - overs)
     if (dist < bestDist) {
       bestDist = dist
       best = i
@@ -61,7 +61,7 @@ export function CricketRunRateChart({ series }: { series: RunRateSeries[] }) {
   const nonEmpty = series.filter((s) => s.points.length > 0)
   if (nonEmpty.length === 0) return null
 
-  const maxOvers = niceCeil(Math.max(1, ...nonEmpty.map((s) => s.points.at(-1)?.overs ?? 0)))
+  const maxOvers = niceCeil(Math.max(1, ...nonEmpty.map((s) => s.points.at(-1)?.overDecimal ?? 0)))
   const maxRuns = niceCeil(Math.max(1, ...nonEmpty.map((s) => s.finalRuns)))
 
   const runTicks = 4
@@ -157,9 +157,12 @@ export function CricketRunRateChart({ series }: { series: RunRateSeries[] }) {
         )}
 
         {nonEmpty.map((s) => {
-          const pathPoints = [{ overs: 0, runs: 0 }, ...s.points]
+          const pathPoints = [{ overDecimal: 0, runs: 0 }, ...s.points]
           const d = pathPoints
-            .map((p, i) => `${i === 0 ? 'M' : 'L'} ${xForOvers(p.overs, maxOvers)} ${yForRuns(p.runs, maxRuns)}`)
+            .map(
+              (p, i) =>
+                `${i === 0 ? 'M' : 'L'} ${xForOvers(p.overDecimal, maxOvers)} ${yForRuns(p.runs, maxRuns)}`,
+            )
             .join(' ')
           const last = pathPoints[pathPoints.length - 1]
 
@@ -172,7 +175,7 @@ export function CricketRunRateChart({ series }: { series: RunRateSeries[] }) {
                 .map((p, i) => (
                   <circle
                     key={i}
-                    cx={xForOvers(p.overs, maxOvers)}
+                    cx={xForOvers(p.overDecimal, maxOvers)}
                     cy={yForRuns(p.runs, maxRuns)}
                     r={4}
                     fill="var(--color-card)"
@@ -182,7 +185,7 @@ export function CricketRunRateChart({ series }: { series: RunRateSeries[] }) {
                 ))}
               {/* End marker. */}
               <circle
-                cx={xForOvers(last.overs, maxOvers)}
+                cx={xForOvers(last.overDecimal, maxOvers)}
                 cy={yForRuns(last.runs, maxRuns)}
                 r={4}
                 fill={s.color}

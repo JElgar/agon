@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { ChevronLeft } from 'lucide-react'
+import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { useAppendCricketEvent, useLiveScore } from '@/hooks/useLiveScore'
@@ -9,7 +10,9 @@ import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { SidePicker, PlayerPicker, sideName } from '@/components/agon/live/Pickers'
 import { WicketDialog } from '@/components/agon/live/WicketDialog'
 import { ExtraRunsDialog } from '@/components/agon/live/ExtraRunsDialog'
+import { NoBallDialog } from '@/components/agon/live/NoBallDialog'
 import { playersOnSide } from '@/lib/members'
+import { cricketFormat } from '@/lib/matchFormat'
 import {
   battingEntryFor,
   battingLine,
@@ -19,7 +22,9 @@ import {
   currentInnings,
   currentOverDeliveries,
   deliveryChipLabel,
+  formatOvers,
   isChipHighlighted,
+  matchTotalsBySide,
   nextBallContext,
   outBattersFor,
   playerNameFor,
@@ -30,6 +35,7 @@ type Match = components['schemas']['Match']
 type CricketDelivery = components['schemas']['CricketDelivery']
 type CricketDeliveryWicket = components['schemas']['CricketDeliveryWicket']
 type InningsEndReason = components['schemas']['InningsEndReason']
+type UpdateMatchInput = components['schemas']['UpdateMatchInput']
 
 const END_REASONS: { value: InningsEndReason; label: string }[] = [
   { value: 'all_out', label: 'All out' },
@@ -53,7 +59,8 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   const appendEvent = useAppendCricketEvent(match.id)
   const state = cricketLiveState(live.data)
   const innings = state ? currentInnings(state) : null
-  const next = innings ? nextBallContext(innings) : null
+  const format = cricketFormat(match.format)
+  const next = innings ? nextBallContext(innings, format) : null
 
   // Locally-picked openers/replacement batter/next bowler — only used until
   // the server confirms them via an actual delivery, at which point
@@ -67,10 +74,65 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
     if (next?.bowlerPlayerId) setPickedBowler(null)
   }, [next?.strikerPlayerId, next?.nonStrikerPlayerId, next?.bowlerPlayerId])
 
+  // Lets the scorer step back into the opener/bowler picker after all three
+  // are picked, to fix a mis-tap — only while the innings' very first ball
+  // hasn't been recorded yet, since the picks are still purely local state at
+  // that point (nothing on the server to correct). Once a real delivery
+  // exists corrections need to go through amending/deleting that event
+  // instead (see `live_score::cricket`'s doc comment) — broader in-innings
+  // correction support is a later step.
+  const [editingOpeningPicks, setEditingOpeningPicks] = useState(false)
+  const openingPicksUnconfirmed = innings ? innings.deliveries.length === 0 : false
+  useEffect(() => {
+    if (!openingPicksUnconfirmed) setEditingOpeningPicks(false)
+  }, [openingPicksUnconfirmed])
+
   const [wicketOpen, setWicketOpen] = useState(false)
-  const [extraDialog, setExtraDialog] = useState<'wide' | 'no_ball' | 'bye' | null>(null)
+  const [extraDialog, setExtraDialog] = useState<'no_ball' | 'bye' | null>(null)
   const [endInningsOpen, setEndInningsOpen] = useState(false)
   const [startBattingSide, setStartBattingSide] = useState<string | undefined>(undefined)
+
+  // Concludes the match: submits the per-innings totals as a `Cricket` score
+  // (so the completed tile can show overs/wickets and the result line
+  // without ever re-fetching the live event log — see `CricketScoreBlock`),
+  // the same way a manual "Add result" would, so it enters the normal
+  // confirmation flow rather than being auto-confirmed. The winner is still
+  // derived from the summed match totals (two-innings formats add up both).
+  const finishMatch = useMutation({
+    mutationFn: async () => {
+      if (!state) throw new Error('No score recorded yet')
+      const totals = matchTotalsBySide(state)
+      const [sideA, sideB] = match.sides
+      const aId = sideA?.id ?? ''
+      const bId = sideB?.id ?? ''
+      const a = totals[aId] ?? 0
+      const b = totals[bId] ?? 0
+      const score = {
+        type: 'Cricket',
+        innings: state.innings.map((inn) => ({
+          batting_side_id: inn.batting_side_id,
+          bowling_side_id: inn.bowling_side_id,
+          runs: inn.runs,
+          wickets: inn.wickets,
+          overs: inn.overs,
+          declared: inn.declared,
+        })),
+      } as unknown as UpdateMatchInput['score']
+      const winner_side_id = a === b ? undefined : a > b ? aId : bId
+      const body: UpdateMatchInput = { score, status: 'completed' }
+      if (winner_side_id) body.winner_side_id = winner_side_id
+      const { error } = await fetchClient.PATCH('/matches/{match_id}', {
+        params: { path: { match_id: match.id } },
+        body,
+      })
+      if (error) throw new Error('Failed to finish the match')
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['match', match.id] })
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
+      navigate(`/matches/${match.id}`)
+    },
+  })
 
   if (live.isLoading) {
     return (
@@ -92,6 +154,12 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   // No innings open — either the match hasn't started, or we're between
   // innings. Either way: pick who's batting (the other side bowls).
   if (!innings) {
+    // Every innings the format allows has been played (e.g. both sides have
+    // had their one T20 innings) — there's no "next innings" to start, so
+    // don't offer to start one. Just let the scorer finish the match.
+    const inningsQuota = match.sides.length * format.innings_per_side
+    const allInningsComplete = !!state && state.innings.length >= inningsQuota
+
     return (
       <div className="mx-auto flex max-w-xl flex-col gap-4">
         {header}
@@ -100,33 +168,81 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
             {match.sides[0]?.name?.trim() || 'Side A'} vs {match.sides[1]?.name?.trim() || 'Side B'}
           </h1>
           <p className="text-sm text-muted-foreground">
-            {state && state.innings.length > 0 ? 'Start the next innings' : "You're scoring this match"}
+            {allInningsComplete
+              ? 'All innings complete'
+              : state && state.innings.length > 0
+                ? 'Start the next innings'
+                : "You're scoring this match"}
           </p>
         </div>
-        <div className="rounded-xl border bg-card p-4">
-          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            Who's batting?
-          </p>
-          <SidePicker sides={match.sides} value={startBattingSide} onChange={setStartBattingSide} />
-        </div>
-        <Button
-          size="lg"
-          disabled={!startBattingSide || appendEvent.isPending}
-          onClick={() => {
-            const bowlingSideId = match.sides.find((s) => s.id !== startBattingSide)?.id
-            if (!startBattingSide || !bowlingSideId) return
-            appendEvent.mutate(
-              {
-                kind: 'InningsStart',
-                batting_side_id: startBattingSide,
-                bowling_side_id: bowlingSideId,
-              },
-              { onSuccess: () => setStartBattingSide(undefined) },
-            )
-          }}
-        >
-          {appendEvent.isPending ? 'Starting…' : 'Start innings'}
-        </Button>
+        {state && state.innings.length > 0 && (
+          <div className="rounded-xl border bg-card p-4">
+            <div className="space-y-3">
+              {state.innings.map((inn, i) => (
+                <div key={i}>
+                  <p className="mb-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                    {match.sides.find((s) => s.id === inn.batting_side_id)?.name?.trim() ||
+                      'This side'}
+                  </p>
+                  <p className="text-2xl font-medium tracking-tight">
+                    {inn.runs}/{inn.wickets}
+                    <span className="ml-2 text-sm font-normal text-muted-foreground">
+                      ({formatOvers(inn.overs)} ov)
+                    </span>
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {!allInningsComplete && (
+          <>
+            <div className="rounded-xl border bg-card p-4">
+              <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                Who's batting?
+              </p>
+              <SidePicker sides={match.sides} value={startBattingSide} onChange={setStartBattingSide} />
+            </div>
+            <Button
+              size="lg"
+              disabled={!startBattingSide || appendEvent.isPending}
+              onClick={() => {
+                const bowlingSideId = match.sides.find((s) => s.id !== startBattingSide)?.id
+                if (!startBattingSide || !bowlingSideId) return
+                appendEvent.mutate(
+                  {
+                    kind: 'InningsStart',
+                    batting_side_id: startBattingSide,
+                    bowling_side_id: bowlingSideId,
+                  },
+                  { onSuccess: () => setStartBattingSide(undefined) },
+                )
+              }}
+            >
+              {appendEvent.isPending ? 'Starting…' : 'Start innings'}
+            </Button>
+          </>
+        )}
+
+        {state && state.innings.length > 0 && (
+          <>
+            {!allInningsComplete && <p className="text-center text-xs text-muted-foreground">or</p>}
+            {finishMatch.isError && (
+              <p className="text-center text-xs text-destructive">
+                {(finishMatch.error as Error).message}
+              </p>
+            )}
+            <Button
+              variant={allInningsComplete ? 'default' : 'outline'}
+              size="lg"
+              disabled={finishMatch.isPending}
+              onClick={() => finishMatch.mutate()}
+            >
+              {finishMatch.isPending ? 'Finishing…' : 'Finish match'}
+            </Button>
+          </>
+        )}
       </div>
     )
   }
@@ -137,6 +253,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   const effectiveNonStriker = next!.nonStrikerPlayerId ?? pickedNonStriker
   const effectiveBowler = next!.bowlerPlayerId ?? pickedBowler
   const readyToScore = !!effectiveStriker && !!effectiveNonStriker && !!effectiveBowler
+  const showPickerPanel = !readyToScore || editingOpeningPicks
 
   const buildDelivery = (overrides: Partial<CricketDelivery>): CricketDelivery => ({
     over: next!.over,
@@ -155,16 +272,67 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   const endInnings = (reason: InningsEndReason) => {
     appendEvent.mutate(
       { kind: 'InningsEnd', reason },
-      {
-        onSuccess: () => {
-          setEndInningsOpen(false)
-          queryClient.invalidateQueries({ queryKey: ['feed'] })
-        },
-      },
+      { onSuccess: () => setEndInningsOpen(false) },
     )
   }
 
-  const crr = runRate(innings.runs, innings.overs)
+  // The over quota's been fully bowled but nothing on the backend blocks
+  // further deliveries (see `match_format`'s doc comment — enforcement is
+  // intentionally out of scope there), so the picker flow would otherwise
+  // just keep asking for a new bowler forever. Steer the scorer to end the
+  // innings instead once every configured over is used up.
+  const oversComplete =
+    format.overs_per_innings != null &&
+    innings.overs.overs >= format.overs_per_innings &&
+    innings.overs.balls === 0
+
+  if (oversComplete && !next!.bowlerPlayerId) {
+    return (
+      <div className="mx-auto flex max-w-xl flex-col gap-4">
+        {header}
+        <div>
+          <h1 className="text-lg font-semibold">
+            {sideName(battingSide!, 'Side A')} vs {sideName(bowlingSide!, 'Side B')}
+          </h1>
+          <p className="text-sm text-muted-foreground">Overs complete</p>
+        </div>
+        <div className="rounded-xl border bg-card p-4">
+          <p className="text-sm font-medium">{sideName(battingSide!, 'Side A')} batting</p>
+          <p className="mt-0.5 text-3xl font-medium tracking-tight">
+            {innings.runs}/{innings.wickets}
+            <span className="ml-2 text-sm font-normal text-muted-foreground">
+              ({formatOvers(innings.overs)}/{format.overs_per_innings} ov)
+            </span>
+          </p>
+        </div>
+        <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
+          <p className="mb-3 text-sm font-medium">
+            All {format.overs_per_innings} overs bowled — end this innings to continue.
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            {END_REASONS.map((r) => (
+              <Button
+                key={r.value}
+                variant="outline"
+                size="sm"
+                disabled={appendEvent.isPending}
+                onClick={() => endInnings(r.value)}
+              >
+                {r.label}
+              </Button>
+            ))}
+          </div>
+          {appendEvent.isError && (
+            <p className="mt-2 text-xs text-destructive">
+              Failed to end the innings — try again.
+            </p>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  const crr = runRate(innings.runs, innings.overs, format.balls_per_over)
   const strikerEntry = battingEntryFor(innings, effectiveStriker)
   const nonStrikerEntry = battingEntryFor(innings, effectiveNonStriker)
   const bowlerEntry = bowlingEntryFor(innings, effectiveBowler)
@@ -187,7 +355,9 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
         <p className="mt-0.5 text-3xl font-medium tracking-tight">
           {innings.runs}/{innings.wickets}
           <span className="ml-2 text-sm font-normal text-muted-foreground">
-            ({innings.overs.toFixed(1)} ov · CRR {crr.toFixed(2)})
+            ({formatOvers(innings.overs)}
+            {format.overs_per_innings ? `/${format.overs_per_innings}` : ''} ov · CRR{' '}
+            {crr.toFixed(2)})
           </span>
         </p>
 
@@ -239,16 +409,18 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
         </div>
       )}
 
-      {!readyToScore ? (
+      {showPickerPanel ? (
         <div className="rounded-xl border bg-card p-4">
           <p className="mb-3 text-sm font-medium">
-            {!effectiveBowler && (!effectiveStriker || !effectiveNonStriker)
-              ? 'New over, new batter — who is it?'
-              : !effectiveBowler
-                ? "New over — who's bowling?"
-                : 'Wicket! Who is coming in to bat?'}
+            {editingOpeningPicks && readyToScore
+              ? 'Edit your selections'
+              : !effectiveBowler && (!effectiveStriker || !effectiveNonStriker)
+                ? 'New over, new batter — who is it?'
+                : !effectiveBowler
+                  ? "New over — who's bowling?"
+                  : 'Wicket! Who is coming in to bat?'}
           </p>
-          {!effectiveStriker && (
+          {(!effectiveStriker || editingOpeningPicks) && (
             <div className="mb-3">
               <p className="mb-1.5 text-xs text-muted-foreground">Striker</p>
               <PlayerPicker
@@ -259,7 +431,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
               />
             </div>
           )}
-          {!effectiveNonStriker && (
+          {(!effectiveNonStriker || editingOpeningPicks) && (
             <div className="mb-3">
               <p className="mb-1.5 text-xs text-muted-foreground">Non-striker</p>
               <PlayerPicker
@@ -270,7 +442,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
               />
             </div>
           )}
-          {!effectiveBowler && (
+          {(!effectiveBowler || editingOpeningPicks) && (
             <div>
               <p className="mb-1.5 text-xs text-muted-foreground">Bowler</p>
               <PlayerPicker
@@ -281,9 +453,28 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
               />
             </div>
           )}
+          {editingOpeningPicks && readyToScore && (
+            <Button
+              size="sm"
+              className="mt-3"
+              onClick={() => setEditingOpeningPicks(false)}
+            >
+              Done
+            </Button>
+          )}
         </div>
       ) : (
         <div>
+          {openingPicksUnconfirmed && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="mb-2 h-auto px-0 text-xs text-muted-foreground hover:bg-transparent hover:underline"
+              onClick={() => setEditingOpeningPicks(true)}
+            >
+              Edit selections
+            </Button>
+          )}
           <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Runs off this ball
           </p>
@@ -324,7 +515,9 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
             <button
               type="button"
               disabled={appendEvent.isPending}
-              onClick={() => setExtraDialog('wide')}
+              onClick={() =>
+                recordDelivery({ extra: { kind: 'wide', runs: format.wide_penalty_runs } })
+              }
               className="rounded-xl border bg-card p-3 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50"
             >
               Wide
@@ -402,25 +595,16 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
             }}
           />
 
-          <ExtraRunsDialog
-            open={extraDialog === 'wide'}
-            title="Wide"
-            kinds={[{ value: 'wide', label: 'Wide' }]}
-            submitting={appendEvent.isPending}
-            onOpenChange={(open) => !open && setExtraDialog(null)}
-            onPick={(kind, runs) => {
-              recordDelivery({ extra: { kind, runs } })
-              setExtraDialog(null)
-            }}
-          />
-          <ExtraRunsDialog
+          <NoBallDialog
             open={extraDialog === 'no_ball'}
-            title="No ball"
-            kinds={[{ value: 'no_ball', label: 'No ball' }]}
+            penaltyRuns={format.no_ball_penalty_runs}
             submitting={appendEvent.isPending}
             onOpenChange={(open) => !open && setExtraDialog(null)}
-            onPick={(kind, runs) => {
-              recordDelivery({ extra: { kind, runs } })
+            onPick={(runsOffBat) => {
+              recordDelivery({
+                runs_off_bat: runsOffBat,
+                extra: { kind: 'no_ball', runs: format.no_ball_penalty_runs },
+              })
               setExtraDialog(null)
             }}
           />

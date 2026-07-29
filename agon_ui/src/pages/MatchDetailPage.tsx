@@ -15,8 +15,10 @@ import { LiveMatchBlock } from '@/components/agon/live/LiveMatchBlock'
 import { CricketMatchBlock } from '@/components/agon/live/CricketMatchBlock'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { useLiveScore } from '@/hooks/useLiveScore'
+import { useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
 import { footballLiveState } from '@/lib/liveScore'
-import { cricketLiveState } from '@/lib/cricketScore'
+import { cricketDetail, cricketLiveState } from '@/lib/cricketScore'
+import { CricketScorecard } from '@/components/agon/CricketScorecard'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { displayScore, headlineBySide, headlineLabel, setLine } from '@/lib/score'
 import {
@@ -134,6 +136,14 @@ function MatchDetail({
   // equivalent preferences step, so it goes straight into scoring.
   const liveEntryPath =
     match.match_type === 'cricket' ? `/matches/${match.id}/live` : `/matches/${match.id}/live/setup`
+
+  // Resolved per-innings scorecard (batting/bowling cards, run progression),
+  // regardless of whether the match was scored live or entered after the
+  // fact — separate from `live` above, which only covers scoring in progress.
+  const detailedScore = useMatchDetailedScore(match.id, {
+    enabled: match.match_type === 'cricket',
+  })
+  const cricketInnings = cricketDetail(detailedScore.data)
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
@@ -276,6 +286,13 @@ function MatchDetail({
           players={match.players.filter((p) => p.side_id === sideB?.id)}
         />
       </div>
+
+      {/* Cricket scorecard: run progression + per-player batting/bowling,
+          once there's per-innings detail recorded (live-scored or entered
+          directly). */}
+      {cricketInnings && cricketInnings.length > 0 && (
+        <CricketScorecard match={match} innings={cricketInnings} />
+      )}
 
       {/* Invite more people (participants only). */}
       {canEdit && !cancelled && (

@@ -9,6 +9,7 @@ export type CricketDismissalKind = components['schemas']['CricketDismissalKind']
 export type CricketBattingEntry = components['schemas']['CricketBattingEntry']
 export type CricketBowlingEntry = components['schemas']['CricketBowlingEntry']
 type LiveScoreSnapshot = components['schemas']['LiveScoreSnapshot']
+type DetailedScore = components['schemas']['DetailedScore']
 type Match = components['schemas']['Match']
 
 /** Narrows a live-score snapshot to its cricket state, or `null` when there's
@@ -18,6 +19,15 @@ export function cricketLiveState(
 ): CricketLiveState | null {
   if (!snapshot || snapshot.state.sport !== 'Cricket') return null
   return snapshot.state
+}
+
+/** Narrows a match's detailed score to its cricket innings, or `null` when
+ *  there's none yet or it's for a different sport. */
+export function cricketDetail(
+  detail: DetailedScore | null | undefined,
+): CricketInnings[] | null {
+  if (!detail || detail.type !== 'Cricket') return null
+  return detail.innings
 }
 
 /** The innings currently being played, or `null` when the match hasn't
@@ -40,6 +50,41 @@ export function runRate(runs: number, oversDisplay: number): number {
   const balls = Math.round((oversDisplay - wholeOvers) * 10)
   const totalBalls = wholeOvers * 6 + balls
   return totalBalls > 0 ? (runs / totalBalls) * 6 : 0
+}
+
+/** One point on a run-progression graph: the cumulative state immediately
+ *  after a delivery. `overs` is the display format (e.g. 4.3 = 4 overs + 3
+ *  balls), matching `CricketInnings.overs`. */
+export interface RunProgressionPoint {
+  overs: number
+  runs: number
+  wickets: number
+  /** True if this delivery was a wicket — for marking the point distinctly. */
+  isWicket: boolean
+}
+
+/** Cumulative runs/wickets after each delivery, in order — the data behind a
+ *  run-rate/worm graph. Only legal deliveries advance the overs count (wides
+ *  and no-balls still add to `runs`, at the same `overs` value as the
+ *  previous legal ball), mirroring the backend's `balls_to_overs`. */
+export function runProgression(deliveries: CricketDelivery[]): RunProgressionPoint[] {
+  let runs = 0
+  let wickets = 0
+  let legalBalls = 0
+  return deliveries.map((d) => {
+    const extraRuns = d.extra?.runs ?? 0
+    runs += d.runs_off_bat + extraRuns
+    if (isLegalDelivery(d)) legalBalls += 1
+    if (d.wicket) wickets += 1
+    const wholeOvers = Math.floor(legalBalls / 6)
+    const ballsIntoOver = legalBalls % 6
+    return {
+      overs: wholeOvers + ballsIntoOver / 10,
+      runs,
+      wickets,
+      isWicket: !!d.wicket,
+    }
+  })
 }
 
 /** This over's deliveries — everything recorded against the innings' latest

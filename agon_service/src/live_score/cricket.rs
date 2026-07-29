@@ -79,12 +79,28 @@ struct OpenInnings {
 /// not a stored index — so deleting a wrongly-placed boundary automatically
 /// re-flows every event after it back into the earlier innings on the next
 /// fold, with nothing to rewrite.
-/// `balls_per_over` is the match's configured over length (see
-/// `agon_service::match_format::CricketFormat::balls_per_over`); callers
-/// without a configured format pass the standard 6.
-pub fn derive_state(events: &[CricketLiveEvent], balls_per_over: u32) -> CricketLiveState {
+/// `balls_per_over`, `wide_is_extra_ball` and `no_ball_is_extra_ball` are the
+/// match's configured over length and extra-ball rules (see
+/// `agon_service::match_format::CricketFormat`); callers without a
+/// configured format pass the standard defaults (6, true, true).
+pub fn derive_state(
+    events: &[CricketLiveEvent],
+    balls_per_over: u32,
+    wide_is_extra_ball: bool,
+    no_ball_is_extra_ball: bool,
+) -> CricketLiveState {
     let mut innings: Vec<CricketInnings> = Vec::new();
     let mut current: Option<OpenInnings> = None;
+
+    let finish = |open: OpenInnings, declared: bool| {
+        finish_innings(
+            open,
+            declared,
+            balls_per_over,
+            wide_is_extra_ball,
+            no_ball_is_extra_ball,
+        )
+    };
 
     for event in events {
         match event {
@@ -92,7 +108,7 @@ pub fn derive_state(events: &[CricketLiveEvent], balls_per_over: u32) -> Cricket
                 // Close out anything left open without an explicit End,
                 // rather than losing it — shouldn't normally happen.
                 if let Some(open) = current.take() {
-                    innings.push(finish_innings(open, false, balls_per_over));
+                    innings.push(finish(open, false));
                 }
                 current = Some(OpenInnings {
                     batting_side_id: start.batting_side_id.clone(),
@@ -115,7 +131,7 @@ pub fn derive_state(events: &[CricketLiveEvent], balls_per_over: u32) -> Cricket
             CricketLiveEvent::InningsEnd(end) => {
                 if let Some(open) = current.take() {
                     let declared = matches!(end.reason, InningsEndReason::Declared);
-                    innings.push(finish_innings(open, declared, balls_per_over));
+                    innings.push(finish(open, declared));
                 }
             }
         }
@@ -123,7 +139,7 @@ pub fn derive_state(events: &[CricketLiveEvent], balls_per_over: u32) -> Cricket
 
     let awaiting_next_innings = current.is_none();
     if let Some(open) = current {
-        innings.push(finish_innings(open, false, balls_per_over));
+        innings.push(finish(open, false));
     }
 
     CricketLiveState {
@@ -132,13 +148,21 @@ pub fn derive_state(events: &[CricketLiveEvent], balls_per_over: u32) -> Cricket
     }
 }
 
-fn finish_innings(open: OpenInnings, declared: bool, balls_per_over: u32) -> CricketInnings {
+fn finish_innings(
+    open: OpenInnings,
+    declared: bool,
+    balls_per_over: u32,
+    wide_is_extra_ball: bool,
+    no_ball_is_extra_ball: bool,
+) -> CricketInnings {
     let mut built = CricketInnings::from_deliveries(
         open.batting_side_id,
         open.bowling_side_id,
         declared,
         open.deliveries,
         balls_per_over,
+        wide_is_extra_ball,
+        no_ball_is_extra_ball,
     );
     apply_retirements(&mut built, &open.retirements);
     built
@@ -217,7 +241,7 @@ mod tests {
             CricketLiveEvent::Delivery(ball("patel", "sharma", "verma", 1)),
         ];
 
-        let state = derive_state(&events, 6);
+        let state = derive_state(&events, 6, true, true);
         assert_eq!(state.innings.len(), 1);
         let innings = &state.innings[0];
         assert_eq!(
@@ -257,7 +281,7 @@ mod tests {
             }),
         ];
 
-        let state = derive_state(&events, 6);
+        let state = derive_state(&events, 6, true, true);
         let innings = &state.innings[0];
         assert_eq!(innings.wickets, 1);
         assert_eq!(innings.fall_of_wickets.len(), 1);
@@ -282,7 +306,7 @@ mod tests {
             CricketLiveEvent::Delivery(ball("sharma", "cole", "adeyemi", 1)),
         ];
 
-        let state = derive_state(&events, 6);
+        let state = derive_state(&events, 6, true, true);
         assert_eq!(state.innings.len(), 2);
         assert_eq!(state.innings[0].batting_side_id, "warriors");
         assert_eq!(state.innings[0].runs, 4);
@@ -313,7 +337,7 @@ mod tests {
             CricketLiveEvent::Delivery(ball("patel", "sharma", "verma", 2)),
         ];
 
-        let state = derive_state(&events, 6);
+        let state = derive_state(&events, 6, true, true);
 
         assert_eq!(
             state.innings.len(),

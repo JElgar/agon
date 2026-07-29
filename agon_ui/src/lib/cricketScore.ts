@@ -70,9 +70,17 @@ export function currentInnings(state: CricketLiveState): CricketInnings | null {
   return state.innings[state.innings.length - 1] ?? null
 }
 
-/** Whether a delivery counts toward the over (wides/no-balls don't). */
-export function isLegalDelivery(d: CricketDelivery): boolean {
-  return !(d.extra && (d.extra.kind === 'wide' || d.extra.kind === 'no_ball'))
+/** Whether a delivery counts toward the over. Wides/no-balls don't under the
+ *  standard rules, but a match format can configure either one to just count
+ *  as a legal ball instead (see `CricketFormat.wide_is_extra_ball` /
+ *  `no_ball_is_extra_ball`). */
+export function isLegalDelivery(
+  d: CricketDelivery,
+  format: Pick<CricketFormat, 'wide_is_extra_ball' | 'no_ball_is_extra_ball'>,
+): boolean {
+  if (d.extra?.kind === 'wide') return !format.wide_is_extra_ball
+  if (d.extra?.kind === 'no_ball') return !format.no_ball_is_extra_ball
+  return true
 }
 
 /** "19.4" — the conventional overs-and-balls display, e.g. 4 balls into the
@@ -314,7 +322,10 @@ export interface NextBallContext {
   previousOverBowlerPlayerId: string | null
 }
 
-export function nextBallContext(innings: CricketInnings, ballsPerOver: number): NextBallContext {
+export function nextBallContext(
+  innings: CricketInnings,
+  format: Pick<CricketFormat, 'balls_per_over' | 'wide_is_extra_ball' | 'no_ball_is_extra_ball'>,
+): NextBallContext {
   let striker: string | null = null
   let nonStriker: string | null = null
   let bowler: string | null = null
@@ -333,7 +344,7 @@ export function nextBallContext(innings: CricketInnings, ballsPerOver: number): 
       else if (d.wicket.dismissed_player_id === nonStriker) nonStriker = null
     }
 
-    if (isLegalDelivery(d)) {
+    if (isLegalDelivery(d, format)) {
       legalInOver += 1
       const rotatingRuns =
         d.runs_off_bat + (d.extra && (d.extra.kind === 'bye' || d.extra.kind === 'leg_bye') ? d.extra.runs : 0)
@@ -344,7 +355,7 @@ export function nextBallContext(innings: CricketInnings, ballsPerOver: number): 
       if (rotatingRuns % 2 === 1) {
         ;[striker, nonStriker] = [nonStriker, striker]
       }
-      if (legalInOver === ballsPerOver) {
+      if (legalInOver === format.balls_per_over) {
         ;[striker, nonStriker] = [nonStriker, striker]
         previousOverBowler = bowler
         bowler = null

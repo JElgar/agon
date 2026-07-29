@@ -101,7 +101,7 @@ export function CricketMatchBlock({
 
   const battingName = sideNameFor(match, innings.batting_side_id)
   const bowlingName = sideNameFor(match, innings.bowling_side_id)
-  const next = nextBallContext(innings, format.balls_per_over)
+  const next = nextBallContext(innings, format)
   const striker = battingEntryFor(innings, next.strikerPlayerId)
   const nonStriker = battingEntryFor(innings, next.nonStrikerPlayerId)
   const overBalls = currentOverDeliveries(innings)

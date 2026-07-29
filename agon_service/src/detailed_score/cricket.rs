@@ -202,12 +202,21 @@ fn dismissal_credited_to_bowler(kind: &CricketDismissalKind) -> bool {
     )
 }
 
-/// True if the delivery counts as a legal ball (advances the over).
-fn is_legal_delivery(delivery: &CricketDelivery) -> bool {
-    !matches!(
-        delivery.extra.as_ref().map(|e| &e.kind),
-        Some(CricketExtraKind::Wide) | Some(CricketExtraKind::NoBall)
-    )
+/// True if the delivery counts as a legal ball (advances the over). Wides and
+/// no-balls are illegal (re-bowled as an extra delivery) under the standard
+/// rules, but a match format can configure either one to just count as one of
+/// the over's legal balls instead (see `CricketFormat::wide_is_extra_ball` /
+/// `no_ball_is_extra_ball`).
+fn is_legal_delivery(
+    delivery: &CricketDelivery,
+    wide_is_extra_ball: bool,
+    no_ball_is_extra_ball: bool,
+) -> bool {
+    match delivery.extra.as_ref().map(|e| &e.kind) {
+        Some(CricketExtraKind::Wide) => !wide_is_extra_ball,
+        Some(CricketExtraKind::NoBall) => !no_ball_is_extra_ball,
+        _ => true,
+    }
 }
 
 /// Runs charged to the bowler for a delivery: runs off the bat plus wides and
@@ -236,17 +245,19 @@ impl CricketInnings {
     /// Builds the innings overview (totals, batting/bowling cards, extras,
     /// fall-of-wickets) from a ball-by-ball delivery log. The deliveries are
     /// retained on the returned innings as the source of truth.
-    /// `balls_per_over` is the match's configured over length (see
-    /// `agon_service::match_format::CricketFormat::balls_per_over`) — it's
-    /// the only piece of match format the DAO-agnostic scoring math actually
-    /// needs, so it's threaded in as a plain argument rather than the whole
-    /// format.
+    /// `balls_per_over`, `wide_is_extra_ball` and `no_ball_is_extra_ball` are
+    /// the match's configured over length and extra-ball rules (see
+    /// `agon_service::match_format::CricketFormat`) — the only pieces of
+    /// match format the DAO-agnostic scoring math actually needs, so they're
+    /// threaded in as plain arguments rather than the whole format.
     pub fn from_deliveries(
         batting_side_id: String,
         bowling_side_id: String,
         declared: bool,
         deliveries: Vec<CricketDelivery>,
         balls_per_over: u32,
+        wide_is_extra_ball: bool,
+        no_ball_is_extra_ball: bool,
     ) -> Self {
         // First-appearance-ordered accumulators keyed by player_id.
         let mut batting: Vec<CricketBattingEntry> = Vec::new();
@@ -306,7 +317,7 @@ impl CricketInnings {
         }
 
         for delivery in &deliveries {
-            let legal = is_legal_delivery(delivery);
+            let legal = is_legal_delivery(delivery, wide_is_extra_ball, no_ball_is_extra_ball);
             let charged = runs_charged_to_bowler(delivery);
             let extra_runs = delivery.extra.as_ref().map(|e| e.runs).unwrap_or(0);
 
@@ -391,7 +402,10 @@ impl CricketInnings {
         for bw in &mut bowling {
             let balls: u32 = deliveries
                 .iter()
-                .filter(|d| d.bowler_player_id == bw.player_id && is_legal_delivery(d))
+                .filter(|d| {
+                    d.bowler_player_id == bw.player_id
+                        && is_legal_delivery(d, wide_is_extra_ball, no_ball_is_extra_ball)
+                })
                 .count() as u32;
             bw.overs = balls_to_overs(balls, balls_per_over);
             bw.maidens = over_runs
@@ -479,8 +493,15 @@ mod tests {
             },
         ];
 
-        let innings =
-            CricketInnings::from_deliveries("team_a".into(), "team_b".into(), false, deliveries, 6);
+        let innings = CricketInnings::from_deliveries(
+            "team_a".into(),
+            "team_b".into(),
+            false,
+            deliveries,
+            6,
+            true,
+            true,
+        );
 
         // Total runs: 4 + 6 + 1(wide) + 0 + 1 + 0 = 12.
         assert_eq!(innings.runs, 12);
@@ -530,8 +551,15 @@ mod tests {
             ball(0, 5, "B1", "S1", "S2", 1),
         ];
 
-        let innings =
-            CricketInnings::from_deliveries("team_a".into(), "team_b".into(), false, deliveries, 5);
+        let innings = CricketInnings::from_deliveries(
+            "team_a".into(),
+            "team_b".into(),
+            false,
+            deliveries,
+            5,
+            true,
+            true,
+        );
 
         assert_eq!(innings.overs, Overs { overs: 1, balls: 0 });
         let b1 = innings
@@ -540,5 +568,66 @@ mod tests {
             .find(|b| b.player_id == "B1")
             .expect("B1 bowling entry");
         assert_eq!(b1.overs, Overs { overs: 1, balls: 0 });
+    }
+
+    #[test]
+    fn wides_and_no_balls_can_be_configured_to_not_cost_an_extra_ball() {
+        // A casual-format over: wide, no-ball, then 4 plain deliveries. Under
+        // the standard rules that's a 4-ball over (wide/no-ball re-bowled);
+        // with both flags off here, the wide and no-ball each count as one of
+        // the over's 6 legal balls, so the whole thing completes in one over.
+        let deliveries = vec![
+            CricketDelivery {
+                over: 0,
+                ball: 1,
+                bowler_player_id: "B1".into(),
+                striker_player_id: "S1".into(),
+                non_striker_player_id: "S2".into(),
+                runs_off_bat: 0,
+                extra: Some(CricketDeliveryExtra {
+                    kind: CricketExtraKind::Wide,
+                    runs: 1,
+                }),
+                wicket: None,
+            },
+            CricketDelivery {
+                over: 0,
+                ball: 2,
+                bowler_player_id: "B1".into(),
+                striker_player_id: "S1".into(),
+                non_striker_player_id: "S2".into(),
+                runs_off_bat: 1,
+                extra: Some(CricketDeliveryExtra {
+                    kind: CricketExtraKind::NoBall,
+                    runs: 1,
+                }),
+                wicket: None,
+            },
+            ball(0, 3, "B1", "S1", "S2", 0),
+            ball(0, 4, "B1", "S1", "S2", 0),
+            ball(0, 5, "B1", "S1", "S2", 0),
+            ball(0, 6, "B1", "S1", "S2", 0),
+        ];
+
+        let innings = CricketInnings::from_deliveries(
+            "team_a".into(),
+            "team_b".into(),
+            false,
+            deliveries,
+            6,
+            false,
+            false,
+        );
+
+        assert_eq!(innings.overs, Overs { overs: 1, balls: 0 });
+        assert_eq!(innings.runs, 3); // 1 (wide) + 1 (no-ball penalty) + 1 (off the bat)
+        let b1 = innings
+            .bowling
+            .iter()
+            .find(|b| b.player_id == "B1")
+            .expect("B1 bowling entry");
+        assert_eq!(b1.overs, Overs { overs: 1, balls: 0 });
+        assert_eq!(b1.wides, 1);
+        assert_eq!(b1.no_balls, 1);
     }
 }

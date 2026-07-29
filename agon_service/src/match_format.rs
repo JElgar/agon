@@ -3,14 +3,18 @@
 //! configured, and clients fall back to their own sensible per-sport
 //! defaults rather than every match being required to specify one.
 //!
-//! Phase 1: purely descriptive. Nothing here is enforced by the live-scoring
+//! Phase 1: mostly descriptive. Nothing here is enforced by the live-scoring
 //! API yet — going over a configured overs limit doesn't block further
 //! deliveries, and a no-ball's configured penalty isn't applied
 //! automatically. Live-scoring clients use it to prefill sensible defaults
 //! and show progress against the configured limit (e.g. "14.2/20 overs").
 //! Actually enforcing it (free hits, auto-suggesting innings/half end,
 //! extra-time and penalty-shootout flows) is intentionally out of scope for
-//! now and would build on top of this.
+//! now and would build on top of this. `wide_is_extra_ball` and
+//! `no_ball_is_extra_ball` are the exceptions, alongside `balls_per_over`:
+//! they drive whether a wide/no-ball advances the over in
+//! `detailed_score::cricket::CricketInnings::from_deliveries`, since that's
+//! server-side scoring math, not just client display.
 
 use poem_openapi::{Object, Union};
 
@@ -52,6 +56,17 @@ pub struct CricketFormat {
     pub no_ball_penalty_runs: u32,
     /// Runs awarded for a wide.
     pub wide_penalty_runs: u32,
+    /// Whether a wide is re-bowled as an extra delivery (the standard rule —
+    /// `true`) or simply counts as one of the over's legal balls alongside its
+    /// penalty runs (a casual/social variant some sides play to keep overs
+    /// moving).
+    pub wide_is_extra_ball: bool,
+    /// Whether a no-ball is re-bowled as an extra delivery (`true`, the
+    /// standard rule) or counts as a legal ball, same trade-off as
+    /// `wide_is_extra_ball`. Independent of `free_hit_after_no_ball`: Test
+    /// cricket, for instance, plays no-balls as extra balls with no free hit
+    /// at all (free hits are a modern limited-overs addition).
+    pub no_ball_is_extra_ball: bool,
     /// Whether the delivery after a no-ball is a free hit.
     pub free_hit_after_no_ball: bool,
 }

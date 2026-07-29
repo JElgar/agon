@@ -658,6 +658,8 @@ pub fn match_format_to_record(fmt: &MatchFormat) -> MatchFormatRecord {
             balls_per_over: f.balls_per_over,
             no_ball_penalty_runs: f.no_ball_penalty_runs,
             wide_penalty_runs: f.wide_penalty_runs,
+            wide_is_extra_ball: f.wide_is_extra_ball,
+            no_ball_is_extra_ball: f.no_ball_is_extra_ball,
             free_hit_after_no_ball: f.free_hit_after_no_ball,
         }),
     }
@@ -680,6 +682,8 @@ pub fn match_format_from_record(rec: &MatchFormatRecord) -> MatchFormat {
             balls_per_over: f.balls_per_over,
             no_ball_penalty_runs: f.no_ball_penalty_runs,
             wide_penalty_runs: f.wide_penalty_runs,
+            wide_is_extra_ball: f.wide_is_extra_ball,
+            no_ball_is_extra_ball: f.no_ball_is_extra_ball,
             free_hit_after_no_ball: f.free_hit_after_no_ball,
         }),
     }
@@ -1059,15 +1063,21 @@ pub fn derive_live_score_state(
                     LiveEventPayloadRecord::Football(_) => None,
                 })
                 .collect();
-            // Standard 6-ball over unless the match configured something else
-            // (e.g. The Hundred's 5).
-            let balls_per_over = match format {
-                Some(MatchFormatRecord::Cricket(f)) => f.balls_per_over,
-                _ => 6,
+            // Standard rules unless the match configured something else: a
+            // 6-ball over (e.g. The Hundred's 5), and both wides and no-balls
+            // as extra (re-bowled) deliveries.
+            let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) = match format {
+                Some(MatchFormatRecord::Cricket(f)) => {
+                    (f.balls_per_over, f.wide_is_extra_ball, f.no_ball_is_extra_ball)
+                }
+                _ => (6, true, true),
             };
-            Some(LiveScoreState::Cricket(
-                crate::live_score::cricket::derive_state(&events, balls_per_over),
-            ))
+            Some(LiveScoreState::Cricket(crate::live_score::cricket::derive_state(
+                &events,
+                balls_per_over,
+                wide_is_extra_ball,
+                no_ball_is_extra_ball,
+            )))
         }
         _ => None,
     }
@@ -1300,6 +1310,8 @@ mod tests {
                 balls_per_over: 6,
                 no_ball_penalty_runs: 2,
                 wide_penalty_runs: 1,
+                wide_is_extra_ball: true,
+                no_ball_is_extra_ball: false,
                 free_hit_after_no_ball: false,
             }),
         ];

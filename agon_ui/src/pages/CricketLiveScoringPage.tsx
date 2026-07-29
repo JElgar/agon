@@ -22,6 +22,7 @@ import {
   currentInnings,
   currentOverDeliveries,
   deliveryChipLabel,
+  formatOvers,
   isChipHighlighted,
   matchTotalsBySide,
   nextBallContext,
@@ -78,10 +79,12 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   const [endInningsOpen, setEndInningsOpen] = useState(false)
   const [startBattingSide, setStartBattingSide] = useState<string | undefined>(undefined)
 
-  // Concludes the match: derives the final score from every completed
-  // innings' totals (summed per side, so a two-innings format adds up both)
-  // and submits it the same way a manual "Add result" would, so it enters
-  // the normal confirmation flow rather than being auto-confirmed.
+  // Concludes the match: submits the per-innings totals as a `Cricket` score
+  // (so the completed tile can show overs/wickets and the result line
+  // without ever re-fetching the live event log — see `CricketScoreBlock`),
+  // the same way a manual "Add result" would, so it enters the normal
+  // confirmation flow rather than being auto-confirmed. The winner is still
+  // derived from the summed match totals (two-innings formats add up both).
   const finishMatch = useMutation({
     mutationFn: async () => {
       if (!state) throw new Error('No score recorded yet')
@@ -92,11 +95,15 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
       const a = totals[aId] ?? 0
       const b = totals[bId] ?? 0
       const score = {
-        type: 'Simple',
-        entries: [
-          { side_id: aId, points: a },
-          { side_id: bId, points: b },
-        ],
+        type: 'Cricket',
+        innings: state.innings.map((inn) => ({
+          batting_side_id: inn.batting_side_id,
+          bowling_side_id: inn.bowling_side_id,
+          runs: inn.runs,
+          wickets: inn.wickets,
+          overs: inn.overs,
+          declared: inn.declared,
+        })),
       } as unknown as UpdateMatchInput['score']
       const winner_side_id = a === b ? undefined : a > b ? aId : bId
       const body: UpdateMatchInput = { score, status: 'completed' }
@@ -167,7 +174,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
                   <p className="text-2xl font-medium tracking-tight">
                     {inn.runs}/{inn.wickets}
                     <span className="ml-2 text-sm font-normal text-muted-foreground">
-                      ({inn.overs.toFixed(1)} ov)
+                      ({formatOvers(inn.overs)} ov)
                     </span>
                   </p>
                 </div>
@@ -278,7 +285,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
         <p className="mt-0.5 text-3xl font-medium tracking-tight">
           {innings.runs}/{innings.wickets}
           <span className="ml-2 text-sm font-normal text-muted-foreground">
-            ({innings.overs.toFixed(1)}
+            ({formatOvers(innings.overs)}
             {format.overs_per_innings ? `/${format.overs_per_innings}` : ''} ov · CRR{' '}
             {crr.toFixed(2)})
           </span>

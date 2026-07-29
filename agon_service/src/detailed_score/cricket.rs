@@ -7,6 +7,21 @@ pub struct CricketDetail {
     pub innings: Vec<CricketInnings>,
 }
 
+/// A count of overs bowled/faced: whole overs plus balls into the current
+/// (not yet complete) over — not a single float like `19.4`, which only
+/// works by coincidence for a standard 6-ball over. A float can't safely
+/// represent a ball count that doesn't fit in one decimal digit (a
+/// hypothetical over of 10+ balls collides with itself: 10 balls and 1 ball
+/// both read as `.10`/`.1`), and an exact count has no business being a
+/// float in the first place.
+#[derive(Object, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Overs {
+    /// Completed overs.
+    pub overs: u32,
+    /// Balls into the current over (0..balls_per_over).
+    pub balls: u32,
+}
+
 /// A cricket innings supports three tiers of fidelity:
 ///   1. Minimal — just `runs`/`wickets`/`overs`, leaving the cards empty.
 ///   2. Scorecard — full per-player `batting`/`bowling` cards.
@@ -26,8 +41,8 @@ pub struct CricketInnings {
     pub runs: u32,
     /// Wickets lost (0-10).
     pub wickets: u32,
-    /// Overs bowled, e.g. 19.4 (4 balls into the 20th over).
-    pub overs: f32,
+    /// Overs bowled, e.g. 19 overs + 4 balls into the 20th.
+    pub overs: Overs,
     /// Whether the innings has been declared closed.
     pub declared: bool,
     pub batting: Vec<CricketBattingEntry>,
@@ -136,8 +151,8 @@ pub enum CricketDismissalKind {
 #[derive(Object)]
 pub struct CricketBowlingEntry {
     pub player_id: String,
-    /// Overs bowled, e.g. 4.0 or 3.2.
-    pub overs: f32,
+    /// Overs bowled, e.g. 4 overs + 0 balls, or 3 overs + 2 balls.
+    pub overs: Overs,
     pub maidens: u32,
     pub runs_conceded: u32,
     pub wickets: u32,
@@ -163,7 +178,7 @@ pub struct CricketFallOfWicket {
     /// Batter dismissed.
     pub player_id: String,
     /// Overs completed when the wicket fell, if recorded.
-    pub overs: Option<f32>,
+    pub overs: Option<Overs>,
 }
 
 /// Cricket scoring rules encoded by the aggregator below:
@@ -207,11 +222,14 @@ fn runs_charged_to_bowler(delivery: &CricketDelivery) -> u32 {
     delivery.runs_off_bat + extra
 }
 
-/// Converts a count of legal balls into the conventional overs float, e.g.
-/// 13 balls -> 2.1 (two complete overs and one ball), given how many legal
-/// deliveries make an over (6 for almost everything, 5 for The Hundred).
-fn balls_to_overs(balls: u32, balls_per_over: u32) -> f32 {
-    (balls / balls_per_over) as f32 + (balls % balls_per_over) as f32 / 10.0
+/// Converts a count of legal balls into whole overs + balls, e.g. 13 balls
+/// -> 2 overs + 1 ball, given how many legal deliveries make an over (6 for
+/// almost everything, 5 for The Hundred).
+fn balls_to_overs(balls: u32, balls_per_over: u32) -> Overs {
+    Overs {
+        overs: balls / balls_per_over,
+        balls: balls % balls_per_over,
+    }
 }
 
 impl CricketInnings {
@@ -276,7 +294,7 @@ impl CricketInnings {
             } else {
                 bowling.push(CricketBowlingEntry {
                     player_id: player_id.to_string(),
-                    overs: 0.0,
+                    overs: Overs { overs: 0, balls: 0 },
                     maidens: 0,
                     runs_conceded: 0,
                     wickets: 0,
@@ -467,8 +485,8 @@ mod tests {
         // Total runs: 4 + 6 + 1(wide) + 0 + 1 + 0 = 12.
         assert_eq!(innings.runs, 12);
         assert_eq!(innings.wickets, 1);
-        // 5 legal balls (wide excluded) -> 0.5 overs.
-        assert_eq!(innings.overs, 0.5);
+        // 5 legal balls (wide excluded) -> 0 overs + 5 balls.
+        assert_eq!(innings.overs, Overs { overs: 0, balls: 5 });
         assert_eq!(innings.extras.wides, 1);
 
         // Striker S1: 11 runs off the bat, faced 5 balls (wide not faced),
@@ -502,7 +520,8 @@ mod tests {
     #[test]
     fn respects_a_configured_balls_per_over_other_than_six() {
         // The Hundred-style 5-ball over: 5 legal deliveries should complete
-        // exactly one over (1.0), not 0.5 as it would under a 6-ball over.
+        // exactly one over (1 over + 0 balls), not 0 overs + 5 balls as it
+        // would under a 6-ball over.
         let deliveries = vec![
             ball(0, 1, "B1", "S1", "S2", 1),
             ball(0, 2, "B1", "S1", "S2", 1),
@@ -514,12 +533,12 @@ mod tests {
         let innings =
             CricketInnings::from_deliveries("team_a".into(), "team_b".into(), false, deliveries, 5);
 
-        assert_eq!(innings.overs, 1.0);
+        assert_eq!(innings.overs, Overs { overs: 1, balls: 0 });
         let b1 = innings
             .bowling
             .iter()
             .find(|b| b.player_id == "B1")
             .expect("B1 bowling entry");
-        assert_eq!(b1.overs, 1.0);
+        assert_eq!(b1.overs, Overs { overs: 1, balls: 0 });
     }
 }

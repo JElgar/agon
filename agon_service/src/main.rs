@@ -55,6 +55,7 @@ use match_format::MatchFormat;
 mod detailed_score;
 use detailed_score::{
     DetailedScore,
+    cricket::Overs,
     football::{FootballDetail, FootballEvent, FootballEventKind},
 };
 
@@ -276,14 +277,23 @@ struct MatchPlayer {
 
 /// Match score. Tagged union so each sport's scoring shape is modelled
 /// explicitly; clients switch on `type` to pick a renderer. Add new variants
-/// (e.g. cricket, golf) without breaking existing clients.
+/// (e.g. golf) without breaking existing clients.
 #[derive(Union)]
 #[oai(one_of, discriminator_name = "type")]
 enum Score {
-    /// Single number per side: football, basketball, rugby.
+    /// Single number per side: football, basketball, rugby. Also cricket
+    /// when the result was logged manually rather than live-scored — there's
+    /// no per-innings detail to hand over in that case, so it degrades to
+    /// this rather than `Cricket`.
     Simple(SimpleScore),
     /// Set-based: tennis, volleyball, badminton.
     Sets(SetsScore),
+    /// Per-innings runs/wickets/overs, produced by finishing a live-scored
+    /// cricket match (see `CricketLiveScoringPage` client-side). Carries
+    /// enough detail to render the completed scorecard tile — and to derive
+    /// the result margin ("won by 4 wickets" / "by 100 runs") — without a
+    /// separate fetch of the match's live event log once it's over.
+    Cricket(CricketScore),
 }
 
 #[derive(Object)]
@@ -310,9 +320,37 @@ struct SetsScoreEntry {
     sets: Vec<u32>,
 }
 
+#[derive(Object)]
+struct CricketScore {
+    /// One entry per innings played, in the order they were played.
+    innings: Vec<CricketScoreInnings>,
+}
+
+/// One innings' final totals — a trimmed-down `detailed_score::cricket::
+/// CricketInnings` with just what a completed-match tile needs (no
+/// batting/bowling cards, extras breakdown, or ball-by-ball log; that detail
+/// still lives in `DetailedScore::Cricket`/the live event log for a match
+/// that wants it).
+#[derive(Object)]
+struct CricketScoreInnings {
+    /// The batting side for this innings (references MatchSide.id).
+    batting_side_id: String,
+    /// The bowling/fielding side for this innings.
+    bowling_side_id: String,
+    /// Total runs scored in the innings.
+    runs: u32,
+    /// Wickets lost (0-10).
+    wickets: u32,
+    /// Overs bowled, e.g. 19 overs + 4 balls into the 20th.
+    overs: Overs,
+    /// Whether the innings was declared closed rather than bowled/timed out.
+    declared: bool,
+}
+
 /// The sport a match was played in. Determines the expected `Score`/
-/// `DetailedScore` shape (e.g. racket sports use `Score::Sets`, football/cricket
-/// use `Score::Simple`). Extend as more sports are supported.
+/// `DetailedScore` shape (e.g. racket sports use `Score::Sets`, football uses
+/// `Score::Simple`, and cricket uses `Score::Cricket` when live-scored or
+/// `Score::Simple` otherwise). Extend as more sports are supported.
 #[derive(Enum)]
 #[oai(rename_all = "snake_case")]
 pub enum MatchType {
@@ -1999,6 +2037,11 @@ impl Api {
             let score_sides: Vec<&str> = match score {
                 Score::Simple(s) => s.entries.iter().map(|e| e.side_id.as_str()).collect(),
                 Score::Sets(s) => s.entries.iter().map(|e| e.side_id.as_str()).collect(),
+                Score::Cricket(s) => s
+                    .innings
+                    .iter()
+                    .flat_map(|i| [i.batting_side_id.as_str(), i.bowling_side_id.as_str()])
+                    .collect(),
             };
             if score_sides.iter().any(|sid| !valid_sides.contains(sid)) {
                 return Ok(UpdateMatchResponse::ValidationError(PlainText(
@@ -4047,6 +4090,20 @@ fn resolve_score_side_ids(
                 });
             }
             Some(Score::Sets(SetsScore { entries }))
+        }
+        Score::Cricket(s) => {
+            let mut innings = Vec::with_capacity(s.innings.len());
+            for i in &s.innings {
+                innings.push(CricketScoreInnings {
+                    batting_side_id: map(&i.batting_side_id)?,
+                    bowling_side_id: map(&i.bowling_side_id)?,
+                    runs: i.runs,
+                    wickets: i.wickets,
+                    overs: i.overs,
+                    declared: i.declared,
+                });
+            }
+            Some(Score::Cricket(CricketScore { innings }))
         }
     }
 }

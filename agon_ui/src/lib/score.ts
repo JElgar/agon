@@ -29,7 +29,9 @@ export function displayScore(
 /**
  * The headline number a side shows: for a Sets score it's the count of sets won
  * (across index-aligned entries); for a Simple score it's the points. Returns a
- * map of side id → headline value.
+ * map of side id → headline value. A `Cricket` score has no single headline
+ * number to show here — `CricketMatchBlock`/`CricketScoreBlock` render it
+ * their own way — so it's an empty map, same as "no score yet".
  */
 export function headlineBySide(score: Score): Record<string, number> {
   const out: Record<string, number> = {}
@@ -37,6 +39,7 @@ export function headlineBySide(score: Score): Record<string, number> {
     for (const e of score.entries) out[e.side_id] = e.points
     return out
   }
+  if (score.type === 'Cricket') return out
   // Sets: a side wins a set at index i if its games exceed every other side's.
   const setCount = Math.max(0, ...score.entries.map((e) => e.sets.length))
   for (const e of score.entries) out[e.side_id] = 0
@@ -75,7 +78,8 @@ export function setLine(score: Score, sides: MatchSide[]): string[] {
   return lines
 }
 
-/** Short label for the headline unit, e.g. "sets" for racket sports, "full time" otherwise. */
+/** Short label for the headline unit, e.g. "sets" for racket sports, "full time" otherwise.
+ *  Unused for a `Cricket` score — see `headlineBySide`. */
 export function headlineLabel(score: Score): string {
   return score.type === 'Sets' ? 'sets' : 'full time'
 }

@@ -31,6 +31,9 @@ pub enum ScoreRecord {
     Sets {
         entries: Vec<SetsScoreEntryRecord>,
     },
+    Cricket {
+        innings: Vec<CricketScoreInningsRecord>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -43,6 +46,28 @@ pub struct SimpleScoreEntryRecord {
 pub struct SetsScoreEntryRecord {
     pub side_id: String,
     pub sets: Vec<u32>,
+}
+
+/// One innings' final totals, as stored on a match's confirmed/pending
+/// `Score` — mirrors the API's `CricketScoreInnings`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CricketScoreInningsRecord {
+    pub batting_side_id: String,
+    pub bowling_side_id: String,
+    pub runs: u32,
+    pub wickets: u32,
+    pub overs: OversRecord,
+    pub declared: bool,
+}
+
+/// A count of overs bowled/faced: whole overs plus balls into the current
+/// over — mirrors the API's `detailed_score::cricket::Overs`. Two integer
+/// fields rather than a single float, which can't safely represent a ball
+/// count that doesn't fit in one decimal digit.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OversRecord {
+    pub overs: u32,
+    pub balls: u32,
 }
 
 /// The agreed, settled score of a match.

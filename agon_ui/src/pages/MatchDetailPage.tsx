@@ -13,10 +13,11 @@ import { StatusBadge, matchBadgeStatus } from '@/components/agon/StatusBadge'
 import { ScoreConfirmationBar } from '@/components/agon/ScoreConfirmationBar'
 import { LiveMatchBlock } from '@/components/agon/live/LiveMatchBlock'
 import { CricketMatchBlock } from '@/components/agon/live/CricketMatchBlock'
+import { CricketScoreBlock } from '@/components/agon/CricketScoreBlock'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { useLiveScore } from '@/hooks/useLiveScore'
 import { footballLiveState } from '@/lib/liveScore'
-import { cricketLiveState } from '@/lib/cricketScore'
+import { cricketLiveState, cricketScoreFrom } from '@/lib/cricketScore'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { displayScore, headlineBySide, headlineLabel, setLine } from '@/lib/score'
 import {
@@ -120,10 +121,12 @@ function MatchDetail({
   const aWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
   const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
 
-  // Live-scoring state, when this is a football match currently being scored
-  // live — takes over the score block below (and the entry button becomes
-  // "Continue scoring"). Not fetched for other sports/statuses, which don't
-  // have a live event log to speak of.
+  // Live-scoring state — takes over the score block below (and the entry
+  // button becomes "Continue scoring") while a match is actually in
+  // progress. Not fetched once it's over: a cricket match's confirmed score
+  // carries its own per-innings detail once it's been live-scored
+  // (`Score::Cricket`; see `finishMatch` in `CricketLiveScoringPage`), so
+  // there's no need to keep reading the live event log after the fact.
   const live = useLiveScore(match.id, {
     enabled: isLiveSport && match.status === 'in_progress',
     refetchInterval: 15000,
@@ -131,6 +134,7 @@ function MatchDetail({
   const footballState = footballLiveState(live.data)
   const cricketState = cricketLiveState(live.data)
   const hasLiveState = !!footballState || !!cricketState
+  const cricketScore = scoreInfo ? cricketScoreFrom(scoreInfo.score) : null
   // Football's setup screen also gates starting the clock; cricket has no
   // equivalent preferences step, so it goes straight into scoring.
   const liveEntryPath =
@@ -180,6 +184,10 @@ function MatchDetail({
           ) : cricketState ? (
             <div className="mt-3">
               <CricketMatchBlock match={match} state={cricketState} />
+            </div>
+          ) : cricketScore ? (
+            <div className="mt-3">
+              <CricketScoreBlock match={match} score={cricketScore} />
             </div>
           ) : scoreInfo ? (
             <div className="mt-3 flex items-center justify-between">

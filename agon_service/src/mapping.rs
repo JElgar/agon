@@ -9,7 +9,7 @@ use poem::error::InternalServerError;
 use crate::detailed_score::DetailedScore;
 use crate::detailed_score::cricket::{
     CricketDelivery, CricketDeliveryExtra, CricketDeliveryWicket, CricketDismissalKind,
-    CricketExtraKind,
+    CricketExtraKind, Overs,
 };
 use crate::live_score::{
     LiveEvent, LiveEventInput, LiveScoreState, NewLiveEventInput,
@@ -34,10 +34,10 @@ use crate::notification::{
 };
 use crate::team::{Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
-    Comment, ConfirmedScore, Location, Match, MatchPlayer, MatchSide, MatchSocial, MatchStatus,
-    MatchType, PendingScore, Photo, Score, ScoreConfirmation, ScoreResponseKind, ScoreSubmission,
-    ScoreSubmissionResponse, ScoreSubmissionStatus, SetsScore, SetsScoreEntry, SimpleScore,
-    SimpleScoreEntry, UserProfile, UserSportStats,
+    Comment, ConfirmedScore, CricketScore, CricketScoreInnings, Location, Match, MatchPlayer,
+    MatchSide, MatchSocial, MatchStatus, MatchType, PendingScore, Photo, Score, ScoreConfirmation,
+    ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus, SetsScore,
+    SetsScoreEntry, SimpleScore, SimpleScoreEntry, UserProfile, UserSportStats,
 };
 use agon_core::dao::error::DaoError;
 use agon_core::dao::live_score_ops::NewLiveEvent;
@@ -45,16 +45,16 @@ use agon_core::dao::records::{
     CommentRecord, ConfirmedScoreRecord, CricketDeliveryExtraRecord, CricketDeliveryRecord,
     CricketDeliveryWicketRecord, CricketDismissalKindRecord, CricketExtraKindRecord,
     CricketFormatRecord, CricketInningsEndEventRecord, CricketInningsStartEventRecord,
-    CricketLiveEventRecord, CricketRetireEventRecord, EmbeddedInvitationRecord,
-    FootballCardColorRecord, FootballCardEventRecord, FootballFormatRecord,
-    FootballGoalEventRecord, FootballLiveEventRecord, FootballPeriodEventRecord,
-    FootballPeriodRecord, FootballSubstitutionEventRecord, InningsEndReasonRecord,
-    InvitationContextRecord, InvitationKindRecord, InvitationRecord, LiveEventPayloadRecord,
-    LiveEventRecord, MatchDetailedScoreRecord, MatchFormatRecord, MatchLikeRecord,
-    MatchPlayerRecord, MatchRecord, MatchSideRecord, NotificationKindRecord, NotificationRecord,
-    PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord,
-    ScoreSubmissionRecord, SetsScoreEntryRecord, SimpleScoreEntryRecord, TeamMemberRecord,
-    TeamRecord, UserRecord, UserSportStatsRecord,
+    CricketLiveEventRecord, CricketRetireEventRecord, CricketScoreInningsRecord,
+    EmbeddedInvitationRecord, FootballCardColorRecord, FootballCardEventRecord,
+    FootballFormatRecord, FootballGoalEventRecord, FootballLiveEventRecord,
+    FootballPeriodEventRecord, FootballPeriodRecord, FootballSubstitutionEventRecord,
+    InningsEndReasonRecord, InvitationContextRecord, InvitationKindRecord, InvitationRecord,
+    LiveEventPayloadRecord, LiveEventRecord, MatchDetailedScoreRecord, MatchFormatRecord,
+    MatchLikeRecord, MatchPlayerRecord, MatchRecord, MatchSideRecord, NotificationKindRecord,
+    NotificationRecord, OversRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord,
+    ScoreResponseRecord, ScoreSubmissionRecord, SetsScoreEntryRecord, SimpleScoreEntryRecord,
+    TeamMemberRecord, TeamRecord, UserRecord, UserSportStatsRecord,
 };
 use poem_openapi::types::{ParseFromJSON, ToJSON};
 
@@ -188,6 +188,33 @@ pub fn score_from_record(rec: &ScoreRecord) -> Score {
                 })
                 .collect(),
         }),
+        ScoreRecord::Cricket { innings } => Score::Cricket(CricketScore {
+            innings: innings
+                .iter()
+                .map(|i| CricketScoreInnings {
+                    batting_side_id: i.batting_side_id.clone(),
+                    bowling_side_id: i.bowling_side_id.clone(),
+                    runs: i.runs,
+                    wickets: i.wickets,
+                    overs: overs_from_record(&i.overs),
+                    declared: i.declared,
+                })
+                .collect(),
+        }),
+    }
+}
+
+fn overs_from_record(rec: &OversRecord) -> Overs {
+    Overs {
+        overs: rec.overs,
+        balls: rec.balls,
+    }
+}
+
+fn overs_to_record(overs: &Overs) -> OversRecord {
+    OversRecord {
+        overs: overs.overs,
+        balls: overs.balls,
     }
 }
 
@@ -210,6 +237,20 @@ pub fn score_to_record(score: &Score) -> ScoreRecord {
                 .map(|e| SetsScoreEntryRecord {
                     side_id: e.side_id.clone(),
                     sets: e.sets.clone(),
+                })
+                .collect(),
+        },
+        Score::Cricket(s) => ScoreRecord::Cricket {
+            innings: s
+                .innings
+                .iter()
+                .map(|i| CricketScoreInningsRecord {
+                    batting_side_id: i.batting_side_id.clone(),
+                    bowling_side_id: i.bowling_side_id.clone(),
+                    runs: i.runs,
+                    wickets: i.wickets,
+                    overs: overs_to_record(&i.overs),
+                    declared: i.declared,
                 })
                 .collect(),
         },
@@ -1266,6 +1307,68 @@ mod tests {
         for format in formats {
             let original_json = format.to_json();
             let round_tripped = match_format_from_record(&match_format_to_record(&format));
+            assert_eq!(original_json, round_tripped.to_json());
+        }
+    }
+
+    #[test]
+    fn score_round_trips_through_dao_mirror() {
+        let scores = vec![
+            Score::Simple(SimpleScore {
+                entries: vec![
+                    SimpleScoreEntry {
+                        side_id: "side_red".into(),
+                        points: 3,
+                    },
+                    SimpleScoreEntry {
+                        side_id: "side_blue".into(),
+                        points: 1,
+                    },
+                ],
+            }),
+            Score::Sets(SetsScore {
+                entries: vec![
+                    SetsScoreEntry {
+                        side_id: "side_red".into(),
+                        sets: vec![6, 4, 7],
+                    },
+                    SetsScoreEntry {
+                        side_id: "side_blue".into(),
+                        sets: vec![4, 6, 5],
+                    },
+                ],
+            }),
+            Score::Cricket(CricketScore {
+                innings: vec![
+                    CricketScoreInnings {
+                        batting_side_id: "warriors".into(),
+                        bowling_side_id: "mill_lane".into(),
+                        runs: 180,
+                        wickets: 6,
+                        overs: Overs {
+                            overs: 20,
+                            balls: 0,
+                        },
+                        declared: false,
+                    },
+                    CricketScoreInnings {
+                        batting_side_id: "mill_lane".into(),
+                        bowling_side_id: "warriors".into(),
+                        runs: 165,
+                        wickets: 10,
+                        overs: Overs {
+                            overs: 19,
+                            balls: 3,
+                        },
+                        declared: false,
+                    },
+                ],
+            }),
+        ];
+
+        for score in scores {
+            let original_json = score.to_json();
+            let round_tripped = score_from_record(&score_to_record(&score));
             assert_eq!(original_json, round_tripped.to_json());
         }
     }

@@ -120,17 +120,24 @@ function MatchDetail({
   const aWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
   const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
 
-  // Live-scoring state, when this is a football match currently being scored
-  // live — takes over the score block below (and the entry button becomes
-  // "Continue scoring"). Not fetched for other sports/statuses, which don't
-  // have a live event log to speak of.
+  // Live-scoring state — takes over the score block below (and the entry
+  // button becomes "Continue scoring") while a match is actually in
+  // progress. Cricket's completed score is nowhere but this live event log
+  // (finishing a match only submits a total-runs summary, see
+  // `CricketLiveScoringPage`), so keep reading it after the match ends too —
+  // otherwise the overs/wickets detail and result line vanish the moment the
+  // status flips. Not fetched for other sports/statuses, which don't have a
+  // live event log to speak of.
+  const isReallyLive = match.status === 'in_progress'
   const live = useLiveScore(match.id, {
-    enabled: isLiveSport && match.status === 'in_progress',
+    enabled:
+      isLiveSport &&
+      (isReallyLive || (match.match_type === 'cricket' && match.status === 'completed')),
     refetchInterval: 15000,
   })
   const footballState = footballLiveState(live.data)
   const cricketState = cricketLiveState(live.data)
-  const hasLiveState = !!footballState || !!cricketState
+  const hasLiveState = (!!footballState || !!cricketState) && isReallyLive
   // Football's setup screen also gates starting the clock; cricket has no
   // equivalent preferences step, so it goes straight into scoring.
   const liveEntryPath =
@@ -179,7 +186,7 @@ function MatchDetail({
             </div>
           ) : cricketState ? (
             <div className="mt-3">
-              <CricketMatchBlock match={match} state={cricketState} />
+              <CricketMatchBlock match={match} state={cricketState} live={isReallyLive} />
             </div>
           ) : scoreInfo ? (
             <div className="mt-3 flex items-center justify-between">

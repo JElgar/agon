@@ -1,5 +1,6 @@
 import type { components } from '@/types/api'
 import { memberName } from './members'
+import type { CricketFormat } from './matchFormat'
 
 export type CricketDelivery = components['schemas']['CricketDelivery']
 export type CricketInnings = components['schemas']['CricketInnings']
@@ -145,12 +146,66 @@ export function matchTotalsBySide(state: CricketLiveState): Record<string, numbe
   return totals
 }
 
+/**
+ * A one-line summary of where the match stands: the run target while the
+ * side batting last is chasing ("England need 200 to win"), or the final
+ * margin once every innings the format allows has been played ("England won
+ * by 4 wickets" / "Australia won by 100 runs" / "Match tied"). `null` when
+ * neither applies yet — e.g. mid-match with more innings still to come.
+ *
+ * The wickets margin is "wickets not yet lost" against the batting side's
+ * own roster size (players registered on that side, minus one — the last
+ * batter has no partner left to bat with), falling back to the standard 10
+ * if the roster looks too small to make sense of (e.g. not fully set up).
+ */
+export function cricketStateDescription(
+  match: Pick<Match, 'sides' | 'players'>,
+  state: CricketLiveState,
+  format: Pick<CricketFormat, 'innings_per_side'>,
+): string | null {
+  if (state.innings.length === 0) return null
+  const quota = match.sides.length * format.innings_per_side
+  const totals = matchTotalsBySide(state)
+
+  const open = currentInnings(state)
+  if (open) {
+    // Only the match's final innings has a fixed target — every earlier
+    // innings (including any the batting side has already had, in a
+    // multi-innings format) is done, so what's left to chase is known.
+    if (state.innings.length !== quota) return null
+    const battingTotal = totals[open.batting_side_id] ?? 0
+    const bowlingTotal = totals[open.bowling_side_id] ?? 0
+    const runsNeeded = bowlingTotal + 1 - battingTotal
+    if (runsNeeded <= 0) return null
+    return `${sideNameFor(match, open.batting_side_id)} need ${runsNeeded} to win`
+  }
+
+  if (!state.awaiting_next_innings || state.innings.length < quota) return null
+  const last = state.innings[state.innings.length - 1]
+  const battingTotal = totals[last.batting_side_id] ?? 0
+  const bowlingTotal = totals[last.bowling_side_id] ?? 0
+  if (battingTotal === bowlingTotal) return 'Match tied'
+  if (battingTotal > bowlingTotal) {
+    const rosterSize = match.players.filter((p) => p.side_id === last.batting_side_id).length
+    const maxWickets = rosterSize > 1 ? rosterSize - 1 : 10
+    const remaining = Math.max(maxWickets - last.wickets, 0)
+    return `${sideNameFor(match, last.batting_side_id)} won by ${remaining} wicket${remaining === 1 ? '' : 's'}`
+  }
+  const margin = bowlingTotal - battingTotal
+  return `${sideNameFor(match, last.bowling_side_id)} won by ${margin} run${margin === 1 ? '' : 's'}`
+}
+
 /** Batters who can't be picked as a new arrival — already dismissed for a
  *  reason other than "retired hurt" (which lets the same batter resume). */
 export function outBattersFor(innings: CricketInnings): string[] {
   return innings.batting
     .filter((b) => b.dismissal && b.dismissal.kind !== 'retired_hurt')
     .map((b) => b.player_id)
+}
+
+/** Display name for a side id: its name, or a neutral fallback. */
+export function sideNameFor(match: Pick<Match, 'sides'>, sideId: string): string {
+  return match.sides.find((s) => s.id === sideId)?.name?.trim() || 'This side'
 }
 
 /** Player display name for a member id, if it's on the roster. */

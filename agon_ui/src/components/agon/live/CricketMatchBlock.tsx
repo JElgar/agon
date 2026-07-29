@@ -4,6 +4,7 @@ import { LiveIndicator } from './LiveIndicator'
 import {
   battingEntryFor,
   battingLine,
+  cricketStateDescription,
   currentInnings,
   currentOverDeliveries,
   deliveryChipLabel,
@@ -11,15 +12,12 @@ import {
   nextBallContext,
   playerNameFor,
   runRate,
+  sideNameFor,
   type CricketLiveState,
 } from '@/lib/cricketScore'
 import { cricketFormat } from '@/lib/matchFormat'
 
 type Match = components['schemas']['Match']
-
-function sideNameFor(match: Match, sideId: string): string {
-  return match.sides.find((s) => s.id === sideId)?.name?.trim() || 'This side'
-}
 
 /** One ball's chip in the "this over" row (mockup: "1  4  W  ·  2"). */
 function BallChip({ label, kind }: { label: string; kind: 'boundary' | 'wicket' | null }) {
@@ -43,8 +41,21 @@ function BallChip({ label, kind }: { label: string; kind: 'boundary' | 'wicket' 
  * caller fetches the live snapshot (`useLiveScore`) and passes the derived
  * cricket state down.
  */
-export function CricketMatchBlock({ match, state }: { match: Match; state: CricketLiveState }) {
+export function CricketMatchBlock({
+  match,
+  state,
+  live = true,
+}: {
+  match: Match
+  state: CricketLiveState
+  /** Whether the match is actually being played right now — gates the
+   *  pulsing "LIVE" pill. A finished match still renders through this
+   *  component (for its overs/wickets detail and result line) but isn't live. */
+  live?: boolean
+}) {
   const innings = currentInnings(state)
+  const format = cricketFormat(match.format)
+  const description = cricketStateDescription(match, state, format)
 
   if (!innings) {
     // Between innings, or nothing bowled yet. Every innings played so far
@@ -53,8 +64,10 @@ export function CricketMatchBlock({ match, state }: { match: Match; state: Crick
     return (
       <div className="rounded-lg bg-muted/50 px-3.5 py-3">
         <div className="flex items-center justify-between">
-          <p className="text-sm text-muted-foreground">Innings break</p>
-          <LiveIndicator />
+          <p className={cn('text-sm font-medium', description ? 'text-primary' : 'text-muted-foreground')}>
+            {description || 'Innings break'}
+          </p>
+          {live && <LiveIndicator />}
         </div>
         {state.innings.length > 0 && (
           <div className="mt-1 space-y-0.5">
@@ -74,7 +87,6 @@ export function CricketMatchBlock({ match, state }: { match: Match; state: Crick
 
   const battingName = sideNameFor(match, innings.batting_side_id)
   const bowlingName = sideNameFor(match, innings.bowling_side_id)
-  const format = cricketFormat(match.format)
   const next = nextBallContext(innings, format.balls_per_over)
   const striker = battingEntryFor(innings, next.strikerPlayerId)
   const nonStriker = battingEntryFor(innings, next.nonStrikerPlayerId)
@@ -109,8 +121,11 @@ export function CricketMatchBlock({ match, state }: { match: Match; state: Crick
               )}
             </p>
           )}
+          {description && (
+            <p className="mt-0.5 text-xs font-medium text-primary">{description}</p>
+          )}
         </div>
-        <LiveIndicator />
+        {live && <LiveIndicator />}
       </div>
 
       {overBalls.length > 0 && (

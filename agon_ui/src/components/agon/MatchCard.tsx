@@ -196,13 +196,20 @@ export function MatchCard({
   const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
 
   const isLiveSport = match.match_type === 'football' || match.match_type === 'cricket'
+  const isReallyLive = match.status === 'in_progress'
+  // Cricket's completed score is nowhere but the live event log (finishing a
+  // match only submits a total-runs summary, see `CricketLiveScoringPage`),
+  // so keep reading it after the match ends too — otherwise the overs/wickets
+  // detail and result line vanish the moment the status flips.
   const live = useLiveScore(match.id, {
-    enabled: isLiveSport && match.status === 'in_progress',
+    enabled:
+      isLiveSport &&
+      (isReallyLive || (match.match_type === 'cricket' && match.status === 'completed')),
     refetchInterval: 20000,
   })
   const footballState = footballLiveState(live.data)
   const cricketState = cricketLiveState(live.data)
-  const hasLiveState = !!footballState || !!cricketState
+  const hasLiveState = (!!footballState || !!cricketState) && isReallyLive
 
   const { like_count, comment_count, i_liked } = match.social
   const toggleLike = useToggleLike(match)
@@ -255,7 +262,7 @@ export function MatchCard({
         </div>
       ) : cricketState ? (
         <div className="mx-3.5 mb-3">
-          <CricketMatchBlock match={match} state={cricketState} />
+          <CricketMatchBlock match={match} state={cricketState} live={isReallyLive} />
         </div>
       ) : (
         scoreInfo && (

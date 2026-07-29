@@ -74,6 +74,19 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
     if (next?.bowlerPlayerId) setPickedBowler(null)
   }, [next?.strikerPlayerId, next?.nonStrikerPlayerId, next?.bowlerPlayerId])
 
+  // Lets the scorer step back into the opener/bowler picker after all three
+  // are picked, to fix a mis-tap — only while the innings' very first ball
+  // hasn't been recorded yet, since the picks are still purely local state at
+  // that point (nothing on the server to correct). Once a real delivery
+  // exists corrections need to go through amending/deleting that event
+  // instead (see `live_score::cricket`'s doc comment) — broader in-innings
+  // correction support is a later step.
+  const [editingOpeningPicks, setEditingOpeningPicks] = useState(false)
+  const openingPicksUnconfirmed = innings ? innings.deliveries.length === 0 : false
+  useEffect(() => {
+    if (!openingPicksUnconfirmed) setEditingOpeningPicks(false)
+  }, [openingPicksUnconfirmed])
+
   const [wicketOpen, setWicketOpen] = useState(false)
   const [extraDialog, setExtraDialog] = useState<'no_ball' | 'bye' | null>(null)
   const [endInningsOpen, setEndInningsOpen] = useState(false)
@@ -240,6 +253,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   const effectiveNonStriker = next!.nonStrikerPlayerId ?? pickedNonStriker
   const effectiveBowler = next!.bowlerPlayerId ?? pickedBowler
   const readyToScore = !!effectiveStriker && !!effectiveNonStriker && !!effectiveBowler
+  const showPickerPanel = !readyToScore || editingOpeningPicks
 
   const buildDelivery = (overrides: Partial<CricketDelivery>): CricketDelivery => ({
     over: next!.over,
@@ -259,6 +273,62 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
     appendEvent.mutate(
       { kind: 'InningsEnd', reason },
       { onSuccess: () => setEndInningsOpen(false) },
+    )
+  }
+
+  // The over quota's been fully bowled but nothing on the backend blocks
+  // further deliveries (see `match_format`'s doc comment — enforcement is
+  // intentionally out of scope there), so the picker flow would otherwise
+  // just keep asking for a new bowler forever. Steer the scorer to end the
+  // innings instead once every configured over is used up.
+  const oversComplete =
+    format.overs_per_innings != null &&
+    innings.overs.overs >= format.overs_per_innings &&
+    innings.overs.balls === 0
+
+  if (oversComplete && !next!.bowlerPlayerId) {
+    return (
+      <div className="mx-auto flex max-w-xl flex-col gap-4">
+        {header}
+        <div>
+          <h1 className="text-lg font-semibold">
+            {sideName(battingSide!, 'Side A')} vs {sideName(bowlingSide!, 'Side B')}
+          </h1>
+          <p className="text-sm text-muted-foreground">Overs complete</p>
+        </div>
+        <div className="rounded-xl border bg-card p-4">
+          <p className="text-sm font-medium">{sideName(battingSide!, 'Side A')} batting</p>
+          <p className="mt-0.5 text-3xl font-medium tracking-tight">
+            {innings.runs}/{innings.wickets}
+            <span className="ml-2 text-sm font-normal text-muted-foreground">
+              ({formatOvers(innings.overs)}/{format.overs_per_innings} ov)
+            </span>
+          </p>
+        </div>
+        <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
+          <p className="mb-3 text-sm font-medium">
+            All {format.overs_per_innings} overs bowled — end this innings to continue.
+          </p>
+          <div className="grid grid-cols-2 gap-2">
+            {END_REASONS.map((r) => (
+              <Button
+                key={r.value}
+                variant="outline"
+                size="sm"
+                disabled={appendEvent.isPending}
+                onClick={() => endInnings(r.value)}
+              >
+                {r.label}
+              </Button>
+            ))}
+          </div>
+          {appendEvent.isError && (
+            <p className="mt-2 text-xs text-destructive">
+              Failed to end the innings — try again.
+            </p>
+          )}
+        </div>
+      </div>
     )
   }
 
@@ -339,16 +409,18 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
         </div>
       )}
 
-      {!readyToScore ? (
+      {showPickerPanel ? (
         <div className="rounded-xl border bg-card p-4">
           <p className="mb-3 text-sm font-medium">
-            {!effectiveBowler && (!effectiveStriker || !effectiveNonStriker)
-              ? 'New over, new batter — who is it?'
-              : !effectiveBowler
-                ? "New over — who's bowling?"
-                : 'Wicket! Who is coming in to bat?'}
+            {editingOpeningPicks && readyToScore
+              ? 'Edit your selections'
+              : !effectiveBowler && (!effectiveStriker || !effectiveNonStriker)
+                ? 'New over, new batter — who is it?'
+                : !effectiveBowler
+                  ? "New over — who's bowling?"
+                  : 'Wicket! Who is coming in to bat?'}
           </p>
-          {!effectiveStriker && (
+          {(!effectiveStriker || editingOpeningPicks) && (
             <div className="mb-3">
               <p className="mb-1.5 text-xs text-muted-foreground">Striker</p>
               <PlayerPicker
@@ -359,7 +431,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
               />
             </div>
           )}
-          {!effectiveNonStriker && (
+          {(!effectiveNonStriker || editingOpeningPicks) && (
             <div className="mb-3">
               <p className="mb-1.5 text-xs text-muted-foreground">Non-striker</p>
               <PlayerPicker
@@ -370,7 +442,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
               />
             </div>
           )}
-          {!effectiveBowler && (
+          {(!effectiveBowler || editingOpeningPicks) && (
             <div>
               <p className="mb-1.5 text-xs text-muted-foreground">Bowler</p>
               <PlayerPicker
@@ -381,9 +453,28 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
               />
             </div>
           )}
+          {editingOpeningPicks && readyToScore && (
+            <Button
+              size="sm"
+              className="mt-3"
+              onClick={() => setEditingOpeningPicks(false)}
+            >
+              Done
+            </Button>
+          )}
         </div>
       ) : (
         <div>
+          {openingPicksUnconfirmed && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="mb-2 h-auto px-0 text-xs text-muted-foreground hover:bg-transparent hover:underline"
+              onClick={() => setEditingOpeningPicks(true)}
+            >
+              Edit selections
+            </Button>
+          )}
           <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
             Runs off this ball
           </p>

@@ -1345,7 +1345,10 @@ mod tests {
                         bowling_side_id: "mill_lane".into(),
                         runs: 180,
                         wickets: 6,
-                        overs: Overs { overs: 20, balls: 0 },
+                        overs: Overs {
+                            overs: 20,
+                            balls: 0,
+                        },
                         declared: false,
                     },
                     CricketScoreInnings {
@@ -1353,7 +1356,10 @@ mod tests {
                         bowling_side_id: "warriors".into(),
                         runs: 165,
                         wickets: 10,
-                        overs: Overs { overs: 19, balls: 3 },
+                        overs: Overs {
+                            overs: 19,
+                            balls: 3,
+                        },
                         declared: false,
                     },
                 ],

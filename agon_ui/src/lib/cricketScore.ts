@@ -147,11 +147,16 @@ export function matchTotalsBySide(state: CricketLiveState): Record<string, numbe
 }
 
 /**
- * A one-line summary of where the match stands: the run target while the
- * side batting last is chasing ("England need 200 to win"), or the final
- * margin once every innings the format allows has been played ("England won
- * by 4 wickets" / "Australia won by 100 runs" / "Match tied"). `null` when
- * neither applies yet — e.g. mid-match with more innings still to come.
+ * A one-line summary of where the match stands:
+ *   - Mid-match, once the bowling side has a score on the board to compare
+ *     against: who's ahead on the match aggregate ("England lead by 30 runs").
+ *   - In the match's final innings: the run target for the side chasing
+ *     ("England need 200 to win").
+ *   - Once every innings the format allows has been played: the result
+ *     ("England won by 4 wickets" / "Australia won by 100 runs" / "Match
+ *     tied").
+ * `null` when none of these apply yet — e.g. the match's very first innings,
+ * with nothing yet to lead or chase.
  *
  * The wickets margin is "wickets not yet lost" against the batting side's
  * own roster size (players registered on that side, minus one — the last
@@ -169,15 +174,30 @@ export function cricketStateDescription(
 
   const open = currentInnings(state)
   if (open) {
+    const battingTotal = totals[open.batting_side_id] ?? 0
+    const bowlingTotal = totals[open.bowling_side_id] ?? 0
+
     // Only the match's final innings has a fixed target — every earlier
     // innings (including any the batting side has already had, in a
     // multi-innings format) is done, so what's left to chase is known.
-    if (state.innings.length !== quota) return null
-    const battingTotal = totals[open.batting_side_id] ?? 0
-    const bowlingTotal = totals[open.bowling_side_id] ?? 0
-    const runsNeeded = bowlingTotal + 1 - battingTotal
-    if (runsNeeded <= 0) return null
-    return `${sideNameFor(match, open.batting_side_id)} need ${runsNeeded} to win`
+    if (state.innings.length === quota) {
+      const runsNeeded = bowlingTotal + 1 - battingTotal
+      if (runsNeeded <= 0) return null
+      return `${sideNameFor(match, open.batting_side_id)} need ${runsNeeded} to win`
+    }
+
+    // Not the decider yet — show who's ahead on the match aggregate, once
+    // the bowling side actually has a score on the board to compare against
+    // (there's nothing to lead in the match's very first innings).
+    const bowlingHasBatted = state.innings
+      .slice(0, -1)
+      .some((i) => i.batting_side_id === open.bowling_side_id)
+    if (!bowlingHasBatted) return null
+    const diff = battingTotal - bowlingTotal
+    if (diff === 0) return 'Scores level'
+    const leadingSideId = diff > 0 ? open.batting_side_id : open.bowling_side_id
+    const margin = Math.abs(diff)
+    return `${sideNameFor(match, leadingSideId)} lead by ${margin} run${margin === 1 ? '' : 's'}`
   }
 
   if (!state.awaiting_next_innings || state.innings.length < quota) return null

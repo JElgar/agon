@@ -443,6 +443,7 @@ pub enum FootballLiveEventRecord {
     Card(FootballCardEventRecord),
     Substitution(FootballSubstitutionEventRecord),
     Period(FootballPeriodEventRecord),
+    PenaltyShootoutKick(FootballPenaltyShootoutKickRecord),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -495,9 +496,17 @@ pub enum FootballPeriodRecord {
     HalfTime,
     SecondHalfKickOff,
     FullTime,
+    ExtraTimeKickOff,
     ExtraTimeHalfTime,
+    ExtraTimeSecondHalfKickOff,
     ExtraTimeFullTime,
     PenaltiesComplete,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FootballPenaltyShootoutKickRecord {
+    pub side_id: String,
+    pub scored: bool,
 }
 
 // ---- Cricket live events ----------------------------------------------------

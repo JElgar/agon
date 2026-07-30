@@ -12,8 +12,8 @@ use crate::detailed_score::cricket::{
     CricketExtraKind, Overs,
 };
 use crate::detailed_score::football::{
-    FootballCardColor, FootballCardEvent, FootballGoalEvent, FootballPeriod,
-    FootballSubstitutionEvent,
+    FootballCardColor, FootballCardEvent, FootballGoalEvent, FootballPenaltyShootoutKick,
+    FootballPeriod, FootballSubstitutionEvent,
 };
 use crate::live_score::{
     LiveEvent, LiveEventInput, NewLiveEventInput,
@@ -49,13 +49,14 @@ use agon_core::dao::records::{
     CricketLiveEventRecord, CricketRetireEventRecord, CricketScoreInningsRecord,
     EmbeddedInvitationRecord, FootballCardColorRecord, FootballCardEventRecord,
     FootballFormatRecord, FootballGoalEventRecord, FootballLiveEventRecord,
-    FootballPeriodEventRecord, FootballPeriodRecord, FootballSubstitutionEventRecord,
-    InningsEndReasonRecord, InvitationContextRecord, InvitationKindRecord, InvitationRecord,
-    LiveEventPayloadRecord, LiveEventRecord, MatchDetailedScoreRecord, MatchFormatRecord,
-    MatchLikeRecord, MatchPlayerRecord, MatchRecord, MatchSideRecord, NotificationKindRecord,
-    NotificationRecord, OversRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord,
-    ScoreResponseRecord, ScoreSubmissionRecord, SetsScoreEntryRecord, SimpleScoreEntryRecord,
-    TeamMemberRecord, TeamRecord, UserRecord, UserSportStatsRecord,
+    FootballPenaltyShootoutKickRecord, FootballPeriodEventRecord, FootballPeriodRecord,
+    FootballSubstitutionEventRecord, InningsEndReasonRecord, InvitationContextRecord,
+    InvitationKindRecord, InvitationRecord, LiveEventPayloadRecord, LiveEventRecord,
+    MatchDetailedScoreRecord, MatchFormatRecord, MatchLikeRecord, MatchPlayerRecord, MatchRecord,
+    MatchSideRecord, NotificationKindRecord, NotificationRecord, OversRecord, PendingScoreRecord,
+    ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord, ScoreSubmissionRecord,
+    SetsScoreEntryRecord, SimpleScoreEntryRecord, TeamMemberRecord, TeamRecord, UserRecord,
+    UserSportStatsRecord,
 };
 use poem_openapi::types::{ParseFromJSON, ToJSON};
 
@@ -783,10 +784,20 @@ fn football_live_event_to_record(event: &FootballLiveEvent) -> FootballLiveEvent
                     FootballPeriod::HalfTime => FootballPeriodRecord::HalfTime,
                     FootballPeriod::SecondHalfKickOff => FootballPeriodRecord::SecondHalfKickOff,
                     FootballPeriod::FullTime => FootballPeriodRecord::FullTime,
+                    FootballPeriod::ExtraTimeKickOff => FootballPeriodRecord::ExtraTimeKickOff,
                     FootballPeriod::ExtraTimeHalfTime => FootballPeriodRecord::ExtraTimeHalfTime,
+                    FootballPeriod::ExtraTimeSecondHalfKickOff => {
+                        FootballPeriodRecord::ExtraTimeSecondHalfKickOff
+                    }
                     FootballPeriod::ExtraTimeFullTime => FootballPeriodRecord::ExtraTimeFullTime,
                     FootballPeriod::PenaltiesComplete => FootballPeriodRecord::PenaltiesComplete,
                 },
+            })
+        }
+        FootballLiveEvent::PenaltyShootoutKick(k) => {
+            FootballLiveEventRecord::PenaltyShootoutKick(FootballPenaltyShootoutKickRecord {
+                side_id: k.side_id.clone(),
+                scored: k.scored,
             })
         }
     }
@@ -825,11 +836,21 @@ fn football_live_event_from_record(rec: &FootballLiveEventRecord) -> FootballLiv
                 FootballPeriodRecord::HalfTime => FootballPeriod::HalfTime,
                 FootballPeriodRecord::SecondHalfKickOff => FootballPeriod::SecondHalfKickOff,
                 FootballPeriodRecord::FullTime => FootballPeriod::FullTime,
+                FootballPeriodRecord::ExtraTimeKickOff => FootballPeriod::ExtraTimeKickOff,
                 FootballPeriodRecord::ExtraTimeHalfTime => FootballPeriod::ExtraTimeHalfTime,
+                FootballPeriodRecord::ExtraTimeSecondHalfKickOff => {
+                    FootballPeriod::ExtraTimeSecondHalfKickOff
+                }
                 FootballPeriodRecord::ExtraTimeFullTime => FootballPeriod::ExtraTimeFullTime,
                 FootballPeriodRecord::PenaltiesComplete => FootballPeriod::PenaltiesComplete,
             },
         }),
+        FootballLiveEventRecord::PenaltyShootoutKick(k) => {
+            FootballLiveEvent::PenaltyShootoutKick(FootballPenaltyShootoutKick {
+                side_id: k.side_id.clone(),
+                scored: k.scored,
+            })
+        }
     }
 }
 
@@ -1260,7 +1281,17 @@ mod tests {
                 minute: Some(70),
             }),
             FootballLiveEvent::Period(FootballPeriodEvent {
+                period: FootballPeriod::ExtraTimeKickOff,
+            }),
+            FootballLiveEvent::Period(FootballPeriodEvent {
+                period: FootballPeriod::ExtraTimeSecondHalfKickOff,
+            }),
+            FootballLiveEvent::Period(FootballPeriodEvent {
                 period: FootballPeriod::ExtraTimeFullTime,
+            }),
+            FootballLiveEvent::PenaltyShootoutKick(FootballPenaltyShootoutKick {
+                side_id: "riverside".into(),
+                scored: true,
             }),
         ];
 

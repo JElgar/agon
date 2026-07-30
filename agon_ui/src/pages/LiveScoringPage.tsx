@@ -10,6 +10,7 @@ import { useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
 import { RecordEventDialog, type EventKind } from '@/components/agon/live/RecordEventDialog'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { CricketLiveScoringPage } from './CricketLiveScoringPage'
+import { footballFormat } from '@/lib/matchFormat'
 import {
   currentMinute,
   describeEvent,
@@ -19,8 +20,11 @@ import {
   loadTrackPrefs,
   nextPeriodForPhase,
   nextPhaseActionLabel,
+  penaltiesComplete,
   phaseFromState,
   phaseLabel,
+  shootoutScoreFor,
+  type ClockPhase,
 } from '@/lib/liveScore'
 
 type Match = components['schemas']['Match']
@@ -103,12 +107,15 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
   const prefs = loadTrackPrefs(match.id)
   const [dialogKind, setDialogKind] = useState<EventKind | null>(null)
 
-  // Concludes the match once full-time is recorded: submits the goal tally
-  // as a `Simple` score (the same shape `MatchResultEditor` writes) and
-  // marks the match `completed`, the way a manual "Add result" would — so it
-  // enters the normal confirmation flow rather than being auto-confirmed.
-  // No `detailed_score` here: the goals/cards/subs/period markers recorded
-  // live are already persisted against the match as they happened. Reads
+  // Concludes the match once it's decided (full-time, extra-time full-time,
+  // or the penalty shootout is done): submits the goal tally — normal time
+  // plus extra time, never shootout kicks — as a `Simple` score (the same
+  // shape `MatchResultEditor` writes) and marks the match `completed`, the
+  // way a manual "Add result" would — so it enters the normal confirmation
+  // flow rather than being auto-confirmed. Still level on goals falls back to
+  // the penalty shootout tally to pick a winner. No `detailed_score` here:
+  // the goals/cards/subs/period markers/shootout kicks recorded live are
+  // already persisted against the match as they happened. Reads
   // `detailedScore.data` directly (rather than closing over the `state`
   // computed below) so this hook can be declared before the loading early
   // return, same as every other hook in this component.
@@ -129,7 +136,13 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
         ],
       } as unknown as UpdateMatchInput['score']
       const body: UpdateMatchInput = { score, status: 'completed' }
-      if (a !== b) body.winner_side_id = a > b ? aId : bId
+      if (a !== b) {
+        body.winner_side_id = a > b ? aId : bId
+      } else if (detail) {
+        const penA = shootoutScoreFor(detail, aId)
+        const penB = shootoutScoreFor(detail, bId)
+        if (penA !== penB) body.winner_side_id = penA > penB ? aId : bId
+      }
       const { error } = await fetchClient.PATCH('/matches/{match_id}', {
         params: { path: { match_id: match.id } },
         body,
@@ -156,17 +169,39 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
   const state = footballDetailFrom(detailedScore.data)
   const goalsFor = (sideId: string | undefined) =>
     state?.score.find((s) => s.side_id === sideId)?.goals ?? 0
+  const format = footballFormat(match.format)
+  const aId = match.sides[0]?.id
+  const bId = match.sides[1]?.id
 
   // Before the first event, there's no snapshot yet at all — treat that the
   // same as an explicit "not started" phase (kickoff just hasn't happened).
   const phase = state ? phaseFromState(state) : 'not_started'
   const minute = state ? currentMinute(state, now) : null
+  const isDraw = !!state && goalsFor(aId) === goalsFor(bId)
+  const progressionCtx = { isDraw, extraTime: format.extra_time }
 
   const handleHalfFt = () => {
-    const period = nextPeriodForPhase(phase)
+    const period = nextPeriodForPhase(phase, progressionCtx)
     if (!period) return
     append.mutate({ kind: 'Period', period })
   }
+
+  // These phases are where the match is up for grabs on a period-marker
+  // "advance the clock" tap (kickoff/half-time/full-time and their extra-time
+  // equivalents). `full_time`/`extra_time_full_time` are deliberately
+  // excluded — they're decision points (finish, or continue into extra
+  // time/penalties) handled by the dedicated panel below instead of this
+  // grid tile, and `penalties` isn't clocked at all (see `ClockPhase`).
+  const advanceClockPhases: ClockPhase[] = [
+    'not_started',
+    'first_half',
+    'half_time',
+    'second_half',
+    'extra_time_first_half',
+    'extra_time_half_time',
+    'extra_time_second_half',
+  ]
+  const showAdvanceClockTile = advanceClockPhases.includes(phase)
 
   const actions: {
     key: EventKind | 'half_ft'
@@ -174,29 +209,48 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
     icon: React.ReactNode
     onClick: () => void
     disabled?: boolean
-  }[] = [
-    { key: 'goal', label: 'Goal', icon: <CircleDot className="size-5" />, onClick: () => setDialogKind('goal') },
-    ...(prefs.cards
-      ? [{ key: 'card' as const, label: 'Card', icon: <Flag className="size-5" />, onClick: () => setDialogKind('card') }]
-      : []),
-    ...(prefs.substitutions
-      ? [
-          {
-            key: 'substitution' as const,
-            label: 'Sub',
-            icon: <Repeat2 className="size-5" />,
-            onClick: () => setDialogKind('substitution'),
-          },
+  }[] =
+    phase === 'penalties'
+      ? []
+      : [
+          { key: 'goal', label: 'Goal', icon: <CircleDot className="size-5" />, onClick: () => setDialogKind('goal') },
+          ...(prefs.cards
+            ? [{ key: 'card' as const, label: 'Card', icon: <Flag className="size-5" />, onClick: () => setDialogKind('card') }]
+            : []),
+          ...(prefs.substitutions
+            ? [
+                {
+                  key: 'substitution' as const,
+                  label: 'Sub',
+                  icon: <Repeat2 className="size-5" />,
+                  onClick: () => setDialogKind('substitution'),
+                },
+              ]
+            : []),
+          ...(showAdvanceClockTile
+            ? [
+                {
+                  key: 'half_ft' as const,
+                  label: nextPhaseActionLabel(phase, progressionCtx),
+                  icon: <TimerReset className="size-5" />,
+                  onClick: handleHalfFt,
+                  disabled: nextPeriodForPhase(phase, progressionCtx) === null,
+                },
+              ]
+            : []),
         ]
-      : []),
-    {
-      key: 'half_ft',
-      label: nextPhaseActionLabel(phase),
-      icon: <TimerReset className="size-5" />,
-      onClick: handleHalfFt,
-      disabled: nextPeriodForPhase(phase) === null,
-    },
-  ]
+
+  // At full-time/extra-time-full-time still level, the format may call for
+  // more play — offer it, with an explicit override to finish as a draw
+  // anyway (the format is a plan, not a rule the organiser is locked into).
+  // Otherwise (decided on goals, or level with no more play configured) the
+  // match is ready to finish. The penalty shootout has its own completion
+  // signal (`penaltiesComplete`) instead of a phase-advance action.
+  const decidingPhase = phase === 'full_time' || phase === 'extra_time_full_time'
+  const continuationAvailable =
+    decidingPhase && isDraw && (phase === 'full_time' ? format.extra_time : format.penalties)
+  const readyToFinish =
+    (decidingPhase && !continuationAvailable) || (phase === 'penalties' && !!state && penaltiesComplete(state))
 
   const events = state ? eventsFromDetail(state).reverse() : []
 
@@ -221,45 +275,124 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
           <p className="flex-1 truncate text-sm font-medium">{nameA}</p>
           <div className="px-3 text-center">
             <div className="text-3xl font-medium tracking-tight">
-              {goalsFor(match.sides[0]?.id)}
+              {goalsFor(aId)}
               <span className="text-muted-foreground">–</span>
-              {goalsFor(match.sides[1]?.id)}
+              {goalsFor(bId)}
             </div>
             <div className="mt-0.5 text-xs text-primary">
               {minute !== null && `${minute}' · `}
               {phaseLabel(phase)}
             </div>
+            {phase === 'penalties' && (
+              <div className="mt-1 text-lg font-medium tracking-tight text-muted-foreground">
+                {state && shootoutScoreFor(state, aId)}
+                <span className="mx-1 text-xs">pens</span>
+                {state && shootoutScoreFor(state, bId)}
+              </div>
+            )}
           </div>
           <p className="flex-1 truncate text-right text-sm font-medium">{nameB}</p>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        {actions.map((a) => (
-          <button
-            key={a.key}
-            type="button"
-            disabled={a.disabled}
-            onClick={a.onClick}
-            className="flex flex-col items-center gap-1.5 rounded-xl border bg-card p-5 text-sm font-medium transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {a.icon}
-            {a.label}
-          </button>
-        ))}
-      </div>
+      {actions.length > 0 && (
+        <div className="grid grid-cols-2 gap-3">
+          {actions.map((a) => (
+            <button
+              key={a.key}
+              type="button"
+              disabled={a.disabled}
+              onClick={a.onClick}
+              className="flex flex-col items-center gap-1.5 rounded-xl border bg-card p-5 text-sm font-medium transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {a.icon}
+              {a.label}
+            </button>
+          ))}
+        </div>
+      )}
 
-      {phase === 'full_time' && (
-        <>
-          <Button size="lg" disabled={finishMatch.isPending} onClick={() => finishMatch.mutate()}>
-            {finishMatch.isPending ? 'Finishing…' : 'Finish match'}
+      {phase === 'penalties' && state && !penaltiesComplete(state) && (
+        <div className="grid grid-cols-2 gap-3">
+          {([
+            [aId, nameA],
+            [bId, nameB],
+          ] as const).map(([sideId, name]) => (
+            <div key={sideId} className="flex flex-col gap-2 rounded-xl border bg-card p-4">
+              <p className="truncate text-center text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                {name}
+              </p>
+              <Button
+                variant="outline"
+                disabled={append.isPending || !sideId}
+                onClick={() => sideId && append.mutate({ kind: 'PenaltyShootoutKick', side_id: sideId, scored: true })}
+              >
+                Scored
+              </Button>
+              <Button
+                variant="ghost"
+                disabled={append.isPending || !sideId}
+                onClick={() => sideId && append.mutate({ kind: 'PenaltyShootoutKick', side_id: sideId, scored: false })}
+              >
+                Missed
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {phase === 'penalties' && state && state.penalty_shootout.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {state.penalty_shootout.map((kick, i) => (
+            <span
+              key={i}
+              className={`flex size-7 items-center justify-center rounded-full text-xs font-semibold ${
+                kick.scored ? 'bg-primary/15 text-primary' : 'bg-muted text-muted-foreground'
+              }`}
+              title={kick.side_id === aId ? nameA : nameB}
+            >
+              {kick.scored ? '✓' : '✗'}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {phase === 'penalties' && state && !penaltiesComplete(state) && (
+        <Button
+          variant="outline"
+          disabled={append.isPending}
+          onClick={() => append.mutate({ kind: 'Period', period: 'penalties_complete' })}
+        >
+          End penalties
+        </Button>
+      )}
+
+      {continuationAvailable && (
+        <div className="flex flex-col gap-2">
+          <Button size="lg" disabled={append.isPending} onClick={handleHalfFt}>
+            {nextPhaseActionLabel(phase, progressionCtx)}
           </Button>
-          {finishMatch.isError && (
-            <p className="text-center text-xs text-destructive">
-              {(finishMatch.error as Error).message}
-            </p>
-          )}
-        </>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={finishMatch.isPending}
+            onClick={() => finishMatch.mutate()}
+          >
+            Or finish as a draw
+          </Button>
+        </div>
+      )}
+
+      {readyToFinish && (
+        <Button size="lg" disabled={finishMatch.isPending} onClick={() => finishMatch.mutate()}>
+          {finishMatch.isPending ? 'Finishing…' : 'Finish match'}
+        </Button>
+      )}
+
+      {finishMatch.isError && (
+        <p className="text-center text-xs text-destructive">
+          {(finishMatch.error as Error).message}
+        </p>
       )}
 
       <Link

@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use poem_openapi::{Object, Union};
 
 use crate::detailed_score::football::{
-    FootballCardEvent, FootballDetail, FootballGoalEvent, FootballPeriod, FootballSideGoals,
-    FootballSubstitutionEvent,
+    FootballCardEvent, FootballDetail, FootballGoalEvent, FootballPenaltyShootoutKick,
+    FootballPeriod, FootballShootoutTally, FootballSideGoals, FootballSubstitutionEvent,
 };
 
 /// Football live-scoring events, nested under the outer sport union
@@ -20,6 +20,9 @@ pub enum FootballLiveEvent {
     Card(FootballCardEvent),
     Substitution(FootballSubstitutionEvent),
     Period(FootballPeriodEvent),
+    /// Reuses `detailed_score::football::FootballPenaltyShootoutKick`
+    /// verbatim, same as `Goal`.
+    PenaltyShootoutKick(FootballPenaltyShootoutKick),
 }
 
 #[derive(Object, Clone)]
@@ -42,6 +45,8 @@ impl FootballDetail {
             substitutions: Vec::new(),
             period: None,
             period_times: HashMap::new(),
+            penalty_shootout: Vec::new(),
+            penalty_shootout_score: Vec::new(),
         };
         for (occurred_at, event) in events {
             detail.apply_event(*occurred_at, event);
@@ -80,6 +85,23 @@ impl FootballDetail {
             FootballLiveEvent::Period(p) => {
                 self.period_times.insert(p.period, occurred_at);
                 self.period = Some(p.period);
+            }
+            FootballLiveEvent::PenaltyShootoutKick(k) => {
+                if k.scored {
+                    if let Some(s) = self
+                        .penalty_shootout_score
+                        .iter_mut()
+                        .find(|s| s.side_id == k.side_id)
+                    {
+                        s.scored += 1;
+                    } else {
+                        self.penalty_shootout_score.push(FootballShootoutTally {
+                            side_id: k.side_id.clone(),
+                            scored: 1,
+                        });
+                    }
+                }
+                self.penalty_shootout.push(k.clone());
             }
         }
     }
@@ -212,9 +234,21 @@ mod tests {
     fn extra_time_and_penalties_markers_get_timestamps_too() {
         let events = vec![
             (
-                ts(120),
+                ts(90),
+                FootballLiveEvent::Period(FootballPeriodEvent {
+                    period: FootballPeriod::ExtraTimeKickOff,
+                }),
+            ),
+            (
+                ts(105),
                 FootballLiveEvent::Period(FootballPeriodEvent {
                     period: FootballPeriod::ExtraTimeHalfTime,
+                }),
+            ),
+            (
+                ts(120),
+                FootballLiveEvent::Period(FootballPeriodEvent {
+                    period: FootballPeriod::ExtraTimeSecondHalfKickOff,
                 }),
             ),
             (
@@ -234,7 +268,17 @@ mod tests {
         let detail = FootballDetail::from_events(&events);
 
         assert_eq!(
+            detail.period_times.get(&FootballPeriod::ExtraTimeKickOff),
+            Some(&ts(90))
+        );
+        assert_eq!(
             detail.period_times.get(&FootballPeriod::ExtraTimeHalfTime),
+            Some(&ts(105))
+        );
+        assert_eq!(
+            detail
+                .period_times
+                .get(&FootballPeriod::ExtraTimeSecondHalfKickOff),
             Some(&ts(120))
         );
         assert_eq!(
@@ -245,6 +289,62 @@ mod tests {
             detail.period_times.get(&FootballPeriod::PenaltiesComplete),
             Some(&ts(160))
         );
+    }
+
+    #[test]
+    fn penalty_shootout_kicks_tally_scored_only() {
+        let events = vec![
+            (
+                ts(160),
+                FootballLiveEvent::PenaltyShootoutKick(FootballPenaltyShootoutKick {
+                    side_id: "riverside".into(),
+                    scored: true,
+                }),
+            ),
+            (
+                ts(161),
+                FootballLiveEvent::PenaltyShootoutKick(FootballPenaltyShootoutKick {
+                    side_id: "oak_park".into(),
+                    scored: false,
+                }),
+            ),
+            (
+                ts(162),
+                FootballLiveEvent::PenaltyShootoutKick(FootballPenaltyShootoutKick {
+                    side_id: "riverside".into(),
+                    scored: true,
+                }),
+            ),
+            (
+                ts(163),
+                FootballLiveEvent::PenaltyShootoutKick(FootballPenaltyShootoutKick {
+                    side_id: "oak_park".into(),
+                    scored: true,
+                }),
+            ),
+        ];
+
+        let detail = FootballDetail::from_events(&events);
+
+        assert_eq!(detail.penalty_shootout.len(), 4);
+        // Only sides with at least one scored kick get a tally entry — same
+        // "absence means zero" convention as `score`/`FootballSideGoals`.
+        assert_eq!(detail.penalty_shootout_score.len(), 2);
+        let riverside = detail
+            .penalty_shootout_score
+            .iter()
+            .find(|s| s.side_id == "riverside")
+            .unwrap();
+        assert_eq!(riverside.scored, 2);
+        let oak_park = detail
+            .penalty_shootout_score
+            .iter()
+            .find(|s| s.side_id == "oak_park")
+            .unwrap();
+        assert_eq!(oak_park.scored, 1);
+        // A shootout kick never counts as a match goal.
+        assert!(detail.score.is_empty());
+        assert!(detail.goals.is_empty());
     }
 
     #[test]
@@ -289,6 +389,8 @@ mod tests {
             substitutions: Vec::new(),
             period: None,
             period_times: HashMap::new(),
+            penalty_shootout: Vec::new(),
+            penalty_shootout_score: Vec::new(),
         };
         for (occurred_at, event) in &events {
             incremental.apply_event(*occurred_at, event);

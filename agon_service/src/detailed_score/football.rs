@@ -27,6 +27,17 @@ pub struct FootballDetail {
     /// shape) so a new kind of marker — extra time, a drinks break — doesn't
     /// need a new field each time.
     pub period_times: HashMap<FootballPeriod, chrono::DateTime<chrono::Utc>>,
+    /// Every penalty-shootout kick recorded, in order taken. Separate from
+    /// `goals`/`score` — a shootout kick never counts as a match goal, only
+    /// towards `penalty_shootout_score` — since the scoreline it decides
+    /// (e.g. "1-1, Riverside win 4-3 on penalties") keeps the 90/120-minute
+    /// score and the shootout tally visually distinct, same as it's reported
+    /// in the real world.
+    pub penalty_shootout: Vec<FootballPenaltyShootoutKick>,
+    /// Running shootout tally (kicks scored, not kicks taken) per side,
+    /// derived from `penalty_shootout` the same way `score` is derived from
+    /// `goals`.
+    pub penalty_shootout_score: Vec<FootballShootoutTally>,
 }
 
 /// A side's running goal tally, derived from the event log (a convenience for
@@ -73,6 +84,23 @@ pub struct FootballSubstitutionEvent {
     pub minute: Option<u32>,
 }
 
+/// One kick in a penalty shootout.
+#[derive(Object, Clone)]
+pub struct FootballPenaltyShootoutKick {
+    /// The side taking this kick.
+    pub side_id: String,
+    pub scored: bool,
+}
+
+/// A side's shootout tally (kicks scored so far) — the penalty-shootout
+/// equivalent of `FootballSideGoals`, kept as its own type since "goals"
+/// would be a misnomer for a shootout kick.
+#[derive(Object, Clone)]
+pub struct FootballShootoutTally {
+    pub side_id: String,
+    pub scored: u32,
+}
+
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[oai(rename_all = "snake_case")]
 pub enum FootballPeriod {
@@ -88,7 +116,14 @@ pub enum FootballPeriod {
     /// left off, not from a fixed 45').
     SecondHalfKickOff,
     FullTime,
+    /// Kickoff of extra time's first half — same role as `KickOff`, one level
+    /// up. Only recorded if the match is level at `FullTime` and the format
+    /// plays extra time.
+    ExtraTimeKickOff,
     ExtraTimeHalfTime,
+    /// Kickoff of extra time's second half — same role as
+    /// `SecondHalfKickOff`.
+    ExtraTimeSecondHalfKickOff,
     ExtraTimeFullTime,
     PenaltiesComplete,
 }
@@ -104,7 +139,9 @@ impl std::fmt::Display for FootballPeriod {
             FootballPeriod::HalfTime => "half_time",
             FootballPeriod::SecondHalfKickOff => "second_half_kick_off",
             FootballPeriod::FullTime => "full_time",
+            FootballPeriod::ExtraTimeKickOff => "extra_time_kick_off",
             FootballPeriod::ExtraTimeHalfTime => "extra_time_half_time",
+            FootballPeriod::ExtraTimeSecondHalfKickOff => "extra_time_second_half_kick_off",
             FootballPeriod::ExtraTimeFullTime => "extra_time_full_time",
             FootballPeriod::PenaltiesComplete => "penalties_complete",
         })
@@ -120,7 +157,9 @@ impl std::str::FromStr for FootballPeriod {
             "half_time" => Ok(FootballPeriod::HalfTime),
             "second_half_kick_off" => Ok(FootballPeriod::SecondHalfKickOff),
             "full_time" => Ok(FootballPeriod::FullTime),
+            "extra_time_kick_off" => Ok(FootballPeriod::ExtraTimeKickOff),
             "extra_time_half_time" => Ok(FootballPeriod::ExtraTimeHalfTime),
+            "extra_time_second_half_kick_off" => Ok(FootballPeriod::ExtraTimeSecondHalfKickOff),
             "extra_time_full_time" => Ok(FootballPeriod::ExtraTimeFullTime),
             "penalties_complete" => Ok(FootballPeriod::PenaltiesComplete),
             other => Err(format!("unknown football period: {other}")),

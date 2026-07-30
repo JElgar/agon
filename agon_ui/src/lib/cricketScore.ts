@@ -13,6 +13,8 @@ export type CricketBowlingEntry = components['schemas']['CricketBowlingEntry']
 export type CricketScore = components['schemas']['CricketScore']
 export type CricketScoreInnings = components['schemas']['CricketScoreInnings']
 export type Overs = components['schemas']['Overs']
+export type CricketLiveEvent = components['schemas']['CricketLiveEvent']
+type LiveEvent = components['schemas']['LiveEvent']
 type LiveScoreSnapshot = components['schemas']['LiveScoreSnapshot']
 type DetailedScore = components['schemas']['DetailedScore']
 type Score = components['schemas']['Score']
@@ -43,6 +45,50 @@ export function cricketDetail(
 ): CricketInnings[] | null {
   if (!detail || detail.type !== 'Cricket') return null
   return detail.innings
+}
+
+/** One innings' ball-by-ball log, recovered by segmenting the raw live event
+ *  log on its `InningsStart`/`InningsEnd` markers. This is the durable
+ *  source for a completed match's full run-progression graph — the live
+ *  snapshot (`CricketLiveState`) only ever keeps deliveries for the innings
+ *  currently open (or just-finished), since that's all the live view itself
+ *  needs; the event log has no such bound (one item per ball, not one item
+ *  per match) and is safe to read in full regardless of match length. */
+export interface InningsDeliveries {
+  batting_side_id: string
+  bowling_side_id: string
+  deliveries: CricketDelivery[]
+}
+
+export function inningsDeliveriesFromEvents(events: LiveEvent[]): InningsDeliveries[] {
+  const innings: InningsDeliveries[] = []
+  let current: InningsDeliveries | null = null
+
+  for (const record of events) {
+    if (record.event.sport !== 'Cricket') continue
+    // `event.sport`'s narrowing erases `kind` on the nested union (the same
+    // openapi-typescript quirk as `Invitation.kind` in `lib/members.ts`) —
+    // cast back to the real union to read it.
+    const event = record.event as unknown as CricketLiveEvent
+    if (event.kind === 'InningsStart') {
+      // Close out anything left open without an explicit End, rather than
+      // silently dropping it — mirrors `derive_state`'s fallback on the
+      // backend (shouldn't normally happen).
+      if (current) innings.push(current)
+      current = {
+        batting_side_id: event.batting_side_id,
+        bowling_side_id: event.bowling_side_id,
+        deliveries: [],
+      }
+    } else if (event.kind === 'Delivery' && current) {
+      current.deliveries.push(event)
+    } else if (event.kind === 'InningsEnd' && current) {
+      innings.push(current)
+      current = null
+    }
+  }
+  if (current) innings.push(current)
+  return innings
 }
 
 /** The minimal per-innings shape match-aggregate math and the state-of-game

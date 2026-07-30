@@ -16,10 +16,15 @@ import { CricketMatchBlock } from '@/components/agon/live/CricketMatchBlock'
 import { CricketScoreBlock } from '@/components/agon/CricketScoreBlock'
 import { CricketScorecard } from '@/components/agon/CricketScorecard'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
-import { useLiveScore } from '@/hooks/useLiveScore'
+import { useLiveEvents, useLiveScore } from '@/hooks/useLiveScore'
 import { useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
 import { footballLiveState } from '@/lib/liveScore'
-import { cricketDetail, cricketLiveState, cricketScoreFrom } from '@/lib/cricketScore'
+import {
+  cricketDetail,
+  cricketLiveState,
+  cricketScoreFrom,
+  inningsDeliveriesFromEvents,
+} from '@/lib/cricketScore'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { displayScore, headlineBySide, headlineLabel, setLine } from '@/lib/score'
 import {
@@ -125,23 +130,16 @@ function MatchDetail({
 
   // Live-scoring state — takes over the score block below (and the entry
   // button becomes "Continue scoring") while a match is actually in
-  // progress. For football this is only relevant while in progress (its
-  // confirmed score has no further use for the event log). Cricket keeps
-  // fetching it after the match completes too — its deliveries log is the
-  // only durable source for the run-rate graph (see `cricketInnings` below);
-  // `detailed_score` deliberately doesn't duplicate it (a full ball-by-ball
-  // log embedded in one record risks DynamoDB's 400KB item cap on a long
-  // match, where the per-event live log doesn't).
+  // progress. Not fetched once it's over: the live snapshot only ever keeps
+  // deliveries for the currently (or most recently) open innings anyway, so
+  // it's no use to a finished match — see `cricketInnings` below for where
+  // the run-rate graph's deliveries actually come from.
   const live = useLiveScore(match.id, {
-    enabled: match.match_type === 'football' ? match.status === 'in_progress' : isLiveSport,
-    refetchInterval: match.status === 'in_progress' ? 15000 : false,
+    enabled: isLiveSport && match.status === 'in_progress',
+    refetchInterval: 15000,
   })
   const footballState = footballLiveState(live.data)
-  // Only surfaced for an in-progress match — otherwise, now that cricket's
-  // live snapshot is fetched after completion too (for its deliveries), this
-  // would wrongly resurrect the "currently scoring" block on a finished
-  // match instead of the confirmed `CricketScoreBlock` below.
-  const cricketState = match.status === 'in_progress' ? cricketLiveState(live.data) : null
+  const cricketState = cricketLiveState(live.data)
   const hasLiveState = !!footballState || !!cricketState
   const cricketScore = scoreInfo ? cricketScoreFrom(scoreInfo.score) : null
   // Football's setup screen also gates starting the clock; cricket has no
@@ -151,17 +149,20 @@ function MatchDetail({
 
   // Resolved per-innings scorecard: batting/bowling cards + totals from
   // `detailed_score` (works whether the match was scored live or entered
-  // after the fact), with each innings' deliveries — only ever present for a
-  // live-scored match — folded in from the live snapshot by matching
-  // innings order, for the run-rate graph.
+  // after the fact), with each innings' deliveries folded in from the raw
+  // live event log by matching innings order, for the run-rate graph. The
+  // event log (unlike the live snapshot above) has no size ceiling and stays
+  // fully readable regardless of match status, so it's fetched here
+  // independently of `live`.
   const detailedScore = useMatchDetailedScore(match.id, {
     enabled: match.match_type === 'cricket',
   })
+  const liveEvents = useLiveEvents(match.id, { enabled: match.match_type === 'cricket' })
   const cricketDetailInnings = cricketDetail(detailedScore.data)
-  const liveCricketInnings = cricketLiveState(live.data)?.innings
+  const liveInningsDeliveries = liveEvents.data ? inningsDeliveriesFromEvents(liveEvents.data) : undefined
   const cricketInnings = cricketDetailInnings?.map((inn, i) => ({
     ...inn,
-    deliveries: liveCricketInnings?.[i]?.deliveries ?? [],
+    deliveries: liveInningsDeliveries?.[i]?.deliveries ?? [],
   }))
 
   return (

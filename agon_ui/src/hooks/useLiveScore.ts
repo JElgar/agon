@@ -3,6 +3,7 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 
 type LiveScoreSnapshot = components['schemas']['LiveScoreSnapshot']
+type LiveEvent = components['schemas']['LiveEvent']
 type NewLiveEventInput = components['schemas']['NewLiveEventInput']
 type FootballLiveEvent = components['schemas']['FootballLiveEvent']
 type CricketLiveEvent = components['schemas']['CricketLiveEvent']
@@ -30,6 +31,29 @@ export function useLiveScore(
       })
       if (response.status === 404) return null
       if (!data) throw new Error('Failed to load live score')
+      return data
+    },
+  })
+}
+
+/**
+ * A match's raw live-scoring event log, in append order — unlike
+ * `useLiveScore`'s derived snapshot, this has no size ceiling (one DynamoDB
+ * item per event) and stays fully readable regardless of match length or
+ * status, so a completed match's full run-progression graph reads deliveries
+ * from here (see `inningsDeliveriesFromEvents`) rather than the snapshot,
+ * which only keeps the currently (or most recently) open innings' ball log.
+ */
+export function useLiveEvents(matchId: string | undefined, options?: { enabled?: boolean }) {
+  return useQuery({
+    queryKey: ['live-events', matchId],
+    enabled: !!matchId && (options?.enabled ?? true),
+    queryFn: async (): Promise<LiveEvent[]> => {
+      const { data, response } = await fetchClient.GET('/matches/{match_id}/live/events', {
+        params: { path: { match_id: matchId! } },
+      })
+      if (response.status === 404) return []
+      if (!data) throw new Error('Failed to load live events')
       return data
     },
   })

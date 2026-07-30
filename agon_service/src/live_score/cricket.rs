@@ -163,6 +163,26 @@ pub fn derive_state(
         innings.push(finish(open, false));
     }
 
+    // Only the last innings — the one actually open, or just-finished if the
+    // match is between innings — needs its ball-by-ball log kept: it's the
+    // only one the live view (the "this over" row, next-ball context) ever
+    // reads. Earlier innings in this same match only need their totals here,
+    // which keeps this whole state (recomputed and cached as one record on
+    // every single delivery — see `put_live_state`) bounded to roughly one
+    // innings' worth of balls rather than growing with the match's full
+    // history. A finished match's complete run-progression graph reads the
+    // raw event log directly instead of this cache (see
+    // `agon_ui/src/lib/cricketScore.ts`'s `inningsDeliveriesFromEvents`),
+    // since that log has no such ceiling — it's one item per ball, not one
+    // item per match.
+    if let Some(last) = innings.len().checked_sub(1) {
+        for (i, inn) in innings.iter_mut().enumerate() {
+            if i != last {
+                inn.deliveries.clear();
+            }
+        }
+    }
+
     CricketLiveState {
         innings,
         awaiting_next_innings,
@@ -351,6 +371,59 @@ mod tests {
             !state.awaiting_next_innings,
             "second innings is still open (no matching InningsEnd)"
         );
+    }
+
+    #[test]
+    fn only_the_last_innings_keeps_its_deliveries() {
+        // Three innings, the first two finished (declared) and the third
+        // still open — only the last one should carry its ball-by-ball log;
+        // the earlier two keep their totals/cards but not the deliveries
+        // that produced them (see `derive_state`'s bounding pass).
+        let events = vec![
+            CricketLiveEvent::InningsStart(CricketInningsStartEvent {
+                batting_side_id: "warriors".into(),
+                bowling_side_id: "mill_lane".into(),
+            }),
+            CricketLiveEvent::Delivery(ball("patel", "sharma", "verma", 4)),
+            CricketLiveEvent::InningsEnd(CricketInningsEndEvent {
+                reason: InningsEndReason::Declared,
+            }),
+            CricketLiveEvent::InningsStart(CricketInningsStartEvent {
+                batting_side_id: "mill_lane".into(),
+                bowling_side_id: "warriors".into(),
+            }),
+            CricketLiveEvent::Delivery(ball("sharma", "cole", "adeyemi", 1)),
+            CricketLiveEvent::InningsEnd(CricketInningsEndEvent {
+                reason: InningsEndReason::AllOut,
+            }),
+            CricketLiveEvent::InningsStart(CricketInningsStartEvent {
+                batting_side_id: "warriors".into(),
+                bowling_side_id: "mill_lane".into(),
+            }),
+            CricketLiveEvent::Delivery(ball("adeyemi", "patel", "verma", 6)),
+        ];
+
+        let state = derive_state(&events, 6, true, true);
+        assert_eq!(state.innings.len(), 3);
+
+        assert!(
+            state.innings[0].deliveries.is_empty(),
+            "first (finished) innings should have its deliveries cleared"
+        );
+        assert_eq!(state.innings[0].runs, 4, "totals survive the clearing");
+
+        assert!(
+            state.innings[1].deliveries.is_empty(),
+            "second (finished) innings should have its deliveries cleared"
+        );
+        assert_eq!(state.innings[1].runs, 1);
+
+        assert_eq!(
+            state.innings[2].deliveries.len(),
+            1,
+            "third (still open) innings is the last one, so it keeps its log"
+        );
+        assert_eq!(state.innings[2].runs, 6);
     }
 
     #[test]

@@ -284,13 +284,6 @@ pub struct MatchRecord {
     /// for records written before this field existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub header_photos: Vec<HeaderPhotoRecord>,
-    /// Legacy header photo URLs, from before `header_photos` (with asset ids)
-    /// existed. No longer written to — `match_from_records` falls back to
-    /// this only when `header_photos` is empty, so a match's photos survive
-    /// the migration read-only until it's next edited with new photos, which
-    /// moves it onto `header_photos`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub header_photo_urls: Vec<String>,
     /// The agreed score. None until agreed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirmed_score: Option<ConfirmedScoreRecord>,

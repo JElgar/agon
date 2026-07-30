@@ -38,18 +38,8 @@ export function MatchDetailsEditor({
   // Local wall-clock for the datetime-local control, seeded from the stored UTC.
   const [startsAt, setStartsAt] = useState(isoToDateTimeLocal(match.starts_at))
 
-  // Photos predating asset-id tracking come back with `asset_id: null` — there's
-  // nothing to seed the field with for those, so they can't be preserved once
-  // the match's photos are next touched here. `null` (as opposed to `[]`) marks
-  // that case so the copy below can call it out.
-  const existingHeaderAssetIds: string[] | null = match.header_photos.every(
-    (p) => p.asset_id != null,
-  )
-    ? match.header_photos.map((p) => p.asset_id as string)
-    : null
-  const [headerAssetIds, setHeaderAssetIds] = useState<string[]>(
-    existingHeaderAssetIds ?? [],
-  )
+  const existingHeaderAssetIds = match.header_photos.map((p) => p.asset_id!)
+  const [headerAssetIds, setHeaderAssetIds] = useState<string[]>(existingHeaderAssetIds)
 
   const nameError = name.trim().length === 0 ? 'A match needs a name' : null
   const timeError = Number.isNaN(new Date(startsAt).getTime())
@@ -66,11 +56,9 @@ export function MatchDetailsEditor({
       if (description !== match.description) body.description = description
       const newIso = new Date(startsAt).toISOString()
       if (newIso !== match.starts_at) body.starts_at = newIso
-      const photosChanged =
-        existingHeaderAssetIds === null
-          ? headerAssetIds.length > 0
-          : JSON.stringify(headerAssetIds) !== JSON.stringify(existingHeaderAssetIds)
-      if (photosChanged) body.header_photo_asset_ids = headerAssetIds
+      if (JSON.stringify(headerAssetIds) !== JSON.stringify(existingHeaderAssetIds)) {
+        body.header_photo_asset_ids = headerAssetIds
+      }
 
       if (Object.keys(body).length === 0) return // nothing changed
 
@@ -139,23 +127,13 @@ export function MatchDetailsEditor({
 
       <div>
         <Label className="text-xs text-muted-foreground">Photos</Label>
-        {existingHeaderAssetIds === null && match.header_photos.length > 0 && (
-          <p className="mt-1 text-xs text-muted-foreground">
-            These photos predate reordering and can't be managed here — adding
-            new ones replaces them.
-          </p>
-        )}
         <MultiImageUploadField
           purpose="match_header"
           onChange={setHeaderAssetIds}
-          initialItems={
-            existingHeaderAssetIds
-              ? match.header_photos.map((p) => ({
-                  assetId: p.asset_id as string,
-                  url: p.image_url,
-                }))
-              : undefined
-          }
+          initialItems={match.header_photos.map((p) => ({
+            assetId: p.asset_id!,
+            url: p.image_url,
+          }))}
           className="mt-1"
         />
       </div>

@@ -1893,9 +1893,6 @@ impl Api {
                 longitude: l.longitude,
             }),
             header_photos,
-            // Legacy field, only ever populated on matches created before
-            // `header_photos` existed — never written to for new matches.
-            header_photo_urls: Vec::new(),
             confirmed_score: None,
             pending_score,
             like_count: 0,

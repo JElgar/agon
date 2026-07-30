@@ -211,9 +211,7 @@ impl Dao {
         pending_score: Option<Option<PendingScoreRecord>>,
         // Replace the header photos, in order. `None` leaves them unchanged;
         // `Some([])` clears them (removes the attribute); `Some([..])`
-        // overwrites. Always writes the current `header_photos` shape (with
-        // asset ids) — the legacy `header_photo_urls` attribute is only ever
-        // read, never written, by this path.
+        // overwrites.
         header_photos: Option<Vec<HeaderPhotoRecord>>,
         // Replace the match format. `None` leaves it unchanged; `Some(value)`
         // overwrites. No "clear" case yet (Phase 1 doesn't need one — a

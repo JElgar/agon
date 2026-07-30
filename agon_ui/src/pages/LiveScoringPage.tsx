@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams, Link } from 'react-router-dom'
 import { ChevronLeft, CircleDot, Flag, Repeat2, TimerReset } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
@@ -24,6 +24,7 @@ import {
 } from '@/lib/liveScore'
 
 type Match = components['schemas']['Match']
+type UpdateMatchInput = components['schemas']['UpdateMatchInput']
 
 function sideName(match: Match, index: number, fallback: string): string {
   return match.sides[index]?.name?.trim() || fallback
@@ -101,6 +102,46 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
 
   const prefs = loadTrackPrefs(match.id)
   const [dialogKind, setDialogKind] = useState<EventKind | null>(null)
+
+  // Concludes the match once full-time is recorded: submits the goal tally
+  // as a `Simple` score (the same shape `MatchResultEditor` writes) and
+  // marks the match `completed`, the way a manual "Add result" would — so it
+  // enters the normal confirmation flow rather than being auto-confirmed.
+  // No `detailed_score` here: the goals/cards/subs/period markers recorded
+  // live are already persisted against the match as they happened. Reads
+  // `detailedScore.data` directly (rather than closing over the `state`
+  // computed below) so this hook can be declared before the loading early
+  // return, same as every other hook in this component.
+  const finishMatch = useMutation({
+    mutationFn: async () => {
+      const detail = footballDetailFrom(detailedScore.data)
+      const goalsFor = (sideId: string | undefined) =>
+        detail?.score.find((s) => s.side_id === sideId)?.goals ?? 0
+      const aId = match.sides[0]?.id ?? ''
+      const bId = match.sides[1]?.id ?? ''
+      const a = goalsFor(aId)
+      const b = goalsFor(bId)
+      const score = {
+        type: 'Simple',
+        entries: [
+          { side_id: aId, points: a },
+          { side_id: bId, points: b },
+        ],
+      } as unknown as UpdateMatchInput['score']
+      const body: UpdateMatchInput = { score, status: 'completed' }
+      if (a !== b) body.winner_side_id = a > b ? aId : bId
+      const { error } = await fetchClient.PATCH('/matches/{match_id}', {
+        params: { path: { match_id: match.id } },
+        body,
+      })
+      if (error) throw new Error('Failed to finish the match')
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['match', match.id] })
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
+      navigate(`/matches/${match.id}`)
+    },
+  })
 
   if (detailedScore.isLoading || seq.isLoading) {
     return (
@@ -208,6 +249,19 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
         ))}
       </div>
 
+      {phase === 'full_time' && (
+        <>
+          <Button size="lg" disabled={finishMatch.isPending} onClick={() => finishMatch.mutate()}>
+            {finishMatch.isPending ? 'Finishing…' : 'Finish match'}
+          </Button>
+          {finishMatch.isError && (
+            <p className="text-center text-xs text-destructive">
+              {(finishMatch.error as Error).message}
+            </p>
+          )}
+        </>
+      )}
+
       <Link
         to={`/matches/${match.id}/live/setup`}
         className="text-center text-sm text-primary hover:underline"
@@ -223,15 +277,21 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
           <p className="text-sm text-muted-foreground">No events recorded yet.</p>
         ) : (
           <div className="flex flex-col gap-2">
-            {events.map((event, i) => (
-              <div key={i} className="flex items-baseline gap-2 text-sm">
-                <span className="w-8 shrink-0 text-xs text-muted-foreground">
-                  {event.minute !== undefined ? `${event.minute}'` : ''}
-                </span>
-                <span aria-hidden>{eventEmoji(event.kind)}</span>
-                <span className="min-w-0 truncate">{describeEvent(event, match)}</span>
-              </div>
-            ))}
+            {events.map((event, i) => {
+              const isSideB = event.side_id === match.sides[1]?.id
+              return (
+                <div
+                  key={i}
+                  className={`flex items-baseline gap-2 text-sm ${isSideB ? 'flex-row-reverse text-right' : ''}`}
+                >
+                  <span className="w-8 shrink-0 text-xs text-muted-foreground">
+                    {event.minute !== undefined ? `${event.minute}'` : ''}
+                  </span>
+                  <span aria-hidden>{eventEmoji(event.kind)}</span>
+                  <span className="min-w-0 truncate">{describeEvent(event, match)}</span>
+                </div>
+              )
+            })}
           </div>
         )}
       </div>

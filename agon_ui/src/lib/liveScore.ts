@@ -121,11 +121,6 @@ export function recentEvents(detail: FootballDetail, limit: number): FootballEve
   return eventsFromDetail(detail).reverse().slice(0, limit)
 }
 
-/** Side display name for an event, falling back to a neutral label. */
-function sideNameFor(match: Pick<Match, 'sides'>, sideId: string): string {
-  return match.sides.find((s) => s.id === sideId)?.name?.trim() || 'This side'
-}
-
 /** Player display name for a member id, if it's on the roster. */
 function playerNameFor(match: Pick<Match, 'players'>, playerId: string | undefined): string | null {
   if (!playerId) return null
@@ -134,30 +129,31 @@ function playerNameFor(match: Pick<Match, 'players'>, playerId: string | undefin
 }
 
 /** One-line human description of a football event, e.g. "Goal — J. Alvarez
- *  (Riverside)" or "Sub — Moreno on for Khan (Oak Park)" — used by the event
- *  log and mini-ticker. */
+ *  (A. Silva)" or "Sub — Moreno on for Khan" — used by the event log and
+ *  mini-ticker. Which side it belongs to isn't repeated in the text; callers
+ *  convey that by aligning/positioning the row using `event.side_id`
+ *  instead (see `LiveScoringPage`/`LiveMatchBlock`). */
 export function describeEvent(
   event: FootballEventView,
-  match: Pick<Match, 'sides' | 'players'>,
+  match: Pick<Match, 'players'>,
 ): string {
-  const side = sideNameFor(match, event.side_id)
   const scorer = playerNameFor(match, event.player_id)
 
   switch (event.kind) {
     case 'goal':
-    case 'penalty':
-      return scorer ? `${eventLabel(event.kind)} — ${scorer} (${side})` : `${eventLabel(event.kind)} (${side})`
+    case 'penalty': {
+      const assist = playerNameFor(match, event.assist_player_id)
+      const base = scorer ? `${eventLabel(event.kind)} — ${scorer}` : eventLabel(event.kind)
+      return assist ? `${base} (${assist})` : base
+    }
     case 'own_goal':
-      return `Own goal — ${side}`
+      return eventLabel(event.kind)
     case 'yellow_card':
     case 'red_card':
-      return scorer
-        ? `${eventLabel(event.kind)} — ${scorer} (${side})`
-        : `${eventLabel(event.kind)} — ${side}`
+      return scorer ? `${eventLabel(event.kind)} — ${scorer}` : eventLabel(event.kind)
     case 'substitution': {
       const out = playerNameFor(match, event.substituted_player_id)
-      if (scorer && out) return `Sub — ${scorer} on for ${out} (${side})`
-      return `Substitution (${side})`
+      return scorer && out ? `Sub — ${scorer} on for ${out}` : 'Substitution'
     }
   }
 }

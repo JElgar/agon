@@ -107,6 +107,7 @@ interface CricketInningsTotal {
   bowling_side_id: string
   runs: number
   wickets: number
+  overs: Overs
 }
 
 /** Ditto, for the match-level progress shape: a detail's own state, or a
@@ -297,11 +298,18 @@ export function matchTotalsBySide(state: CricketMatchProgress): Record<string, n
  * own roster size (players registered on that side, minus one — the last
  * batter has no partner left to bat with), falling back to the standard 10
  * if the roster looks too small to make sense of (e.g. not fully set up).
+ *
+ * A win is only reported by wickets when the chasing side's innings ended
+ * *before* using its full over allocation — i.e. they got there with
+ * balls to spare. If both sides batted out their complete overs quota, the
+ * "wickets in hand" framing doesn't mean anything (nobody was chasing down
+ * a target mid-over); that's reported as a runs margin instead, same as the
+ * side batting first finishing ahead.
  */
 export function cricketStateDescription(
   match: Pick<Match, 'sides' | 'players'>,
   state: CricketMatchProgress,
-  format: Pick<CricketFormat, 'innings_per_side'>,
+  format: Pick<CricketFormat, 'innings_per_side' | 'overs_per_innings'>,
 ): string | null {
   if (state.innings.length === 0) return null
   const quota = match.sides.length * format.innings_per_side
@@ -340,14 +348,21 @@ export function cricketStateDescription(
   const battingTotal = totals[last.batting_side_id] ?? 0
   const bowlingTotal = totals[last.bowling_side_id] ?? 0
   if (battingTotal === bowlingTotal) return 'Match tied'
-  if (battingTotal > bowlingTotal) {
+
+  const oversAllUsed =
+    format.overs_per_innings != null &&
+    last.overs.overs >= format.overs_per_innings &&
+    last.overs.balls === 0
+
+  if (battingTotal > bowlingTotal && !oversAllUsed) {
     const rosterSize = match.players.filter((p) => p.side_id === last.batting_side_id).length
     const maxWickets = rosterSize > 1 ? rosterSize - 1 : 10
     const remaining = Math.max(maxWickets - last.wickets, 0)
     return `${sideNameFor(match, last.batting_side_id)} won by ${remaining} wicket${remaining === 1 ? '' : 's'}`
   }
-  const margin = bowlingTotal - battingTotal
-  return `${sideNameFor(match, last.bowling_side_id)} won by ${margin} run${margin === 1 ? '' : 's'}`
+  const winnerSideId = battingTotal > bowlingTotal ? last.batting_side_id : last.bowling_side_id
+  const margin = Math.abs(battingTotal - bowlingTotal)
+  return `${sideNameFor(match, winnerSideId)} won by ${margin} run${margin === 1 ? '' : 's'}`
 }
 
 /** Display name for a side id: its name, or a neutral fallback. */

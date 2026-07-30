@@ -2600,11 +2600,12 @@ impl Api {
         &self,
         Data(dao): Data<&dao::Dao>,
         AuthSchema(jwt_data): AuthSchema,
-        Path(_match_id): Path<String>,
-        Path(_seq): Path<u32>,
-        _input: Json<LiveEventInput>,
+        Path(match_id): Path<String>,
+        Path(seq): Path<u32>,
+        input: Json<LiveEventInput>,
     ) -> Result<AmendLiveEventResponse> {
         self.require_uid(dao, &jwt_data).await?;
+        let _ = (match_id, seq, input);
         Ok(AmendLiveEventResponse::ValidationError(PlainText(
             "amending a live event in place isn't supported; delete and re-append instead \
              (only the most recently recorded event can be deleted)"

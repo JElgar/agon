@@ -165,6 +165,12 @@ struct UpdateUserInput {
 #[derive(Object)]
 pub struct Photo {
     pub image_url: String,
+    /// The asset backing this photo, when known — pass it back in
+    /// `header_photo_asset_ids` to keep, reorder, or mix it with newly
+    /// uploaded photos on a future edit. `None` for a profile image (single,
+    /// always replaced wholesale) or a header photo attached before asset
+    /// ids were tracked alongside the URL.
+    pub asset_id: Option<String>,
 }
 
 /// What an upload is for. Drives the storage bucket/path and the size/type
@@ -1256,7 +1262,7 @@ impl Api {
             Some(asset_id) => {
                 let ids = std::slice::from_ref(asset_id);
                 match resolve_asset_urls(dao, &uid, "profile_image", ids).await? {
-                    Ok(urls) => Some(urls.into_iter().next()),
+                    Ok(resolved) => Some(resolved.into_iter().next().map(|(_, url)| url)),
                     Err(msg) => {
                         return Ok(UpdateUserResponse::ValidationError(PlainText(msg)));
                     }
@@ -1660,12 +1666,15 @@ impl Api {
         let input = input.0;
         let uid = self.require_uid(dao, &jwt_data).await?;
 
-        // Resolve any header images to their stored URLs (must be uploaded,
-        // owned by the caller, and of `match_header` purpose).
+        // Resolve any header images to asset id + stored URL (must be
+        // uploaded, owned by the caller, and of `match_header` purpose).
         let header_asset_ids = input.header_photo_asset_ids.clone().unwrap_or_default();
-        let header_photo_urls =
+        let header_photos =
             match resolve_asset_urls(dao, &uid, "match_header", &header_asset_ids).await? {
-                Ok(urls) => urls,
+                Ok(resolved) => resolved
+                    .into_iter()
+                    .map(|(asset_id, url)| dao::records::HeaderPhotoRecord { asset_id, url })
+                    .collect::<Vec<_>>(),
                 Err(msg) => return Ok(CreateMatchResponse::ValidationError(PlainText(msg))),
             };
 
@@ -1883,7 +1892,10 @@ impl Api {
                 latitude: l.latitude,
                 longitude: l.longitude,
             }),
-            header_photo_urls,
+            header_photos,
+            // Legacy field, only ever populated on matches created before
+            // `header_photos` existed — never written to for new matches.
+            header_photo_urls: Vec::new(),
             confirmed_score: None,
             pending_score,
             like_count: 0,
@@ -2003,15 +2015,25 @@ impl Api {
             }
         }
 
-        // Resolve any replacement header images (must be uploaded, owned by the
-        // caller, `match_header` purpose). `None` = leave unchanged.
-        let header_photo_urls: Option<Vec<String>> = match &input.header_photo_asset_ids {
-            Some(ids) => match resolve_asset_urls(dao, &uid, "match_header", ids).await? {
-                Ok(urls) => Some(urls),
-                Err(msg) => return Ok(UpdateMatchResponse::ValidationError(PlainText(msg))),
-            },
-            None => None,
-        };
+        // Resolve any replacement header images to asset id + stored URL
+        // (must be uploaded, owned by the caller, `match_header` purpose).
+        // `None` = leave unchanged. The caller sends the *complete* desired
+        // set each time (there's no append/remove-by-id on the server), so a
+        // client that wants to keep existing photos re-sends their asset ids
+        // (from `Match.header_photos[].asset_id`) alongside any new ones.
+        let header_photos: Option<Vec<dao::records::HeaderPhotoRecord>> =
+            match &input.header_photo_asset_ids {
+                Some(ids) => match resolve_asset_urls(dao, &uid, "match_header", ids).await? {
+                    Ok(resolved) => Some(
+                        resolved
+                            .into_iter()
+                            .map(|(asset_id, url)| dao::records::HeaderPhotoRecord { asset_id, url })
+                            .collect(),
+                    ),
+                    Err(msg) => return Ok(UpdateMatchResponse::ValidationError(PlainText(msg))),
+                },
+                None => None,
+            };
 
         // A cancelled match can't be scored.
         let resulting_status = input
@@ -2157,7 +2179,7 @@ impl Api {
                 .as_deref(),
             None,
             pending_score.map(Some),
-            header_photo_urls,
+            header_photos,
             input.format.as_ref().map(match_format_to_record),
         )
         .await
@@ -4340,23 +4362,24 @@ async fn asset_from_record(assets: &Assets, record: &dao::records::AssetRecord) 
     }
 }
 
-/// Resolve a list of asset ids to their stored (canonical) URLs, enforcing that
-/// each is `Uploaded`, owned by `uid`, and of the expected `purpose`. Returns
-/// `Err` with a client-facing message on the first asset that fails a check, so
-/// the caller can surface a 400. An empty input yields an empty list.
+/// Resolve a list of asset ids to their own id plus stored (canonical) URL, in
+/// order, enforcing that each is `Uploaded`, owned by `uid`, and of the
+/// expected `purpose`. Returns `Err` with a client-facing message on the first
+/// asset that fails a check, so the caller can surface a 400. An empty input
+/// yields an empty list.
 async fn resolve_asset_urls(
     dao: &dao::Dao,
     uid: &str,
     purpose: &str,
     asset_ids: &[String],
-) -> Result<std::result::Result<Vec<String>, String>> {
-    let mut urls = Vec::with_capacity(asset_ids.len());
+) -> Result<std::result::Result<Vec<(String, String)>, String>> {
+    let mut resolved = Vec::with_capacity(asset_ids.len());
     for asset_id in asset_ids {
         let asset = dao.get_asset(asset_id).await.map_err(dao_internal)?;
         match asset {
             Some(a) if a.status == "uploaded" && a.owner_user_id == uid && a.purpose == purpose => {
                 match a.url {
-                    Some(url) => urls.push(url),
+                    Some(url) => resolved.push((asset_id.clone(), url)),
                     // Uploaded but no URL recorded — treat as not-yet-usable.
                     None => {
                         return Ok(Err(format!(
@@ -4372,7 +4395,7 @@ async fn resolve_asset_urls(
             }
         }
     }
-    Ok(Ok(urls))
+    Ok(Ok(resolved))
 }
 
 /// Sign a `Match`'s header-photo URLs for private serving. The mapping layer
@@ -4438,6 +4461,7 @@ fn mock_user_profile(id: String, name: String) -> UserProfile {
         name,
         profile_image: Some(Photo {
             image_url: String::from("https://cdn.example.com/users/avatar.jpg"),
+            asset_id: None,
         }),
         stats: vec![UserSportStats {
             match_type: MatchType::Tennis,
@@ -4466,6 +4490,7 @@ fn mock_match(id: String) -> Match {
         }),
         header_photos: vec![Photo {
             image_url: String::from("https://cdn.example.com/matches/match_123/header.jpg"),
+            asset_id: Some(String::from("asset_123")),
         }],
         sides: vec![
             MatchSide {

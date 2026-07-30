@@ -19,10 +19,11 @@ type Match = components['schemas']['Match']
  *
  * Roster and result are edited elsewhere (invite control, result editor), so
  * this deliberately covers just the descriptive fields plus photos — useful
- * once a match is complete and there are photos from the game to add, since
- * `header_photos` on the match only carries served URLs (no asset id), the
- * newly-uploaded set here can't be merged with whatever's already attached —
- * saving with new photos replaces the header images rather than appending.
+ * once a match is complete and there are photos from the game to add. The
+ * server has no id-level append/reorder, only "replace with this full list",
+ * so the photo field is seeded with the match's *current* photos (by asset
+ * id) and the user's edits — reorder, remove, add — are applied on top of
+ * that seed before being sent back as the complete list on save.
  */
 export function MatchDetailsEditor({
   match,
@@ -36,9 +37,19 @@ export function MatchDetailsEditor({
   const [description, setDescription] = useState(match.description)
   // Local wall-clock for the datetime-local control, seeded from the stored UTC.
   const [startsAt, setStartsAt] = useState(isoToDateTimeLocal(match.starts_at))
-  // Newly-uploaded header photo asset ids. Empty until the field reports an
-  // upload, so a save with no photo changes never touches `header_photos`.
-  const [headerAssetIds, setHeaderAssetIds] = useState<string[]>([])
+
+  // Photos predating asset-id tracking come back with `asset_id: null` — there's
+  // nothing to seed the field with for those, so they can't be preserved once
+  // the match's photos are next touched here. `null` (as opposed to `[]`) marks
+  // that case so the copy below can call it out.
+  const existingHeaderAssetIds: string[] | null = match.header_photos.every(
+    (p) => p.asset_id != null,
+  )
+    ? match.header_photos.map((p) => p.asset_id as string)
+    : null
+  const [headerAssetIds, setHeaderAssetIds] = useState<string[]>(
+    existingHeaderAssetIds ?? [],
+  )
 
   const nameError = name.trim().length === 0 ? 'A match needs a name' : null
   const timeError = Number.isNaN(new Date(startsAt).getTime())
@@ -55,7 +66,11 @@ export function MatchDetailsEditor({
       if (description !== match.description) body.description = description
       const newIso = new Date(startsAt).toISOString()
       if (newIso !== match.starts_at) body.starts_at = newIso
-      if (headerAssetIds.length > 0) body.header_photo_asset_ids = headerAssetIds
+      const photosChanged =
+        existingHeaderAssetIds === null
+          ? headerAssetIds.length > 0
+          : JSON.stringify(headerAssetIds) !== JSON.stringify(existingHeaderAssetIds)
+      if (photosChanged) body.header_photo_asset_ids = headerAssetIds
 
       if (Object.keys(body).length === 0) return // nothing changed
 
@@ -124,14 +139,23 @@ export function MatchDetailsEditor({
 
       <div>
         <Label className="text-xs text-muted-foreground">Photos</Label>
-        {match.header_photos.length > 0 && (
+        {existingHeaderAssetIds === null && match.header_photos.length > 0 && (
           <p className="mt-1 text-xs text-muted-foreground">
-            Adding new photos replaces the current ones.
+            These photos predate reordering and can't be managed here — adding
+            new ones replaces them.
           </p>
         )}
         <MultiImageUploadField
           purpose="match_header"
           onChange={setHeaderAssetIds}
+          initialItems={
+            existingHeaderAssetIds
+              ? match.header_photos.map((p) => ({
+                  assetId: p.asset_id as string,
+                  url: p.image_url,
+                }))
+              : undefined
+          }
           className="mt-1"
         />
       </div>

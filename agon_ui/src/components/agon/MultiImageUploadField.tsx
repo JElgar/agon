@@ -36,6 +36,12 @@ interface Item {
   error: string | null
 }
 
+/** An already-attached photo (asset id known) to seed the grid with. */
+export interface ExistingImage {
+  assetId: string
+  url: string
+}
+
 export interface MultiImageUploadFieldProps {
   purpose: UploadPurpose
   /** Reports the ordered list of successfully-uploaded asset ids whenever it
@@ -46,6 +52,11 @@ export interface MultiImageUploadFieldProps {
   max?: number
   label?: string
   className?: string
+  /** Already-attached photos to seed the grid with, so they can be reordered,
+   *  removed, or mixed with newly uploaded ones rather than replaced outright
+   *  — the server has no id-level append/remove, it just takes whatever
+   *  ordered id list `onChange` last reported. Read once, at mount. */
+  initialItems?: ExistingImage[]
 }
 
 /**
@@ -62,9 +73,18 @@ export function MultiImageUploadField({
   max = 6,
   label = 'Add images',
   className,
+  initialItems,
 }: MultiImageUploadFieldProps) {
   const inputRef = useRef<HTMLInputElement>(null)
-  const [items, setItems] = useState<Item[]>([])
+  const [items, setItems] = useState<Item[]>(() =>
+    (initialItems ?? []).map((img) => ({
+      key: img.assetId,
+      previewUrl: img.url,
+      status: 'done',
+      assetId: img.assetId,
+      error: null,
+    })),
+  )
   const [error, setError] = useState<string | null>(null)
 
   const sensors = useSensors(
@@ -143,8 +163,11 @@ export function MultiImageUploadField({
 
   const remove = (key: string) => {
     setItems((prev) => {
+      // Only newly-picked files get an object URL (existing photos preview
+      // via their real served URL) — revoking a non-blob URL is a no-op, but
+      // only bother for the ones we actually created.
       const target = prev.find((i) => i.key === key)
-      if (target) URL.revokeObjectURL(target.previewUrl)
+      if (target?.previewUrl.startsWith('blob:')) URL.revokeObjectURL(target.previewUrl)
       const next = prev.filter((i) => i.key !== key)
       report(next)
       return next

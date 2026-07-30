@@ -21,6 +21,15 @@ pub struct LocationRecord {
     pub longitude: f64,
 }
 
+/// One header photo attached to a match: the asset it was uploaded as (so a
+/// later edit can re-include, reorder, or mix it with newly uploaded photos)
+/// plus its canonical serving URL.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HeaderPhotoRecord {
+    pub asset_id: String,
+    pub url: String,
+}
+
 /// A match score. Tagged union mirroring the sport's scoring shape.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -271,6 +280,15 @@ pub struct MatchRecord {
     pub starts_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<LocationRecord>,
+    /// Header photos, in display order (first = shown first). `#[serde(default)]`
+    /// for records written before this field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub header_photos: Vec<HeaderPhotoRecord>,
+    /// Legacy header photo URLs, from before `header_photos` (with asset ids)
+    /// existed. No longer written to — `match_from_records` falls back to
+    /// this only when `header_photos` is empty, so a match's photos survive
+    /// the migration read-only until it's next edited with new photos, which
+    /// moves it onto `header_photos`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub header_photo_urls: Vec<String>,
     /// The agreed score. None until agreed.

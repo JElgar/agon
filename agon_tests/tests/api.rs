@@ -2910,6 +2910,40 @@ async fn upload_match_header_end_to_end() {
         "the uploaded header should be attached"
     );
     assert!(!created.header_photos[0].image_url.is_empty());
+    assert_eq!(
+        created.header_photos[0].asset_id.as_deref(),
+        Some(asset.id.as_str()),
+        "the photo's asset id round-trips so it can be reordered/kept on a later edit"
+    );
+
+    // Adding a second photo via PATCH, re-sending the first photo's asset id
+    // alongside the new one, keeps both rather than replacing the first.
+    let second_asset = create_png_asset(&config, models::UploadPurpose::MatchHeader).await;
+    upload_and_confirm(&config, &second_asset).await;
+    let first_asset_id = created.header_photos[0]
+        .asset_id
+        .clone()
+        .expect("first photo has an asset id");
+    let updated = matches_match_id_patch(
+        &config,
+        &created.id,
+        models::UpdateMatchInput {
+            header_photo_asset_ids: Some(vec![second_asset.id.clone(), first_asset_id.clone()]),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("patch photos");
+    assert_eq!(updated.header_photos.len(), 2, "both photos are kept");
+    assert_eq!(
+        updated.header_photos[0].asset_id.as_deref(),
+        Some(second_asset.id.as_str()),
+        "the new photo is first, matching the order it was sent in"
+    );
+    assert_eq!(
+        updated.header_photos[1].asset_id.as_deref(),
+        Some(first_asset_id.as_str()),
+    );
 }
 
 #[tokio::test]

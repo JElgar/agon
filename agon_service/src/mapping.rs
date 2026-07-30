@@ -118,6 +118,7 @@ pub fn user_profile_from_record(user: &UserRecord, is_followed_by_me: bool) -> U
         name: user.name.clone(),
         profile_image: user.profile_image_url.as_ref().map(|url| Photo {
             image_url: url.clone(),
+            asset_id: None,
         }),
         stats: entries
             .into_iter()
@@ -559,13 +560,26 @@ pub fn match_from_records(
             latitude: l.latitude,
             longitude: l.longitude,
         }),
-        header_photos: rec
-            .header_photo_urls
-            .iter()
-            .map(|url| Photo {
-                image_url: url.clone(),
-            })
-            .collect(),
+        // `header_photos` (with asset ids) is what every current write uses;
+        // fall back to the legacy URL-only `header_photo_urls` only for
+        // matches written before that field existed.
+        header_photos: if !rec.header_photos.is_empty() {
+            rec.header_photos
+                .iter()
+                .map(|p| Photo {
+                    image_url: p.url.clone(),
+                    asset_id: Some(p.asset_id.clone()),
+                })
+                .collect()
+        } else {
+            rec.header_photo_urls
+                .iter()
+                .map(|url| Photo {
+                    image_url: url.clone(),
+                    asset_id: None,
+                })
+                .collect()
+        },
         sides: sides.iter().map(match_side_from_record).collect(),
         players: players.iter().map(match_player_from_record).collect(),
         confirmed_score: rec

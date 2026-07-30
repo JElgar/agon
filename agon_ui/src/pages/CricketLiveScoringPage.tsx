@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { ChevronLeft } from 'lucide-react'
@@ -61,6 +61,19 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   // replay needed for the online case.
   const next = state?.next_ball_context ?? null
 
+  // The over quota's been fully bowled but nothing on the backend blocks
+  // further deliveries (see `match_format`'s doc comment — enforcement is
+  // intentionally out of scope there), so the picker flow would otherwise
+  // just keep asking for a new bowler forever. The reason is unambiguous
+  // here — the overs ran out, nobody needs to be asked — so this ends the
+  // innings itself instead of prompting (see the auto-end effect below).
+  const oversComplete =
+    !!innings &&
+    format.overs_per_innings != null &&
+    innings.overs.overs >= format.overs_per_innings &&
+    innings.overs.balls === 0
+  const oversCompleteAwaitingEnd = oversComplete && !next?.bowler_player_id
+
   // Locally-picked openers/replacement batter/next bowler — only used until
   // the server confirms them via an actual delivery, at which point
   // `next_ball_context` takes over as the source of truth.
@@ -90,6 +103,25 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   const [extraDialog, setExtraDialog] = useState<'no_ball' | 'bye' | null>(null)
   const [endInningsOpen, setEndInningsOpen] = useState(false)
   const [startBattingSide, setStartBattingSide] = useState<string | undefined>(undefined)
+
+  // Fires the `overs_complete` end-of-innings event itself the moment the
+  // quota's used up, rather than asking the scorer to pick a reason they
+  // didn't choose. Guarded by a ref (not `appendEvent.isPending`) so it
+  // fires exactly once per innings — `isPending` flips mid-flight and isn't
+  // a dependency here, so it can't retrigger the effect — and resets once
+  // the innings actually ends (`oversComplete` goes false) so the next
+  // innings' overs-complete moment can auto-end too.
+  const autoEndedOversRef = useRef(false)
+  useEffect(() => {
+    if (!oversCompleteAwaitingEnd) {
+      autoEndedOversRef.current = false
+      return
+    }
+    if (autoEndedOversRef.current) return
+    autoEndedOversRef.current = true
+    appendEvent.mutate({ kind: 'InningsEnd', reason: 'overs_complete' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [oversCompleteAwaitingEnd])
 
   // Concludes the match: submits the per-innings totals as a `Cricket` score
   // (so the completed tile can show overs/wickets and the result line
@@ -280,17 +312,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
     )
   }
 
-  // The over quota's been fully bowled but nothing on the backend blocks
-  // further deliveries (see `match_format`'s doc comment — enforcement is
-  // intentionally out of scope there), so the picker flow would otherwise
-  // just keep asking for a new bowler forever. Steer the scorer to end the
-  // innings instead once every configured over is used up.
-  const oversComplete =
-    format.overs_per_innings != null &&
-    innings.overs.overs >= format.overs_per_innings &&
-    innings.overs.balls === 0
-
-  if (oversComplete && !next!.bowler_player_id) {
+  if (oversCompleteAwaitingEnd) {
     return (
       <div className="mx-auto flex max-w-xl flex-col gap-4">
         {header}
@@ -310,25 +332,23 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
           </p>
         </div>
         <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
-          <p className="mb-3 text-sm font-medium">
-            All {format.overs_per_innings} overs bowled — end this innings to continue.
-          </p>
-          <div className="grid grid-cols-2 gap-2">
-            {END_REASONS.map((r) => (
+          {appendEvent.isError ? (
+            <>
+              <p className="mb-3 text-sm font-medium">
+                All {format.overs_per_innings} overs bowled, but ending the innings failed.
+              </p>
               <Button
-                key={r.value}
                 variant="outline"
                 size="sm"
                 disabled={appendEvent.isPending}
-                onClick={() => endInnings(r.value)}
+                onClick={() => endInnings('overs_complete')}
               >
-                {r.label}
+                Try again
               </Button>
-            ))}
-          </div>
-          {appendEvent.isError && (
-            <p className="mt-2 text-xs text-destructive">
-              Failed to end the innings — try again.
+            </>
+          ) : (
+            <p className="text-sm font-medium text-muted-foreground">
+              All {format.overs_per_innings} overs bowled — ending the innings…
             </p>
           )}
         </div>

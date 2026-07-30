@@ -60,7 +60,13 @@ export default defineConfig({
         // which is exactly how an old Supabase project URL survived a redeploy.
         // Exclude it from the precache and never let the SW serve a cached copy.
         globIgnores: ['**/runtime-env*.js'],
-        navigateFallbackDenylist: [/runtime-env/],
+        // Also exclude /api/* from the SPA navigation fallback: without this,
+        // a direct browser navigation to e.g. /api/docs (not in the precache)
+        // is intercepted by the service worker and served the app shell
+        // instead of hitting the backend, and the app's catch-all route then
+        // bounces it to /feed. Only affects navigations (address bar/links),
+        // not fetch() calls the already-loaded UI makes to the API.
+        navigateFallbackDenylist: [/runtime-env/, /^\/api\//],
         runtimeCaching: [
           {
             urlPattern: /\/assets\/runtime-env.*\.js$/,

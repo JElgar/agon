@@ -4604,10 +4604,7 @@ fn mock_football_detailed_score() -> DetailedScore {
         cards: vec![],
         substitutions: vec![],
         period: Some(FootballPeriod::FullTime),
-        kickoff_at: None,
-        half_time_at: None,
-        second_half_kickoff_at: None,
-        full_time_at: None,
+        period_times: std::collections::HashMap::new(),
     })
 }
 

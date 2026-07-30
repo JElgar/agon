@@ -8,7 +8,13 @@ import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { useAppendFootballEvent } from '@/hooks/useLiveScore'
 import { useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
-import { footballDetailFrom, loadTrackPrefs, saveTrackPrefs, type TrackPrefs } from '@/lib/liveScore'
+import {
+  footballDetailFrom,
+  loadTrackPrefs,
+  periodTime,
+  saveTrackPrefs,
+  type TrackPrefs,
+} from '@/lib/liveScore'
 
 type Match = components['schemas']['Match']
 
@@ -89,7 +95,7 @@ export function LiveScoringSetupPage() {
   // record one, and whether the button reads "Start" vs "Continue".
   const detailedScore = useMatchDetailedScore(matchId)
   const liveState = footballDetailFrom(detailedScore.data)
-  const alreadyKickedOff = !!liveState?.kickoff_at
+  const alreadyKickedOff = !!liveState && !!periodTime(liveState, 'kick_off')
   const appendEvent = useAppendFootballEvent(matchId ?? '')
 
   const start = useMutation({

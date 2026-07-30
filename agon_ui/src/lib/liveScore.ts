@@ -209,14 +209,19 @@ export function saveTrackPrefs(matchId: string, prefs: TrackPrefs): void {
 }
 
 // ---------------------------------------------------------------------------
-// Match clock — derived entirely from `FootballDetail`'s phase-boundary
-// timestamps (`kickoff_at`/`half_time_at`/`second_half_kickoff_at`/
-// `full_time_at`), each the `occurred_at` of the period marker that recorded
-// it server-side (see `agon_service::live_score::football::derive_detail`).
-// Because it's computed from shared server data rather than a per-device
-// stopwatch, the scorer's own screen and every other viewer (feed card, match
-// detail) tick the exact same clock.
+// Match clock — derived entirely from `FootballDetail.period_times`, each the
+// `occurred_at` of the period marker that recorded it server-side (see
+// `agon_service::live_score::football::derive_detail`). Because it's
+// computed from shared server data rather than a per-device stopwatch, the
+// scorer's own screen and every other viewer (feed card, match detail) tick
+// the exact same clock.
 // ---------------------------------------------------------------------------
+
+/** When a given period marker was recorded, if at all — a typed lookup into
+ *  `FootballDetail.period_times`'s string-keyed map. */
+export function periodTime(detail: FootballDetail, period: FootballPeriod): string | undefined {
+  return detail.period_times[period]
+}
 
 export type ClockPhase =
   | 'not_started'
@@ -230,10 +235,10 @@ export type ClockPhase =
 
 /** Which phase the match is in right now, purely from recorded timestamps. */
 export function phaseFromState(state: FootballDetail): ClockPhase {
-  if (state.full_time_at) return 'full_time'
-  if (state.second_half_kickoff_at) return 'second_half'
-  if (state.half_time_at) return 'half_time'
-  if (state.kickoff_at) return 'first_half'
+  if (periodTime(state, 'full_time')) return 'full_time'
+  if (periodTime(state, 'second_half_kick_off')) return 'second_half'
+  if (periodTime(state, 'half_time')) return 'half_time'
+  if (periodTime(state, 'kick_off')) return 'first_half'
   if (state.period) return 'other'
   return 'not_started'
 }
@@ -252,26 +257,27 @@ function minutesBetween(from: string, to: Date | string): number {
  */
 export function currentMinute(state: FootballDetail, now: Date = new Date()): number | null {
   const phase = phaseFromState(state)
-  const firstHalfMinutes =
-    state.kickoff_at && state.half_time_at
-      ? minutesBetween(state.kickoff_at, state.half_time_at)
-      : 0
+  const kickoffAt = periodTime(state, 'kick_off')
+  const halfTimeAt = periodTime(state, 'half_time')
+  const secondHalfKickoffAt = periodTime(state, 'second_half_kick_off')
+  const fullTimeAt = periodTime(state, 'full_time')
+  const firstHalfMinutes = kickoffAt && halfTimeAt ? minutesBetween(kickoffAt, halfTimeAt) : 0
 
   switch (phase) {
     case 'first_half':
-      return state.kickoff_at ? minutesBetween(state.kickoff_at, now) : null
+      return kickoffAt ? minutesBetween(kickoffAt, now) : null
     case 'half_time':
-      return state.kickoff_at && state.half_time_at ? firstHalfMinutes : null
+      return kickoffAt && halfTimeAt ? firstHalfMinutes : null
     case 'second_half':
-      return state.second_half_kickoff_at
-        ? firstHalfMinutes + minutesBetween(state.second_half_kickoff_at, now)
+      return secondHalfKickoffAt
+        ? firstHalfMinutes + minutesBetween(secondHalfKickoffAt, now)
         : null
     case 'full_time':
-      if (!state.full_time_at) return null
-      return state.second_half_kickoff_at
-        ? firstHalfMinutes + minutesBetween(state.second_half_kickoff_at, state.full_time_at)
-        : state.kickoff_at
-          ? minutesBetween(state.kickoff_at, state.full_time_at)
+      if (!fullTimeAt) return null
+      return secondHalfKickoffAt
+        ? firstHalfMinutes + minutesBetween(secondHalfKickoffAt, fullTimeAt)
+        : kickoffAt
+          ? minutesBetween(kickoffAt, fullTimeAt)
           : null
     case 'not_started':
     case 'other':

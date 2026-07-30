@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use poem_openapi::{Object, Union};
 
 use crate::detailed_score::football::{
@@ -36,10 +38,7 @@ pub fn derive_detail(
     events: &[(chrono::DateTime<chrono::Utc>, FootballLiveEvent)],
 ) -> FootballDetail {
     let mut period = None;
-    let mut kickoff_at = None;
-    let mut half_time_at = None;
-    let mut second_half_kickoff_at = None;
-    let mut full_time_at = None;
+    let mut period_times = HashMap::new();
     let mut score: Vec<FootballSideGoals> = Vec::new();
     let mut goals = Vec::new();
     let mut cards = Vec::new();
@@ -65,20 +64,8 @@ pub fn derive_detail(
                 substitutions.push(sub.clone());
             }
             FootballLiveEvent::Period(p) => {
-                match p.period {
-                    FootballPeriod::KickOff => kickoff_at = Some(*occurred_at),
-                    FootballPeriod::HalfTime => half_time_at = Some(*occurred_at),
-                    FootballPeriod::SecondHalfKickOff => {
-                        second_half_kickoff_at = Some(*occurred_at)
-                    }
-                    FootballPeriod::FullTime => full_time_at = Some(*occurred_at),
-                    // Extra time / penalties aren't clocked yet — only the
-                    // marker itself is tracked, same as before.
-                    FootballPeriod::ExtraTimeHalfTime
-                    | FootballPeriod::ExtraTimeFullTime
-                    | FootballPeriod::PenaltiesComplete => {}
-                }
-                period = Some(p.period.clone());
+                period_times.insert(p.period, *occurred_at);
+                period = Some(p.period);
             }
         }
     }
@@ -89,10 +76,7 @@ pub fn derive_detail(
         cards,
         substitutions,
         period,
-        kickoff_at,
-        half_time_at,
-        second_half_kickoff_at,
-        full_time_at,
+        period_times,
     }
 }
 
@@ -167,7 +151,10 @@ mod tests {
         assert_eq!(detail.cards.len(), 1);
         assert_eq!(detail.substitutions.len(), 1);
         assert!(matches!(detail.period, Some(FootballPeriod::FullTime)));
-        assert_eq!(detail.full_time_at, Some(ts(94)));
+        assert_eq!(
+            detail.period_times.get(&FootballPeriod::FullTime),
+            Some(&ts(94))
+        );
         assert!(detail.goals[1].own_goal);
         assert_eq!(detail.substitutions[0].player_out_id, "khan");
     }
@@ -197,13 +184,61 @@ mod tests {
 
         let detail = derive_detail(&events);
 
-        assert_eq!(detail.kickoff_at, Some(ts(0)));
-        assert_eq!(detail.half_time_at, Some(ts(46)));
-        assert_eq!(detail.second_half_kickoff_at, Some(ts(60)));
-        assert_eq!(detail.full_time_at, None);
+        assert_eq!(
+            detail.period_times.get(&FootballPeriod::KickOff),
+            Some(&ts(0))
+        );
+        assert_eq!(
+            detail.period_times.get(&FootballPeriod::HalfTime),
+            Some(&ts(46))
+        );
+        assert_eq!(
+            detail.period_times.get(&FootballPeriod::SecondHalfKickOff),
+            Some(&ts(60))
+        );
+        assert_eq!(detail.period_times.get(&FootballPeriod::FullTime), None);
         assert!(matches!(
             detail.period,
             Some(FootballPeriod::SecondHalfKickOff)
         ));
+    }
+
+    #[test]
+    fn extra_time_and_penalties_markers_get_timestamps_too() {
+        let events = vec![
+            (
+                ts(120),
+                FootballLiveEvent::Period(FootballPeriodEvent {
+                    period: FootballPeriod::ExtraTimeHalfTime,
+                }),
+            ),
+            (
+                ts(150),
+                FootballLiveEvent::Period(FootballPeriodEvent {
+                    period: FootballPeriod::ExtraTimeFullTime,
+                }),
+            ),
+            (
+                ts(160),
+                FootballLiveEvent::Period(FootballPeriodEvent {
+                    period: FootballPeriod::PenaltiesComplete,
+                }),
+            ),
+        ];
+
+        let detail = derive_detail(&events);
+
+        assert_eq!(
+            detail.period_times.get(&FootballPeriod::ExtraTimeHalfTime),
+            Some(&ts(120))
+        );
+        assert_eq!(
+            detail.period_times.get(&FootballPeriod::ExtraTimeFullTime),
+            Some(&ts(150))
+        );
+        assert_eq!(
+            detail.period_times.get(&FootballPeriod::PenaltiesComplete),
+            Some(&ts(160))
+        );
     }
 }

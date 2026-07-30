@@ -60,6 +60,10 @@ export function MatchFormatCard({
   canEdit: boolean
 }) {
   const queryClient = useQueryClient()
+  // The server locks the format once the match has left `scheduled` (scoring
+  // started, or it's complete/cancelled) — hide the affordance to match, so
+  // there's no dead "Edit" button that just 400s.
+  const canEditFormat = canEdit && match.status === 'scheduled'
   const [editing, setEditing] = useState(false)
   const [footballDraft, setFootballDraft] = useState<FootballFormat>(() =>
     footballFormat(match.format),
@@ -96,7 +100,7 @@ export function MatchFormatCard({
           <p className="text-sm font-medium">Format</p>
           <FormatSummary match={match} />
         </div>
-        {canEdit && (
+        {canEditFormat && (
           <Button
             variant="ghost"
             size="sm"

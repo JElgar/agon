@@ -10,8 +10,8 @@ use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::{
-    ConfirmedScoreRecord, MatchDetailedScoreRecord, MatchFormatRecord, MatchPlayerRecord,
-    MatchRecord, MatchSideRecord, PendingScoreRecord,
+    ConfirmedScoreRecord, HeaderPhotoRecord, MatchDetailedScoreRecord, MatchFormatRecord,
+    MatchPlayerRecord, MatchRecord, MatchSideRecord, PendingScoreRecord,
 };
 
 pub const TYPE_MATCH: &str = "match";
@@ -209,9 +209,10 @@ impl Dao {
         starts_at: Option<&str>,
         confirmed_score: Option<ConfirmedScoreRecord>,
         pending_score: Option<Option<PendingScoreRecord>>,
-        // Replace the header photo URLs. `None` leaves them unchanged; `Some([])`
-        // clears them (removes the attribute); `Some([..])` overwrites.
-        header_photo_urls: Option<Vec<String>>,
+        // Replace the header photos, in order. `None` leaves them unchanged;
+        // `Some([])` clears them (removes the attribute); `Some([..])`
+        // overwrites.
+        header_photos: Option<Vec<HeaderPhotoRecord>>,
         // Replace the match format. `None` leaves it unchanged; `Some(value)`
         // overwrites. No "clear" case yet (Phase 1 doesn't need one — a
         // match's sport, and so its format shape, doesn't change).
@@ -263,17 +264,16 @@ impl Dao {
             }
             None => {}
         }
-        match header_photo_urls {
-            Some(urls) if !urls.is_empty() => {
-                set.push("#hpu = :hpu".into());
-                names.insert("#hpu".into(), "header_photo_urls".into());
-                let list: Vec<AttributeValue> = urls.iter().map(s).collect();
-                values.insert(":hpu".into(), AttributeValue::L(list));
+        match header_photos {
+            Some(photos) if !photos.is_empty() => {
+                set.push("#hp = :hp".into());
+                names.insert("#hp".into(), "header_photos".into());
+                values.insert(":hp".into(), to_attr(&photos)?);
             }
             // Clearing: remove the attribute so a read defaults to an empty Vec.
             Some(_) => {
-                remove.push("#hpu".into());
-                names.insert("#hpu".into(), "header_photo_urls".into());
+                remove.push("#hp".into());
+                names.insert("#hp".into(), "header_photos".into());
             }
             None => {}
         }

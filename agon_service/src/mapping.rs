@@ -118,6 +118,7 @@ pub fn user_profile_from_record(user: &UserRecord, is_followed_by_me: bool) -> U
         name: user.name.clone(),
         profile_image: user.profile_image_url.as_ref().map(|url| Photo {
             image_url: url.clone(),
+            asset_id: None,
         }),
         stats: entries
             .into_iter()
@@ -560,10 +561,11 @@ pub fn match_from_records(
             longitude: l.longitude,
         }),
         header_photos: rec
-            .header_photo_urls
+            .header_photos
             .iter()
-            .map(|url| Photo {
-                image_url: url.clone(),
+            .map(|p| Photo {
+                image_url: p.url.clone(),
+                asset_id: Some(p.asset_id.clone()),
             })
             .collect(),
         sides: sides.iter().map(match_side_from_record).collect(),

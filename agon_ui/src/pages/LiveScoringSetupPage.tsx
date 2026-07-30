@@ -6,8 +6,9 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
-import { useAppendFootballEvent, useLiveScore } from '@/hooks/useLiveScore'
-import { footballLiveState, loadTrackPrefs, saveTrackPrefs, type TrackPrefs } from '@/lib/liveScore'
+import { useAppendFootballEvent } from '@/hooks/useLiveScore'
+import { useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
+import { footballDetailFrom, loadTrackPrefs, saveTrackPrefs, type TrackPrefs } from '@/lib/liveScore'
 
 type Match = components['schemas']['Match']
 
@@ -86,8 +87,8 @@ export function LiveScoringSetupPage() {
   // Whether the match's live clock has already started (a KickOff period
   // marker already recorded) — determines whether "Start scoring" needs to
   // record one, and whether the button reads "Start" vs "Continue".
-  const live = useLiveScore(matchId)
-  const liveState = footballLiveState(live.data)
+  const detailedScore = useMatchDetailedScore(matchId)
+  const liveState = footballDetailFrom(detailedScore.data)
   const alreadyKickedOff = !!liveState?.kickoff_at
   const appendEvent = useAppendFootballEvent(matchId ?? '')
 

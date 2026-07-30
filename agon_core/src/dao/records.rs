@@ -374,18 +374,29 @@ pub struct MatchPlayerRecord {
     pub invitation: Option<EmbeddedInvitationRecord>,
 }
 
-/// `MATCH#<matchId>` / `DETAIL#<sport>` — the sport-specific detailed score.
+/// `MATCH#<matchId>` / `DETAIL#<sport>` — the match's detailed score: live or
+/// finished, the same record either way (see `agon_service::detailed_score`'s
+/// module docs). A cricket match being scored live keeps this up to date
+/// incrementally, one delivery at a time; a manually-entered match (or one
+/// past its last live event) just has it written directly.
 ///
 /// The `detail` payload is intentionally `serde_json::Value`: it is a large,
-/// deeply-nested, sport-polymorphic blob (a full cricket scorecard with
-/// ball-by-ball deliveries, or a football event timeline) that the DAO only ever
-/// stores and returns verbatim — it never reads inside it. Typing it would mean
-/// porting the entire detailed-score union into the DAO for zero benefit here.
-/// This is the one deliberate exception to the "type everything" rule.
+/// deeply-nested, sport-polymorphic blob (a full cricket scorecard, or a
+/// football event timeline) that the DAO only ever stores and returns
+/// verbatim — it never reads inside it. Typing it would mean porting the
+/// entire detailed-score union into the DAO for zero benefit here. This is
+/// the one deliberate exception to the "type everything" rule.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MatchDetailedScoreRecord {
     pub sport: String,
     pub detail: serde_json::Value,
+    /// The seq of the last live event folded into `detail`, if any — `None`
+    /// for a match with no live event log behind this record (manual
+    /// entry). Lets an incremental update confirm this is caught up to
+    /// exactly the start of the new batch before applying it, and lets a
+    /// reader know whether to trust this over a fresh derive.
+    #[serde(default)]
+    pub last_seq: Option<u32>,
 }
 
 /// `MATCH#<matchId>` / `LIVEEVT#<seq>` — one live-scoring event, in append
@@ -580,23 +591,6 @@ pub enum InningsEndReasonRecord {
     OversComplete,
     Declared,
     TargetReached,
-}
-
-/// `MATCH#<matchId>` / `#LIVESTATE` — cached live-scoring summary, derived by
-/// folding the `LIVEEVT#` log. A cache, not a source of truth: safe to
-/// recompute or go briefly stale (e.g. after a crash between an event write
-/// and the cache rewrite) — the next append recomputes it from the full log.
-/// Unlike `MatchDetailedScoreRecord`, this one is fixed-size regardless of
-/// match length (see `agon_service::live_score::cricket::CricketLiveState`),
-/// which is what makes it safe to rewrite on every single delivery. `state`
-/// is opaque per the same rule as `MatchDetailedScoreRecord.detail`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct LiveStateRecord {
-    pub sport: String,
-    pub state: serde_json::Value,
-    /// The seq of the last event folded into `state`, so a reader can tell
-    /// whether the cache might be behind the current log tip.
-    pub last_seq: u32,
 }
 
 /// `MATCH#<matchId>` / `SCORESUB#<ts>#<subId>` — a score submission and its

@@ -17,10 +17,10 @@ import { LiveMatchBlock } from './live/LiveMatchBlock'
 import { CricketMatchBlock } from './live/CricketMatchBlock'
 import { CricketScoreBlock } from './CricketScoreBlock'
 import { LiveIndicator } from './live/LiveIndicator'
-import { useLiveScore } from '@/hooks/useLiveScore'
-import { footballLiveState } from '@/lib/liveScore'
+import { useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
+import { footballDetailFrom } from '@/lib/liveScore'
 import {
-  cricketLiveState,
+  cricketDetailFrom,
   cricketProgressFromScore,
   cricketScoreFrom,
   cricketStateDescription,
@@ -203,12 +203,12 @@ export function MatchCard({
   const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
 
   const isLiveSport = match.match_type === 'football' || match.match_type === 'cricket'
-  const live = useLiveScore(match.id, {
+  const detailedScore = useMatchDetailedScore(match.id, {
     enabled: isLiveSport && match.status === 'in_progress',
     refetchInterval: 20000,
   })
-  const footballState = footballLiveState(live.data)
-  const cricketState = cricketLiveState(live.data)
+  const footballState = footballDetailFrom(detailedScore.data)
+  const cricketState = cricketDetailFrom(detailedScore.data)
   const hasLiveState = !!footballState || !!cricketState
   // A cricket match's confirmed score carries its own per-innings detail once
   // it's been live-scored (`Score::Cricket`; see `finishMatch` in

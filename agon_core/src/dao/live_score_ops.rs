@@ -1,19 +1,14 @@
 //! Live-scoring event log: batched, transactional append with optimistic
-//! concurrency (so an offline device can catch up safely), direct
-//! delete/amend for corrections, plus a cache of the derived summary.
+//! concurrency (so an offline device can catch up safely), plus direct
+//! delete/amend for corrections.
 //!
 //! The event log (`LIVEEVT#<seq>`) is the sole source of truth — one item per
 //! event, with no per-item size ceiling regardless of how long a match runs.
-//! `#LIVESTATE` is a *fixed-size* cache of the folded summary
-//! (`agon_service::live_score::cricket::CricketLiveState`; see its own docs
-//! for why it stays small no matter how long the match runs), rebuilt from
-//! the log on every append and never trusted as authoritative on its own —
-//! unlike the full per-innings scorecard (batting/bowling cards), which is
-//! never cached here at all and only ever computed once, when a match
-//! completes (see `agon_service::live_score::cricket::fold_full_scorecard`).
-//! Corrections are direct mutations of the log — `delete_live_event` removes
-//! an item outright, `amend_live_event` overwrites its payload in place —
-//! not a layered "this is void" marker to filter out on every read.
+//! The derived scorecard it folds into lives in `MatchDetailedScoreRecord`
+//! (`DETAIL#<sport>`) — see that record's doc comment. Corrections are
+//! direct mutations of the log — `delete_live_event` removes an item
+//! outright, `amend_live_event` overwrites its payload in place — not a
+//! layered "this is void" marker to filter out on every read.
 
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::delete_item::DeleteItemError;
@@ -22,13 +17,12 @@ use aws_sdk_dynamodb::types::{AttributeValue, Put, TransactWriteItem, Update};
 
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
-use super::item::{ATTR_PK, ATTR_SK, from_item, s, to_item};
+use super::item::{ATTR_PK, ATTR_SK, s, to_item};
 use super::keys::{Pk, Sk};
 use super::page::Page;
-use super::records::{LiveEventPayloadRecord, LiveEventRecord, LiveStateRecord};
+use super::records::{LiveEventPayloadRecord, LiveEventRecord};
 
 pub const TYPE_LIVE_EVENT: &str = "live_event";
-pub const TYPE_LIVE_STATE: &str = "live_state";
 
 /// DynamoDB caps `TransactWriteItems` at 100 items per call. One of those is
 /// the seq-counter reservation, leaving this many for the events themselves.
@@ -234,45 +228,6 @@ impl Dao {
             limit,
         )
         .await
-    }
-
-    /// Fetch the cached derived live summary. `None` if never computed.
-    pub async fn get_live_state(&self, match_id: &str) -> DaoResult<Option<LiveStateRecord>> {
-        let out = self
-            .client
-            .get_item()
-            .table_name(self.table())
-            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
-            .key(ATTR_SK, s(Sk::LiveState.to_string()))
-            .send()
-            .await
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-        match out.item {
-            Some(item) => Ok(Some(from_item(item)?)),
-            None => Ok(None),
-        }
-    }
-
-    /// Write (overwrite) the cached derived live summary. Best-effort: never
-    /// part of the append transaction, always safely recomputable from the
-    /// log, so a failure here doesn't need to roll back the append. Safe to
-    /// call on every single delivery — the summary is fixed-size regardless
-    /// of match length (see the module docs).
-    pub async fn put_live_state(&self, match_id: &str, state: &LiveStateRecord) -> DaoResult<()> {
-        let item = to_item(
-            &Pk::Match(match_id.into()),
-            &Sk::LiveState,
-            TYPE_LIVE_STATE,
-            state,
-        )?;
-        self.client
-            .put_item()
-            .table_name(self.table())
-            .set_item(Some(item))
-            .send()
-            .await
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-        Ok(())
     }
 }
 

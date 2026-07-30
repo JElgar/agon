@@ -11,7 +11,7 @@ import {
   playerNameFor,
   runRate,
   sideNameFor,
-  type CricketLiveState,
+  type CricketDetail,
 } from '@/lib/cricketScore'
 import { cricketFormat } from '@/lib/matchFormat'
 
@@ -36,8 +36,8 @@ function BallChip({ label, kind }: { label: string; kind: 'boundary' | 'wicket' 
 /**
  * The score block + "this over" ball row for a cricket match being scored
  * live (mirrors `LiveMatchBlock`'s role for football). Presentational: the
- * caller fetches the live snapshot (`useLiveScore`) and passes the derived
- * cricket state down.
+ * caller fetches the detailed score (`useMatchDetailedScore`) and passes the
+ * derived cricket detail down.
  */
 export function CricketMatchBlock({
   match,
@@ -45,7 +45,7 @@ export function CricketMatchBlock({
   showDescription = true,
 }: {
   match: Match
-  state: CricketLiveState
+  state: CricketDetail
   /** Whether to show the state-of-game line (target/leading/result) here.
    *  Callers that already surface it elsewhere (the feed card's header)
    *  pass `false` so it isn't said twice — the innings-break heading then
@@ -99,7 +99,7 @@ export function CricketMatchBlock({
   const battingName = sideNameFor(match, innings.batting_side_id)
   const bowlingName = sideNameFor(match, innings.bowling_side_id)
   const next = state.next_ball_context
-  const overBalls = currentOverDeliveries(state.recent_deliveries)
+  const overBalls = currentOverDeliveries(state.recent_deliveries ?? [])
   const crr = runRate(innings.runs, innings.overs, format.balls_per_over)
 
   return (

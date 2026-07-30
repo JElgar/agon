@@ -5,7 +5,8 @@ import { ChevronLeft, CircleDot, Flag, Repeat2, TimerReset } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
-import { useLiveScore, useAppendFootballEvent } from '@/hooks/useLiveScore'
+import { useAppendFootballEvent, useLiveSeq } from '@/hooks/useLiveScore'
+import { useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
 import { RecordEventDialog, type EventKind } from '@/components/agon/live/RecordEventDialog'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { CricketLiveScoringPage } from './CricketLiveScoringPage'
@@ -13,7 +14,8 @@ import {
   currentMinute,
   describeEvent,
   eventEmoji,
-  footballLiveState,
+  eventsFromDetail,
+  footballDetailFrom,
   loadTrackPrefs,
   nextPeriodForPhase,
   nextPhaseActionLabel,
@@ -87,7 +89,8 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
-  const live = useLiveScore(match.id, { refetchInterval: 8000 })
+  const detailedScore = useMatchDetailedScore(match.id, { refetchInterval: 8000 })
+  const seq = useLiveSeq(match.id)
   const append = useAppendFootballEvent(match.id)
 
   const [now, setNow] = useState(() => new Date())
@@ -99,7 +102,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
   const prefs = loadTrackPrefs(match.id)
   const [dialogKind, setDialogKind] = useState<EventKind | null>(null)
 
-  if (live.isLoading) {
+  if (detailedScore.isLoading || seq.isLoading) {
     return (
       <div className="mx-auto max-w-xl">
         <div className="h-64 animate-pulse rounded-xl border bg-card" aria-hidden />
@@ -109,7 +112,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
 
   const nameA = sideName(match, 0, 'Side A')
   const nameB = sideName(match, 1, 'Side B')
-  const state = footballLiveState(live.data)
+  const state = footballDetailFrom(detailedScore.data)
   const goalsFor = (sideId: string | undefined) =>
     state?.score.find((s) => s.side_id === sideId)?.goals ?? 0
 
@@ -154,7 +157,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
     },
   ]
 
-  const events = state ? [...state.events].reverse() : []
+  const events = state ? eventsFromDetail(state).reverse() : []
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">

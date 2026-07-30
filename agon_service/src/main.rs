@@ -4580,6 +4580,8 @@ fn mock_football_detailed_score() -> DetailedScore {
         substitutions: vec![],
         period: Some(FootballPeriod::FullTime),
         period_times: std::collections::HashMap::new(),
+        penalty_shootout: vec![],
+        penalty_shootout_score: vec![],
     })
 }
 

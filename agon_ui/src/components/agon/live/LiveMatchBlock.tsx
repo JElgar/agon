@@ -83,15 +83,21 @@ export function LiveMatchBlock({
 
       {events.length > 0 && (
         <div className="mt-2.5 space-y-1 border-t pt-2">
-          {events.map((event, i) => (
-            <p key={i} className="truncate text-xs text-muted-foreground">
-              <span aria-hidden>{eventEmoji(event.kind)}</span>{' '}
-              {event.minute !== undefined && (
-                <span className="font-medium text-foreground">{event.minute}' </span>
-              )}
-              {describeEvent(event, match)}
-            </p>
-          ))}
+          {events.map((event, i) => {
+            const isSideB = event.side_id === sideB?.id
+            return (
+              <p
+                key={i}
+                className={`flex items-baseline gap-1.5 truncate text-xs text-muted-foreground ${isSideB ? 'flex-row-reverse text-right' : ''}`}
+              >
+                <span aria-hidden>{eventEmoji(event.kind)}</span>
+                {event.minute !== undefined && (
+                  <span className="font-medium text-foreground">{event.minute}'</span>
+                )}
+                <span className="truncate">{describeEvent(event, match)}</span>
+              </p>
+            )
+          })}
         </div>
       )}
     </div>

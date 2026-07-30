@@ -2,15 +2,12 @@ import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { LiveIndicator } from './LiveIndicator'
 import {
-  battingEntryFor,
-  battingLine,
   cricketStateDescription,
   currentInnings,
   currentOverDeliveries,
   deliveryChipLabel,
   formatOvers,
   isChipHighlighted,
-  nextBallContext,
   playerNameFor,
   runRate,
   sideNameFor,
@@ -101,10 +98,8 @@ export function CricketMatchBlock({
 
   const battingName = sideNameFor(match, innings.batting_side_id)
   const bowlingName = sideNameFor(match, innings.bowling_side_id)
-  const next = nextBallContext(innings, format)
-  const striker = battingEntryFor(innings, next.strikerPlayerId)
-  const nonStriker = battingEntryFor(innings, next.nonStrikerPlayerId)
-  const overBalls = currentOverDeliveries(innings)
+  const next = state.next_ball_context
+  const overBalls = currentOverDeliveries(state.recent_deliveries)
   const crr = runRate(innings.runs, innings.overs, format.balls_per_over)
 
   return (
@@ -120,19 +115,11 @@ export function CricketMatchBlock({
               {crr.toFixed(2)})
             </span>
           </p>
-          {(striker || nonStriker) && (
+          {next && (next.striker_player_id || next.non_striker_player_id) && (
             <p className="mt-0.5 truncate text-xs text-muted-foreground">
-              {next.strikerPlayerId && (
-                <>
-                  {playerNameFor(match, next.strikerPlayerId)}* {battingLine(striker)}
-                </>
-              )}
-              {next.strikerPlayerId && next.nonStrikerPlayerId && ' · '}
-              {next.nonStrikerPlayerId && (
-                <>
-                  {playerNameFor(match, next.nonStrikerPlayerId)} {battingLine(nonStriker)}
-                </>
-              )}
+              {next.striker_player_id && <>{playerNameFor(match, next.striker_player_id)}*</>}
+              {next.striker_player_id && next.non_striker_player_id && ' · '}
+              {next.non_striker_player_id && <>{playerNameFor(match, next.non_striker_player_id)}</>}
             </p>
           )}
           {showDescription && description && (

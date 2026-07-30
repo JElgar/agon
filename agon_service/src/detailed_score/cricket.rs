@@ -207,7 +207,7 @@ fn dismissal_credited_to_bowler(kind: &CricketDismissalKind) -> bool {
 /// rules, but a match format can configure either one to just count as one of
 /// the over's legal balls instead (see `CricketFormat::wide_is_extra_ball` /
 /// `no_ball_is_extra_ball`).
-fn is_legal_delivery(
+pub(crate) fn is_legal_delivery(
     delivery: &CricketDelivery,
     wide_is_extra_ball: bool,
     no_ball_is_extra_ball: bool,
@@ -234,7 +234,7 @@ fn runs_charged_to_bowler(delivery: &CricketDelivery) -> u32 {
 /// Converts a count of legal balls into whole overs + balls, e.g. 13 balls
 /// -> 2 overs + 1 ball, given how many legal deliveries make an over (6 for
 /// almost everything, 5 for The Hundred).
-fn balls_to_overs(balls: u32, balls_per_over: u32) -> Overs {
+pub(crate) fn balls_to_overs(balls: u32, balls_per_over: u32) -> Overs {
     Overs {
         overs: balls / balls_per_over,
         balls: balls % balls_per_over,

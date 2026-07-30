@@ -42,19 +42,29 @@ export function useLiveScore(
  * item per event) and stays fully readable regardless of match length or
  * status, so a completed match's full run-progression graph reads deliveries
  * from here (see `inningsDeliveriesFromEvents`) rather than the snapshot,
- * which only keeps the currently (or most recently) open innings' ball log.
+ * which only ever carries the current innings' totals plus a bounded
+ * recent-deliveries window. The endpoint itself is paginated (a long match's
+ * log can run to thousands of events), so this drains every page — fine for
+ * a one-shot fetch on a match detail page, not meant for polling.
  */
 export function useLiveEvents(matchId: string | undefined, options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ['live-events', matchId],
     enabled: !!matchId && (options?.enabled ?? true),
     queryFn: async (): Promise<LiveEvent[]> => {
-      const { data, response } = await fetchClient.GET('/matches/{match_id}/live/events', {
-        params: { path: { match_id: matchId! } },
-      })
-      if (response.status === 404) return []
-      if (!data) throw new Error('Failed to load live events')
-      return data
+      const events: LiveEvent[] = []
+      let cursor: string | undefined
+      for (;;) {
+        const { data, response } = await fetchClient.GET('/matches/{match_id}/live/events', {
+          params: { path: { match_id: matchId! }, query: { cursor, limit: 50 } },
+        })
+        if (response.status === 404) return []
+        if (!data) throw new Error('Failed to load live events')
+        events.push(...data.items)
+        if (!data.next_cursor) break
+        cursor = data.next_cursor
+      }
+      return events
     },
   })
 }

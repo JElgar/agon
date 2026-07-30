@@ -163,6 +163,11 @@ pub enum Sk {
     /// corrections are later events (a `void` payload referencing an earlier
     /// seq), not edits.
     LiveEvent(u32),
+    /// Cached live-scoring summary derived by folding the `LIVEEVT#` log — a
+    /// rebuildable cache, never authoritative, and fixed-size regardless of
+    /// match length (see `agon_service::live_score::cricket::CricketLiveState`).
+    /// `#LIVESTATE`
+    LiveState,
 
     /// A score submission. `SCORESUB#<subId>` — addressed by id; time ordering
     /// is via GSI1 (`MSUBMISSIONS#<matchId>` / `<ts>#<subId>`).
@@ -206,6 +211,7 @@ impl Sk {
             Sk::Detail(_) => "DETAIL",
             Sk::Like(_) => "LIKE",
             Sk::LiveEvent(_) => "LIVEEVT",
+            Sk::LiveState => "#LIVESTATE",
             Sk::ScoreSubmission(_) => "SCORESUB",
             Sk::Comment(_) => "COMMENT",
             Sk::Reply(_) => "REPLY",
@@ -220,7 +226,7 @@ impl fmt::Display for Sk {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             // Marker keys (the prefix is the whole key).
-            Sk::Profile | Sk::Meta | Sk::Guard => write!(f, "{}", self.prefix()),
+            Sk::Profile | Sk::Meta | Sk::Guard | Sk::LiveState => write!(f, "{}", self.prefix()),
 
             // Single-value keys.
             Sk::Follower(v)
@@ -261,6 +267,7 @@ impl FromStr for Sk {
             "#PROFILE" => return Ok(Sk::Profile),
             "#META" => return Ok(Sk::Meta),
             "#GUARD" => return Ok(Sk::Guard),
+            "#LIVESTATE" => return Ok(Sk::LiveState),
             _ => {}
         }
 
@@ -345,6 +352,7 @@ mod tests {
         sk_roundtrip(Sk::Profile, "#PROFILE");
         sk_roundtrip(Sk::Meta, "#META");
         sk_roundtrip(Sk::Guard, "#GUARD");
+        sk_roundtrip(Sk::LiveState, "#LIVESTATE");
     }
 
     #[test]

@@ -4,8 +4,9 @@ import type { CricketFormat } from './matchFormat'
 
 export type CricketDelivery = components['schemas']['CricketDelivery']
 export type CricketInnings = components['schemas']['CricketInnings']
-export type CricketLiveInnings = components['schemas']['CricketLiveInnings']
+export type CricketInningsTotals = components['schemas']['CricketInningsTotals']
 export type CricketLiveState = components['schemas']['CricketLiveState']
+export type NextBallContext = components['schemas']['NextBallContext']
 export type CricketExtraKind = components['schemas']['CricketExtraKind']
 export type CricketDismissalKind = components['schemas']['CricketDismissalKind']
 export type CricketBattingEntry = components['schemas']['CricketBattingEntry']
@@ -46,6 +47,13 @@ export function cricketDetail(
   if (!detail || detail.type !== 'Cricket') return null
   return detail.innings
 }
+
+/** A `detailed_score` innings (batting/bowling cards, totals) with its
+ *  ball-by-ball log folded back in from the live event log — what the match
+ *  detail page builds for the scorecard/run-rate graph, since
+ *  `detailed_score` itself no longer carries deliveries (see
+ *  `inningsDeliveriesFromEvents`). */
+export type CricketInningsWithDeliveries = CricketInnings & { deliveries: CricketDelivery[] }
 
 /** One innings' ball-by-ball log, recovered by segmenting the raw live event
  *  log on its `InningsStart`/`InningsEnd` markers. This is the durable
@@ -122,7 +130,7 @@ export function cricketProgressFromScore(score: CricketScore): CricketMatchProgr
 /** The innings currently being played, or `null` when the match hasn't
  *  started its first innings yet, or is between innings (see
  *  `CricketLiveState.awaiting_next_innings`). */
-export function currentInnings(state: CricketLiveState): CricketLiveInnings | null {
+export function currentInnings(state: CricketLiveState): CricketInningsTotals | null {
   if (state.awaiting_next_innings) return null
   return state.innings[state.innings.length - 1] ?? null
 }
@@ -196,12 +204,13 @@ export function runProgression(
   })
 }
 
-/** This over's deliveries — everything recorded against the innings' latest
- *  over index (we assign `over`/`ball` ourselves on submit, so this is a
- *  simple filter rather than a rolling window). */
-export function currentOverDeliveries(innings: CricketLiveInnings): CricketDelivery[] {
-  const latestOver = innings.deliveries.reduce((max, d) => Math.max(max, d.over), 0)
-  return innings.deliveries.filter((d) => d.over === latestOver)
+/** This over's deliveries out of a live snapshot's bounded recent-deliveries
+ *  window (`CricketLiveState.recent_deliveries`) — everything recorded
+ *  against the latest over index (we assign `over`/`ball` ourselves on
+ *  submit, so this is a simple filter rather than a rolling window). */
+export function currentOverDeliveries(recentDeliveries: CricketDelivery[]): CricketDelivery[] {
+  const latestOver = recentDeliveries.reduce((max, d) => Math.max(max, d.over), 0)
+  return recentDeliveries.filter((d) => d.over === latestOver)
 }
 
 /** Short chip label for a delivery in the "this over" row, e.g. "4", "W",
@@ -256,35 +265,11 @@ export function creditsBowler(kind: CricketDismissalKind): boolean {
   )
 }
 
-/** A batter's card entry, or `null` if they haven't faced a ball yet (e.g. a
- *  non-striker who's yet to be on strike) — not the same as not being on the
- *  crease at all. */
-export function battingEntryFor(
-  innings: CricketInnings,
-  playerId: string | null,
-): CricketBattingEntry | null {
-  if (!playerId) return null
-  return innings.batting.find((b) => b.player_id === playerId) ?? null
-}
-
-export function bowlingEntryFor(
-  innings: CricketInnings,
-  playerId: string | null,
-): CricketBowlingEntry | null {
-  if (!playerId) return null
-  return innings.bowling.find((b) => b.player_id === playerId) ?? null
-}
-
 /** "3.2-0-24-1" bowling figures (overs-maidens-runs-wickets), or an em dash
  *  before the bowler has sent down a delivery. */
 export function bowlingFigures(entry: CricketBowlingEntry | null): string {
   if (!entry) return '—'
   return `${formatOvers(entry.overs)}-${entry.maidens}-${entry.runs_conceded}-${entry.wickets}`
-}
-
-/** "46 (32)" — runs and balls faced, or "0 (0)" before a batter's first ball. */
-export function battingLine(entry: CricketBattingEntry | null): string {
-  return `${entry?.runs ?? 0} (${entry?.balls_faced ?? 0})`
 }
 
 /** Total runs scored by each side across every completed innings so far —
@@ -367,14 +352,6 @@ export function cricketStateDescription(
   return `${sideNameFor(match, last.bowling_side_id)} won by ${margin} run${margin === 1 ? '' : 's'}`
 }
 
-/** Batters who can't be picked as a new arrival — already dismissed for a
- *  reason other than "retired hurt" (which lets the same batter resume). */
-export function outBattersFor(innings: CricketInnings): string[] {
-  return innings.batting
-    .filter((b) => b.dismissal && b.dismissal.kind !== 'retired_hurt')
-    .map((b) => b.player_id)
-}
-
 /** Display name for a side id: its name, or a neutral fallback. */
 export function sideNameFor(match: Pick<Match, 'sides'>, sideId: string): string {
   return match.sides.find((s) => s.id === sideId)?.name?.trim() || 'This side'
@@ -390,87 +367,10 @@ export function playerNameFor(
   return player ? memberName(player.member) : '—'
 }
 
-/**
- * What's known about who's at the crease/bowling for the *next* delivery,
- * folded from the current innings' delivery log. A `null` field means the
- * scorer needs to pick someone before the next ball can be recorded — either
- * a fresh innings (nothing bowled yet), a wicket just fell (the dismissed
- * batter's slot is open), or an over just completed (a new bowler is
- * required; the same bowler can't bowl consecutive overs).
- *
- * Strike rotates automatically on an odd number of the ball's rotating runs
- * (off the bat, or byes/leg-byes — wides/no-balls don't rotate strike here)
- * and always at the end of an over — including when one slot is already
- * vacant from a wicket on that same ball (e.g. dismissed on the over's final
- * ball): the swap still applies to whichever slot the survivor occupies, so
- * the vacancy lands in the correct slot for the next ball rather than always
- * defaulting to "striker". One remaining simplification: a mid-run run-out's
- * rotation is inferred from the parity of runs completed before the
- * dismissal (as entered in the wicket dialog), not an explicit "had they
- * crossed?" flag — the two agree in the vast majority of real dismissals.
- */
-export interface NextBallContext {
-  strikerPlayerId: string | null
-  nonStrikerPlayerId: string | null
-  bowlerPlayerId: string | null
-  /** 0-based over index the next delivery belongs to. */
-  over: number
-  /** 1-based ball number within that over. */
-  ball: number
-  /** The bowler who just finished an over — excluded from the next-bowler
-   *  picker. `null` unless a bowler pick is actually needed. */
-  previousOverBowlerPlayerId: string | null
-}
-
-export function nextBallContext(
-  innings: CricketLiveInnings,
-  format: Pick<CricketFormat, 'balls_per_over' | 'wide_is_extra_ball' | 'no_ball_is_extra_ball'>,
-): NextBallContext {
-  let striker: string | null = null
-  let nonStriker: string | null = null
-  let bowler: string | null = null
-  let legalInOver = 0
-  let over = 0
-  let previousOverBowler: string | null = null
-
-  for (const d of innings.deliveries) {
-    bowler = d.bowler_player_id
-    striker = d.striker_player_id
-    nonStriker = d.non_striker_player_id
-    previousOverBowler = null
-
-    if (d.wicket) {
-      if (d.wicket.dismissed_player_id === striker) striker = null
-      else if (d.wicket.dismissed_player_id === nonStriker) nonStriker = null
-    }
-
-    if (isLegalDelivery(d, format)) {
-      legalInOver += 1
-      const rotatingRuns =
-        d.runs_off_bat + (d.extra && (d.extra.kind === 'bye' || d.extra.kind === 'leg_bye') ? d.extra.runs : 0)
-      // Not guarded on both being non-null: swapping a real id with a `null`
-      // vacancy still means something — it moves *which slot* is vacant, so
-      // a wicket that falls alongside a rotation (odd runs, or an over
-      // boundary) leaves the opening in the correct slot for the next ball.
-      if (rotatingRuns % 2 === 1) {
-        ;[striker, nonStriker] = [nonStriker, striker]
-      }
-      if (legalInOver === format.balls_per_over) {
-        ;[striker, nonStriker] = [nonStriker, striker]
-        previousOverBowler = bowler
-        bowler = null
-        over += 1
-        legalInOver = 0
-      }
-    }
-  }
-
-  return {
-    strikerPlayerId: striker,
-    nonStrikerPlayerId: nonStriker,
-    bowlerPlayerId: bowler,
-    over,
-    ball: legalInOver + 1,
-    previousOverBowlerPlayerId: previousOverBowler,
-  }
-}
+// `NextBallContext` (who's on strike/bowling for the next delivery) is now
+// folded server-side, incrementally, as part of the live snapshot (see
+// `CricketLiveState.next_ball_context` and the backend's
+// `apply_delivery_to_context`) — no client-side replay needed for the
+// online case. An offline-scoring client will need its own local copy of
+// that same incremental fold (applied to its not-yet-synced queue) when
+// that's built; it isn't yet, so there's nothing here today.

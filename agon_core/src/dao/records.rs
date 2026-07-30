@@ -582,6 +582,23 @@ pub enum InningsEndReasonRecord {
     TargetReached,
 }
 
+/// `MATCH#<matchId>` / `#LIVESTATE` — cached live-scoring summary, derived by
+/// folding the `LIVEEVT#` log. A cache, not a source of truth: safe to
+/// recompute or go briefly stale (e.g. after a crash between an event write
+/// and the cache rewrite) — the next append recomputes it from the full log.
+/// Unlike `MatchDetailedScoreRecord`, this one is fixed-size regardless of
+/// match length (see `agon_service::live_score::cricket::CricketLiveState`),
+/// which is what makes it safe to rewrite on every single delivery. `state`
+/// is opaque per the same rule as `MatchDetailedScoreRecord.detail`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LiveStateRecord {
+    pub sport: String,
+    pub state: serde_json::Value,
+    /// The seq of the last event folded into `state`, so a reader can tell
+    /// whether the cache might be behind the current log tip.
+    pub last_seq: u32,
+}
+
 /// `MATCH#<matchId>` / `SCORESUB#<ts>#<subId>` — a score submission and its
 /// responses. Score and responses are opaque JSON.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

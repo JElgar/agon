@@ -55,12 +55,15 @@ use match_format::MatchFormat;
 mod detailed_score;
 use detailed_score::{
     DetailedScore,
-    cricket::Overs,
+    cricket::{CricketDetail, Overs},
     football::{FootballDetail, FootballEvent, FootballEventKind},
 };
 
 mod live_score;
-use live_score::{AppendLiveEventsInput, LiveEvent, LiveEventInput, LiveScoreSnapshot};
+use live_score::{
+    AppendLiveEventsInput, LiveEvent, LiveEventInput, LiveScoreSnapshot, LiveScoreState,
+    NewLiveEventInput,
+};
 
 mod membership;
 use membership::{
@@ -1037,10 +1040,18 @@ enum GetLiveScoreResponse {
     NotFound(PlainText<String>),
 }
 
+/// One page of a match's live event log, oldest first. `next_cursor` absent
+/// => end.
+#[derive(Object)]
+struct LiveEventPage {
+    items: Vec<LiveEvent>,
+    next_cursor: Option<String>,
+}
+
 #[derive(ApiResponse)]
 enum ListLiveEventsResponse {
     #[oai(status = 200)]
-    Events(Json<Vec<LiveEvent>>),
+    Events(Json<LiveEventPage>),
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
@@ -2122,12 +2133,52 @@ impl Api {
             }
         }
 
-        // Persist a supplied detailed score.
+        // Persist a supplied detailed score, or — for a cricket match that
+        // was actually scored live and is completing without the caller
+        // supplying one — derive it ourselves from the event log (the
+        // authoritative source; the caller's own `GET /live` only ever sees
+        // a bounded live summary now, not the full batting/bowling cards, so
+        // it has nothing full to submit). One-time cost at completion, not a
+        // hot path, so folding the whole log here is fine.
         if let Some(ds) = &input.detailed_score {
             let record = detailed_score_to_record(ds);
             dao.put_match_detailed_score(&match_id, &record)
                 .await
                 .map_err(dao_internal)?;
+        } else {
+            let final_status = status_override.unwrap_or(agg.match_.status.as_str());
+            if final_status == "completed" && agg.match_.match_type == "cricket" {
+                let records = dao
+                    .list_live_events(&match_id)
+                    .await
+                    .map_err(dao_internal)?;
+                if !records.is_empty() {
+                    let events: Vec<live_score::cricket::CricketLiveEvent> = records
+                        .iter()
+                        .filter_map(|r| match &r.payload {
+                            dao::records::LiveEventPayloadRecord::Cricket(c) => {
+                                Some(mapping::cricket_live_event_from_record(c))
+                            }
+                            dao::records::LiveEventPayloadRecord::Football(_) => None,
+                        })
+                        .collect();
+                    let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) =
+                        mapping::cricket_format_args(agg.match_.format.as_ref());
+                    let innings = live_score::cricket::fold_full_scorecard(
+                        &events,
+                        balls_per_over,
+                        wide_is_extra_ball,
+                        no_ball_is_extra_ball,
+                    );
+                    if !innings.is_empty() {
+                        let ds = DetailedScore::Cricket(CricketDetail { innings });
+                        let record = detailed_score_to_record(&ds);
+                        dao.put_match_detailed_score(&match_id, &record)
+                            .await
+                            .map_err(dao_internal)?;
+                    }
+                }
+            }
         }
 
         // Apply metadata + resolved score in one update.
@@ -2306,16 +2357,16 @@ impl Api {
             .map(|e| new_live_event_to_dao(e, &uid, &recorded_at))
             .collect();
 
-        match dao
+        let new_last_seq = match dao
             .append_live_events(&match_id, input.expected_last_seq, &new_events)
             .await
         {
-            Ok(_) => {}
+            Ok(new_last_seq) => new_last_seq,
             Err(dao::DaoError::Conflict(msg)) => {
                 return Ok(AppendLiveEventsResponse::Conflict(PlainText(msg)));
             }
             Err(e) => return Err(dao_internal(e)),
-        }
+        };
 
         // Recording a live event is what "starting" a match means, whatever
         // the sport (kickoff for football, the first ball for cricket) — flip
@@ -2337,10 +2388,37 @@ impl Api {
             .map_err(dao_internal)?;
         }
 
-        match self
-            .derive_live_snapshot(dao, &match_id, &sport, agg.match_.format.as_ref())
-            .await?
-        {
+        // Cricket's cache supports a genuine incremental update (apply just
+        // the new events to the last-known checkpoint) since it's the one
+        // whose per-ball hot path this exists for; football always takes the
+        // full-refold path (cheap enough at its event volumes, and there's no
+        // cache for it to update). Falls back to a full refold itself if the
+        // cache is missing or behind (e.g. this is the innings' first ball,
+        // or a correction landed between the last append and this one).
+        let snapshot = if sport == "cricket" {
+            match self
+                .apply_cricket_events_incrementally(
+                    dao,
+                    &match_id,
+                    agg.match_.format.as_ref(),
+                    &input.events,
+                    input.expected_last_seq,
+                    new_last_seq,
+                )
+                .await?
+            {
+                Some(snapshot) => Some(snapshot),
+                None => {
+                    self.derive_live_snapshot(dao, &match_id, &sport, agg.match_.format.as_ref())
+                        .await?
+                }
+            }
+        } else {
+            self.derive_live_snapshot(dao, &match_id, &sport, agg.match_.format.as_ref())
+                .await?
+        };
+
+        match snapshot {
             Some(snapshot) => Ok(AppendLiveEventsResponse::Ok(Json(snapshot))),
             None => Ok(AppendLiveEventsResponse::ValidationError(PlainText(
                 format!("sport `{sport}` does not support live scoring"),
@@ -2348,11 +2426,66 @@ impl Api {
         }
     }
 
+    /// The incremental fast path for a cricket append: applies just the
+    /// newly-appended events to the cached checkpoint, rather than refolding
+    /// the whole log. Returns `None` (meaning "fall back to a full refold")
+    /// when there's no usable checkpoint to build on — missing, unparseable,
+    /// or not caught up to exactly the start of this batch (a correction
+    /// landing between the last append and this one, or the very first event
+    /// this match has ever recorded).
+    async fn apply_cricket_events_incrementally(
+        &self,
+        dao: &dao::Dao,
+        match_id: &str,
+        format: Option<&dao::records::MatchFormatRecord>,
+        new_events: &[NewLiveEventInput],
+        expected_last_seq: u32,
+        new_last_seq: u32,
+    ) -> Result<Option<LiveScoreSnapshot>> {
+        let Some(cached) = dao.get_live_state(match_id).await.map_err(dao_internal)? else {
+            return Ok(None);
+        };
+        if cached.last_seq != expected_last_seq {
+            return Ok(None);
+        }
+        let Ok(LiveScoreState::Cricket(mut state)) =
+            poem_openapi::types::ParseFromJSON::parse_from_json(Some(cached.state))
+        else {
+            return Ok(None);
+        };
+
+        let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) =
+            mapping::cricket_format_args(format);
+        for e in new_events {
+            let LiveEventInput::Cricket(event) = &e.event else {
+                // Sport mismatch is already rejected earlier in
+                // `append_live_events`; unreachable here in practice.
+                return Ok(None);
+            };
+            state.apply_event(
+                event,
+                balls_per_over,
+                wide_is_extra_ball,
+                no_ball_is_extra_ball,
+            );
+        }
+
+        let new_state = LiveScoreState::Cricket(state);
+        self.refresh_cricket_live_state_cache(dao, match_id, &new_state, new_last_seq)
+            .await;
+
+        Ok(Some(LiveScoreSnapshot {
+            last_seq: new_last_seq,
+            state: new_state,
+        }))
+    }
+
     /// The current derived live-scoring state (score/clock/scorecard so
-    /// far), for a feed card or the scorer's own view to poll. Derived fresh
-    /// from the event log on every call — no separate cache to go stale or
-    /// risk a size cap of its own; folding the log is cheap enough not to
-    /// need one (see `agon_core::dao::live_score_ops`).
+    /// far), for a feed card or the scorer's own view to poll. For cricket,
+    /// served from the `#LIVESTATE` cache when present (fixed-size regardless
+    /// of match length — see `agon_core::dao::live_score_ops`), falling back
+    /// to a full refold on a miss; football has no cache and always folds
+    /// fresh (its event count stays small — goals/cards/subs, not deliveries).
     #[oai(path = "/matches/:match_id/live", method = "get")]
     async fn get_live_score(
         &self,
@@ -2368,6 +2501,18 @@ impl Api {
                 )));
             }
         };
+
+        if let Some(cached) = dao.get_live_state(&match_id).await.map_err(dao_internal)?
+            && let Ok(state) =
+                poem_openapi::types::ParseFromJSON::parse_from_json(Some(cached.state))
+        {
+            return Ok(GetLiveScoreResponse::State(Json(LiveScoreSnapshot {
+                last_seq: cached.last_seq,
+                state,
+            })));
+            // Otherwise fall through to a full refold — it's just a cache,
+            // never trusted blindly if it's somehow unparseable.
+        }
 
         match self
             .derive_live_snapshot(
@@ -2385,20 +2530,22 @@ impl Api {
         }
     }
 
-    /// The raw live event log, in order — for reconstructing the full
+    /// The raw live event log, oldest first — for reconstructing the full
     /// scorecard client-side (see `inningsDeliveriesFromEvents`, used by a
     /// completed match's run-progression graph) or for the scorer's own
-    /// delete/amend picker. Not paginated at this level: the DAO already
-    /// drains every underlying query page, and a match's log, however long,
-    /// is many small items rather than one large one, so there's no
-    /// per-request size cap being worked around here — just none of the
-    /// usual reasons to add a cursor.
+    /// delete/amend picker. Paginated: a full multi-innings, unlimited-overs
+    /// match can run to thousands of events, which is fine for the
+    /// per-item-safe log itself but not something to ship as one response.
     #[oai(path = "/matches/:match_id/live/events", method = "get")]
     async fn list_live_events(
         &self,
         Data(dao): Data<&dao::Dao>,
         AuthSchema(_jwt_data): AuthSchema,
         Path(match_id): Path<String>,
+        /// Opaque cursor from the previous page's `next_cursor`. Omit for the first page.
+        Query(cursor): Query<Option<String>>,
+        /// Maximum number of items to return (defaults to 20, capped at 50).
+        Query(limit): Query<Option<u32>>,
     ) -> Result<ListLiveEventsResponse> {
         if dao
             .get_match(&match_id)
@@ -2411,12 +2558,15 @@ impl Api {
             )));
         }
 
-        let records = dao
-            .list_live_events(&match_id)
+        let page = dao
+            .list_live_events_page(&match_id, cursor.as_deref(), page_limit(limit))
             .await
             .map_err(dao_internal)?;
-        let events: Vec<LiveEvent> = records.iter().map(live_event_from_record).collect();
-        Ok(ListLiveEventsResponse::Events(Json(events)))
+        let items: Vec<LiveEvent> = page.items.iter().map(live_event_from_record).collect();
+        Ok(ListLiveEventsResponse::Events(Json(LiveEventPage {
+            items,
+            next_cursor: page.next_cursor,
+        })))
     }
 
     /// Delete a single live event outright — "this never happened" (a
@@ -2535,8 +2685,13 @@ impl Api {
         }
     }
 
-    /// Derives the current live state by folding the full event log — no
-    /// cache involved (see `agon_core::dao::live_score_ops`'s module docs).
+    /// Derives the current live state by folding the full event log — the
+    /// slow path: bootstrapping a match's first cricket summary, recovering
+    /// from a missing/unparseable cache, and rebuilding after a correction
+    /// (an arbitrary-position delete/amend can't be applied as a single
+    /// incremental step — see `append_live_events` for the fast path).
+    /// Refreshes the `#LIVESTATE` cache for cricket; football has no cache
+    /// to refresh (see `agon_core::dao::live_score_ops`'s module docs).
     /// Returns `None` if `sport` doesn't support live scoring.
     async fn derive_live_snapshot(
         &self,
@@ -2552,7 +2707,40 @@ impl Api {
             return Ok(None);
         };
 
+        if let LiveScoreState::Cricket(_) = &state {
+            self.refresh_cricket_live_state_cache(dao, match_id, &state, last_seq)
+                .await;
+        }
+
         Ok(Some(LiveScoreSnapshot { last_seq, state }))
+    }
+
+    /// Best-effort cache write, shared by the full-refold path and the
+    /// incremental append path — never fails the caller's request; the
+    /// cache is always safely recomputable from the event log if this is
+    /// lost or goes stale.
+    async fn refresh_cricket_live_state_cache(
+        &self,
+        dao: &dao::Dao,
+        match_id: &str,
+        state: &LiveScoreState,
+        last_seq: u32,
+    ) {
+        let state_json =
+            poem_openapi::types::ToJSON::to_json(state).unwrap_or(serde_json::Value::Null);
+        if let Err(e) = dao
+            .put_live_state(
+                match_id,
+                &dao::records::LiveStateRecord {
+                    sport: "cricket".to_string(),
+                    state: state_json,
+                    last_seq,
+                },
+            )
+            .await
+        {
+            error!("Failed to refresh live-state cache for match {match_id}: {e}");
+        }
     }
 
     #[oai(path = "/matches/:match_id/score-submissions", method = "get")]

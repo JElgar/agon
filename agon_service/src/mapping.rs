@@ -850,7 +850,7 @@ fn cricket_live_event_to_record(event: &CricketLiveEvent) -> CricketLiveEventRec
     }
 }
 
-fn cricket_live_event_from_record(rec: &CricketLiveEventRecord) -> CricketLiveEvent {
+pub fn cricket_live_event_from_record(rec: &CricketLiveEventRecord) -> CricketLiveEvent {
     match rec {
         CricketLiveEventRecord::Delivery(d) => {
             CricketLiveEvent::Delivery(cricket_delivery_from_record(d))
@@ -1063,19 +1063,10 @@ pub fn derive_live_score_state(
                     LiveEventPayloadRecord::Football(_) => None,
                 })
                 .collect();
-            // Standard rules unless the match configured something else: a
-            // 6-ball over (e.g. The Hundred's 5), and both wides and no-balls
-            // as extra (re-bowled) deliveries.
-            let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) = match format {
-                Some(MatchFormatRecord::Cricket(f)) => (
-                    f.balls_per_over,
-                    f.wide_is_extra_ball,
-                    f.no_ball_is_extra_ball,
-                ),
-                _ => (6, true, true),
-            };
+            let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) =
+                cricket_format_args(format);
             Some(LiveScoreState::Cricket(
-                crate::live_score::cricket::derive_state(
+                crate::live_score::cricket::CricketLiveState::from_events(
                     &events,
                     balls_per_over,
                     wide_is_extra_ball,
@@ -1084,6 +1075,23 @@ pub fn derive_live_score_state(
             ))
         }
         _ => None,
+    }
+}
+
+/// A cricket match's configured over length and extra-ball rules — standard
+/// rules (a 6-ball over, wides/no-balls re-bowled as extras) unless the match
+/// configured something else (e.g. The Hundred's 5-ball over). The only
+/// pieces of match format the DAO-agnostic scoring math actually needs, so
+/// callers thread these three through as plain arguments rather than the
+/// whole format.
+pub fn cricket_format_args(format: Option<&MatchFormatRecord>) -> (u32, bool, bool) {
+    match format {
+        Some(MatchFormatRecord::Cricket(f)) => (
+            f.balls_per_over,
+            f.wide_is_extra_ball,
+            f.no_ball_is_extra_ball,
+        ),
+        _ => (6, true, true),
     }
 }
 

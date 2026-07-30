@@ -203,12 +203,20 @@ export function MatchCard({
   const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
 
   const isLiveSport = match.match_type === 'football' || match.match_type === 'cricket'
+  const isCurrentlyLive = isLiveSport && match.status === 'in_progress'
   const detailedScore = useMatchDetailedScore(match.id, {
-    enabled: isLiveSport && match.status === 'in_progress',
+    enabled: isCurrentlyLive,
     refetchInterval: 20000,
   })
-  const footballState = footballDetailFrom(detailedScore.data)
-  const cricketState = cricketDetailFrom(detailedScore.data)
+  // Gate on `isCurrentlyLive`, not just "did the fetch return something" —
+  // `detailedScore` is a react-query cache keyed only by match id, shared
+  // with `MatchDetailPage`, which fetches it for a *completed* match too (to
+  // show the finished scorecard). `enabled: false` only stops a new fetch
+  // here; it doesn't hide data another component already populated that
+  // cache entry with, so without this guard a card could keep rendering the
+  // live block/badge for a match that finished after the card last mounted.
+  const footballState = isCurrentlyLive ? footballDetailFrom(detailedScore.data) : null
+  const cricketState = isCurrentlyLive ? cricketDetailFrom(detailedScore.data) : null
   const hasLiveState = !!footballState || !!cricketState
   // A cricket match's confirmed score carries its own per-innings detail once
   // it's been live-scored (`Score::Cricket`; see `finishMatch` in

@@ -111,7 +111,9 @@ struct Api;
 pub struct UserSportStats {
     pub match_type: MatchType,
     pub matches_played: i32,
-    pub win_percentage: f32,
+    /// `None` when no confirmed matches have been played yet — display as
+    /// "-", not 0%.
+    pub win_percentage: Option<f32>,
     // TODO Elo
 }
 
@@ -4432,7 +4434,7 @@ fn mock_user_profile(id: String, name: String) -> UserProfile {
         stats: vec![UserSportStats {
             match_type: MatchType::Tennis,
             matches_played: 12,
-            win_percentage: 58.3,
+            win_percentage: Some(58.3),
         }],
         follower_count: 42,
         following_count: 17,

@@ -2,10 +2,11 @@
 //!
 //! On any write to a match's `#META`, we recompute what the match *currently*
 //! contributes to each participant's stats and reconcile it (see
-//! [`Dao::reconcile_match_contribution`]): a completed match contributes
-//! `played` for everyone who actually played and `won` for the winning side;
-//! anything else (scheduled, cancelled, roster/score change) is reconciled to
-//! its new value, backing out stale contributions.
+//! [`Dao::reconcile_match_contribution`]): a match with a **confirmed** score
+//! contributes `played` for everyone who actually played and `won` for the
+//! winning side; anything else (scheduled, cancelled, pending/disputed score,
+//! roster change) is reconciled to its new value, backing out stale
+//! contributions.
 //!
 //! **Idempotency / correctness**: the worker sees a match-meta event on *every*
 //! write to it (status changes, but also each like/comment counter bump), and
@@ -49,21 +50,20 @@ pub async fn reconcile_match_stats(dao: &Dao, match_id: &str) -> WorkerResult<()
         return Ok(());
     };
 
-    let completed = agg.match_.status == "completed";
+    // A match only contributes to stats once its score is confirmed — a
+    // completed-but-pending (or disputed) score isn't agreed yet, and counting
+    // it would inflate `matches_played` with no corresponding win, dragging
+    // down (or zeroing) the win rate for a game nobody has actually lost.
+    let confirmed_score = agg.match_.confirmed_score.as_ref();
     let sport = agg.match_.match_type.clone();
-    // The confirmed winner's side, if a score has been agreed.
-    let winner_side_id = agg
-        .match_
-        .confirmed_score
-        .as_ref()
-        .and_then(|cs| cs.winner_side_id.clone());
+    let winner_side_id = confirmed_score.and_then(|cs| cs.winner_side_id.clone());
 
     // Desired `won` per participant who actually played, keyed by user id.
-    // "Played" = a completed match where the player is the creator/self-added
-    // (no embedded invitation) or an accepted invitee. Pending/declined invitees
-    // are on the roster but didn't play.
+    // "Played" = a match with a confirmed score where the player is the
+    // creator/self-added (no embedded invitation) or an accepted invitee.
+    // Pending/declined invitees are on the roster but didn't play.
     let mut desired: std::collections::BTreeMap<String, bool> = Default::default();
-    if completed {
+    if confirmed_score.is_some() {
         for player in &agg.players {
             let Some(user_id) = &player.user_id else {
                 continue;

@@ -1982,8 +1982,18 @@ impl Api {
             )));
         }
 
-        // A supplied format must be for this match's own sport.
         if let Some(fmt) = &input.format {
+            // The format is locked once the match has left `scheduled`: it
+            // can no longer be changed once scoring has started (live events
+            // or a submitted score both move it to `in_progress`/`completed`)
+            // or once the match is complete.
+            if agg.match_.status != "scheduled" {
+                return Ok(UpdateMatchResponse::ValidationError(PlainText(
+                    "match format cannot be changed once scoring has started".into(),
+                )));
+            }
+
+            // A supplied format must be for this match's own sport.
             let tag = match_format_sport_tag(fmt);
             if tag != agg.match_.match_type {
                 return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(

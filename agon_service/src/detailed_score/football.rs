@@ -73,7 +73,7 @@ pub struct FootballSubstitutionEvent {
     pub minute: Option<u32>,
 }
 
-#[derive(Enum, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[oai(rename_all = "snake_case")]
 pub enum FootballPeriod {
     /// Kickoff — the moment the match clock actually starts. Recorded once,

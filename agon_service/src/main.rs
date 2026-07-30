@@ -2211,16 +2211,12 @@ impl Api {
         Ok(UpdateMatchResponse::Match(Json(m)))
     }
 
-    /// Football's derived detail is cheap to fold (goals/cards/subs, not
-    /// deliveries) and nothing keeps a persisted football record in sync
-    /// with corrections the way cricket's incremental live-scoring path
-    /// does — so whenever a live log exists, this always re-derives fresh
-    /// from it rather than risk serving a stale persisted copy. Cricket is
-    /// the opposite: its persisted record is kept incrementally correct by
-    /// every live-scoring append (see `apply_cricket_events_incrementally`),
-    /// so it's trusted directly, with a full refold only as a recovery path
-    /// for a missing or unparseable record. Manual entry (no live log at
-    /// all, either sport) always reads the persisted record.
+    /// Both sports' persisted records are kept incrementally correct by
+    /// every live-scoring append (see `apply_live_events_incrementally`), so
+    /// this trusts the persisted record directly, with a full refold only as
+    /// a recovery path for a missing or unparseable record. Manual entry (no
+    /// live log at all) always reads the persisted record too — there's
+    /// nothing else for it to be caught up with.
     #[oai(path = "/matches/:match_id/detailed-score", method = "get")]
     async fn get_match_detailed_score(
         &self,
@@ -2240,28 +2236,6 @@ impl Api {
         };
         let sport = agg.match_.match_type.as_str();
 
-        if sport == "football" {
-            let records = dao
-                .list_live_events(&match_id)
-                .await
-                .map_err(dao_internal)?;
-            let ds = if !records.is_empty() {
-                derive_live_detail(sport, &records, agg.match_.format.as_ref())
-            } else {
-                dao.get_match_detailed_score(&match_id, sport)
-                    .await
-                    .map_err(dao_internal)?
-                    .as_ref()
-                    .and_then(detailed_score_from_record)
-            };
-            return match ds {
-                Some(ds) => Ok(GetMatchDetailedScoreResponse::DetailedScore(Json(ds))),
-                None => Ok(GetMatchDetailedScoreResponse::NotFound(PlainText(
-                    "match has no detailed score".into(),
-                ))),
-            };
-        }
-
         let record = dao
             .get_match_detailed_score(&match_id, sport)
             .await
@@ -2271,10 +2245,10 @@ impl Api {
         }
 
         // No usable persisted record — recover by folding the event log, if
-        // there is one (e.g. a live-scored cricket match whose record was
-        // somehow missing or unparseable). Persist the result so subsequent
-        // reads, and the next incremental append, have a fresh checkpoint to
-        // build on.
+        // there is one (e.g. a live-scored match whose record was somehow
+        // missing or unparseable). Persist the result so subsequent reads,
+        // and the next incremental append, have a fresh checkpoint to build
+        // on.
         let records = dao
             .list_live_events(&match_id)
             .await
@@ -2394,34 +2368,27 @@ impl Api {
             .map_err(dao_internal)?;
         }
 
-        // Cricket's cache supports a genuine incremental update (apply just
-        // the new events to the last-known checkpoint) since it's the one
-        // whose per-ball hot path this exists for; football always takes the
-        // full-refold path (cheap enough at its event volumes, and there's no
-        // cache for it to update). Falls back to a full refold itself if the
-        // cache is missing or behind (e.g. this is the innings' first ball,
-        // or a correction landed between the last append and this one).
-        let snapshot = if sport == "cricket" {
-            match self
-                .apply_cricket_events_incrementally(
-                    dao,
-                    &match_id,
-                    agg.match_.format.as_ref(),
-                    &input.events,
-                    input.expected_last_seq,
-                    new_last_seq,
-                )
-                .await?
-            {
-                Some(snapshot) => Some(snapshot),
-                None => {
-                    self.derive_live_snapshot(dao, &match_id, &sport, agg.match_.format.as_ref())
-                        .await?
-                }
+        // Applies just the new events to the last-known checkpoint, whatever
+        // the sport — falls back to a full refold itself if the checkpoint
+        // is missing or behind (e.g. this is the match's first event, or a
+        // correction landed between the last append and this one).
+        let snapshot = match self
+            .apply_live_events_incrementally(
+                dao,
+                &match_id,
+                &sport,
+                agg.match_.format.as_ref(),
+                &input.events,
+                input.expected_last_seq,
+                new_last_seq,
+            )
+            .await?
+        {
+            Some(snapshot) => Some(snapshot),
+            None => {
+                self.derive_live_snapshot(dao, &match_id, &sport, agg.match_.format.as_ref())
+                    .await?
             }
-        } else {
-            self.derive_live_snapshot(dao, &match_id, &sport, agg.match_.format.as_ref())
-                .await?
         };
 
         match snapshot {
@@ -2432,24 +2399,25 @@ impl Api {
         }
     }
 
-    /// The incremental fast path for a cricket append: applies just the
-    /// newly-appended events to the cached checkpoint, rather than refolding
-    /// the whole log. Returns `None` (meaning "fall back to a full refold")
-    /// when there's no usable checkpoint to build on — missing, unparseable,
-    /// or not caught up to exactly the start of this batch (a correction
-    /// landing between the last append and this one, or the very first event
-    /// this match has ever recorded).
-    async fn apply_cricket_events_incrementally(
+    /// The incremental fast path for an append, either sport: applies just
+    /// the newly-appended events to the persisted checkpoint, rather than
+    /// refolding the whole log. Returns `None` (meaning "fall back to a full
+    /// refold") when there's no usable checkpoint to build on — missing,
+    /// unparseable, or not caught up to exactly the start of this batch (a
+    /// correction landing between the last append and this one, or the very
+    /// first event this match has ever recorded).
+    async fn apply_live_events_incrementally(
         &self,
         dao: &dao::Dao,
         match_id: &str,
+        sport: &str,
         format: Option<&dao::records::MatchFormatRecord>,
         new_events: &[NewLiveEventInput],
         expected_last_seq: u32,
         new_last_seq: u32,
     ) -> Result<Option<LiveScoreSnapshot>> {
         let Some(record) = dao
-            .get_match_detailed_score(match_id, "cricket")
+            .get_match_detailed_score(match_id, sport)
             .await
             .map_err(dao_internal)?
         else {
@@ -2458,27 +2426,38 @@ impl Api {
         if record.last_seq != Some(expected_last_seq) {
             return Ok(None);
         }
-        let Some(DetailedScore::Cricket(mut detail)) = detailed_score_from_record(&record) else {
+        let Some(mut ds) = detailed_score_from_record(&record) else {
             return Ok(None);
         };
 
-        let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) =
-            mapping::cricket_format_args(format);
-        for e in new_events {
-            let LiveEventInput::Cricket(event) = &e.event else {
-                // Sport mismatch is already rejected earlier in
-                // `append_live_events`; unreachable here in practice.
-                return Ok(None);
-            };
-            detail.apply_event(
-                event,
-                balls_per_over,
-                wide_is_extra_ball,
-                no_ball_is_extra_ball,
-            );
+        match &mut ds {
+            DetailedScore::Cricket(detail) => {
+                let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) =
+                    mapping::cricket_format_args(format);
+                for e in new_events {
+                    let LiveEventInput::Cricket(event) = &e.event else {
+                        // Sport mismatch is already rejected earlier in
+                        // `append_live_events`; unreachable here in practice.
+                        return Ok(None);
+                    };
+                    detail.apply_event(
+                        event,
+                        balls_per_over,
+                        wide_is_extra_ball,
+                        no_ball_is_extra_ball,
+                    );
+                }
+            }
+            DetailedScore::Football(detail) => {
+                for e in new_events {
+                    let LiveEventInput::Football(event) = &e.event else {
+                        return Ok(None);
+                    };
+                    detail.apply_event(e.occurred_at, event);
+                }
+            }
         }
 
-        let ds = DetailedScore::Cricket(detail);
         self.persist_detailed_score(dao, match_id, &ds, Some(new_last_seq))
             .await;
 
@@ -2617,12 +2596,10 @@ impl Api {
     /// path: bootstrapping a match's first detailed score, recovering from a
     /// missing or unparseable persisted record, and rebuilding after an undo
     /// (removing the tip isn't a single incremental step the way appending
-    /// is — see `apply_cricket_events_incrementally` for that fast path).
-    /// Persists the result for cricket, whose record is meant to stay
-    /// incrementally in sync with every append; football's `GET
-    /// /detailed-score` always re-derives from the log itself when one
-    /// exists, so there's nothing to keep in sync for it here. Returns
-    /// `None` if `sport` doesn't support live scoring.
+    /// is — see `apply_live_events_incrementally` for that fast path).
+    /// Persists the result so subsequent reads and the next incremental
+    /// append have a fresh checkpoint to build on. Returns `None` if `sport`
+    /// doesn't support live scoring.
     async fn derive_live_snapshot(
         &self,
         dao: &dao::Dao,
@@ -2637,10 +2614,8 @@ impl Api {
             return Ok(None);
         };
 
-        if sport == "cricket" {
-            self.persist_detailed_score(dao, match_id, &detail, Some(last_seq))
-                .await;
-        }
+        self.persist_detailed_score(dao, match_id, &detail, Some(last_seq))
+            .await;
 
         Ok(Some(LiveScoreSnapshot { last_seq, detail }))
     }

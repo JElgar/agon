@@ -27,56 +27,61 @@ pub struct FootballPeriodEvent {
     pub period: FootballPeriod,
 }
 
-/// Folds an ordered, timestamped list of events into the match's full
-/// detail — cheap enough to do on every read; football's event volume
-/// (goals, cards, subs) never approaches cricket's ball-by-ball scale, so
-/// there's no bounding or incremental-caching concern here the way there is
-/// for cricket. Each event is paired with its own `occurred_at` (not
-/// `recorded_at`) so a period marker's timestamp reflects when the half
-/// actually started/ended on the pitch, not when the server received it.
-pub fn derive_detail(
-    events: &[(chrono::DateTime<chrono::Utc>, FootballLiveEvent)],
-) -> FootballDetail {
-    let mut period = None;
-    let mut period_times = HashMap::new();
-    let mut score: Vec<FootballSideGoals> = Vec::new();
-    let mut goals = Vec::new();
-    let mut cards = Vec::new();
-    let mut substitutions = Vec::new();
+impl FootballDetail {
+    /// Folds the whole event log into a `FootballDetail` from scratch — the
+    /// slow path, used to bootstrap a match's first detail or recover from a
+    /// missing/unparseable persisted record. Just `apply_event` run once per
+    /// event in order; the fast (single-event) and slow (whole-log) paths
+    /// share the exact same fold, so they can't disagree — same pattern as
+    /// `CricketDetail::from_events`.
+    pub fn from_events(events: &[(chrono::DateTime<chrono::Utc>, FootballLiveEvent)]) -> Self {
+        let mut detail = FootballDetail {
+            score: Vec::new(),
+            goals: Vec::new(),
+            cards: Vec::new(),
+            substitutions: Vec::new(),
+            period: None,
+            period_times: HashMap::new(),
+        };
+        for (occurred_at, event) in events {
+            detail.apply_event(*occurred_at, event);
+        }
+        detail
+    }
 
-    for (occurred_at, event) in events {
+    /// Folds one new event into this detail in place — the fast path, run on
+    /// every append. `occurred_at` (not `recorded_at`) is threaded through
+    /// separately from `event` so a period marker's timestamp reflects when
+    /// the half actually started/ended on the pitch, not when the server
+    /// received it.
+    pub fn apply_event(
+        &mut self,
+        occurred_at: chrono::DateTime<chrono::Utc>,
+        event: &FootballLiveEvent,
+    ) {
         match event {
             FootballLiveEvent::Goal(g) => {
-                if let Some(s) = score.iter_mut().find(|s| s.side_id == g.side_id) {
+                if let Some(s) = self.score.iter_mut().find(|s| s.side_id == g.side_id) {
                     s.goals += 1;
                 } else {
-                    score.push(FootballSideGoals {
+                    self.score.push(FootballSideGoals {
                         side_id: g.side_id.clone(),
                         goals: 1,
                     });
                 }
-                goals.push(g.clone());
+                self.goals.push(g.clone());
             }
             FootballLiveEvent::Card(c) => {
-                cards.push(c.clone());
+                self.cards.push(c.clone());
             }
             FootballLiveEvent::Substitution(sub) => {
-                substitutions.push(sub.clone());
+                self.substitutions.push(sub.clone());
             }
             FootballLiveEvent::Period(p) => {
-                period_times.insert(p.period, *occurred_at);
-                period = Some(p.period);
+                self.period_times.insert(p.period, occurred_at);
+                self.period = Some(p.period);
             }
         }
-    }
-
-    FootballDetail {
-        score,
-        goals,
-        cards,
-        substitutions,
-        period,
-        period_times,
     }
 }
 
@@ -142,7 +147,7 @@ mod tests {
             ),
         ];
 
-        let detail = derive_detail(&events);
+        let detail = FootballDetail::from_events(&events);
 
         assert_eq!(detail.score.len(), 1);
         assert_eq!(detail.score[0].side_id, "riverside");
@@ -182,7 +187,7 @@ mod tests {
             ),
         ];
 
-        let detail = derive_detail(&events);
+        let detail = FootballDetail::from_events(&events);
 
         assert_eq!(
             detail.period_times.get(&FootballPeriod::KickOff),
@@ -226,7 +231,7 @@ mod tests {
             ),
         ];
 
-        let detail = derive_detail(&events);
+        let detail = FootballDetail::from_events(&events);
 
         assert_eq!(
             detail.period_times.get(&FootballPeriod::ExtraTimeHalfTime),
@@ -240,5 +245,58 @@ mod tests {
             detail.period_times.get(&FootballPeriod::PenaltiesComplete),
             Some(&ts(160))
         );
+    }
+
+    #[test]
+    fn incremental_and_full_fold_agree() {
+        let events = vec![
+            (
+                ts(0),
+                FootballLiveEvent::Period(FootballPeriodEvent {
+                    period: FootballPeriod::KickOff,
+                }),
+            ),
+            (
+                ts(12),
+                FootballLiveEvent::Goal(FootballGoalEvent {
+                    side_id: "riverside".into(),
+                    scorer_player_id: Some("alvarez".into()),
+                    assist_player_id: None,
+                    own_goal: false,
+                    penalty: false,
+                    minute: Some(12),
+                }),
+            ),
+            (
+                ts(58),
+                FootballLiveEvent::Card(FootballCardEvent {
+                    side_id: "oak_park".into(),
+                    player_id: "khan".into(),
+                    color: FootballCardColor::Yellow,
+                    minute: Some(58),
+                }),
+            ),
+        ];
+
+        let full = FootballDetail::from_events(&events);
+
+        // Apply the same events one at a time, incrementally, and check the
+        // final state matches the full fold exactly.
+        let mut incremental = FootballDetail {
+            score: Vec::new(),
+            goals: Vec::new(),
+            cards: Vec::new(),
+            substitutions: Vec::new(),
+            period: None,
+            period_times: HashMap::new(),
+        };
+        for (occurred_at, event) in &events {
+            incremental.apply_event(*occurred_at, event);
+        }
+
+        assert_eq!(incremental.score.len(), full.score.len());
+        assert_eq!(incremental.goals.len(), full.goals.len());
+        assert_eq!(incremental.cards.len(), full.cards.len());
+        assert_eq!(incremental.period_times, full.period_times);
     }
 }

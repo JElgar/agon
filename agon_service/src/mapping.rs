@@ -1060,7 +1060,7 @@ pub fn derive_live_detail(
                 })
                 .collect();
             Some(DetailedScore::Football(
-                crate::live_score::football::derive_detail(&events),
+                crate::detailed_score::football::FootballDetail::from_events(&events),
             ))
         }
         "cricket" => {

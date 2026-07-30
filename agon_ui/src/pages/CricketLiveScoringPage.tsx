@@ -119,7 +119,15 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
         })),
       } as unknown as UpdateMatchInput['score']
       const winner_side_id = a === b ? undefined : a > b ? aId : bId
-      const body: UpdateMatchInput = { score, status: 'completed' }
+      // The full per-innings breakdown (batting/bowling cards, ball-by-ball
+      // deliveries) — submitted alongside the totals-only `score` so the
+      // resolved scorecard (run-rate graph, player stats) survives after the
+      // match completes and the live event log stops being polled.
+      const detailed_score = {
+        type: 'Cricket',
+        innings: state.innings,
+      } as unknown as UpdateMatchInput['detailed_score']
+      const body: UpdateMatchInput = { score, detailed_score, status: 'completed' }
       if (winner_side_id) body.winner_side_id = winner_side_id
       const { error } = await fetchClient.PATCH('/matches/{match_id}', {
         params: { path: { match_id: match.id } },

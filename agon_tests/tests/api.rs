@@ -1000,8 +1000,35 @@ async fn accepting_a_normal_invite_updates_feed_and_stats() {
 
     // The match is now on the accepter's feed...
     assert_match_reaches_feed(&invitee_config, &created.id, "invitee's feed").await;
-    // ...and their stats credit the completed match they played in (they were on
-    // the losing side, so one played, zero wins).
+
+    // Stats aren't credited yet: the creator's score is still an unconfirmed
+    // submission, and an unconfirmed game doesn't count as played.
+    assert_eq!(
+        my_matches_played(&invitee_config, models::MatchType::Tennis).await,
+        0,
+        "an unconfirmed score shouldn't count toward matches played"
+    );
+
+    // Now the invitee (side "b") confirms the creator's submitted score.
+    let submission_id = created
+        .pending_score
+        .as_ref()
+        .expect("pending score at create time")
+        .submission_id
+        .clone();
+    matches_match_id_score_submissions_submission_id_respond_post(
+        &invitee_config,
+        &created.id,
+        &submission_id,
+        models::RespondToScoreInput {
+            response: models::ScoreResponseKind::Confirm,
+        },
+    )
+    .await
+    .expect("confirm score");
+
+    // ...and their stats now credit the confirmed match they played in (they
+    // were on the losing side, so one played, zero wins).
     assert_matches_played_reaches(&invitee_config, models::MatchType::Tennis, 1, "invitee").await;
     let stats = users_me_get(&invitee_config)
         .await
@@ -1012,7 +1039,11 @@ async fn accepting_a_normal_invite_updates_feed_and_stats() {
         .iter()
         .find(|s| s.match_type == models::MatchType::Tennis)
         .expect("a tennis stat row");
-    assert_eq!(tennis.win_percentage, 0.0, "invitee was on the losing side");
+    assert_eq!(
+        tennis.win_percentage,
+        Some(0.0),
+        "invitee was on the losing side"
+    );
 }
 
 /// End-to-end for the *invite-link* (bearer token) acceptance flow into an
@@ -1052,8 +1083,33 @@ async fn accepting_a_link_invite_updates_feed_and_stats() {
         models::InvitationStatus::Accepted
     ));
 
-    // The match is on the accepter's feed and their stats credit the match.
+    // The match is on the accepter's feed, but their stats aren't credited
+    // yet: the creator's score is still an unconfirmed submission.
     assert_match_reaches_feed(&accepter_config, &created.id, "token-accepter's feed").await;
+    assert_eq!(
+        my_matches_played(&accepter_config, models::MatchType::Tennis).await,
+        0,
+        "an unconfirmed score shouldn't count toward matches played"
+    );
+
+    // The accepter (side "b") confirms the creator's submitted score, and only
+    // then does it credit the match.
+    let submission_id = created
+        .pending_score
+        .as_ref()
+        .expect("pending score at create time")
+        .submission_id
+        .clone();
+    matches_match_id_score_submissions_submission_id_respond_post(
+        &accepter_config,
+        &created.id,
+        &submission_id,
+        models::RespondToScoreInput {
+            response: models::ScoreResponseKind::Confirm,
+        },
+    )
+    .await
+    .expect("confirm score");
     assert_matches_played_reaches(
         &accepter_config,
         models::MatchType::Tennis,

@@ -132,9 +132,9 @@ pub fn user_profile_from_record(user: &UserRecord, is_followed_by_me: bool) -> U
 /// Map a stored per-sport stats record to the API model, deriving win %.
 pub fn sport_stats_from_record(sport: &str, rec: &UserSportStatsRecord) -> UserSportStats {
     let win_percentage = if rec.matches_played == 0 {
-        0.0
+        None
     } else {
-        (rec.wins as f32 / rec.matches_played as f32) * 100.0
+        Some((rec.wins as f32 / rec.matches_played as f32) * 100.0)
     };
     UserSportStats {
         match_type: match_type_from_tag(sport),

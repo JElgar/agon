@@ -2018,19 +2018,20 @@ impl Api {
         // set each time (there's no append/remove-by-id on the server), so a
         // client that wants to keep existing photos re-sends their asset ids
         // (from `Match.header_photos[].asset_id`) alongside any new ones.
-        let header_photos: Option<Vec<dao::records::HeaderPhotoRecord>> =
-            match &input.header_photo_asset_ids {
-                Some(ids) => match resolve_asset_urls(dao, &uid, "match_header", ids).await? {
-                    Ok(resolved) => Some(
-                        resolved
-                            .into_iter()
-                            .map(|(asset_id, url)| dao::records::HeaderPhotoRecord { asset_id, url })
-                            .collect(),
-                    ),
-                    Err(msg) => return Ok(UpdateMatchResponse::ValidationError(PlainText(msg))),
-                },
-                None => None,
-            };
+        let header_photos: Option<Vec<dao::records::HeaderPhotoRecord>> = match &input
+            .header_photo_asset_ids
+        {
+            Some(ids) => match resolve_asset_urls(dao, &uid, "match_header", ids).await? {
+                Ok(resolved) => Some(
+                    resolved
+                        .into_iter()
+                        .map(|(asset_id, url)| dao::records::HeaderPhotoRecord { asset_id, url })
+                        .collect(),
+                ),
+                Err(msg) => return Ok(UpdateMatchResponse::ValidationError(PlainText(msg))),
+            },
+            None => None,
+        };
 
         // A cancelled match can't be scored.
         let resulting_status = input

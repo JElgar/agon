@@ -119,13 +119,16 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
         })),
       } as unknown as UpdateMatchInput['score']
       const winner_side_id = a === b ? undefined : a > b ? aId : bId
-      // The full per-innings breakdown (batting/bowling cards, ball-by-ball
-      // deliveries) — submitted alongside the totals-only `score` so the
-      // resolved scorecard (run-rate graph, player stats) survives after the
-      // match completes and the live event log stops being polled.
+      // The per-innings batting/bowling cards — submitted alongside the
+      // totals-only `score` so the resolved scorecard survives after the
+      // match completes. `deliveries` is deliberately left empty here: the
+      // match detail page reads ball-by-ball detail from the live event log
+      // instead (already stored one item per ball, so it has no practical
+      // size ceiling), rather than duplicating it into this single record
+      // where it would risk DynamoDB's 400KB item cap on a long match.
       const detailed_score = {
         type: 'Cricket',
-        innings: state.innings,
+        innings: state.innings.map((inn) => ({ ...inn, deliveries: [] })),
       } as unknown as UpdateMatchInput['detailed_score']
       const body: UpdateMatchInput = { score, detailed_score, status: 'completed' }
       if (winner_side_id) body.winner_side_id = winner_side_id

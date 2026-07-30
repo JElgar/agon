@@ -125,16 +125,23 @@ function MatchDetail({
 
   // Live-scoring state — takes over the score block below (and the entry
   // button becomes "Continue scoring") while a match is actually in
-  // progress. Not fetched once it's over: a cricket match's confirmed score
-  // carries its own per-innings detail once it's been live-scored
-  // (`Score::Cricket`; see `finishMatch` in `CricketLiveScoringPage`), so
-  // there's no need to keep reading the live event log after the fact.
+  // progress. For football this is only relevant while in progress (its
+  // confirmed score has no further use for the event log). Cricket keeps
+  // fetching it after the match completes too — its deliveries log is the
+  // only durable source for the run-rate graph (see `cricketInnings` below);
+  // `detailed_score` deliberately doesn't duplicate it (a full ball-by-ball
+  // log embedded in one record risks DynamoDB's 400KB item cap on a long
+  // match, where the per-event live log doesn't).
   const live = useLiveScore(match.id, {
-    enabled: isLiveSport && match.status === 'in_progress',
-    refetchInterval: 15000,
+    enabled: match.match_type === 'football' ? match.status === 'in_progress' : isLiveSport,
+    refetchInterval: match.status === 'in_progress' ? 15000 : false,
   })
   const footballState = footballLiveState(live.data)
-  const cricketState = cricketLiveState(live.data)
+  // Only surfaced for an in-progress match — otherwise, now that cricket's
+  // live snapshot is fetched after completion too (for its deliveries), this
+  // would wrongly resurrect the "currently scoring" block on a finished
+  // match instead of the confirmed `CricketScoreBlock` below.
+  const cricketState = match.status === 'in_progress' ? cricketLiveState(live.data) : null
   const hasLiveState = !!footballState || !!cricketState
   const cricketScore = scoreInfo ? cricketScoreFrom(scoreInfo.score) : null
   // Football's setup screen also gates starting the clock; cricket has no
@@ -142,13 +149,20 @@ function MatchDetail({
   const liveEntryPath =
     match.match_type === 'cricket' ? `/matches/${match.id}/live` : `/matches/${match.id}/live/setup`
 
-  // Resolved per-innings scorecard (batting/bowling cards, run progression),
-  // regardless of whether the match was scored live or entered after the
-  // fact — separate from `live` above, which only covers scoring in progress.
+  // Resolved per-innings scorecard: batting/bowling cards + totals from
+  // `detailed_score` (works whether the match was scored live or entered
+  // after the fact), with each innings' deliveries — only ever present for a
+  // live-scored match — folded in from the live snapshot by matching
+  // innings order, for the run-rate graph.
   const detailedScore = useMatchDetailedScore(match.id, {
     enabled: match.match_type === 'cricket',
   })
-  const cricketInnings = cricketDetail(detailedScore.data)
+  const cricketDetailInnings = cricketDetail(detailedScore.data)
+  const liveCricketInnings = cricketLiveState(live.data)?.innings
+  const cricketInnings = cricketDetailInnings?.map((inn, i) => ({
+    ...inn,
+    deliveries: liveCricketInnings?.[i]?.deliveries ?? [],
+  }))
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">

@@ -4,6 +4,7 @@ import type { CricketFormat } from './matchFormat'
 
 export type CricketDelivery = components['schemas']['CricketDelivery']
 export type CricketInnings = components['schemas']['CricketInnings']
+export type CricketLiveInnings = components['schemas']['CricketLiveInnings']
 export type CricketLiveState = components['schemas']['CricketLiveState']
 export type CricketExtraKind = components['schemas']['CricketExtraKind']
 export type CricketDismissalKind = components['schemas']['CricketDismissalKind']
@@ -75,7 +76,7 @@ export function cricketProgressFromScore(score: CricketScore): CricketMatchProgr
 /** The innings currently being played, or `null` when the match hasn't
  *  started its first innings yet, or is between innings (see
  *  `CricketLiveState.awaiting_next_innings`). */
-export function currentInnings(state: CricketLiveState): CricketInnings | null {
+export function currentInnings(state: CricketLiveState): CricketLiveInnings | null {
   if (state.awaiting_next_innings) return null
   return state.innings[state.innings.length - 1] ?? null
 }
@@ -152,7 +153,7 @@ export function runProgression(
 /** This over's deliveries — everything recorded against the innings' latest
  *  over index (we assign `over`/`ball` ourselves on submit, so this is a
  *  simple filter rather than a rolling window). */
-export function currentOverDeliveries(innings: CricketInnings): CricketDelivery[] {
+export function currentOverDeliveries(innings: CricketLiveInnings): CricketDelivery[] {
   const latestOver = innings.deliveries.reduce((max, d) => Math.max(max, d.over), 0)
   return innings.deliveries.filter((d) => d.over === latestOver)
 }
@@ -376,7 +377,7 @@ export interface NextBallContext {
 }
 
 export function nextBallContext(
-  innings: CricketInnings,
+  innings: CricketLiveInnings,
   format: Pick<CricketFormat, 'balls_per_over' | 'wide_is_extra_ball' | 'no_ball_is_extra_ball'>,
 ): NextBallContext {
   let striker: string | null = null

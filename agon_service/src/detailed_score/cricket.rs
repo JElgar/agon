@@ -22,15 +22,18 @@ pub struct Overs {
     pub balls: u32,
 }
 
-/// A cricket innings supports three tiers of fidelity:
+/// A cricket innings supports two tiers of fidelity:
 ///   1. Minimal — just `runs`/`wickets`/`overs`, leaving the cards empty.
 ///   2. Scorecard — full per-player `batting`/`bowling` cards.
-///   3. Ball-by-ball — a `deliveries` log (for live in-app scoring).
 ///
-/// The aggregate fields (`runs`, `wickets`, `overs`, `batting`, `bowling`,
-/// `extras`, `fall_of_wickets`) are the always-present *overview*. When
-/// `deliveries` is populated it is the source of truth and the overview is
-/// generated from it; otherwise the overview is entered directly.
+/// A match scored ball-by-ball (live, in-app) reaches this via
+/// `from_deliveries`, folding a delivery log into the same shape — but that
+/// log itself isn't part of it. It's already stored one item per ball in the
+/// match's live event log (`live_score::cricket`), which has no practical
+/// size ceiling; duplicating it here would mean a second, much larger copy
+/// embedded in this single record, risking DynamoDB's per-item size cap on a
+/// long match. `live_score::cricket::CricketLiveInnings` is the equivalent
+/// shape that does carry deliveries, for the one place that needs them.
 #[derive(Object)]
 pub struct CricketInnings {
     /// The batting side for this innings (references MatchSide.id).
@@ -49,9 +52,6 @@ pub struct CricketInnings {
     pub bowling: Vec<CricketBowlingEntry>,
     pub extras: CricketExtras,
     pub fall_of_wickets: Vec<CricketFallOfWicket>,
-    /// Optional ball-by-ball log. When present, the overview above is generated
-    /// from these deliveries. Empty when the innings was not scored ball-by-ball.
-    pub deliveries: Vec<CricketDelivery>,
 }
 
 /// A single delivery (ball) in an innings. The atomic unit of in-app scoring.
@@ -243,8 +243,7 @@ fn balls_to_overs(balls: u32, balls_per_over: u32) -> Overs {
 
 impl CricketInnings {
     /// Builds the innings overview (totals, batting/bowling cards, extras,
-    /// fall-of-wickets) from a ball-by-ball delivery log. The deliveries are
-    /// retained on the returned innings as the source of truth.
+    /// fall-of-wickets) from a ball-by-ball delivery log.
     /// `balls_per_over`, `wide_is_extra_ball` and `no_ball_is_extra_ball` are
     /// the match's configured over length and extra-ball rules (see
     /// `agon_service::match_format::CricketFormat`) — the only pieces of
@@ -254,7 +253,7 @@ impl CricketInnings {
         batting_side_id: String,
         bowling_side_id: String,
         declared: bool,
-        deliveries: Vec<CricketDelivery>,
+        deliveries: &[CricketDelivery],
         balls_per_over: u32,
         wide_is_extra_ball: bool,
         no_ball_is_extra_ball: bool,
@@ -316,7 +315,7 @@ impl CricketInnings {
             }
         }
 
-        for delivery in &deliveries {
+        for delivery in deliveries {
             let legal = is_legal_delivery(delivery, wide_is_extra_ball, no_ball_is_extra_ball);
             let charged = runs_charged_to_bowler(delivery);
             let extra_runs = delivery.extra.as_ref().map(|e| e.runs).unwrap_or(0);
@@ -425,7 +424,6 @@ impl CricketInnings {
             bowling,
             extras,
             fall_of_wickets,
-            deliveries,
         }
     }
 }
@@ -497,7 +495,7 @@ mod tests {
             "team_a".into(),
             "team_b".into(),
             false,
-            deliveries,
+            &deliveries,
             6,
             true,
             true,
@@ -555,7 +553,7 @@ mod tests {
             "team_a".into(),
             "team_b".into(),
             false,
-            deliveries,
+            &deliveries,
             5,
             true,
             true,
@@ -613,7 +611,7 @@ mod tests {
             "team_a".into(),
             "team_b".into(),
             false,
-            deliveries,
+            &deliveries,
             6,
             false,
             false,

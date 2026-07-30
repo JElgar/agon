@@ -1,7 +1,8 @@
 use poem_openapi::{Enum, Object, Union};
 
 use crate::detailed_score::cricket::{
-    CricketDelivery, CricketDismissal, CricketDismissalKind, CricketFallOfWicket, CricketInnings,
+    CricketBattingEntry, CricketBowlingEntry, CricketDelivery, CricketDismissal,
+    CricketDismissalKind, CricketExtras, CricketFallOfWicket, CricketInnings, Overs,
 };
 
 /// Cricket live-scoring events, nested under the outer sport union
@@ -51,16 +52,36 @@ pub struct CricketInningsEndEvent {
 }
 
 /// The live-scoring state derived by folding a match's cricket event log.
-/// `innings` reuses `detailed_score::cricket::CricketInnings` verbatim, one
-/// entry per `InningsStart`...`InningsEnd` span (plus a still-open trailing
-/// innings, if the match is mid-innings).
+/// One `CricketLiveInnings` per `InningsStart`...`InningsEnd` span (plus a
+/// still-open trailing innings, if the match is mid-innings).
 #[derive(Object)]
 pub struct CricketLiveState {
-    pub innings: Vec<CricketInnings>,
+    pub innings: Vec<CricketLiveInnings>,
     /// True once the log's last innings has an `InningsEnd` and no following
     /// `InningsStart` has opened a new one yet (i.e. between innings, or the
     /// log is empty).
     pub awaiting_next_innings: bool,
+}
+
+/// A `detailed_score::cricket::CricketInnings` overview plus the ball-by-ball
+/// log it was folded from — everything a live-scoring view needs (the "this
+/// over" ball row, striker/non-striker/bowler for the next delivery) that
+/// the persisted overview alone can't answer. Exists only in the live
+/// snapshot, derived fresh from the event log on each read; nothing this
+/// large is ever written back to a single stored record.
+#[derive(Object)]
+pub struct CricketLiveInnings {
+    pub batting_side_id: String,
+    pub bowling_side_id: String,
+    pub runs: u32,
+    pub wickets: u32,
+    pub overs: Overs,
+    pub declared: bool,
+    pub batting: Vec<CricketBattingEntry>,
+    pub bowling: Vec<CricketBowlingEntry>,
+    pub extras: CricketExtras,
+    pub fall_of_wickets: Vec<CricketFallOfWicket>,
+    pub deliveries: Vec<CricketDelivery>,
 }
 
 struct OpenInnings {
@@ -89,7 +110,7 @@ pub fn derive_state(
     wide_is_extra_ball: bool,
     no_ball_is_extra_ball: bool,
 ) -> CricketLiveState {
-    let mut innings: Vec<CricketInnings> = Vec::new();
+    let mut innings: Vec<CricketLiveInnings> = Vec::new();
     let mut current: Option<OpenInnings> = None;
 
     let finish = |open: OpenInnings, declared: bool| {
@@ -154,16 +175,29 @@ fn finish_innings(
     balls_per_over: u32,
     wide_is_extra_ball: bool,
     no_ball_is_extra_ball: bool,
-) -> CricketInnings {
-    let mut built = CricketInnings::from_deliveries(
+) -> CricketLiveInnings {
+    let overview = CricketInnings::from_deliveries(
         open.batting_side_id,
         open.bowling_side_id,
         declared,
-        open.deliveries,
+        &open.deliveries,
         balls_per_over,
         wide_is_extra_ball,
         no_ball_is_extra_ball,
     );
+    let mut built = CricketLiveInnings {
+        batting_side_id: overview.batting_side_id,
+        bowling_side_id: overview.bowling_side_id,
+        runs: overview.runs,
+        wickets: overview.wickets,
+        overs: overview.overs,
+        declared: overview.declared,
+        batting: overview.batting,
+        bowling: overview.bowling,
+        extras: overview.extras,
+        fall_of_wickets: overview.fall_of_wickets,
+        deliveries: open.deliveries,
+    };
     apply_retirements(&mut built, &open.retirements);
     built
 }
@@ -171,7 +205,7 @@ fn finish_innings(
 /// Annotates the batting card with retirements that never went through a
 /// delivery-based dismissal. A later real dismissal (from a delivery) always
 /// takes precedence over an earlier retirement note for the same batter.
-fn apply_retirements(innings: &mut CricketInnings, retirements: &[(String, bool)]) {
+fn apply_retirements(innings: &mut CricketLiveInnings, retirements: &[(String, bool)]) {
     for (player_id, retired_out) in retirements {
         let Some(entry) = innings
             .batting

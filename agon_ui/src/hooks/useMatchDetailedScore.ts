@@ -17,11 +17,12 @@ export function matchDetailedScoreQueryKey(matchId: string | undefined) {
  */
 export function useMatchDetailedScore(
   matchId: string | undefined,
-  options?: { enabled?: boolean },
+  options?: { enabled?: boolean; refetchInterval?: number | false },
 ) {
   return useQuery({
     queryKey: matchDetailedScoreQueryKey(matchId),
     enabled: !!matchId && (options?.enabled ?? true),
+    refetchInterval: options?.refetchInterval,
     queryFn: async (): Promise<DetailedScore | null> => {
       const { data, response } = await fetchClient.GET('/matches/{match_id}/detailed-score', {
         params: { path: { match_id: matchId! } },

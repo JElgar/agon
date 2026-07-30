@@ -2,19 +2,16 @@ import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { LiveIndicator } from './LiveIndicator'
 import {
-  battingEntryFor,
-  battingLine,
   cricketStateDescription,
   currentInnings,
   currentOverDeliveries,
   deliveryChipLabel,
   formatOvers,
   isChipHighlighted,
-  nextBallContext,
   playerNameFor,
   runRate,
   sideNameFor,
-  type CricketLiveState,
+  type CricketDetail,
 } from '@/lib/cricketScore'
 import { cricketFormat } from '@/lib/matchFormat'
 
@@ -39,8 +36,8 @@ function BallChip({ label, kind }: { label: string; kind: 'boundary' | 'wicket' 
 /**
  * The score block + "this over" ball row for a cricket match being scored
  * live (mirrors `LiveMatchBlock`'s role for football). Presentational: the
- * caller fetches the live snapshot (`useLiveScore`) and passes the derived
- * cricket state down.
+ * caller fetches the detailed score (`useMatchDetailedScore`) and passes the
+ * derived cricket detail down.
  */
 export function CricketMatchBlock({
   match,
@@ -48,7 +45,7 @@ export function CricketMatchBlock({
   showDescription = true,
 }: {
   match: Match
-  state: CricketLiveState
+  state: CricketDetail
   /** Whether to show the state-of-game line (target/leading/result) here.
    *  Callers that already surface it elsewhere (the feed card's header)
    *  pass `false` so it isn't said twice — the innings-break heading then
@@ -101,10 +98,8 @@ export function CricketMatchBlock({
 
   const battingName = sideNameFor(match, innings.batting_side_id)
   const bowlingName = sideNameFor(match, innings.bowling_side_id)
-  const next = nextBallContext(innings, format)
-  const striker = battingEntryFor(innings, next.strikerPlayerId)
-  const nonStriker = battingEntryFor(innings, next.nonStrikerPlayerId)
-  const overBalls = currentOverDeliveries(innings)
+  const next = state.next_ball_context
+  const overBalls = currentOverDeliveries(state.recent_deliveries ?? [])
   const crr = runRate(innings.runs, innings.overs, format.balls_per_over)
 
   return (
@@ -120,19 +115,11 @@ export function CricketMatchBlock({
               {crr.toFixed(2)})
             </span>
           </p>
-          {(striker || nonStriker) && (
+          {next && (next.striker_player_id || next.non_striker_player_id) && (
             <p className="mt-0.5 truncate text-xs text-muted-foreground">
-              {next.strikerPlayerId && (
-                <>
-                  {playerNameFor(match, next.strikerPlayerId)}* {battingLine(striker)}
-                </>
-              )}
-              {next.strikerPlayerId && next.nonStrikerPlayerId && ' · '}
-              {next.nonStrikerPlayerId && (
-                <>
-                  {playerNameFor(match, next.nonStrikerPlayerId)} {battingLine(nonStriker)}
-                </>
-              )}
+              {next.striker_player_id && <>{playerNameFor(match, next.striker_player_id)}*</>}
+              {next.striker_player_id && next.non_striker_player_id && ' · '}
+              {next.non_striker_player_id && <>{playerNameFor(match, next.non_striker_player_id)}</>}
             </p>
           )}
           {showDescription && description && (

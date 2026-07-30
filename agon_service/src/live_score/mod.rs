@@ -3,18 +3,19 @@
 //! goal-by-goal, card-by-card, ...) in real time — possibly in batches, from a
 //! device catching up after being offline.
 //!
-//! Distinct from `detailed_score`, which is the *resolved* scorecard read off
-//! the derived state. This module is the write-side vocabulary, plus the pure
-//! functions (in `football`/`cricket`) that fold an ordered event log into
-//! that derived state — the same shapes `detailed_score` already defines,
-//! since a live match's final scorecard is exactly what live scoring builds
-//! up to.
+//! This is the write-side vocabulary, plus the pure functions (in
+//! `football`/`cricket`) that fold an ordered event log into
+//! `detailed_score`'s shapes — there's no separate "live" read shape
+//! anymore: `GET /matches/:id/detailed-score` serves the same
+//! `DetailedScore` whether the match is still being scored or long
+//! finished (see `detailed_score`'s module docs for why that's one shape
+//! now, not two).
 //!
-//! Corrections are direct mutations of the log, not layered on top of it:
-//! `DELETE /matches/:id/live/events/:seq` removes an event outright, `PATCH`
-//! overwrites one seq's content in place. There's no soft-delete/void marker
-//! to filter out on every fold — `derive_state` folds whatever the DAO
-//! actually returns, in order.
+//! Corrections are restricted to undoing the most recently recorded event —
+//! `DELETE /matches/:id/live/events/:seq` only succeeds when `seq` is the
+//! current tip. An arbitrary-position edit would need real conflict
+//! resolution to reconcile against a device's own offline queue; undoing
+//! only the tip doesn't (see the DELETE handler's doc comment).
 
 use poem_openapi::{Object, Union};
 
@@ -72,28 +73,21 @@ pub struct LiveEvent {
     pub event: LiveEventInput,
 }
 
-/// The derived live-scoring state for a match, sport-first discriminated like
-/// `LiveEventInput`. A full fold of the event log — the same shape
-/// `detailed_score` exposes once a match is done, just kept live.
-#[derive(Union)]
-#[oai(one_of, discriminator_name = "sport")]
-pub enum LiveScoreState {
-    Football(football::FootballLiveState),
-    Cricket(cricket::CricketLiveState),
-}
-
-/// `LiveScoreState` plus the log position it was derived from, so a client
-/// can tell whether its own queued-but-unsynced events are already reflected.
+/// A `DetailedScore` plus the log position it reflects, so a client can tell
+/// whether its own queued-but-unsynced events are already applied. Returned
+/// by every endpoint that touches the live event log (append, delete) —
+/// `GET /matches/:id/detailed-score` itself doesn't need this wrapper, since
+/// a plain read has no "position I was expecting" to compare against.
 #[derive(Object)]
 pub struct LiveScoreSnapshot {
     pub last_seq: u32,
-    pub state: LiveScoreState,
+    pub detail: crate::detailed_score::DetailedScore,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::live_score::football::{FootballCardColor, FootballCardEvent};
+    use crate::detailed_score::football::{FootballCardColor, FootballCardEvent};
     use poem_openapi::types::{ParseFromJSON, ToJSON};
 
     /// The outer (`sport`) and inner (`kind`) unions must serialize as one

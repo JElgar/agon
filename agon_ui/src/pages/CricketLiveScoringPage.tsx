@@ -5,7 +5,8 @@ import { ChevronLeft } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
-import { useAppendCricketEvent, useLiveScore } from '@/hooks/useLiveScore'
+import { useAppendCricketEvent, useLiveSeq } from '@/hooks/useLiveScore'
+import { useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { SidePicker, PlayerPicker, sideName } from '@/components/agon/live/Pickers'
 import { WicketDialog } from '@/components/agon/live/WicketDialog'
@@ -14,19 +15,13 @@ import { NoBallDialog } from '@/components/agon/live/NoBallDialog'
 import { playersOnSide } from '@/lib/members'
 import { cricketFormat } from '@/lib/matchFormat'
 import {
-  battingEntryFor,
-  battingLine,
-  bowlingEntryFor,
-  bowlingFigures,
-  cricketLiveState,
+  cricketDetailFrom,
   currentInnings,
   currentOverDeliveries,
   deliveryChipLabel,
   formatOvers,
   isChipHighlighted,
   matchTotalsBySide,
-  nextBallContext,
-  outBattersFor,
   playerNameFor,
   runRate,
 } from '@/lib/cricketScore'
@@ -55,24 +50,28 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
-  const live = useLiveScore(match.id, { refetchInterval: 8000 })
+  const detailedScore = useMatchDetailedScore(match.id, { refetchInterval: 8000 })
+  const seq = useLiveSeq(match.id)
   const appendEvent = useAppendCricketEvent(match.id)
-  const state = cricketLiveState(live.data)
+  const state = cricketDetailFrom(detailedScore.data)
   const innings = state ? currentInnings(state) : null
   const format = cricketFormat(match.format)
-  const next = innings ? nextBallContext(innings, format) : null
+  // The server folds this incrementally as events are recorded (see
+  // `live_score::cricket::apply_delivery_to_context`) — no client-side
+  // replay needed for the online case.
+  const next = state?.next_ball_context ?? null
 
   // Locally-picked openers/replacement batter/next bowler — only used until
   // the server confirms them via an actual delivery, at which point
-  // `nextBallContext` takes over as the source of truth.
+  // `next_ball_context` takes over as the source of truth.
   const [pickedStriker, setPickedStriker] = useState<string | null>(null)
   const [pickedNonStriker, setPickedNonStriker] = useState<string | null>(null)
   const [pickedBowler, setPickedBowler] = useState<string | null>(null)
   useEffect(() => {
-    if (next?.strikerPlayerId) setPickedStriker(null)
-    if (next?.nonStrikerPlayerId) setPickedNonStriker(null)
-    if (next?.bowlerPlayerId) setPickedBowler(null)
-  }, [next?.strikerPlayerId, next?.nonStrikerPlayerId, next?.bowlerPlayerId])
+    if (next?.striker_player_id) setPickedStriker(null)
+    if (next?.non_striker_player_id) setPickedNonStriker(null)
+    if (next?.bowler_player_id) setPickedBowler(null)
+  }, [next?.striker_player_id, next?.non_striker_player_id, next?.bowler_player_id])
 
   // Lets the scorer step back into the opener/bowler picker after all three
   // are picked, to fix a mis-tap — only while the innings' very first ball
@@ -82,7 +81,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   // instead (see `live_score::cricket`'s doc comment) — broader in-innings
   // correction support is a later step.
   const [editingOpeningPicks, setEditingOpeningPicks] = useState(false)
-  const openingPicksUnconfirmed = innings ? innings.deliveries.length === 0 : false
+  const openingPicksUnconfirmed = innings ? (state?.recent_deliveries?.length ?? 0) === 0 : false
   useEffect(() => {
     if (!openingPicksUnconfirmed) setEditingOpeningPicks(false)
   }, [openingPicksUnconfirmed])
@@ -98,6 +97,11 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   // the same way a manual "Add result" would, so it enters the normal
   // confirmation flow rather than being auto-confirmed. The winner is still
   // derived from the summed match totals (two-innings formats add up both).
+  // No `detailed_score` here: the backend derives and persists the full
+  // batting/bowling cards itself from the event log when a live-scored
+  // cricket match completes without one supplied (see `update_match`) — the
+  // authoritative source, and the only one with the full log to fold; this
+  // client only ever sees the bounded live summary.
   const finishMatch = useMutation({
     mutationFn: async () => {
       if (!state) throw new Error('No score recorded yet')
@@ -134,7 +138,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
     },
   })
 
-  if (live.isLoading) {
+  if (detailedScore.isLoading || seq.isLoading) {
     return (
       <div className="mx-auto max-w-xl">
         <div className="h-64 animate-pulse rounded-xl border bg-card" aria-hidden />
@@ -249,9 +253,9 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
 
   const battingSide = match.sides.find((s) => s.id === innings.batting_side_id)
   const bowlingSide = match.sides.find((s) => s.id === innings.bowling_side_id)
-  const effectiveStriker = next!.strikerPlayerId ?? pickedStriker
-  const effectiveNonStriker = next!.nonStrikerPlayerId ?? pickedNonStriker
-  const effectiveBowler = next!.bowlerPlayerId ?? pickedBowler
+  const effectiveStriker = next!.striker_player_id ?? pickedStriker
+  const effectiveNonStriker = next!.non_striker_player_id ?? pickedNonStriker
+  const effectiveBowler = next!.bowler_player_id ?? pickedBowler
   const readyToScore = !!effectiveStriker && !!effectiveNonStriker && !!effectiveBowler
   const showPickerPanel = !readyToScore || editingOpeningPicks
 
@@ -286,7 +290,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
     innings.overs.overs >= format.overs_per_innings &&
     innings.overs.balls === 0
 
-  if (oversComplete && !next!.bowlerPlayerId) {
+  if (oversComplete && !next!.bowler_player_id) {
     return (
       <div className="mx-auto flex max-w-xl flex-col gap-4">
         {header}
@@ -333,11 +337,17 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   }
 
   const crr = runRate(innings.runs, innings.overs, format.balls_per_over)
-  const strikerEntry = battingEntryFor(innings, effectiveStriker)
-  const nonStrikerEntry = battingEntryFor(innings, effectiveNonStriker)
-  const bowlerEntry = bowlingEntryFor(innings, effectiveBowler)
-  const overBalls = currentOverDeliveries(innings)
-  const outBatters = outBattersFor(innings)
+  const overBalls = currentOverDeliveries(state!.recent_deliveries ?? [])
+  // Excluded from the batter picker in addition to whoever's currently at
+  // the crease — `innings.batting` carries the full card (see
+  // `CricketDetail`), so a dismissal here is as reliable as the server's own
+  // scorecard, not just a locally-replayed guess. Retired hurt is excluded
+  // from this list on purpose: unlike every other dismissal it isn't final —
+  // the same batter can simply be picked again to resume (see
+  // `CricketRetireEvent`'s doc comment on the backend).
+  const outBatters = innings.batting
+    .filter((b) => b.dismissal && b.dismissal.kind !== 'retired_hurt')
+    .map((b) => b.player_id)
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
@@ -365,13 +375,11 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
           {effectiveStriker && (
             <div className="flex items-center justify-between">
               <span className="font-medium">{playerNameFor(match, effectiveStriker)}*</span>
-              <span className="text-muted-foreground">{battingLine(strikerEntry)}</span>
             </div>
           )}
           {effectiveNonStriker && (
             <div className="flex items-center justify-between">
               <span>{playerNameFor(match, effectiveNonStriker)}</span>
-              <span className="text-muted-foreground">{battingLine(nonStrikerEntry)}</span>
             </div>
           )}
           {effectiveBowler && (
@@ -379,7 +387,6 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
               <span className="text-muted-foreground">
                 Bowling: <span className="font-medium text-foreground">{playerNameFor(match, effectiveBowler)}</span>
               </span>
-              <span className="text-muted-foreground">{bowlingFigures(bowlerEntry)}</span>
             </div>
           )}
         </div>
@@ -448,7 +455,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
               <PlayerPicker
                 players={playersOnSide(match.players, bowlingSide!)}
                 value={pickedBowler ?? undefined}
-                exclude={next!.previousOverBowlerPlayerId ?? undefined}
+                exclude={next!.previous_over_bowler_player_id ?? undefined}
                 onChange={setPickedBowler}
               />
             </div>

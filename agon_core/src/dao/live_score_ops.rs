@@ -1,10 +1,12 @@
 //! Live-scoring event log: batched, transactional append with optimistic
-//! concurrency (so an offline device can catch up safely), direct
-//! delete/amend for corrections, plus the derived state cache.
+//! concurrency (so an offline device can catch up safely), plus direct
+//! delete/amend for corrections.
 //!
-//! The event log (`LIVEEVT#<seq>`) is the source of truth; `#LIVESTATE` is a
-//! rebuildable cache, never trusted as authoritative on its own. Corrections
-//! are direct mutations of the log — `delete_live_event` removes an item
+//! The event log (`LIVEEVT#<seq>`) is the sole source of truth — one item per
+//! event, with no per-item size ceiling regardless of how long a match runs.
+//! The derived scorecard it folds into lives in `MatchDetailedScoreRecord`
+//! (`DETAIL#<sport>`) — see that record's doc comment. Corrections are
+//! direct mutations of the log — `delete_live_event` removes an item
 //! outright, `amend_live_event` overwrites its payload in place — not a
 //! layered "this is void" marker to filter out on every read.
 
@@ -15,12 +17,12 @@ use aws_sdk_dynamodb::types::{AttributeValue, Put, TransactWriteItem, Update};
 
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
-use super::item::{ATTR_PK, ATTR_SK, from_item, s, to_item};
+use super::item::{ATTR_PK, ATTR_SK, s, to_item};
 use super::keys::{Pk, Sk};
-use super::records::{LiveEventPayloadRecord, LiveEventRecord, LiveStateRecord};
+use super::page::Page;
+use super::records::{LiveEventPayloadRecord, LiveEventRecord};
 
 pub const TYPE_LIVE_EVENT: &str = "live_event";
-pub const TYPE_LIVE_STATE: &str = "live_state";
 
 /// DynamoDB caps `TransactWriteItems` at 100 items per call. One of those is
 /// the seq-counter reservation, leaving this many for the events themselves.
@@ -194,48 +196,38 @@ impl Dao {
     }
 
     /// Read every live event in the match's log, in seq order. Drains all
-    /// query pages — event logs are small (low hundreds at most for a single
-    /// match) so this is never a 1 MB-page concern.
+    /// query pages, so this stays correct regardless of how many events a
+    /// match accumulates (a full multi-innings, unlimited-overs match can run
+    /// to thousands) — each is its own small item, so there's no per-item
+    /// size concern the way one record holding the whole log would have.
+    /// Internal use only (folding the whole log) — the public API paginates
+    /// via `list_live_events_page` instead of ever returning this whole.
     pub async fn list_live_events(&self, match_id: &str) -> DaoResult<Vec<LiveEventRecord>> {
         self.query_match_collection(match_id, Sk::LiveEvent(0).prefix())
             .await
     }
 
-    /// Fetch the cached derived live state. `None` if never computed.
-    pub async fn get_live_state(&self, match_id: &str) -> DaoResult<Option<LiveStateRecord>> {
-        let out = self
-            .client
-            .get_item()
-            .table_name(self.table())
-            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
-            .key(ATTR_SK, s(Sk::LiveState.to_string()))
-            .send()
-            .await
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-        match out.item {
-            Some(item) => Ok(Some(from_item(item)?)),
-            None => Ok(None),
-        }
-    }
-
-    /// Write (overwrite) the cached derived live state. Best-effort: never
-    /// part of the append transaction, always safely recomputable from the
-    /// log, so a failure here doesn't need to roll back the append.
-    pub async fn put_live_state(&self, match_id: &str, state: &LiveStateRecord) -> DaoResult<()> {
-        let item = to_item(
-            &Pk::Match(match_id.into()),
-            &Sk::LiveState,
-            TYPE_LIVE_STATE,
-            state,
-        )?;
-        self.client
-            .put_item()
-            .table_name(self.table())
-            .set_item(Some(item))
-            .send()
-            .await
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-        Ok(())
+    /// One page of the match's live event log, oldest first (`seq` order —
+    /// the zero-padded key sorts numerically). What `GET
+    /// /matches/:id/live/events` actually serves.
+    pub async fn list_live_events_page(
+        &self,
+        match_id: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> DaoResult<Page<LiveEventRecord>> {
+        self.query_page(
+            self.client
+                .query()
+                .table_name(self.table())
+                .key_condition_expression("#pk = :pk AND begins_with(SK, :sk)")
+                .expression_attribute_names("#pk", ATTR_PK)
+                .expression_attribute_values(":pk", s(Pk::Match(match_id.into()).to_string()))
+                .expression_attribute_values(":sk", s(Sk::LiveEvent(0).prefix())),
+            cursor,
+            limit,
+        )
+        .await
     }
 }
 

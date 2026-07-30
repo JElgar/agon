@@ -1,20 +1,73 @@
 import type { components } from '@/types/api'
 import { memberName } from './members'
 
-export type FootballEventKind = components['schemas']['FootballEventKind']
-export type FootballEvent = components['schemas']['FootballEvent']
 export type FootballPeriod = components['schemas']['FootballPeriod']
-export type FootballLiveState = components['schemas']['FootballLiveState']
-type LiveScoreSnapshot = components['schemas']['LiveScoreSnapshot']
+export type FootballDetail = components['schemas']['FootballDetail']
+type FootballGoalEvent = components['schemas']['FootballGoalEvent']
+type FootballCardEvent = components['schemas']['FootballCardEvent']
+type DetailedScore = components['schemas']['DetailedScore']
 type Match = components['schemas']['Match']
 
-/** Narrows a live-score snapshot to its football state, or `null` when there's
- *  no snapshot yet or it's for a different sport. */
-export function footballLiveState(
-  snapshot: LiveScoreSnapshot | null | undefined,
-): FootballLiveState | null {
-  if (!snapshot || snapshot.state.sport !== 'Football') return null
-  return snapshot.state
+/** Narrows a match's detailed score to its football detail, or `null` when
+ *  there's none yet or it's for a different sport. */
+export function footballDetailFrom(detail: DetailedScore | null | undefined): FootballDetail | null {
+  if (!detail || detail.type !== 'Football') return null
+  return detail
+}
+
+/** A client-side view of one football event, merging `FootballDetail`'s
+ *  separately-typed `goals`/`cards`/`substitutions` lists back into a single
+ *  timeline for the event log/mini-ticker (see `eventsFromDetail`) — the
+ *  backend keeps them apart so a goal's scorer/assist/own-goal/penalty
+ *  fields mean the same thing they did when recorded, not a shared field
+ *  reinterpreted per kind. */
+export type FootballEventKind = 'goal' | 'own_goal' | 'penalty' | 'yellow_card' | 'red_card' | 'substitution'
+export interface FootballEventView {
+  kind: FootballEventKind
+  side_id: string
+  minute?: number
+  player_id?: string
+  assist_player_id?: string
+  substituted_player_id?: string
+}
+
+function goalKind(g: FootballGoalEvent): FootballEventKind {
+  if (g.own_goal) return 'own_goal'
+  if (g.penalty) return 'penalty'
+  return 'goal'
+}
+
+function cardKind(c: FootballCardEvent): FootballEventKind {
+  return c.color === 'yellow' ? 'yellow_card' : 'red_card'
+}
+
+/** All of a football detail's goals/cards/substitutions merged into one
+ *  timeline, ordered by minute (undated events last — the scorer always
+ *  fills in a minute in practice, so this only matters for edge cases). */
+export function eventsFromDetail(detail: FootballDetail): FootballEventView[] {
+  const events: FootballEventView[] = [
+    ...detail.goals.map((g): FootballEventView => ({
+      kind: goalKind(g),
+      side_id: g.side_id,
+      minute: g.minute,
+      player_id: g.scorer_player_id,
+      assist_player_id: g.assist_player_id,
+    })),
+    ...detail.cards.map((c): FootballEventView => ({
+      kind: cardKind(c),
+      side_id: c.side_id,
+      minute: c.minute,
+      player_id: c.player_id,
+    })),
+    ...detail.substitutions.map((s): FootballEventView => ({
+      kind: 'substitution',
+      side_id: s.side_id,
+      minute: s.minute,
+      player_id: s.player_in_id,
+      substituted_player_id: s.player_out_id,
+    })),
+  ]
+  return events.sort((a, b) => (a.minute ?? Infinity) - (b.minute ?? Infinity))
 }
 
 /** Label + emoji for each football live-event kind, for the event log/ticker. */
@@ -64,8 +117,8 @@ export function periodLabel(period: FootballPeriod): string {
 }
 
 /** The most recent events first, capped to `limit` — for a mini-ticker. */
-export function recentEvents(state: FootballLiveState, limit: number): FootballEvent[] {
-  return [...state.events].reverse().slice(0, limit)
+export function recentEvents(detail: FootballDetail, limit: number): FootballEventView[] {
+  return eventsFromDetail(detail).reverse().slice(0, limit)
 }
 
 /** Side display name for an event, falling back to a neutral label. */
@@ -84,7 +137,7 @@ function playerNameFor(match: Pick<Match, 'players'>, playerId: string | undefin
  *  (Riverside)" or "Sub — Moreno on for Khan (Oak Park)" — used by the event
  *  log and mini-ticker. */
 export function describeEvent(
-  event: FootballEvent,
+  event: FootballEventView,
   match: Pick<Match, 'sides' | 'players'>,
 ): string {
   const side = sideNameFor(match, event.side_id)
@@ -156,14 +209,19 @@ export function saveTrackPrefs(matchId: string, prefs: TrackPrefs): void {
 }
 
 // ---------------------------------------------------------------------------
-// Match clock — derived entirely from `FootballLiveState`'s phase-boundary
-// timestamps (`kickoff_at`/`half_time_at`/`second_half_kickoff_at`/
-// `full_time_at`), each the `occurred_at` of the period marker that recorded
-// it server-side (see `agon_service::live_score::football::derive_state`).
-// Because it's computed from shared server data rather than a per-device
-// stopwatch, the scorer's own screen and every other viewer (feed card, match
-// detail) tick the exact same clock.
+// Match clock — derived entirely from `FootballDetail.period_times`, each the
+// `occurred_at` of the period marker that recorded it server-side (see
+// `agon_service::live_score::football::derive_detail`). Because it's
+// computed from shared server data rather than a per-device stopwatch, the
+// scorer's own screen and every other viewer (feed card, match detail) tick
+// the exact same clock.
 // ---------------------------------------------------------------------------
+
+/** When a given period marker was recorded, if at all — a typed lookup into
+ *  `FootballDetail.period_times`'s string-keyed map. */
+export function periodTime(detail: FootballDetail, period: FootballPeriod): string | undefined {
+  return detail.period_times[period]
+}
 
 export type ClockPhase =
   | 'not_started'
@@ -176,11 +234,11 @@ export type ClockPhase =
   | 'other'
 
 /** Which phase the match is in right now, purely from recorded timestamps. */
-export function phaseFromState(state: FootballLiveState): ClockPhase {
-  if (state.full_time_at) return 'full_time'
-  if (state.second_half_kickoff_at) return 'second_half'
-  if (state.half_time_at) return 'half_time'
-  if (state.kickoff_at) return 'first_half'
+export function phaseFromState(state: FootballDetail): ClockPhase {
+  if (periodTime(state, 'full_time')) return 'full_time'
+  if (periodTime(state, 'second_half_kick_off')) return 'second_half'
+  if (periodTime(state, 'half_time')) return 'half_time'
+  if (periodTime(state, 'kick_off')) return 'first_half'
   if (state.period) return 'other'
   return 'not_started'
 }
@@ -197,28 +255,29 @@ function minutesBetween(from: string, to: Date | string): number {
  * minute count continues from wherever the first half actually left off,
  * rather than resetting to a fixed 45'.
  */
-export function currentMinute(state: FootballLiveState, now: Date = new Date()): number | null {
+export function currentMinute(state: FootballDetail, now: Date = new Date()): number | null {
   const phase = phaseFromState(state)
-  const firstHalfMinutes =
-    state.kickoff_at && state.half_time_at
-      ? minutesBetween(state.kickoff_at, state.half_time_at)
-      : 0
+  const kickoffAt = periodTime(state, 'kick_off')
+  const halfTimeAt = periodTime(state, 'half_time')
+  const secondHalfKickoffAt = periodTime(state, 'second_half_kick_off')
+  const fullTimeAt = periodTime(state, 'full_time')
+  const firstHalfMinutes = kickoffAt && halfTimeAt ? minutesBetween(kickoffAt, halfTimeAt) : 0
 
   switch (phase) {
     case 'first_half':
-      return state.kickoff_at ? minutesBetween(state.kickoff_at, now) : null
+      return kickoffAt ? minutesBetween(kickoffAt, now) : null
     case 'half_time':
-      return state.kickoff_at && state.half_time_at ? firstHalfMinutes : null
+      return kickoffAt && halfTimeAt ? firstHalfMinutes : null
     case 'second_half':
-      return state.second_half_kickoff_at
-        ? firstHalfMinutes + minutesBetween(state.second_half_kickoff_at, now)
+      return secondHalfKickoffAt
+        ? firstHalfMinutes + minutesBetween(secondHalfKickoffAt, now)
         : null
     case 'full_time':
-      if (!state.full_time_at) return null
-      return state.second_half_kickoff_at
-        ? firstHalfMinutes + minutesBetween(state.second_half_kickoff_at, state.full_time_at)
-        : state.kickoff_at
-          ? minutesBetween(state.kickoff_at, state.full_time_at)
+      if (!fullTimeAt) return null
+      return secondHalfKickoffAt
+        ? firstHalfMinutes + minutesBetween(secondHalfKickoffAt, fullTimeAt)
+        : kickoffAt
+          ? minutesBetween(kickoffAt, fullTimeAt)
           : null
     case 'not_started':
     case 'other':
@@ -245,7 +304,7 @@ export function phaseLabel(phase: ClockPhase): string {
 }
 
 /** A compact clock label for a score box, e.g. "63'", "HT", "FT", "LIVE". */
-export function liveClockLabel(state: FootballLiveState, now: Date = new Date()): string {
+export function liveClockLabel(state: FootballDetail, now: Date = new Date()): string {
   const phase = phaseFromState(state)
   if (phase === 'half_time') return 'HT'
   if (phase === 'full_time') return 'FT'

@@ -5,7 +5,9 @@ import {
   formatOvers,
   playerNameFor,
   runProgression,
-  type CricketInnings,
+  type CricketBattingEntry,
+  type CricketBowlingEntry,
+  type CricketInningsWithDeliveries,
 } from '@/lib/cricketScore'
 import { cricketFormat } from '@/lib/matchFormat'
 import { CricketRunRateChart, type RunRateSeries } from './CricketRunRateChart'
@@ -25,7 +27,7 @@ function sideNameFor(match: Match, sideId: string): string {
  * cards. Renders nothing if there's no per-innings detail to show (e.g. only
  * a headline score was ever recorded).
  */
-export function CricketScorecard({ match, innings }: { match: Match; innings: CricketInnings[] }) {
+export function CricketScorecard({ match, innings }: { match: Match; innings: CricketInningsWithDeliveries[] }) {
   if (innings.length === 0) return null
 
   const format = cricketFormat(match.format)
@@ -56,7 +58,7 @@ export function CricketScorecard({ match, innings }: { match: Match; innings: Cr
   )
 }
 
-function InningsCard({ match, innings }: { match: Match; innings: CricketInnings }) {
+function InningsCard({ match, innings }: { match: Match; innings: CricketInningsWithDeliveries }) {
   if (innings.batting.length === 0 && innings.bowling.length === 0) return null
 
   const battingName = sideNameFor(match, innings.batting_side_id)
@@ -83,7 +85,7 @@ function InningsCard({ match, innings }: { match: Match; innings: CricketInnings
             </TableRow>
           </TableHeader>
           <TableBody>
-            {innings.batting.map((b) => (
+            {innings.batting.map((b: CricketBattingEntry) => (
               <TableRow key={b.player_id}>
                 <TableCell>
                   <p className="font-medium">{playerNameFor(match, b.player_id)}</p>
@@ -110,7 +112,7 @@ function InningsCard({ match, innings }: { match: Match; innings: CricketInnings
             </TableRow>
           </TableHeader>
           <TableBody>
-            {innings.bowling.map((bw) => (
+            {innings.bowling.map((bw: CricketBowlingEntry) => (
               <TableRow key={bw.player_id}>
                 <TableCell className="font-medium">{playerNameFor(match, bw.player_id)}</TableCell>
                 <TableCell className="text-right tabular-nums">{bowlingFigures(bw)}</TableCell>

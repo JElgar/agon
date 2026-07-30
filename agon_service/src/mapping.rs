@@ -11,16 +11,17 @@ use crate::detailed_score::cricket::{
     CricketDelivery, CricketDeliveryExtra, CricketDeliveryWicket, CricketDismissalKind,
     CricketExtraKind, Overs,
 };
+use crate::detailed_score::football::{
+    FootballCardColor, FootballCardEvent, FootballGoalEvent, FootballPeriod,
+    FootballSubstitutionEvent,
+};
 use crate::live_score::{
-    LiveEvent, LiveEventInput, LiveScoreState, NewLiveEventInput,
+    LiveEvent, LiveEventInput, NewLiveEventInput,
     cricket::{
         CricketInningsEndEvent, CricketInningsStartEvent, CricketLiveEvent, CricketRetireEvent,
         InningsEndReason,
     },
-    football::{
-        FootballCardColor, FootballCardEvent, FootballGoalEvent, FootballLiveEvent, FootballPeriod,
-        FootballPeriodEvent, FootballSubstitutionEvent,
-    },
+    football::{FootballLiveEvent, FootballPeriodEvent},
 };
 use crate::match_format::{CricketFormat, FootballFormat, MatchFormat};
 use crate::membership::{
@@ -619,14 +620,21 @@ pub fn like_user_id(rec: &MatchLikeRecord) -> String {
 
 /// Serialize a `DetailedScore` union into the `(sport, detail)` record shape.
 /// The sport tag mirrors the union variant so a read can pick the right variant.
-pub fn detailed_score_to_record(ds: &DetailedScore) -> MatchDetailedScoreRecord {
+pub fn detailed_score_to_record(
+    ds: &DetailedScore,
+    last_seq: Option<u32>,
+) -> MatchDetailedScoreRecord {
     let sport = match ds {
         DetailedScore::Football(_) => "football",
         DetailedScore::Cricket(_) => "cricket",
     }
     .to_string();
     let detail = ds.to_json().unwrap_or(serde_json::Value::Null);
-    MatchDetailedScoreRecord { sport, detail }
+    MatchDetailedScoreRecord {
+        sport,
+        detail,
+        last_seq,
+    }
 }
 
 /// Parse a stored detailed-score record back into the `DetailedScore` union.
@@ -850,7 +858,7 @@ fn cricket_live_event_to_record(event: &CricketLiveEvent) -> CricketLiveEventRec
     }
 }
 
-fn cricket_live_event_from_record(rec: &CricketLiveEventRecord) -> CricketLiveEvent {
+pub fn cricket_live_event_from_record(rec: &CricketLiveEventRecord) -> CricketLiveEvent {
     match rec {
         CricketLiveEventRecord::Delivery(d) => {
             CricketLiveEvent::Delivery(cricket_delivery_from_record(d))
@@ -1028,18 +1036,18 @@ pub fn live_event_from_record(rec: &LiveEventRecord) -> LiveEvent {
     }
 }
 
-/// Folds a match's live event log into its derived state. `None` if
+/// Folds a match's live event log into its full detail. `None` if
 /// `match_type` isn't a sport live scoring supports yet (only football and
 /// cricket so far — see `LiveEventInput`).
 ///
 /// `records` is whatever the DAO currently has on record, in seq order — a
 /// deleted event is already absent from it and an amended one already shows
 /// its corrected content, so there's no filtering pass needed here.
-pub fn derive_live_score_state(
+pub fn derive_live_detail(
     match_type: &str,
     records: &[LiveEventRecord],
     format: Option<&MatchFormatRecord>,
-) -> Option<LiveScoreState> {
+) -> Option<DetailedScore> {
     match match_type {
         "football" => {
             let events: Vec<(chrono::DateTime<chrono::Utc>, FootballLiveEvent)> = records
@@ -1051,8 +1059,8 @@ pub fn derive_live_score_state(
                     LiveEventPayloadRecord::Cricket(_) => None,
                 })
                 .collect();
-            Some(LiveScoreState::Football(
-                crate::live_score::football::derive_state(&events),
+            Some(DetailedScore::Football(
+                crate::detailed_score::football::FootballDetail::from_events(&events),
             ))
         }
         "cricket" => {
@@ -1063,19 +1071,10 @@ pub fn derive_live_score_state(
                     LiveEventPayloadRecord::Football(_) => None,
                 })
                 .collect();
-            // Standard rules unless the match configured something else: a
-            // 6-ball over (e.g. The Hundred's 5), and both wides and no-balls
-            // as extra (re-bowled) deliveries.
-            let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) = match format {
-                Some(MatchFormatRecord::Cricket(f)) => (
-                    f.balls_per_over,
-                    f.wide_is_extra_ball,
-                    f.no_ball_is_extra_ball,
-                ),
-                _ => (6, true, true),
-            };
-            Some(LiveScoreState::Cricket(
-                crate::live_score::cricket::derive_state(
+            let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) =
+                cricket_format_args(format);
+            Some(DetailedScore::Cricket(
+                crate::detailed_score::cricket::CricketDetail::from_events(
                     &events,
                     balls_per_over,
                     wide_is_extra_ball,
@@ -1084,6 +1083,23 @@ pub fn derive_live_score_state(
             ))
         }
         _ => None,
+    }
+}
+
+/// A cricket match's configured over length and extra-ball rules — standard
+/// rules (a 6-ball over, wides/no-balls re-bowled as extras) unless the match
+/// configured something else (e.g. The Hundred's 5-ball over). The only
+/// pieces of match format the DAO-agnostic scoring math actually needs, so
+/// callers thread these three through as plain arguments rather than the
+/// whole format.
+pub fn cricket_format_args(format: Option<&MatchFormatRecord>) -> (u32, bool, bool) {
+    match format {
+        Some(MatchFormatRecord::Cricket(f)) => (
+            f.balls_per_over,
+            f.wide_is_extra_ball,
+            f.no_ball_is_extra_ball,
+        ),
+        _ => (6, true, true),
     }
 }
 

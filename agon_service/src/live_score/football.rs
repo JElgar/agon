@@ -1,215 +1,94 @@
-use poem_openapi::{Enum, Object, Union};
+use std::collections::HashMap;
 
-use crate::detailed_score::football::{FootballEvent, FootballEventKind};
+use poem_openapi::{Object, Union};
+
+use crate::detailed_score::football::{
+    FootballCardEvent, FootballDetail, FootballGoalEvent, FootballPeriod, FootballSideGoals,
+    FootballSubstitutionEvent,
+};
 
 /// Football live-scoring events, nested under the outer sport union
 /// (`LiveEventInput::Football`), discriminated by `kind`. Corrections are
 /// handled by directly deleting or amending the stored event (see
 /// `DELETE`/`PATCH /matches/:id/live/events/:seq`), not a variant here.
-#[derive(Union)]
+#[derive(Union, Clone)]
 #[oai(one_of, discriminator_name = "kind")]
 pub enum FootballLiveEvent {
+    /// Reuses `detailed_score::football::FootballGoalEvent` verbatim — see
+    /// `CricketLiveEvent::Delivery`'s doc comment for why.
     Goal(FootballGoalEvent),
     Card(FootballCardEvent),
     Substitution(FootballSubstitutionEvent),
     Period(FootballPeriodEvent),
 }
 
-#[derive(Object)]
-pub struct FootballGoalEvent {
-    /// The side this goal counts for.
-    pub side_id: String,
-    /// None for an own goal with no recorded scorer.
-    pub scorer_player_id: Option<String>,
-    pub assist_player_id: Option<String>,
-    pub own_goal: bool,
-    pub penalty: bool,
-    pub minute: Option<u32>,
-}
-
-#[derive(Enum, Clone)]
-#[oai(rename_all = "snake_case")]
-pub enum FootballCardColor {
-    Yellow,
-    Red,
-}
-
-#[derive(Object)]
-pub struct FootballCardEvent {
-    pub side_id: String,
-    pub player_id: String,
-    pub color: FootballCardColor,
-    pub minute: Option<u32>,
-}
-
-#[derive(Object)]
-pub struct FootballSubstitutionEvent {
-    pub side_id: String,
-    pub player_in_id: String,
-    pub player_out_id: String,
-    pub minute: Option<u32>,
-}
-
-#[derive(Enum, Clone, PartialEq)]
-#[oai(rename_all = "snake_case")]
-pub enum FootballPeriod {
-    /// Kickoff — the moment the match clock actually starts. Recorded once,
-    /// when the scorer starts live scoring; distinct from `Match.starts_at`
-    /// (the *scheduled* time), which may not match when the whistle actually
-    /// blew.
-    KickOff,
-    HalfTime,
-    /// Kickoff of the second half — no clock gap is assumed between this and
-    /// `HalfTime`, so added time in the first half is preserved automatically
-    /// (the second half's clock continues from wherever the first half's
-    /// left off, not from a fixed 45').
-    SecondHalfKickOff,
-    FullTime,
-    ExtraTimeHalfTime,
-    ExtraTimeFullTime,
-    PenaltiesComplete,
-}
-
-#[derive(Object)]
+#[derive(Object, Clone)]
 pub struct FootballPeriodEvent {
     pub period: FootballPeriod,
 }
 
-/// A side's running goal tally, derived from the event log (a convenience for
-/// cheap reads — e.g. a feed card — that don't want to re-derive it from
-/// `events` themselves).
-#[derive(Object)]
-pub struct FootballSideGoals {
-    pub side_id: String,
-    pub goals: u32,
-}
+impl FootballDetail {
+    /// Folds the whole event log into a `FootballDetail` from scratch — the
+    /// slow path, used to bootstrap a match's first detail or recover from a
+    /// missing/unparseable persisted record. Just `apply_event` run once per
+    /// event in order; the fast (single-event) and slow (whole-log) paths
+    /// share the exact same fold, so they can't disagree — same pattern as
+    /// `CricketDetail::from_events`.
+    pub fn from_events(events: &[(chrono::DateTime<chrono::Utc>, FootballLiveEvent)]) -> Self {
+        let mut detail = FootballDetail {
+            score: Vec::new(),
+            goals: Vec::new(),
+            cards: Vec::new(),
+            substitutions: Vec::new(),
+            period: None,
+            period_times: HashMap::new(),
+        };
+        for (occurred_at, event) in events {
+            detail.apply_event(*occurred_at, event);
+        }
+        detail
+    }
 
-/// The live-scoring state derived by folding a match's football event log.
-/// `events` reuses `detailed_score::football::FootballEvent` verbatim — this
-/// *is* that timeline, just built up incrementally.
-///
-/// The `*_at` fields are the wall-clock moments each phase boundary was
-/// actually recorded (each period marker's own `occurred_at`), not derived
-/// from `Match.starts_at` — a scorer may start the clock later than the
-/// scheduled kickoff. Together they let every client — the scorer's device
-/// and any other viewer alike — compute the same running match minute
-/// without needing a clock of their own: `now - kickoff_at` while in the
-/// first half, `now - second_half_kickoff_at` plus the first half's length
-/// once the second half is under way, frozen at the relevant boundary during
-/// half-time/full-time.
-#[derive(Object)]
-pub struct FootballLiveState {
-    /// The most recent period marker seen, if any.
-    pub period: Option<FootballPeriod>,
-    pub kickoff_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub half_time_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub second_half_kickoff_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub full_time_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub score: Vec<FootballSideGoals>,
-    pub events: Vec<FootballEvent>,
-}
-
-/// Folds an ordered, timestamped list of events into the derived live state.
-/// Callers pass whatever the DAO currently has on record — a deleted event is
-/// simply absent from that list, and an amended one shows up with its
-/// corrected content, so this never needs to know a correction happened at
-/// all. Each event is paired with its own `occurred_at` (not `recorded_at`)
-/// so a period marker's timestamp reflects when the half actually
-/// started/ended on the pitch, not when the server received it.
-pub fn derive_state(
-    events: &[(chrono::DateTime<chrono::Utc>, FootballLiveEvent)],
-) -> FootballLiveState {
-    let mut period = None;
-    let mut kickoff_at = None;
-    let mut half_time_at = None;
-    let mut second_half_kickoff_at = None;
-    let mut full_time_at = None;
-    let mut score: Vec<FootballSideGoals> = Vec::new();
-    let mut out = Vec::new();
-
-    for (occurred_at, event) in events {
+    /// Folds one new event into this detail in place — the fast path, run on
+    /// every append. `occurred_at` (not `recorded_at`) is threaded through
+    /// separately from `event` so a period marker's timestamp reflects when
+    /// the half actually started/ended on the pitch, not when the server
+    /// received it.
+    pub fn apply_event(
+        &mut self,
+        occurred_at: chrono::DateTime<chrono::Utc>,
+        event: &FootballLiveEvent,
+    ) {
         match event {
             FootballLiveEvent::Goal(g) => {
-                if let Some(s) = score.iter_mut().find(|s| s.side_id == g.side_id) {
+                if let Some(s) = self.score.iter_mut().find(|s| s.side_id == g.side_id) {
                     s.goals += 1;
                 } else {
-                    score.push(FootballSideGoals {
+                    self.score.push(FootballSideGoals {
                         side_id: g.side_id.clone(),
                         goals: 1,
                     });
                 }
-                let kind = if g.own_goal {
-                    FootballEventKind::OwnGoal
-                } else if g.penalty {
-                    FootballEventKind::Penalty
-                } else {
-                    FootballEventKind::Goal
-                };
-                out.push(FootballEvent {
-                    kind,
-                    side_id: g.side_id.clone(),
-                    minute: g.minute,
-                    player_id: g.scorer_player_id.clone(),
-                    assist_player_id: g.assist_player_id.clone(),
-                    substituted_player_id: None,
-                });
+                self.goals.push(g.clone());
             }
             FootballLiveEvent::Card(c) => {
-                out.push(FootballEvent {
-                    kind: match c.color {
-                        FootballCardColor::Yellow => FootballEventKind::YellowCard,
-                        FootballCardColor::Red => FootballEventKind::RedCard,
-                    },
-                    side_id: c.side_id.clone(),
-                    minute: c.minute,
-                    player_id: Some(c.player_id.clone()),
-                    assist_player_id: None,
-                    substituted_player_id: None,
-                });
+                self.cards.push(c.clone());
             }
             FootballLiveEvent::Substitution(sub) => {
-                out.push(FootballEvent {
-                    kind: FootballEventKind::Substitution,
-                    side_id: sub.side_id.clone(),
-                    minute: sub.minute,
-                    player_id: Some(sub.player_in_id.clone()),
-                    assist_player_id: None,
-                    substituted_player_id: Some(sub.player_out_id.clone()),
-                });
+                self.substitutions.push(sub.clone());
             }
             FootballLiveEvent::Period(p) => {
-                match p.period {
-                    FootballPeriod::KickOff => kickoff_at = Some(*occurred_at),
-                    FootballPeriod::HalfTime => half_time_at = Some(*occurred_at),
-                    FootballPeriod::SecondHalfKickOff => {
-                        second_half_kickoff_at = Some(*occurred_at)
-                    }
-                    FootballPeriod::FullTime => full_time_at = Some(*occurred_at),
-                    // Extra time / penalties aren't clocked yet — only the
-                    // marker itself is tracked, same as before.
-                    FootballPeriod::ExtraTimeHalfTime
-                    | FootballPeriod::ExtraTimeFullTime
-                    | FootballPeriod::PenaltiesComplete => {}
-                }
-                period = Some(p.period.clone());
+                self.period_times.insert(p.period, occurred_at);
+                self.period = Some(p.period);
             }
         }
-    }
-
-    FootballLiveState {
-        period,
-        kickoff_at,
-        half_time_at,
-        second_half_kickoff_at,
-        full_time_at,
-        score,
-        events: out,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detailed_score::football::FootballCardColor;
     use chrono::{DateTime, TimeZone, Utc};
 
     fn ts(minute: i64) -> DateTime<Utc> {
@@ -217,7 +96,7 @@ mod tests {
     }
 
     #[test]
-    fn derives_score_and_events_from_goals_cards_and_subs() {
+    fn derives_score_goals_cards_and_substitutions() {
         let events = vec![
             (
                 ts(41),
@@ -268,19 +147,21 @@ mod tests {
             ),
         ];
 
-        let state = derive_state(&events);
+        let detail = FootballDetail::from_events(&events);
 
-        assert_eq!(state.score.len(), 1);
-        assert_eq!(state.score[0].side_id, "riverside");
-        assert_eq!(state.score[0].goals, 2);
-        assert_eq!(state.events.len(), 4);
-        assert!(matches!(state.period, Some(FootballPeriod::FullTime)));
-        assert_eq!(state.full_time_at, Some(ts(94)));
-        assert!(matches!(state.events[2].kind, FootballEventKind::OwnGoal));
-        assert!(matches!(
-            state.events[3].kind,
-            FootballEventKind::Substitution
-        ));
+        assert_eq!(detail.score.len(), 1);
+        assert_eq!(detail.score[0].side_id, "riverside");
+        assert_eq!(detail.score[0].goals, 2);
+        assert_eq!(detail.goals.len(), 2);
+        assert_eq!(detail.cards.len(), 1);
+        assert_eq!(detail.substitutions.len(), 1);
+        assert!(matches!(detail.period, Some(FootballPeriod::FullTime)));
+        assert_eq!(
+            detail.period_times.get(&FootballPeriod::FullTime),
+            Some(&ts(94))
+        );
+        assert!(detail.goals[1].own_goal);
+        assert_eq!(detail.substitutions[0].player_out_id, "khan");
     }
 
     #[test]
@@ -306,15 +187,116 @@ mod tests {
             ),
         ];
 
-        let state = derive_state(&events);
+        let detail = FootballDetail::from_events(&events);
 
-        assert_eq!(state.kickoff_at, Some(ts(0)));
-        assert_eq!(state.half_time_at, Some(ts(46)));
-        assert_eq!(state.second_half_kickoff_at, Some(ts(60)));
-        assert_eq!(state.full_time_at, None);
+        assert_eq!(
+            detail.period_times.get(&FootballPeriod::KickOff),
+            Some(&ts(0))
+        );
+        assert_eq!(
+            detail.period_times.get(&FootballPeriod::HalfTime),
+            Some(&ts(46))
+        );
+        assert_eq!(
+            detail.period_times.get(&FootballPeriod::SecondHalfKickOff),
+            Some(&ts(60))
+        );
+        assert_eq!(detail.period_times.get(&FootballPeriod::FullTime), None);
         assert!(matches!(
-            state.period,
+            detail.period,
             Some(FootballPeriod::SecondHalfKickOff)
         ));
+    }
+
+    #[test]
+    fn extra_time_and_penalties_markers_get_timestamps_too() {
+        let events = vec![
+            (
+                ts(120),
+                FootballLiveEvent::Period(FootballPeriodEvent {
+                    period: FootballPeriod::ExtraTimeHalfTime,
+                }),
+            ),
+            (
+                ts(150),
+                FootballLiveEvent::Period(FootballPeriodEvent {
+                    period: FootballPeriod::ExtraTimeFullTime,
+                }),
+            ),
+            (
+                ts(160),
+                FootballLiveEvent::Period(FootballPeriodEvent {
+                    period: FootballPeriod::PenaltiesComplete,
+                }),
+            ),
+        ];
+
+        let detail = FootballDetail::from_events(&events);
+
+        assert_eq!(
+            detail.period_times.get(&FootballPeriod::ExtraTimeHalfTime),
+            Some(&ts(120))
+        );
+        assert_eq!(
+            detail.period_times.get(&FootballPeriod::ExtraTimeFullTime),
+            Some(&ts(150))
+        );
+        assert_eq!(
+            detail.period_times.get(&FootballPeriod::PenaltiesComplete),
+            Some(&ts(160))
+        );
+    }
+
+    #[test]
+    fn incremental_and_full_fold_agree() {
+        let events = vec![
+            (
+                ts(0),
+                FootballLiveEvent::Period(FootballPeriodEvent {
+                    period: FootballPeriod::KickOff,
+                }),
+            ),
+            (
+                ts(12),
+                FootballLiveEvent::Goal(FootballGoalEvent {
+                    side_id: "riverside".into(),
+                    scorer_player_id: Some("alvarez".into()),
+                    assist_player_id: None,
+                    own_goal: false,
+                    penalty: false,
+                    minute: Some(12),
+                }),
+            ),
+            (
+                ts(58),
+                FootballLiveEvent::Card(FootballCardEvent {
+                    side_id: "oak_park".into(),
+                    player_id: "khan".into(),
+                    color: FootballCardColor::Yellow,
+                    minute: Some(58),
+                }),
+            ),
+        ];
+
+        let full = FootballDetail::from_events(&events);
+
+        // Apply the same events one at a time, incrementally, and check the
+        // final state matches the full fold exactly.
+        let mut incremental = FootballDetail {
+            score: Vec::new(),
+            goals: Vec::new(),
+            cards: Vec::new(),
+            substitutions: Vec::new(),
+            period: None,
+            period_times: HashMap::new(),
+        };
+        for (occurred_at, event) in &events {
+            incremental.apply_event(*occurred_at, event);
+        }
+
+        assert_eq!(incremental.score.len(), full.score.len());
+        assert_eq!(incremental.goals.len(), full.goals.len());
+        assert_eq!(incremental.cards.len(), full.cards.len());
+        assert_eq!(incremental.period_times, full.period_times);
     }
 }

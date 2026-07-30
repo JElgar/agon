@@ -36,7 +36,7 @@ use auth::{JwtClaims, JwtVerifier};
 // Boundary mapping between API models and DAO records.
 mod mapping;
 use mapping::{
-    comment_from_record, dao_internal, derive_live_score_state, detailed_score_from_record,
+    comment_from_record, dao_internal, derive_live_detail, detailed_score_from_record,
     detailed_score_to_record, invitation_detail_from_record, invitation_from_record,
     invitation_status_from_str, invitation_status_str, live_event_from_record,
     match_format_sport_tag, match_format_to_record, match_from_records, match_status_str,
@@ -56,11 +56,13 @@ mod detailed_score;
 use detailed_score::{
     DetailedScore,
     cricket::Overs,
-    football::{FootballDetail, FootballEvent, FootballEventKind},
+    football::{FootballDetail, FootballGoalEvent, FootballPeriod, FootballSideGoals},
 };
 
 mod live_score;
-use live_score::{AppendLiveEventsInput, LiveEvent, LiveEventInput, LiveScoreSnapshot};
+use live_score::{
+    AppendLiveEventsInput, LiveEvent, LiveEventInput, LiveScoreSnapshot, NewLiveEventInput,
+};
 
 mod membership;
 use membership::{
@@ -1027,20 +1029,18 @@ enum AppendLiveEventsResponse {
     Conflict(PlainText<String>),
 }
 
-#[derive(ApiResponse)]
-enum GetLiveScoreResponse {
-    #[oai(status = 200)]
-    State(Json<LiveScoreSnapshot>),
-
-    /// The match exists but has no live events recorded yet.
-    #[oai(status = 404)]
-    NotFound(PlainText<String>),
+/// One page of a match's live event log, oldest first. `next_cursor` absent
+/// => end.
+#[derive(Object)]
+struct LiveEventPage {
+    items: Vec<LiveEvent>,
+    next_cursor: Option<String>,
 }
 
 #[derive(ApiResponse)]
 enum ListLiveEventsResponse {
     #[oai(status = 200)]
-    Events(Json<Vec<LiveEvent>>),
+    Events(Json<LiveEventPage>),
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
@@ -2122,9 +2122,14 @@ impl Api {
             }
         }
 
-        // Persist a supplied detailed score.
+        // Persist a manually-supplied detailed score (a match entered
+        // directly, without live scoring). For a live-scored match, there's
+        // nothing to do here even at completion: `GET /matches/:id/detailed-
+        // score` reads the same record live scoring has been keeping
+        // incrementally up to date all along (see `append_live_events`),
+        // so completing the match is just the status flip below.
         if let Some(ds) = &input.detailed_score {
-            let record = detailed_score_to_record(ds);
+            let record = detailed_score_to_record(ds, None);
             dao.put_match_detailed_score(&match_id, &record)
                 .await
                 .map_err(dao_internal)?;
@@ -2206,6 +2211,12 @@ impl Api {
         Ok(UpdateMatchResponse::Match(Json(m)))
     }
 
+    /// Both sports' persisted records are kept incrementally correct by
+    /// every live-scoring append (see `apply_live_events_incrementally`), so
+    /// this trusts the persisted record directly, with a full refold only as
+    /// a recovery path for a missing or unparseable record. Manual entry (no
+    /// live log at all) always reads the persisted record too — there's
+    /// nothing else for it to be caught up with.
     #[oai(path = "/matches/:match_id/detailed-score", method = "get")]
     async fn get_match_detailed_score(
         &self,
@@ -2215,9 +2226,6 @@ impl Api {
     ) -> Result<GetMatchDetailedScoreResponse> {
         info!("Getting detailed score for match {match_id}");
 
-        // The detailed score is stored under `DETAIL#<sport>`, so we need the
-        // match's sport tag to address it. Fetch the match aggregate (meta) for
-        // the sport; 404 if the match itself is missing.
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
             None => {
@@ -2226,16 +2234,39 @@ impl Api {
                 )));
             }
         };
+        let sport = agg.match_.match_type.as_str();
+
         let record = dao
-            .get_match_detailed_score(&match_id, &agg.match_.match_type)
+            .get_match_detailed_score(&match_id, sport)
             .await
             .map_err(dao_internal)?;
-        match record.as_ref().and_then(detailed_score_from_record) {
-            Some(ds) => Ok(GetMatchDetailedScoreResponse::DetailedScore(Json(ds))),
-            None => Ok(GetMatchDetailedScoreResponse::NotFound(PlainText(
-                "match has no detailed score".into(),
-            ))),
+        if let Some(ds) = record.as_ref().and_then(detailed_score_from_record) {
+            return Ok(GetMatchDetailedScoreResponse::DetailedScore(Json(ds)));
         }
+
+        // No usable persisted record — recover by folding the event log, if
+        // there is one (e.g. a live-scored match whose record was somehow
+        // missing or unparseable). Persist the result so subsequent reads,
+        // and the next incremental append, have a fresh checkpoint to build
+        // on.
+        let records = dao
+            .list_live_events(&match_id)
+            .await
+            .map_err(dao_internal)?;
+        if records.is_empty() {
+            return Ok(GetMatchDetailedScoreResponse::NotFound(PlainText(
+                "match has no detailed score".into(),
+            )));
+        }
+        let last_seq = records.iter().map(|r| r.seq).max().unwrap_or(0);
+        let Some(ds) = derive_live_detail(sport, &records, agg.match_.format.as_ref()) else {
+            return Ok(GetMatchDetailedScoreResponse::NotFound(PlainText(
+                "match has no detailed score".into(),
+            )));
+        };
+        self.persist_detailed_score(dao, &match_id, &ds, Some(last_seq))
+            .await;
+        Ok(GetMatchDetailedScoreResponse::DetailedScore(Json(ds)))
     }
 
     /// Append a batch of live-scoring events (1 to
@@ -2306,16 +2337,16 @@ impl Api {
             .map(|e| new_live_event_to_dao(e, &uid, &recorded_at))
             .collect();
 
-        match dao
+        let new_last_seq = match dao
             .append_live_events(&match_id, input.expected_last_seq, &new_events)
             .await
         {
-            Ok(_) => {}
+            Ok(new_last_seq) => new_last_seq,
             Err(dao::DaoError::Conflict(msg)) => {
                 return Ok(AppendLiveEventsResponse::Conflict(PlainText(msg)));
             }
             Err(e) => return Err(dao_internal(e)),
-        }
+        };
 
         // Recording a live event is what "starting" a match means, whatever
         // the sport (kickoff for football, the first ball for cricket) — flip
@@ -2337,10 +2368,30 @@ impl Api {
             .map_err(dao_internal)?;
         }
 
-        match self
-            .recompute_live_state(dao, &match_id, &sport, agg.match_.format.as_ref())
+        // Applies just the new events to the last-known checkpoint, whatever
+        // the sport — falls back to a full refold itself if the checkpoint
+        // is missing or behind (e.g. this is the match's first event, or a
+        // correction landed between the last append and this one).
+        let snapshot = match self
+            .apply_live_events_incrementally(
+                dao,
+                &match_id,
+                &sport,
+                agg.match_.format.as_ref(),
+                &input.events,
+                input.expected_last_seq,
+                new_last_seq,
+            )
             .await?
         {
+            Some(snapshot) => Some(snapshot),
+            None => {
+                self.derive_live_snapshot(dao, &match_id, &sport, agg.match_.format.as_ref())
+                    .await?
+            }
+        };
+
+        match snapshot {
             Some(snapshot) => Ok(AppendLiveEventsResponse::Ok(Json(snapshot))),
             None => Ok(AppendLiveEventsResponse::ValidationError(PlainText(
                 format!("sport `{sport}` does not support live scoring"),
@@ -2348,63 +2399,90 @@ impl Api {
         }
     }
 
-    /// The current derived live-scoring state (score/clock/scorecard so
-    /// far), for a feed card or the scorer's own view to poll. Served from
-    /// the `#LIVESTATE` cache, recomputing it from the event log on a miss.
-    #[oai(path = "/matches/:match_id/live", method = "get")]
-    async fn get_live_score(
+    /// The incremental fast path for an append, either sport: applies just
+    /// the newly-appended events to the persisted checkpoint, rather than
+    /// refolding the whole log. Returns `None` (meaning "fall back to a full
+    /// refold") when there's no usable checkpoint to build on — missing,
+    /// unparseable, or not caught up to exactly the start of this batch (a
+    /// correction landing between the last append and this one, or the very
+    /// first event this match has ever recorded).
+    async fn apply_live_events_incrementally(
         &self,
-        Data(dao): Data<&dao::Dao>,
-        AuthSchema(_jwt_data): AuthSchema,
-        Path(match_id): Path<String>,
-    ) -> Result<GetLiveScoreResponse> {
-        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
-            Some(a) => a,
-            None => {
-                return Ok(GetLiveScoreResponse::NotFound(PlainText(
-                    "match not found".into(),
-                )));
-            }
+        dao: &dao::Dao,
+        match_id: &str,
+        sport: &str,
+        format: Option<&dao::records::MatchFormatRecord>,
+        new_events: &[NewLiveEventInput],
+        expected_last_seq: u32,
+        new_last_seq: u32,
+    ) -> Result<Option<LiveScoreSnapshot>> {
+        let Some(record) = dao
+            .get_match_detailed_score(match_id, sport)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(None);
+        };
+        if record.last_seq != Some(expected_last_seq) {
+            return Ok(None);
+        }
+        let Some(mut ds) = detailed_score_from_record(&record) else {
+            return Ok(None);
         };
 
-        if let Some(cached) = dao.get_live_state(&match_id).await.map_err(dao_internal)?
-            && let Ok(state) =
-                poem_openapi::types::ParseFromJSON::parse_from_json(Some(cached.state))
-        {
-            return Ok(GetLiveScoreResponse::State(Json(LiveScoreSnapshot {
-                last_seq: cached.last_seq,
-                state,
-            })));
-            // Otherwise fall through to a full recompute — it's just a
-            // cache, never trusted blindly if it's somehow unparseable.
+        match &mut ds {
+            DetailedScore::Cricket(detail) => {
+                let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) =
+                    mapping::cricket_format_args(format);
+                for e in new_events {
+                    let LiveEventInput::Cricket(event) = &e.event else {
+                        // Sport mismatch is already rejected earlier in
+                        // `append_live_events`; unreachable here in practice.
+                        return Ok(None);
+                    };
+                    detail.apply_event(
+                        event,
+                        balls_per_over,
+                        wide_is_extra_ball,
+                        no_ball_is_extra_ball,
+                    );
+                }
+            }
+            DetailedScore::Football(detail) => {
+                for e in new_events {
+                    let LiveEventInput::Football(event) = &e.event else {
+                        return Ok(None);
+                    };
+                    detail.apply_event(e.occurred_at, event);
+                }
+            }
         }
 
-        match self
-            .recompute_live_state(
-                dao,
-                &match_id,
-                &agg.match_.match_type,
-                agg.match_.format.as_ref(),
-            )
-            .await?
-        {
-            Some(snapshot) => Ok(GetLiveScoreResponse::State(Json(snapshot))),
-            None => Ok(GetLiveScoreResponse::NotFound(PlainText(
-                "match has no live events recorded yet".into(),
-            ))),
-        }
+        self.persist_detailed_score(dao, match_id, &ds, Some(new_last_seq))
+            .await;
+
+        Ok(Some(LiveScoreSnapshot {
+            last_seq: new_last_seq,
+            detail: ds,
+        }))
     }
 
-    /// The raw live event log, in order — for reconstructing the full
-    /// scorecard client-side or for the scorer's own delete/amend picker. Not
-    /// paginated: a single match's log is small (low hundreds of events at
-    /// most).
+    /// The raw live event log, oldest first — for reconstructing the full
+    /// scorecard client-side (see `inningsDeliveriesFromEvents`, used by a
+    /// completed match's run-progression graph) or for the scorer's own
+    /// delete/amend picker. Paginated: a full multi-innings, unlimited-overs
+    /// match can run to thousands of events, which is fine for the
+    /// per-item-safe log itself but not something to ship as one response.
     #[oai(path = "/matches/:match_id/live/events", method = "get")]
     async fn list_live_events(
         &self,
         Data(dao): Data<&dao::Dao>,
         AuthSchema(_jwt_data): AuthSchema,
         Path(match_id): Path<String>,
+        /// Opaque cursor from the previous page's `next_cursor`. Omit for the first page.
+        Query(cursor): Query<Option<String>>,
+        /// Maximum number of items to return (defaults to 20, capped at 50).
+        Query(limit): Query<Option<u32>>,
     ) -> Result<ListLiveEventsResponse> {
         if dao
             .get_match(&match_id)
@@ -2417,19 +2495,25 @@ impl Api {
             )));
         }
 
-        let records = dao
-            .list_live_events(&match_id)
+        let page = dao
+            .list_live_events_page(&match_id, cursor.as_deref(), page_limit(limit))
             .await
             .map_err(dao_internal)?;
-        let events: Vec<LiveEvent> = records.iter().map(live_event_from_record).collect();
-        Ok(ListLiveEventsResponse::Events(Json(events)))
+        let items: Vec<LiveEvent> = page.items.iter().map(live_event_from_record).collect();
+        Ok(ListLiveEventsResponse::Events(Json(LiveEventPage {
+            items,
+            next_cursor: page.next_cursor,
+        })))
     }
 
-    /// Delete a single live event outright — "this never happened" (a
-    /// duplicate, a wrong-match entry). History is genuinely removed, not
-    /// marked; the returned state reflects the log as if it had never been
-    /// recorded (e.g. deleting a wrongly-placed innings boundary re-flows the
-    /// surrounding deliveries back into one innings automatically).
+    /// Delete a single live event outright — but only the current tip
+    /// ("undo the last thing I recorded"). An arbitrary-position delete
+    /// would need real conflict resolution to reconcile against a device's
+    /// own offline queue (see `live_score`'s module docs); undoing only the
+    /// tip doesn't, since there's nothing downstream of it that could have
+    /// been built on the thing being removed. History is genuinely removed,
+    /// not marked; the returned detail reflects the log as if the event had
+    /// never been recorded.
     #[oai(path = "/matches/:match_id/live/events/:seq", method = "delete")]
     async fn delete_live_event(
         &self,
@@ -2450,6 +2534,12 @@ impl Api {
             }
         };
 
+        if seq != agg.match_.live_seq {
+            return Ok(DeleteLiveEventResponse::ValidationError(PlainText(
+                "only the most recently recorded event can be undone".into(),
+            )));
+        }
+
         match dao.delete_live_event(&match_id, seq).await {
             Ok(()) => {}
             Err(dao::DaoError::NotFound(_)) => {
@@ -2461,7 +2551,7 @@ impl Api {
         }
 
         match self
-            .recompute_live_state(
+            .derive_live_snapshot(
                 dao,
                 &match_id,
                 &agg.match_.match_type,
@@ -2479,10 +2569,11 @@ impl Api {
         }
     }
 
-    /// Overwrite a single live event's content in place — "this happened,
-    /// but I recorded the wrong facts" (wrong bowler, wrong runs, wrong
-    /// dismissal). Keeps its position in the log; can even change kind (e.g.
-    /// "that wasn't a goal, it was a card").
+    /// Amending an event in place isn't supported: it would need real
+    /// conflict resolution to reconcile against a device's own offline
+    /// queue, the way appends and tip-only deletes don't. The correction
+    /// path for "recorded the wrong facts" is delete-and-reappend, currently
+    /// restricted to the tip — see `delete_live_event`.
     #[oai(path = "/matches/:match_id/live/events/:seq", method = "patch")]
     async fn amend_live_event(
         &self,
@@ -2493,59 +2584,23 @@ impl Api {
         input: Json<LiveEventInput>,
     ) -> Result<AmendLiveEventResponse> {
         self.require_uid(dao, &jwt_data).await?;
-        let input = input.0;
-        info!("Amending live event {seq} on match {match_id}");
-
-        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
-            Some(a) => a,
-            None => {
-                return Ok(AmendLiveEventResponse::NotFound(PlainText(
-                    "match not found".into(),
-                )));
-            }
-        };
-
-        let tag = mapping::live_event_sport_tag(&input);
-        if tag != agg.match_.match_type {
-            return Ok(AmendLiveEventResponse::ValidationError(PlainText(format!(
-                "event has sport `{tag}` but match is `{}`",
-                agg.match_.match_type
-            ))));
-        }
-
-        let payload = mapping::live_event_input_to_record(&input);
-        match dao.amend_live_event(&match_id, seq, &payload).await {
-            Ok(()) => {}
-            Err(dao::DaoError::NotFound(_)) => {
-                return Ok(AmendLiveEventResponse::NotFound(PlainText(
-                    "live event not found".into(),
-                )));
-            }
-            Err(e) => return Err(dao_internal(e)),
-        }
-
-        match self
-            .recompute_live_state(
-                dao,
-                &match_id,
-                &agg.match_.match_type,
-                agg.match_.format.as_ref(),
-            )
-            .await?
-        {
-            Some(snapshot) => Ok(AmendLiveEventResponse::Ok(Json(snapshot))),
-            None => Ok(AmendLiveEventResponse::ValidationError(PlainText(format!(
-                "sport `{}` does not support live scoring",
-                agg.match_.match_type
-            )))),
-        }
+        let _ = (match_id, seq, input);
+        Ok(AmendLiveEventResponse::ValidationError(PlainText(
+            "amending a live event in place isn't supported; delete and re-append instead \
+             (only the most recently recorded event can be deleted)"
+                .into(),
+        )))
     }
 
-    /// Re-derives the live state from the full event log and refreshes the
-    /// `#LIVESTATE` cache. The cache write is best-effort — it's always
-    /// safely recomputable, so a failure here doesn't fail the caller's
-    /// request. Returns `None` if `sport` doesn't support live scoring.
-    async fn recompute_live_state(
+    /// Derives the current detail by folding the full event log — the slow
+    /// path: bootstrapping a match's first detailed score, recovering from a
+    /// missing or unparseable persisted record, and rebuilding after an undo
+    /// (removing the tip isn't a single incremental step the way appending
+    /// is — see `apply_live_events_incrementally` for that fast path).
+    /// Persists the result so subsequent reads and the next incremental
+    /// append have a fresh checkpoint to build on. Returns `None` if `sport`
+    /// doesn't support live scoring.
+    async fn derive_live_snapshot(
         &self,
         dao: &dao::Dao,
         match_id: &str,
@@ -2555,27 +2610,31 @@ impl Api {
         let records = dao.list_live_events(match_id).await.map_err(dao_internal)?;
         let last_seq = records.iter().map(|r| r.seq).max().unwrap_or(0);
 
-        let Some(state) = derive_live_score_state(sport, &records, format) else {
+        let Some(detail) = derive_live_detail(sport, &records, format) else {
             return Ok(None);
         };
 
-        let state_json =
-            poem_openapi::types::ToJSON::to_json(&state).unwrap_or(serde_json::Value::Null);
-        if let Err(e) = dao
-            .put_live_state(
-                match_id,
-                &dao::records::LiveStateRecord {
-                    sport: sport.to_string(),
-                    state: state_json,
-                    last_seq,
-                },
-            )
-            .await
-        {
-            error!("Failed to refresh live-state cache for match {match_id}: {e}");
-        }
+        self.persist_detailed_score(dao, match_id, &detail, Some(last_seq))
+            .await;
 
-        Ok(Some(LiveScoreSnapshot { last_seq, state }))
+        Ok(Some(LiveScoreSnapshot { last_seq, detail }))
+    }
+
+    /// Best-effort persisted-record write, shared by the incremental append
+    /// path and the full-refold path — never fails the caller's request;
+    /// the record is always safely recomputable from the event log if this
+    /// write is lost or the record goes stale.
+    async fn persist_detailed_score(
+        &self,
+        dao: &dao::Dao,
+        match_id: &str,
+        ds: &DetailedScore,
+        last_seq: Option<u32>,
+    ) {
+        let record = detailed_score_to_record(ds, last_seq);
+        if let Err(e) = dao.put_match_detailed_score(match_id, &record).await {
+            error!("Failed to persist detailed score for match {match_id}: {e}");
+        }
     }
 
     #[oai(path = "/matches/:match_id/score-submissions", method = "get")]
@@ -4473,40 +4532,54 @@ fn mock_match(id: String) -> Match {
 /// Builds a mock football detailed score matching the mock match's 3-1 result.
 fn mock_football_detailed_score() -> DetailedScore {
     DetailedScore::Football(FootballDetail {
-        events: vec![
-            FootballEvent {
-                kind: FootballEventKind::Goal,
+        score: vec![
+            FootballSideGoals {
                 side_id: String::from("side_red"),
-                minute: Some(12),
-                player_id: Some(String::from("player_red_1")),
-                assist_player_id: Some(String::from("player_red_2")),
-                substituted_player_id: None,
+                goals: 3,
             },
-            FootballEvent {
-                kind: FootballEventKind::Goal,
+            FootballSideGoals {
                 side_id: String::from("side_blue"),
-                minute: Some(34),
-                player_id: Some(String::from("player_blue_1")),
-                assist_player_id: None,
-                substituted_player_id: None,
-            },
-            FootballEvent {
-                kind: FootballEventKind::Goal,
-                side_id: String::from("side_red"),
-                minute: Some(58),
-                player_id: Some(String::from("player_red_2")),
-                assist_player_id: Some(String::from("player_red_1")),
-                substituted_player_id: None,
-            },
-            FootballEvent {
-                kind: FootballEventKind::Penalty,
-                side_id: String::from("side_red"),
-                minute: Some(81),
-                player_id: Some(String::from("player_red_1")),
-                assist_player_id: None,
-                substituted_player_id: None,
+                goals: 1,
             },
         ],
+        goals: vec![
+            FootballGoalEvent {
+                side_id: String::from("side_red"),
+                scorer_player_id: Some(String::from("player_red_1")),
+                assist_player_id: Some(String::from("player_red_2")),
+                own_goal: false,
+                penalty: false,
+                minute: Some(12),
+            },
+            FootballGoalEvent {
+                side_id: String::from("side_blue"),
+                scorer_player_id: Some(String::from("player_blue_1")),
+                assist_player_id: None,
+                own_goal: false,
+                penalty: false,
+                minute: Some(34),
+            },
+            FootballGoalEvent {
+                side_id: String::from("side_red"),
+                scorer_player_id: Some(String::from("player_red_2")),
+                assist_player_id: Some(String::from("player_red_1")),
+                own_goal: false,
+                penalty: false,
+                minute: Some(58),
+            },
+            FootballGoalEvent {
+                side_id: String::from("side_red"),
+                scorer_player_id: Some(String::from("player_red_1")),
+                assist_player_id: None,
+                own_goal: false,
+                penalty: true,
+                minute: Some(81),
+            },
+        ],
+        cards: vec![],
+        substitutions: vec![],
+        period: Some(FootballPeriod::FullTime),
+        period_times: std::collections::HashMap::new(),
     })
 }
 

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
@@ -10,7 +11,16 @@ import {
   type MatchFormat,
 } from '@/lib/matchFormat'
 
-/** A labelled number field, small enough to sit a few to a row. */
+/**
+ * A labelled number field, small enough to sit a few to a row.
+ *
+ * Keeps its own text buffer instead of rendering `value` directly: for
+ * required fields, the caller's `onChange` immediately falls back to a
+ * default when passed `undefined`, which would otherwise re-fill the input
+ * on every keystroke and make it impossible to clear before typing a
+ * replacement. The buffer lets the field sit empty while being edited and
+ * only reconciles with the caller (defaulting if still empty) on blur.
+ */
 function NumberField({
   label,
   value,
@@ -24,6 +34,12 @@ function NumberField({
   min?: number
   placeholder?: string
 }) {
+  const [text, setText] = useState(value?.toString() ?? '')
+
+  useEffect(() => {
+    setText(value?.toString() ?? '')
+  }, [value])
+
   return (
     <div className="flex flex-col gap-1">
       <Label className="text-xs text-muted-foreground">{label}</Label>
@@ -31,11 +47,15 @@ function NumberField({
         type="number"
         min={min}
         inputMode="numeric"
-        value={value ?? ''}
+        value={text}
         placeholder={placeholder}
         onChange={(e) => {
+          setText(e.target.value)
           const n = Number(e.target.value)
-          onChange(e.target.value === '' || !Number.isFinite(n) ? undefined : n)
+          if (e.target.value !== '' && Number.isFinite(n)) onChange(n)
+        }}
+        onBlur={() => {
+          if (text === '') onChange(undefined)
         }}
       />
     </div>

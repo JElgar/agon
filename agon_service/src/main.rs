@@ -2338,7 +2338,7 @@ impl Api {
         }
 
         match self
-            .recompute_live_state(dao, &match_id, &sport, agg.match_.format.as_ref())
+            .derive_live_snapshot(dao, &match_id, &sport, agg.match_.format.as_ref())
             .await?
         {
             Some(snapshot) => Ok(AppendLiveEventsResponse::Ok(Json(snapshot))),
@@ -2349,8 +2349,10 @@ impl Api {
     }
 
     /// The current derived live-scoring state (score/clock/scorecard so
-    /// far), for a feed card or the scorer's own view to poll. Served from
-    /// the `#LIVESTATE` cache, recomputing it from the event log on a miss.
+    /// far), for a feed card or the scorer's own view to poll. Derived fresh
+    /// from the event log on every call — no separate cache to go stale or
+    /// risk a size cap of its own; folding the log is cheap enough not to
+    /// need one (see `agon_core::dao::live_score_ops`).
     #[oai(path = "/matches/:match_id/live", method = "get")]
     async fn get_live_score(
         &self,
@@ -2367,20 +2369,8 @@ impl Api {
             }
         };
 
-        if let Some(cached) = dao.get_live_state(&match_id).await.map_err(dao_internal)?
-            && let Ok(state) =
-                poem_openapi::types::ParseFromJSON::parse_from_json(Some(cached.state))
-        {
-            return Ok(GetLiveScoreResponse::State(Json(LiveScoreSnapshot {
-                last_seq: cached.last_seq,
-                state,
-            })));
-            // Otherwise fall through to a full recompute — it's just a
-            // cache, never trusted blindly if it's somehow unparseable.
-        }
-
         match self
-            .recompute_live_state(
+            .derive_live_snapshot(
                 dao,
                 &match_id,
                 &agg.match_.match_type,
@@ -2396,9 +2386,13 @@ impl Api {
     }
 
     /// The raw live event log, in order — for reconstructing the full
-    /// scorecard client-side or for the scorer's own delete/amend picker. Not
-    /// paginated: a single match's log is small (low hundreds of events at
-    /// most).
+    /// scorecard client-side (see `inningsDeliveriesFromEvents`, used by a
+    /// completed match's run-progression graph) or for the scorer's own
+    /// delete/amend picker. Not paginated at this level: the DAO already
+    /// drains every underlying query page, and a match's log, however long,
+    /// is many small items rather than one large one, so there's no
+    /// per-request size cap being worked around here — just none of the
+    /// usual reasons to add a cursor.
     #[oai(path = "/matches/:match_id/live/events", method = "get")]
     async fn list_live_events(
         &self,
@@ -2461,7 +2455,7 @@ impl Api {
         }
 
         match self
-            .recompute_live_state(
+            .derive_live_snapshot(
                 dao,
                 &match_id,
                 &agg.match_.match_type,
@@ -2525,7 +2519,7 @@ impl Api {
         }
 
         match self
-            .recompute_live_state(
+            .derive_live_snapshot(
                 dao,
                 &match_id,
                 &agg.match_.match_type,
@@ -2541,11 +2535,10 @@ impl Api {
         }
     }
 
-    /// Re-derives the live state from the full event log and refreshes the
-    /// `#LIVESTATE` cache. The cache write is best-effort — it's always
-    /// safely recomputable, so a failure here doesn't fail the caller's
-    /// request. Returns `None` if `sport` doesn't support live scoring.
-    async fn recompute_live_state(
+    /// Derives the current live state by folding the full event log — no
+    /// cache involved (see `agon_core::dao::live_score_ops`'s module docs).
+    /// Returns `None` if `sport` doesn't support live scoring.
+    async fn derive_live_snapshot(
         &self,
         dao: &dao::Dao,
         match_id: &str,
@@ -2558,22 +2551,6 @@ impl Api {
         let Some(state) = derive_live_score_state(sport, &records, format) else {
             return Ok(None);
         };
-
-        let state_json =
-            poem_openapi::types::ToJSON::to_json(&state).unwrap_or(serde_json::Value::Null);
-        if let Err(e) = dao
-            .put_live_state(
-                match_id,
-                &dao::records::LiveStateRecord {
-                    sport: sport.to_string(),
-                    state: state_json,
-                    last_seq,
-                },
-            )
-            .await
-        {
-            error!("Failed to refresh live-state cache for match {match_id}: {e}");
-        }
 
         Ok(Some(LiveScoreSnapshot { last_seq, state }))
     }

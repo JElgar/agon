@@ -166,15 +166,16 @@ pub fn derive_state(
     // Only the last innings — the one actually open, or just-finished if the
     // match is between innings — needs its ball-by-ball log kept: it's the
     // only one the live view (the "this over" row, next-ball context) ever
-    // reads. Earlier innings in this same match only need their totals here,
-    // which keeps this whole state (recomputed and cached as one record on
-    // every single delivery — see `put_live_state`) bounded to roughly one
-    // innings' worth of balls rather than growing with the match's full
-    // history. A finished match's complete run-progression graph reads the
-    // raw event log directly instead of this cache (see
+    // reads, both for `GET /live` and for a device folding its own offline
+    // queue the same way. Earlier innings in this same match only need their
+    // totals here, which keeps every `GET /live`/append response (this is
+    // derived fresh on each one — see `derive_live_snapshot`, no cache
+    // involved) bounded to roughly one innings' worth of balls rather than
+    // the match's full history. A finished match's complete run-progression
+    // graph instead reads the raw event log directly (see
     // `agon_ui/src/lib/cricketScore.ts`'s `inningsDeliveriesFromEvents`),
-    // since that log has no such ceiling — it's one item per ball, not one
-    // item per match.
+    // which has no such reason to bound — one item per ball, not one item
+    // (or one response) per match.
     if let Some(last) = innings.len().checked_sub(1) {
         for (i, inn) in innings.iter_mut().enumerate() {
             if i != last {

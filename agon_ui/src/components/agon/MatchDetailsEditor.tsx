@@ -6,17 +6,23 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { isoToDateTimeLocal } from '@/lib/datetime'
+import { MultiImageUploadField } from '@/components/agon/MultiImageUploadField'
 
 type Match = components['schemas']['Match']
 
 /**
- * Inline editor for a match's metadata — name, description, and start time —
- * shown in place of the details card when a participant taps "Edit". Saves via
- * `PATCH /matches/{id}` (only the changed fields are sent) and, on success,
- * refreshes the match and feed then closes back to the read-only card.
+ * Inline editor for a match's metadata — name, description, start time, and
+ * header photos — shown in place of the details card when a participant taps
+ * "Edit". Saves via `PATCH /matches/{id}` (only the changed fields are sent)
+ * and, on success, refreshes the match and feed then closes back to the
+ * read-only card.
  *
  * Roster and result are edited elsewhere (invite control, result editor), so
- * this deliberately covers just the descriptive fields.
+ * this deliberately covers just the descriptive fields plus photos — useful
+ * once a match is complete and there are photos from the game to add, since
+ * `header_photos` on the match only carries served URLs (no asset id), the
+ * newly-uploaded set here can't be merged with whatever's already attached —
+ * saving with new photos replaces the header images rather than appending.
  */
 export function MatchDetailsEditor({
   match,
@@ -30,6 +36,9 @@ export function MatchDetailsEditor({
   const [description, setDescription] = useState(match.description)
   // Local wall-clock for the datetime-local control, seeded from the stored UTC.
   const [startsAt, setStartsAt] = useState(isoToDateTimeLocal(match.starts_at))
+  // Newly-uploaded header photo asset ids. Empty until the field reports an
+  // upload, so a save with no photo changes never touches `header_photos`.
+  const [headerAssetIds, setHeaderAssetIds] = useState<string[]>([])
 
   const nameError = name.trim().length === 0 ? 'A match needs a name' : null
   const timeError = Number.isNaN(new Date(startsAt).getTime())
@@ -46,6 +55,7 @@ export function MatchDetailsEditor({
       if (description !== match.description) body.description = description
       const newIso = new Date(startsAt).toISOString()
       if (newIso !== match.starts_at) body.starts_at = newIso
+      if (headerAssetIds.length > 0) body.header_photo_asset_ids = headerAssetIds
 
       if (Object.keys(body).length === 0) return // nothing changed
 
@@ -110,6 +120,20 @@ export function MatchDetailsEditor({
         {timeError && (
           <p className="mt-1 text-xs text-destructive">{timeError}</p>
         )}
+      </div>
+
+      <div>
+        <Label className="text-xs text-muted-foreground">Photos</Label>
+        {match.header_photos.length > 0 && (
+          <p className="mt-1 text-xs text-muted-foreground">
+            Adding new photos replaces the current ones.
+          </p>
+        )}
+        <MultiImageUploadField
+          purpose="match_header"
+          onChange={setHeaderAssetIds}
+          className="mt-1"
+        />
       </div>
 
       {save.isError && (

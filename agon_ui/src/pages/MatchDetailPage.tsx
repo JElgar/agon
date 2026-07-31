@@ -48,6 +48,8 @@ type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
 type MatchPlayer = components['schemas']['MatchPlayer']
 
+/** Display label for a side: the server-resolved name (always present), or a
+ *  neutral fallback for the unlikely case it's missing. */
 function sideName(side: MatchSide | undefined, fallback: string): string {
   return side?.name?.trim() || fallback
 }

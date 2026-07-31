@@ -46,7 +46,8 @@ export interface MatchCardProps extends React.HTMLAttributes<HTMLDivElement> {
   currentUserId?: string
 }
 
-/** Display label for a side: its name, or a neutral fallback. */
+/** Display label for a side: the server-resolved name (always present), or a
+ *  neutral fallback for the unlikely case it's missing. */
 function sideName(side: MatchSide | undefined, fallback: string): string {
   return side?.name?.trim() || fallback
 }

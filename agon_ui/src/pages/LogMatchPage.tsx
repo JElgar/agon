@@ -303,10 +303,11 @@ export function LogMatchPage() {
       match_type: sport,
       // datetime-local is local wall-clock; convert to a UTC ISO instant.
       starts_at: new Date(startsAt).toISOString(),
-      sides: [
-        { client_id: SIDE_A, name: sideName(sideA, 'Your side') },
-        { client_id: SIDE_B, name: sideName(sideB, 'Opposition') },
-      ],
+      // No name is sent: the server resolves a display name per request
+      // (sole player's name, "Your side"/"Opposition", ...) instead, since a
+      // name fixed at creation time would be wrong once the roster changes or
+      // anyone but the creator views the match.
+      sides: [{ client_id: SIDE_A }, { client_id: SIDE_B }],
       invites: buildInvites(),
     }
 

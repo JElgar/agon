@@ -1553,14 +1553,16 @@ impl Api {
                     .map_err(dao_internal)?;
                 let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
                 sign_match_headers(assets, &mut m);
-                self.hydrate_match_player_profiles(dao, &mut m).await?;
                 built.push(m);
             }
         }
 
-        // Resolve every match's side names off one batch team-name lookup for
-        // the whole page, instead of a `batch_get_team_metas` round trip per
-        // match (see `hydrate_match`/`resolve_side_names`).
+        // Hydrate player profiles and resolve side names off one batch read
+        // each for the whole page, instead of a `batch_get_users` /
+        // `batch_get_team_metas` round trip per match (see
+        // `hydrate_match`/`resolve_side_names`).
+        let user_ids: Vec<String> = built.iter().flat_map(Self::player_user_ids).collect();
+        let user_records = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
         let team_ids: Vec<String> = built
             .iter()
             .flat_map(|m| m.sides.iter().filter_map(|s| s.team_id.clone()))
@@ -1569,6 +1571,7 @@ impl Api {
         let items = built
             .into_iter()
             .map(|mut m| {
+                Self::apply_player_profiles(&mut m, &user_records);
                 Self::resolve_side_names(&mut m, &uid, &team_names);
                 FeedItem::Match(m)
             })
@@ -1672,13 +1675,14 @@ impl Api {
                     .map_err(dao_internal)?;
                 let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
                 sign_match_headers(assets, &mut m);
-                self.hydrate_match_player_profiles(dao, &mut m).await?;
                 built.push(m);
             }
         }
 
-        // Resolve every match's side names off one batch team-name lookup for
-        // the whole page (see `hydrate_match`/`resolve_side_names`).
+        // Hydrate player profiles and resolve side names off one batch read
+        // each for the whole page (see `hydrate_match`/`resolve_side_names`).
+        let user_ids: Vec<String> = built.iter().flat_map(Self::player_user_ids).collect();
+        let user_records = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
         let team_ids: Vec<String> = built
             .iter()
             .flat_map(|m| m.sides.iter().filter_map(|s| s.team_id.clone()))
@@ -1687,6 +1691,7 @@ impl Api {
         let items = built
             .into_iter()
             .map(|mut m| {
+                Self::apply_player_profiles(&mut m, &user_records);
                 Self::resolve_side_names(&mut m, &caller_uid, &team_names);
                 m
             })
@@ -4165,21 +4170,41 @@ impl Api {
     }
 
     /// Fill in each `User` match player's `name`/`avatar_url` from their
-    /// account, via one batch read for the whole roster (external players
-    /// already carry their display name inline, so are left alone).
+    /// account, via one batch read for this match's own roster. For a whole
+    /// feed/list page, don't call this per match — collect every match's
+    /// player ids first and batch once instead (see `get_feed`/`list_matches`,
+    /// and `apply_player_profiles` for the pure per-match application step).
     async fn hydrate_match_player_profiles(&self, dao: &dao::Dao, m: &mut Match) -> Result<()> {
-        let ids: Vec<String> = m
-            .players
+        let ids = Self::player_user_ids(m);
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let records = dao.batch_get_users(&ids).await.map_err(dao_internal)?;
+        Self::apply_player_profiles(m, &records);
+        Ok(())
+    }
+
+    /// Every `User` match player's account id (external players carry their
+    /// name inline already, so aren't included).
+    fn player_user_ids(m: &Match) -> Vec<String> {
+        m.players
             .iter()
             .filter_map(|p| match &p.member {
                 Member::User(u) => Some(u.user_id.clone()),
                 Member::External(_) => None,
             })
-            .collect();
-        if ids.is_empty() {
-            return Ok(());
-        }
-        let records = dao.batch_get_users(&ids).await.map_err(dao_internal)?;
+            .collect()
+    }
+
+    /// Fill in each `User` match player's `name`/`avatar_url` from `records`
+    /// (keyed by user id, as returned by `batch_get_users`). Pure/sync — the
+    /// caller resolves `records`, either a single match's own roster
+    /// (`hydrate_match_player_profiles`) or one shared batch read across a
+    /// whole feed/list page (see `get_feed`/`list_matches`).
+    fn apply_player_profiles(
+        m: &mut Match,
+        records: &std::collections::HashMap<String, dao::records::UserRecord>,
+    ) {
         for player in &mut m.players {
             if let Member::User(u) = &mut player.member
                 && let Some(record) = records.get(&u.user_id)
@@ -4188,7 +4213,6 @@ impl Api {
                 u.avatar_url = record.profile_image_url.clone();
             }
         }
-        Ok(())
     }
 
     /// Hydrate player profiles, batch-resolve this match's own sides' team

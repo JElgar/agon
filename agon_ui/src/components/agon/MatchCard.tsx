@@ -18,7 +18,7 @@ import { CricketMatchBlock } from './live/CricketMatchBlock'
 import { CricketScoreBlock } from './CricketScoreBlock'
 import { LiveIndicator } from './live/LiveIndicator'
 import { useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
-import { footballDetailFrom } from '@/lib/liveScore'
+import { describeEvent, eventEmoji, footballDetailFrom, recentEvents } from '@/lib/liveScore'
 import {
   cricketDetailFrom,
   cricketProgressFromScore,
@@ -205,19 +205,29 @@ export function MatchCard({
 
   const isLiveSport = match.match_type === 'football' || match.match_type === 'cricket'
   const isCurrentlyLive = isLiveSport && match.status === 'in_progress'
+  // Fetched for completed matches too (not just while live) — a completed
+  // football match still needs its goal detail to show the scorer ticker
+  // below, it just no longer polls once the match is over.
   const detailedScore = useMatchDetailedScore(match.id, {
-    enabled: isCurrentlyLive,
-    refetchInterval: 20000,
+    enabled: isLiveSport && (match.status === 'in_progress' || match.status === 'completed'),
+    refetchInterval: isCurrentlyLive ? 20000 : undefined,
   })
-  // Gate on `isCurrentlyLive`, not just "did the fetch return something" —
-  // `detailedScore` is a react-query cache keyed only by match id, shared
-  // with `MatchDetailPage`, which fetches it for a *completed* match too (to
-  // show the finished scorecard). `enabled: false` only stops a new fetch
-  // here; it doesn't hide data another component already populated that
-  // cache entry with, so without this guard a card could keep rendering the
-  // live block/badge for a match that finished after the card last mounted.
-  const footballState = isCurrentlyLive ? footballDetailFrom(detailedScore.data) : null
+  // `footballState`/`cricketState` (which drive the live score header +
+  // pulsing LIVE badge) stay gated on `isCurrentlyLive`, not just "did the
+  // fetch return something" — `detailedScore` is a react-query cache keyed
+  // only by match id, shared with `MatchDetailPage`, which also fetches it
+  // for a completed match. Without this guard a card could keep rendering
+  // the live block/badge for a match that finished after the card last
+  // mounted. `footballDetail` itself (below) isn't gated the same way, so a
+  // finished match can still show its goal ticker.
+  const footballDetail = footballDetailFrom(detailedScore.data)
+  const footballState = isCurrentlyLive ? footballDetail : null
   const cricketState = isCurrentlyLive ? cricketDetailFrom(detailedScore.data) : null
+  // Recent goals/cards/subs for a finished football match, shown under the
+  // plain score box below (the live ticker in `LiveMatchBlock` only renders
+  // while `footballState` is set, i.e. while still in progress).
+  const finishedFootballEvents =
+    !isCurrentlyLive && footballDetail ? recentEvents(footballDetail, 3) : []
   const hasLiveState = !!footballState || !!cricketState
   // A cricket match's confirmed score carries its own per-innings detail once
   // it's been live-scored (`Score::Cricket`; see `finishMatch` in
@@ -333,6 +343,25 @@ export function MatchCard({
                     Set {i + 1} <span className="font-medium text-foreground">{s}</span>
                   </span>
                 ))}
+              </div>
+            )}
+            {finishedFootballEvents.length > 0 && (
+              <div className="mt-2.5 space-y-1 border-t pt-2">
+                {finishedFootballEvents.map((event, i) => {
+                  const isSideB = event.side_id === sideB?.id
+                  return (
+                    <p
+                      key={i}
+                      className={`flex items-baseline gap-1.5 truncate text-[11px] text-muted-foreground ${isSideB ? 'flex-row-reverse text-right' : ''}`}
+                    >
+                      <span aria-hidden>{eventEmoji(event.kind)}</span>
+                      {event.minute !== undefined && (
+                        <span className="font-medium text-foreground">{event.minute}'</span>
+                      )}
+                      <span className="truncate">{describeEvent(event, match)}</span>
+                    </p>
+                  )
+                })}
               </div>
             )}
           </div>

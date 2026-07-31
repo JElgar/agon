@@ -15,6 +15,7 @@ import { LiveMatchBlock } from '@/components/agon/live/LiveMatchBlock'
 import { CricketMatchBlock } from '@/components/agon/live/CricketMatchBlock'
 import { CricketScoreBlock } from '@/components/agon/CricketScoreBlock'
 import { CricketScorecard } from '@/components/agon/CricketScorecard'
+import { FootballScorecard } from '@/components/agon/FootballScorecard'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { useLiveEvents } from '@/hooks/useLiveScore'
 import { useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
@@ -143,7 +144,12 @@ function MatchDetail({
     refetchInterval: match.status === 'in_progress' ? 15000 : undefined,
   })
   const isCurrentlyLive = isLiveSport && match.status === 'in_progress'
-  const footballState = isCurrentlyLive ? footballDetailFrom(detailedScore.data) : null
+  // Unlike `footballState` below (which only drives the live score header
+  // while the match is in progress), this isn't gated on live status — it's
+  // what keeps the goal-by-goal breakdown visible on this page once the
+  // match is completed (see `FootballScorecard`).
+  const footballDetail = footballDetailFrom(detailedScore.data)
+  const footballState = isCurrentlyLive ? footballDetail : null
   const cricketState = isCurrentlyLive ? cricketDetailFrom(detailedScore.data) : null
   const hasLiveState = !!footballState || !!cricketState
   const cricketScore = scoreInfo ? cricketScoreFrom(scoreInfo.score) : null
@@ -322,6 +328,11 @@ function MatchDetail({
       {cricketInnings && cricketInnings.length > 0 && (
         <CricketScorecard match={match} innings={cricketInnings} />
       )}
+
+      {/* Football event timeline: goals/cards/subs, once there's detail
+          recorded (live-scored or entered directly) — stays visible after
+          the match finishes, unlike the live score header above. */}
+      {footballDetail && <FootballScorecard match={match} detail={footballDetail} />}
 
       {/* Invite more people (participants only). */}
       {canEdit && !cancelled && (

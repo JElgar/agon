@@ -266,12 +266,12 @@ struct MatchSide {
     /// the pick-from-squad UI). None = ad-hoc side with manually picked players.
     team_id: Option<String>,
     /// Display name for this side, resolved fresh on every response (see
-    /// `Api::hydrate_match`) — never the client-supplied value verbatim, and
-    /// never None in practice. Priority: the sole player's name if there's
-    /// exactly one, else the team's name, else a custom name the creator gave
-    /// an ad-hoc side, else "Your side"/"Opposition" relative to the caller,
-    /// else a neutral "Team A"/"Team B". Computed per-request rather than
-    /// stored so it can't go stale and "your side" always means the caller.
+    /// `Api::hydrate_match`) — never None in practice. Priority: the sole
+    /// player's name if there's exactly one, else a custom name the creator
+    /// gave the side, else the team's name, else "Your side"/"Opposition"
+    /// relative to the caller, else a neutral "Team A"/"Team B". Computed
+    /// per-request rather than stored so it can't go stale and "your side"
+    /// always means the caller.
     name: Option<String>,
 }
 
@@ -604,9 +604,10 @@ struct CreateMatchSideInput {
     /// invites and score entries to this side before real ids exist.
     client_id: String,
     team_id: Option<String>,
-    /// A custom name for this side. Only used when `team_id` is None — ignored
-    /// (stored as None) once a team is assigned, since the team is the source
-    /// of truth for that side's name.
+    /// A custom name for this side. Rejected (validation error) alongside a
+    /// `team_id` unless another side in the same request shares that team —
+    /// the team is normally the source of truth for the side's name, but two
+    /// sides sharing one team need a name each to be told apart.
     name: Option<String>,
 }
 
@@ -1696,6 +1697,27 @@ impl Api {
             )));
         }
 
+        // A side's name normally comes from its team, so a client-supplied
+        // name alongside a `team_id` is redundant — except when two sides
+        // share the *same* team (e.g. an intra-squad practice match), where
+        // the team name alone can't tell the sides apart and a name is the
+        // only way to distinguish them.
+        for side in &input.sides {
+            if side.team_id.is_none() || side.name.is_none() {
+                continue;
+            }
+            let team_shared = input
+                .sides
+                .iter()
+                .any(|other| other.client_id != side.client_id && other.team_id == side.team_id);
+            if !team_shared {
+                return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
+                    "side `{}` can't have both a name and a team unless another side shares that team",
+                    side.client_id
+                ))));
+            }
+        }
+
         // A supplied format must be for this match's own sport — a football
         // match can't carry cricket's overs-per-innings setting, say.
         if let Some(fmt) = &input.format {
@@ -1739,15 +1761,10 @@ impl Api {
             side_records.push(dao::records::MatchSideRecord {
                 side_id,
                 team_id: side.team_id.clone(),
-                // A side's display name comes from its team once one is assigned;
-                // ignore any client-supplied name in that case so it can't drift
-                // from the team's actual name. Ad-hoc (teamless) sides may still
-                // carry a client-chosen name.
-                name: if side.team_id.is_some() {
-                    None
-                } else {
-                    side.name.clone()
-                },
+                // Validated above: a name is only allowed here without a team,
+                // or alongside a team shared with another side (to tell the
+                // two apart) — never a lone team-assigned side.
+                name: side.name.clone(),
             });
         }
 
@@ -4143,13 +4160,14 @@ impl Api {
     }
 
     /// Hydrate player profiles, then resolve each side's display `name` for
-    /// this request: the sole player's name if there's exactly one, else the
-    /// assigned team's name, else a custom name the creator gave an ad-hoc
-    /// side, else a fallback relative to `viewer_uid` — "Your side" /
-    /// "Opposition" if they're actually playing in the match, else a neutral
-    /// "Team A" / "Team B" by side order. Resolved per-request rather than
-    /// stored, so a side's name can't go stale (team renamed, more players
-    /// added) and "your side" always reflects whoever is asking.
+    /// this request: the sole player's name if there's exactly one, else a
+    /// custom name the creator gave the side (an ad-hoc side, or one of two
+    /// sides sharing a team), else the assigned team's name, else a fallback
+    /// relative to `viewer_uid` — "Your side"/"Opposition" if they're
+    /// actually playing in the match, else a neutral "Team A"/"Team B" by
+    /// side order. Resolved per-request rather than stored, so a side's name
+    /// can't go stale (team renamed, more players added) and "your side"
+    /// always reflects whoever is asking.
     async fn hydrate_match(&self, dao: &dao::Dao, m: &mut Match, viewer_uid: &str) -> Result<()> {
         self.hydrate_match_player_profiles(dao, m).await?;
 
@@ -4187,16 +4205,26 @@ impl Api {
                 _ => None,
             };
 
+            let custom_name = side
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|n| !n.is_empty());
+
             side.name = Some(match sole_player_name {
                 Some(name) => name,
-                None => match &side.team_id {
-                    Some(team_id) => team_names
-                        .get(team_id)
-                        .cloned()
-                        .unwrap_or_else(|| "Team".to_string()),
-                    None => match side.name.as_deref().map(str::trim) {
-                        Some(name) if !name.is_empty() => name.to_string(),
-                        _ => match &viewer_side_id {
+                // A custom name (only ever set alongside a team when two
+                // sides share it — see the create-time validation) wins over
+                // the team's own name, since it's there specifically to tell
+                // those sides apart.
+                None => match custom_name {
+                    Some(name) => name.to_string(),
+                    None => match &side.team_id {
+                        Some(team_id) => team_names
+                            .get(team_id)
+                            .cloned()
+                            .unwrap_or_else(|| "Team".to_string()),
+                        None => match &viewer_side_id {
                             Some(vs) if vs == &side.id => "Your side".to_string(),
                             Some(_) => "Opposition".to_string(),
                             None if i == 0 => "Team A".to_string(),

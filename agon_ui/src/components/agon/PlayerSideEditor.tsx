@@ -30,6 +30,13 @@ export interface PlayerSideEditorProps {
   currentUserId?: string
   /** Ids already tagged on the *other* side, so we don't offer them twice. */
   excludeUserIds?: string[]
+  /** Optional custom name for this side (e.g. "The Wanderers"). Only offered
+   *  here because this flow has no way to assign a persistent team to a
+   *  side yet — once it does, this input should only show for a teamless
+   *  side, since the server rejects a name alongside a team (unless another
+   *  side shares that team). Omit both props to hide the field entirely. */
+  name?: string
+  onNameChange?: (name: string) => void
 }
 
 /** How long to wait after typing stops before hitting `/users/search`. */
@@ -48,6 +55,8 @@ export function PlayerSideEditor({
   onChange,
   currentUserId,
   excludeUserIds = [],
+  name,
+  onNameChange,
 }: PlayerSideEditorProps) {
   const [term, setTerm] = useState('')
   const [debounced, setDebounced] = useState('')
@@ -114,6 +123,17 @@ export function PlayerSideEditor({
       <p className="mb-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
         {title}
       </p>
+
+      {onNameChange && (
+        <input
+          type="text"
+          value={name ?? ''}
+          onChange={(e) => onNameChange(e.target.value)}
+          placeholder="Name this side (optional)"
+          maxLength={60}
+          className="mb-2 w-full rounded-md border bg-card px-2.5 py-1.5 text-sm outline-none placeholder:text-muted-foreground"
+        />
+      )}
 
       <div className="flex flex-col gap-1.5">
         {players.length === 0 && (

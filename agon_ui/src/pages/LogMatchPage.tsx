@@ -36,9 +36,12 @@ interface SetRow {
 /** Whether the match is upcoming (no score) or already played (with a score). */
 type MatchMode = 'scheduled' | 'completed'
 
-/** A display name for a side: the sole player's name, else a generic fallback. */
-function sideName(players: TaggedPlayer[], fallback: string): string {
-  return players.length === 1 ? players[0].name : fallback
+/** A display name for a side: the sole player's name, else the custom name
+ *  typed for it (if any), else a generic fallback — mirrors the server's
+ *  resolution order for this compose form's own preview text. */
+function sideName(players: TaggedPlayer[], customName: string, fallback: string): string {
+  if (players.length === 1) return players[0].name
+  return customName.trim() || fallback
 }
 
 /** Default scheduled time: the next whole hour, at least an hour from now. */
@@ -68,6 +71,12 @@ export function LogMatchPage() {
   const [name, setName] = useState('')
   const [sideA, setSideA] = useState<TaggedPlayer[]>([])
   const [sideB, setSideB] = useState<TaggedPlayer[]>([])
+  // Optional custom names for ad-hoc sides. No team-picker exists yet, so
+  // these are always offered — once one does, hide the field for a side with
+  // a team assigned (the server rejects a name alongside a team unless
+  // another side shares it).
+  const [sideAName, setSideAName] = useState('')
+  const [sideBName, setSideBName] = useState('')
 
   // Scheduled (upcoming, no score) vs Completed (already played, with a score).
   // The mode drives both whether the score section shows and how `starts_at` is
@@ -303,9 +312,14 @@ export function LogMatchPage() {
       match_type: sport,
       // datetime-local is local wall-clock; convert to a UTC ISO instant.
       starts_at: new Date(startsAt).toISOString(),
+      // A custom name is only sent if the user actually typed one — the
+      // server otherwise resolves a display name per request (sole player's
+      // name, "Your side"/"Opposition", ...), since a name fixed at creation
+      // time would be wrong once the roster changes or anyone but the
+      // creator views the match.
       sides: [
-        { client_id: SIDE_A, name: sideName(sideA, 'Your side') },
-        { client_id: SIDE_B, name: sideName(sideB, 'Opposition') },
+        { client_id: SIDE_A, name: sideAName.trim() || undefined },
+        { client_id: SIDE_B, name: sideBName.trim() || undefined },
       ],
       invites: buildInvites(),
     }
@@ -386,6 +400,8 @@ export function LogMatchPage() {
             onChange={setSideA}
             currentUserId={currentUserId}
             excludeUserIds={sideBUserIds}
+            name={sideAName}
+            onNameChange={setSideAName}
           />
           <div className="flex items-center justify-center">
             <span className="rounded-full border border-primary/30 bg-accent px-3 py-0.5 text-[11px] font-medium text-primary">
@@ -399,6 +415,8 @@ export function LogMatchPage() {
             onChange={setSideB}
             currentUserId={currentUserId}
             excludeUserIds={sideAUserIds}
+            name={sideBName}
+            onNameChange={setSideBName}
           />
         </div>
       </Section>
@@ -450,10 +468,10 @@ export function LogMatchPage() {
           {setsPlayable && (
             <div className="flex flex-col gap-2">
               <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-center text-[11px] uppercase tracking-wider text-muted-foreground">
-                <span className="truncate text-left">{sideName(sideA, 'Your side')}</span>
+                <span className="truncate text-left">{sideName(sideA, sideAName, 'Your side')}</span>
                 <span>Set</span>
                 <span className="truncate text-right">
-                  {sideName(sideB, 'Opposition')}
+                  {sideName(sideB, sideBName, 'Opposition')}
                 </span>
               </div>
               {sets.map((row, i) => (
@@ -515,7 +533,7 @@ export function LogMatchPage() {
             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
               <div className="flex flex-col gap-1">
                 <span className="truncate text-center text-xs text-muted-foreground">
-                  {sideName(sideA, 'Your side')}
+                  {sideName(sideA, sideAName, 'Your side')}
                 </span>
                 <Input
                   type="number"
@@ -529,7 +547,7 @@ export function LogMatchPage() {
               <span className="pt-5 text-muted-foreground">–</span>
               <div className="flex flex-col gap-1">
                 <span className="truncate text-center text-xs text-muted-foreground">
-                  {sideName(sideB, 'Opposition')}
+                  {sideName(sideB, sideBName, 'Opposition')}
                 </span>
                 <Input
                   type="number"

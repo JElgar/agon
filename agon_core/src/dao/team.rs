@@ -1,13 +1,15 @@
 //! Team operations: create, get (meta + members aggregate), update, member
 //! add/remove, and "my teams".
 
+use std::collections::HashMap;
+
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 use aws_sdk_dynamodb::types::AttributeValue;
 
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
-use super::item::{ATTR_GSI1PK, ATTR_PK, ItemBuilder, from_item, item_sk, s, to_item};
+use super::item::{ATTR_GSI1PK, ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_sk, s, to_item};
 use super::keys::{Pk, Sk};
 use super::page::Page;
 use super::records::{TeamMemberRecord, TeamRecord};
@@ -82,6 +84,37 @@ impl Dao {
             Some(item) => Ok(Some(from_item(item)?)),
             None => Ok(None),
         }
+    }
+
+    /// Fetch multiple teams' meta (no members) in one batch read, keyed by
+    /// team id. An id with no team simply has no entry in the result — mirrors
+    /// `batch_get_users`. Used to resolve match-side team names for a whole
+    /// feed/list page in one round trip instead of one `get_team_meta` per
+    /// side.
+    pub async fn batch_get_team_metas(
+        &self,
+        team_ids: &[String],
+    ) -> DaoResult<HashMap<String, TeamRecord>> {
+        // De-dup — BatchGetItem rejects duplicate keys in one request.
+        let mut seen = std::collections::HashSet::new();
+        let keys: Vec<_> = team_ids
+            .iter()
+            .filter(|id| seen.insert((*id).clone()))
+            .map(|id| {
+                HashMap::from([
+                    (ATTR_PK.to_string(), s(Pk::Team(id.clone()).to_string())),
+                    (ATTR_SK.to_string(), s(Sk::Meta.to_string())),
+                ])
+            })
+            .collect();
+
+        let items = self.batch_get_all(keys, None).await?;
+        let mut out = HashMap::with_capacity(items.len());
+        for item in items {
+            let record: TeamRecord = from_item(item)?;
+            out.insert(record.id.clone(), record);
+        }
+        Ok(out)
     }
 
     /// Fetch the full team aggregate (meta + all members) in a single query on

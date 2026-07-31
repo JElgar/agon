@@ -265,7 +265,13 @@ struct MatchSide {
     /// Optional link to a persistent Team (drives "Kent vs Surrey" labelling and
     /// the pick-from-squad UI). None = ad-hoc side with manually picked players.
     team_id: Option<String>,
-    /// Display name — usually the team name, but works for ad-hoc sides too.
+    /// Display name for this side, resolved fresh on every response (see
+    /// `Api::hydrate_match`) — never None in practice. Priority: the sole
+    /// player's name if there's exactly one, else a custom name the creator
+    /// gave the side, else the team's name, else "Your side"/"Opposition"
+    /// relative to the caller, else a neutral "Team A"/"Team B". Computed
+    /// per-request rather than stored so it can't go stale and "your side"
+    /// always means the caller.
     name: Option<String>,
 }
 
@@ -598,6 +604,10 @@ struct CreateMatchSideInput {
     /// invites and score entries to this side before real ids exist.
     client_id: String,
     team_id: Option<String>,
+    /// A custom name for this side. Rejected (validation error) alongside a
+    /// `team_id` unless another side in the same request shares that team —
+    /// the team is normally the source of truth for the side's name, but two
+    /// sides sharing one team need a name each to be told apart.
     name: Option<String>,
 }
 
@@ -1525,7 +1535,7 @@ impl Api {
             Err(e) => return Err(dao_internal(e)),
         };
 
-        let mut items = Vec::with_capacity(page.items.len());
+        let mut built: Vec<Match> = Vec::with_capacity(page.items.len());
         for entry in &page.items {
             // Apply the optional date range on the entry's start time (cheap;
             // avoids hydrating matches outside the window).
@@ -1543,10 +1553,18 @@ impl Api {
                     .map_err(dao_internal)?;
                 let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
                 sign_match_headers(assets, &mut m);
-                self.hydrate_match_player_profiles(dao, &mut m).await?;
-                items.push(FeedItem::Match(m));
+                built.push(m);
             }
         }
+
+        // Hydrate the whole page's player profiles and side names in one
+        // batch read each, instead of per-match round trips.
+        let items = self
+            .hydrate_matches(dao, built, &uid)
+            .await?
+            .into_iter()
+            .map(FeedItem::Match)
+            .collect();
 
         Ok(GetFeedResponse::Feed(Json(FeedPage {
             items,
@@ -1637,7 +1655,7 @@ impl Api {
         // Hydrate each match from DynamoDB (the index carries only filter/sort
         // fields). `i_liked` needs the caller's like state; resolve per match.
         // TODO: BatchGet + batch the like checks (N+1 for now).
-        let mut items = Vec::with_capacity(hits.ids.len());
+        let mut built: Vec<Match> = Vec::with_capacity(hits.ids.len());
         for id in &hits.ids {
             if let Some(agg) = dao.get_match(id).await.map_err(dao_internal)? {
                 let i_liked = dao
@@ -1646,10 +1664,14 @@ impl Api {
                     .map_err(dao_internal)?;
                 let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
                 sign_match_headers(assets, &mut m);
-                self.hydrate_match_player_profiles(dao, &mut m).await?;
-                items.push(m);
+                built.push(m);
             }
         }
+
+        // Hydrate the whole page's player profiles and side names in one
+        // batch read each, instead of per-match round trips.
+        let items = self.hydrate_matches(dao, built, &caller_uid).await?;
+
         Ok(ListMatchesResponse::Matches(Json(MatchPage {
             items,
             next_cursor: search_cursor(hits.next_offset),
@@ -1685,6 +1707,27 @@ impl Api {
             return Ok(CreateMatchResponse::ValidationError(PlainText(
                 "a match must have at least two sides".to_string(),
             )));
+        }
+
+        // A side's name normally comes from its team, so a client-supplied
+        // name alongside a `team_id` is redundant — except when two sides
+        // share the *same* team (e.g. an intra-squad practice match), where
+        // the team name alone can't tell the sides apart and a name is the
+        // only way to distinguish them.
+        for side in &input.sides {
+            if side.team_id.is_none() || side.name.is_none() {
+                continue;
+            }
+            let team_shared = input
+                .sides
+                .iter()
+                .any(|other| other.client_id != side.client_id && other.team_id == side.team_id);
+            if !team_shared {
+                return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
+                    "side `{}` can't have both a name and a team unless another side shares that team",
+                    side.client_id
+                ))));
+            }
         }
 
         // A supplied format must be for this match's own sport — a football
@@ -1730,6 +1773,9 @@ impl Api {
             side_records.push(dao::records::MatchSideRecord {
                 side_id,
                 team_id: side.team_id.clone(),
+                // Validated above: a name is only allowed here without a team,
+                // or alongside a team shared with another side (to tell the
+                // two apart) — never a lone team-assigned side.
                 name: side.name.clone(),
             });
         }
@@ -1931,7 +1977,7 @@ impl Api {
 
         let mut m = match_from_records(&match_record, &side_records, &player_records, false);
         sign_match_headers(assets, &mut m);
-        self.hydrate_match_player_profiles(dao, &mut m).await?;
+        let m = self.hydrate_match(dao, m, &uid).await?;
         Ok(CreateMatchResponse::Match(Json(m)))
     }
 
@@ -1959,7 +2005,7 @@ impl Api {
             .map_err(dao_internal)?;
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
         sign_match_headers(assets, &mut m);
-        self.hydrate_match_player_profiles(dao, &mut m).await?;
+        let m = self.hydrate_match(dao, m, &uid).await?;
         Ok(GetMatchResponse::Match(Json(m)))
     }
 
@@ -2239,7 +2285,7 @@ impl Api {
             .map_err(dao_internal)?;
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
         sign_match_headers(assets, &mut m);
-        self.hydrate_match_player_profiles(dao, &mut m).await?;
+        let m = self.hydrate_match(dao, m, &uid).await?;
         Ok(UpdateMatchResponse::Match(Json(m)))
     }
 
@@ -4098,22 +4144,67 @@ impl Api {
         Ok(profiles)
     }
 
-    /// Fill in each `User` match player's `name`/`avatar_url` from their
-    /// account, via one batch read for the whole roster (external players
-    /// already carry their display name inline, so are left alone).
-    async fn hydrate_match_player_profiles(&self, dao: &dao::Dao, m: &mut Match) -> Result<()> {
-        let ids: Vec<String> = m
-            .players
+    /// Hydrate a single match — see `hydrate_matches`, which does the actual
+    /// work; this just wraps/unwraps the one-match case.
+    async fn hydrate_match(&self, dao: &dao::Dao, m: Match, viewer_uid: &str) -> Result<Match> {
+        Ok(self
+            .hydrate_matches(dao, vec![m], viewer_uid)
+            .await?
+            .remove(0))
+    }
+
+    /// Hydrate every match in `matches` for one response: fill in each `User`
+    /// player's `name`/`avatar_url` from their account, and resolve every
+    /// side's display `name` — the sole player's name if there's exactly one,
+    /// else a custom name the creator gave the side (an ad-hoc side, or one
+    /// of two sides sharing a team), else the assigned team's name, else a
+    /// fallback relative to `viewer_uid` — "Your side"/"Opposition" if
+    /// they're actually playing in the match, else a neutral "Team A"/
+    /// "Team B" by side order. Resolved per-request rather than stored, so a
+    /// side's name can't go stale and "your side" always reflects whoever is
+    /// asking. Player and team lookups are each batched exactly once across
+    /// every match passed in, however many that is — a feed/list page hands
+    /// over the whole page at once rather than calling this per match.
+    async fn hydrate_matches(
+        &self,
+        dao: &dao::Dao,
+        mut matches: Vec<Match>,
+        viewer_uid: &str,
+    ) -> Result<Vec<Match>> {
+        let user_ids: Vec<String> = matches.iter().flat_map(Self::player_user_ids).collect();
+        let user_records = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
+
+        let team_ids: Vec<String> = matches
+            .iter()
+            .flat_map(|m| m.sides.iter().filter_map(|s| s.team_id.clone()))
+            .collect();
+        let team_names = self.batch_team_names(dao, &team_ids).await?;
+
+        for m in &mut matches {
+            Self::apply_player_profiles(m, &user_records);
+            Self::resolve_side_names(m, viewer_uid, &team_names);
+        }
+        Ok(matches)
+    }
+
+    /// Every `User` match player's account id (external players carry their
+    /// name inline already, so aren't included).
+    fn player_user_ids(m: &Match) -> Vec<String> {
+        m.players
             .iter()
             .filter_map(|p| match &p.member {
                 Member::User(u) => Some(u.user_id.clone()),
                 Member::External(_) => None,
             })
-            .collect();
-        if ids.is_empty() {
-            return Ok(());
-        }
-        let records = dao.batch_get_users(&ids).await.map_err(dao_internal)?;
+            .collect()
+    }
+
+    /// Fill in each `User` match player's `name`/`avatar_url` from `records`
+    /// (keyed by user id, as returned by `batch_get_users`). Pure/sync.
+    fn apply_player_profiles(
+        m: &mut Match,
+        records: &std::collections::HashMap<String, dao::records::UserRecord>,
+    ) {
         for player in &mut m.players {
             if let Member::User(u) = &mut player.member
                 && let Some(record) = records.get(&u.user_id)
@@ -4122,7 +4213,83 @@ impl Api {
                 u.avatar_url = record.profile_image_url.clone();
             }
         }
-        Ok(())
+    }
+
+    /// Batch-fetch team names for the given ids (deduped, missing ids simply
+    /// absent from the result), keyed by team id.
+    async fn batch_team_names(
+        &self,
+        dao: &dao::Dao,
+        team_ids: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        if team_ids.is_empty() {
+            return Ok(Default::default());
+        }
+        let records = dao
+            .batch_get_team_metas(team_ids)
+            .await
+            .map_err(dao_internal)?;
+        Ok(records.into_iter().map(|(id, t)| (id, t.name)).collect())
+    }
+
+    /// Resolve one match's side names, given `team_names` already resolved by
+    /// the caller. Pure/sync — no DAO calls — so it's cheap to run per match
+    /// after a shared batch team-name lookup (see `hydrate_matches`).
+    fn resolve_side_names(
+        m: &mut Match,
+        viewer_uid: &str,
+        team_names: &std::collections::HashMap<String, String>,
+    ) {
+        // The side the viewer is actually on (by an invite they were placed
+        // on, accepted or not) — used for the "Your side"/"Opposition"
+        // fallback below.
+        let viewer_side_id = m.players.iter().find_map(|p| match &p.member {
+            Member::User(u) if u.user_id == viewer_uid => p.side_id.clone(),
+            _ => None,
+        });
+
+        for (i, side) in m.sides.iter_mut().enumerate() {
+            let mut on_side = m
+                .players
+                .iter()
+                .filter(|p| p.side_id.as_deref() == Some(side.id.as_str()));
+            let sole_player_name = match (on_side.next(), on_side.next()) {
+                (Some(p), None) => Some(match &p.member {
+                    Member::User(u) => u.name.clone(),
+                    Member::External(e) => e.display_name.clone(),
+                }),
+                _ => None,
+            };
+
+            let custom_name = side
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|n| !n.is_empty());
+
+            side.name = Some(match sole_player_name {
+                Some(name) => name,
+                // A custom name (only ever set alongside a team when two
+                // sides share it — see the create-time validation) wins over
+                // the team's own name, since it's there specifically to tell
+                // those sides apart.
+                None => match custom_name {
+                    Some(name) => name.to_string(),
+                    None => match &side.team_id {
+                        Some(team_id) => team_names
+                            .get(team_id)
+                            .cloned()
+                            .unwrap_or_else(|| "Team".to_string()),
+                        None => match &viewer_side_id {
+                            Some(vs) if vs == &side.id => "Your side".to_string(),
+                            Some(_) => "Opposition".to_string(),
+                            None if i == 0 => "Team A".to_string(),
+                            None => "Team B".to_string(),
+                        },
+                    },
+                },
+            });
+        }
     }
 
     /// Fetch a single user's public profile, or `None` if absent. Used to embed

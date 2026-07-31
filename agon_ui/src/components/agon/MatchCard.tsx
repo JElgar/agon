@@ -205,11 +205,15 @@ export function MatchCard({
 
   const isLiveSport = match.match_type === 'football' || match.match_type === 'cricket'
   const isCurrentlyLive = isLiveSport && match.status === 'in_progress'
-  // Fetched for completed matches too (not just while live) — a completed
-  // football match still needs its goal detail to show the scorer ticker
-  // below, it just no longer polls once the match is over.
+  // Fetched for a completed football match too (not just while live) — its
+  // confirmed score is just point totals, so the scorer ticker below needs
+  // the fetched detail to know who scored. Cricket doesn't need this: its
+  // confirmed `Score::Cricket` already carries the per-innings detail this
+  // card reads (`cricketScore` below), so completed cricket matches skip the
+  // fetch entirely rather than pulling data nothing here renders.
+  const isFinishedFootball = match.match_type === 'football' && match.status === 'completed'
   const detailedScore = useMatchDetailedScore(match.id, {
-    enabled: isLiveSport && (match.status === 'in_progress' || match.status === 'completed'),
+    enabled: isCurrentlyLive || isFinishedFootball,
     refetchInterval: isCurrentlyLive ? 20000 : undefined,
   })
   // `footballState`/`cricketState` (which drive the live score header +

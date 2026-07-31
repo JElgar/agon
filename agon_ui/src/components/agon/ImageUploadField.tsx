@@ -109,11 +109,7 @@ export function ImageUploadField({
           aria-label={label}
         >
           {shownUrl ? (
-            <img
-              src={shownUrl}
-              alt=""
-              className="size-full object-cover [dynamic-range-limit:standard]"
-            />
+            <img src={shownUrl} alt="" className="size-full object-cover" />
           ) : (
             <ImagePlus className="size-6" />
           )}

@@ -45,10 +45,7 @@ export function MatchHeaderCarousel({ photos, className }: MatchHeaderCarouselPr
       <img
         src={photos[0].image_url}
         alt=""
-        className={cn(
-          'h-40 w-full rounded-xl border object-cover [dynamic-range-limit:standard]',
-          className,
-        )}
+        className={cn('h-40 w-full rounded-xl border object-cover', className)}
         loading="lazy"
       />
     )
@@ -62,7 +59,7 @@ export function MatchHeaderCarousel({ photos, className }: MatchHeaderCarouselPr
             <img
               src={photo.image_url}
               alt=""
-              className="h-40 w-full rounded-xl border object-cover [dynamic-range-limit:standard]"
+              className="h-40 w-full rounded-xl border object-cover"
               loading="lazy"
             />
           </CarouselItem>

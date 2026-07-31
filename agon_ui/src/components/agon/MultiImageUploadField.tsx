@@ -254,7 +254,7 @@ function SortableImageTile({ item, onRemove }: { item: Item; onRemove: () => voi
       <img
         src={item.previewUrl}
         alt=""
-        className="size-full object-cover"
+        className="size-full object-cover [dynamic-range-limit:standard]"
         draggable={false}
       />
       {(item.status === 'uploading' || item.status === 'processing') && (

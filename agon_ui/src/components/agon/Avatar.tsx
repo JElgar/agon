@@ -57,7 +57,7 @@ export function Avatar({
         <img
           src={imageUrl}
           alt={name}
-          className="size-full object-cover"
+          className="size-full object-cover [dynamic-range-limit:standard]"
           loading="lazy"
         />
       ) : (

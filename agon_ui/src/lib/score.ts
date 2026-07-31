@@ -3,6 +3,16 @@ import type { components } from '@/types/api'
 type Match = components['schemas']['Match']
 type Score = components['schemas']['Score']
 type MatchSide = components['schemas']['MatchSide']
+type FootballGoalEvent = components['schemas']['FootballGoalEvent']
+
+/** A finished football match's goals, straight off its confirmed/pending
+ *  score — `null` for any other score type (including a football match
+ *  logged manually rather than live-scored, which degrades to `Simple`; see
+ *  `Score.Simple`'s doc comment). Lets a feed card show who scored without a
+ *  separate `/detailed-score` fetch once the match is over. */
+export function footballGoalsFromScore(score: Score): FootballGoalEvent[] | null {
+  return score.type === 'Football' ? score.goals : null
+}
 
 /** The score to display for a match: the confirmed result if present, else the
  *  pending (awaiting-confirmation) submission. `null` when no score exists yet. */
@@ -28,15 +38,22 @@ export function displayScore(
 
 /**
  * The headline number a side shows: for a Sets score it's the count of sets won
- * (across index-aligned entries); for a Simple score it's the points. Returns a
- * map of side id → headline value. A `Cricket` score has no single headline
- * number to show here — `CricketMatchBlock`/`CricketScoreBlock` render it
- * their own way — so it's an empty map, same as "no score yet".
+ * (across index-aligned entries); for a Simple score it's the points; for a
+ * Football score it's the goal count (each goal's `side_id` is already the
+ * side it counts for — including an own goal crediting the opponent — so a
+ * plain per-side count is the full tally). Returns a map of side id →
+ * headline value. A `Cricket` score has no single headline number to show
+ * here — `CricketMatchBlock`/`CricketScoreBlock` render it their own way —
+ * so it's an empty map, same as "no score yet".
  */
 export function headlineBySide(score: Score): Record<string, number> {
   const out: Record<string, number> = {}
   if (score.type === 'Simple') {
     for (const e of score.entries) out[e.side_id] = e.points
+    return out
+  }
+  if (score.type === 'Football') {
+    for (const g of score.goals) out[g.side_id] = (out[g.side_id] ?? 0) + 1
     return out
   }
   if (score.type === 'Cricket') return out

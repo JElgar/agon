@@ -1524,6 +1524,7 @@ fn simple_score_points(score: &models::Score) -> Vec<(String, i32)> {
             .collect(),
         models::Score::Sets(_) => panic!("expected a simple score"),
         models::Score::Cricket(_) => panic!("expected a simple score"),
+        models::Score::Football(_) => panic!("expected a simple score"),
     }
 }
 

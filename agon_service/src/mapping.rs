@@ -35,10 +35,11 @@ use crate::notification::{
 };
 use crate::team::{Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
-    Comment, ConfirmedScore, CricketScore, CricketScoreInnings, Location, Match, MatchPlayer,
-    MatchSide, MatchSocial, MatchStatus, MatchType, PendingScore, Photo, Score, ScoreConfirmation,
-    ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus, SetsScore,
-    SetsScoreEntry, SimpleScore, SimpleScoreEntry, UserProfile, UserSportStats,
+    Comment, ConfirmedScore, CricketScore, CricketScoreInnings, FootballScore, Location, Match,
+    MatchPlayer, MatchSide, MatchSocial, MatchStatus, MatchType, PendingScore, Photo, Score,
+    ScoreConfirmation, ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse,
+    ScoreSubmissionStatus, SetsScore, SetsScoreEntry, SimpleScore, SimpleScoreEntry, UserProfile,
+    UserSportStats,
 };
 use agon_core::dao::error::DaoError;
 use agon_core::dao::live_score_ops::NewLiveEvent;
@@ -204,6 +205,9 @@ pub fn score_from_record(rec: &ScoreRecord) -> Score {
                 })
                 .collect(),
         }),
+        ScoreRecord::Football { goals } => Score::Football(FootballScore {
+            goals: goals.iter().map(football_goal_event_from_record).collect(),
+        }),
     }
 }
 
@@ -256,6 +260,9 @@ pub fn score_to_record(score: &Score) -> ScoreRecord {
                     declared: i.declared,
                 })
                 .collect(),
+        },
+        Score::Football(s) => ScoreRecord::Football {
+            goals: s.goals.iter().map(football_goal_event_to_record).collect(),
         },
     }
 }
@@ -752,16 +759,36 @@ pub fn live_event_payload_from_record(rec: &LiveEventPayloadRecord) -> LiveEvent
 
 // ---- Football ---------------------------------------------------------
 
+/// Shared by the live-event mapping below and `score_to_record`'s `Football`
+/// arm — both carry the same `FootballGoalEvent`/`FootballGoalEventRecord`
+/// shape.
+fn football_goal_event_to_record(g: &FootballGoalEvent) -> FootballGoalEventRecord {
+    FootballGoalEventRecord {
+        side_id: g.side_id.clone(),
+        scorer_player_id: g.scorer_player_id.clone(),
+        assist_player_id: g.assist_player_id.clone(),
+        own_goal: g.own_goal,
+        penalty: g.penalty,
+        minute: g.minute,
+    }
+}
+
+fn football_goal_event_from_record(rec: &FootballGoalEventRecord) -> FootballGoalEvent {
+    FootballGoalEvent {
+        side_id: rec.side_id.clone(),
+        scorer_player_id: rec.scorer_player_id.clone(),
+        assist_player_id: rec.assist_player_id.clone(),
+        own_goal: rec.own_goal,
+        penalty: rec.penalty,
+        minute: rec.minute,
+    }
+}
+
 fn football_live_event_to_record(event: &FootballLiveEvent) -> FootballLiveEventRecord {
     match event {
-        FootballLiveEvent::Goal(g) => FootballLiveEventRecord::Goal(FootballGoalEventRecord {
-            side_id: g.side_id.clone(),
-            scorer_player_id: g.scorer_player_id.clone(),
-            assist_player_id: g.assist_player_id.clone(),
-            own_goal: g.own_goal,
-            penalty: g.penalty,
-            minute: g.minute,
-        }),
+        FootballLiveEvent::Goal(g) => {
+            FootballLiveEventRecord::Goal(football_goal_event_to_record(g))
+        }
         FootballLiveEvent::Card(c) => FootballLiveEventRecord::Card(FootballCardEventRecord {
             side_id: c.side_id.clone(),
             player_id: c.player_id.clone(),
@@ -807,14 +834,9 @@ fn football_live_event_to_record(event: &FootballLiveEvent) -> FootballLiveEvent
 
 fn football_live_event_from_record(rec: &FootballLiveEventRecord) -> FootballLiveEvent {
     match rec {
-        FootballLiveEventRecord::Goal(g) => FootballLiveEvent::Goal(FootballGoalEvent {
-            side_id: g.side_id.clone(),
-            scorer_player_id: g.scorer_player_id.clone(),
-            assist_player_id: g.assist_player_id.clone(),
-            own_goal: g.own_goal,
-            penalty: g.penalty,
-            minute: g.minute,
-        }),
+        FootballLiveEventRecord::Goal(g) => {
+            FootballLiveEvent::Goal(football_goal_event_from_record(g))
+        }
         FootballLiveEventRecord::Card(c) => FootballLiveEvent::Card(FootballCardEvent {
             side_id: c.side_id.clone(),
             player_id: c.player_id.clone(),
@@ -1426,6 +1448,26 @@ mod tests {
                             balls: 3,
                         },
                         declared: false,
+                    },
+                ],
+            }),
+            Score::Football(FootballScore {
+                goals: vec![
+                    FootballGoalEvent {
+                        side_id: "side_red".into(),
+                        scorer_player_id: Some("player_1".into()),
+                        assist_player_id: Some("player_2".into()),
+                        own_goal: false,
+                        penalty: false,
+                        minute: Some(23),
+                    },
+                    FootballGoalEvent {
+                        side_id: "side_blue".into(),
+                        scorer_player_id: None,
+                        assist_player_id: None,
+                        own_goal: true,
+                        penalty: false,
+                        minute: None,
                     },
                 ],
             }),

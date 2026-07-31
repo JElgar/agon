@@ -108,17 +108,18 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
   const [dialogKind, setDialogKind] = useState<EventKind | null>(null)
 
   // Concludes the match once it's decided (full-time, extra-time full-time,
-  // or the penalty shootout is done): submits the goal tally — normal time
-  // plus extra time, never shootout kicks — as a `Simple` score (the same
-  // shape `MatchResultEditor` writes) and marks the match `completed`, the
-  // way a manual "Add result" would — so it enters the normal confirmation
-  // flow rather than being auto-confirmed. Still level on goals falls back to
-  // the penalty shootout tally to pick a winner. No `detailed_score` here:
-  // the goals/cards/subs/period markers/shootout kicks recorded live are
-  // already persisted against the match as they happened. Reads
-  // `detailedScore.data` directly (rather than closing over the `state`
-  // computed below) so this hook can be declared before the loading early
-  // return, same as every other hook in this component.
+  // or the penalty shootout is done): submits the goals — normal time plus
+  // extra time, never shootout kicks — as a `Football` score (so the feed/
+  // detail page can show who scored without a separate `/detailed-score`
+  // fetch once the match is over — see `Score.Football`'s doc comment) and
+  // marks the match `completed`, the way a manual "Add result" would — so it
+  // enters the normal confirmation flow rather than being auto-confirmed.
+  // Still level on goals falls back to the penalty shootout tally to pick a
+  // winner. No `detailed_score` here: the goals/cards/subs/period markers/
+  // shootout kicks recorded live are already persisted against the match as
+  // they happened. Reads `detailedScore.data` directly (rather than closing
+  // over the `state` computed below) so this hook can be declared before the
+  // loading early return, same as every other hook in this component.
   const finishMatch = useMutation({
     mutationFn: async () => {
       const detail = footballDetailFrom(detailedScore.data)
@@ -129,11 +130,8 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
       const a = goalsFor(aId)
       const b = goalsFor(bId)
       const score = {
-        type: 'Simple',
-        entries: [
-          { side_id: aId, points: a },
-          { side_id: bId, points: b },
-        ],
+        type: 'Football',
+        goals: detail?.goals ?? [],
       } as unknown as UpdateMatchInput['score']
       const body: UpdateMatchInput = { score, status: 'completed' }
       if (a !== b) {

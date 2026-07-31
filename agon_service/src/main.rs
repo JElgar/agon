@@ -310,6 +310,13 @@ enum Score {
     /// the result margin ("won by 4 wickets" / "by 100 runs") — without a
     /// separate fetch of the match's live event log once it's over.
     Cricket(CricketScore),
+    /// Goals scored, produced by finishing a live-scored football match (see
+    /// `LiveScoringPage` client-side) — same technique as `Cricket` above:
+    /// carries enough to render the feed/detail goal ticker without a
+    /// separate `/detailed-score` fetch once the match is over. Cards and
+    /// substitutions aren't included; a client that wants those still fetches
+    /// `DetailedScore::Football`.
+    Football(FootballScore),
 }
 
 #[derive(Object)]
@@ -361,6 +368,15 @@ struct CricketScoreInnings {
     overs: Overs,
     /// Whether the innings was declared closed rather than bowled/timed out.
     declared: bool,
+}
+
+#[derive(Object)]
+struct FootballScore {
+    /// Every goal scored (normal + extra time; penalty-shootout kicks are
+    /// tracked separately and never appear here). Reuses
+    /// `detailed_score::football::FootballGoalEvent` verbatim — same shape
+    /// whether read from here or from `DetailedScore::Football`.
+    goals: Vec<FootballGoalEvent>,
 }
 
 /// The sport a match was played in. Determines the expected `Score`/
@@ -2120,6 +2136,7 @@ impl Api {
                     .iter()
                     .flat_map(|i| [i.batting_side_id.as_str(), i.bowling_side_id.as_str()])
                     .collect(),
+                Score::Football(s) => s.goals.iter().map(|g| g.side_id.as_str()).collect(),
             };
             if score_sides.iter().any(|sid| !valid_sides.contains(sid)) {
                 return Ok(UpdateMatchResponse::ValidationError(PlainText(
@@ -4362,6 +4379,20 @@ fn resolve_score_side_ids(
                 });
             }
             Some(Score::Cricket(CricketScore { innings }))
+        }
+        Score::Football(s) => {
+            let mut goals = Vec::with_capacity(s.goals.len());
+            for g in &s.goals {
+                goals.push(FootballGoalEvent {
+                    side_id: map(&g.side_id)?,
+                    scorer_player_id: g.scorer_player_id.clone(),
+                    assist_player_id: g.assist_player_id.clone(),
+                    own_goal: g.own_goal,
+                    penalty: g.penalty,
+                    minute: g.minute,
+                });
+            }
+            Some(Score::Football(FootballScore { goals }))
         }
     }
 }

@@ -3,7 +3,7 @@ import { memberName } from './members'
 
 export type FootballPeriod = components['schemas']['FootballPeriod']
 export type FootballDetail = components['schemas']['FootballDetail']
-type FootballGoalEvent = components['schemas']['FootballGoalEvent']
+export type FootballGoalEvent = components['schemas']['FootballGoalEvent']
 type FootballCardEvent = components['schemas']['FootballCardEvent']
 type DetailedScore = components['schemas']['DetailedScore']
 type Match = components['schemas']['Match']
@@ -41,18 +41,26 @@ function cardKind(c: FootballCardEvent): FootballEventKind {
   return c.color === 'yellow' ? 'yellow_card' : 'red_card'
 }
 
+/** Maps a bare goals list — either `FootballDetail.goals` or a finished
+ *  match's `Score.Football.goals` (see `footballGoalsFromScore`) — to event
+ *  views. Unsorted; callers order as needed (`eventsFromDetail` merges and
+ *  sorts alongside cards/subs, `recentGoalEvents` sorts standalone). */
+function goalEventsToViews(goals: FootballGoalEvent[]): FootballEventView[] {
+  return goals.map((g): FootballEventView => ({
+    kind: goalKind(g),
+    side_id: g.side_id,
+    minute: g.minute,
+    player_id: g.scorer_player_id,
+    assist_player_id: g.assist_player_id,
+  }))
+}
+
 /** All of a football detail's goals/cards/substitutions merged into one
  *  timeline, ordered by minute (undated events last — the scorer always
  *  fills in a minute in practice, so this only matters for edge cases). */
 export function eventsFromDetail(detail: FootballDetail): FootballEventView[] {
   const events: FootballEventView[] = [
-    ...detail.goals.map((g): FootballEventView => ({
-      kind: goalKind(g),
-      side_id: g.side_id,
-      minute: g.minute,
-      player_id: g.scorer_player_id,
-      assist_player_id: g.assist_player_id,
-    })),
+    ...goalEventsToViews(detail.goals),
     ...detail.cards.map((c): FootballEventView => ({
       kind: cardKind(c),
       side_id: c.side_id,
@@ -121,6 +129,18 @@ export function periodLabel(period: FootballPeriod): string {
 /** The most recent events first, capped to `limit` — for a mini-ticker. */
 export function recentEvents(detail: FootballDetail, limit: number): FootballEventView[] {
   return eventsFromDetail(detail).reverse().slice(0, limit)
+}
+
+/** The most recent goals first, capped to `limit` — for a finished match's
+ *  feed-card ticker, built straight from the goals embedded in its
+ *  `Score.Football` (see `footballGoalsFromScore`) rather than a full
+ *  `FootballDetail` fetch, which a completed match no longer needs just to
+ *  show who scored. */
+export function recentGoalEvents(goals: FootballGoalEvent[], limit: number): FootballEventView[] {
+  return goalEventsToViews(goals)
+    .sort((a, b) => (a.minute ?? Infinity) - (b.minute ?? Infinity))
+    .reverse()
+    .slice(0, limit)
 }
 
 /** Player display name for a member id, if it's on the roster. */

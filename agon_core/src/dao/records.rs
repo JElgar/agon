@@ -43,6 +43,9 @@ pub enum ScoreRecord {
     Cricket {
         innings: Vec<CricketScoreInningsRecord>,
     },
+    Football {
+        goals: Vec<FootballGoalEventRecord>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

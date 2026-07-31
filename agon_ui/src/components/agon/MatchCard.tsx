@@ -18,7 +18,7 @@ import { CricketMatchBlock } from './live/CricketMatchBlock'
 import { CricketScoreBlock } from './CricketScoreBlock'
 import { LiveIndicator } from './live/LiveIndicator'
 import { useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
-import { describeEvent, eventEmoji, footballDetailFrom, recentEvents } from '@/lib/liveScore'
+import { describeEvent, eventEmoji, footballDetailFrom, recentGoalEvents } from '@/lib/liveScore'
 import {
   cricketDetailFrom,
   cricketProgressFromScore,
@@ -28,6 +28,7 @@ import {
 import { cricketFormat } from '@/lib/matchFormat'
 import {
   displayScore,
+  footballGoalsFromScore,
   headlineBySide,
   headlineLabel,
   setLine,
@@ -205,33 +206,33 @@ export function MatchCard({
 
   const isLiveSport = match.match_type === 'football' || match.match_type === 'cricket'
   const isCurrentlyLive = isLiveSport && match.status === 'in_progress'
-  // Fetched for a completed football match too (not just while live) — its
-  // confirmed score is just point totals, so the scorer ticker below needs
-  // the fetched detail to know who scored. Cricket doesn't need this: its
-  // confirmed `Score::Cricket` already carries the per-innings detail this
-  // card reads (`cricketScore` below), so completed cricket matches skip the
-  // fetch entirely rather than pulling data nothing here renders.
-  const isFinishedFootball = match.match_type === 'football' && match.status === 'completed'
+  // Only fetched while live — a finished match doesn't need it. Football's
+  // confirmed/pending `Score.Football` already embeds its goals (see
+  // `footballGoalsFromScore`/`finishedFootballEvents` below), and cricket's
+  // confirmed `Score.Cricket` already embeds its per-innings detail
+  // (`cricketScore` below) — both produced by finishing a live-scored match
+  // (see `finishMatch` in `LiveScoringPage`/`CricketLiveScoringPage`), same
+  // technique as `MatchDetailPage`'s completed scorecards but without that
+  // page's extra `/detailed-score` fetch, which this compact card doesn't need.
   const detailedScore = useMatchDetailedScore(match.id, {
-    enabled: isCurrentlyLive || isFinishedFootball,
-    refetchInterval: isCurrentlyLive ? 20000 : undefined,
+    enabled: isCurrentlyLive,
+    refetchInterval: 20000,
   })
-  // `footballState`/`cricketState` (which drive the live score header +
-  // pulsing LIVE badge) stay gated on `isCurrentlyLive`, not just "did the
-  // fetch return something" — `detailedScore` is a react-query cache keyed
-  // only by match id, shared with `MatchDetailPage`, which also fetches it
-  // for a completed match. Without this guard a card could keep rendering
-  // the live block/badge for a match that finished after the card last
-  // mounted. `footballDetail` itself (below) isn't gated the same way, so a
-  // finished match can still show its goal ticker.
-  const footballDetail = footballDetailFrom(detailedScore.data)
-  const footballState = isCurrentlyLive ? footballDetail : null
+  // Gate on `isCurrentlyLive`, not just "did the fetch return something" —
+  // `detailedScore` is a react-query cache keyed only by match id, shared
+  // with `MatchDetailPage`, which fetches it for a *completed* match too (to
+  // show the finished scorecard). `enabled: false` only stops a new fetch
+  // here; it doesn't hide data another component already populated that
+  // cache entry with, so without this guard a card could keep rendering the
+  // live block/badge for a match that finished after the card last mounted.
+  const footballState = isCurrentlyLive ? footballDetailFrom(detailedScore.data) : null
   const cricketState = isCurrentlyLive ? cricketDetailFrom(detailedScore.data) : null
-  // Recent goals/cards/subs for a finished football match, shown under the
-  // plain score box below (the live ticker in `LiveMatchBlock` only renders
-  // while `footballState` is set, i.e. while still in progress).
-  const finishedFootballEvents =
-    !isCurrentlyLive && footballDetail ? recentEvents(footballDetail, 3) : []
+  // Recent goals for a finished football match, read straight off the
+  // confirmed/pending score (no fetch) — shown under the plain score box
+  // below (the live ticker in `LiveMatchBlock` only renders while
+  // `footballState` is set, i.e. while still in progress).
+  const finishedFootballGoals = scoreInfo && !isCurrentlyLive ? footballGoalsFromScore(scoreInfo.score) : null
+  const finishedFootballEvents = finishedFootballGoals ? recentGoalEvents(finishedFootballGoals, 3) : []
   const hasLiveState = !!footballState || !!cricketState
   // A cricket match's confirmed score carries its own per-innings detail once
   // it's been live-scored (`Score::Cricket`; see `finishMatch` in

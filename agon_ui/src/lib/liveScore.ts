@@ -5,7 +5,9 @@ export type FootballPeriod = components['schemas']['FootballPeriod']
 export type FootballDetail = components['schemas']['FootballDetail']
 export type FootballGoalEvent = components['schemas']['FootballGoalEvent']
 type FootballCardEvent = components['schemas']['FootballCardEvent']
+type FootballSubstitutionEvent = components['schemas']['FootballSubstitutionEvent']
 type DetailedScore = components['schemas']['DetailedScore']
+type Score = components['schemas']['Score']
 type Match = components['schemas']['Match']
 
 /** Narrows a match's detailed score to its football detail, or `null` when
@@ -13,6 +15,32 @@ type Match = components['schemas']['Match']
 export function footballDetailFrom(detail: DetailedScore | null | undefined): FootballDetail | null {
   if (!detail || detail.type !== 'Football') return null
   return detail
+}
+
+/** What `eventsFromDetail` actually reads off a `FootballDetail` — narrowed
+ *  so a finished match's `Score.Football` (whose `goals`/`cards`/
+ *  `substitutions` are optional, unlike `FootballDetail`'s) can feed the same
+ *  timeline via `footballEventSourceFromScore`, without a live-only fetch. */
+export type FootballEventSource = {
+  goals: FootballGoalEvent[]
+  cards: FootballCardEvent[]
+  substitutions: FootballSubstitutionEvent[]
+}
+
+/** A finished football match's event timeline straight off its confirmed/
+ *  pending score — `null` if there's no score yet, it's a different sport, or
+ *  it's a football score with no detail attached (a manual entry with just
+ *  the final tally). Lets the match detail page's `FootballScorecard` avoid
+ *  fetching `DetailedScore` once the match is over (see `footballDetail`,
+ *  which still covers the live, in-progress view). */
+export function footballEventSourceFromScore(score: Score | null | undefined): FootballEventSource | null {
+  if (!score || score.type !== 'Football') return null
+  if (!score.goals && !score.cards && !score.substitutions) return null
+  return {
+    goals: score.goals ?? [],
+    cards: score.cards ?? [],
+    substitutions: score.substitutions ?? [],
+  }
 }
 
 /** A client-side view of one football event, merging `FootballDetail`'s
@@ -45,7 +73,7 @@ function cardKind(c: FootballCardEvent): FootballEventKind {
  *  match's `Score.Football.goals` (see `footballGoalsFromScore`) — to event
  *  views. Unsorted; callers order as needed (`eventsFromDetail` merges and
  *  sorts alongside cards/subs, `recentGoalEvents` sorts standalone). */
-function goalEventsToViews(goals: FootballGoalEvent[]): FootballEventView[] {
+export function goalEventsToViews(goals: FootballGoalEvent[]): FootballEventView[] {
   return goals.map((g): FootballEventView => ({
     kind: goalKind(g),
     side_id: g.side_id,
@@ -57,8 +85,11 @@ function goalEventsToViews(goals: FootballGoalEvent[]): FootballEventView[] {
 
 /** All of a football detail's goals/cards/substitutions merged into one
  *  timeline, ordered by minute (undated events last — the scorer always
- *  fills in a minute in practice, so this only matters for edge cases). */
-export function eventsFromDetail(detail: FootballDetail): FootballEventView[] {
+ *  fills in a minute in practice, so this only matters for edge cases).
+ *  Takes just `FootballEventSource` (not the full `FootballDetail`) so a
+ *  finished match's `Score.Football` can feed it too — see
+ *  `footballEventSourceFromScore`. */
+export function eventsFromDetail(detail: FootballEventSource): FootballEventView[] {
   const events: FootballEventView[] = [
     ...goalEventsToViews(detail.goals),
     ...detail.cards.map((c): FootballEventView => ({
@@ -289,7 +320,7 @@ export function penaltiesComplete(state: FootballDetail): boolean {
 /** A side's penalty-shootout tally (kicks scored, not taken) — the shootout
  *  equivalent of reading `FootballDetail.score` for goals. */
 export function shootoutScoreFor(state: FootballDetail, sideId: string | undefined): number {
-  return state.penalty_shootout_score.find((s) => s.side_id === sideId)?.scored ?? 0
+  return (sideId ? state.penalty_shootout_score[sideId] : undefined) ?? 0
 }
 
 function minutesBetween(from: string, to: Date | string): number {

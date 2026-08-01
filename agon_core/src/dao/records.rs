@@ -35,33 +35,33 @@ pub struct HeaderPhotoRecord {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ScoreRecord {
     Simple {
-        entries: Vec<SimpleScoreEntryRecord>,
+        /// Points per side, keyed by side id.
+        entries: HashMap<String, u32>,
     },
     Sets {
-        entries: Vec<SetsScoreEntryRecord>,
+        /// Games won per set per side, keyed by side id.
+        entries: HashMap<String, Vec<u32>>,
     },
     Cricket {
         innings: Vec<CricketScoreInningsRecord>,
     },
     Football {
-        goals: Vec<FootballGoalEventRecord>,
+        /// Goal tally, keyed by side id.
+        score: HashMap<String, u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        goals: Option<Vec<FootballGoalEventRecord>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cards: Option<Vec<FootballCardEventRecord>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        substitutions: Option<Vec<FootballSubstitutionEventRecord>>,
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SimpleScoreEntryRecord {
-    pub side_id: String,
-    pub points: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct SetsScoreEntryRecord {
-    pub side_id: String,
-    pub sets: Vec<u32>,
-}
-
 /// One innings' final totals, as stored on a match's confirmed/pending
-/// `Score` — mirrors the API's `CricketScoreInnings`.
+/// `Score` — mirrors the API's `CricketScoreInnings`. `batting`/`bowling`/
+/// `fall_of_wickets`/`extras` are `None` for a manually-entered result with
+/// no per-player detail to hand over; populated when the result came from a
+/// live-scored (or backfilled) match.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CricketScoreInningsRecord {
     pub batting_side_id: String,
@@ -70,6 +70,69 @@ pub struct CricketScoreInningsRecord {
     pub wickets: u32,
     pub overs: OversRecord,
     pub declared: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batting: Option<Vec<CricketBattingEntryRecord>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bowling: Option<Vec<CricketBowlingEntryRecord>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fall_of_wickets: Option<Vec<CricketFallOfWicketRecord>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extras: Option<CricketExtrasRecord>,
+}
+
+/// Mirrors the API's `detailed_score::cricket::CricketBattingEntry`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CricketBattingEntryRecord {
+    pub player_id: String,
+    pub runs: u32,
+    pub balls_faced: u32,
+    pub fours: u32,
+    pub sixes: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dismissal: Option<CricketDismissalRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batting_position: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CricketDismissalRecord {
+    pub kind: CricketDismissalKindRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bowler_player_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fielder_player_id: Option<String>,
+}
+
+/// Mirrors the API's `detailed_score::cricket::CricketBowlingEntry`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CricketBowlingEntryRecord {
+    pub player_id: String,
+    pub overs: OversRecord,
+    pub maidens: u32,
+    pub runs_conceded: u32,
+    pub wickets: u32,
+    pub wides: u32,
+    pub no_balls: u32,
+}
+
+/// Mirrors the API's `detailed_score::cricket::CricketExtras`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CricketExtrasRecord {
+    pub byes: u32,
+    pub leg_byes: u32,
+    pub wides: u32,
+    pub no_balls: u32,
+    pub penalty: u32,
+}
+
+/// Mirrors the API's `detailed_score::cricket::CricketFallOfWicket`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CricketFallOfWicketRecord {
+    pub wicket: u32,
+    pub runs: u32,
+    pub player_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overs: Option<OversRecord>,
 }
 
 /// A count of overs bowled/faced: whole overs plus balls into the current

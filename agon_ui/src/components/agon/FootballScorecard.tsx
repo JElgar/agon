@@ -1,5 +1,5 @@
 import type { components } from '@/types/api'
-import { describeEvent, eventEmoji, eventsFromDetail, minuteLabel, type FootballDetail } from '@/lib/liveScore'
+import { describeEvent, eventEmoji, eventsFromDetail, minuteLabel, type FootballEventSource } from '@/lib/liveScore'
 
 type Match = components['schemas']['Match']
 
@@ -8,11 +8,13 @@ type Match = components['schemas']['Match']
  * substitution recorded (live or entered after the fact), each attributed to
  * a player and minute. Unlike `LiveMatchBlock`'s mini-ticker this isn't
  * gated on the match still being in progress, so it's what keeps goals
- * visible on the match detail page once the match is completed. Renders
- * nothing if there's no event detail recorded (e.g. only a headline score
- * was ever entered).
+ * visible on the match detail page once the match is completed — reading
+ * straight off the confirmed/pending score once there is one (see
+ * `footballEventSourceFromScore`), no separate fetch needed. Renders nothing
+ * if there's no event detail recorded (e.g. only a headline score was ever
+ * entered).
  */
-export function FootballScorecard({ match, detail }: { match: Match; detail: FootballDetail }) {
+export function FootballScorecard({ match, detail }: { match: Match; detail: FootballEventSource }) {
   const events = eventsFromDetail(detail)
   if (events.length === 0) return null
 

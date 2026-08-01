@@ -16,12 +16,43 @@ import {
   PlayerSideEditor,
   type TaggedPlayer,
 } from '@/components/agon/PlayerSideEditor'
+import { FootballScoreFields } from '@/components/agon/FootballScoreFields'
+import { CricketScoreFields } from '@/components/agon/CricketScoreFields'
 import { cn } from '@/lib/utils'
 import { toDateTimeLocal } from '@/lib/datetime'
 import { addPendingMatch } from '@/hooks/usePendingMatches'
 
 type CreateMatchInput = components['schemas']['CreateMatchInput']
 type UserProfile = components['schemas']['UserProfile']
+type MatchSide = components['schemas']['MatchSide']
+type MatchPlayer = components['schemas']['MatchPlayer']
+type Score = components['schemas']['Score']
+
+/** A tagged side's players, reshaped into the API's `MatchPlayer` so the
+ *  football/cricket detail editors (`FootballScoreFields`/`CricketScoreFields`,
+ *  built for a real match's roster) can be reused here too — before the match
+ *  exists, `member.id` holds the *reference* the server will resolve to a
+ *  real player id: a tagged Agon user's own (already-known) id, or a guest's
+ *  freshly generated `TaggedPlayer.id` (see `CreateMatchExternalInviteInput`). */
+function toMatchPlayers(players: TaggedPlayer[], sideId: string): MatchPlayer[] {
+  return players.map((p) =>
+    p.kind === 'user'
+      ? {
+          member: {
+            type: 'User',
+            id: p.id,
+            user_id: p.id,
+            name: p.name,
+            avatar_url: p.imageUrl,
+          },
+          side_id: sideId,
+        }
+      : {
+          member: { type: 'External', id: p.id, display_name: p.name },
+          side_id: sideId,
+        },
+  )
+}
 
 /** Client ids used to wire invites/score to the created sides (see CreateMatchSideInput). */
 const SIDE_A = 'side-a'
@@ -92,6 +123,10 @@ export function LogMatchPage() {
   ])
   const [pointsA, setPointsA] = useState('')
   const [pointsB, setPointsB] = useState('')
+  // Football/cricket's own goal-detail / innings editors report their built
+  // result here directly (see `FootballScoreFields`/`CricketScoreFields`),
+  // rather than through the plain points/sets state above.
+  const [detailBuilt, setDetailBuilt] = useState<{ score: Score; winnerSideId?: string } | null>(null)
   // Optional header images for the match, uploaded via the Asset API. Holds the
   // ordered uploaded asset ids (attached as `header_photo_asset_ids` on submit).
   const [headerAssetIds, setHeaderAssetIds] = useState<string[]>([])
@@ -141,6 +176,8 @@ export function LogMatchPage() {
   const sideBUserIds = sideB.flatMap((p) => (p.kind === 'user' ? [p.id] : []))
 
   const setsPlayable = isSetsSport(sport ?? 'other')
+  const isFootball = sport === 'football'
+  const isCricket = sport === 'cricket'
 
   // Is the picked time valid for the chosen mode? Completed matches must be in
   // the past, scheduled ones in the future (matches the server's rule). Empty or
@@ -162,6 +199,9 @@ export function LogMatchPage() {
   // inline hint), or null when the score state is acceptable for the mode.
   const scoreError = useMemo((): string | null => {
     if (mode !== 'completed') return null
+    if (isFootball || isCricket) {
+      return detailBuilt ? null : 'Enter the score'
+    }
     if (setsPlayable) {
       const anySet = sets.some((r) => {
         const a = Number(r.a)
@@ -182,7 +222,7 @@ export function LogMatchPage() {
     if (pointsA === '' || pointsB === '' || !Number.isFinite(a) || !Number.isFinite(b))
       return 'Enter the score for both sides'
     return null
-  }, [mode, setsPlayable, sets, pointsA, pointsB])
+  }, [mode, isFootball, isCricket, detailBuilt, setsPlayable, sets, pointsA, pointsB])
 
   // Validation: a sport, a match name, at least one player on each side (so the
   // match is meaningful), at least one opponent on side B, a time valid for the
@@ -228,15 +268,14 @@ export function LogMatchPage() {
       const invited_user_ids = players
         .filter((p) => p.kind === 'user' && p.id !== currentUserId)
         .map((p) => (p as Extract<TaggedPlayer, { kind: 'user' }>).id)
-      const invited_external_names = players
-        .filter((p) => p.kind === 'external')
-        .map((p) => p.name)
-      if (invited_user_ids.length === 0 && invited_external_names.length === 0)
-        continue
+      const invited_externals = players
+        .filter((p): p is Extract<TaggedPlayer, { kind: 'external' }> => p.kind === 'external')
+        .map((p) => ({ client_id: p.id, name: p.name }))
+      if (invited_user_ids.length === 0 && invited_externals.length === 0) continue
       invites.push({
         side_client_id: clientId,
         invited_user_ids,
-        invited_external_names,
+        invited_externals,
       })
     }
     return invites
@@ -259,6 +298,14 @@ export function LogMatchPage() {
     | null => {
     if (!recordResult || !sport) return null
 
+    if (isFootball || isCricket) {
+      if (!detailBuilt) return null
+      return {
+        score: detailBuilt.score as unknown as CreateMatchInput['score'],
+        winner: detailBuilt.winnerSideId,
+      }
+    }
+
     if (setsPlayable) {
       const rows = sets
         .map((r) => ({ a: Number(r.a), b: Number(r.b) }))
@@ -279,10 +326,10 @@ export function LogMatchPage() {
       }
       const score = {
         type: 'Sets',
-        entries: [
-          { side_id: SIDE_A, sets: rows.map((r) => r.a) },
-          { side_id: SIDE_B, sets: rows.map((r) => r.b) },
-        ],
+        entries: {
+          [SIDE_A]: rows.map((r) => r.a),
+          [SIDE_B]: rows.map((r) => r.b),
+        },
       } as unknown as CreateMatchInput['score']
       const winner = aSets === bSets ? undefined : aSets > bSets ? SIDE_A : SIDE_B
       return { score, winner }
@@ -294,10 +341,7 @@ export function LogMatchPage() {
       return null
     const score = {
       type: 'Simple',
-      entries: [
-        { side_id: SIDE_A, points: a },
-        { side_id: SIDE_B, points: b },
-      ],
+      entries: { [SIDE_A]: a, [SIDE_B]: b },
     } as unknown as CreateMatchInput['score']
     const winner = a === b ? undefined : a > b ? SIDE_A : SIDE_B
     return { score, winner }
@@ -465,7 +509,28 @@ export function LogMatchPage() {
       {mode === 'completed' &&
         (playersSet ? (
           <Section num={5} title="Score">
-          {setsPlayable && (
+          {(isFootball || isCricket) && (() => {
+            const sideAObj: MatchSide = { id: SIDE_A, name: sideAName.trim() || undefined }
+            const sideBObj: MatchSide = { id: SIDE_B, name: sideBName.trim() || undefined }
+            const players = [...toMatchPlayers(sideA, SIDE_A), ...toMatchPlayers(sideB, SIDE_B)]
+            return isFootball ? (
+              <FootballScoreFields
+                sideA={sideAObj}
+                sideB={sideBObj}
+                players={players}
+                onChange={setDetailBuilt}
+              />
+            ) : (
+              <CricketScoreFields
+                sideA={sideAObj}
+                sideB={sideBObj}
+                players={players}
+                onChange={setDetailBuilt}
+              />
+            )
+          })()}
+
+          {!isFootball && !isCricket && setsPlayable && (
             <div className="flex flex-col gap-2">
               <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-center text-[11px] uppercase tracking-wider text-muted-foreground">
                 <span className="truncate text-left">{sideName(sideA, sideAName, 'Your side')}</span>
@@ -529,7 +594,7 @@ export function LogMatchPage() {
             </div>
           )}
 
-          {!setsPlayable && (
+          {!isFootball && !isCricket && !setsPlayable && (
             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
               <div className="flex flex-col gap-1">
                 <span className="truncate text-center text-xs text-muted-foreground">

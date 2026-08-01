@@ -19,10 +19,11 @@ import { FootballScorecard } from '@/components/agon/FootballScorecard'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { useLiveEvents } from '@/hooks/useLiveScore'
 import { useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
-import { footballDetailFrom } from '@/lib/liveScore'
+import { footballDetailFrom, footballEventSourceFromScore } from '@/lib/liveScore'
 import {
   cricketDetail,
   cricketDetailFrom,
+  cricketInningsFromScore,
   cricketScoreFrom,
   inningsDeliveriesFromEvents,
 } from '@/lib/cricketScore'
@@ -131,28 +132,28 @@ function MatchDetail({
   const aWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
   const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
 
-  // Resolved detailed score: batting/bowling cards + totals (works whether
-  // the match was scored live or entered after the fact) for cricket, or the
-  // score/goals/cards/subs for football. Also takes over the score block
-  // below (and the entry button becomes "Continue scoring") while a match is
-  // actually in progress — see `footballState`/`cricketState` below, which
-  // only surface it then; once finished, the confirmed/pending score block
-  // takes over instead. Fetched for `in_progress`/`completed` matches only —
-  // nothing to show before a match has started.
+  // Live, in-progress detail only — a completed match reads its scorecard
+  // straight off `confirmed_score`/`pending_score` instead (see
+  // `footballEventSource`/`cricketDetailInnings` below), which now carries
+  // the same goals/cards/subs (football) or batting/bowling/extras (cricket)
+  // a live-scored or manually-entered result produces. Takes over the score
+  // block below (and the entry button becomes "Continue scoring") while a
+  // match is actually in progress — see `footballState`/`cricketState`.
   const detailedScore = useMatchDetailedScore(match.id, {
-    enabled: isLiveSport && (match.status === 'in_progress' || match.status === 'completed'),
+    enabled: isLiveSport && match.status === 'in_progress',
     refetchInterval: match.status === 'in_progress' ? 15000 : undefined,
   })
   const isCurrentlyLive = isLiveSport && match.status === 'in_progress'
-  // Unlike `footballState` below (which only drives the live score header
-  // while the match is in progress), this isn't gated on live status — it's
-  // what keeps the goal-by-goal breakdown visible on this page once the
-  // match is completed (see `FootballScorecard`).
-  const footballDetail = footballDetailFrom(detailedScore.data)
-  const footballState = isCurrentlyLive ? footballDetail : null
+  const footballState = isCurrentlyLive ? footballDetailFrom(detailedScore.data) : null
   const cricketState = isCurrentlyLive ? cricketDetailFrom(detailedScore.data) : null
   const hasLiveState = !!footballState || !!cricketState
   const cricketScore = scoreInfo ? cricketScoreFrom(scoreInfo.score) : null
+  // `FootballScorecard`'s event timeline: the live running detail while the
+  // match is in progress, else straight off the confirmed/pending score —
+  // stays visible once the match is completed, unlike `footballState` above.
+  const footballEventSource = isCurrentlyLive
+    ? footballDetailFrom(detailedScore.data)
+    : footballEventSourceFromScore(scoreInfo?.score)
   // Football's setup screen also gates starting the clock; cricket has no
   // equivalent preferences step, so it goes straight into scoring.
   const liveEntryPath =
@@ -165,7 +166,9 @@ function MatchDetail({
   // event log has no size ceiling and stays fully readable regardless of
   // match status, so it's fetched here independently of `detailedScore`.
   const liveEvents = useLiveEvents(match.id, { enabled: match.match_type === 'cricket' })
-  const cricketDetailInnings = cricketDetail(detailedScore.data)
+  const cricketDetailInnings = isCurrentlyLive
+    ? cricketDetail(detailedScore.data)
+    : cricketInningsFromScore(scoreInfo?.score)
   const liveInningsDeliveries = liveEvents.data ? inningsDeliveriesFromEvents(liveEvents.data) : undefined
   const cricketInnings = cricketDetailInnings?.map((inn, i) => ({
     ...inn,
@@ -332,7 +335,7 @@ function MatchDetail({
       {/* Football event timeline: goals/cards/subs, once there's detail
           recorded (live-scored or entered directly) — stays visible after
           the match finishes, unlike the live score header above. */}
-      {footballDetail && <FootballScorecard match={match} detail={footballDetail} />}
+      {footballEventSource && <FootballScorecard match={match} detail={footballEventSource} />}
 
       {/* Invite more people (participants only). */}
       {canEdit && !cancelled && (

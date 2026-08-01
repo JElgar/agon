@@ -108,39 +108,17 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
   const [dialogKind, setDialogKind] = useState<EventKind | null>(null)
 
   // Concludes the match once it's decided (full-time, extra-time full-time,
-  // or the penalty shootout is done): submits the goals — normal time plus
-  // extra time, never shootout kicks — as a `Football` score (so the feed/
-  // detail page can show who scored without a separate `/detailed-score`
-  // fetch once the match is over — see `Score.Football`'s doc comment) and
-  // marks the match `completed`, the way a manual "Add result" would — so it
-  // enters the normal confirmation flow rather than being auto-confirmed.
-  // Still level on goals falls back to the penalty shootout tally to pick a
-  // winner. No `detailed_score` here: the goals/cards/subs/period markers/
-  // shootout kicks recorded live are already persisted against the match as
-  // they happened. Reads `detailedScore.data` directly (rather than closing
-  // over the `state` computed below) so this hook can be declared before the
-  // loading early return, same as every other hook in this component.
+  // or the penalty shootout is done): just flips the match to `completed`.
+  // The server derives the `Football` score (goals/cards/subs) and winner
+  // from the match's own persisted live detail — the goals/cards/subs/period
+  // markers/shootout kicks recorded live are already there, so there's
+  // nothing for the client to reconstruct and send back (see `update_match`
+  // server-side, and `Score.Football`'s doc comment). Still enters the
+  // normal confirmation flow rather than being auto-confirmed, same as a
+  // manual "Add result" would.
   const finishMatch = useMutation({
     mutationFn: async () => {
-      const detail = footballDetailFrom(detailedScore.data)
-      const goalsFor = (sideId: string | undefined) =>
-        detail?.score.find((s) => s.side_id === sideId)?.goals ?? 0
-      const aId = match.sides[0]?.id ?? ''
-      const bId = match.sides[1]?.id ?? ''
-      const a = goalsFor(aId)
-      const b = goalsFor(bId)
-      const score = {
-        type: 'Football',
-        goals: detail?.goals ?? [],
-      } as unknown as UpdateMatchInput['score']
-      const body: UpdateMatchInput = { score, status: 'completed' }
-      if (a !== b) {
-        body.winner_side_id = a > b ? aId : bId
-      } else if (detail) {
-        const penA = shootoutScoreFor(detail, aId)
-        const penB = shootoutScoreFor(detail, bId)
-        if (penA !== penB) body.winner_side_id = penA > penB ? aId : bId
-      }
+      const body: UpdateMatchInput = { status: 'completed' }
       const { error } = await fetchClient.PATCH('/matches/{match_id}', {
         params: { path: { match_id: match.id } },
         body,
@@ -166,7 +144,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
   const nameB = sideName(match, 1, 'Side B')
   const state = footballDetailFrom(detailedScore.data)
   const goalsFor = (sideId: string | undefined) =>
-    state?.score.find((s) => s.side_id === sideId)?.goals ?? 0
+    (sideId ? state?.score[sideId] : undefined) ?? 0
   const format = footballFormat(match.format)
   const aId = match.sides[0]?.id
   const bId = match.sides[1]?.id

@@ -21,7 +21,6 @@ import {
   deliveryChipLabel,
   formatOvers,
   isChipHighlighted,
-  matchTotalsBySide,
   playerNameFor,
   runRate,
 } from '@/lib/cricketScore'
@@ -123,40 +122,18 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [oversCompleteAwaitingEnd])
 
-  // Concludes the match: submits the per-innings totals as a `Cricket` score
-  // (so the completed tile can show overs/wickets and the result line
-  // without ever re-fetching the live event log — see `CricketScoreBlock`),
-  // the same way a manual "Add result" would, so it enters the normal
-  // confirmation flow rather than being auto-confirmed. The winner is still
-  // derived from the summed match totals (two-innings formats add up both).
-  // No `detailed_score` here: the backend derives and persists the full
-  // batting/bowling cards itself from the event log when a live-scored
-  // cricket match completes without one supplied (see `update_match`) — the
-  // authoritative source, and the only one with the full log to fold; this
-  // client only ever sees the bounded live summary.
+  // Concludes the match: just flips it to `completed`. The server derives
+  // the `Cricket` score (per-innings totals, plus batting/bowling detail)
+  // and the winner (summed match totals — two-innings formats add up both)
+  // from the match's own persisted live detail — it's the authoritative
+  // source, and the only one with the full log to fold; this client only
+  // ever sees the bounded live summary (see `update_match` server-side).
+  // Still enters the normal confirmation flow rather than being
+  // auto-confirmed, same as a manual "Add result" would.
   const finishMatch = useMutation({
     mutationFn: async () => {
       if (!state) throw new Error('No score recorded yet')
-      const totals = matchTotalsBySide(state)
-      const [sideA, sideB] = match.sides
-      const aId = sideA?.id ?? ''
-      const bId = sideB?.id ?? ''
-      const a = totals[aId] ?? 0
-      const b = totals[bId] ?? 0
-      const score = {
-        type: 'Cricket',
-        innings: state.innings.map((inn) => ({
-          batting_side_id: inn.batting_side_id,
-          bowling_side_id: inn.bowling_side_id,
-          runs: inn.runs,
-          wickets: inn.wickets,
-          overs: inn.overs,
-          declared: inn.declared,
-        })),
-      } as unknown as UpdateMatchInput['score']
-      const winner_side_id = a === b ? undefined : a > b ? aId : bId
-      const body: UpdateMatchInput = { score, status: 'completed' }
-      if (winner_side_id) body.winner_side_id = winner_side_id
+      const body: UpdateMatchInput = { status: 'completed' }
       const { error } = await fetchClient.PATCH('/matches/{match_id}', {
         params: { path: { match_id: match.id } },
         body,

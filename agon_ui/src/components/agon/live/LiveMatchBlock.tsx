@@ -43,7 +43,7 @@ export function LiveMatchBlock({
   const nameA = sideName(sideA, 'Side A')
   const nameB = sideName(sideB, 'Side B')
   const goalsFor = (sideId: string | undefined) =>
-    state.score.find((s) => s.side_id === sideId)?.goals ?? 0
+    (sideId ? state.score[sideId] : undefined) ?? 0
 
   const events = recentEvents(state, tickerLimit)
 

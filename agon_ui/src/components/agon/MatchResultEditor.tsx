@@ -5,6 +5,8 @@ import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { isSetsSport } from '@/lib/sports'
+import { FootballScoreFields } from '@/components/agon/FootballScoreFields'
+import { CricketScoreFields } from '@/components/agon/CricketScoreFields'
 
 type Match = components['schemas']['Match']
 type UpdateMatchInput = components['schemas']['UpdateMatchInput']
@@ -27,8 +29,8 @@ function sideLabel(match: Match, index: number, fallback: string): string {
 function seedSets(match: Match, aId: string, bId: string): SetRow[] {
   const score = match.confirmed_score?.score
   if (score && score.type === 'Sets') {
-    const a = score.entries.find((e) => e.side_id === aId)?.sets ?? []
-    const b = score.entries.find((e) => e.side_id === bId)?.sets ?? []
+    const a = score.entries[aId] ?? []
+    const b = score.entries[bId] ?? []
     const rows = Math.max(a.length, b.length)
     if (rows > 0) {
       return Array.from({ length: rows }, (_, i) => ({
@@ -47,8 +49,8 @@ function seedSets(match: Match, aId: string, bId: string): SetRow[] {
 function seedPoints(match: Match, aId: string, bId: string): [string, string] {
   const score = match.confirmed_score?.score
   if (score && score.type === 'Simple') {
-    const a = score.entries.find((e) => e.side_id === aId)?.points
-    const b = score.entries.find((e) => e.side_id === bId)?.points
+    const a = score.entries[aId]
+    const b = score.entries[bId]
     return [a?.toString() ?? '', b?.toString() ?? '']
   }
   return ['', '']
@@ -56,11 +58,13 @@ function seedPoints(match: Match, aId: string, bId: string): [string, string] {
 
 /**
  * Inline editor for a match's result, opened from the detail card. Renders a
- * sets grid for racket sports and a single points pair otherwise (mirroring the
- * create flow), seeded from any existing confirmed score. On save it PATCHes the
- * score against the match's real side ids; a changed score re-enters the
- * confirmation flow server-side (the other side is asked to confirm), so we also
- * refresh so the pending-score prompt appears.
+ * sets grid for racket sports, the football/cricket editors (goal-by-goal /
+ * innings detail, optional) for those sports, and a single points pair
+ * otherwise (mirroring the create flow), seeded from any existing confirmed
+ * score. On save it PATCHes the score against the match's real side ids; a
+ * changed score re-enters the confirmation flow server-side (the other side
+ * is asked to confirm), so we also refresh so the pending-score prompt
+ * appears.
  */
 export function MatchResultEditor({
   match,
@@ -76,15 +80,20 @@ export function MatchResultEditor({
   const nameA = sideLabel(match, 0, 'Side A')
   const nameB = sideLabel(match, 1, 'Side B')
 
+  const isFootball = match.match_type === 'football'
+  const isCricket = match.match_type === 'cricket'
   const setsMode = isSetsSport(match.match_type)
   const [sets, setSets] = useState<SetRow[]>(() => seedSets(match, aId, bId))
-  const [points, setPoints] = useState<[string, string]>(() =>
-    seedPoints(match, aId, bId),
-  )
+  const [points, setPoints] = useState<[string, string]>(() => seedPoints(match, aId, bId))
   const [pointsA, pointsB] = points
+  const [detailBuilt, setDetailBuilt] = useState<{ score: Score; winnerSideId?: string } | null>(null)
 
   /** Build the score payload + derived winner, or null when incomplete. */
   const build = (): { score: Score; winner?: string } | null => {
+    if (isFootball || isCricket) {
+      return detailBuilt ? { score: detailBuilt.score, winner: detailBuilt.winnerSideId } : null
+    }
+
     if (setsMode) {
       const rows = sets
         .map((r) => ({ a: Number(r.a), b: Number(r.b) }))
@@ -103,13 +112,13 @@ export function MatchResultEditor({
         if (r.a > r.b) aSets += 1
         else if (r.b > r.a) bSets += 1
       }
-      const score = {
+      const score: Score = {
         type: 'Sets',
-        entries: [
-          { side_id: aId, sets: rows.map((r) => r.a) },
-          { side_id: bId, sets: rows.map((r) => r.b) },
-        ],
-      } as unknown as Score
+        entries: {
+          [aId]: rows.map((r) => r.a),
+          [bId]: rows.map((r) => r.b),
+        },
+      }
       const winner = aSets === bSets ? undefined : aSets > bSets ? aId : bId
       return { score, winner }
     }
@@ -123,13 +132,10 @@ export function MatchResultEditor({
       !Number.isFinite(b)
     )
       return null
-    const score = {
+    const score: Score = {
       type: 'Simple',
-      entries: [
-        { side_id: aId, points: a },
-        { side_id: bId, points: b },
-      ],
-    } as unknown as Score
+      entries: { [aId]: a, [bId]: b },
+    }
     const winner = a === b ? undefined : a > b ? aId : bId
     return { score, winner }
   }
@@ -140,9 +146,7 @@ export function MatchResultEditor({
     mutationFn: async () => {
       if (!built) throw new Error('Enter a score first')
       const body: UpdateMatchInput = {
-        // The generated type is `Omit<Score,'type'>`; the server needs the
-        // discriminator, which we injected when building `score`.
-        score: built.score as UpdateMatchInput['score'],
+        score: built.score,
       }
       if (built.winner) body.winner_side_id = built.winner
       const { error } = await fetchClient.PATCH('/matches/{match_id}', {
@@ -162,7 +166,23 @@ export function MatchResultEditor({
     <div className="flex flex-col gap-3 rounded-xl border bg-card p-4">
       <p className="text-sm font-medium">Result</p>
 
-      {setsMode ? (
+      {isFootball && sideA && sideB ? (
+        <FootballScoreFields
+          sideA={sideA}
+          sideB={sideB}
+          players={match.players}
+          initial={match.confirmed_score?.score}
+          onChange={setDetailBuilt}
+        />
+      ) : isCricket && sideA && sideB ? (
+        <CricketScoreFields
+          sideA={sideA}
+          sideB={sideB}
+          players={match.players}
+          initial={match.confirmed_score?.score}
+          onChange={setDetailBuilt}
+        />
+      ) : setsMode ? (
         <div className="flex flex-col gap-2">
           <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-center text-[11px] uppercase tracking-wider text-muted-foreground">
             <span className="truncate text-left">{nameA}</span>

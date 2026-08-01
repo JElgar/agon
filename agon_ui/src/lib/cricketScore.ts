@@ -46,6 +46,36 @@ export function cricketDetail(
   return cricketDetailFrom(detail)?.innings ?? null
 }
 
+/** A `Score.Cricket` innings' totals plus whatever per-player detail it
+ *  carries, reshaped to `CricketInnings`' shape (batting/bowling/extras/
+ *  fall-of-wickets default to empty/zeroed when absent — a manually-entered
+ *  result with no card attached). */
+function cricketInningsFromScoreInnings(inn: CricketScoreInnings): CricketInnings {
+  return {
+    batting_side_id: inn.batting_side_id,
+    bowling_side_id: inn.bowling_side_id,
+    runs: inn.runs,
+    wickets: inn.wickets,
+    overs: inn.overs,
+    declared: inn.declared,
+    batting: inn.batting ?? [],
+    bowling: inn.bowling ?? [],
+    extras: inn.extras ?? { byes: 0, leg_byes: 0, wides: 0, no_balls: 0, penalty: 0 },
+    fall_of_wickets: inn.fall_of_wickets ?? [],
+  }
+}
+
+/** A finished cricket match's per-innings detail straight off its confirmed/
+ *  pending score — `null` if there's no score yet or it's not `Cricket`
+ *  (a manually-logged result that never got innings totals at all). Lets
+ *  the match detail page's `CricketScorecard` avoid fetching `DetailedScore`
+ *  once the match is over (see `cricketDetail`, which still covers the
+ *  live, in-progress view). */
+export function cricketInningsFromScore(score: Score | null | undefined): CricketInnings[] | null {
+  const cs = cricketScoreFrom(score)
+  return cs ? cs.innings.map(cricketInningsFromScoreInnings) : null
+}
+
 /** A `detailed_score` innings (batting/bowling cards, totals) with its
  *  ball-by-ball log folded back in from the live event log — what the match
  *  detail page builds for the scorecard/run-rate graph, since

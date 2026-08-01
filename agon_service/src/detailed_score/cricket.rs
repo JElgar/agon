@@ -194,7 +194,7 @@ pub struct CricketDeliveryWicket {
     pub fielder_player_id: Option<String>,
 }
 
-#[derive(Object)]
+#[derive(Object, Clone)]
 pub struct CricketBattingEntry {
     pub player_id: String,
     pub runs: u32,
@@ -207,7 +207,7 @@ pub struct CricketBattingEntry {
     pub batting_position: Option<u32>,
 }
 
-#[derive(Object)]
+#[derive(Object, Clone)]
 pub struct CricketDismissal {
     pub kind: CricketDismissalKind,
     /// Bowler credited with the wicket (none for run outs / retired).
@@ -235,7 +235,7 @@ pub enum CricketDismissalKind {
     RetiredHurt,
 }
 
-#[derive(Object)]
+#[derive(Object, Clone)]
 pub struct CricketBowlingEntry {
     pub player_id: String,
     /// Overs bowled, e.g. 4 overs + 0 balls, or 3 overs + 2 balls.
@@ -247,7 +247,7 @@ pub struct CricketBowlingEntry {
     pub no_balls: u32,
 }
 
-#[derive(Object)]
+#[derive(Object, Clone)]
 pub struct CricketExtras {
     pub byes: u32,
     pub leg_byes: u32,
@@ -256,7 +256,7 @@ pub struct CricketExtras {
     pub penalty: u32,
 }
 
-#[derive(Object)]
+#[derive(Object, Clone)]
 pub struct CricketFallOfWicket {
     /// Wicket number (1 = first wicket to fall).
     pub wicket: u32,

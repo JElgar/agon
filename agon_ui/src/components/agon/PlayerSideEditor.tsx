@@ -8,10 +8,16 @@ import { Avatar } from './Avatar'
 
 type UserProfile = components['schemas']['UserProfile']
 
-/** A person tagged onto a side: either a registered Agon user or a typed-in guest. */
+/** A person tagged onto a side: either a registered Agon user or a typed-in guest.
+ *  Both carry a stable `id` — the user's own account id for a registered user
+ *  (already known before the match exists), or a freshly generated client-side
+ *  token for a guest — so a create-time score's goal/card/batting detail can
+ *  reference a specific player before the match (and its real player ids)
+ *  exists; the server re-points these to real ids the same way it already
+ *  does for side client ids (see `CreateMatchExternalInviteInput`). */
 export type TaggedPlayer =
   | { kind: 'user'; id: string; name: string; imageUrl?: string }
-  | { kind: 'external'; name: string }
+  | { kind: 'external'; id: string; name: string }
 
 /** A stable key for a tagged player, for React keys and de-duping. */
 function taggedPlayerKey(p: TaggedPlayer): string {
@@ -104,7 +110,7 @@ export function PlayerSideEditor({
     if (!trimmed) return
     const key = `ext:${trimmed.toLowerCase()}`
     if (taggedKeys.has(key)) return
-    onChange([...players, { kind: 'external', name: trimmed }])
+    onChange([...players, { kind: 'external', id: crypto.randomUUID(), name: trimmed }])
     setTerm('')
     setDebounced('')
   }

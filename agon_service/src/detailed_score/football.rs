@@ -12,7 +12,10 @@ use poem_openapi::{Enum, Object};
 /// next-ball context does.
 #[derive(Object)]
 pub struct FootballDetail {
-    pub score: Vec<FootballSideGoals>,
+    /// Goal tally, keyed by side id — exactly one entry per side, so a map
+    /// rather than the `Vec<{side_id, ...}>` shape used where order or
+    /// repeats matter (e.g. `goals`, or cricket's `innings`).
+    pub score: HashMap<String, u32>,
     pub goals: Vec<FootballGoalEvent>,
     pub cards: Vec<FootballCardEvent>,
     pub substitutions: Vec<FootballSubstitutionEvent>,
@@ -36,17 +39,8 @@ pub struct FootballDetail {
     pub penalty_shootout: Vec<FootballPenaltyShootoutKick>,
     /// Running shootout tally (kicks scored, not kicks taken) per side,
     /// derived from `penalty_shootout` the same way `score` is derived from
-    /// `goals`.
-    pub penalty_shootout_score: Vec<FootballShootoutTally>,
-}
-
-/// A side's running goal tally, derived from the event log (a convenience for
-/// cheap reads — e.g. a feed card — that don't want to re-derive it from
-/// `goals` themselves).
-#[derive(Object)]
-pub struct FootballSideGoals {
-    pub side_id: String,
-    pub goals: u32,
+    /// `goals`. Keyed by side id, same reasoning as `score`.
+    pub penalty_shootout_score: HashMap<String, u32>,
 }
 
 #[derive(Object, Clone)]
@@ -90,15 +84,6 @@ pub struct FootballPenaltyShootoutKick {
     /// The side taking this kick.
     pub side_id: String,
     pub scored: bool,
-}
-
-/// A side's shootout tally (kicks scored so far) — the penalty-shootout
-/// equivalent of `FootballSideGoals`, kept as its own type since "goals"
-/// would be a misnomer for a shootout kick.
-#[derive(Object, Clone)]
-pub struct FootballShootoutTally {
-    pub side_id: String,
-    pub scored: u32,
 }
 
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq, Hash)]

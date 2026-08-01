@@ -4,7 +4,7 @@ use poem_openapi::{Object, Union};
 
 use crate::detailed_score::football::{
     FootballCardEvent, FootballDetail, FootballGoalEvent, FootballPenaltyShootoutKick,
-    FootballPeriod, FootballShootoutTally, FootballSideGoals, FootballSubstitutionEvent,
+    FootballPeriod, FootballSubstitutionEvent,
 };
 
 /// Football live-scoring events, nested under the outer sport union
@@ -39,14 +39,14 @@ impl FootballDetail {
     /// `CricketDetail::from_events`.
     pub fn from_events(events: &[(chrono::DateTime<chrono::Utc>, FootballLiveEvent)]) -> Self {
         let mut detail = FootballDetail {
-            score: Vec::new(),
+            score: HashMap::new(),
             goals: Vec::new(),
             cards: Vec::new(),
             substitutions: Vec::new(),
             period: None,
             period_times: HashMap::new(),
             penalty_shootout: Vec::new(),
-            penalty_shootout_score: Vec::new(),
+            penalty_shootout_score: HashMap::new(),
         };
         for (occurred_at, event) in events {
             detail.apply_event(*occurred_at, event);
@@ -66,14 +66,7 @@ impl FootballDetail {
     ) {
         match event {
             FootballLiveEvent::Goal(g) => {
-                if let Some(s) = self.score.iter_mut().find(|s| s.side_id == g.side_id) {
-                    s.goals += 1;
-                } else {
-                    self.score.push(FootballSideGoals {
-                        side_id: g.side_id.clone(),
-                        goals: 1,
-                    });
-                }
+                *self.score.entry(g.side_id.clone()).or_insert(0) += 1;
                 self.goals.push(g.clone());
             }
             FootballLiveEvent::Card(c) => {
@@ -88,18 +81,10 @@ impl FootballDetail {
             }
             FootballLiveEvent::PenaltyShootoutKick(k) => {
                 if k.scored {
-                    if let Some(s) = self
+                    *self
                         .penalty_shootout_score
-                        .iter_mut()
-                        .find(|s| s.side_id == k.side_id)
-                    {
-                        s.scored += 1;
-                    } else {
-                        self.penalty_shootout_score.push(FootballShootoutTally {
-                            side_id: k.side_id.clone(),
-                            scored: 1,
-                        });
-                    }
+                        .entry(k.side_id.clone())
+                        .or_insert(0) += 1;
                 }
                 self.penalty_shootout.push(k.clone());
             }
@@ -172,8 +157,7 @@ mod tests {
         let detail = FootballDetail::from_events(&events);
 
         assert_eq!(detail.score.len(), 1);
-        assert_eq!(detail.score[0].side_id, "riverside");
-        assert_eq!(detail.score[0].goals, 2);
+        assert_eq!(detail.score.get("riverside"), Some(&2));
         assert_eq!(detail.goals.len(), 2);
         assert_eq!(detail.cards.len(), 1);
         assert_eq!(detail.substitutions.len(), 1);
@@ -328,20 +312,10 @@ mod tests {
 
         assert_eq!(detail.penalty_shootout.len(), 4);
         // Only sides with at least one scored kick get a tally entry — same
-        // "absence means zero" convention as `score`/`FootballSideGoals`.
+        // "absence means zero" convention as `score`.
         assert_eq!(detail.penalty_shootout_score.len(), 2);
-        let riverside = detail
-            .penalty_shootout_score
-            .iter()
-            .find(|s| s.side_id == "riverside")
-            .unwrap();
-        assert_eq!(riverside.scored, 2);
-        let oak_park = detail
-            .penalty_shootout_score
-            .iter()
-            .find(|s| s.side_id == "oak_park")
-            .unwrap();
-        assert_eq!(oak_park.scored, 1);
+        assert_eq!(detail.penalty_shootout_score.get("riverside"), Some(&2));
+        assert_eq!(detail.penalty_shootout_score.get("oak_park"), Some(&1));
         // A shootout kick never counts as a match goal.
         assert!(detail.score.is_empty());
         assert!(detail.goals.is_empty());
@@ -383,14 +357,14 @@ mod tests {
         // Apply the same events one at a time, incrementally, and check the
         // final state matches the full fold exactly.
         let mut incremental = FootballDetail {
-            score: Vec::new(),
+            score: HashMap::new(),
             goals: Vec::new(),
             cards: Vec::new(),
             substitutions: Vec::new(),
             period: None,
             period_times: HashMap::new(),
             penalty_shootout: Vec::new(),
-            penalty_shootout_score: Vec::new(),
+            penalty_shootout_score: HashMap::new(),
         };
         for (occurred_at, event) in &events {
             incremental.apply_event(*occurred_at, event);

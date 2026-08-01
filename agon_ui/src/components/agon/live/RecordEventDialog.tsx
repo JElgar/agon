@@ -81,7 +81,10 @@ export function RecordEventDialog({
 }: {
   open: boolean
   kind: EventKind | null
-  match: Match
+  /** Only `sides`/`players` are read — a manual-entry caller without a real
+   *  match yet (see `FootballScoreFields`) can pass a synthetic object with
+   *  just these two fields. */
+  match: Pick<Match, 'sides' | 'players'>
   initialMinute: number
   onOpenChange: (open: boolean) => void
   onSubmit: (event: FootballLiveEvent) => void

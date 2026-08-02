@@ -2174,6 +2174,22 @@ impl Api {
         let effective_score = input.score.as_ref().or(derived_score.as_ref());
         let effective_winner_side_id = input.winner_side_id.clone().or(derived_winner_side_id);
 
+        // A match can't land on `completed` with no score at all — supplied,
+        // derived from live detail, or already recorded from an earlier
+        // submission (this PATCH might just be re-asserting `completed`, or
+        // editing something unrelated, on a match that already has one).
+        if resulting_status == "completed"
+            && effective_score.is_none()
+            && agg.match_.confirmed_score.is_none()
+            && agg.match_.pending_score.is_none()
+        {
+            return Ok(UpdateMatchResponse::ValidationError(PlainText(
+                "a completed match needs a score — submit one, or finish live scoring \
+                 first so it can be derived"
+                    .into(),
+            )));
+        }
+
         // A supplied score creates a new submission only when it differs from
         // the current confirmed score. For a not-yet-played match, a new score
         // also completes it.

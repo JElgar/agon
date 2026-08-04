@@ -1,33 +1,6 @@
 use poem_openapi::{Enum, Object};
 
-/// A match's full cricket detail — live or finished, the same shape either
-/// way. `innings` covers the whole match so far (batting/bowling cards,
-/// extras, fall-of-wickets — bounded by roster size, not ball count, so it
-/// stays small regardless of match length). `recent_deliveries` and
-/// `next_ball_context` describe only the *current* innings, and are `None`
-/// once there isn't one (between innings, or the match is over) — there's
-/// nothing "next" to give context for.
-///
-/// A match scored ball-by-ball (live, in-app) builds this incrementally, one
-/// delivery at a time (see `live_score::cricket::apply_delivery`), from the
-/// event log — which is *not* part of this record. It's already stored one
-/// item per ball in the match's live event log, which has no practical size
-/// ceiling; duplicating it here would mean a second, much larger copy
-/// embedded in this single record, risking DynamoDB's per-item size cap on a
-/// long match. A finished match's complete ball-by-ball history reads that
-/// log directly (paginated — `GET /matches/:id/live/events`) instead of
-/// this record.
-#[derive(Object)]
-pub struct CricketDetail {
-    pub innings: Vec<CricketInnings>,
-    pub recent_deliveries: Option<Vec<CricketDelivery>>,
-    pub next_ball_context: Option<NextBallContext>,
-    /// True once the log's last innings has ended and no following one has
-    /// started yet (i.e. between innings, or nothing's been recorded).
-    pub awaiting_next_innings: bool,
-}
-
-/// How many balls back `CricketDetail.recent_deliveries` keeps for the "this
+/// How many balls back `CricketScore.recent_deliveries` keeps for the "this
 /// over"/recent-balls row — enough to show a bit more than the current over,
 /// nowhere near a whole innings.
 pub const RECENT_DELIVERIES_LIMIT: usize = 18;
@@ -92,53 +65,6 @@ pub struct Overs {
     pub overs: u32,
     /// Balls into the current over (0..balls_per_over).
     pub balls: u32,
-}
-
-/// One innings' full detail: totals, batting/bowling cards, extras, and
-/// fall-of-wickets. Bounded by roster size (how many players batted/bowled),
-/// not ball count, so it stays small regardless of how long the innings runs
-/// — safe to keep in `CricketDetail` and update on every single delivery.
-#[derive(Object)]
-pub struct CricketInnings {
-    /// The batting side for this innings (references MatchSide.id).
-    pub batting_side_id: String,
-    /// The bowling/fielding side for this innings.
-    pub bowling_side_id: String,
-    /// Total runs scored in the innings.
-    pub runs: u32,
-    /// Wickets lost (0-10).
-    pub wickets: u32,
-    /// Overs bowled, e.g. 19 overs + 4 balls into the 20th.
-    pub overs: Overs,
-    /// Whether the innings has been declared closed.
-    pub declared: bool,
-    pub batting: Vec<CricketBattingEntry>,
-    pub bowling: Vec<CricketBowlingEntry>,
-    pub extras: CricketExtras,
-    pub fall_of_wickets: Vec<CricketFallOfWicket>,
-}
-
-impl CricketInnings {
-    pub fn opening(batting_side_id: String, bowling_side_id: String) -> Self {
-        CricketInnings {
-            batting_side_id,
-            bowling_side_id,
-            runs: 0,
-            wickets: 0,
-            overs: Overs { overs: 0, balls: 0 },
-            declared: false,
-            batting: Vec::new(),
-            bowling: Vec::new(),
-            extras: CricketExtras {
-                byes: 0,
-                leg_byes: 0,
-                wides: 0,
-                no_balls: 0,
-                penalty: 0,
-            },
-            fall_of_wickets: Vec::new(),
-        }
-    }
 }
 
 /// A single delivery (ball) in an innings. The atomic unit of in-app scoring.
@@ -247,7 +173,7 @@ pub struct CricketBowlingEntry {
     pub no_balls: u32,
 }
 
-#[derive(Object, Clone)]
+#[derive(Object, Clone, Default)]
 pub struct CricketExtras {
     pub byes: u32,
     pub leg_byes: u32,

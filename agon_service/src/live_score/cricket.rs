@@ -1,11 +1,12 @@
 use poem_openapi::{Enum, Object, Union};
 
 use crate::detailed_score::cricket::{
-    CricketBattingEntry, CricketBowlingEntry, CricketDelivery, CricketDetail, CricketDismissal,
-    CricketDismissalKind, CricketExtraKind, CricketFallOfWicket, CricketInnings, NextBallContext,
+    CricketBattingEntry, CricketBowlingEntry, CricketDelivery, CricketDismissal,
+    CricketDismissalKind, CricketExtraKind, CricketExtras, CricketFallOfWicket, NextBallContext,
     Overs, RECENT_DELIVERIES_LIMIT, balls_to_overs, dismissal_credited_to_bowler,
     is_legal_delivery, runs_charged_to_bowler,
 };
+use crate::{CricketScore, CricketScoreInnings};
 
 /// Cricket live-scoring events, nested under the outer sport union
 /// (`LiveEventInput::Cricket`), discriminated by `kind`. Corrections are
@@ -97,10 +98,15 @@ fn bowler<'a>(
 /// the batting/bowling cards, extras, and fall-of-wickets in place — and
 /// returns the next-ball context that follows it. The whole incremental
 /// step: called once per new delivery on the append path, and repeatedly
-/// from `CricketInnings::opening`/`NextBallContext::opening` to bootstrap or
-/// recover a `CricketDetail` from the full event log (see
-/// `CricketDetail::from_events`) — one implementation either way, so the two
-/// paths can't disagree.
+/// from `CricketScoreInnings::opening`/`NextBallContext::opening` to
+/// bootstrap or recover a `CricketScore` from the full event log (see
+/// `CricketScore::from_events`) — one implementation either way, so the two
+/// paths can't disagree. The card fields (`batting`/`bowling`/`extras`/
+/// `fall_of_wickets`) are always `Some` by the time this runs — `opening()`
+/// populates them empty rather than `None` — but every access still goes
+/// through `get_or_insert_with` defensively, since the same fields are
+/// `None` for a bare manually-entered result and it costs nothing here to
+/// not assume otherwise.
 ///
 /// Strike rotates on an odd number of the ball's rotating runs (off the bat,
 /// or byes/leg-byes — wides/no-balls don't rotate strike) and always at the
@@ -112,7 +118,7 @@ fn bowler<'a>(
 /// completed, using `runs_conceded_this_over` — tracked alongside the
 /// context rather than recomputed by scanning deliveries.
 pub fn apply_delivery(
-    innings: &mut CricketInnings,
+    innings: &mut CricketScoreInnings,
     context: &NextBallContext,
     d: &CricketDelivery,
     balls_per_over: u32,
@@ -132,7 +138,10 @@ pub fn apply_delivery(
     // Batting: striker is credited runs off the bat and faces legal balls
     // and no-balls (but not wides).
     {
-        let b = batter(&mut innings.batting, &d.striker_player_id);
+        let b = batter(
+            innings.batting.get_or_insert_with(Vec::new),
+            &d.striker_player_id,
+        );
         b.runs += d.runs_off_bat;
         let faced_ball = !matches!(
             d.extra.as_ref().map(|e| &e.kind),
@@ -150,7 +159,10 @@ pub fn apply_delivery(
 
     // Bowling figures.
     {
-        let bw = bowler(&mut innings.bowling, &d.bowler_player_id);
+        let bw = bowler(
+            innings.bowling.get_or_insert_with(Vec::new),
+            &d.bowler_player_id,
+        );
         bw.runs_conceded += charged;
         if let Some(extra) = &d.extra {
             match extra.kind {
@@ -167,28 +179,39 @@ pub fn apply_delivery(
 
     // Extras breakdown.
     if let Some(extra) = &d.extra {
+        let extras = innings.extras.get_or_insert_with(CricketExtras::default);
         match extra.kind {
-            CricketExtraKind::Bye => innings.extras.byes += extra.runs,
-            CricketExtraKind::LegBye => innings.extras.leg_byes += extra.runs,
-            CricketExtraKind::Wide => innings.extras.wides += extra.runs,
-            CricketExtraKind::NoBall => innings.extras.no_balls += extra.runs,
-            CricketExtraKind::Penalty => innings.extras.penalty += extra.runs,
+            CricketExtraKind::Bye => extras.byes += extra.runs,
+            CricketExtraKind::LegBye => extras.leg_byes += extra.runs,
+            CricketExtraKind::Wide => extras.wides += extra.runs,
+            CricketExtraKind::NoBall => extras.no_balls += extra.runs,
+            CricketExtraKind::Penalty => extras.penalty += extra.runs,
         }
     }
 
     // Wicket.
     if let Some(wicket) = &d.wicket {
         innings.wickets += 1;
-        innings.fall_of_wickets.push(CricketFallOfWicket {
-            wicket: innings.wickets,
-            runs: innings.runs,
-            player_id: wicket.dismissed_player_id.clone(),
-            overs: Some(innings.overs),
-        });
+        innings
+            .fall_of_wickets
+            .get_or_insert_with(Vec::new)
+            .push(CricketFallOfWicket {
+                wicket: innings.wickets,
+                runs: innings.runs,
+                player_id: wicket.dismissed_player_id.clone(),
+                overs: Some(innings.overs),
+            });
         if dismissal_credited_to_bowler(&wicket.kind) {
-            bowler(&mut innings.bowling, &d.bowler_player_id).wickets += 1;
+            bowler(
+                innings.bowling.get_or_insert_with(Vec::new),
+                &d.bowler_player_id,
+            )
+            .wickets += 1;
         }
-        let b = batter(&mut innings.batting, &wicket.dismissed_player_id);
+        let b = batter(
+            innings.batting.get_or_insert_with(Vec::new),
+            &wicket.dismissed_player_id,
+        );
         b.dismissal = Some(CricketDismissal {
             kind: wicket.kind.clone(),
             bowler_player_id: wicket.bowler_player_id.clone(),
@@ -228,7 +251,7 @@ pub fn apply_delivery(
             if runs_conceded_this_over == 0
                 && let Some(over_bowler_id) = &bowler_id
             {
-                bowler(&mut innings.bowling, over_bowler_id).maidens += 1;
+                bowler(innings.bowling.get_or_insert_with(Vec::new), over_bowler_id).maidens += 1;
             }
             previous_over_bowler = bowler_id.take();
             over += 1;
@@ -248,9 +271,9 @@ pub fn apply_delivery(
     }
 }
 
-impl CricketDetail {
-    /// Folds the whole event log into a `CricketDetail` from scratch — the
-    /// slow path, used to bootstrap a match's first detail, recover from a
+impl CricketScore {
+    /// Folds the whole event log into a `CricketScore` from scratch — the
+    /// slow path, used to bootstrap a match's first score, recover from a
     /// missing/unparseable cache, or rebuild after undoing the last event.
     /// Just `apply_event` run once per event in order; the fast
     /// (single-event) and slow (whole-log) paths share the exact same fold,
@@ -261,24 +284,24 @@ impl CricketDetail {
         wide_is_extra_ball: bool,
         no_ball_is_extra_ball: bool,
     ) -> Self {
-        let mut detail = CricketDetail {
+        let mut score = CricketScore {
             innings: Vec::new(),
             recent_deliveries: None,
             next_ball_context: None,
-            awaiting_next_innings: true,
+            awaiting_next_innings: Some(true),
         };
         for event in events {
-            detail.apply_event(
+            score.apply_event(
                 event,
                 balls_per_over,
                 wide_is_extra_ball,
                 no_ball_is_extra_ball,
             );
         }
-        detail
+        score
     }
 
-    /// Folds one new event into this detail in place — the fast path, run
+    /// Folds one new event into this score in place — the fast path, run
     /// on every append.
     pub fn apply_event(
         &mut self,
@@ -289,13 +312,13 @@ impl CricketDetail {
     ) {
         match event {
             CricketLiveEvent::InningsStart(start) => {
-                self.innings.push(CricketInnings::opening(
+                self.innings.push(CricketScoreInnings::opening(
                     start.batting_side_id.clone(),
                     start.bowling_side_id.clone(),
                 ));
                 self.recent_deliveries = Some(Vec::new());
                 self.next_ball_context = Some(NextBallContext::opening());
-                self.awaiting_next_innings = false;
+                self.awaiting_next_innings = Some(false);
             }
             CricketLiveEvent::Delivery(d) => {
                 let Some(current) = self.innings.last_mut() else {
@@ -329,6 +352,7 @@ impl CricketDetail {
                 };
                 let Some(entry) = current
                     .batting
+                    .get_or_insert_with(Vec::new)
                     .iter_mut()
                     .find(|b| b.player_id == r.batter_player_id)
                 else {
@@ -355,12 +379,14 @@ impl CricketDetail {
                 });
                 if r.retired_out {
                     current.wickets += 1;
-                    current.fall_of_wickets.push(CricketFallOfWicket {
-                        wicket: current.wickets,
-                        runs: current.runs,
-                        player_id: r.batter_player_id.clone(),
-                        overs: Some(current.overs),
-                    });
+                    current.fall_of_wickets.get_or_insert_with(Vec::new).push(
+                        CricketFallOfWicket {
+                            wicket: current.wickets,
+                            runs: current.runs,
+                            player_id: r.batter_player_id.clone(),
+                            overs: Some(current.overs),
+                        },
+                    );
                 }
                 if let Some(ctx) = &mut self.next_ball_context {
                     if ctx.striker_player_id.as_deref() == Some(r.batter_player_id.as_str()) {
@@ -378,7 +404,7 @@ impl CricketDetail {
                 }
                 self.recent_deliveries = None;
                 self.next_ball_context = None;
-                self.awaiting_next_innings = true;
+                self.awaiting_next_innings = Some(true);
             }
         }
     }
@@ -402,8 +428,8 @@ mod tests {
         }
     }
 
-    fn detail(events: &[CricketLiveEvent]) -> CricketDetail {
-        CricketDetail::from_events(events, 6, true, true)
+    fn score(events: &[CricketLiveEvent]) -> CricketScore {
+        CricketScore::from_events(events, 6, true, true)
     }
 
     #[test]
@@ -425,15 +451,17 @@ mod tests {
             }),
         ];
 
-        let d = detail(&events);
+        let d = score(&events);
         assert_eq!(d.innings.len(), 1);
         assert_eq!(d.innings[0].runs, 4);
         assert_eq!(d.innings[0].wickets, 1);
         assert_eq!(d.innings[0].overs, Overs { overs: 0, balls: 2 });
-        assert!(!d.awaiting_next_innings);
+        assert_eq!(d.awaiting_next_innings, Some(false));
 
         let sharma = d.innings[0]
             .batting
+            .as_ref()
+            .unwrap()
             .iter()
             .find(|b| b.player_id == "sharma")
             .unwrap();
@@ -445,6 +473,8 @@ mod tests {
 
         let patel = d.innings[0]
             .bowling
+            .as_ref()
+            .unwrap()
             .iter()
             .find(|b| b.player_id == "patel")
             .unwrap();
@@ -463,9 +493,11 @@ mod tests {
                 "patel", "sharma", "verma", 0,
             )));
         }
-        let d = detail(&events);
+        let d = score(&events);
         let patel = d.innings[0]
             .bowling
+            .as_ref()
+            .unwrap()
             .iter()
             .find(|b| b.player_id == "patel")
             .unwrap();
@@ -487,9 +519,11 @@ mod tests {
                 "patel", "verma", "sharma", 0,
             )));
         }
-        let d = detail(&events);
+        let d = score(&events);
         let patel = d.innings[0]
             .bowling
+            .as_ref()
+            .unwrap()
             .iter()
             .find(|b| b.player_id == "patel")
             .unwrap();
@@ -507,7 +541,7 @@ mod tests {
                 "patel", "sharma", "verma", 1,
             )));
         }
-        let d = detail(&events);
+        let d = score(&events);
         assert_eq!(
             d.recent_deliveries.as_ref().map(Vec::len),
             Some(RECENT_DELIVERIES_LIMIT)
@@ -517,10 +551,10 @@ mod tests {
         events.push(CricketLiveEvent::InningsEnd(CricketInningsEndEvent {
             reason: InningsEndReason::Declared,
         }));
-        let d = detail(&events);
+        let d = score(&events);
         assert!(d.recent_deliveries.is_none());
         assert!(d.next_ball_context.is_none());
-        assert!(d.awaiting_next_innings);
+        assert_eq!(d.awaiting_next_innings, Some(true));
     }
 
     #[test]
@@ -532,7 +566,7 @@ mod tests {
             }),
             CricketLiveEvent::Delivery(ball("patel", "sharma", "verma", 1)),
         ];
-        let ctx = detail(&events).next_ball_context.unwrap();
+        let ctx = score(&events).next_ball_context.unwrap();
         assert_eq!(ctx.striker_player_id.as_deref(), Some("verma"));
         assert_eq!(ctx.non_striker_player_id.as_deref(), Some("sharma"));
         assert_eq!(ctx.bowler_player_id.as_deref(), Some("patel"));
@@ -545,7 +579,7 @@ mod tests {
                 "patel", "verma", "sharma", 0,
             )));
         }
-        let ctx = detail(&all_events).next_ball_context.unwrap();
+        let ctx = score(&all_events).next_ball_context.unwrap();
         assert_eq!(
             ctx.over, 1,
             "over completes after 6 legal balls (with the standard 6-ball-over default)"
@@ -579,7 +613,7 @@ mod tests {
                 ..ball("patel", "sharma", "verma", 0)
             }),
         ];
-        let ctx = detail(&events).next_ball_context.unwrap();
+        let ctx = score(&events).next_ball_context.unwrap();
         assert!(ctx.striker_player_id.is_none());
         assert_eq!(ctx.non_striker_player_id.as_deref(), Some("verma"));
     }
@@ -601,7 +635,7 @@ mod tests {
             CricketLiveEvent::Delivery(ball("patel", "sharma", "verma", 1)),
         ];
 
-        let d = detail(&events);
+        let d = score(&events);
         assert_eq!(d.innings.len(), 1);
         assert_eq!(
             d.innings[0].wickets, 0,
@@ -609,6 +643,8 @@ mod tests {
         );
         let sharma = d.innings[0]
             .batting
+            .as_ref()
+            .unwrap()
             .iter()
             .find(|b| b.player_id == "sharma")
             .unwrap();
@@ -620,8 +656,9 @@ mod tests {
             sharma.dismissal.as_ref().map(|w| &w.kind),
             Some(CricketDismissalKind::RetiredHurt)
         ));
-        assert!(
-            !d.awaiting_next_innings,
+        assert_eq!(
+            d.awaiting_next_innings,
+            Some(false),
             "the innings is still open (no InningsEnd), so we're not \"awaiting\" the next one"
         );
     }
@@ -640,10 +677,13 @@ mod tests {
             }),
         ];
 
-        let d = detail(&events);
+        let d = score(&events);
         assert_eq!(d.innings[0].wickets, 1);
-        assert_eq!(d.innings[0].fall_of_wickets.len(), 1);
-        assert_eq!(d.innings[0].fall_of_wickets[0].player_id, "sharma");
+        assert_eq!(d.innings[0].fall_of_wickets.as_ref().unwrap().len(), 1);
+        assert_eq!(
+            d.innings[0].fall_of_wickets.as_ref().unwrap()[0].player_id,
+            "sharma"
+        );
     }
 
     #[test]
@@ -664,14 +704,14 @@ mod tests {
             CricketLiveEvent::Delivery(ball("sharma", "cole", "adeyemi", 1)),
         ];
 
-        let d = detail(&events);
+        let d = score(&events);
         assert_eq!(d.innings.len(), 2);
         assert_eq!(d.innings[0].batting_side_id, "warriors");
         assert_eq!(d.innings[0].runs, 4);
         assert!(d.innings[0].declared);
         assert_eq!(d.innings[1].batting_side_id, "mill_lane");
         assert_eq!(d.innings[1].runs, 1);
-        assert!(!d.awaiting_next_innings);
+        assert_eq!(d.awaiting_next_innings, Some(false));
     }
 
     #[test]
@@ -692,14 +732,14 @@ mod tests {
             CricketLiveEvent::Delivery(ball("patel", "sharma", "verma", 2)),
         ];
 
-        let d = detail(&events);
+        let d = score(&events);
         assert_eq!(
             d.innings.len(),
             1,
             "the deleted end must not have split the log into two innings"
         );
         assert_eq!(d.innings[0].runs, 6);
-        assert!(!d.awaiting_next_innings);
+        assert_eq!(d.awaiting_next_innings, Some(false));
     }
 
     #[test]
@@ -722,15 +762,15 @@ mod tests {
             }),
         ];
 
-        let full = CricketDetail::from_events(&events, 6, true, true);
+        let full = CricketScore::from_events(&events, 6, true, true);
 
         // Apply the same events one at a time, incrementally, and check the
         // final state matches the full fold exactly.
-        let mut incremental = CricketDetail {
+        let mut incremental = CricketScore {
             innings: Vec::new(),
             recent_deliveries: None,
             next_ball_context: None,
-            awaiting_next_innings: true,
+            awaiting_next_innings: Some(true),
         };
         for event in &events {
             incremental.apply_event(event, 6, true, true);
@@ -740,12 +780,12 @@ mod tests {
         assert_eq!(incremental.innings[0].runs, full.innings[0].runs);
         assert_eq!(incremental.innings[0].wickets, full.innings[0].wickets);
         assert_eq!(
-            incremental.innings[0].batting.len(),
-            full.innings[0].batting.len()
+            incremental.innings[0].batting.as_ref().unwrap().len(),
+            full.innings[0].batting.as_ref().unwrap().len()
         );
         assert_eq!(
-            incremental.innings[0].bowling.len(),
-            full.innings[0].bowling.len()
+            incremental.innings[0].bowling.as_ref().unwrap().len(),
+            full.innings[0].bowling.as_ref().unwrap().len()
         );
     }
 }

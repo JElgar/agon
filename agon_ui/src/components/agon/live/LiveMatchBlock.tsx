@@ -7,7 +7,7 @@ import {
   eventEmoji,
   liveClockLabel,
   recentEvents,
-  type FootballDetail,
+  type FootballScore,
 } from '@/lib/liveScore'
 
 /** How often the clock label re-renders. Minute-granularity, so this just
@@ -24,9 +24,9 @@ function sideName(side: MatchSide | undefined, fallback: string): string {
 /**
  * The score block + mini-ticker for a football match being scored live
  * (mockup "Mini-ticker — last events under the score"). Presentational: the
- * caller fetches the detailed score (`useMatchDetailedScore`) and passes the
- * derived football detail down, so `MatchCard` and `MatchDetailPage` can each
- * decide when to show this instead of their normal (confirmed/pending score)
+ * caller fetches the live score (`useMatchScore`) and passes the derived
+ * football score down, so `MatchCard` and `MatchDetailPage` can each decide
+ * when to show this instead of their normal (confirmed/pending score)
  * block.
  */
 export function LiveMatchBlock({
@@ -35,7 +35,7 @@ export function LiveMatchBlock({
   tickerLimit = 2,
 }: {
   match: Match
-  state: FootballDetail
+  state: FootballScore
   /** How many recent events to show under the score. */
   tickerLimit?: number
 }) {

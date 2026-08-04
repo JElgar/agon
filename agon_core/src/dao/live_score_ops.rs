@@ -4,8 +4,8 @@
 //!
 //! The event log (`LIVEEVT#<seq>`) is the sole source of truth — one item per
 //! event, with no per-item size ceiling regardless of how long a match runs.
-//! The derived scorecard it folds into lives in `MatchDetailedScoreRecord`
-//! (`DETAIL#<sport>`) — see that record's doc comment. Corrections are
+//! The derived scorecard it folds into lives in `MatchScoreRecord`
+//! (`LIVESCORE#<sport>`) — see that record's doc comment. Corrections are
 //! direct mutations of the log — `delete_live_event` removes an item
 //! outright, `amend_live_event` overwrites its payload in place — not a
 //! layered "this is void" marker to filter out on every read.

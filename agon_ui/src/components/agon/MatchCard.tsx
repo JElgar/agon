@@ -17,10 +17,9 @@ import { LiveMatchBlock } from './live/LiveMatchBlock'
 import { CricketMatchBlock } from './live/CricketMatchBlock'
 import { CricketScoreBlock } from './CricketScoreBlock'
 import { LiveIndicator } from './live/LiveIndicator'
-import { useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
-import { describeEvent, eventEmoji, footballDetailFrom, recentGoalEvents } from '@/lib/liveScore'
+import { useMatchScore } from '@/hooks/useMatchScore'
+import { describeEvent, eventEmoji, footballScoreFrom, recentGoalEvents } from '@/lib/liveScore'
 import {
-  cricketDetailFrom,
   cricketProgressFromScore,
   cricketScoreFrom,
   cricketStateDescription,
@@ -213,20 +212,20 @@ export function MatchCard({
   // (`cricketScore` below) — both produced by finishing a live-scored match
   // (see `finishMatch` in `LiveScoringPage`/`CricketLiveScoringPage`), same
   // technique as `MatchDetailPage`'s completed scorecards but without that
-  // page's extra `/detailed-score` fetch, which this compact card doesn't need.
-  const detailedScore = useMatchDetailedScore(match.id, {
+  // page's extra `/score` poll, which this compact card doesn't need.
+  const scoreQuery = useMatchScore(match.id, {
     enabled: isCurrentlyLive,
     refetchInterval: 20000,
   })
   // Gate on `isCurrentlyLive`, not just "did the fetch return something" —
-  // `detailedScore` is a react-query cache keyed only by match id, shared
-  // with `MatchDetailPage`, which fetches it for a *completed* match too (to
+  // `scoreQuery` is a react-query cache keyed only by match id, shared with
+  // `MatchDetailPage`, which fetches it for a *completed* match too (to
   // show the finished scorecard). `enabled: false` only stops a new fetch
   // here; it doesn't hide data another component already populated that
   // cache entry with, so without this guard a card could keep rendering the
   // live block/badge for a match that finished after the card last mounted.
-  const footballState = isCurrentlyLive ? footballDetailFrom(detailedScore.data) : null
-  const cricketState = isCurrentlyLive ? cricketDetailFrom(detailedScore.data) : null
+  const footballState = isCurrentlyLive ? footballScoreFrom(scoreQuery.data) : null
+  const cricketState = isCurrentlyLive ? cricketScoreFrom(scoreQuery.data) : null
   // Recent goals for a finished football match, read straight off the
   // confirmed/pending score (no fetch) — shown under the plain score box
   // below (the live ticker in `LiveMatchBlock` only renders while
@@ -247,7 +246,11 @@ export function MatchCard({
   // it (`showDescription`).
   const cricketFmt = cricketFormat(match.format)
   const cricketDescription = cricketState
-    ? cricketStateDescription(match, cricketState, cricketFmt)
+    ? cricketStateDescription(
+        match,
+        { innings: cricketState.innings, awaiting_next_innings: cricketState.awaiting_next_innings ?? true },
+        cricketFmt,
+      )
     : cricketScore
       ? cricketStateDescription(match, cricketProgressFromScore(cricketScore), cricketFmt)
       : null

@@ -11,7 +11,7 @@ import {
   playerNameFor,
   runRate,
   sideNameFor,
-  type CricketDetail,
+  type CricketScore,
 } from '@/lib/cricketScore'
 import { cricketFormat } from '@/lib/matchFormat'
 
@@ -36,8 +36,8 @@ function BallChip({ label, kind }: { label: string; kind: 'boundary' | 'wicket' 
 /**
  * The score block + "this over" ball row for a cricket match being scored
  * live (mirrors `LiveMatchBlock`'s role for football). Presentational: the
- * caller fetches the detailed score (`useMatchDetailedScore`) and passes the
- * derived cricket detail down.
+ * caller fetches the live score (`useMatchScore`) and passes the derived
+ * cricket score down.
  */
 export function CricketMatchBlock({
   match,
@@ -45,7 +45,7 @@ export function CricketMatchBlock({
   showDescription = true,
 }: {
   match: Match
-  state: CricketDetail
+  state: CricketScore
   /** Whether to show the state-of-game line (target/leading/result) here.
    *  Callers that already surface it elsewhere (the feed card's header)
    *  pass `false` so it isn't said twice — the innings-break heading then
@@ -54,7 +54,11 @@ export function CricketMatchBlock({
 }) {
   const innings = currentInnings(state)
   const format = cricketFormat(match.format)
-  const description = cricketStateDescription(match, state, format)
+  const description = cricketStateDescription(
+    match,
+    { innings: state.innings, awaiting_next_innings: state.awaiting_next_innings ?? true },
+    format,
+  )
 
   if (!innings) {
     // Between innings, or nothing bowled yet. Every innings played so far

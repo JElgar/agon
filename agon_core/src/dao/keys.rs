@@ -152,8 +152,10 @@ pub enum Sk {
     Side(String),
     /// A match player. `PLAYER#<playerId>`
     Player(String),
-    /// A match's detailed score, keyed by sport. `DETAIL#<sport>`
-    Detail(String),
+    /// A match's live-scoring score record, keyed by sport.
+    /// `LIVESCORE#<sport>` — not `SCORE#`, which would collide with
+    /// `SCORESUB#` under a `begins_with` prefix query.
+    Score(String),
     /// A like on a match. `LIKE#<uid>`
     Like(String),
 
@@ -203,7 +205,7 @@ impl Sk {
             Sk::Member(_) => "MEMBER",
             Sk::Side(_) => "SIDE",
             Sk::Player(_) => "PLAYER",
-            Sk::Detail(_) => "DETAIL",
+            Sk::Score(_) => "LIVESCORE",
             Sk::Like(_) => "LIKE",
             Sk::LiveEvent(_) => "LIVEEVT",
             Sk::ScoreSubmission(_) => "SCORESUB",
@@ -227,7 +229,7 @@ impl fmt::Display for Sk {
             | Sk::Member(v)
             | Sk::Side(v)
             | Sk::Player(v)
-            | Sk::Detail(v)
+            | Sk::Score(v)
             | Sk::Like(v)
             | Sk::ScoreSubmission(v)
             | Sk::Comment(v)
@@ -280,7 +282,7 @@ impl FromStr for Sk {
             "MEMBER" => Ok(Sk::Member(rest.into())),
             "SIDE" => Ok(Sk::Side(rest.into())),
             "PLAYER" => Ok(Sk::Player(rest.into())),
-            "DETAIL" => Ok(Sk::Detail(rest.into())),
+            "LIVESCORE" => Ok(Sk::Score(rest.into())),
             "LIKE" => Ok(Sk::Like(rest.into())),
             "LIVEEVT" => rest
                 .parse::<u32>()
@@ -367,7 +369,7 @@ mod tests {
         sk_roundtrip(Sk::Member("mem1".into()), "MEMBER#mem1");
         sk_roundtrip(Sk::Side("side_red".into()), "SIDE#side_red");
         sk_roundtrip(Sk::Player("p1".into()), "PLAYER#p1");
-        sk_roundtrip(Sk::Detail("cricket".into()), "DETAIL#cricket");
+        sk_roundtrip(Sk::Score("cricket".into()), "LIVESCORE#cricket");
         sk_roundtrip(Sk::Like("u3".into()), "LIKE#u3");
         // Id-addressed (time-ordered) items now use id-only base SKs.
         sk_roundtrip(Sk::ScoreSubmission("s1".into()), "SCORESUB#s1");

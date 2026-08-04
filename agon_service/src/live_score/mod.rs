@@ -4,12 +4,11 @@
 //! device catching up after being offline.
 //!
 //! This is the write-side vocabulary, plus the pure functions (in
-//! `football`/`cricket`) that fold an ordered event log into
-//! `detailed_score`'s shapes — there's no separate "live" read shape
-//! anymore: `GET /matches/:id/detailed-score` serves the same
-//! `DetailedScore` whether the match is still being scored or long
-//! finished (see `detailed_score`'s module docs for why that's one shape
-//! now, not two).
+//! `football`/`cricket`) that fold an ordered event log into `Score`'s
+//! optional rich-detail fields — there's no separate "live" read shape:
+//! `GET /matches/:id/score` serves the same `Score` whether the match is
+//! still being scored or long finished, live or confirmed (see `Score`'s
+//! doc comment on `main.rs`).
 //!
 //! Corrections are restricted to undoing the most recently recorded event —
 //! `DELETE /matches/:id/live/events/:seq` only succeeds when `seq` is the
@@ -26,9 +25,9 @@ pub use cricket::CricketLiveEvent;
 pub use football::FootballLiveEvent;
 
 /// A single live-scoring event, sport-first discriminated so a new sport is a
-/// new variant without touching existing ones — same pattern as
-/// `detailed_score::DetailedScore`. See `football`/`cricket` for the per-kind
-/// union nested inside each variant.
+/// new variant without touching existing ones — same pattern as `Score`.
+/// See `football`/`cricket` for the per-kind union nested inside each
+/// variant.
 #[derive(Union)]
 #[oai(one_of, discriminator_name = "sport")]
 pub enum LiveEventInput {
@@ -73,15 +72,15 @@ pub struct LiveEvent {
     pub event: LiveEventInput,
 }
 
-/// A `DetailedScore` plus the log position it reflects, so a client can tell
-/// whether its own queued-but-unsynced events are already applied. Returned
-/// by every endpoint that touches the live event log (append, delete) —
-/// `GET /matches/:id/detailed-score` itself doesn't need this wrapper, since
-/// a plain read has no "position I was expecting" to compare against.
+/// A `Score` plus the log position it reflects, so a client can tell whether
+/// its own queued-but-unsynced events are already applied. Returned by every
+/// endpoint that touches the live event log (append, delete) —
+/// `GET /matches/:id/score` itself doesn't need this wrapper, since a plain
+/// read has no "position I was expecting" to compare against.
 #[derive(Object)]
 pub struct LiveScoreSnapshot {
     pub last_seq: u32,
-    pub detail: crate::detailed_score::DetailedScore,
+    pub score: crate::Score,
 }
 
 #[cfg(test)]
@@ -106,7 +105,7 @@ mod tests {
         let json = event.to_json().expect("serializes");
         let obj = json.as_object().expect("flat object, not a wrapper");
         // Variant names are the discriminator values as-is (no rename_all is
-        // set), matching the existing `DetailedScore`/`Score` unions.
+        // set), matching the existing `Score` union.
         assert_eq!(obj.get("sport").and_then(|v| v.as_str()), Some("Football"));
         assert_eq!(obj.get("kind").and_then(|v| v.as_str()), Some("Card"));
         assert_eq!(obj.get("side_id").and_then(|v| v.as_str()), Some("side_a"));

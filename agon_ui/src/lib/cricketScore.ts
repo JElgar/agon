@@ -3,8 +3,6 @@ import { memberName } from './members'
 import type { CricketFormat } from './matchFormat'
 
 export type CricketDelivery = components['schemas']['CricketDelivery']
-export type CricketInnings = components['schemas']['CricketInnings']
-export type CricketDetail = components['schemas']['CricketDetail']
 export type NextBallContext = components['schemas']['NextBallContext']
 export type CricketExtraKind = components['schemas']['CricketExtraKind']
 export type CricketDismissalKind = components['schemas']['CricketDismissalKind']
@@ -15,21 +13,13 @@ export type CricketScoreInnings = components['schemas']['CricketScoreInnings']
 export type Overs = components['schemas']['Overs']
 export type CricketLiveEvent = components['schemas']['CricketLiveEvent']
 type LiveEvent = components['schemas']['LiveEvent']
-type DetailedScore = components['schemas']['DetailedScore']
 type Score = components['schemas']['Score']
 type Match = components['schemas']['Match']
 
-/** Narrows a match's detailed score to its cricket detail — innings plus,
- *  while a match is actually being live-scored, the bounded recent-ball
- *  window and next-ball context (see `CricketDetail`'s doc comment on the
- *  backend for why it's one merged shape, live or finished). `null` when
- *  there's none yet or it's for a different sport. */
-export function cricketDetailFrom(detail: DetailedScore | null | undefined): CricketDetail | null {
-  if (!detail || detail.type !== 'Cricket') return null
-  return detail
-}
-
-/** Narrows a match score to its cricket variant, or `null` when there's no
+/** Narrows a match's score to its cricket variant — innings plus, while a
+ *  match is actually being live-scored, the bounded recent-ball window and
+ *  next-ball context (see `Score`'s doc comment on the backend for why it's
+ *  one shape, live or finished, confirmed or not). `null` when there's no
  *  score yet or it's the plain totals-only shape a manually-logged (not
  *  live-scored) cricket result degrades to (see `Score::Simple`'s doc
  *  comment on the backend). */
@@ -38,78 +28,26 @@ export function cricketScoreFrom(score: Score | null | undefined): CricketScore 
   return score
 }
 
-/** Narrows a match's detailed score to its cricket innings, or `null` when
- *  there's none yet or it's for a different sport. */
-export function cricketDetail(
-  detail: DetailedScore | null | undefined,
-): CricketInnings[] | null {
-  return cricketDetailFrom(detail)?.innings ?? null
+/** A match's per-innings totals (plus whatever per-player detail they carry)
+ *  straight off its score — `null` if there's no score yet or it's not
+ *  `Cricket`. The same accessor for both the live in-progress view and a
+ *  finished match's confirmed/pending score, now that they're the same
+ *  shape (see `cricketScoreFrom`). */
+export function cricketInningsFor(score: Score | null | undefined): CricketScoreInnings[] | null {
+  return cricketScoreFrom(score)?.innings ?? null
 }
 
-/** A `Score.Cricket` innings' totals plus whatever per-player detail it
- *  carries, reshaped to `CricketInnings`' shape (batting/bowling/extras/
- *  fall-of-wickets default to empty/zeroed when absent — a manually-entered
- *  result with no card attached). */
-function cricketInningsFromScoreInnings(inn: CricketScoreInnings): CricketInnings {
-  return {
-    batting_side_id: inn.batting_side_id,
-    bowling_side_id: inn.bowling_side_id,
-    runs: inn.runs,
-    wickets: inn.wickets,
-    overs: inn.overs,
-    declared: inn.declared,
-    batting: inn.batting ?? [],
-    bowling: inn.bowling ?? [],
-    extras: inn.extras ?? { byes: 0, leg_byes: 0, wides: 0, no_balls: 0, penalty: 0 },
-    fall_of_wickets: inn.fall_of_wickets ?? [],
-  }
-}
-
-/** A finished cricket match's per-innings detail straight off its confirmed/
- *  pending score — `null` if there's no score yet or it's not `Cricket`
- *  (a manually-logged result that never got innings totals at all). Lets
- *  the match detail page's `CricketScorecard` avoid fetching `DetailedScore`
- *  once the match is over (see `cricketDetail`, which still covers the
- *  live, in-progress view). */
-export function cricketInningsFromScore(score: Score | null | undefined): CricketInnings[] | null {
-  const cs = cricketScoreFrom(score)
-  return cs ? cs.innings.map(cricketInningsFromScoreInnings) : null
-}
-
-/** Builds the `Score` a finished, live-scored cricket match would confirm —
- *  the same shape `update_match` derives server-side from this same
- *  persisted detail (`derive_score_from_detail`). `finishMatch` sends this
- *  explicitly so the server can confirm the client isn't finishing on a
- *  stale view rather than silently trusting it. */
-export function scoreFromCricketDetail(detail: CricketDetail): Score {
-  return {
-    type: 'Cricket',
-    innings: detail.innings.map((inn) => ({
-      batting_side_id: inn.batting_side_id,
-      bowling_side_id: inn.bowling_side_id,
-      runs: inn.runs,
-      wickets: inn.wickets,
-      overs: inn.overs,
-      declared: inn.declared,
-      batting: inn.batting,
-      bowling: inn.bowling,
-      extras: inn.extras,
-      fall_of_wickets: inn.fall_of_wickets,
-    })),
-  }
-}
-
-/** A `detailed_score` innings (batting/bowling cards, totals) with its
- *  ball-by-ball log folded back in from the live event log — what the match
- *  detail page builds for the scorecard/run-rate graph, since
- *  `detailed_score` itself no longer carries deliveries (see
+/** A cricket innings (batting/bowling cards, totals) with its ball-by-ball
+ *  log folded back in from the live event log — what the match detail page
+ *  builds for the scorecard/run-rate graph, since a match's score itself
+ *  only ever carries a bounded recent-deliveries window (see
  *  `inningsDeliveriesFromEvents`). */
-export type CricketInningsWithDeliveries = CricketInnings & { deliveries: CricketDelivery[] }
+export type CricketInningsWithDeliveries = CricketScoreInnings & { deliveries: CricketDelivery[] }
 
 /** One innings' ball-by-ball log, recovered by segmenting the raw live event
  *  log on its `InningsStart`/`InningsEnd` markers. This is the durable
- *  source for a completed match's full run-progression graph — the detail
- *  (`CricketDetail.recent_deliveries`) only ever keeps a bounded window for
+ *  source for a completed match's full run-progression graph — the score
+ *  (`CricketScore.recent_deliveries`) only ever keeps a bounded window for
  *  the innings currently open (or just-finished), since that's all the live
  *  view itself needs; the event log has no such bound (one item per ball,
  *  not one item per match) and is safe to read in full regardless of match
@@ -152,9 +90,8 @@ export function inningsDeliveriesFromEvents(events: LiveEvent[]): InningsDeliver
 }
 
 /** The minimal per-innings shape match-aggregate math and the state-of-game
- *  sentence need — both `CricketDetail.innings` (rich, ball-by-ball derived,
- *  live or finished) and a confirmed `CricketScore.innings` (the persisted
- *  summary) satisfy this structurally, so the same functions work on either. */
+ *  sentence need — a live `CricketScore.innings` and a confirmed one satisfy
+ *  this structurally either way, so the same functions work on both. */
 interface CricketInningsTotal {
   batting_side_id: string
   bowling_side_id: string
@@ -181,10 +118,12 @@ export function cricketProgressFromScore(score: CricketScore): CricketMatchProgr
 
 /** The innings currently being played, or `null` when the match hasn't
  *  started its first innings yet, or is between innings (see
- *  `CricketDetail.awaiting_next_innings`). */
-export function currentInnings(detail: CricketDetail): CricketInnings | null {
-  if (detail.awaiting_next_innings) return null
-  return detail.innings[detail.innings.length - 1] ?? null
+ *  `CricketScore.awaiting_next_innings`) — `undefined` (no live data at all,
+ *  shouldn't happen for a live-in-progress caller in practice) reads the
+ *  same as "between innings", the more conservative of the two defaults. */
+export function currentInnings(score: CricketScore): CricketScoreInnings | null {
+  if (score.awaiting_next_innings ?? true) return null
+  return score.innings[score.innings.length - 1] ?? null
 }
 
 /** Whether a delivery counts toward the over. Wides/no-balls don't under the
@@ -256,8 +195,8 @@ export function runProgression(
   })
 }
 
-/** This over's deliveries out of a detail's bounded recent-deliveries window
- *  (`CricketDetail.recent_deliveries`) — everything recorded
+/** This over's deliveries out of a score's bounded recent-deliveries window
+ *  (`CricketScore.recent_deliveries`) — everything recorded
  *  against the latest over index (we assign `over`/`ball` ourselves on
  *  submit, so this is a simple filter rather than a rolling window). */
 export function currentOverDeliveries(recentDeliveries: CricketDelivery[]): CricketDelivery[] {
@@ -434,8 +373,8 @@ export function playerNameFor(
 }
 
 // `NextBallContext` (who's on strike/bowling for the next delivery) is now
-// folded server-side, incrementally, as part of `CricketDetail` (see
-// `CricketDetail.next_ball_context` and the backend's `apply_delivery`) — no
+// folded server-side, incrementally, as part of `CricketScore` (see
+// `CricketScore.next_ball_context` and the backend's `apply_delivery`) — no
 // client-side replay needed for the online case. An offline-scoring client
 // will need its own local copy of that same incremental fold (applied to its
 // not-yet-synced queue) when that's built; it isn't yet, so there's nothing

@@ -6,7 +6,7 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { useAppendFootballEvent, useLiveSeq } from '@/hooks/useLiveScore'
-import { matchDetailedScoreQueryKey, useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
+import { matchScoreQueryKey, useMatchScore } from '@/hooks/useMatchScore'
 import { RecordEventDialog, type EventKind } from '@/components/agon/live/RecordEventDialog'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { CricketLiveScoringPage } from './CricketLiveScoringPage'
@@ -16,21 +16,20 @@ import {
   describeEvent,
   eventEmoji,
   eventsFromDetail,
-  footballDetailFrom,
+  footballScoreFrom,
   loadTrackPrefs,
   nextPeriodForPhase,
   nextPhaseActionLabel,
   penaltiesComplete,
   phaseFromState,
   phaseLabel,
-  scoreFromFootballDetail,
   shootoutScoreFor,
   type ClockPhase,
 } from '@/lib/liveScore'
 
 type Match = components['schemas']['Match']
 type UpdateMatchInput = components['schemas']['UpdateMatchInput']
-type DetailedScore = components['schemas']['DetailedScore']
+type Score = components['schemas']['Score']
 
 function sideName(match: Match, index: number, fallback: string): string {
   return match.sides[index]?.name?.trim() || fallback
@@ -96,7 +95,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
-  const detailedScore = useMatchDetailedScore(match.id, { refetchInterval: 8000 })
+  const scoreQuery = useMatchScore(match.id, { refetchInterval: 8000 })
   const seq = useLiveSeq(match.id)
   const append = useAppendFootballEvent(match.id)
 
@@ -123,19 +122,19 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
   // auto-confirmed, same as a manual "Add result" would.
   const finishMatch = useMutation({
     mutationFn: async () => {
-      const state = footballDetailFrom(
-        queryClient.getQueryData<DetailedScore | null>(matchDetailedScoreQueryKey(match.id)),
+      const state = footballScoreFrom(
+        queryClient.getQueryData<Score | null>(matchScoreQueryKey(match.id)),
       )
       const body: UpdateMatchInput = {
         status: 'completed',
-        score: state ? scoreFromFootballDetail(state) : undefined,
+        score: state ?? undefined,
       }
       const { error, response } = await fetchClient.PATCH('/matches/{match_id}', {
         params: { path: { match_id: match.id } },
         body,
       })
       if (response.status === 409) {
-        await queryClient.refetchQueries({ queryKey: matchDetailedScoreQueryKey(match.id) })
+        await queryClient.refetchQueries({ queryKey: matchScoreQueryKey(match.id) })
         throw new Error('The live score just changed — check the updated score above, then finish again')
       }
       if (error) throw new Error('Failed to finish the match')
@@ -147,7 +146,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
     },
   })
 
-  if (detailedScore.isLoading || seq.isLoading) {
+  if (scoreQuery.isLoading || seq.isLoading) {
     return (
       <div className="mx-auto max-w-xl">
         <div className="h-64 animate-pulse rounded-xl border bg-card" aria-hidden />
@@ -157,7 +156,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
 
   const nameA = sideName(match, 0, 'Side A')
   const nameB = sideName(match, 1, 'Side B')
-  const state = footballDetailFrom(detailedScore.data)
+  const state = footballScoreFrom(scoreQuery.data)
   const goalsFor = (sideId: string | undefined) =>
     (sideId ? state?.score[sideId] : undefined) ?? 0
   const format = footballFormat(match.format)
@@ -243,7 +242,13 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
   const readyToFinish =
     (decidingPhase && !continuationAvailable) || (phase === 'penalties' && !!state && penaltiesComplete(state))
 
-  const events = state ? eventsFromDetail(state).reverse() : []
+  const events = state
+    ? eventsFromDetail({
+        goals: state.goals ?? [],
+        cards: state.cards ?? [],
+        substitutions: state.substitutions ?? [],
+      }).reverse()
+    : []
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
@@ -332,9 +337,9 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
         </div>
       )}
 
-      {phase === 'penalties' && state && state.penalty_shootout.length > 0 && (
+      {phase === 'penalties' && state && (state.penalty_shootout?.length ?? 0) > 0 && (
         <div className="flex flex-wrap gap-1.5">
-          {state.penalty_shootout.map((kick, i) => (
+          {(state.penalty_shootout ?? []).map((kick, i) => (
             <span
               key={i}
               className={`flex size-7 items-center justify-center rounded-full text-xs font-semibold ${

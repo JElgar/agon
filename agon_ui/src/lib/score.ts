@@ -8,8 +8,8 @@ type FootballGoalEvent = components['schemas']['FootballGoalEvent']
 /** A finished football match's goals, straight off its confirmed/pending
  *  score — `null` for any other score type, or a football score with no
  *  goal-by-goal detail attached (a manual entry with just the final tally).
- *  Lets a feed card show who scored without a separate `/detailed-score`
- *  fetch once the match is over. */
+ *  Lets a feed card show who scored without a separate live-poll fetch once
+ *  the match is over. */
 export function footballGoalsFromScore(score: Score): FootballGoalEvent[] | null {
   return score.type === 'Football' ? (score.goals ?? null) : null
 }

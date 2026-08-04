@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
@@ -7,10 +7,22 @@ import { Input } from '@/components/ui/input'
 import { isSetsSport } from '@/lib/sports'
 import { FootballScoreFields } from '@/components/agon/FootballScoreFields'
 import { CricketScoreFields } from '@/components/agon/CricketScoreFields'
+import { headlineBySide } from '@/lib/score'
+import { cricketProgressFromScore, matchTotalsBySide } from '@/lib/cricketScore'
 
 type Match = components['schemas']['Match']
 type UpdateMatchInput = components['schemas']['UpdateMatchInput']
 type Score = components['schemas']['Score']
+
+/** A short "X–Y" summary of a score for the two given sides — used to show
+ *  what the live/recorded score actually is when it disagrees with what's
+ *  being saved. Cricket has no single headline number (see `headlineBySide`),
+ *  so it sums each side's runs across every innings played so far instead. */
+function scoreSummary(score: Score, aId: string, bId: string): string {
+  const totals =
+    score.type === 'Cricket' ? matchTotalsBySide(cricketProgressFromScore(score)) : headlineBySide(score)
+  return `${totals[aId] ?? 0}–${totals[bId] ?? 0}`
+}
 
 /** One row of the sets editor: games won by each side in a single set. */
 interface SetRow {
@@ -65,6 +77,13 @@ function seedPoints(match: Match, aId: string, bId: string): [string, string] {
  * changed score re-enters the confirmation flow server-side (the other side
  * is asked to confirm), so we also refresh so the pending-score prompt
  * appears.
+ *
+ * For a live-scored football/cricket match, a save that disagrees with the
+ * server's own live-derived score comes back as a 409 rather than being
+ * silently accepted — unlike `finishMatch` (which just asks the user to
+ * refresh and try again), this editor is specifically a correction tool, so
+ * it offers a way through: fetch and show what the live/recorded score
+ * actually is, then let a second tap resubmit with `override_live_score` set.
  */
 export function MatchResultEditor({
   match,
@@ -142,20 +161,42 @@ export function MatchResultEditor({
 
   const built = build()
 
+  // Set when a save is rejected (409) because it disagrees with the match's
+  // live/recorded score — `null` while there's nothing to warn about. Holds
+  // that live score itself, so the prompt can show exactly what it is
+  // instead of just "something doesn't match". Cleared whenever the input
+  // changes so a fresh edit doesn't carry a stale warning around, and an
+  // edit that resolves the disagreement goes back to a normal save.
+  const [conflict, setConflict] = useState<Score | null>(null)
+  useEffect(() => {
+    setConflict(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [built ? JSON.stringify(built.score) : null])
+
   const save = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (override: boolean): Promise<'saved' | 'conflict'> => {
       if (!built) throw new Error('Enter a score first')
       const body: UpdateMatchInput = {
         score: built.score,
       }
       if (built.winner) body.winner_side_id = built.winner
-      const { error } = await fetchClient.PATCH('/matches/{match_id}', {
+      if (override) body.override_live_score = true
+      const { error, response } = await fetchClient.PATCH('/matches/{match_id}', {
         params: { path: { match_id: match.id } },
         body,
       })
+      if (response.status === 409) {
+        const { data } = await fetchClient.GET('/matches/{match_id}/score', {
+          params: { path: { match_id: match.id } },
+        })
+        setConflict(data ?? null)
+        return 'conflict'
+      }
       if (error) throw new Error('Failed to save the result')
+      return 'saved'
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
+      if (result === 'conflict') return
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })
       queryClient.invalidateQueries({ queryKey: ['feed'] })
       onDone()
@@ -274,6 +315,15 @@ export function MatchResultEditor({
         </div>
       )}
 
+      {conflict && (
+        <div className="rounded-lg border border-warning/30 bg-warning/10 p-3">
+          <p className="text-xs font-medium text-foreground">
+            This doesn't match the live/recorded score ({scoreSummary(conflict, aId, bId)}). Saving
+            will overwrite it.
+          </p>
+        </div>
+      )}
+
       {save.isError && (
         <p className="text-xs text-destructive">
           {(save.error as Error).message}
@@ -284,9 +334,9 @@ export function MatchResultEditor({
         <Button
           size="sm"
           disabled={!built || save.isPending}
-          onClick={() => save.mutate()}
+          onClick={() => save.mutate(!!conflict)}
         >
-          {save.isPending ? 'Saving…' : 'Save result'}
+          {save.isPending ? 'Saving…' : conflict ? 'Save anyway' : 'Save result'}
         </Button>
         <Button
           size="sm"

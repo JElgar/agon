@@ -2,37 +2,41 @@ import type { components } from '@/types/api'
 import { memberName } from './members'
 
 export type FootballPeriod = components['schemas']['FootballPeriod']
-export type FootballDetail = components['schemas']['FootballDetail']
 export type FootballGoalEvent = components['schemas']['FootballGoalEvent']
 type FootballCardEvent = components['schemas']['FootballCardEvent']
 type FootballSubstitutionEvent = components['schemas']['FootballSubstitutionEvent']
-type DetailedScore = components['schemas']['DetailedScore']
 type Score = components['schemas']['Score']
 type Match = components['schemas']['Match']
 
-/** Narrows a match's detailed score to its football detail, or `null` when
- *  there's none yet or it's for a different sport. */
-export function footballDetailFrom(detail: DetailedScore | null | undefined): FootballDetail | null {
-  if (!detail || detail.type !== 'Football') return null
-  return detail
+/** A football `Score` — live or finished, confirmed or not, it's the same
+ *  shape either way (see `Score`'s doc comment on the backend). Narrowed via
+ *  `type`, so this retains the `type: 'Football'` tag and is itself a valid
+ *  `Score` to send back on a PATCH (see `LiveScoringPage`'s `finishMatch`) as
+ *  well as a source for the clock/ticker helpers below. */
+export type FootballScore = Extract<Score, { type: 'Football' }>
+
+/** Narrows a match's score to its football variant, or `null` when there's
+ *  none yet or it's for a different sport. */
+export function footballScoreFrom(score: Score | null | undefined): FootballScore | null {
+  if (!score || score.type !== 'Football') return null
+  return score
 }
 
-/** What `eventsFromDetail` actually reads off a `FootballDetail` — narrowed
+/** What `eventsFromDetail` actually reads off a `FootballScore` — narrowed
  *  so a finished match's `Score.Football` (whose `goals`/`cards`/
- *  `substitutions` are optional, unlike `FootballDetail`'s) can feed the same
- *  timeline via `footballEventSourceFromScore`, without a live-only fetch. */
+ *  `substitutions` are optional) and a live one (same optionality now) can
+ *  both feed the same timeline via `footballEventSourceFromScore`. */
 export type FootballEventSource = {
   goals: FootballGoalEvent[]
   cards: FootballCardEvent[]
   substitutions: FootballSubstitutionEvent[]
 }
 
-/** A finished football match's event timeline straight off its confirmed/
- *  pending score — `null` if there's no score yet, it's a different sport, or
- *  it's a football score with no detail attached (a manual entry with just
- *  the final tally). Lets the match detail page's `FootballScorecard` avoid
- *  fetching `DetailedScore` once the match is over (see `footballDetail`,
- *  which still covers the live, in-progress view). */
+/** A football match's event timeline straight off its score — `null` if
+ *  there's no score yet, it's a different sport, or it's a football score
+ *  with no detail attached (a manual entry with just the final tally). Lets
+ *  `FootballScorecard` render nothing rather than an empty "Match events"
+ *  section for a bare scoreline. */
 export function footballEventSourceFromScore(score: Score | null | undefined): FootballEventSource | null {
   if (!score || score.type !== 'Football') return null
   if (!score.goals && !score.cards && !score.substitutions) return null
@@ -43,22 +47,7 @@ export function footballEventSourceFromScore(score: Score | null | undefined): F
   }
 }
 
-/** Builds the `Score` a finished, live-scored football match would confirm —
- *  the same shape `update_match` derives server-side from this same
- *  persisted detail (`derive_score_from_detail`). `finishMatch` sends this
- *  explicitly so the server can confirm the client isn't finishing on a
- *  stale view rather than silently trusting it. */
-export function scoreFromFootballDetail(detail: FootballDetail): Score {
-  return {
-    type: 'Football',
-    score: detail.score,
-    goals: detail.goals,
-    cards: detail.cards,
-    substitutions: detail.substitutions,
-  }
-}
-
-/** A client-side view of one football event, merging `FootballDetail`'s
+/** A client-side view of one football event, merging `FootballScore`'s
  *  separately-typed `goals`/`cards`/`substitutions` lists back into a single
  *  timeline for the event log/mini-ticker (see `eventsFromDetail`) — the
  *  backend keeps them apart so a goal's scorer/assist/own-goal/penalty
@@ -84,10 +73,10 @@ function cardKind(c: FootballCardEvent): FootballEventKind {
   return c.color === 'yellow' ? 'yellow_card' : 'red_card'
 }
 
-/** Maps a bare goals list — either `FootballDetail.goals` or a finished
- *  match's `Score.Football.goals` (see `footballGoalsFromScore`) — to event
- *  views. Unsorted; callers order as needed (`eventsFromDetail` merges and
- *  sorts alongside cards/subs, `recentGoalEvents` sorts standalone). */
+/** Maps a bare goals list — either `FootballScore.goals` or a finished
+ *  match's goals (see `recentGoalEvents`) — to event views. Unsorted;
+ *  callers order as needed (`eventsFromDetail` merges and sorts alongside
+ *  cards/subs, `recentGoalEvents` sorts standalone). */
 export function goalEventsToViews(goals: FootballGoalEvent[]): FootballEventView[] {
   return goals.map((g): FootballEventView => ({
     kind: goalKind(g),
@@ -98,10 +87,10 @@ export function goalEventsToViews(goals: FootballGoalEvent[]): FootballEventView
   }))
 }
 
-/** All of a football detail's goals/cards/substitutions merged into one
+/** All of a football score's goals/cards/substitutions merged into one
  *  timeline, ordered by minute (undated events last — the scorer always
  *  fills in a minute in practice, so this only matters for edge cases).
- *  Takes just `FootballEventSource` (not the full `FootballDetail`) so a
+ *  Takes just `FootballEventSource` (not the full `FootballScore`) so a
  *  finished match's `Score.Football` can feed it too — see
  *  `footballEventSourceFromScore`. */
 export function eventsFromDetail(detail: FootballEventSource): FootballEventView[] {
@@ -173,15 +162,20 @@ export function periodLabel(period: FootballPeriod): string {
 }
 
 /** The most recent events first, capped to `limit` — for a mini-ticker. */
-export function recentEvents(detail: FootballDetail, limit: number): FootballEventView[] {
-  return eventsFromDetail(detail).reverse().slice(0, limit)
+export function recentEvents(detail: FootballScore, limit: number): FootballEventView[] {
+  return eventsFromDetail({
+    goals: detail.goals ?? [],
+    cards: detail.cards ?? [],
+    substitutions: detail.substitutions ?? [],
+  })
+    .reverse()
+    .slice(0, limit)
 }
 
 /** The most recent goals first, capped to `limit` — for a finished match's
  *  feed-card ticker, built straight from the goals embedded in its
- *  `Score.Football` (see `footballGoalsFromScore`) rather than a full
- *  `FootballDetail` fetch, which a completed match no longer needs just to
- *  show who scored. */
+ *  `Score.Football` rather than a full live fetch, which a completed match
+ *  no longer needs just to show who scored. */
 export function recentGoalEvents(goals: FootballGoalEvent[], limit: number): FootballEventView[] {
   return goalEventsToViews(goals)
     .sort((a, b) => (a.minute ?? Infinity) - (b.minute ?? Infinity))
@@ -273,18 +267,20 @@ export function saveTrackPrefs(matchId: string, prefs: TrackPrefs): void {
 }
 
 // ---------------------------------------------------------------------------
-// Match clock — derived entirely from `FootballDetail.period_times`, each the
+// Match clock — derived entirely from `FootballScore.period_times`, each the
 // `occurred_at` of the period marker that recorded it server-side (see
-// `agon_service::live_score::football::derive_detail`). Because it's
-// computed from shared server data rather than a per-device stopwatch, the
-// scorer's own screen and every other viewer (feed card, match detail) tick
-// the exact same clock.
+// `agon_service::live_score::football`). Because it's computed from shared
+// server data rather than a per-device stopwatch, the scorer's own screen
+// and every other viewer (feed card, match detail) tick the exact same
+// clock. `period_times` is `undefined` for a score with no live detail
+// behind it at all — every lookup below already treats that the same as "no
+// marker recorded yet".
 // ---------------------------------------------------------------------------
 
 /** When a given period marker was recorded, if at all — a typed lookup into
- *  `FootballDetail.period_times`'s string-keyed map. */
-export function periodTime(detail: FootballDetail, period: FootballPeriod): string | undefined {
-  return detail.period_times[period]
+ *  `FootballScore.period_times`'s string-keyed map. */
+export function periodTime(detail: FootballScore, period: FootballPeriod): string | undefined {
+  return detail.period_times?.[period]
 }
 
 export type ClockPhase =
@@ -308,8 +304,8 @@ export type ClockPhase =
 /** Which phase the match is in right now, purely from recorded timestamps
  *  (plus, for `penalties`, whether any shootout kicks exist yet — there's no
  *  dedicated "shootout started" marker, the first kick doubles as one). */
-export function phaseFromState(state: FootballDetail): ClockPhase {
-  if (periodTime(state, 'penalties_complete') || state.penalty_shootout.length > 0) {
+export function phaseFromState(state: FootballScore): ClockPhase {
+  if (periodTime(state, 'penalties_complete') || (state.penalty_shootout?.length ?? 0) > 0) {
     return 'penalties'
   }
   if (periodTime(state, 'extra_time_full_time')) return 'extra_time_full_time'
@@ -328,14 +324,14 @@ export function phaseFromState(state: FootballDetail): ClockPhase {
  *  returns `'penalties'` for both an in-progress and a finished shootout —
  *  callers that need to tell them apart (e.g. to show "Finish match" instead
  *  of the kick-recording panel) check this too. */
-export function penaltiesComplete(state: FootballDetail): boolean {
+export function penaltiesComplete(state: FootballScore): boolean {
   return !!periodTime(state, 'penalties_complete')
 }
 
 /** A side's penalty-shootout tally (kicks scored, not taken) — the shootout
- *  equivalent of reading `FootballDetail.score` for goals. */
-export function shootoutScoreFor(state: FootballDetail, sideId: string | undefined): number {
-  return (sideId ? state.penalty_shootout_score[sideId] : undefined) ?? 0
+ *  equivalent of reading `FootballScore.score` for goals. */
+export function shootoutScoreFor(state: FootballScore, sideId: string | undefined): number {
+  return (sideId ? state.penalty_shootout_score?.[sideId] : undefined) ?? 0
 }
 
 function minutesBetween(from: string, to: Date | string): number {
@@ -351,7 +347,7 @@ function minutesBetween(from: string, to: Date | string): number {
  * continuously (e.g. 94', then 106' once extra time starts) rather than
  * resetting to a fixed 45'/90' each time.
  */
-export function currentMinute(state: FootballDetail, now: Date = new Date()): number | null {
+export function currentMinute(state: FootballScore, now: Date = new Date()): number | null {
   const phase = phaseFromState(state)
   const kickoffAt = periodTime(state, 'kick_off')
   const halfTimeAt = periodTime(state, 'half_time')
@@ -435,7 +431,7 @@ export function phaseLabel(phase: ClockPhase): string {
 }
 
 /** A compact clock label for a score box, e.g. "63'", "HT", "FT", "AET", "PENS". */
-export function liveClockLabel(state: FootballDetail, now: Date = new Date()): string {
+export function liveClockLabel(state: FootballScore, now: Date = new Date()): string {
   const phase = phaseFromState(state)
   if (phase === 'half_time') return 'HT'
   if (phase === 'full_time') return 'FT'

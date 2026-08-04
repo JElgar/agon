@@ -130,41 +130,32 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   // score from the match's persisted live detail — the authoritative source,
   // and the only one with the full log to fold — and 409s if the two
   // disagree (e.g. a delivery landed between this device's last poll and the
-  // tap), retried once here with a freshly refetched detail before
-  // surfacing an error; a second mismatch means something's genuinely
-  // racing and the user should look again. Still enters the normal
-  // confirmation flow rather than being auto-confirmed, same as a manual
-  // "Add result" would.
+  // tap). That's surfaced, not silently resolved: the live detail is
+  // refetched (so the summary above updates to what's actually current) and
+  // the button stays "Finish match" so the user reviews it and taps again
+  // themselves, rather than the app resubmitting on their behalf without
+  // them seeing what changed. Still enters the normal confirmation flow
+  // rather than being auto-confirmed, same as a manual "Add result" would.
   const finishMatch = useMutation({
     mutationFn: async () => {
       if (!state) throw new Error('No score recorded yet')
 
-      const scoreFromCache = () => {
-        const fresh = cricketDetailFrom(
-          queryClient.getQueryData<DetailedScore | null>(matchDetailedScoreQueryKey(match.id)),
-        )
-        return fresh ? scoreFromCricketDetail(fresh) : undefined
+      const fresh = cricketDetailFrom(
+        queryClient.getQueryData<DetailedScore | null>(matchDetailedScoreQueryKey(match.id)),
+      )
+      const body: UpdateMatchInput = {
+        status: 'completed',
+        score: fresh ? scoreFromCricketDetail(fresh) : undefined,
       }
-      const submit = () => {
-        const body: UpdateMatchInput = { status: 'completed', score: scoreFromCache() }
-        return fetchClient.PATCH('/matches/{match_id}', {
-          params: { path: { match_id: match.id } },
-          body,
-        })
-      }
-
-      let { error, response } = await submit()
+      const { error, response } = await fetchClient.PATCH('/matches/{match_id}', {
+        params: { path: { match_id: match.id } },
+        body,
+      })
       if (response.status === 409) {
         await queryClient.refetchQueries({ queryKey: matchDetailedScoreQueryKey(match.id) })
-        ;({ error, response } = await submit())
+        throw new Error('The live score just changed — check the updated score above, then finish again')
       }
-      if (error) {
-        throw new Error(
-          response.status === 409
-            ? 'The live score changed while finishing — try again'
-            : 'Failed to finish the match',
-        )
-      }
+      if (error) throw new Error('Failed to finish the match')
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })

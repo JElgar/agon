@@ -76,6 +76,29 @@ export function cricketInningsFromScore(score: Score | null | undefined): Cricke
   return cs ? cs.innings.map(cricketInningsFromScoreInnings) : null
 }
 
+/** Builds the `Score` a finished, live-scored cricket match would confirm —
+ *  the same shape `update_match` derives server-side from this same
+ *  persisted detail (`derive_score_from_detail`). `finishMatch` sends this
+ *  explicitly so the server can confirm the client isn't finishing on a
+ *  stale view rather than silently trusting it. */
+export function scoreFromCricketDetail(detail: CricketDetail): Score {
+  return {
+    type: 'Cricket',
+    innings: detail.innings.map((inn) => ({
+      batting_side_id: inn.batting_side_id,
+      bowling_side_id: inn.bowling_side_id,
+      runs: inn.runs,
+      wickets: inn.wickets,
+      overs: inn.overs,
+      declared: inn.declared,
+      batting: inn.batting,
+      bowling: inn.bowling,
+      extras: inn.extras,
+      fall_of_wickets: inn.fall_of_wickets,
+    })),
+  }
+}
+
 /** A `detailed_score` innings (batting/bowling cards, totals) with its
  *  ball-by-ball log folded back in from the live event log — what the match
  *  detail page builds for the scorecard/run-rate graph, since

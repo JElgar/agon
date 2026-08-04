@@ -6,7 +6,7 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { useAppendCricketEvent, useLiveSeq } from '@/hooks/useLiveScore'
-import { useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
+import { matchDetailedScoreQueryKey, useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { SidePicker, PlayerPicker, sideName } from '@/components/agon/live/Pickers'
 import { WicketDialog } from '@/components/agon/live/WicketDialog'
@@ -23,6 +23,7 @@ import {
   isChipHighlighted,
   playerNameFor,
   runRate,
+  scoreFromCricketDetail,
 } from '@/lib/cricketScore'
 
 type Match = components['schemas']['Match']
@@ -30,6 +31,7 @@ type CricketDelivery = components['schemas']['CricketDelivery']
 type CricketDeliveryWicket = components['schemas']['CricketDeliveryWicket']
 type InningsEndReason = components['schemas']['InningsEndReason']
 type UpdateMatchInput = components['schemas']['UpdateMatchInput']
+type DetailedScore = components['schemas']['DetailedScore']
 
 const END_REASONS: { value: InningsEndReason; label: string }[] = [
   { value: 'all_out', label: 'All out' },
@@ -122,23 +124,47 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [oversCompleteAwaitingEnd])
 
-  // Concludes the match: just flips it to `completed`. The server derives
-  // the `Cricket` score (per-innings totals, plus batting/bowling detail)
-  // and the winner (summed match totals — two-innings formats add up both)
-  // from the match's own persisted live detail — it's the authoritative
-  // source, and the only one with the full log to fold; this client only
-  // ever sees the bounded live summary (see `update_match` server-side).
-  // Still enters the normal confirmation flow rather than being
-  // auto-confirmed, same as a manual "Add result" would.
+  // Concludes the match: flips it to `completed`, sending the score built
+  // from this device's own view of the live detail (per-innings totals plus
+  // batting/bowling detail). The server independently derives the same
+  // score from the match's persisted live detail — the authoritative source,
+  // and the only one with the full log to fold — and 409s if the two
+  // disagree (e.g. a delivery landed between this device's last poll and the
+  // tap), retried once here with a freshly refetched detail before
+  // surfacing an error; a second mismatch means something's genuinely
+  // racing and the user should look again. Still enters the normal
+  // confirmation flow rather than being auto-confirmed, same as a manual
+  // "Add result" would.
   const finishMatch = useMutation({
     mutationFn: async () => {
       if (!state) throw new Error('No score recorded yet')
-      const body: UpdateMatchInput = { status: 'completed' }
-      const { error } = await fetchClient.PATCH('/matches/{match_id}', {
-        params: { path: { match_id: match.id } },
-        body,
-      })
-      if (error) throw new Error('Failed to finish the match')
+
+      const scoreFromCache = () => {
+        const fresh = cricketDetailFrom(
+          queryClient.getQueryData<DetailedScore | null>(matchDetailedScoreQueryKey(match.id)),
+        )
+        return fresh ? scoreFromCricketDetail(fresh) : undefined
+      }
+      const submit = () => {
+        const body: UpdateMatchInput = { status: 'completed', score: scoreFromCache() }
+        return fetchClient.PATCH('/matches/{match_id}', {
+          params: { path: { match_id: match.id } },
+          body,
+        })
+      }
+
+      let { error, response } = await submit()
+      if (response.status === 409) {
+        await queryClient.refetchQueries({ queryKey: matchDetailedScoreQueryKey(match.id) })
+        ;({ error, response } = await submit())
+      }
+      if (error) {
+        throw new Error(
+          response.status === 409
+            ? 'The live score changed while finishing — try again'
+            : 'Failed to finish the match',
+        )
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })

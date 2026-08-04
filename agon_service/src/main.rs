@@ -717,7 +717,18 @@ struct UpdateMatchInput {
     side_assignments: Option<Vec<SetPlayerSideInput>>,
     /// The result. Creates a score submission when changed; for a not-yet-played
     /// match this also completes it. `side_id`s reference the match's sides.
+    /// Required to complete a match — there is no server-side fallback if
+    /// it's omitted, even for a live-scored match (see `override_live_score`
+    /// for submitting one the server disagrees with).
     score: Option<Score>,
+    /// For a live-scored football/cricket match being completed: submit
+    /// `score` even though it doesn't match what the server derives from the
+    /// match's own persisted live detail. Without this, a mismatch is
+    /// rejected (409) rather than silently accepted, so `score` staying in
+    /// sync with live scoring is the default; this is the explicit escape
+    /// hatch for a deliberate correction. Ignored when there's no live
+    /// detail to disagree with.
+    override_live_score: Option<bool>,
     winner_side_id: Option<String>,
     /// Optional sport-specific breakdown (goals/assists, full scorecard),
     /// captured alongside the result.
@@ -925,6 +936,12 @@ enum UpdateMatchResponse {
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
+
+    /// The submitted `score` doesn't match what the server derives from the
+    /// match's own persisted live detail. Refresh and resubmit, or set
+    /// `override_live_score` to submit it anyway.
+    #[oai(status = 409)]
+    Conflict(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -2147,18 +2164,17 @@ impl Api {
         let valid_sides: std::collections::HashSet<&str> =
             agg.sides.iter().map(|s| s.side_id.as_str()).collect();
 
-        // Finishing a live-scored match sends no `score` at all (see
-        // `LiveScoringPage`/`CricketLiveScoringPage`'s simplified
-        // `finishMatch`) — derive it from the match's own persisted live
-        // detail instead of trusting a client reconstruction. Only kicks in
-        // when the client is explicitly completing the match and hasn't
-        // supplied a score of their own; a manual entry (`LogMatchPage`) or a
-        // correction (`MatchResultEditor`) always supplies an explicit score,
-        // which wins unconditionally.
-        let mut derived_score: Option<Score> = None;
+        // Completing a live-scored football/cricket match still requires an
+        // explicit `score` from the client (see `LiveScoringPage`/
+        // `CricketLiveScoringPage`'s `finishMatch`, which now builds one
+        // locally from the same persisted live detail before sending it) —
+        // the server never fills one in silently. What it does instead is
+        // cross-check: derive its own score from the match's persisted live
+        // detail and, unless `override_live_score` says otherwise, reject a
+        // client score that disagrees with it, so confirmed results stay in
+        // sync with live scoring by default rather than by convention.
         let mut derived_winner_side_id: Option<String> = None;
-        if input.score.is_none()
-            && input.status.as_ref().map(match_status_str) == Some("completed")
+        if input.status.as_ref().map(match_status_str) == Some("completed")
             && matches!(agg.match_.match_type.as_str(), "football" | "cricket")
             && let Some(record) = dao
                 .get_match_detailed_score(&match_id, &agg.match_.match_type)
@@ -2167,26 +2183,34 @@ impl Api {
             && let Some(ds) = detailed_score_from_record(&record)
         {
             let side_ids: Vec<String> = agg.sides.iter().map(|s| s.side_id.clone()).collect();
-            let (score, winner) = derive_score_from_detail(&ds, &side_ids);
-            derived_score = Some(score);
+            let (derived_score, winner) = derive_score_from_detail(&ds, &side_ids);
             derived_winner_side_id = winner;
+
+            if let Some(client_score) = &input.score
+                && score_to_record(client_score) != score_to_record(&derived_score)
+                && !input.override_live_score.unwrap_or(false)
+            {
+                return Ok(UpdateMatchResponse::Conflict(PlainText(
+                    "the submitted score doesn't match the match's live result — refresh \
+                     and resubmit, or set override_live_score to submit it anyway"
+                        .into(),
+                )));
+            }
         }
-        let effective_score = input.score.as_ref().or(derived_score.as_ref());
+        let effective_score = input.score.as_ref();
         let effective_winner_side_id = input.winner_side_id.clone().or(derived_winner_side_id);
 
         // A match can't land on `completed` with no score at all — supplied,
-        // derived from live detail, or already recorded from an earlier
-        // submission (this PATCH might just be re-asserting `completed`, or
-        // editing something unrelated, on a match that already has one).
+        // or already recorded from an earlier submission (this PATCH might
+        // just be re-asserting `completed`, or editing something unrelated,
+        // on a match that already has one).
         if resulting_status == "completed"
             && effective_score.is_none()
             && agg.match_.confirmed_score.is_none()
             && agg.match_.pending_score.is_none()
         {
             return Ok(UpdateMatchResponse::ValidationError(PlainText(
-                "a completed match needs a score — submit one, or finish live scoring \
-                 first so it can be derived"
-                    .into(),
+                "a completed match needs a score".into(),
             )));
         }
 

@@ -43,6 +43,21 @@ export function footballEventSourceFromScore(score: Score | null | undefined): F
   }
 }
 
+/** Builds the `Score` a finished, live-scored football match would confirm —
+ *  the same shape `update_match` derives server-side from this same
+ *  persisted detail (`derive_score_from_detail`). `finishMatch` sends this
+ *  explicitly so the server can confirm the client isn't finishing on a
+ *  stale view rather than silently trusting it. */
+export function scoreFromFootballDetail(detail: FootballDetail): Score {
+  return {
+    type: 'Football',
+    score: detail.score,
+    goals: detail.goals,
+    cards: detail.cards,
+    substitutions: detail.substitutions,
+  }
+}
+
 /** A client-side view of one football event, merging `FootballDetail`'s
  *  separately-typed `goals`/`cards`/`substitutions` lists back into a single
  *  timeline for the event log/mini-ticker (see `eventsFromDetail`) — the

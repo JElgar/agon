@@ -6,7 +6,7 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { useAppendFootballEvent, useLiveSeq } from '@/hooks/useLiveScore'
-import { useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
+import { matchDetailedScoreQueryKey, useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
 import { RecordEventDialog, type EventKind } from '@/components/agon/live/RecordEventDialog'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { CricketLiveScoringPage } from './CricketLiveScoringPage'
@@ -23,12 +23,14 @@ import {
   penaltiesComplete,
   phaseFromState,
   phaseLabel,
+  scoreFromFootballDetail,
   shootoutScoreFor,
   type ClockPhase,
 } from '@/lib/liveScore'
 
 type Match = components['schemas']['Match']
 type UpdateMatchInput = components['schemas']['UpdateMatchInput']
+type DetailedScore = components['schemas']['DetailedScore']
 
 function sideName(match: Match, index: number, fallback: string): string {
   return match.sides[index]?.name?.trim() || fallback
@@ -108,22 +110,44 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
   const [dialogKind, setDialogKind] = useState<EventKind | null>(null)
 
   // Concludes the match once it's decided (full-time, extra-time full-time,
-  // or the penalty shootout is done): just flips the match to `completed`.
-  // The server derives the `Football` score (goals/cards/subs) and winner
-  // from the match's own persisted live detail — the goals/cards/subs/period
-  // markers/shootout kicks recorded live are already there, so there's
-  // nothing for the client to reconstruct and send back (see `update_match`
-  // server-side, and `Score.Football`'s doc comment). Still enters the
-  // normal confirmation flow rather than being auto-confirmed, same as a
-  // manual "Add result" would.
+  // or the penalty shootout is done): flips the match to `completed`,
+  // sending the score built from this device's own view of the live detail.
+  // The server independently derives the same score from the match's
+  // persisted live detail and 409s if the two disagree (e.g. a goal landed
+  // between this device's last poll and the tap) — retried once here with a
+  // freshly refetched detail before surfacing an error, since that's the
+  // common, harmless case; a second mismatch means something's genuinely
+  // racing and the user should look again. Still enters the normal
+  // confirmation flow rather than being auto-confirmed, same as a manual
+  // "Add result" would.
   const finishMatch = useMutation({
     mutationFn: async () => {
-      const body: UpdateMatchInput = { status: 'completed' }
-      const { error } = await fetchClient.PATCH('/matches/{match_id}', {
-        params: { path: { match_id: match.id } },
-        body,
-      })
-      if (error) throw new Error('Failed to finish the match')
+      const scoreFromCache = () => {
+        const state = footballDetailFrom(
+          queryClient.getQueryData<DetailedScore | null>(matchDetailedScoreQueryKey(match.id)),
+        )
+        return state ? scoreFromFootballDetail(state) : undefined
+      }
+      const submit = () => {
+        const body: UpdateMatchInput = { status: 'completed', score: scoreFromCache() }
+        return fetchClient.PATCH('/matches/{match_id}', {
+          params: { path: { match_id: match.id } },
+          body,
+        })
+      }
+
+      let { error, response } = await submit()
+      if (response.status === 409) {
+        await queryClient.refetchQueries({ queryKey: matchDetailedScoreQueryKey(match.id) })
+        ;({ error, response } = await submit())
+      }
+      if (error) {
+        throw new Error(
+          response.status === 409
+            ? 'The live score changed while finishing — try again'
+            : 'Failed to finish the match',
+        )
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })

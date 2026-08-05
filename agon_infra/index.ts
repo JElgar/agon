@@ -1178,14 +1178,33 @@ const loki = new k8s.helm.v4.Chart("loki", {
 // Tempo — single-binary traces backend with the OTLP receiver enabled. Alloy
 // forwards spans here; Grafana queries it on port 3100.
 //
-// The metrics-generator (+ its `local-blocks` processor) is enabled so
-// TraceQL metrics queries work — e.g. Grafana's Traces Drilldown app runs a
-// default overview panel of `{...} | rate() by (resource.service.name)`,
-// which is served by the generator's ring, not the trace store. Without
-// this, plain trace search/lookup still works, but any rate()/
-// quantile_over_time()/histogram_over_time() query 500s with "error finding
-// generators in Querier.queryRangeRecent: empty ring" because no generator
-// ever registers in the ring.
+// TraceQL metrics queries (e.g. Grafana's Traces Drilldown app runs a default
+// overview panel of `{...} | rate() by (resource.service.name)`) went through
+// two failure modes here, in order:
+//   1. "error finding generators in Querier.queryRangeRecent: empty ring" —
+//      the metrics-generator wasn't enabled at all, so it never registered in
+//      its ring. Fixed by `metricsGenerator.enabled` below.
+//   2. Once the generator was up: "error querying generators ...: localblocks
+//      processor not found". This chart pulls whatever was current on
+//      `grafana.github.io/helm-charts` as of 2026-07-19, which — going by the
+//      timing (that repo's `charts/tempo` folder has since been migrated to
+//      grafana-community/helm-charts, and Tempo's 3.0 release, which shipped
+//      around the same time, GA'd TraceQL metrics) — is very likely a Tempo
+//      3.x build. Tempo 3.0 REMOVED the metrics-generator's `local-blocks`
+//      processor; a `live-store` component (bundled into monolithic
+//      `-target=all`, which this single-binary chart already runs) took over
+//      serving these "recent data" queries instead, no processor override
+//      needed. Asking for a `local-blocks` processor that no longer exists is
+//      exactly what "processor not found" means, so the override is removed
+//      rather than renamed. `metricsGenerator.enabled` is left on since it's
+//      independently useful for span-metrics/service-graphs and harmless to
+//      the rate()/quantile_over_time() queries either way.
+//
+// If rate() queries are still failing after this, confirm the running image
+// tag (`kubectl -n observability get pod -l app.kubernetes.io/name=tempo -o
+// jsonpath='{.items[0].spec.containers[0].image}'`) — a pre-3.0 image would
+// need the local-blocks override back (a chart pin, not this override, would
+// be the actual bug in that case).
 const tempo = new k8s.helm.v4.Chart("tempo", {
 	chart: "tempo",
 	version: "1.18.2",
@@ -1199,13 +1218,6 @@ const tempo = new k8s.helm.v4.Chart("tempo", {
 			},
 			metricsGenerator: {
 				enabled: true,
-			},
-			overrides: {
-				defaults: {
-					metrics_generator: {
-						processors: ["local-blocks"],
-					},
-				},
 			},
 			// Bumped slightly over the trace-only baseline: the generator holds
 			// recent blocks in memory to serve queryRangeRecent.

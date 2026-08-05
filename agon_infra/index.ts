@@ -1177,6 +1177,15 @@ const loki = new k8s.helm.v4.Chart("loki", {
 
 // Tempo — single-binary traces backend with the OTLP receiver enabled. Alloy
 // forwards spans here; Grafana queries it on port 3100.
+//
+// The metrics-generator (+ its `local-blocks` processor) is enabled so
+// TraceQL metrics queries work — e.g. Grafana's Traces Drilldown app runs a
+// default overview panel of `{...} | rate() by (resource.service.name)`,
+// which is served by the generator's ring, not the trace store. Without
+// this, plain trace search/lookup still works, but any rate()/
+// quantile_over_time()/histogram_over_time() query 500s with "error finding
+// generators in Querier.queryRangeRecent: empty ring" because no generator
+// ever registers in the ring.
 const tempo = new k8s.helm.v4.Chart("tempo", {
 	chart: "tempo",
 	version: "1.18.2",
@@ -1188,9 +1197,21 @@ const tempo = new k8s.helm.v4.Chart("tempo", {
 			storage: {
 				trace: { backend: "local", local: { path: "/var/tempo/traces" } },
 			},
+			metricsGenerator: {
+				enabled: true,
+			},
+			overrides: {
+				defaults: {
+					metrics_generator: {
+						processors: ["local-blocks"],
+					},
+				},
+			},
+			// Bumped slightly over the trace-only baseline: the generator holds
+			// recent blocks in memory to serve queryRangeRecent.
 			resources: {
-				requests: { cpu: "100m", memory: "128Mi" },
-				limits: { memory: "400Mi" },
+				requests: { cpu: "100m", memory: "160Mi" },
+				limits: { memory: "512Mi" },
 			},
 		},
 		persistence: { enabled: true, size: "5Gi" },

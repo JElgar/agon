@@ -16,6 +16,7 @@ import { SportBadge } from '@/components/agon/SportBadge'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { confirmationState } from '@/lib/confirmation'
 import { displayScore, headlineBySide, headlineLabel } from '@/lib/score'
+import { cricketScoreFrom, formatOvers, sideNameFor } from '@/lib/cricketScore'
 
 type InvitationResponse = components['schemas']['InvitationResponse']
 type Match = components['schemas']['Match']
@@ -87,6 +88,7 @@ export function InvitationResponseDialog({
       ? { matchId: matchId!, submissionId: score.submissionId }
       : null
   const preview = match ? displayScore(match) : null
+  const cricketScore = preview ? cricketScoreFrom(preview.score) : null
 
   const mutation = useMutation({
     mutationFn: async (): Promise<InvitationResponse | undefined> => {
@@ -136,7 +138,29 @@ export function InvitationResponseDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {matchId && match && preview && (
+        {matchId && match && preview && cricketScore && (
+          <div className="rounded-lg border bg-muted/40 px-3 py-2.5">
+            <span className="text-sm font-medium">
+              {match.sides[0]?.name}
+              <span className="text-muted-foreground"> vs </span>
+              {match.sides[1]?.name}
+            </span>
+            <div className="mt-1.5 space-y-0.5">
+              {cricketScore.innings.map((inn, i) => (
+                <p key={i} className="text-sm font-medium leading-tight tracking-tight">
+                  {sideNameFor(match, inn.batting_side_id)} {inn.runs}/{inn.wickets}
+                  <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+                    ({formatOvers(inn.overs)} ov)
+                  </span>
+                </p>
+              ))}
+            </div>
+            <div className="mt-1 text-[10px] uppercase tracking-widest text-muted-foreground">
+              {preview.confirmed ? 'result' : 'pending'}
+            </div>
+          </div>
+        )}
+        {matchId && match && preview && !cricketScore && (
           <div className="flex items-center justify-between gap-3 rounded-lg border bg-muted/40 px-3 py-2.5">
             <div className="flex items-center gap-3 text-sm">
               <span className="font-medium">

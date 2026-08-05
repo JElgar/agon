@@ -5,6 +5,7 @@
 //! thin and the coupling lives in one file.
 
 use poem::error::InternalServerError;
+use tracing::error;
 
 use crate::detailed_score::cricket::{
     CricketBattingEntry, CricketBowlingEntry, CricketDelivery, CricketDeliveryExtra,
@@ -74,7 +75,11 @@ pub fn parse_ts_opt(raw: &Option<String>) -> Option<chrono::DateTime<chrono::Utc
 
 /// Map an unexpected `DaoError` to a 500. Handlers deal with the *expected*
 /// variants (Conflict/NotFound) explicitly by matching before calling this.
+/// Logs the underlying error first — `InternalServerError` on its own gives
+/// the client (and, until now, our own logs) nothing but a bare 500, which
+/// makes anything unexpected here unreproducible after the fact.
 pub fn dao_internal(err: DaoError) -> poem::Error {
+    error!("DAO error: {err}");
     InternalServerError(err)
 }
 

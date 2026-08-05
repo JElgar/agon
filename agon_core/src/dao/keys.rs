@@ -284,13 +284,6 @@ impl Sk {
             .prefix()
         )
     }
-
-    /// Lists a match's score-submission history: `SCORESUB#`. Submissions are
-    /// normally read via GSI1 (newest first), but a table-wide scan (e.g. a
-    /// one-off data migration) needs this to recognize one from a raw item.
-    pub fn score_submission_prefix() -> String {
-        format!("{}{DELIMITER}", Sk::ScoreSubmission(String::new()).prefix())
-    }
 }
 
 impl fmt::Display for Sk {

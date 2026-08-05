@@ -399,10 +399,6 @@ new aws.iam.UserPolicy("agon-app-dynamodb", {
 					"dynamodb:UpdateItem",
 					"dynamodb:DeleteItem",
 					"dynamodb:Query",
-					// Only used by the one-off `migrate-score-entries` CLI command
-					// (agon_core::dao::migrate) — there's no index listing "every
-					// match"/"every score submission" to Query instead.
-					"dynamodb:Scan",
 					"dynamodb:TransactWriteItems",
 					"dynamodb:TransactGetItems",
 					"dynamodb:ConditionCheckItem",

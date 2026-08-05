@@ -416,11 +416,11 @@ impl Dao {
 }
 
 /// Serialize any record value into a DynamoDB AttributeValue (nested map/list).
-pub(super) fn to_attr<T: serde::Serialize>(value: &T) -> DaoResult<AttributeValue> {
+fn to_attr<T: serde::Serialize>(value: &T) -> DaoResult<AttributeValue> {
     Ok(serde_dynamo::to_attribute_value(value)?)
 }
 
-pub(super) fn is_update_conditional_failure(err: &SdkError<UpdateItemError>) -> bool {
+fn is_update_conditional_failure(err: &SdkError<UpdateItemError>) -> bool {
     matches!(
         err,
         SdkError::ServiceError(se)

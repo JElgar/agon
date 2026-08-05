@@ -30,7 +30,6 @@ pub mod invitation;
 pub mod live_score_ops;
 pub mod match_ops;
 pub mod match_social;
-pub mod migrate;
 pub mod notification;
 pub mod stats;
 pub mod team;

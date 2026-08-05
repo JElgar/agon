@@ -79,10 +79,10 @@ function InningsCard({ match, innings }: { match: Match; innings: CricketInnings
           <TableHeader>
             <TableRow>
               <TableHead>Batter</TableHead>
-              <TableHead className="text-right">R</TableHead>
-              <TableHead className="text-right">B</TableHead>
-              <TableHead className="text-right">4s</TableHead>
-              <TableHead className="text-right">6s</TableHead>
+              <TableHead className="w-12 text-right">R</TableHead>
+              <TableHead className="w-12 text-right">B</TableHead>
+              <TableHead className="w-12 text-right">4s</TableHead>
+              <TableHead className="w-12 text-right">6s</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -94,10 +94,10 @@ function InningsCard({ match, innings }: { match: Match; innings: CricketInnings
                     {b.dismissal ? dismissalLabel(b.dismissal.kind) : 'not out'}
                   </p>
                 </TableCell>
-                <TableCell className="text-right tabular-nums">{b.runs}</TableCell>
-                <TableCell className="text-right tabular-nums">{b.balls_faced}</TableCell>
-                <TableCell className="text-right tabular-nums">{b.fours}</TableCell>
-                <TableCell className="text-right tabular-nums">{b.sixes}</TableCell>
+                <TableCell className="w-12 text-right tabular-nums">{b.runs}</TableCell>
+                <TableCell className="w-12 text-right tabular-nums">{b.balls_faced}</TableCell>
+                <TableCell className="w-12 text-right tabular-nums">{b.fours}</TableCell>
+                <TableCell className="w-12 text-right tabular-nums">{b.sixes}</TableCell>
               </TableRow>
             ))}
           </TableBody>
@@ -109,20 +109,20 @@ function InningsCard({ match, innings }: { match: Match; innings: CricketInnings
           <TableHeader>
             <TableRow>
               <TableHead>Bowler</TableHead>
-              <TableHead className="text-right">O</TableHead>
-              <TableHead className="text-right">M</TableHead>
-              <TableHead className="text-right">R</TableHead>
-              <TableHead className="text-right">W</TableHead>
+              <TableHead className="w-12 text-right">O</TableHead>
+              <TableHead className="w-12 text-right">M</TableHead>
+              <TableHead className="w-12 text-right">R</TableHead>
+              <TableHead className="w-12 text-right">W</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {bowling.map((bw: CricketBowlingEntry) => (
               <TableRow key={bw.player_id}>
                 <TableCell className="font-medium">{playerNameFor(match, bw.player_id)}</TableCell>
-                <TableCell className="text-right tabular-nums">{formatOvers(bw.overs)}</TableCell>
-                <TableCell className="text-right tabular-nums">{bw.maidens}</TableCell>
-                <TableCell className="text-right tabular-nums">{bw.runs_conceded}</TableCell>
-                <TableCell className="text-right tabular-nums">{bw.wickets}</TableCell>
+                <TableCell className="w-12 text-right tabular-nums">{formatOvers(bw.overs)}</TableCell>
+                <TableCell className="w-12 text-right tabular-nums">{bw.maidens}</TableCell>
+                <TableCell className="w-12 text-right tabular-nums">{bw.runs_conceded}</TableCell>
+                <TableCell className="w-12 text-right tabular-nums">{bw.wickets}</TableCell>
               </TableRow>
             ))}
           </TableBody>

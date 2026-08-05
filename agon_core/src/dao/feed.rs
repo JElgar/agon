@@ -99,14 +99,7 @@ impl Dao {
                 .key_condition_expression("#pk = :pk AND begins_with(SK, :sk)")
                 .expression_attribute_names("#pk", ATTR_PK)
                 .expression_attribute_values(":pk", s(Pk::UserFeed(viewer_id.into()).to_string()))
-                .expression_attribute_values(
-                    ":sk",
-                    s(Sk::Feed {
-                        starts_at: String::new(),
-                        match_id: String::new(),
-                    }
-                    .prefix()),
-                )
+                .expression_attribute_values(":sk", s(Sk::feed_prefix()))
                 .scan_index_forward(false), // newest (latest starts_at) first
             cursor,
             limit,

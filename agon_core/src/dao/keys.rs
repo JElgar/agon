@@ -67,8 +67,13 @@ pub enum Pk {
 }
 
 impl Pk {
-    /// The static prefix keyword for this variant (without the delimiter).
-    pub fn prefix(&self) -> &'static str {
+    /// The static prefix keyword for this variant, without the delimiter —
+    /// what `Display` builds the real key from. Every `Pk` query in this DAO
+    /// is an exact-match partition key (`#pk = :pk`), never a `begins_with`
+    /// range scan, so unlike `Sk::prefix()` this has no query-collision
+    /// concern to guard against — kept private purely because nothing
+    /// outside `Display` needs it.
+    fn prefix(&self) -> &'static str {
         match self {
             Pk::User(_) => "USER",
             Pk::EmailGuard(_) => "EMAIL",
@@ -193,10 +198,14 @@ pub enum Sk {
 }
 
 impl Sk {
-    /// The static prefix keyword for this variant (without the delimiter). Use
-    /// with `begins_with` / `between` to query an item collection, e.g. all of a
-    /// match's comments: `begins_with(SK, Sk::comment_prefix())`.
-    pub fn prefix(&self) -> &'static str {
+    /// The static prefix keyword for this variant, without the delimiter —
+    /// what `Display` builds the real key from. Not meant for range queries:
+    /// a bare keyword can be a literal string-prefix of a different variant's
+    /// keyword (e.g. `SCORE` of `SCORESUB`), so `begins_with(SK, ...)` on one
+    /// can silently also match items of the other. Use one of the `*_prefix()`
+    /// functions below for that instead — each bakes in the delimiter, so it
+    /// only ever matches its own variant's items.
+    fn prefix(&self) -> &'static str {
         match self {
             Sk::Profile => "#PROFILE",
             Sk::Meta => "#META",
@@ -215,6 +224,62 @@ impl Sk {
             Sk::StatContribution(_) => "STATCONTRIB",
             Sk::Feed { .. } => "FEED",
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Range-query prefixes: one named function per variant that's ever the
+    // target of a `begins_with(SK, ...)` / `between` collection query. Each
+    // includes the delimiter, so (unlike the bare `prefix()` above) it can
+    // never accidentally match a different variant's items too. Add a new
+    // one here — never call `Sk::Variant(dummy).prefix()` at a query call
+    // site — the next time a query needs one.
+    // -----------------------------------------------------------------
+
+    /// Lists a user or team's followers, or a user's own following list:
+    /// `FOLLOWER#` (the same prefix either way — see `Sk::Follower`'s doc
+    /// comment on why one variant covers both).
+    pub fn follower_prefix() -> String {
+        format!("{}{DELIMITER}", Sk::Follower(String::new()).prefix())
+    }
+
+    /// Lists a match's sides: `SIDE#`.
+    pub fn side_prefix() -> String {
+        format!("{}{DELIMITER}", Sk::Side(String::new()).prefix())
+    }
+
+    /// Lists a match's players: `PLAYER#`.
+    pub fn player_prefix() -> String {
+        format!("{}{DELIMITER}", Sk::Player(String::new()).prefix())
+    }
+
+    /// Lists a match's likes: `LIKE#`.
+    pub fn like_prefix() -> String {
+        format!("{}{DELIMITER}", Sk::Like(String::new()).prefix())
+    }
+
+    /// Lists a match's live-scoring event log: `LIVEEVT#`.
+    pub fn live_event_prefix() -> String {
+        format!("{}{DELIMITER}", Sk::LiveEvent(0).prefix())
+    }
+
+    /// Lists a user or team's stat contributions: `STATCONTRIB#`.
+    pub fn stat_contribution_prefix() -> String {
+        format!(
+            "{}{DELIMITER}",
+            Sk::StatContribution(String::new()).prefix()
+        )
+    }
+
+    /// Lists a viewer's feed: `FEED#`.
+    pub fn feed_prefix() -> String {
+        format!(
+            "{}{DELIMITER}",
+            Sk::Feed {
+                starts_at: String::new(),
+                match_id: String::new(),
+            }
+            .prefix()
+        )
     }
 }
 
@@ -415,9 +480,45 @@ mod tests {
 
     #[test]
     fn prefix_helpers_support_range_queries() {
-        // The prefix is what a begins_with query would use for a collection.
-        assert_eq!(Sk::Comment("y".into()).prefix(), "COMMENT");
-        assert_eq!(Sk::Follower("x".into()).prefix(), "FOLLOWER");
-        assert_eq!(Pk::Match("m1".into()).prefix(), "MATCH");
+        // Each `*_prefix()` includes the delimiter — what a `begins_with`
+        // query actually needs, unlike the bare `prefix()` a `Display` impl
+        // builds off (see `no_range_query_prefix_is_a_prefix_of_another`).
+        assert_eq!(Sk::follower_prefix(), "FOLLOWER#");
+        assert_eq!(Sk::side_prefix(), "SIDE#");
+        assert_eq!(Sk::player_prefix(), "PLAYER#");
+        assert_eq!(Sk::like_prefix(), "LIKE#");
+        assert_eq!(Sk::live_event_prefix(), "LIVEEVT#");
+        assert_eq!(Sk::stat_contribution_prefix(), "STATCONTRIB#");
+        assert_eq!(Sk::feed_prefix(), "FEED#");
+    }
+
+    #[test]
+    fn no_range_query_prefix_is_a_prefix_of_another() {
+        // A `begins_with(SK, prefix)` query must only ever match its own
+        // variant's items. This is exactly the bug that motivated
+        // `LIVESCORE#` over `SCORE#` for `Sk::Score`: `SCORE#` would have
+        // been a literal string-prefix of `SCORESUB#`, so a range query
+        // meant to list live-scoring records would also match score
+        // submissions. `SCORESUB#` has no `*_prefix()` of its own today
+        // (score submissions are addressed by id / listed via GSI1) but is
+        // included here as a literal precisely so it keeps guarding future
+        // additions, not just the ones that already have a function.
+        let prefixes = [
+            Sk::follower_prefix(),
+            Sk::side_prefix(),
+            Sk::player_prefix(),
+            Sk::like_prefix(),
+            Sk::live_event_prefix(),
+            Sk::stat_contribution_prefix(),
+            Sk::feed_prefix(),
+            "SCORESUB#".to_string(),
+        ];
+        for (i, a) in prefixes.iter().enumerate() {
+            for (j, b) in prefixes.iter().enumerate() {
+                if i != j {
+                    assert!(!b.starts_with(a.as_str()), "{a:?} is a prefix of {b:?}");
+                }
+            }
+        }
     }
 }

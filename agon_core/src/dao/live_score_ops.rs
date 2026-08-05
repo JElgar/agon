@@ -203,7 +203,7 @@ impl Dao {
     /// Internal use only (folding the whole log) — the public API paginates
     /// via `list_live_events_page` instead of ever returning this whole.
     pub async fn list_live_events(&self, match_id: &str) -> DaoResult<Vec<LiveEventRecord>> {
-        self.query_match_collection(match_id, Sk::LiveEvent(0).prefix())
+        self.query_match_collection(match_id, &Sk::live_event_prefix())
             .await
     }
 
@@ -223,7 +223,7 @@ impl Dao {
                 .key_condition_expression("#pk = :pk AND begins_with(SK, :sk)")
                 .expression_attribute_names("#pk", ATTR_PK)
                 .expression_attribute_values(":pk", s(Pk::Match(match_id.into()).to_string()))
-                .expression_attribute_values(":sk", s(Sk::LiveEvent(0).prefix())),
+                .expression_attribute_values(":sk", s(Sk::live_event_prefix())),
             cursor,
             limit,
         )

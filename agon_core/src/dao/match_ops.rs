@@ -146,10 +146,10 @@ impl Dao {
         // sides/players queries once agon_core takes a futures/tokio dep
         // (`try_join!`) — deferred to avoid adding the dependency just for this.
         let sides: Vec<MatchSideRecord> = self
-            .query_match_collection(match_id, Sk::Side(String::new()).prefix())
+            .query_match_collection(match_id, &Sk::side_prefix())
             .await?;
         let players: Vec<MatchPlayerRecord> = self
-            .query_match_collection(match_id, Sk::Player(String::new()).prefix())
+            .query_match_collection(match_id, &Sk::player_prefix())
             .await?;
 
         Ok(Some(MatchAggregate {

@@ -1,14 +1,28 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { isSetsSport } from '@/lib/sports'
+import { FootballScoreFields } from '@/components/agon/FootballScoreFields'
+import { CricketScoreFields } from '@/components/agon/CricketScoreFields'
+import { headlineBySide } from '@/lib/score'
+import { cricketProgressFromScore, matchTotalsBySide } from '@/lib/cricketScore'
 
 type Match = components['schemas']['Match']
 type UpdateMatchInput = components['schemas']['UpdateMatchInput']
 type Score = components['schemas']['Score']
+
+/** A short "X–Y" summary of a score for the two given sides — used to show
+ *  what the live/recorded score actually is when it disagrees with what's
+ *  being saved. Cricket has no single headline number (see `headlineBySide`),
+ *  so it sums each side's runs across every innings played so far instead. */
+function scoreSummary(score: Score, aId: string, bId: string): string {
+  const totals =
+    score.type === 'Cricket' ? matchTotalsBySide(cricketProgressFromScore(score)) : headlineBySide(score)
+  return `${totals[aId] ?? 0}–${totals[bId] ?? 0}`
+}
 
 /** One row of the sets editor: games won by each side in a single set. */
 interface SetRow {
@@ -27,8 +41,8 @@ function sideLabel(match: Match, index: number, fallback: string): string {
 function seedSets(match: Match, aId: string, bId: string): SetRow[] {
   const score = match.confirmed_score?.score
   if (score && score.type === 'Sets') {
-    const a = score.entries.find((e) => e.side_id === aId)?.sets ?? []
-    const b = score.entries.find((e) => e.side_id === bId)?.sets ?? []
+    const a = score.entries[aId] ?? []
+    const b = score.entries[bId] ?? []
     const rows = Math.max(a.length, b.length)
     if (rows > 0) {
       return Array.from({ length: rows }, (_, i) => ({
@@ -47,8 +61,8 @@ function seedSets(match: Match, aId: string, bId: string): SetRow[] {
 function seedPoints(match: Match, aId: string, bId: string): [string, string] {
   const score = match.confirmed_score?.score
   if (score && score.type === 'Simple') {
-    const a = score.entries.find((e) => e.side_id === aId)?.points
-    const b = score.entries.find((e) => e.side_id === bId)?.points
+    const a = score.entries[aId]
+    const b = score.entries[bId]
     return [a?.toString() ?? '', b?.toString() ?? '']
   }
   return ['', '']
@@ -56,11 +70,20 @@ function seedPoints(match: Match, aId: string, bId: string): [string, string] {
 
 /**
  * Inline editor for a match's result, opened from the detail card. Renders a
- * sets grid for racket sports and a single points pair otherwise (mirroring the
- * create flow), seeded from any existing confirmed score. On save it PATCHes the
- * score against the match's real side ids; a changed score re-enters the
- * confirmation flow server-side (the other side is asked to confirm), so we also
- * refresh so the pending-score prompt appears.
+ * sets grid for racket sports, the football/cricket editors (goal-by-goal /
+ * innings detail, optional) for those sports, and a single points pair
+ * otherwise (mirroring the create flow), seeded from any existing confirmed
+ * score. On save it PATCHes the score against the match's real side ids; a
+ * changed score re-enters the confirmation flow server-side (the other side
+ * is asked to confirm), so we also refresh so the pending-score prompt
+ * appears.
+ *
+ * For a live-scored football/cricket match, a save that disagrees with the
+ * server's own live-derived score comes back as a 409 rather than being
+ * silently accepted — unlike `finishMatch` (which just asks the user to
+ * refresh and try again), this editor is specifically a correction tool, so
+ * it offers a way through: fetch and show what the live/recorded score
+ * actually is, then let a second tap resubmit with `override_live_score` set.
  */
 export function MatchResultEditor({
   match,
@@ -76,15 +99,20 @@ export function MatchResultEditor({
   const nameA = sideLabel(match, 0, 'Side A')
   const nameB = sideLabel(match, 1, 'Side B')
 
+  const isFootball = match.match_type === 'football'
+  const isCricket = match.match_type === 'cricket'
   const setsMode = isSetsSport(match.match_type)
   const [sets, setSets] = useState<SetRow[]>(() => seedSets(match, aId, bId))
-  const [points, setPoints] = useState<[string, string]>(() =>
-    seedPoints(match, aId, bId),
-  )
+  const [points, setPoints] = useState<[string, string]>(() => seedPoints(match, aId, bId))
   const [pointsA, pointsB] = points
+  const [detailBuilt, setDetailBuilt] = useState<{ score: Score; winnerSideId?: string } | null>(null)
 
   /** Build the score payload + derived winner, or null when incomplete. */
   const build = (): { score: Score; winner?: string } | null => {
+    if (isFootball || isCricket) {
+      return detailBuilt ? { score: detailBuilt.score, winner: detailBuilt.winnerSideId } : null
+    }
+
     if (setsMode) {
       const rows = sets
         .map((r) => ({ a: Number(r.a), b: Number(r.b) }))
@@ -103,13 +131,13 @@ export function MatchResultEditor({
         if (r.a > r.b) aSets += 1
         else if (r.b > r.a) bSets += 1
       }
-      const score = {
+      const score: Score = {
         type: 'Sets',
-        entries: [
-          { side_id: aId, sets: rows.map((r) => r.a) },
-          { side_id: bId, sets: rows.map((r) => r.b) },
-        ],
-      } as unknown as Score
+        entries: {
+          [aId]: rows.map((r) => r.a),
+          [bId]: rows.map((r) => r.b),
+        },
+      }
       const winner = aSets === bSets ? undefined : aSets > bSets ? aId : bId
       return { score, winner }
     }
@@ -123,35 +151,52 @@ export function MatchResultEditor({
       !Number.isFinite(b)
     )
       return null
-    const score = {
+    const score: Score = {
       type: 'Simple',
-      entries: [
-        { side_id: aId, points: a },
-        { side_id: bId, points: b },
-      ],
-    } as unknown as Score
+      entries: { [aId]: a, [bId]: b },
+    }
     const winner = a === b ? undefined : a > b ? aId : bId
     return { score, winner }
   }
 
   const built = build()
 
+  // Set when a save is rejected (409) because it disagrees with the match's
+  // live/recorded score — `null` while there's nothing to warn about. Holds
+  // that live score itself, so the prompt can show exactly what it is
+  // instead of just "something doesn't match". Cleared whenever the input
+  // changes so a fresh edit doesn't carry a stale warning around, and an
+  // edit that resolves the disagreement goes back to a normal save.
+  const [conflict, setConflict] = useState<Score | null>(null)
+  useEffect(() => {
+    setConflict(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [built ? JSON.stringify(built.score) : null])
+
   const save = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (override: boolean): Promise<'saved' | 'conflict'> => {
       if (!built) throw new Error('Enter a score first')
       const body: UpdateMatchInput = {
-        // The generated type is `Omit<Score,'type'>`; the server needs the
-        // discriminator, which we injected when building `score`.
-        score: built.score as UpdateMatchInput['score'],
+        score: built.score,
       }
       if (built.winner) body.winner_side_id = built.winner
-      const { error } = await fetchClient.PATCH('/matches/{match_id}', {
+      if (override) body.override_live_score = true
+      const { error, response } = await fetchClient.PATCH('/matches/{match_id}', {
         params: { path: { match_id: match.id } },
         body,
       })
+      if (response.status === 409) {
+        const { data } = await fetchClient.GET('/matches/{match_id}/score', {
+          params: { path: { match_id: match.id } },
+        })
+        setConflict(data ?? null)
+        return 'conflict'
+      }
       if (error) throw new Error('Failed to save the result')
+      return 'saved'
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
+      if (result === 'conflict') return
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })
       queryClient.invalidateQueries({ queryKey: ['feed'] })
       onDone()
@@ -162,7 +207,23 @@ export function MatchResultEditor({
     <div className="flex flex-col gap-3 rounded-xl border bg-card p-4">
       <p className="text-sm font-medium">Result</p>
 
-      {setsMode ? (
+      {isFootball && sideA && sideB ? (
+        <FootballScoreFields
+          sideA={sideA}
+          sideB={sideB}
+          players={match.players}
+          initial={match.confirmed_score?.score}
+          onChange={setDetailBuilt}
+        />
+      ) : isCricket && sideA && sideB ? (
+        <CricketScoreFields
+          sideA={sideA}
+          sideB={sideB}
+          players={match.players}
+          initial={match.confirmed_score?.score}
+          onChange={setDetailBuilt}
+        />
+      ) : setsMode ? (
         <div className="flex flex-col gap-2">
           <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-center text-[11px] uppercase tracking-wider text-muted-foreground">
             <span className="truncate text-left">{nameA}</span>
@@ -254,6 +315,15 @@ export function MatchResultEditor({
         </div>
       )}
 
+      {conflict && (
+        <div className="rounded-lg border border-warning/30 bg-warning/10 p-3">
+          <p className="text-xs font-medium text-foreground">
+            This doesn't match the live/recorded score ({scoreSummary(conflict, aId, bId)}). Saving
+            will overwrite it.
+          </p>
+        </div>
+      )}
+
       {save.isError && (
         <p className="text-xs text-destructive">
           {(save.error as Error).message}
@@ -264,9 +334,9 @@ export function MatchResultEditor({
         <Button
           size="sm"
           disabled={!built || save.isPending}
-          onClick={() => save.mutate()}
+          onClick={() => save.mutate(!!conflict)}
         >
-          {save.isPending ? 'Saving…' : 'Save result'}
+          {save.isPending ? 'Saving…' : conflict ? 'Save anyway' : 'Save result'}
         </Button>
         <Button
           size="sm"

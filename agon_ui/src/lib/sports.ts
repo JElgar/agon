@@ -45,6 +45,21 @@ export function sportIcon(type: MatchType): LucideIcon {
   return SPORT_ICONS[type] ?? Circle
 }
 
+/** Emoji for a sport, used by the compact sport pill (feed cards, match detail). */
+const SPORT_EMOJI: Record<MatchType, string> = {
+  tennis: '🎾',
+  badminton: '🏸',
+  squash: '🎾',
+  table_tennis: '🏓',
+  football: '⚽',
+  cricket: '🏏',
+  other: '🏅',
+}
+
+export function sportEmoji(type: MatchType): string {
+  return SPORT_EMOJI[type] ?? SPORT_EMOJI.other
+}
+
 /** Racket sports are scored by sets; everything else by a single points total. */
 export function isSetsSport(sport: MatchType): boolean {
   return (

@@ -1,46 +1,78 @@
 use poem_openapi::{Enum, Object};
 
-/// Full cricket scorecard: one entry per innings, each with batting and
-/// bowling cards plus the extras/fall-of-wicket detail.
-#[derive(Object)]
-pub struct CricketDetail {
-    pub innings: Vec<CricketInnings>,
+/// How many balls back `CricketScore.recent_deliveries` keeps for the "this
+/// over"/recent-balls row — enough to show a bit more than the current over,
+/// nowhere near a whole innings.
+pub const RECENT_DELIVERIES_LIMIT: usize = 18;
+
+/// What's known about who's at the crease/bowling for the *next* delivery,
+/// folded incrementally as events are recorded. A `None` field means the
+/// scorer needs to pick someone before the next ball can be recorded —
+/// either a fresh innings (nothing bowled yet), a wicket just fell (the
+/// dismissed batter's slot is open), or an over just completed (a new
+/// bowler is required; the same bowler can't bowl consecutive overs).
+///
+/// Mirrors `agon_ui/src/lib/cricketScore.ts`'s `NextBallContext` field-for-
+/// field and step-for-step — kept in sync by hand. The frontend runs the
+/// identical fold offline, against deliveries a device has recorded locally
+/// but not yet synced, which is exactly the case this incremental (one
+/// delivery at a time) shape is built for: apply one step to the last-known
+/// context, don't replay history.
+#[derive(Object, Clone)]
+pub struct NextBallContext {
+    pub striker_player_id: Option<String>,
+    pub non_striker_player_id: Option<String>,
+    pub bowler_player_id: Option<String>,
+    /// 0-based over index the next delivery belongs to.
+    pub over: u32,
+    /// 1-based ball number within that over.
+    pub ball: u32,
+    /// The bowler who just finished an over — excluded from the next-bowler
+    /// picker. `None` unless a bowler pick is actually needed.
+    pub previous_over_bowler_player_id: Option<String>,
+    /// Runs conceded so far in the *current* over (resets to 0 at each over
+    /// boundary) — what decides whether the over that just completed was a
+    /// maiden, without needing to look back at the deliveries that made it
+    /// up. Also just useful on its own for a live "this over: 4 runs" read.
+    pub runs_conceded_this_over: u32,
 }
 
-/// A cricket innings supports three tiers of fidelity:
-///   1. Minimal — just `runs`/`wickets`/`overs`, leaving the cards empty.
-///   2. Scorecard — full per-player `batting`/`bowling` cards.
-///   3. Ball-by-ball — a `deliveries` log (for live in-app scoring).
-///
-/// The aggregate fields (`runs`, `wickets`, `overs`, `batting`, `bowling`,
-/// `extras`, `fall_of_wickets`) are the always-present *overview*. When
-/// `deliveries` is populated it is the source of truth and the overview is
-/// generated from it; otherwise the overview is entered directly.
-#[derive(Object)]
-pub struct CricketInnings {
-    /// The batting side for this innings (references MatchSide.id).
-    pub batting_side_id: String,
-    /// The bowling/fielding side for this innings.
-    pub bowling_side_id: String,
-    /// Total runs scored in the innings.
-    pub runs: u32,
-    /// Wickets lost (0-10).
-    pub wickets: u32,
-    /// Overs bowled, e.g. 19.4 (4 balls into the 20th over).
-    pub overs: f32,
-    /// Whether the innings has been declared closed.
-    pub declared: bool,
-    pub batting: Vec<CricketBattingEntry>,
-    pub bowling: Vec<CricketBowlingEntry>,
-    pub extras: CricketExtras,
-    pub fall_of_wickets: Vec<CricketFallOfWicket>,
-    /// Optional ball-by-ball log. When present, the overview above is generated
-    /// from these deliveries. Empty when the innings was not scored ball-by-ball.
-    pub deliveries: Vec<CricketDelivery>,
+impl NextBallContext {
+    /// The state before any delivery has been recorded in an innings.
+    pub fn opening() -> Self {
+        NextBallContext {
+            striker_player_id: None,
+            non_striker_player_id: None,
+            bowler_player_id: None,
+            over: 0,
+            ball: 1,
+            previous_over_bowler_player_id: None,
+            runs_conceded_this_over: 0,
+        }
+    }
+}
+
+/// A count of overs bowled/faced: whole overs plus balls into the current
+/// (not yet complete) over — not a single float like `19.4`, which only
+/// works by coincidence for a standard 6-ball over. A float can't safely
+/// represent a ball count that doesn't fit in one decimal digit (a
+/// hypothetical over of 10+ balls collides with itself: 10 balls and 1 ball
+/// both read as `.10`/`.1`), and an exact count has no business being a
+/// float in the first place.
+#[derive(Object, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Overs {
+    /// Completed overs.
+    pub overs: u32,
+    /// Balls into the current over (0..balls_per_over).
+    pub balls: u32,
 }
 
 /// A single delivery (ball) in an innings. The atomic unit of in-app scoring.
-#[derive(Object)]
+/// Also the live-scoring "delivery" event payload verbatim (see
+/// `crate::live_score::cricket::CricketLiveEvent::Delivery`) — a live match's
+/// ball-by-ball log *is* a sequence of these, folded incrementally instead of
+/// submitted whole.
+#[derive(Object, Clone)]
 pub struct CricketDelivery {
     /// Over number, 0-based.
     pub over: u32,
@@ -60,14 +92,14 @@ pub struct CricketDelivery {
     pub wicket: Option<CricketDeliveryWicket>,
 }
 
-#[derive(Object)]
+#[derive(Object, Clone)]
 pub struct CricketDeliveryExtra {
     pub kind: CricketExtraKind,
     /// Extra runs awarded for this delivery.
     pub runs: u32,
 }
 
-#[derive(Enum)]
+#[derive(Enum, Clone)]
 #[oai(rename_all = "snake_case")]
 pub enum CricketExtraKind {
     Wide,
@@ -77,7 +109,7 @@ pub enum CricketExtraKind {
     Penalty,
 }
 
-#[derive(Object)]
+#[derive(Object, Clone)]
 pub struct CricketDeliveryWicket {
     pub kind: CricketDismissalKind,
     /// The batter dismissed (usually the striker, but run-outs can be either).
@@ -88,7 +120,7 @@ pub struct CricketDeliveryWicket {
     pub fielder_player_id: Option<String>,
 }
 
-#[derive(Object)]
+#[derive(Object, Clone)]
 pub struct CricketBattingEntry {
     pub player_id: String,
     pub runs: u32,
@@ -101,7 +133,7 @@ pub struct CricketBattingEntry {
     pub batting_position: Option<u32>,
 }
 
-#[derive(Object)]
+#[derive(Object, Clone)]
 pub struct CricketDismissal {
     pub kind: CricketDismissalKind,
     /// Bowler credited with the wicket (none for run outs / retired).
@@ -119,14 +151,21 @@ pub enum CricketDismissalKind {
     RunOut,
     Stumped,
     HitWicket,
+    /// Left the field (injury/illness) and did not return. Counts as a
+    /// wicket, unlike `RetiredHurt`. Recorded via a live `Retire` event with
+    /// `retired_out: true` (see `crate::live_score::cricket`).
+    RetiredOut,
+    /// Left the field (injury/illness) but may return — the same
+    /// `player_id` simply reappears on a later delivery. Does not count as a
+    /// wicket. Recorded via a live `Retire` event with `retired_out: false`.
     RetiredHurt,
 }
 
-#[derive(Object)]
+#[derive(Object, Clone)]
 pub struct CricketBowlingEntry {
     pub player_id: String,
-    /// Overs bowled, e.g. 4.0 or 3.2.
-    pub overs: f32,
+    /// Overs bowled, e.g. 4 overs + 0 balls, or 3 overs + 2 balls.
+    pub overs: Overs,
     pub maidens: u32,
     pub runs_conceded: u32,
     pub wickets: u32,
@@ -134,7 +173,7 @@ pub struct CricketBowlingEntry {
     pub no_balls: u32,
 }
 
-#[derive(Object)]
+#[derive(Object, Clone, Default)]
 pub struct CricketExtras {
     pub byes: u32,
     pub leg_byes: u32,
@@ -143,7 +182,7 @@ pub struct CricketExtras {
     pub penalty: u32,
 }
 
-#[derive(Object)]
+#[derive(Object, Clone)]
 pub struct CricketFallOfWicket {
     /// Wicket number (1 = first wicket to fall).
     pub wicket: u32,
@@ -152,10 +191,10 @@ pub struct CricketFallOfWicket {
     /// Batter dismissed.
     pub player_id: String,
     /// Overs completed when the wicket fell, if recorded.
-    pub overs: Option<f32>,
+    pub overs: Option<Overs>,
 }
 
-/// Cricket scoring rules encoded by the aggregator below:
+/// Cricket scoring rules encoded by `live_score::cricket::apply_delivery`:
 /// - A delivery is *legal* (counts toward overs and balls faced) unless it is a
 ///   wide or no-ball.
 /// - `runs_off_bat` is credited to the striker and the team total.
@@ -165,7 +204,7 @@ pub struct CricketFallOfWicket {
 ///   or hit-wicket; run-outs and retirements are not.
 /// - A maiden is an over in which the bowler concedes no runs (byes/leg-byes do
 ///   not count against the bowler, so they do not break a maiden).
-fn dismissal_credited_to_bowler(kind: &CricketDismissalKind) -> bool {
+pub(crate) fn dismissal_credited_to_bowler(kind: &CricketDismissalKind) -> bool {
     matches!(
         kind,
         CricketDismissalKind::Bowled
@@ -176,17 +215,26 @@ fn dismissal_credited_to_bowler(kind: &CricketDismissalKind) -> bool {
     )
 }
 
-/// True if the delivery counts as a legal ball (advances the over).
-fn is_legal_delivery(delivery: &CricketDelivery) -> bool {
-    !matches!(
-        delivery.extra.as_ref().map(|e| &e.kind),
-        Some(CricketExtraKind::Wide) | Some(CricketExtraKind::NoBall)
-    )
+/// True if the delivery counts as a legal ball (advances the over). Wides and
+/// no-balls are illegal (re-bowled as an extra delivery) under the standard
+/// rules, but a match format can configure either one to just count as one of
+/// the over's legal balls instead (see `CricketFormat::wide_is_extra_ball` /
+/// `no_ball_is_extra_ball`).
+pub(crate) fn is_legal_delivery(
+    delivery: &CricketDelivery,
+    wide_is_extra_ball: bool,
+    no_ball_is_extra_ball: bool,
+) -> bool {
+    match delivery.extra.as_ref().map(|e| &e.kind) {
+        Some(CricketExtraKind::Wide) => !wide_is_extra_ball,
+        Some(CricketExtraKind::NoBall) => !no_ball_is_extra_ball,
+        _ => true,
+    }
 }
 
 /// Runs charged to the bowler for a delivery: runs off the bat plus wides and
 /// no-balls. Byes, leg-byes and penalties are not the bowler's responsibility.
-fn runs_charged_to_bowler(delivery: &CricketDelivery) -> u32 {
+pub(crate) fn runs_charged_to_bowler(delivery: &CricketDelivery) -> u32 {
     let extra = delivery
         .extra
         .as_ref()
@@ -196,288 +244,12 @@ fn runs_charged_to_bowler(delivery: &CricketDelivery) -> u32 {
     delivery.runs_off_bat + extra
 }
 
-/// Converts a count of legal balls into the conventional overs float, e.g.
-/// 13 balls -> 2.1 (two complete overs and one ball).
-fn balls_to_overs(balls: u32) -> f32 {
-    (balls / 6) as f32 + (balls % 6) as f32 / 10.0
-}
-
-impl CricketInnings {
-    /// Builds the innings overview (totals, batting/bowling cards, extras,
-    /// fall-of-wickets) from a ball-by-ball delivery log. The deliveries are
-    /// retained on the returned innings as the source of truth.
-    pub fn from_deliveries(
-        batting_side_id: String,
-        bowling_side_id: String,
-        declared: bool,
-        deliveries: Vec<CricketDelivery>,
-    ) -> Self {
-        // First-appearance-ordered accumulators keyed by player_id.
-        let mut batting: Vec<CricketBattingEntry> = Vec::new();
-        let mut bowling: Vec<CricketBowlingEntry> = Vec::new();
-        let mut extras = CricketExtras {
-            byes: 0,
-            leg_byes: 0,
-            wides: 0,
-            no_balls: 0,
-            penalty: 0,
-        };
-        let mut fall_of_wickets: Vec<CricketFallOfWicket> = Vec::new();
-        let mut total_runs: u32 = 0;
-        let mut wickets: u32 = 0;
-        let mut legal_balls: u32 = 0;
-        // (bowler_player_id, over) -> runs charged, to detect maidens.
-        let mut over_runs: Vec<((String, u32), u32)> = Vec::new();
-
-        fn batter<'a>(
-            batting: &'a mut Vec<CricketBattingEntry>,
-            player_id: &str,
-        ) -> &'a mut CricketBattingEntry {
-            if let Some(pos) = batting.iter().position(|b| b.player_id == player_id) {
-                &mut batting[pos]
-            } else {
-                batting.push(CricketBattingEntry {
-                    player_id: player_id.to_string(),
-                    runs: 0,
-                    balls_faced: 0,
-                    fours: 0,
-                    sixes: 0,
-                    dismissal: None,
-                    batting_position: Some(batting.len() as u32 + 1),
-                });
-                batting.last_mut().unwrap()
-            }
-        }
-
-        fn bowler<'a>(
-            bowling: &'a mut Vec<CricketBowlingEntry>,
-            player_id: &str,
-        ) -> &'a mut CricketBowlingEntry {
-            if let Some(pos) = bowling.iter().position(|b| b.player_id == player_id) {
-                &mut bowling[pos]
-            } else {
-                bowling.push(CricketBowlingEntry {
-                    player_id: player_id.to_string(),
-                    overs: 0.0,
-                    maidens: 0,
-                    runs_conceded: 0,
-                    wickets: 0,
-                    wides: 0,
-                    no_balls: 0,
-                });
-                bowling.last_mut().unwrap()
-            }
-        }
-
-        for delivery in &deliveries {
-            let legal = is_legal_delivery(delivery);
-            let charged = runs_charged_to_bowler(delivery);
-            let extra_runs = delivery.extra.as_ref().map(|e| e.runs).unwrap_or(0);
-
-            total_runs += delivery.runs_off_bat + extra_runs;
-            if legal {
-                legal_balls += 1;
-            }
-
-            // Batting: striker is credited runs off the bat and faces legal
-            // balls and no-balls (but not wides).
-            {
-                let b = batter(&mut batting, &delivery.striker_player_id);
-                b.runs += delivery.runs_off_bat;
-                let faced_ball = !matches!(
-                    delivery.extra.as_ref().map(|e| &e.kind),
-                    Some(CricketExtraKind::Wide)
-                );
-                if faced_ball {
-                    b.balls_faced += 1;
-                }
-                match delivery.runs_off_bat {
-                    4 => b.fours += 1,
-                    6 => b.sixes += 1,
-                    _ => {}
-                }
-            }
-
-            // Bowling figures.
-            {
-                let bw = bowler(&mut bowling, &delivery.bowler_player_id);
-                bw.runs_conceded += charged;
-                if let Some(extra) = &delivery.extra {
-                    match extra.kind {
-                        CricketExtraKind::Wide => bw.wides += 1,
-                        CricketExtraKind::NoBall => bw.no_balls += 1,
-                        _ => {}
-                    }
-                }
-            }
-
-            // Track runs per bowler-over for maiden detection.
-            let key = (delivery.bowler_player_id.clone(), delivery.over);
-            if let Some(entry) = over_runs.iter_mut().find(|(k, _)| *k == key) {
-                entry.1 += charged;
-            } else {
-                over_runs.push((key, charged));
-            }
-
-            // Extras breakdown.
-            if let Some(extra) = &delivery.extra {
-                match extra.kind {
-                    CricketExtraKind::Bye => extras.byes += extra.runs,
-                    CricketExtraKind::LegBye => extras.leg_byes += extra.runs,
-                    CricketExtraKind::Wide => extras.wides += extra.runs,
-                    CricketExtraKind::NoBall => extras.no_balls += extra.runs,
-                    CricketExtraKind::Penalty => extras.penalty += extra.runs,
-                }
-            }
-
-            // Wicket.
-            if let Some(wicket) = &delivery.wicket {
-                wickets += 1;
-                fall_of_wickets.push(CricketFallOfWicket {
-                    wicket: wickets,
-                    runs: total_runs,
-                    player_id: wicket.dismissed_player_id.clone(),
-                    overs: Some(balls_to_overs(legal_balls)),
-                });
-                if dismissal_credited_to_bowler(&wicket.kind) {
-                    bowler(&mut bowling, &delivery.bowler_player_id).wickets += 1;
-                }
-                let b = batter(&mut batting, &wicket.dismissed_player_id);
-                b.dismissal = Some(CricketDismissal {
-                    kind: wicket.kind.clone(),
-                    bowler_player_id: wicket.bowler_player_id.clone(),
-                    fielder_player_id: wicket.fielder_player_id.clone(),
-                });
-            }
-        }
-
-        // Per-bowler overs and maidens.
-        for bw in &mut bowling {
-            let balls: u32 = deliveries
-                .iter()
-                .filter(|d| d.bowler_player_id == bw.player_id && is_legal_delivery(d))
-                .count() as u32;
-            bw.overs = balls_to_overs(balls);
-            bw.maidens = over_runs
-                .iter()
-                .filter(|((bowler_id, _), runs)| *bowler_id == bw.player_id && *runs == 0)
-                .count() as u32;
-        }
-
-        CricketInnings {
-            batting_side_id,
-            bowling_side_id,
-            runs: total_runs,
-            wickets,
-            overs: balls_to_overs(legal_balls),
-            declared,
-            batting,
-            bowling,
-            extras,
-            fall_of_wickets,
-            deliveries,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A plain run-scoring delivery (no extra, no wicket).
-    fn ball(
-        over: u32,
-        ball: u32,
-        bowler: &str,
-        striker: &str,
-        non_striker: &str,
-        runs: u32,
-    ) -> CricketDelivery {
-        CricketDelivery {
-            over,
-            ball,
-            bowler_player_id: bowler.to_string(),
-            striker_player_id: striker.to_string(),
-            non_striker_player_id: non_striker.to_string(),
-            runs_off_bat: runs,
-            extra: None,
-            wicket: None,
-        }
-    }
-
-    #[test]
-    fn aggregates_overview_from_deliveries() {
-        // One over from bowler B1: 4, 6, wide(+1), dot, 1, W(bowled striker S1).
-        let deliveries = vec![
-            ball(0, 1, "B1", "S1", "S2", 4),
-            ball(0, 2, "B1", "S1", "S2", 6),
-            CricketDelivery {
-                over: 0,
-                ball: 2,
-                bowler_player_id: "B1".into(),
-                striker_player_id: "S1".into(),
-                non_striker_player_id: "S2".into(),
-                runs_off_bat: 0,
-                extra: Some(CricketDeliveryExtra {
-                    kind: CricketExtraKind::Wide,
-                    runs: 1,
-                }),
-                wicket: None,
-            },
-            ball(0, 3, "B1", "S1", "S2", 0),
-            ball(0, 4, "B1", "S1", "S2", 1),
-            CricketDelivery {
-                over: 0,
-                ball: 5,
-                bowler_player_id: "B1".into(),
-                striker_player_id: "S1".into(),
-                non_striker_player_id: "S2".into(),
-                runs_off_bat: 0,
-                extra: None,
-                wicket: Some(CricketDeliveryWicket {
-                    kind: CricketDismissalKind::Bowled,
-                    dismissed_player_id: "S1".into(),
-                    bowler_player_id: Some("B1".into()),
-                    fielder_player_id: None,
-                }),
-            },
-        ];
-
-        let innings =
-            CricketInnings::from_deliveries("team_a".into(), "team_b".into(), false, deliveries);
-
-        // Total runs: 4 + 6 + 1(wide) + 0 + 1 + 0 = 12.
-        assert_eq!(innings.runs, 12);
-        assert_eq!(innings.wickets, 1);
-        // 5 legal balls (wide excluded) -> 0.5 overs.
-        assert_eq!(innings.overs, 0.5);
-        assert_eq!(innings.extras.wides, 1);
-
-        // Striker S1: 11 runs off the bat, faced 5 balls (wide not faced),
-        // one four, one six, bowled.
-        let s1 = innings
-            .batting
-            .iter()
-            .find(|b| b.player_id == "S1")
-            .expect("S1 batting entry");
-        assert_eq!(s1.runs, 11);
-        assert_eq!(s1.balls_faced, 5);
-        assert_eq!(s1.fours, 1);
-        assert_eq!(s1.sixes, 1);
-        assert!(matches!(
-            s1.dismissal.as_ref().map(|d| &d.kind),
-            Some(CricketDismissalKind::Bowled)
-        ));
-
-        // Bowler B1: all 12 runs charged, 1 wicket, 1 wide, not a maiden.
-        let b1 = innings
-            .bowling
-            .iter()
-            .find(|b| b.player_id == "B1")
-            .expect("B1 bowling entry");
-        assert_eq!(b1.runs_conceded, 12);
-        assert_eq!(b1.wickets, 1);
-        assert_eq!(b1.wides, 1);
-        assert_eq!(b1.maidens, 0);
+/// Converts a count of legal balls into whole overs + balls, e.g. 13 balls
+/// -> 2 overs + 1 ball, given how many legal deliveries make an over (6 for
+/// almost everything, 5 for The Hundred).
+pub(crate) fn balls_to_overs(balls: u32, balls_per_over: u32) -> Overs {
+    Overs {
+        overs: balls / balls_per_over,
+        balls: balls % balls_per_over,
     }
 }

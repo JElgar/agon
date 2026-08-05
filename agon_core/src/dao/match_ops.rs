@@ -1,5 +1,6 @@
 //! Match operations: create (meta + sides + players in one transaction),
-//! get aggregate, update meta, detailed score, and player roster writes.
+//! get aggregate, update meta, live-scoring score record, and player roster
+//! writes.
 
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
@@ -10,17 +11,17 @@ use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::{
-    ConfirmedScoreRecord, MatchDetailedScoreRecord, MatchPlayerRecord, MatchRecord,
-    MatchSideRecord, PendingScoreRecord,
+    ConfirmedScoreRecord, HeaderPhotoRecord, MatchFormatRecord, MatchPlayerRecord, MatchRecord,
+    MatchScoreRecord, MatchSideRecord, PendingScoreRecord,
 };
 
 pub const TYPE_MATCH: &str = "match";
 pub const TYPE_MATCH_SIDE: &str = "match_side";
 pub const TYPE_MATCH_PLAYER: &str = "match_player";
-pub const TYPE_MATCH_DETAIL: &str = "match_detail";
+pub const TYPE_MATCH_SCORE: &str = "match_score";
 
 /// A match plus its sides and players, assembled from one collection query.
-/// Excludes the detailed score, likes and comments (fetched separately).
+/// Excludes the live-scoring score record, likes and comments (fetched separately).
 #[derive(Debug)]
 pub struct MatchAggregate {
     pub match_: MatchRecord,
@@ -109,19 +110,19 @@ impl Dao {
     }
 
     /// Fetch the match aggregate (meta + sides + players). `None` if the meta
-    /// item is absent. Likes/comments/submissions/detailed-score are deliberately
-    /// not loaded here — fetch via their own paginated ops.
+    /// item is absent. Likes/comments/submissions/live-scoring score record
+    /// are deliberately not loaded here — fetch via their own paginated ops.
     ///
     /// Reads are **scoped per collection** rather than scanning the whole match
     /// partition: a `GetItem` for meta, then `begins_with(SK, "SIDE#")` and
     /// `begins_with(SK, "PLAYER#")` queries. This reads only the handful of
     /// side/player items — not the potentially large COMMENT#/LIKE#/SCORESUB#
     /// ranges — and, crucially, avoids the 1 MB single-Query-page trap: because
-    /// `SIDE#` sorts last in the partition (`#META < COMMENT# < DETAIL# < LIKE# <
-    /// PLAYER# < SCORESUB# < SIDE#`), a whole-partition query on a match with
-    /// many comments could push sides onto an unread second page and silently
-    /// drop them. Scoped queries can't (BatchGetItem isn't an option — side and
-    /// player ids aren't known ahead of the read).
+    /// `SIDE#` sorts last in the partition (`#META < COMMENT# < LIKE# <
+    /// LIVESCORE# < PLAYER# < SCORESUB# < SIDE#`), a whole-partition query on a
+    /// match with many comments could push sides onto an unread second page and
+    /// silently drop them. Scoped queries can't (BatchGetItem isn't an option —
+    /// side and player ids aren't known ahead of the read).
     pub async fn get_match(&self, match_id: &str) -> DaoResult<Option<MatchAggregate>> {
         let pk = Pk::Match(match_id.into());
 
@@ -145,10 +146,10 @@ impl Dao {
         // sides/players queries once agon_core takes a futures/tokio dep
         // (`try_join!`) — deferred to avoid adding the dependency just for this.
         let sides: Vec<MatchSideRecord> = self
-            .query_match_collection(match_id, Sk::Side(String::new()).prefix())
+            .query_match_collection(match_id, &Sk::side_prefix())
             .await?;
         let players: Vec<MatchPlayerRecord> = self
-            .query_match_collection(match_id, Sk::Player(String::new()).prefix())
+            .query_match_collection(match_id, &Sk::player_prefix())
             .await?;
 
         Ok(Some(MatchAggregate {
@@ -161,7 +162,7 @@ impl Dao {
     /// Read every item in a match's partition whose SK starts with `sk_prefix`
     /// (e.g. `SIDE#`, `PLAYER#`), draining all query pages so a large collection
     /// is never truncated at the 1 MB page limit. Deserializes each into `T`.
-    async fn query_match_collection<T: serde::de::DeserializeOwned>(
+    pub(super) async fn query_match_collection<T: serde::de::DeserializeOwned>(
         &self,
         match_id: &str,
         sk_prefix: &str,
@@ -209,9 +210,14 @@ impl Dao {
         starts_at: Option<&str>,
         confirmed_score: Option<ConfirmedScoreRecord>,
         pending_score: Option<Option<PendingScoreRecord>>,
-        // Replace the header photo URLs. `None` leaves them unchanged; `Some([])`
-        // clears them (removes the attribute); `Some([..])` overwrites.
-        header_photo_urls: Option<Vec<String>>,
+        // Replace the header photos, in order. `None` leaves them unchanged;
+        // `Some([])` clears them (removes the attribute); `Some([..])`
+        // overwrites.
+        header_photos: Option<Vec<HeaderPhotoRecord>>,
+        // Replace the match format. `None` leaves it unchanged; `Some(value)`
+        // overwrites. No "clear" case yet (Phase 1 doesn't need one — a
+        // match's sport, and so its format shape, doesn't change).
+        format: Option<MatchFormatRecord>,
     ) -> DaoResult<()> {
         let mut set: Vec<String> = Vec::new();
         let mut remove: Vec<String> = Vec::new();
@@ -259,19 +265,23 @@ impl Dao {
             }
             None => {}
         }
-        match header_photo_urls {
-            Some(urls) if !urls.is_empty() => {
-                set.push("#hpu = :hpu".into());
-                names.insert("#hpu".into(), "header_photo_urls".into());
-                let list: Vec<AttributeValue> = urls.iter().map(s).collect();
-                values.insert(":hpu".into(), AttributeValue::L(list));
+        match header_photos {
+            Some(photos) if !photos.is_empty() => {
+                set.push("#hp = :hp".into());
+                names.insert("#hp".into(), "header_photos".into());
+                values.insert(":hp".into(), to_attr(&photos)?);
             }
             // Clearing: remove the attribute so a read defaults to an empty Vec.
             Some(_) => {
-                remove.push("#hpu".into());
-                names.insert("#hpu".into(), "header_photo_urls".into());
+                remove.push("#hp".into());
+                names.insert("#hp".into(), "header_photos".into());
             }
             None => {}
+        }
+        if let Some(fmt) = format {
+            set.push("#fmt = :fmt".into());
+            names.insert("#fmt".into(), "format".into());
+            values.insert(":fmt".into(), to_attr(&fmt)?);
         }
 
         if set.is_empty() && remove.is_empty() {
@@ -334,18 +344,18 @@ impl Dao {
         Ok(())
     }
 
-    /// Fetch a match's detailed score. `None` if none recorded.
-    pub async fn get_match_detailed_score(
+    /// Fetch a match's live-scoring score record. `None` if none recorded.
+    pub async fn get_match_score(
         &self,
         match_id: &str,
         sport: &str,
-    ) -> DaoResult<Option<MatchDetailedScoreRecord>> {
+    ) -> DaoResult<Option<MatchScoreRecord>> {
         let out = self
             .client
             .get_item()
             .table_name(self.table())
             .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
-            .key("SK", s(Sk::Detail(sport.into()).to_string()))
+            .key("SK", s(Sk::Score(sport.into()).to_string()))
             .send()
             .await
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
@@ -355,17 +365,17 @@ impl Dao {
         }
     }
 
-    /// Write (overwrite) a match's detailed score.
-    pub async fn put_match_detailed_score(
+    /// Write (overwrite) a match's live-scoring score record.
+    pub async fn put_match_score(
         &self,
         match_id: &str,
-        detail: &MatchDetailedScoreRecord,
+        record: &MatchScoreRecord,
     ) -> DaoResult<()> {
         let item = to_item(
             &Pk::Match(match_id.into()),
-            &Sk::Detail(detail.sport.clone()),
-            TYPE_MATCH_DETAIL,
-            detail,
+            &Sk::Score(record.sport.clone()),
+            TYPE_MATCH_SCORE,
+            record,
         )?;
         self.client
             .put_item()

@@ -152,12 +152,13 @@ fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
         invites: vec![models::CreateMatchInviteInput {
             side_client_id: Some("a".to_string()),
             invited_user_ids: vec![invited_user_id.to_string()],
-            invited_external_names: vec![],
+            invited_externals: vec![],
         }],
         creator_side_client_id: None,
         score: None,
         winner_side_id: None,
         header_photo_asset_ids: None,
+        format: None,
     }
 }
 
@@ -174,7 +175,7 @@ fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::Create
     let invite_side = |client_id: &str, ids: &[&str]| models::CreateMatchInviteInput {
         side_client_id: Some(client_id.to_string()),
         invited_user_ids: ids.iter().map(|id| id.to_string()).collect(),
-        invited_external_names: vec![],
+        invited_externals: vec![],
     };
     models::CreateMatchInput {
         name: name.to_string(),
@@ -199,6 +200,7 @@ fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::Create
         score: None,
         winner_side_id: None,
         header_photo_asset_ids: None,
+        format: None,
     }
 }
 
@@ -207,18 +209,26 @@ fn invite_users(side_client_id: &str, ids: &[&str]) -> models::CreateMatchInvite
     models::CreateMatchInviteInput {
         side_client_id: Some(side_client_id.to_string()),
         invited_user_ids: ids.iter().map(|id| id.to_string()).collect(),
-        invited_external_names: vec![],
+        invited_externals: vec![],
     }
 }
 
 /// Invite one or more external (unaccounted) people by name onto a side. Each
 /// gets a minted invite token, surfaced on the created match's external player —
-/// the credential the by-token accept flow (invite link) uses.
+/// the credential the by-token accept flow (invite link) uses. `client_id` is
+/// just `name` here (unique enough within a test), mirroring how a real
+/// client would generate one per tagged guest before the match exists.
 fn invite_externals(side_client_id: &str, names: &[&str]) -> models::CreateMatchInviteInput {
     models::CreateMatchInviteInput {
         side_client_id: Some(side_client_id.to_string()),
         invited_user_ids: vec![],
-        invited_external_names: names.iter().map(|n| n.to_string()).collect(),
+        invited_externals: names
+            .iter()
+            .map(|n| models::CreateMatchExternalInviteInput {
+                client_id: n.to_string(),
+                name: n.to_string(),
+            })
+            .collect(),
     }
 }
 
@@ -250,6 +260,7 @@ fn completed_match(invites: Vec<models::CreateMatchInviteInput>) -> models::Crea
         score: Some(Box::new(simple_score("a", "b", 6, 3))),
         winner_side_id: Some("a".to_string()),
         header_photo_asset_ids: None,
+        format: None,
     }
 }
 
@@ -1064,8 +1075,35 @@ async fn accepting_a_normal_invite_updates_feed_and_stats() {
 
     // The match is now on the accepter's feed...
     assert_match_reaches_feed(&invitee_config, &created.id, "invitee's feed").await;
-    // ...and their stats credit the completed match they played in (they were on
-    // the losing side, so one played, zero wins).
+
+    // Stats aren't credited yet: the creator's score is still an unconfirmed
+    // submission, and an unconfirmed game doesn't count as played.
+    assert_eq!(
+        my_matches_played(&invitee_config, models::MatchType::Tennis).await,
+        0,
+        "an unconfirmed score shouldn't count toward matches played"
+    );
+
+    // Now the invitee (side "b") confirms the creator's submitted score.
+    let submission_id = created
+        .pending_score
+        .as_ref()
+        .expect("pending score at create time")
+        .submission_id
+        .clone();
+    matches_match_id_score_submissions_submission_id_respond_post(
+        &invitee_config,
+        &created.id,
+        &submission_id,
+        models::RespondToScoreInput {
+            response: models::ScoreResponseKind::Confirm,
+        },
+    )
+    .await
+    .expect("confirm score");
+
+    // ...and their stats now credit the confirmed match they played in (they
+    // were on the losing side, so one played, zero wins).
     assert_matches_played_reaches(&invitee_config, models::MatchType::Tennis, 1, "invitee").await;
     let stats = users_me_get(&invitee_config)
         .await
@@ -1076,7 +1114,11 @@ async fn accepting_a_normal_invite_updates_feed_and_stats() {
         .iter()
         .find(|s| s.match_type == models::MatchType::Tennis)
         .expect("a tennis stat row");
-    assert_eq!(tennis.win_percentage, 0.0, "invitee was on the losing side");
+    assert_eq!(
+        tennis.win_percentage,
+        Some(0.0),
+        "invitee was on the losing side"
+    );
 }
 
 /// End-to-end for the *invite-link* (bearer token) acceptance flow into an
@@ -1116,8 +1158,33 @@ async fn accepting_a_link_invite_updates_feed_and_stats() {
         models::InvitationStatus::Accepted
     ));
 
-    // The match is on the accepter's feed and their stats credit the match.
+    // The match is on the accepter's feed, but their stats aren't credited
+    // yet: the creator's score is still an unconfirmed submission.
     assert_match_reaches_feed(&accepter_config, &created.id, "token-accepter's feed").await;
+    assert_eq!(
+        my_matches_played(&accepter_config, models::MatchType::Tennis).await,
+        0,
+        "an unconfirmed score shouldn't count toward matches played"
+    );
+
+    // The accepter (side "b") confirms the creator's submitted score, and only
+    // then does it credit the match.
+    let submission_id = created
+        .pending_score
+        .as_ref()
+        .expect("pending score at create time")
+        .submission_id
+        .clone();
+    matches_match_id_score_submissions_submission_id_respond_post(
+        &accepter_config,
+        &created.id,
+        &submission_id,
+        models::RespondToScoreInput {
+            response: models::ScoreResponseKind::Confirm,
+        },
+    )
+    .await
+    .expect("confirm score");
     assert_matches_played_reaches(
         &accepter_config,
         models::MatchType::Tennis,
@@ -1507,16 +1574,10 @@ async fn being_invited_to_a_match_eventually_notifies_you() {
 /// side ids on the created match, so we read them off the created match).
 fn simple_score(side_a: &str, side_b: &str, a: i32, b: i32) -> models::Score {
     models::Score::Simple(Box::new(models::ScoreSimpleScore {
-        entries: vec![
-            models::SimpleScoreEntry {
-                side_id: side_a.to_string(),
-                points: a,
-            },
-            models::SimpleScoreEntry {
-                side_id: side_b.to_string(),
-                points: b,
-            },
-        ],
+        entries: std::collections::HashMap::from([
+            (side_a.to_string(), a),
+            (side_b.to_string(), b),
+        ]),
         r#type: Default::default(),
     }))
 }
@@ -1528,9 +1589,11 @@ fn simple_score_points(score: &models::Score) -> Vec<(String, i32)> {
         models::Score::Simple(s) => s
             .entries
             .iter()
-            .map(|e| (e.side_id.clone(), e.points))
+            .map(|(side_id, points)| (side_id.clone(), *points))
             .collect(),
         models::Score::Sets(_) => panic!("expected a simple score"),
+        models::Score::Cricket(_) => panic!("expected a simple score"),
+        models::Score::Football(_) => panic!("expected a simple score"),
     }
 }
 
@@ -1589,7 +1652,7 @@ async fn rejecting_a_score_and_resubmitting_requires_approval_again() {
     input.invites = vec![models::CreateMatchInviteInput {
         side_client_id: Some("b".to_string()),
         invited_user_ids: vec![opponent.profile.id.clone()],
-        invited_external_names: vec![],
+        invited_externals: vec![],
     }];
     input.starts_at = iso_offset_hours(-2);
     input.creator_side_client_id = Some("a".to_string());
@@ -1713,7 +1776,7 @@ async fn match_with_a_confirmed_score() -> (
     input.invites = vec![models::CreateMatchInviteInput {
         side_client_id: Some("b".to_string()),
         invited_user_ids: vec![opponent.profile.id.clone()],
-        invited_external_names: vec![],
+        invited_externals: vec![],
     }];
     input.starts_at = iso_offset_hours(-2);
     input.creator_side_client_id = Some("a".to_string());
@@ -1891,24 +1954,63 @@ async fn submitting_a_score_notifies_the_other_side_to_confirm() {
     let (owner_config, owner) = new_user().await;
     let (opponent_config, opponent) = new_user().await;
 
-    // Owner plays on side "a" and submits a create-time score; the opponent is
-    // invited onto the opposing side "b". The submission is therefore pending on
-    // the opponent's side (the owner's side is pre-confirmed).
+    // Owner plays on side "a", opponent invited onto side "b" — no score at
+    // creation. The opponent accepts the invite first, so the score PATCHed in
+    // below is unambiguously "submitted after accept", which must always
+    // notify (unlike a create-time score arriving alongside a still-pending
+    // invite — see `inviting_with_a_score_does_not_duplicate_the_invite_notification`
+    // for that deliberately-deduped case).
     let mut input = create_match_input(&opponent.profile.id);
     input.invites = vec![models::CreateMatchInviteInput {
         side_client_id: Some("b".to_string()),
         invited_user_ids: vec![opponent.profile.id.clone()],
-        invited_external_names: vec![],
+        invited_externals: vec![],
     }];
-    input.starts_at = iso_offset_hours(-2);
     input.creator_side_client_id = Some("a".to_string());
-    input.score = Some(Box::new(simple_score("a", "b", 6, 3)));
-    input.winner_side_id = Some("a".to_string());
 
     let created = matches_post(&owner_config, input)
         .await
         .expect("create match");
-    assert!(created.confirmed_score.is_none(), "score starts pending");
+    assert!(created.confirmed_score.is_none(), "no score yet");
+
+    // The opponent accepts their invite before any score exists.
+    let inbox = users_me_invitations_get(&opponent_config, None, None, None)
+        .await
+        .expect("inbox");
+    let detail = inbox
+        .items
+        .iter()
+        .find(|i| {
+            matches!(&*i.context,
+            models::InvitationContext::Match(ctx) if ctx.match_id == created.id)
+        })
+        .expect("match invitation in inbox");
+    invitations_invitation_id_respond_post(
+        &opponent_config,
+        &detail.invitation.id,
+        models::RespondToInvitationInput {
+            response: models::InvitationResponse::Accepted,
+            side_id: None,
+        },
+    )
+    .await
+    .expect("accept invitation");
+
+    // Now the owner submits a score (post-creation, via PATCH) — pending on
+    // the opponent's (already-joined) side.
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+    matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 3))),
+            winner_side_id: Some(side_a.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("patch score");
 
     // The opponent gets a ScoreSubmitted notification asking them to confirm, with
     // the owner as the submitter.
@@ -1965,6 +2067,64 @@ async fn submitting_a_score_notifies_the_other_side_to_confirm() {
     })
     .await;
     assert!(!confirmed.is_read, "a fresh notification is unread");
+}
+
+/// A match created with a score already attached (e.g. logging a completed
+/// match and inviting the opponent in the same action) must not duplicate the
+/// invite notification with a separate "score submitted, confirm it?" one —
+/// the invitee's accept flow already surfaces the pending score in the same
+/// step. Once they accept, a later submission notifies as normal (covered by
+/// `submitting_a_score_notifies_the_other_side_to_confirm`).
+#[tokio::test]
+async fn inviting_with_a_score_does_not_duplicate_the_invite_notification() {
+    let (owner_config, _owner) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+
+    // Owner plays on side "a" and submits a create-time score; the opponent is
+    // invited (left pending — never accepted in this test) onto side "b".
+    let mut input = create_match_input(&opponent.profile.id);
+    input.invites = vec![models::CreateMatchInviteInput {
+        side_client_id: Some("b".to_string()),
+        invited_user_ids: vec![opponent.profile.id.clone()],
+        invited_externals: vec![],
+    }];
+    input.starts_at = iso_offset_hours(-2);
+    input.creator_side_client_id = Some("a".to_string());
+    input.score = Some(Box::new(simple_score("a", "b", 6, 3)));
+    input.winner_side_id = Some("a".to_string());
+
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("create match");
+
+    // Wait for the invite notification — proves the worker has processed this
+    // match's events, so a still-absent score-submitted notification below
+    // reflects the dedup rather than the async pipeline simply not having run.
+    eventually("match invitation notification to be generated", || {
+        let config = &opponent_config;
+        let match_id = &created.id;
+        async move {
+            let page = notifications_get(config, None, None).await.ok()?;
+            page.items.into_iter().find(|n| match &*n.kind {
+                models::NotificationKind::MatchInvitation(m) => m.match_id == *match_id,
+                _ => false,
+            })
+        }
+    })
+    .await;
+
+    // A short extra settle (same idiom as `assert_match_absent_from_feed`),
+    // then confirm no score-submitted notification arrived for the invitee —
+    // their invite is still pending, so it was deliberately deduped.
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    let page = notifications_get(&opponent_config, None, None)
+        .await
+        .expect("list notifications");
+    assert!(
+        !page.items.iter().any(|n| matches!(&*n.kind,
+            models::NotificationKind::ScoreSubmitted(s) if s.match_id == created.id)),
+        "a still-pending invitee should not get a separate score-submitted notification"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2908,6 +3068,40 @@ async fn upload_match_header_end_to_end() {
         "the uploaded header should be attached"
     );
     assert!(!created.header_photos[0].image_url.is_empty());
+    assert_eq!(
+        created.header_photos[0].asset_id.as_deref(),
+        Some(asset.id.as_str()),
+        "the photo's asset id round-trips so it can be reordered/kept on a later edit"
+    );
+
+    // Adding a second photo via PATCH, re-sending the first photo's asset id
+    // alongside the new one, keeps both rather than replacing the first.
+    let second_asset = create_png_asset(&config, models::UploadPurpose::MatchHeader).await;
+    upload_and_confirm(&config, &second_asset).await;
+    let first_asset_id = created.header_photos[0]
+        .asset_id
+        .clone()
+        .expect("first photo has an asset id");
+    let updated = matches_match_id_patch(
+        &config,
+        &created.id,
+        models::UpdateMatchInput {
+            header_photo_asset_ids: Some(vec![second_asset.id.clone(), first_asset_id.clone()]),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("patch photos");
+    assert_eq!(updated.header_photos.len(), 2, "both photos are kept");
+    assert_eq!(
+        updated.header_photos[0].asset_id.as_deref(),
+        Some(second_asset.id.as_str()),
+        "the new photo is first, matching the order it was sent in"
+    );
+    assert_eq!(
+        updated.header_photos[1].asset_id.as_deref(),
+        Some(first_asset_id.as_str()),
+    );
 }
 
 #[tokio::test]

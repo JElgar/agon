@@ -18,7 +18,7 @@ aws-sdk-dynamodb = "1"
 # Only the timer, for backoff between DynamoDB batch-retry attempts.
 tokio = { version = "1", features = ["time"] }
 serde_dynamo = { version = "4", features = ["aws-sdk-dynamodb+1"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+meilisearch-sdk = { version = "0.33", default-features = false, features = ["reqwest", "tls"] }
 # FCM HTTP v1 client (`push`) — auto-generated from Google's own fcm:v1 API
 # schema, so it tracks the API surface (platform-specific payload options)
 # without us hand-maintaining request/response types. Re-exports the

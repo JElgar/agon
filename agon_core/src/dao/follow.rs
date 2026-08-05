@@ -227,7 +227,7 @@ impl Dao {
                 .key_condition_expression("#pk = :pk AND begins_with(SK, :sk)")
                 .expression_attribute_names("#pk", ATTR_PK)
                 .expression_attribute_values(":pk", s(Pk::User(user_id.into()).to_string()))
-                .expression_attribute_values(":sk", s(Sk::Follower(String::new()).prefix())),
+                .expression_attribute_values(":sk", s(Sk::follower_prefix())),
             cursor,
             limit,
         )
@@ -356,7 +356,7 @@ impl Dao {
                 .key_condition_expression("#pk = :pk AND begins_with(SK, :sk)")
                 .expression_attribute_names("#pk", ATTR_PK)
                 .expression_attribute_values(":pk", s(Pk::Team(team_id.into()).to_string()))
-                .expression_attribute_values(":sk", s(Sk::Follower(String::new()).prefix())),
+                .expression_attribute_values(":sk", s(Sk::follower_prefix())),
             cursor,
             limit,
         )

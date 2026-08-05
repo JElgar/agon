@@ -1,17 +1,20 @@
-//! Minimal Meilisearch client over its REST API.
+//! Meilisearch client, built on the official `meilisearch-sdk` crate.
 //!
 //! Shared by the worker (which keeps the indexes in sync via idempotent
 //! upsert/delete off the DynamoDB stream) and the API (which queries the indexes
-//! to serve discovery endpoints). We talk to Meilisearch directly with `reqwest`
-//! rather than pulling in the official SDK: the surface we need is small —
-//! upsert a document, delete one by id, and run a filtered search — so a thin
-//! client keeps the dependency footprint (and version churn) down.
+//! to serve discovery endpoints). This module exposes only the slice of the SDK
+//! we actually use — upsert a document, delete one by id, run a filtered
+//! search, and declare index settings — so callers don't reach into the SDK
+//! directly.
 //!
 //! Write operations are idempotent (a replayed upsert/delete has no visible
 //! effect), which is exactly what the worker's at-least-once delivery needs.
 //! Search returns only document ids: the API hydrates full entities from
 //! DynamoDB, since the indexes store only what's needed to match and rank.
 
+use meilisearch_sdk::client::Client;
+use meilisearch_sdk::search::Selectors;
+use meilisearch_sdk::settings::Settings;
 use serde::{Deserialize, Serialize};
 
 use crate::error::SearchError;
@@ -86,12 +89,11 @@ pub struct SearchQuery {
     pub limit: u32,
 }
 
-/// A thin Meilisearch REST client. Cheap to clone (wraps an `Arc` internally).
+/// A Meilisearch client wrapping the official SDK. Cheap to clone (the SDK's
+/// `Client` wraps its `reqwest::Client` internally).
 #[derive(Clone)]
 pub struct SearchClient {
-    http: reqwest::Client,
-    base_url: String,
-    api_key: String,
+    client: Client,
 }
 
 /// Only the `id` field is read back from search hits; everything else is
@@ -101,100 +103,72 @@ struct IdOnly {
     id: String,
 }
 
-#[derive(Deserialize)]
-struct SearchResponse {
-    hits: Vec<IdOnly>,
-    #[serde(rename = "estimatedTotalHits")]
-    estimated_total_hits: u32,
-}
-
 impl SearchClient {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            // Trim a trailing slash so URL joins are predictable.
-            base_url: base_url.into().trim_end_matches('/').to_string(),
-            api_key: api_key.into(),
-        }
+        // Trim a trailing slash so URL joins are predictable.
+        let base_url = base_url.into().trim_end_matches('/').to_string();
+        // Only fails if the api key can't be encoded as an HTTP header value,
+        // which never happens for the keys this service is configured with.
+        let client = Client::new(base_url, Some(api_key.into()))
+            .expect("invalid meilisearch client configuration");
+        Self { client }
     }
 
     /// Upsert one document into an index. Meilisearch replaces any existing
     /// document with the same primary key (`id`), so this is idempotent.
-    pub async fn upsert<T: Serialize>(&self, index: Index, doc: &T) -> SearchResult<()> {
-        let url = format!("{}/indexes/{}/documents", self.base_url, index.name());
-        let resp = self
-            .http
-            .post(&url)
-            .bearer_auth(&self.api_key)
-            .json(&[doc])
-            .send()
+    pub async fn upsert<T: Serialize + Send + Sync>(
+        &self,
+        index: Index,
+        doc: &T,
+    ) -> SearchResult<()> {
+        self.client
+            .index(index.name())
+            .add_documents(std::slice::from_ref(doc), Some("id"))
             .await
             .map_err(|e| SearchError(e.to_string()))?;
-        Self::check(resp, "upsert").await
+        Ok(())
     }
 
     /// Delete one document by id from an index. Deleting a missing document is a
     /// no-op in Meilisearch, so this is idempotent.
     pub async fn delete(&self, index: Index, id: &str) -> SearchResult<()> {
-        let url = format!(
-            "{}/indexes/{}/documents/{}",
-            self.base_url,
-            index.name(),
-            id
-        );
-        let resp = self
-            .http
-            .delete(&url)
-            .bearer_auth(&self.api_key)
-            .send()
+        self.client
+            .index(index.name())
+            .delete_document(id)
             .await
             .map_err(|e| SearchError(e.to_string()))?;
-        Self::check(resp, "delete").await
+        Ok(())
     }
 
     /// Run a search against an index, returning ranked document ids and a
     /// next-page offset. The caller hydrates full entities from DynamoDB.
     pub async fn search(&self, index: Index, query: &SearchQuery) -> SearchResult<SearchHits> {
-        let url = format!("{}/indexes/{}/search", self.base_url, index.name());
-
-        let mut body = serde_json::json!({
-            "q": query.q,
-            "offset": query.offset,
-            "limit": query.limit,
+        let idx = self.client.index(index.name());
+        let mut builder = idx.search();
+        builder
+            .with_query(&query.q)
+            .with_offset(query.offset as usize)
+            .with_limit(query.limit as usize)
             // Only the primary key comes back; entities are hydrated from Dynamo.
-            "attributesToRetrieve": ["id"],
-        });
+            .with_attributes_to_retrieve(Selectors::Some(&["id"]));
         if let Some(filter) = &query.filter {
-            body["filter"] = serde_json::json!(filter);
+            builder.with_filter(filter);
         }
-        if !query.sort.is_empty() {
-            body["sort"] = serde_json::json!(query.sort);
+        let sort_refs: Vec<&str> = query.sort.iter().map(String::as_str).collect();
+        if !sort_refs.is_empty() {
+            builder.with_sort(&sort_refs);
         }
 
-        let resp = self
-            .http
-            .post(&url)
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
+        let results = builder
+            .execute::<IdOnly>()
             .await
             .map_err(|e| SearchError(e.to_string()))?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(SearchError(format!("search returned {status}: {text}")));
-        }
-
-        let parsed: SearchResponse = resp
-            .json()
-            .await
-            .map_err(|e| SearchError(format!("bad search response: {e}")))?;
-
-        let ids: Vec<String> = parsed.hits.into_iter().map(|h| h.id).collect();
+        let ids: Vec<String> = results.hits.into_iter().map(|h| h.result.id).collect();
         // If this page reached the estimated total, there is no next page.
         let consumed = query.offset.saturating_add(ids.len() as u32);
-        let next_offset = (consumed < parsed.estimated_total_hits).then_some(consumed);
+        let total = results.estimated_total_hits.unwrap_or(consumed as usize) as u32;
+        let next_offset = (consumed < total).then_some(consumed);
 
         Ok(SearchHits { ids, next_offset })
     }
@@ -204,22 +178,18 @@ impl SearchClient {
     /// treats the settings update as idempotent — re-applying the same settings
     /// is a no-op — so this is safe to run on every worker start.
     ///
-    /// Uses `id` as the primary key to match how documents are upserted.
+    /// Uses `id` as the primary key implicitly: documents are always upserted
+    /// with `id` as the explicit primary key (see `upsert`).
     pub async fn configure_index(&self, index: Index) -> SearchResult<()> {
-        let url = format!("{}/indexes/{}/settings", self.base_url, index.name());
-        let body = serde_json::json!({
-            "filterableAttributes": index.filterable_attributes(),
-            "sortableAttributes": index.sortable_attributes(),
-        });
-        let resp = self
-            .http
-            .patch(&url)
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
+        let settings = Settings::new()
+            .with_filterable_attributes(index.filterable_attributes().iter().copied())
+            .with_sortable_attributes(index.sortable_attributes().iter().copied());
+        self.client
+            .index(index.name())
+            .set_settings(&settings)
             .await
             .map_err(|e| SearchError(e.to_string()))?;
-        Self::check(resp, "configure_index").await
+        Ok(())
     }
 
     /// Configure every index. Called once on worker startup so a fresh
@@ -230,14 +200,5 @@ impl SearchClient {
             self.configure_index(index).await?;
         }
         Ok(())
-    }
-
-    async fn check(resp: reqwest::Response, op: &str) -> SearchResult<()> {
-        let status = resp.status();
-        if status.is_success() {
-            return Ok(());
-        }
-        let body = resp.text().await.unwrap_or_default();
-        Err(SearchError(format!("{op} returned {status}: {body}")))
     }
 }

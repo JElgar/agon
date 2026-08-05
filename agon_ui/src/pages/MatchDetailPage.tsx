@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate, useParams } from 'react-router-dom'
-import { ChevronLeft, Flame, MailOpen, Pencil, UserPlus } from 'lucide-react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
+import { ChevronLeft, Flame, MailOpen, Pencil, Radio, UserPlus } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
@@ -11,6 +11,16 @@ import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
 import { SportBadge } from '@/components/agon/SportBadge'
 import { StatusBadge, matchBadgeStatus } from '@/components/agon/StatusBadge'
 import { ScoreConfirmationBar } from '@/components/agon/ScoreConfirmationBar'
+import { LiveMatchBlock } from '@/components/agon/live/LiveMatchBlock'
+import { CricketMatchBlock } from '@/components/agon/live/CricketMatchBlock'
+import { CricketScoreBlock } from '@/components/agon/CricketScoreBlock'
+import { CricketScorecard } from '@/components/agon/CricketScorecard'
+import { FootballScorecard } from '@/components/agon/FootballScorecard'
+import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
+import { useLiveEvents } from '@/hooks/useLiveScore'
+import { useMatchScore } from '@/hooks/useMatchScore'
+import { footballScoreFrom, footballEventSourceFromScore } from '@/lib/liveScore'
+import { cricketInningsFor, cricketScoreFrom, inningsDeliveriesFromEvents } from '@/lib/cricketScore'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { displayScore, headlineBySide, headlineLabel, setLine } from '@/lib/score'
 import {
@@ -23,15 +33,19 @@ import {
 } from '@/lib/members'
 import { CopyInviteButton } from '@/components/agon/CopyInviteButton'
 import { MatchDetailsEditor } from '@/components/agon/MatchDetailsEditor'
+import { MatchFormatCard } from '@/components/agon/MatchFormatCard'
 import { MatchResultEditor } from '@/components/agon/MatchResultEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
 import { MatchComments } from '@/components/agon/MatchComments'
 import { useToggleLike } from '@/hooks/useToggleLike'
+import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
 type MatchPlayer = components['schemas']['MatchPlayer']
 
+/** Display label for a side: the server-resolved name (always present), or a
+ *  neutral fallback for the unlikely case it's missing. */
 function sideName(side: MatchSide | undefined, fallback: string): string {
   return side?.name?.trim() || fallback
 }
@@ -100,6 +114,7 @@ function MatchDetail({
 
   const canEdit = isParticipant(match, currentUserId)
   const cancelled = match.status === 'cancelled'
+  const isLiveSport = match.match_type === 'football' || match.match_type === 'cricket'
 
   const [sideA, sideB] = match.sides
   const nameA = sideName(sideA, 'Side A')
@@ -110,6 +125,48 @@ function MatchDetail({
   const sets = scoreInfo ? setLine(scoreInfo.score, match.sides) : []
   const aWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
   const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
+
+  // Live, in-progress score only — a completed match reads its scorecard
+  // straight off `confirmed_score`/`pending_score` instead (see
+  // `footballEventSource`/`cricketInnings` below), which carries the same
+  // goals/cards/subs (football) or batting/bowling/extras (cricket) a
+  // live-scored or manually-entered result produces — it's the same `Score`
+  // shape either way. Takes over the score block below (and the entry
+  // button becomes "Continue scoring") while a match is actually in
+  // progress — see `footballState`/`cricketState`.
+  const scoreQuery = useMatchScore(match.id, {
+    enabled: isLiveSport && match.status === 'in_progress',
+    refetchInterval: match.status === 'in_progress' ? 15000 : undefined,
+  })
+  const isCurrentlyLive = isLiveSport && match.status === 'in_progress'
+  const footballState = isCurrentlyLive ? footballScoreFrom(scoreQuery.data) : null
+  const cricketState = isCurrentlyLive ? cricketScoreFrom(scoreQuery.data) : null
+  const hasLiveState = !!footballState || !!cricketState
+  const cricketScore = scoreInfo ? cricketScoreFrom(scoreInfo.score) : null
+  // `FootballScorecard`'s event timeline: the live running score while the
+  // match is in progress, else straight off the confirmed/pending score —
+  // stays visible once the match is completed, unlike `footballState` above.
+  const footballEventSource = footballEventSourceFromScore(
+    isCurrentlyLive ? scoreQuery.data : scoreInfo?.score,
+  )
+  // Football's setup screen also gates starting the clock; cricket has no
+  // equivalent preferences step, so it goes straight into scoring.
+  const liveEntryPath =
+    match.match_type === 'cricket' ? `/matches/${match.id}/live` : `/matches/${match.id}/live/setup`
+
+  // Each cricket innings' deliveries, folded in from the raw live event log
+  // by matching innings order, for the run-rate graph — the score's own
+  // `recent_deliveries` is bounded to the current innings' last 18 balls,
+  // not the full match, so the graph needs the raw log instead. The event
+  // log has no size ceiling and stays fully readable regardless of match
+  // status, so it's fetched here independently of `scoreQuery`.
+  const liveEvents = useLiveEvents(match.id, { enabled: match.match_type === 'cricket' })
+  const cricketScoreInnings = cricketInningsFor(isCurrentlyLive ? scoreQuery.data : scoreInfo?.score)
+  const liveInningsDeliveries = liveEvents.data ? inningsDeliveriesFromEvents(liveEvents.data) : undefined
+  const cricketInnings = cricketScoreInnings?.map((inn, i) => ({
+    ...inn,
+    deliveries: liveInningsDeliveries?.[i]?.deliveries ?? [],
+  }))
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
@@ -145,8 +202,22 @@ function MatchDetail({
             )}
           </div>
 
-          {/* Score header */}
-          {scoreInfo ? (
+          {/* Score header — the live block (score + mini-ticker) takes over
+              while a football/cricket match is being scored live; otherwise
+              the usual confirmed/pending result. */}
+          {footballState ? (
+            <div className="mt-3">
+              <LiveMatchBlock match={match} state={footballState} tickerLimit={3} />
+            </div>
+          ) : cricketState ? (
+            <div className="mt-3">
+              <CricketMatchBlock match={match} state={cricketState} />
+            </div>
+          ) : cricketScore ? (
+            <div className="mt-3">
+              <CricketScoreBlock match={match} score={cricketScore} />
+            </div>
+          ) : scoreInfo ? (
             <div className="mt-3 flex items-center justify-between">
               <div className="flex-1">
                 <p className={cn('text-sm', aWon && 'font-medium')}>{nameA}</p>
@@ -184,17 +255,26 @@ function MatchDetail({
           )}
 
           <div className="mt-3 flex items-center justify-between">
-            <StatusBadge status={matchBadgeStatus(match)} />
-            {canEdit && !cancelled && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2 text-xs text-muted-foreground"
-                onClick={() => setEditingResult(true)}
-              >
-                {scoreInfo ? 'Edit result' : 'Add result'}
-              </Button>
-            )}
+            {hasLiveState ? <LiveIndicator /> : <StatusBadge status={matchBadgeStatus(match)} />}
+            <div className="flex items-center gap-1">
+              {canEdit && isLiveSport && !cancelled && match.status !== 'completed' && (
+                <Button asChild variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs text-primary">
+                  <Link to={liveEntryPath}>
+                    <Radio className="size-3" /> {hasLiveState ? 'Continue scoring' : 'Score live'}
+                  </Link>
+                </Button>
+              )}
+              {canEdit && !cancelled && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-xs text-muted-foreground"
+                  onClick={() => setEditingResult(true)}
+                >
+                  {scoreInfo ? 'Edit result' : 'Add result'}
+                </Button>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -207,16 +287,23 @@ function MatchDetail({
         />
       )}
 
-      {/* Invitation banner: the viewer has a pending invite to this match. */}
-      <InviteBanner match={match} currentUserId={currentUserId} />
+      {/* Match format — half length/overs limit/penalty runs, football and
+          cricket only. Renders nothing for other sports. */}
+      <MatchFormatCard match={match} canEdit={canEdit && !cancelled} />
 
-      {/* Confirm / dispute (only when the viewer's side owes a response) */}
-      {match.pending_score && (
-        <ScoreConfirmationBar
-          match={match}
-          currentUserId={currentUserId}
-          variant="detail"
-        />
+      {/* Respond to a pending invite first; only once joined does the score
+          confirm/dispute prompt apply — the two are mutually exclusive (same
+          logic as the feed/profile match card). */}
+      {myPendingInvitation(match, currentUserId) ? (
+        <InviteBanner match={match} currentUserId={currentUserId} />
+      ) : (
+        match.pending_score && (
+          <ScoreConfirmationBar
+            match={match}
+            currentUserId={currentUserId}
+            variant="detail"
+          />
+        )
       )}
 
       {/* Rosters, one column per side */}
@@ -230,6 +317,18 @@ function MatchDetail({
           players={match.players.filter((p) => p.side_id === sideB?.id)}
         />
       </div>
+
+      {/* Cricket scorecard: run progression + per-player batting/bowling,
+          once there's per-innings detail recorded (live-scored or entered
+          directly). */}
+      {cricketInnings && cricketInnings.length > 0 && (
+        <CricketScorecard match={match} innings={cricketInnings} />
+      )}
+
+      {/* Football event timeline: goals/cards/subs, once there's detail
+          recorded (live-scored or entered directly) — stays visible after
+          the match finishes, unlike the live score header above. */}
+      {footballEventSource && <FootballScorecard match={match} detail={footballEventSource} />}
 
       {/* Invite more people (participants only). */}
       {canEdit && !cancelled && (
@@ -286,9 +385,12 @@ function LikeBar({ match }: { match: Match }) {
 
 /**
  * Shown when the signed-in viewer has a pending invitation to this match: a
- * prominent Accept/Decline banner wired to `POST /invitations/:id/respond`.
- * On success it refreshes the match (so the roster/badge update) and the
- * notification badge (the matching invite notification is now handled).
+ * prominent Accept/Decline banner. Both actions open the shared response
+ * dialog, wired to `POST /invitations/:id/respond`; accepting also offers to
+ * confirm the match's score in the same step when one is already pending on
+ * the viewer's side. On success it refreshes the match (so the roster/badge/
+ * score update) and the notification badge (the matching invite notification
+ * is now handled).
  */
 function InviteBanner({
   match,
@@ -300,6 +402,7 @@ function InviteBanner({
   const queryClient = useQueryClient()
   const invitation = myPendingInvitation(match, currentUserId)
   const matchKey = ['match', match.id]
+  const [action, setAction] = useState<'accept' | 'decline' | null>(null)
 
   const respond = useMutation({
     mutationFn: async (
@@ -352,41 +455,49 @@ function InviteBanner({
   if (!invitation) return null
 
   return (
-    <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
-      <div className="flex items-start gap-3">
-        <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-          <MailOpen className="size-5" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium">You've been invited to this match</p>
-          <p className="text-xs text-muted-foreground">
-            Accept to join the roster, or decline if you can't make it.
-          </p>
-          {respond.isError && (
-            <p className="mt-1 text-xs text-red-600">
-              Something went wrong. Please try again.
+    <>
+      <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
+        <div className="flex items-start gap-3">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+            <MailOpen className="size-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">You've been invited to this match</p>
+            <p className="text-xs text-muted-foreground">
+              Accept to join the roster, or decline if you can't make it.
             </p>
-          )}
-          <div className="mt-3 flex gap-2">
-            <Button
-              size="sm"
-              disabled={respond.isPending}
-              onClick={() => respond.mutate('accepted')}
-            >
-              {respond.isPending ? 'Saving…' : 'Accept'}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={respond.isPending}
-              onClick={() => respond.mutate('declined')}
-            >
-              Decline
-            </Button>
+            <div className="mt-3 flex gap-2">
+              <Button size="sm" onClick={() => setAction('accept')}>
+                Accept
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setAction('decline')}
+              >
+                Decline
+              </Button>
+            </div>
           </div>
         </div>
       </div>
-    </div>
+
+      <InvitationResponseDialog
+        open={action !== null}
+        onOpenChange={(open) => !open && setAction(null)}
+        action={action}
+        name={match.name}
+        matchId={match.id}
+        respond={(response) => respond.mutateAsync(response)}
+        onSuccess={() => {
+          setAction(null)
+          // Cover the score-confirm sub-step, which the mutation above doesn't
+          // know about (it only reconciles the invitation response itself).
+          queryClient.invalidateQueries({ queryKey: matchKey })
+          queryClient.invalidateQueries({ queryKey: ['profile-activity'] })
+        }}
+      />
+    </>
   )
 }
 

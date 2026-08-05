@@ -25,6 +25,8 @@ import { FeedPage } from '@/pages/FeedPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { LogMatchPage } from '@/pages/LogMatchPage'
 import { MatchDetailPage } from '@/pages/MatchDetailPage'
+import { LiveScoringSetupPage } from '@/pages/LiveScoringSetupPage'
+import { LiveScoringPage } from '@/pages/LiveScoringPage'
 import { NotificationsPage } from '@/pages/NotificationsPage'
 import { UserSearchPage } from '@/pages/UserSearchPage'
 import { FollowListPage } from '@/pages/FollowListPage'
@@ -93,6 +95,8 @@ function AppShell({ email, onSignOut }: { email: string; onSignOut: () => void }
           <Route path="/feed" element={<FeedPage />} />
           <Route path="/matches/new" element={<LogMatchPage />} />
           <Route path="/matches/:matchId" element={<MatchDetailPage />} />
+          <Route path="/matches/:matchId/live/setup" element={<LiveScoringSetupPage />} />
+          <Route path="/matches/:matchId/live" element={<LiveScoringPage />} />
           <Route path="/teams" element={<ComingSoon title="Teams" />} />
           <Route path="/teams/:teamId" element={<ComingSoon title="Team" />} />
           <Route path="/notifications" element={<NotificationsPage />} />

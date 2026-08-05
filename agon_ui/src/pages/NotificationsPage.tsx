@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { formatDistanceToNow } from 'date-fns'
@@ -17,6 +18,7 @@ import { Avatar } from '@/components/agon/Avatar'
 import { FollowButton } from '@/components/agon/FollowButton'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
 
 type NotificationPage = components['schemas']['NotificationPage']
 type Notification = components['schemas']['Notification']
@@ -151,10 +153,9 @@ export function NotificationsPage() {
             onMarkRead={() => {
               if (!n.is_read) markRead.mutate(n.id)
             }}
-            onRespond={(invitationId, response) =>
-              respond.mutate({ invitationId, response })
+            respondToInvitation={(invitationId, response) =>
+              respond.mutateAsync({ invitationId, response })
             }
-            responding={respond.isPending}
           />
         ))}
       </ul>
@@ -177,20 +178,21 @@ interface NotificationRowProps {
   notification: Notification
   navigate: ReturnType<typeof useNavigate>
   onMarkRead: () => void
-  onRespond: (
+  respondToInvitation: (
     invitationId: string,
     response: components['schemas']['InvitationResponse'],
-  ) => void
-  responding: boolean
+  ) => Promise<void>
 }
 
 function NotificationRow({
   notification,
   navigate,
   onMarkRead,
-  onRespond,
-  responding,
+  respondToInvitation,
 }: NotificationRowProps) {
+  const queryClient = useQueryClient()
+  const [action, setAction] = useState<'accept' | 'decline' | null>(null)
+
   // See the `Kind` alias: the generated `notification.kind` type drops the
   // discriminant, so cast to the real union for exhaustive narrowing.
   const view = describe(notification.kind as Kind)
@@ -236,24 +238,15 @@ function NotificationRow({
 
         {view.actions && (
           <div className="mt-2 flex flex-wrap gap-2">
-            {view.actions.invitationId && (
+            {view.actions.invitation && (
               <>
-                <Button
-                  size="sm"
-                  disabled={responding}
-                  onClick={() =>
-                    onRespond(view.actions!.invitationId!, 'accepted')
-                  }
-                >
+                <Button size="sm" onClick={() => setAction('accept')}>
                   Confirm
                 </Button>
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={responding}
-                  onClick={() =>
-                    onRespond(view.actions!.invitationId!, 'declined')
-                  }
+                  onClick={() => setAction('decline')}
                 >
                   Decline
                 </Button>
@@ -281,6 +274,28 @@ function NotificationRow({
           aria-label="Unread"
         />
       )}
+
+      {view.actions?.invitation && (
+        <InvitationResponseDialog
+          open={action !== null}
+          onOpenChange={(open) => !open && setAction(null)}
+          action={action}
+          name={view.actions.invitation.name}
+          suffix={view.actions.invitation.suffix}
+          matchId={view.actions.invitation.matchId}
+          respond={(response) =>
+            respondToInvitation(view.actions!.invitation!.id, response)
+          }
+          onSuccess={() => {
+            setAction(null)
+            const matchId = view.actions?.invitation?.matchId
+            if (matchId) {
+              queryClient.invalidateQueries({ queryKey: ['match', matchId] })
+              queryClient.invalidateQueries({ queryKey: ['profile-activity'] })
+            }
+          }}
+        />
+      )}
     </li>
   )
 }
@@ -297,8 +312,18 @@ interface NotificationView {
   /** Where "View"/opening the row navigates, if anywhere. */
   href?: string
   actions?: {
-    /** Present for invitation kinds → renders Confirm/Decline. */
-    invitationId?: string
+    /** Present for invitation kinds → renders Confirm/Decline (via the shared
+     *  accept/decline dialog). */
+    invitation?: {
+      id: string
+      /** Match or team name, for the dialog's "Join X" / "Decline invite to X" copy. */
+      name: string
+      /** Trailing qualifier after the name, e.g. ' as a member' for a team. */
+      suffix?: string
+      /** Present only for a match invite — lets the dialog fetch the match to
+       *  preview the score and offer to confirm it in the same step. */
+      matchId?: string
+    }
     /** Label for the plain "View" jump. */
     viewLabel: string
   }
@@ -329,7 +354,14 @@ function describe(kind: Kind): NotificationView {
         badgeIcon: Swords,
         badgeClass: 'bg-primary',
         href: `/matches/${kind.match_id}`,
-        actions: { invitationId: kind.invitation_id, viewLabel: 'View match' },
+        actions: {
+          invitation: {
+            id: kind.invitation_id,
+            name: kind.match_name,
+            matchId: kind.match_id,
+          },
+          viewLabel: 'View match',
+        },
       }
     case 'TeamInvitation':
       return {
@@ -345,7 +377,14 @@ function describe(kind: Kind): NotificationView {
         badgeIcon: Users,
         badgeClass: 'bg-primary',
         href: `/teams/${kind.team_id}`,
-        actions: { invitationId: kind.invitation_id, viewLabel: 'View team' },
+        actions: {
+          invitation: {
+            id: kind.invitation_id,
+            name: kind.team_name,
+            suffix: ' as a member',
+          },
+          viewLabel: 'View team',
+        },
       }
     case 'InvitationAccepted': {
       // `context` has the same discriminant erasure as `kind` — cast to the

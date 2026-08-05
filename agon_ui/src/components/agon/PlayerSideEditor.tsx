@@ -8,10 +8,16 @@ import { Avatar } from './Avatar'
 
 type UserProfile = components['schemas']['UserProfile']
 
-/** A person tagged onto a side: either a registered Agon user or a typed-in guest. */
+/** A person tagged onto a side: either a registered Agon user or a typed-in guest.
+ *  Both carry a stable `id` — the user's own account id for a registered user
+ *  (already known before the match exists), or a freshly generated client-side
+ *  token for a guest — so a create-time score's goal/card/batting detail can
+ *  reference a specific player before the match (and its real player ids)
+ *  exists; the server re-points these to real ids the same way it already
+ *  does for side client ids (see `CreateMatchExternalInviteInput`). */
 export type TaggedPlayer =
   | { kind: 'user'; id: string; name: string; imageUrl?: string }
-  | { kind: 'external'; name: string }
+  | { kind: 'external'; id: string; name: string }
 
 /** A stable key for a tagged player, for React keys and de-duping. */
 function taggedPlayerKey(p: TaggedPlayer): string {
@@ -30,6 +36,13 @@ export interface PlayerSideEditorProps {
   currentUserId?: string
   /** Ids already tagged on the *other* side, so we don't offer them twice. */
   excludeUserIds?: string[]
+  /** Optional custom name for this side (e.g. "The Wanderers"). Only offered
+   *  here because this flow has no way to assign a persistent team to a
+   *  side yet — once it does, this input should only show for a teamless
+   *  side, since the server rejects a name alongside a team (unless another
+   *  side shares that team). Omit both props to hide the field entirely. */
+  name?: string
+  onNameChange?: (name: string) => void
 }
 
 /** How long to wait after typing stops before hitting `/users/search`. */
@@ -48,6 +61,8 @@ export function PlayerSideEditor({
   onChange,
   currentUserId,
   excludeUserIds = [],
+  name,
+  onNameChange,
 }: PlayerSideEditorProps) {
   const [term, setTerm] = useState('')
   const [debounced, setDebounced] = useState('')
@@ -95,7 +110,7 @@ export function PlayerSideEditor({
     if (!trimmed) return
     const key = `ext:${trimmed.toLowerCase()}`
     if (taggedKeys.has(key)) return
-    onChange([...players, { kind: 'external', name: trimmed }])
+    onChange([...players, { kind: 'external', id: crypto.randomUUID(), name: trimmed }])
     setTerm('')
     setDebounced('')
   }
@@ -114,6 +129,17 @@ export function PlayerSideEditor({
       <p className="mb-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
         {title}
       </p>
+
+      {onNameChange && (
+        <input
+          type="text"
+          value={name ?? ''}
+          onChange={(e) => onNameChange(e.target.value)}
+          placeholder="Name this side (optional)"
+          maxLength={60}
+          className="mb-2 w-full rounded-md border bg-card px-2.5 py-1.5 text-sm outline-none placeholder:text-muted-foreground"
+        />
+      )}
 
       <div className="flex flex-col gap-1.5">
         {players.length === 0 && (

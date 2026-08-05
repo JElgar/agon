@@ -9,21 +9,25 @@ export function totalMatches(stats: UserSportStats[]): number {
 
 /**
  * Overall win rate (0–100) across all sports, weighted by matches played — the
- * per-sport `win_percentage` values can't just be averaged. Returns 0 when no
- * matches have been played.
+ * per-sport `win_percentage` values can't just be averaged. Returns `null`
+ * when no confirmed matches have been played (nothing to divide by).
  */
-export function overallWinRate(stats: UserSportStats[]): number {
+export function overallWinRate(stats: UserSportStats[]): number | null {
   const played = totalMatches(stats)
-  if (played === 0) return 0
+  if (played === 0) return null
   const wins = stats.reduce(
-    (sum, s) => sum + (s.win_percentage / 100) * s.matches_played,
+    (sum, s) => sum + ((s.win_percentage ?? 0) / 100) * s.matches_played,
     0,
   )
   return (wins / played) * 100
 }
 
-/** Format a 0–100 win percentage for display, e.g. 58.3 → "58%". */
-export function formatWinRate(pct: number): string {
+/**
+ * Format a 0–100 win percentage for display, e.g. 58.3 → "58%". `null`/
+ * `undefined` (no confirmed matches yet) renders as "-", not "0%".
+ */
+export function formatWinRate(pct: number | null | undefined): string {
+  if (pct == null) return '-'
   return `${Math.round(pct)}%`
 }
 

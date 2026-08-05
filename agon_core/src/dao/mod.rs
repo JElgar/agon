@@ -28,6 +28,7 @@ pub mod device;
 pub mod feed;
 pub mod follow;
 pub mod invitation;
+pub mod live_score_ops;
 pub mod match_ops;
 pub mod match_social;
 pub mod notification;

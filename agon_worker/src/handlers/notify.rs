@@ -397,11 +397,25 @@ async fn notify_score_submitted(
     // user needs to confirm only if the submission is pending and they're not on
     // the submitter's side; if a user appears on multiple sides, err towards
     // asking them to confirm.
+    //
+    // A player whose invite to the match is still pending is skipped here: their
+    // `MatchInvitation` notification already covers this (accepting offers to
+    // confirm the score in the same step, using whatever's pending at that
+    // point), so a separate "score submitted" notification would just be a
+    // duplicate of the same event. Once they accept, notifications resume as
+    // normal for any later submission.
     let mut recipients: std::collections::BTreeMap<String, bool> =
         std::collections::BTreeMap::new();
     for player in &agg.players {
         let Some(uid) = &player.user_id else { continue };
         if *uid == submitter_user_id {
+            continue;
+        }
+        if player
+            .invitation
+            .as_ref()
+            .is_some_and(|inv| inv.status == "pending")
+        {
             continue;
         }
         let needs = is_pending && player.side_id != submitter_side_id;

@@ -141,4 +141,10 @@
   body {
     @apply bg-background text-foreground;
   }
+  /* Phone photos often carry an HDR gain map; HDR-capable browsers boost
+   * display brightness for them, dimming the rest of the screen by
+   * comparison. Cap every image to standard dynamic range. */
+  img {
+    dynamic-range-limit: standard;
+  }
 }

@@ -115,7 +115,7 @@ impl Dao {
                     .key_condition_expression("#pk = :pk AND begins_with(SK, :sk)")
                     .expression_attribute_names("#pk", ATTR_PK)
                     .expression_attribute_values(":pk", s(Pk::User(user_id.into()).to_string()))
-                    .expression_attribute_values(":sk", s(Sk::Device(String::new()).prefix())),
+                    .expression_attribute_values(":sk", s(Sk::device_prefix())),
                 None,
                 MAX_DEVICES_PER_USER,
             )

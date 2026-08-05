@@ -1387,7 +1387,11 @@ async fn match_with_a_team_side_fans_out_to_team_followers() {
         &[&owner.profile.id],
         &[&opponent.profile.id],
     );
+    // A side can't carry both a client-supplied name and a team_id unless
+    // another side shares that team (disambiguation) — neither applies here,
+    // so drop the placeholder name `match_between` set for side "a".
     input.sides[0].team_id = Some(team.id.clone());
+    input.sides[0].name = None;
     let created = matches_post(&owner_config, input)
         .await
         .expect("create match");
@@ -1515,10 +1519,11 @@ fn simple_score(side_a: &str, side_b: &str, a: i32, b: i32) -> models::Score {
     }))
 }
 
-/// Extract `(side_id, points)` pairs from a simple score, for asserting on the
-/// value of a `confirmed_score`/`pending_score`/submission's score.
+/// Extract `(side_id, points)` pairs from a simple score, sorted by side id so
+/// the result is stable regardless of the underlying `HashMap`'s iteration
+/// order — callers should compare against a [`sorted_points`] expectation.
 fn simple_score_points(score: &models::Score) -> Vec<(String, i32)> {
-    match score {
+    let mut points: Vec<(String, i32)> = match score {
         models::Score::Simple(s) => s
             .entries
             .iter()
@@ -1527,7 +1532,17 @@ fn simple_score_points(score: &models::Score) -> Vec<(String, i32)> {
         models::Score::Sets(_) => panic!("expected a simple score"),
         models::Score::Cricket(_) => panic!("expected a simple score"),
         models::Score::Football(_) => panic!("expected a simple score"),
-    }
+    };
+    points.sort_by(|a, b| a.0.cmp(&b.0));
+    points
+}
+
+/// Sort a literal `(side_id, points)` expectation the same way
+/// [`simple_score_points`] sorts its output, so the two can be compared with
+/// `assert_eq!` regardless of which side id happens to sort first.
+fn sorted_points(mut points: Vec<(String, i32)>) -> Vec<(String, i32)> {
+    points.sort_by(|a, b| a.0.cmp(&b.0));
+    points
 }
 
 #[tokio::test]
@@ -1779,7 +1794,7 @@ async fn editing_a_confirmed_score_stays_pending_until_the_other_side_confirms()
         .expect("confirmed score is unaffected by an unapproved edit");
     assert_eq!(
         simple_score_points(&still_confirmed.score),
-        vec![(side_a.clone(), 6), (side_b.clone(), 3)],
+        sorted_points(vec![(side_a.clone(), 6), (side_b.clone(), 3)]),
         "the previously-confirmed score must not change until the edit is approved"
     );
     let pending = edited
@@ -1787,7 +1802,7 @@ async fn editing_a_confirmed_score_stays_pending_until_the_other_side_confirms()
         .expect("the edit is pending, not applied immediately");
     assert_eq!(
         simple_score_points(&pending.score),
-        vec![(side_a.clone(), 6), (side_b.clone(), 4)]
+        sorted_points(vec![(side_a.clone(), 6), (side_b.clone(), 4)])
     );
 
     // History now has the confirmed original plus the new pending edit.
@@ -1816,7 +1831,7 @@ async fn editing_a_confirmed_score_stays_pending_until_the_other_side_confirms()
         .expect("edited score is confirmed");
     assert_eq!(
         simple_score_points(&final_confirmed.score),
-        vec![(side_a.clone(), 6), (side_b.clone(), 4)]
+        sorted_points(vec![(side_a.clone(), 6), (side_b.clone(), 4)])
     );
     assert!(final_match.pending_score.is_none());
 }
@@ -1863,7 +1878,7 @@ async fn disputing_an_edit_to_a_confirmed_score_leaves_the_original_confirmed_sc
         .expect("the original confirmed score still stands");
     assert_eq!(
         simple_score_points(&confirmed.score),
-        vec![(side_a.clone(), 6), (side_b.clone(), 3)],
+        sorted_points(vec![(side_a.clone(), 6), (side_b.clone(), 3)]),
         "a disputed edit must not change the previously-confirmed score"
     );
 

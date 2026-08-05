@@ -11,28 +11,35 @@
 
 pub mod index;
 pub mod notify;
+pub mod push;
 pub mod stats;
 
 use agon_core::dao::Dao;
 
 use crate::error::WorkerResult;
 use crate::event::ChangeEvent;
+use agon_core::push::PushClient;
 use agon_core::search::SearchClient;
 
 /// Run every inline handler applicable to one event. `now` is the processing
 /// timestamp (RFC3339), used where an event carries no timestamp of its own.
 ///
-/// Ordering: indexing, notifications, then stats. All are independent and
-/// idempotent, so if a later one fails after an earlier succeeded, redelivery
-/// re-runs them all harmlessly.
+/// Ordering: indexing, notifications, push, then stats. All are independent
+/// and idempotent, so if a later one fails after an earlier succeeded,
+/// redelivery re-runs them all harmlessly. `push` runs after `notify`
+/// deliberately: a `NotificationRecord` write from `notify::handle` produces
+/// its own stream event, which `push::handle` reacts to on a later call to
+/// `route` — see `handlers/push.rs`'s module docs.
 pub async fn route(
     dao: &Dao,
     search: &SearchClient,
+    push: Option<&PushClient>,
     ev: &ChangeEvent,
     now: &str,
 ) -> WorkerResult<()> {
     index::handle(dao, search, ev).await?;
     notify::handle(dao, ev, now).await?;
+    push::handle(dao, push, ev).await?;
     stats::handle(dao, ev).await?;
     Ok(())
 }

@@ -39,11 +39,11 @@ use auth::{JwtClaims, JwtVerifier};
 // Boundary mapping between API models and DAO records.
 mod mapping;
 use mapping::{
-    comment_from_record, dao_internal, derive_live_score, invitation_detail_from_record,
-    invitation_from_record, invitation_status_from_str, invitation_status_str,
-    live_event_from_record, match_format_sport_tag, match_format_to_record, match_from_records,
-    match_score_from_record, match_score_to_record, match_status_str, match_type_tag,
-    new_live_event_to_dao, notification_actor_id, notification_from_record,
+    comment_from_record, dao_internal, derive_live_score, device_platform_to_record,
+    invitation_detail_from_record, invitation_from_record, invitation_status_from_str,
+    invitation_status_str, live_event_from_record, match_format_sport_tag, match_format_to_record,
+    match_from_records, match_score_from_record, match_score_to_record, match_status_str,
+    match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
     score_submission_from_record, score_to_record, team_from_records, team_list_item_from_record,
     user_profile_from_record,
 };
@@ -1137,6 +1137,46 @@ enum UnreadCountResponse {
 
 #[derive(ApiResponse)]
 enum MarkNotificationReadResponse {
+    #[oai(status = 204)]
+    Ok,
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// The client platform a registered push token belongs to.
+#[derive(Enum)]
+#[oai(rename_all = "snake_case")]
+enum DevicePlatform {
+    Web,
+    Android,
+    Ios,
+}
+
+#[derive(Object)]
+struct RegisterDeviceInput {
+    /// The FCM registration token issued to this device/browser.
+    push_token: String,
+    platform: DevicePlatform,
+}
+
+#[derive(Object)]
+struct UnregisterDeviceInput {
+    push_token: String,
+}
+
+#[derive(ApiResponse)]
+enum RegisterDeviceResponse {
+    #[oai(status = 204)]
+    Ok,
+
+    /// The user already has the maximum number of registered devices.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum UnregisterDeviceResponse {
     #[oai(status = 204)]
     Ok,
 
@@ -3375,9 +3415,17 @@ impl Api {
                 .await
                 .map_err(dao_internal)?;
         } else {
-            dao.delete_comment_hard(&match_id, &comment_id)
-                .await
-                .map_err(dao_internal)?;
+            match dao.delete_comment_hard(&match_id, &comment_id).await {
+                Ok(()) => {}
+                // Deleted by a concurrent request between the check above and
+                // here.
+                Err(dao::DaoError::NotFound(_)) => {
+                    return Ok(DeleteCommentResponse::NotFound(PlainText(
+                        "comment not found".into(),
+                    )));
+                }
+                Err(e) => return Err(dao_internal(e)),
+            }
         }
         Ok(DeleteCommentResponse::Ok)
     }
@@ -3637,9 +3685,15 @@ impl Api {
                 "team not found".into(),
             )));
         }
-        dao.remove_team_member(&team_id, &member_id)
-            .await
-            .map_err(dao_internal)?;
+        match dao.remove_team_member(&team_id, &member_id).await {
+            Ok(()) => {}
+            Err(dao::DaoError::NotFound(_)) => {
+                return Ok(RemoveTeamMemberResponse::NotFound(PlainText(
+                    "member not found".into(),
+                )));
+            }
+            Err(e) => return Err(dao_internal(e)),
+        }
         match dao.get_team(&team_id).await.map_err(dao_internal)? {
             Some(agg) => Ok(RemoveTeamMemberResponse::Team(Json(team_from_records(
                 &agg.team,
@@ -3955,6 +4009,51 @@ impl Api {
         Ok(MarkNotificationReadResponse::Ok)
     }
 
+    #[oai(path = "/devices", method = "post")]
+    async fn register_device(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        input: Json<RegisterDeviceInput>,
+    ) -> Result<RegisterDeviceResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        info!("Registering device for {uid}");
+        let now = chrono::Utc::now().to_rfc3339();
+        match dao
+            .register_device(
+                &uid,
+                &input.push_token,
+                device_platform_to_record(&input.platform),
+                &now,
+            )
+            .await
+        {
+            Ok(()) => Ok(RegisterDeviceResponse::Ok),
+            Err(dao::DaoError::Conflict(msg)) => {
+                Ok(RegisterDeviceResponse::ValidationError(PlainText(msg)))
+            }
+            Err(e) => Err(dao_internal(e)),
+        }
+    }
+
+    #[oai(path = "/devices/unregister", method = "post")]
+    async fn unregister_device(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        input: Json<UnregisterDeviceInput>,
+    ) -> Result<UnregisterDeviceResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        info!("Unregistering device for {uid}");
+        match dao.delete_device(&uid, &input.push_token).await {
+            Ok(()) => Ok(UnregisterDeviceResponse::Ok),
+            Err(dao::DaoError::NotFound(_)) => Ok(UnregisterDeviceResponse::NotFound(PlainText(
+                "device not registered".into(),
+            ))),
+            Err(e) => Err(dao_internal(e)),
+        }
+    }
+
     #[oai(path = "/invitations/:invitation_id", method = "get")]
     async fn get_invitation(
         &self,
@@ -4028,10 +4127,14 @@ impl Api {
             }
             Some(_) => {}
         }
-        dao.delete_invitation(&invitation_id)
-            .await
-            .map_err(dao_internal)?;
-        Ok(RevokeInvitationResponse::Ok)
+        match dao.delete_invitation(&invitation_id).await {
+            Ok(()) => Ok(RevokeInvitationResponse::Ok),
+            // Revoked by a concurrent request between the check above and here.
+            Err(dao::DaoError::NotFound(_)) => Ok(RevokeInvitationResponse::NotFound(PlainText(
+                "invitation not found".into(),
+            ))),
+            Err(e) => Err(dao_internal(e)),
+        }
     }
 
     #[oai(path = "/invitations/:invitation_id/respond", method = "post")]

@@ -5556,6 +5556,19 @@ enum Commands {
         #[arg(long)]
         email: Option<String>,
     },
+
+    /// One-off backfill: rewrite Score::Simple/Sets `entries` still stored in
+    /// the pre-migration `Vec<{side_id, ...}>` shape into the current
+    /// side_id-keyed map shape (see `agon_core::dao::migrate` for the full
+    /// design/safety rationale). Defaults to a dry run that only reports
+    /// counts; pass --apply to actually write. Idempotent — safe to re-run
+    /// until it reports zero items needing migration.
+    MigrateScoreEntries {
+        /// Actually rewrite matching items. Without this, only reports what
+        /// would change.
+        #[arg(long)]
+        apply: bool,
+    },
 }
 
 fn log_request(uri: &Uri, status: StatusCode) {
@@ -5738,6 +5751,38 @@ async fn main() {
             .expect("Failed to encode JWT");
 
             println!("{token}");
+        }
+
+        Commands::MigrateScoreEntries { apply } => {
+            let table = std::env::var("AGON_TABLE_NAME").unwrap_or_else(|_| "agon".to_string());
+            let dao = dao::Dao::from_env(table).await;
+
+            let dry_run = !apply;
+            info!(dry_run, "Starting legacy score entries migration");
+            let stats = dao
+                .migrate_legacy_score_entries(dry_run)
+                .await
+                .expect("migration scan failed");
+            info!(
+                items_scanned = stats.items_scanned,
+                needs_migration = stats.needs_migration,
+                migrated = stats.migrated,
+                conflicted = stats.conflicted,
+                dry_run,
+                "Legacy score entries migration complete"
+            );
+
+            if dry_run {
+                println!(
+                    "DRY RUN: scanned {}, {} item(s) need migration. Re-run with --apply to write.",
+                    stats.items_scanned, stats.needs_migration
+                );
+            } else {
+                println!(
+                    "scanned {}, migrated {} of {} item(s) needing migration ({} lost a concurrency race — re-run to retry).",
+                    stats.items_scanned, stats.migrated, stats.needs_migration, stats.conflicted
+                );
+            }
         }
     }
 }

@@ -1664,7 +1664,7 @@ impl Api {
             Err(e) => return Err(dao_internal(e)),
         };
 
-        let mut built: Vec<Match> = Vec::with_capacity(page.items.len());
+        let mut eligible_ids: Vec<String> = Vec::with_capacity(page.items.len());
         for entry in &page.items {
             // Apply the optional date range on the entry's start time (cheap;
             // avoids hydrating matches outside the window).
@@ -1675,11 +1675,23 @@ impl Api {
             if entry.ref_type != "match" {
                 continue;
             }
-            if let Some(agg) = dao.get_match(&entry.ref_id).await.map_err(dao_internal)? {
-                let i_liked = dao
-                    .has_liked_match(&entry.ref_id, &uid)
-                    .await
-                    .map_err(dao_internal)?;
+            eligible_ids.push(entry.ref_id.clone());
+        }
+
+        // Hydrate every referenced match (meta + sides + players) and this
+        // viewer's likes for the whole page in two round-trips total, run
+        // concurrently — not one `get_match` + `has_liked_match` per feed
+        // entry. Neither call's DB request count grows with page size.
+        let (aggregates, liked) = tokio::try_join!(
+            dao.batch_get_match_aggregates(&eligible_ids),
+            dao.batch_has_liked_matches(&eligible_ids, &uid),
+        )
+        .map_err(dao_internal)?;
+
+        let mut built: Vec<Match> = Vec::with_capacity(eligible_ids.len());
+        for match_id in &eligible_ids {
+            if let Some(agg) = aggregates.get(match_id) {
+                let i_liked = liked.contains(match_id);
                 let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
                 sign_match_headers(assets, &mut m);
                 built.push(m);
@@ -1782,15 +1794,18 @@ impl Api {
             .map_err(search_internal)?;
 
         // Hydrate each match from DynamoDB (the index carries only filter/sort
-        // fields). `i_liked` needs the caller's like state; resolve per match.
-        // TODO: BatchGet + batch the like checks (N+1 for now).
+        // fields) and this caller's like state, in two round-trips total
+        // instead of a `get_match` + `has_liked_match` per hit.
+        let (aggregates, liked) = tokio::try_join!(
+            dao.batch_get_match_aggregates(&hits.ids),
+            dao.batch_has_liked_matches(&hits.ids, &caller_uid),
+        )
+        .map_err(dao_internal)?;
+
         let mut built: Vec<Match> = Vec::with_capacity(hits.ids.len());
         for id in &hits.ids {
-            if let Some(agg) = dao.get_match(id).await.map_err(dao_internal)? {
-                let i_liked = dao
-                    .has_liked_match(id, &caller_uid)
-                    .await
-                    .map_err(dao_internal)?;
+            if let Some(agg) = aggregates.get(id) {
+                let i_liked = liked.contains(id);
                 let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
                 sign_match_headers(assets, &mut m);
                 built.push(m);

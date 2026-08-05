@@ -2,9 +2,12 @@
 //! get aggregate, update meta, live-scoring score record, and player roster
 //! writes.
 
+use std::collections::HashMap;
+
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 use aws_sdk_dynamodb::types::{AttributeValue, Put, TransactWriteItem};
+use tokio::task::JoinSet;
 
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
@@ -162,6 +165,105 @@ impl Dao {
             sides,
             players,
         }))
+    }
+
+    /// Fetch many matches' meta items by id in one round-trip, keyed by id.
+    /// Missing ids are simply absent from the map (mirrors [`get_match`]
+    /// returning `None`), and duplicate ids collapse.
+    ///
+    /// Each meta item is an exact-key point read, so this collapses what would
+    /// be N `GetItem`s into one `BatchGetItem` (see [`batch_get_all`] for the
+    /// unprocessed-key retry). Callers must pass at most `BATCH_GET_MAX` ids —
+    /// every current caller hydrates a single, service-capped page.
+    ///
+    /// [`batch_get_all`]: Dao::batch_get_all
+    #[tracing::instrument(skip(self))]
+    pub async fn batch_get_match_metas(
+        &self,
+        match_ids: &[String],
+    ) -> DaoResult<HashMap<String, MatchRecord>> {
+        let mut seen = std::collections::HashSet::new();
+        let keys: Vec<_> = match_ids
+            .iter()
+            .filter(|id| seen.insert((*id).clone()))
+            .map(|id| {
+                HashMap::from([
+                    (ATTR_PK.to_string(), s(Pk::Match(id.clone()).to_string())),
+                    (ATTR_SK.to_string(), s(Sk::Meta.to_string())),
+                ])
+            })
+            .collect();
+
+        let items = self.batch_get_all(keys, None).await?;
+        let mut out = HashMap::with_capacity(items.len());
+        for item in items {
+            let record: MatchRecord = from_item(item)?;
+            out.insert(record.id.clone(), record);
+        }
+        Ok(out)
+    }
+
+    /// Fetch match aggregates (meta + sides + players) for many matches at
+    /// once — e.g. to hydrate a whole feed page without one `get_match` per
+    /// entry. Missing ids are simply absent from the map. Callers must pass at
+    /// most `BATCH_GET_MAX` ids — a single, service-capped page.
+    ///
+    /// The meta reads collapse into a single `BatchGetItem` via
+    /// [`batch_get_match_metas`], so that part of the cost is flat regardless
+    /// of page size. Sides and players can't collapse the same way: each is a
+    /// `begins_with(SK, ...)` collection query scoped to one match's
+    /// partition, and side/player ids aren't known ahead of the read (see
+    /// [`get_match`]'s doc comment for why `BatchGetItem` isn't an option
+    /// there) — DynamoDB's `Query` is inherently per-partition, so this still
+    /// issues two queries per match. Those queries do run concurrently
+    /// (one task per match, `sides`/`players` fetched together within it)
+    /// rather than one-at-a-time, so wall-clock latency doesn't stack with
+    /// page size the way the old sequential loop did — only the request count
+    /// does.
+    ///
+    /// [`batch_get_match_metas`]: Dao::batch_get_match_metas
+    #[tracing::instrument(skip(self))]
+    pub async fn batch_get_match_aggregates(
+        &self,
+        match_ids: &[String],
+    ) -> DaoResult<HashMap<String, MatchAggregate>> {
+        let mut metas = self.batch_get_match_metas(match_ids).await?;
+        if metas.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut tasks = JoinSet::new();
+        for match_id in metas.keys().cloned() {
+            let dao = self.clone();
+            tasks.spawn(async move {
+                let side_prefix = Sk::side_prefix();
+                let player_prefix = Sk::player_prefix();
+                let result = tokio::try_join!(
+                    dao.query_match_collection::<MatchSideRecord>(&match_id, &side_prefix),
+                    dao.query_match_collection::<MatchPlayerRecord>(&match_id, &player_prefix),
+                );
+                (match_id, result)
+            });
+        }
+
+        let mut out = HashMap::with_capacity(metas.len());
+        while let Some(joined) = tasks.join_next().await {
+            let (match_id, result) = joined.map_err(|e| {
+                DaoError::Dynamo(format!("match collection fetch task panicked: {e}"))
+            })?;
+            let (sides, players) = result?;
+            if let Some(match_) = metas.remove(&match_id) {
+                out.insert(
+                    match_id,
+                    MatchAggregate {
+                        match_,
+                        sides,
+                        players,
+                    },
+                );
+            }
+        }
+        Ok(out)
     }
 
     /// Read every item in a match's partition whose SK starts with `sk_prefix`

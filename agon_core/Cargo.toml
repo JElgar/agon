@@ -15,8 +15,11 @@ base64 = "0.22.1"
 chrono = { version = "0.4.41", features = ["serde"] }
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-dynamodb = "1"
-# Only the timer, for backoff between DynamoDB batch-retry attempts.
-tokio = { version = "1", features = ["time"] }
+# "time" is for backoff between DynamoDB batch-retry attempts; "rt" is for
+# JoinSet and "macros" for try_join!, to fetch a page's worth of matches'
+# sides/players concurrently instead of one match at a time (runs on the
+# binary's existing runtime — this crate doesn't construct one of its own).
+tokio = { version = "1", features = ["time", "rt", "macros"] }
 serde_dynamo = { version = "4", features = ["aws-sdk-dynamodb+1"] }
 meilisearch-sdk = { version = "0.33", default-features = false, features = ["reqwest", "tls"] }
 

@@ -16,7 +16,8 @@ use poem::http::Uri;
 use poem::{Endpoint, IntoResponse, Response};
 use poem::{
     EndpointExt, Error, Request, Result, Route, Server, http::StatusCode, listener::TcpListener,
-    middleware::Cors, web::Data,
+    middleware::{Cors, Tracing},
+    web::Data,
 };
 use poem_openapi::auth::Bearer;
 use poem_openapi::param::Query;
@@ -5690,7 +5691,13 @@ async fn main() {
                 .data(search)
                 .data(verifier)
                 .data(assets)
-                .around(log_middleware);
+                .around(log_middleware)
+                // Outermost: opens a tracing span per request, so it covers
+                // log_middleware's logging/metrics and everything downstream.
+                // Without it, `agon_core::telemetry`'s OTLP tracer never has a
+                // span to export — requests were logged and measured but no
+                // trace ever left the process.
+                .with(Tracing);
 
             Server::new(TcpListener::bind("0.0.0.0:7000"))
                 .run(app)

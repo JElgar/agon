@@ -15,7 +15,9 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use poem::http::Uri;
 use poem::{Endpoint, IntoResponse, Response};
 use poem::{
-    EndpointExt, Error, Request, Result, Route, Server, http::StatusCode, listener::TcpListener,
+    EndpointExt, Error, Request, Result, Route, Server,
+    http::StatusCode,
+    listener::TcpListener,
     middleware::{Cors, Tracing},
     web::Data,
 };

@@ -50,6 +50,7 @@ impl Dao {
     /// `PK` for an existence check). `keys` must hold at most [`BATCH_GET_MAX`]
     /// entries and must be free of duplicates — DynamoDB rejects a request that
     /// repeats a key; callers de-dup while building the key list.
+    #[tracing::instrument(skip(self))]
     pub(super) async fn batch_get_all(
         &self,
         keys: Vec<Item>,

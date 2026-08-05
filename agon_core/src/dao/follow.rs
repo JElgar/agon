@@ -19,6 +19,7 @@ impl Dao {
     /// Follow a user. Idempotent: re-following is a no-op that does not
     /// double-count. Atomically: writes the edge (if absent), bumps the
     /// followee's `follower_count` and the follower's `following_count`.
+    #[tracing::instrument(skip(self))]
     pub async fn follow_user(
         &self,
         follower_id: &str,
@@ -92,6 +93,7 @@ impl Dao {
 
     /// Unfollow a user. Idempotent: only decrements when an edge actually
     /// existed, so repeated unfollows don't drive counts negative.
+    #[tracing::instrument(skip(self))]
     pub async fn unfollow_user(&self, follower_id: &str, followee_id: &str) -> DaoResult<()> {
         let delete_edge = Delete::builder()
             .table_name(self.table())
@@ -138,6 +140,7 @@ impl Dao {
     }
 
     /// True if `follower_id` follows `followee_id` (drives `is_followed_by_me`).
+    #[tracing::instrument(skip(self))]
     pub async fn is_following_user(&self, follower_id: &str, followee_id: &str) -> DaoResult<bool> {
         let out = self
             .client
@@ -164,6 +167,7 @@ impl Dao {
     /// pass at most `BATCH_GET_MAX` ids — a single, service-capped page.
     ///
     /// [`batch_get_all`]: Dao::batch_get_all
+    #[tracing::instrument(skip(self))]
     pub async fn batch_is_following_users(
         &self,
         follower_id: &str,
@@ -199,6 +203,7 @@ impl Dao {
 
     /// Whether `follower_id` follows the team `team_id`. Existence check on the
     /// `TEAM#<team>` / `FOLLOWER#<follower>` edge.
+    #[tracing::instrument(skip(self))]
     pub async fn is_following_team(&self, follower_id: &str, team_id: &str) -> DaoResult<bool> {
         let out = self
             .client
@@ -214,6 +219,7 @@ impl Dao {
     }
 
     /// List a user's followers (the edge records), cursor-paginated.
+    #[tracing::instrument(skip(self))]
     pub async fn list_user_followers(
         &self,
         user_id: &str,
@@ -235,6 +241,7 @@ impl Dao {
     }
 
     /// List the users a given user follows, via GSI1 (`UFOLLOWING#<id>`).
+    #[tracing::instrument(skip(self))]
     pub async fn list_user_following(
         &self,
         follower_id: &str,
@@ -256,6 +263,7 @@ impl Dao {
     }
 
     /// Follow a team. Idempotent. Bumps the team's `follower_count`.
+    #[tracing::instrument(skip(self))]
     pub async fn follow_team(&self, follower_id: &str, team_id: &str, now: &str) -> DaoResult<()> {
         let edge = TeamFollowRecord {
             team_id: team_id.into(),
@@ -308,6 +316,7 @@ impl Dao {
     }
 
     /// Unfollow a team. Idempotent.
+    #[tracing::instrument(skip(self))]
     pub async fn unfollow_team(&self, follower_id: &str, team_id: &str) -> DaoResult<()> {
         let delete_edge = Delete::builder()
             .table_name(self.table())
@@ -343,6 +352,7 @@ impl Dao {
     }
 
     /// List a team's followers, cursor-paginated.
+    #[tracing::instrument(skip(self))]
     pub async fn list_team_followers(
         &self,
         team_id: &str,
@@ -364,6 +374,7 @@ impl Dao {
     }
 
     /// List the teams a user follows, via GSI3.
+    #[tracing::instrument(skip(self))]
     pub async fn list_followed_teams(
         &self,
         follower_id: &str,

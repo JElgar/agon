@@ -37,6 +37,7 @@ impl Dao {
     /// kick off async follower fan-out), or `None` for a team invite.
     ///
     /// `NotFound` if the invitation or its embedding roster entry is gone.
+    #[tracing::instrument(skip(self))]
     pub async fn accept_invitation_tx(
         &self,
         invitation_id: &str,
@@ -197,6 +198,7 @@ impl Dao {
     /// point re-write, so a replay is harmless.
     ///
     /// Returns `NotFound` if the invitation or its target entry is gone.
+    #[tracing::instrument(skip(self))]
     pub async fn link_accepted_invitation(
         &self,
         invitation_id: &str,

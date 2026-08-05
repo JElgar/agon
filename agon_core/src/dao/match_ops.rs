@@ -36,6 +36,10 @@ impl Dao {
     /// Note: DynamoDB caps a transaction at 100 items, so a match with a very
     /// large roster would need chunking — not handled here (fine for real
     /// team sizes). Feed fan-out happens asynchronously off the stream, not here.
+    #[tracing::instrument(
+        skip(self, match_, sides, players),
+        fields(match_id = %match_.id, sides = sides.len(), players = players.len())
+    )]
     pub async fn create_match(
         &self,
         match_: &MatchRecord,
@@ -123,6 +127,7 @@ impl Dao {
     /// match with many comments could push sides onto an unread second page and
     /// silently drop them. Scoped queries can't (BatchGetItem isn't an option —
     /// side and player ids aren't known ahead of the read).
+    #[tracing::instrument(skip(self))]
     pub async fn get_match(&self, match_id: &str) -> DaoResult<Option<MatchAggregate>> {
         let pk = Pk::Match(match_id.into());
 
@@ -162,6 +167,7 @@ impl Dao {
     /// Read every item in a match's partition whose SK starts with `sk_prefix`
     /// (e.g. `SIDE#`, `PLAYER#`), draining all query pages so a large collection
     /// is never truncated at the 1 MB page limit. Deserializes each into `T`.
+    #[tracing::instrument(skip(self))]
     pub(super) async fn query_match_collection<T: serde::de::DeserializeOwned>(
         &self,
         match_id: &str,
@@ -201,6 +207,7 @@ impl Dao {
     /// and the resolved `confirmed_score`/`pending_score` blobs. `NotFound` if
     /// the match is absent.
     #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(skip(self))]
     pub async fn update_match_meta(
         &self,
         match_id: &str,
@@ -329,6 +336,7 @@ impl Dao {
     }
 
     /// Add or update a single match player (roster reconciliation / late adds).
+    #[tracing::instrument(skip(self, player), fields(player_id = %player.player_id))]
     pub async fn put_match_player(
         &self,
         match_id: &str,
@@ -345,6 +353,7 @@ impl Dao {
     }
 
     /// Fetch a match's live-scoring score record. `None` if none recorded.
+    #[tracing::instrument(skip(self))]
     pub async fn get_match_score(
         &self,
         match_id: &str,
@@ -366,6 +375,7 @@ impl Dao {
     }
 
     /// Write (overwrite) a match's live-scoring score record.
+    #[tracing::instrument(skip(self, record), fields(sport = %record.sport))]
     pub async fn put_match_score(
         &self,
         match_id: &str,

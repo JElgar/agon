@@ -25,6 +25,7 @@ impl Dao {
     /// Reads the match aggregate, then walks the follower lists of each
     /// participating user and involved team. Returns an empty set if the match
     /// doesn't exist.
+    #[tracing::instrument(skip(self))]
     pub async fn resolve_fanout_audience(&self, match_id: &str) -> DaoResult<Vec<String>> {
         let Some(agg) = self.get_match(match_id).await? else {
             return Ok(Vec::new());

@@ -20,6 +20,7 @@ impl Dao {
 
     /// Like a match. Idempotent; bumps `like_count` on the match meta only when
     /// the like edge is newly created.
+    #[tracing::instrument(skip(self))]
     pub async fn like_match(&self, match_id: &str, user_id: &str, now: &str) -> DaoResult<()> {
         let like = MatchLikeRecord {
             match_id: match_id.into(),
@@ -61,6 +62,7 @@ impl Dao {
     }
 
     /// Unlike a match. Idempotent; only decrements when a like actually existed.
+    #[tracing::instrument(skip(self))]
     pub async fn unlike_match(&self, match_id: &str, user_id: &str) -> DaoResult<()> {
         let delete = Delete::builder()
             .table_name(self.table())
@@ -91,6 +93,7 @@ impl Dao {
     }
 
     /// Whether the given user has liked the match (drives `i_liked`).
+    #[tracing::instrument(skip(self))]
     pub async fn has_liked_match(&self, match_id: &str, user_id: &str) -> DaoResult<bool> {
         let out = self
             .client
@@ -106,6 +109,7 @@ impl Dao {
     }
 
     /// List users who liked a match, cursor-paginated.
+    #[tracing::instrument(skip(self))]
     pub async fn list_match_likes(
         &self,
         match_id: &str,
@@ -134,6 +138,10 @@ impl Dao {
     // `MCOMMENTS#<matchId>` / `CREPLIES#<parentId>` with sort `<createdAt>#<id>`.
 
     /// Create a top-level comment on a match. Bumps the match `comment_count`.
+    #[tracing::instrument(
+        skip(self, comment),
+        fields(match_id = %comment.match_id, comment_id = %comment.comment_id)
+    )]
     pub async fn create_comment(&self, comment: &CommentRecord) -> DaoResult<()> {
         let item = ItemBuilder::new(to_item(
             &Pk::Match(comment.match_id.clone()),
@@ -170,6 +178,10 @@ impl Dao {
     /// `reply_count` and the match's `comment_count`. The reply's base item lives
     /// in the match partition (`MATCH#<mid>` / `REPLY#<rid>`) so it's fetchable by
     /// id; the parent (`COMMENT#<parentId>`) is bumped in the same transaction.
+    #[tracing::instrument(
+        skip(self, reply),
+        fields(match_id = %reply.match_id, comment_id = %reply.comment_id, parent_id = ?reply.parent_id)
+    )]
     pub async fn create_reply(&self, reply: &CommentRecord) -> DaoResult<()> {
         let parent_id = reply
             .parent_id
@@ -225,6 +237,7 @@ impl Dao {
     }
 
     /// List top-level comments on a match, newest first, via GSI1.
+    #[tracing::instrument(skip(self))]
     pub async fn list_comments(
         &self,
         match_id: &str,
@@ -247,6 +260,7 @@ impl Dao {
     }
 
     /// List replies to a comment, newest first, via GSI1.
+    #[tracing::instrument(skip(self))]
     pub async fn list_replies(
         &self,
         parent_comment_id: &str,
@@ -270,6 +284,7 @@ impl Dao {
 
     /// Fetch a single top-level comment by id (for authorisation / reply_count
     /// checks on edit and delete). `None` if absent.
+    #[tracing::instrument(skip(self))]
     pub async fn get_comment(
         &self,
         match_id: &str,
@@ -294,6 +309,7 @@ impl Dao {
     /// distinguish "parent is a reply" (reject a second-level reply) from
     /// "parent doesn't exist" when validating a new reply's target. `None` if
     /// absent.
+    #[tracing::instrument(skip(self))]
     pub async fn get_reply(
         &self,
         match_id: &str,
@@ -315,6 +331,7 @@ impl Dao {
     }
 
     /// Edit a top-level comment's text (addressed by id). Sets `edited_at`.
+    #[tracing::instrument(skip(self))]
     pub async fn edit_comment(
         &self,
         match_id: &str,
@@ -342,6 +359,7 @@ impl Dao {
     /// Tombstone a top-level comment that has replies (addressed by id): clear
     /// author/text, set `deleted_at`, keep the row. Does not touch counts. Use
     /// `delete_comment_hard` for reply-less comments.
+    #[tracing::instrument(skip(self))]
     pub async fn tombstone_comment(
         &self,
         match_id: &str,
@@ -364,6 +382,7 @@ impl Dao {
 
     /// Hard-delete a reply-less top-level comment (addressed by id); decrements
     /// `comment_count`.
+    #[tracing::instrument(skip(self))]
     pub async fn delete_comment_hard(&self, match_id: &str, comment_id: &str) -> DaoResult<()> {
         let delete = Delete::builder()
             .table_name(self.table())
@@ -392,6 +411,7 @@ impl Dao {
     // list is via GSI1 (`MSUBMISSIONS#<matchId>` / `<submittedAt>#<id>`).
 
     /// Fetch a single score submission by id. `None` if absent.
+    #[tracing::instrument(skip(self))]
     pub async fn get_score_submission(
         &self,
         match_id: &str,
@@ -418,6 +438,7 @@ impl Dao {
     /// Append a score submission to a match's history. Also used to overwrite an
     /// existing submission (same id) after recording a response — the full item
     /// (incl. its GSI1 projection) is rewritten.
+    #[tracing::instrument(skip(self, submission), fields(submission_id = %submission.submission_id))]
     pub async fn put_score_submission(
         &self,
         match_id: &str,
@@ -445,6 +466,7 @@ impl Dao {
     }
 
     /// List a match's score submissions (history), newest first, via GSI1.
+    #[tracing::instrument(skip(self))]
     pub async fn list_score_submissions(
         &self,
         match_id: &str,

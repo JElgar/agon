@@ -14,6 +14,7 @@ pub const TYPE_ASSET: &str = "asset";
 
 impl Dao {
     /// Create a new (pending) asset.
+    #[tracing::instrument(skip(self, asset), fields(asset_id = %asset.id))]
     pub async fn create_asset(&self, asset: &AssetRecord) -> DaoResult<()> {
         let item = to_item(&Pk::Asset(asset.id.clone()), &Sk::Meta, TYPE_ASSET, asset)?;
         self.client
@@ -29,6 +30,7 @@ impl Dao {
     }
 
     /// Fetch an asset by id. `None` if absent.
+    #[tracing::instrument(skip(self))]
     pub async fn get_asset(&self, asset_id: &str) -> DaoResult<Option<AssetRecord>> {
         let out = self
             .client
@@ -46,11 +48,13 @@ impl Dao {
     }
 
     /// Mark an asset uploaded and set its public URL (storage-event driven).
+    #[tracing::instrument(skip(self))]
     pub async fn mark_asset_uploaded(&self, asset_id: &str, url: &str) -> DaoResult<()> {
         self.set_asset_status(asset_id, "uploaded", Some(url)).await
     }
 
     /// Mark an asset failed (e.g. upload expired / rejected).
+    #[tracing::instrument(skip(self))]
     pub async fn mark_asset_failed(&self, asset_id: &str) -> DaoResult<()> {
         self.set_asset_status(asset_id, "failed", None).await
     }

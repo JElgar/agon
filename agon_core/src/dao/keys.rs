@@ -157,9 +157,12 @@ pub enum Sk {
     Side(String),
     /// A match player. `PLAYER#<playerId>`
     Player(String),
-    /// A match's live-scoring score record, keyed by sport.
-    /// `LIVESCORE#<sport>` — not `SCORE#`, which would collide with
-    /// `SCORESUB#` under a `begins_with` prefix query.
+    /// A match's live-scoring score record, keyed by sport — the score as
+    /// derived from the event log, live or finished, but never itself the
+    /// agreed result. Named `LIVESCORE#<sport>` rather than `SCORE#` to keep
+    /// that distinct from `confirmed_score`/`pending_score` on the match's
+    /// `#META` item, which *is* the agreed-or-awaiting-agreement result (see
+    /// `ScoreSubmission`'s confirm/dispute flow).
     Score(String),
     /// A like on a match. `LIKE#<uid>`
     Like(String),

@@ -6,7 +6,7 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { useAppendFootballEvent, useLiveSeq } from '@/hooks/useLiveScore'
-import { useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
+import { matchScoreQueryKey, useMatchScore } from '@/hooks/useMatchScore'
 import { RecordEventDialog, type EventKind } from '@/components/agon/live/RecordEventDialog'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { CricketLiveScoringPage } from './CricketLiveScoringPage'
@@ -16,7 +16,7 @@ import {
   describeEvent,
   eventEmoji,
   eventsFromDetail,
-  footballDetailFrom,
+  footballScoreFrom,
   loadTrackPrefs,
   nextPeriodForPhase,
   nextPhaseActionLabel,
@@ -29,6 +29,7 @@ import {
 
 type Match = components['schemas']['Match']
 type UpdateMatchInput = components['schemas']['UpdateMatchInput']
+type Score = components['schemas']['Score']
 
 function sideName(match: Match, index: number, fallback: string): string {
   return match.sides[index]?.name?.trim() || fallback
@@ -94,7 +95,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
-  const detailedScore = useMatchDetailedScore(match.id, { refetchInterval: 8000 })
+  const scoreQuery = useMatchScore(match.id, { refetchInterval: 8000 })
   const seq = useLiveSeq(match.id)
   const append = useAppendFootballEvent(match.id)
 
@@ -108,45 +109,34 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
   const [dialogKind, setDialogKind] = useState<EventKind | null>(null)
 
   // Concludes the match once it's decided (full-time, extra-time full-time,
-  // or the penalty shootout is done): submits the goal tally — normal time
-  // plus extra time, never shootout kicks — as a `Simple` score (the same
-  // shape `MatchResultEditor` writes) and marks the match `completed`, the
-  // way a manual "Add result" would — so it enters the normal confirmation
-  // flow rather than being auto-confirmed. Still level on goals falls back to
-  // the penalty shootout tally to pick a winner. No `detailed_score` here:
-  // the goals/cards/subs/period markers/shootout kicks recorded live are
-  // already persisted against the match as they happened. Reads
-  // `detailedScore.data` directly (rather than closing over the `state`
-  // computed below) so this hook can be declared before the loading early
-  // return, same as every other hook in this component.
+  // or the penalty shootout is done): flips the match to `completed`,
+  // sending the score built from this device's own view of the live detail.
+  // The server independently derives the same score from the match's
+  // persisted live detail and 409s if the two disagree (e.g. a goal landed
+  // between this device's last poll and the tap). That's surfaced, not
+  // silently resolved: the live detail is refetched (so the score shown
+  // above updates to what's actually current) and the button stays
+  // "Finish match" so the user reviews it and taps again themselves, rather
+  // than the app resubmitting on their behalf without them seeing what
+  // changed. Still enters the normal confirmation flow rather than being
+  // auto-confirmed, same as a manual "Add result" would.
   const finishMatch = useMutation({
     mutationFn: async () => {
-      const detail = footballDetailFrom(detailedScore.data)
-      const goalsFor = (sideId: string | undefined) =>
-        detail?.score.find((s) => s.side_id === sideId)?.goals ?? 0
-      const aId = match.sides[0]?.id ?? ''
-      const bId = match.sides[1]?.id ?? ''
-      const a = goalsFor(aId)
-      const b = goalsFor(bId)
-      const score = {
-        type: 'Simple',
-        entries: [
-          { side_id: aId, points: a },
-          { side_id: bId, points: b },
-        ],
-      } as unknown as UpdateMatchInput['score']
-      const body: UpdateMatchInput = { score, status: 'completed' }
-      if (a !== b) {
-        body.winner_side_id = a > b ? aId : bId
-      } else if (detail) {
-        const penA = shootoutScoreFor(detail, aId)
-        const penB = shootoutScoreFor(detail, bId)
-        if (penA !== penB) body.winner_side_id = penA > penB ? aId : bId
+      const state = footballScoreFrom(
+        queryClient.getQueryData<Score | null>(matchScoreQueryKey(match.id)),
+      )
+      const body: UpdateMatchInput = {
+        status: 'completed',
+        score: state ?? undefined,
       }
-      const { error } = await fetchClient.PATCH('/matches/{match_id}', {
+      const { error, response } = await fetchClient.PATCH('/matches/{match_id}', {
         params: { path: { match_id: match.id } },
         body,
       })
+      if (response.status === 409) {
+        await queryClient.refetchQueries({ queryKey: matchScoreQueryKey(match.id) })
+        throw new Error('The live score just changed — check the updated score above, then finish again')
+      }
       if (error) throw new Error('Failed to finish the match')
     },
     onSuccess: () => {
@@ -156,7 +146,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
     },
   })
 
-  if (detailedScore.isLoading || seq.isLoading) {
+  if (scoreQuery.isLoading || seq.isLoading) {
     return (
       <div className="mx-auto max-w-xl">
         <div className="h-64 animate-pulse rounded-xl border bg-card" aria-hidden />
@@ -166,9 +156,9 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
 
   const nameA = sideName(match, 0, 'Side A')
   const nameB = sideName(match, 1, 'Side B')
-  const state = footballDetailFrom(detailedScore.data)
+  const state = footballScoreFrom(scoreQuery.data)
   const goalsFor = (sideId: string | undefined) =>
-    state?.score.find((s) => s.side_id === sideId)?.goals ?? 0
+    (sideId ? state?.score[sideId] : undefined) ?? 0
   const format = footballFormat(match.format)
   const aId = match.sides[0]?.id
   const bId = match.sides[1]?.id
@@ -252,7 +242,13 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
   const readyToFinish =
     (decidingPhase && !continuationAvailable) || (phase === 'penalties' && !!state && penaltiesComplete(state))
 
-  const events = state ? eventsFromDetail(state).reverse() : []
+  const events = state
+    ? eventsFromDetail({
+        goals: state.goals ?? [],
+        cards: state.cards ?? [],
+        substitutions: state.substitutions ?? [],
+      }).reverse()
+    : []
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
@@ -341,9 +337,9 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
         </div>
       )}
 
-      {phase === 'penalties' && state && state.penalty_shootout.length > 0 && (
+      {phase === 'penalties' && state && (state.penalty_shootout?.length ?? 0) > 0 && (
         <div className="flex flex-wrap gap-1.5">
-          {state.penalty_shootout.map((kick, i) => (
+          {(state.penalty_shootout ?? []).map((kick, i) => (
             <span
               key={i}
               className={`flex size-7 items-center justify-center rounded-full text-xs font-semibold ${

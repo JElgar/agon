@@ -59,7 +59,9 @@ export function CricketScorecard({ match, innings }: { match: Match; innings: Cr
 }
 
 function InningsCard({ match, innings }: { match: Match; innings: CricketInningsWithDeliveries }) {
-  if (innings.batting.length === 0 && innings.bowling.length === 0) return null
+  const batting = innings.batting ?? []
+  const bowling = innings.bowling ?? []
+  if (batting.length === 0 && bowling.length === 0) return null
 
   const battingName = sideNameFor(match, innings.batting_side_id)
   const bowlingName = sideNameFor(match, innings.bowling_side_id)
@@ -73,7 +75,7 @@ function InningsCard({ match, innings }: { match: Match; innings: CricketInnings
         </p>
       </div>
 
-      {innings.batting.length > 0 && (
+      {batting.length > 0 && (
         <Table>
           <TableHeader>
             <TableRow>
@@ -85,7 +87,7 @@ function InningsCard({ match, innings }: { match: Match; innings: CricketInnings
             </TableRow>
           </TableHeader>
           <TableBody>
-            {innings.batting.map((b: CricketBattingEntry) => (
+            {batting.map((b: CricketBattingEntry) => (
               <TableRow key={b.player_id}>
                 <TableCell>
                   <p className="font-medium">{playerNameFor(match, b.player_id)}</p>
@@ -103,7 +105,7 @@ function InningsCard({ match, innings }: { match: Match; innings: CricketInnings
         </Table>
       )}
 
-      {innings.bowling.length > 0 && (
+      {bowling.length > 0 && (
         <Table>
           <TableHeader>
             <TableRow>
@@ -112,7 +114,7 @@ function InningsCard({ match, innings }: { match: Match; innings: CricketInnings
             </TableRow>
           </TableHeader>
           <TableBody>
-            {innings.bowling.map((bw: CricketBowlingEntry) => (
+            {bowling.map((bw: CricketBowlingEntry) => (
               <TableRow key={bw.player_id}>
                 <TableCell className="font-medium">{playerNameFor(match, bw.player_id)}</TableCell>
                 <TableCell className="text-right tabular-nums">{bowlingFigures(bw)}</TableCell>

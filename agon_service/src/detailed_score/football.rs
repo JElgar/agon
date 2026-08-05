@@ -1,53 +1,4 @@
-use std::collections::HashMap;
-
 use poem_openapi::{Enum, Object};
-
-/// A match's full football detail — live or finished, the same shape either
-/// way. Every goal, card, and substitution recorded, each in its own
-/// well-typed list rather than flattened into one generic "event" shape — a
-/// goal's scorer/assist/own-goal/penalty fields mean the same thing here as
-/// when they were recorded, no interpreting a shared field differently per
-/// event kind. `period_times` are historical facts, not "current state" —
-/// nothing here needs to go blank once the match is over the way cricket's
-/// next-ball context does.
-#[derive(Object)]
-pub struct FootballDetail {
-    pub score: Vec<FootballSideGoals>,
-    pub goals: Vec<FootballGoalEvent>,
-    pub cards: Vec<FootballCardEvent>,
-    pub substitutions: Vec<FootballSubstitutionEvent>,
-    /// The most recent period marker seen, if any.
-    pub period: Option<FootballPeriod>,
-    /// When each period marker was recorded, keyed by kind — one entry per
-    /// `FootballPeriod` variant seen so far (a marker recorded twice
-    /// overwrites, it doesn't append; see `FootballPeriod`'s doc comment on
-    /// why every current variant is a once-per-match boundary). A map here
-    /// rather than a named field per marker (the original
-    /// `kickoff_at`/`half_time_at`/`second_half_kickoff_at`/`full_time_at`
-    /// shape) so a new kind of marker — extra time, a drinks break — doesn't
-    /// need a new field each time.
-    pub period_times: HashMap<FootballPeriod, chrono::DateTime<chrono::Utc>>,
-    /// Every penalty-shootout kick recorded, in order taken. Separate from
-    /// `goals`/`score` — a shootout kick never counts as a match goal, only
-    /// towards `penalty_shootout_score` — since the scoreline it decides
-    /// (e.g. "1-1, Riverside win 4-3 on penalties") keeps the 90/120-minute
-    /// score and the shootout tally visually distinct, same as it's reported
-    /// in the real world.
-    pub penalty_shootout: Vec<FootballPenaltyShootoutKick>,
-    /// Running shootout tally (kicks scored, not kicks taken) per side,
-    /// derived from `penalty_shootout` the same way `score` is derived from
-    /// `goals`.
-    pub penalty_shootout_score: Vec<FootballShootoutTally>,
-}
-
-/// A side's running goal tally, derived from the event log (a convenience for
-/// cheap reads — e.g. a feed card — that don't want to re-derive it from
-/// `goals` themselves).
-#[derive(Object)]
-pub struct FootballSideGoals {
-    pub side_id: String,
-    pub goals: u32,
-}
 
 #[derive(Object, Clone)]
 pub struct FootballGoalEvent {
@@ -90,15 +41,6 @@ pub struct FootballPenaltyShootoutKick {
     /// The side taking this kick.
     pub side_id: String,
     pub scored: bool,
-}
-
-/// A side's shootout tally (kicks scored so far) — the penalty-shootout
-/// equivalent of `FootballSideGoals`, kept as its own type since "goals"
-/// would be a misnomer for a shootout kick.
-#[derive(Object, Clone)]
-pub struct FootballShootoutTally {
-    pub side_id: String,
-    pub scored: u32,
 }
 
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq, Hash)]

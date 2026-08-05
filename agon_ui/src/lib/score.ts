@@ -3,6 +3,16 @@ import type { components } from '@/types/api'
 type Match = components['schemas']['Match']
 type Score = components['schemas']['Score']
 type MatchSide = components['schemas']['MatchSide']
+type FootballGoalEvent = components['schemas']['FootballGoalEvent']
+
+/** A finished football match's goals, straight off its confirmed/pending
+ *  score — `null` for any other score type, or a football score with no
+ *  goal-by-goal detail attached (a manual entry with just the final tally).
+ *  Lets a feed card show who scored without a separate live-poll fetch once
+ *  the match is over. */
+export function footballGoalsFromScore(score: Score): FootballGoalEvent[] | null {
+  return score.type === 'Football' ? (score.goals ?? null) : null
+}
 
 /** The score to display for a match: the confirmed result if present, else the
  *  pending (awaiting-confirmation) submission. `null` when no score exists yet. */
@@ -28,30 +38,31 @@ export function displayScore(
 
 /**
  * The headline number a side shows: for a Sets score it's the count of sets won
- * (across index-aligned entries); for a Simple score it's the points. Returns a
- * map of side id → headline value. A `Cricket` score has no single headline
- * number to show here — `CricketMatchBlock`/`CricketScoreBlock` render it
- * their own way — so it's an empty map, same as "no score yet".
+ * (across index-aligned entries); for a Simple score it's the points; for a
+ * Football score it's the goal tally (`score.score`, keyed by side id —
+ * already correct including own goals, which credit the benefiting side).
+ * Returns a map of side id → headline value. A `Cricket` score has no single
+ * headline number to show here — `CricketMatchBlock`/`CricketScoreBlock`
+ * render it their own way — so it's an empty map, same as "no score yet".
  */
 export function headlineBySide(score: Score): Record<string, number> {
-  const out: Record<string, number> = {}
-  if (score.type === 'Simple') {
-    for (const e of score.entries) out[e.side_id] = e.points
-    return out
-  }
-  if (score.type === 'Cricket') return out
+  if (score.type === 'Simple') return { ...score.entries }
+  if (score.type === 'Football') return { ...score.score }
+  if (score.type === 'Cricket') return {}
   // Sets: a side wins a set at index i if its games exceed every other side's.
-  const setCount = Math.max(0, ...score.entries.map((e) => e.sets.length))
-  for (const e of score.entries) out[e.side_id] = 0
+  const out: Record<string, number> = {}
+  const entries = Object.entries(score.entries)
+  const setCount = Math.max(0, ...entries.map(([, sets]) => sets.length))
+  for (const [sideId] of entries) out[sideId] = 0
   for (let i = 0; i < setCount; i++) {
     let bestSide: string | null = null
     let bestGames = -1
     let tie = false
-    for (const e of score.entries) {
-      const games = e.sets[i] ?? 0
+    for (const [sideId, sets] of entries) {
+      const games = sets[i] ?? 0
       if (games > bestGames) {
         bestGames = games
-        bestSide = e.side_id
+        bestSide = sideId
         tie = false
       } else if (games === bestGames) {
         tie = true
@@ -65,9 +76,8 @@ export function headlineBySide(score: Score): Record<string, number> {
 /** Per-set game scores in side order, e.g. "6–3 · 6–2". Empty for Simple scores. */
 export function setLine(score: Score, sides: MatchSide[]): string[] {
   if (score.type !== 'Sets') return []
-  const bySide = new Map(score.entries.map((e) => [e.side_id, e.sets]))
   const ordered = sides
-    .map((s) => bySide.get(s.id))
+    .map((s) => score.entries[s.id])
     .filter((s): s is number[] => Array.isArray(s))
   if (ordered.length < 2) return []
   const setCount = Math.max(...ordered.map((s) => s.length))

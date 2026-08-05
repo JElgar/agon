@@ -7,7 +7,7 @@
 #![allow(clippy::result_large_err)]
 #![allow(clippy::too_many_arguments)]
 
-use std::{fs::File, io::Write};
+use std::{collections::HashMap, fs::File, io::Write};
 
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use clap::{Parser, Subcommand};
@@ -36,11 +36,11 @@ use auth::{JwtClaims, JwtVerifier};
 // Boundary mapping between API models and DAO records.
 mod mapping;
 use mapping::{
-    comment_from_record, dao_internal, derive_live_detail, detailed_score_from_record,
-    detailed_score_to_record, invitation_detail_from_record, invitation_from_record,
-    invitation_status_from_str, invitation_status_str, live_event_from_record,
-    match_format_sport_tag, match_format_to_record, match_from_records, match_status_str,
-    match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
+    comment_from_record, dao_internal, derive_live_score, invitation_detail_from_record,
+    invitation_from_record, invitation_status_from_str, invitation_status_str,
+    live_event_from_record, match_format_sport_tag, match_format_to_record, match_from_records,
+    match_score_from_record, match_score_to_record, match_status_str, match_type_tag,
+    new_live_event_to_dao, notification_actor_id, notification_from_record,
     score_submission_from_record, score_to_record, team_from_records, team_list_item_from_record,
     user_profile_from_record,
 };
@@ -54,9 +54,14 @@ use match_format::MatchFormat;
 
 mod detailed_score;
 use detailed_score::{
-    DetailedScore,
-    cricket::Overs,
-    football::{FootballDetail, FootballGoalEvent, FootballPeriod, FootballSideGoals},
+    cricket::{
+        CricketBattingEntry, CricketBowlingEntry, CricketDelivery, CricketDeliveryWicket,
+        CricketDismissal, CricketExtras, CricketFallOfWicket, NextBallContext, Overs,
+    },
+    football::{
+        FootballCardEvent, FootballGoalEvent, FootballPenaltyShootoutKick, FootballPeriod,
+        FootballSubstitutionEvent,
+    },
 };
 
 mod live_score;
@@ -294,59 +299,82 @@ struct MatchPlayer {
 /// Match score. Tagged union so each sport's scoring shape is modelled
 /// explicitly; clients switch on `type` to pick a renderer. Add new variants
 /// (e.g. golf) without breaking existing clients.
+///
+/// One type serves three roles for football/cricket: the confirmable result
+/// embedded on `Match.confirmed_score`/`pending_score`, the persisted
+/// live-scoring record, and `GET /matches/:id/score`'s live-poll response —
+/// live or finished, confirmed or not, it's the same shape either way. Every
+/// field beyond the settled headline (goal tally; per-innings totals) is
+/// `Option`: `None` for a bare manually-entered result with no richer detail
+/// behind it, `Some(...)` (possibly containing empty collections) once
+/// there's live or backfilled detail to carry.
 #[derive(Union)]
 #[oai(one_of, discriminator_name = "type")]
 enum Score {
-    /// Single number per side: football, basketball, rugby. Also cricket
-    /// when the result was logged manually rather than live-scored — there's
-    /// no per-innings detail to hand over in that case, so it degrades to
-    /// this rather than `Cricket`.
+    /// Single number per side: basketball, rugby, and any other sport with no
+    /// richer native shape.
     Simple(SimpleScore),
     /// Set-based: tennis, volleyball, badminton.
     Sets(SetsScore),
-    /// Per-innings runs/wickets/overs, produced by finishing a live-scored
-    /// cricket match (see `CricketLiveScoringPage` client-side). Carries
-    /// enough detail to render the completed scorecard tile — and to derive
+    /// Per-innings runs/wickets/overs (plus optional per-player detail), the
+    /// result of a completed cricket match — live-scored or manually entered.
+    /// Carries enough to render the completed scorecard tile — and to derive
     /// the result margin ("won by 4 wickets" / "by 100 runs") — without a
-    /// separate fetch of the match's live event log once it's over.
+    /// separate fetch of the match's live event log.
     Cricket(CricketScore),
+    /// Goals scored (plus optional cards/substitutions), the result of a
+    /// completed football match — live-scored or manually entered. Carries
+    /// enough to render the feed/detail goal ticker without a separate fetch.
+    Football(FootballScore),
 }
 
 #[derive(Object)]
 struct SimpleScore {
-    entries: Vec<SimpleScoreEntry>,
-}
-
-#[derive(Object)]
-struct SimpleScoreEntry {
-    side_id: String,
-    points: u32,
+    /// Points per side, keyed by side id — exactly one entry per side, so a
+    /// map rather than a `Vec<{side_id, ...}>` list.
+    entries: HashMap<String, u32>,
 }
 
 #[derive(Object)]
 struct SetsScore {
-    entries: Vec<SetsScoreEntry>,
-}
-
-#[derive(Object)]
-struct SetsScoreEntry {
-    side_id: String,
-    /// Games won per set, e.g. [6, 4, 7]. Index-aligned across entries so the
-    /// same index is the same set for every side.
-    sets: Vec<u32>,
+    /// Games won per set per side, keyed by side id. Each side's list is
+    /// index-aligned with every other side's — the same index is the same
+    /// set (e.g. `["side_a": [6, 4, 7], "side_b": [4, 6, 5]]`).
+    entries: HashMap<String, Vec<u32>>,
 }
 
 #[derive(Object)]
 struct CricketScore {
     /// One entry per innings played, in the order they were played.
     innings: Vec<CricketScoreInnings>,
+    /// The current/most recent innings' recent-ball window, for a "this
+    /// over"/recent-balls read. `None` once there isn't a current innings
+    /// (between innings, or the match is over) or for a result with no
+    /// ball-by-ball detail behind it — there's nothing to show. Bounded
+    /// (`detailed_score::cricket::RECENT_DELIVERIES_LIMIT`), not the whole
+    /// innings — a finished match's complete ball-by-ball history reads the
+    /// live event log directly (paginated — `GET /matches/:id/live/events`)
+    /// instead of this field.
+    recent_deliveries: Option<Vec<CricketDelivery>>,
+    /// What's known about who's at the crease/bowling for the *next*
+    /// delivery. `None` once there isn't a next delivery to give context for
+    /// (between innings, match over, or no live detail at all).
+    next_ball_context: Option<NextBallContext>,
+    /// True once the log's last innings has ended and no following one has
+    /// started yet (i.e. between innings, or nothing's been recorded).
+    /// `None` for a result with no live log behind it.
+    awaiting_next_innings: Option<bool>,
 }
 
-/// One innings' final totals — a trimmed-down `detailed_score::cricket::
-/// CricketInnings` with just what a completed-match tile needs (no
-/// batting/bowling cards, extras breakdown, or ball-by-ball log; that detail
-/// still lives in `DetailedScore::Cricket`/the live event log for a match
-/// that wants it).
+/// One innings' totals, plus optional per-player detail. The totals
+/// (`runs`/`wickets`/`overs`/`declared`) are always present — enough for a
+/// completed-match tile — while `batting`/`bowling`/`fall_of_wickets`/
+/// `extras` are `None` for a result with no per-player detail to hand over
+/// (a manually-entered result with no card, or one that doesn't include
+/// fall-of-wickets — see `CricketBattingEntry`/`CricketBowlingEntry` etc. in
+/// `detailed_score::cricket`, reused here verbatim) and populated for a
+/// live-scored (or backfilled) match. Never includes ball-by-ball deliveries
+/// — that stays in the live event log for a match that wants it.
 #[derive(Object)]
 struct CricketScoreInnings {
     /// The batting side for this innings (references MatchSide.id).
@@ -361,12 +389,72 @@ struct CricketScoreInnings {
     overs: Overs,
     /// Whether the innings was declared closed rather than bowled/timed out.
     declared: bool,
+    batting: Option<Vec<CricketBattingEntry>>,
+    bowling: Option<Vec<CricketBowlingEntry>>,
+    fall_of_wickets: Option<Vec<CricketFallOfWicket>>,
+    extras: Option<CricketExtras>,
 }
 
-/// The sport a match was played in. Determines the expected `Score`/
-/// `DetailedScore` shape (e.g. racket sports use `Score::Sets`, football uses
-/// `Score::Simple`, and cricket uses `Score::Cricket` when live-scored or
-/// `Score::Simple` otherwise). Extend as more sports are supported.
+impl CricketScoreInnings {
+    /// The state before any delivery has been recorded in this innings —
+    /// only ever constructed on a live-scoring path (`InningsStart`), so the
+    /// optional card fields start populated (`Some`, empty) rather than
+    /// `None`: there's a live innings behind this from the moment it exists,
+    /// even before its first ball.
+    fn opening(batting_side_id: String, bowling_side_id: String) -> Self {
+        CricketScoreInnings {
+            batting_side_id,
+            bowling_side_id,
+            runs: 0,
+            wickets: 0,
+            overs: Overs { overs: 0, balls: 0 },
+            declared: false,
+            batting: Some(Vec::new()),
+            bowling: Some(Vec::new()),
+            fall_of_wickets: Some(Vec::new()),
+            extras: Some(CricketExtras::default()),
+        }
+    }
+}
+
+/// A football match's result: the goal tally, plus optional richer detail.
+#[derive(Object)]
+struct FootballScore {
+    /// Goal tally, keyed by side id — exactly one entry per side, so a map
+    /// rather than the `Vec<{side_id, ...}>` shape used where order or
+    /// repeats matter (e.g. `goals`).
+    score: HashMap<String, u32>,
+    /// Every goal scored (normal + extra time; penalty-shootout kicks are
+    /// tracked separately and never appear here), if there's a goal-by-goal
+    /// breakdown to hand over. Reuses `detailed_score::football::
+    /// FootballGoalEvent` verbatim.
+    goals: Option<Vec<FootballGoalEvent>>,
+    cards: Option<Vec<FootballCardEvent>>,
+    substitutions: Option<Vec<FootballSubstitutionEvent>>,
+    /// The most recent period marker seen, if any. `None` for a result with
+    /// no live detail behind it.
+    period: Option<FootballPeriod>,
+    /// When each period marker was recorded, keyed by kind — one entry per
+    /// `FootballPeriod` variant seen so far (a marker recorded twice
+    /// overwrites, it doesn't append). Historical facts, not "current
+    /// state" — nothing here goes blank once the match is over.
+    period_times: Option<HashMap<FootballPeriod, chrono::DateTime<chrono::Utc>>>,
+    /// Every penalty-shootout kick recorded, in order taken. Separate from
+    /// `goals`/`score` — a shootout kick never counts as a match goal, only
+    /// towards `penalty_shootout_score` — since the scoreline it decides
+    /// (e.g. "1-1, Riverside win 4-3 on penalties") keeps the 90/120-minute
+    /// score and the shootout tally visually distinct, same as it's reported
+    /// in the real world.
+    penalty_shootout: Option<Vec<FootballPenaltyShootoutKick>>,
+    /// Running shootout tally (kicks scored, not kicks taken) per side,
+    /// derived from `penalty_shootout` the same way `score` is derived from
+    /// `goals`. Keyed by side id, same reasoning as `score`.
+    penalty_shootout_score: Option<HashMap<String, u32>>,
+}
+
+/// The sport a match was played in. Determines the expected `Score` shape
+/// (e.g. racket sports use `Score::Sets`, football uses `Score::Football`,
+/// and cricket uses `Score::Cricket`). Extend as more sports are supported.
 #[derive(Enum)]
 #[oai(rename_all = "snake_case")]
 pub enum MatchType {
@@ -616,8 +704,21 @@ struct CreateMatchSideInput {
 #[derive(Object)]
 struct CreateMatchInviteInput {
     side_client_id: Option<String>,
+    /// Real Agon users, referenced by their own (already-known, stable) user
+    /// id — a create-time score's goal/card/batting detail can reference one
+    /// of these ids directly, no separate client id needed.
     invited_user_ids: Vec<String>,
-    invited_external_names: Vec<String>,
+    /// Guests with no Agon account, each given a caller-chosen temporary id
+    /// (unique within the request) so a create-time score's detail can
+    /// reference them too, the same way `CreateMatchSideInput.client_id`
+    /// lets a score reference a side before it has a real id.
+    invited_externals: Vec<CreateMatchExternalInviteInput>,
+}
+
+#[derive(Object)]
+struct CreateMatchExternalInviteInput {
+    client_id: String,
+    name: String,
 }
 
 #[derive(Object)]
@@ -681,11 +782,26 @@ struct UpdateMatchInput {
     side_assignments: Option<Vec<SetPlayerSideInput>>,
     /// The result. Creates a score submission when changed; for a not-yet-played
     /// match this also completes it. `side_id`s reference the match's sides.
+    /// Required to complete a match — there is no server-side fallback if
+    /// it's omitted, even for a live-scored match (see `override_live_score`
+    /// for submitting one the server disagrees with).
     score: Option<Score>,
+    /// For a live-scored football/cricket match being completed: submit
+    /// `score` even though it doesn't match what the server derives from the
+    /// match's own persisted live detail. Without this, a mismatch is
+    /// rejected (409) rather than silently accepted, so `score` staying in
+    /// sync with live scoring is the default; this is the explicit escape
+    /// hatch for a deliberate correction. Ignored when there's no live
+    /// detail to disagree with.
+    override_live_score: Option<bool>,
     winner_side_id: Option<String>,
-    /// Optional sport-specific breakdown (goals/assists, full scorecard),
-    /// captured alongside the result.
-    detailed_score: Option<DetailedScore>,
+    /// A separate, fuller version of `score` to persist as the match's
+    /// live-scoring record (e.g. attaching a goal-by-goal/ball-by-ball
+    /// breakdown to a manual entry without it being what `score` itself
+    /// carries). Writes straight to the same record `GET /matches/:id/score`
+    /// reads and live scoring incrementally updates — has no bearing on
+    /// confirmation, which is `score`'s job alone.
+    detailed_score: Option<Score>,
     /// Replace the match's header images. Each references an `Asset` (purpose
     /// `match_header`) the caller created and uploaded. `Some([])` clears the
     /// headers; `None` leaves them unchanged. Any asset not `Uploaded`/owned by
@@ -889,6 +1005,12 @@ enum UpdateMatchResponse {
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
+
+    /// The submitted `score` doesn't match what the server derives from the
+    /// match's own persisted live detail. Refresh and resubmit, or set
+    /// `override_live_score` to submit it anyway.
+    #[oai(status = 409)]
+    Conflict(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -1020,11 +1142,11 @@ enum MarkNotificationReadResponse {
 }
 
 #[derive(ApiResponse)]
-enum GetMatchDetailedScoreResponse {
+enum GetMatchScoreResponse {
     #[oai(status = 200)]
-    DetailedScore(Json<DetailedScore>),
+    Score(Json<Score>),
 
-    /// The match exists but has no detailed score recorded.
+    /// The match exists but has no score recorded.
     #[oai(status = 404)]
     NotFound(PlainText<String>),
 }
@@ -1036,6 +1158,10 @@ enum AppendLiveEventsResponse {
 
     #[oai(status = 400)]
     ValidationError(PlainText<String>),
+
+    /// Only a participant may record live events for a match.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
@@ -1780,42 +1906,16 @@ impl Api {
             });
         }
 
-        // Resolve a create-time score's client-side ids to real side ids (reject
-        // an unknown side). This becomes a PENDING submission, not a confirmed
-        // score: the reported result awaits the other side(s)' confirmation via
-        // `POST /matches/:id/score-submissions/:sid/respond` (mirrors the
-        // post-creation flow). The submitter's side is implicitly confirmed.
-        let (resolved_score, resolved_winner) = match &input.score {
-            Some(score) => match resolve_score_side_ids(score, &side_ids) {
-                Some(resolved) => (
-                    Some(score_to_record(&resolved)),
-                    input
-                        .winner_side_id
-                        .as_ref()
-                        .and_then(|c| side_ids.get(c).cloned()),
-                ),
-                None => {
-                    return Ok(CreateMatchResponse::ValidationError(PlainText(
-                        "score references an unknown side".into(),
-                    )));
-                }
-            },
-            None => (None, None),
-        };
-
-        // A supplied score means the match was already played (Completed);
-        // otherwise it is Scheduled. Confirmation is independent of status — a
-        // Completed match may still carry an unconfirmed (pending) score.
-        let status = if resolved_score.is_some() {
-            "completed"
-        } else {
-            "scheduled"
-        };
-
         // Build a player + invitation per invitee. Externals get a minted token
         // and a standalone invitation record; users get a user-kind invitation.
+        // Also remember each invitee's "reference" (their own user id for a
+        // real Agon user, or their caller-chosen `client_id` for a guest) ->
+        // minted player id, so a create-time score's goal/card/batting detail
+        // can be re-pointed at real player ids below, the same way side ids
+        // already are.
         let mut player_records: Vec<dao::records::MatchPlayerRecord> = Vec::new();
         let mut invitation_records: Vec<dao::records::InvitationRecord> = Vec::new();
+        let mut player_ids: std::collections::HashMap<String, String> = Default::default();
 
         // If the creator opted to play, add them as an already-accepted player on
         // the chosen side — no invitation (they're the source of truth, not an
@@ -1833,6 +1933,7 @@ impl Api {
             let player_id = new_id();
             creator_player_id = Some(player_id.clone());
             creator_side_id = Some(side_id.clone());
+            player_ids.insert(uid.clone(), player_id.clone());
             player_records.push(dao::records::MatchPlayerRecord {
                 player_id,
                 user_id: Some(uid.clone()),
@@ -1857,23 +1958,58 @@ impl Api {
                     None,
                     &now,
                 );
+                player_ids.insert(user_id.clone(), player.player_id.clone());
                 player_records.push(player);
                 invitation_records.push(inv);
             }
-            for name in &invite.invited_external_names {
+            for external in &invite.invited_externals {
                 let (player, inv) = build_invited_player(
                     &match_id,
                     &input.name,
                     &uid,
                     side_id.clone(),
                     None,
-                    Some(name.clone()),
+                    Some(external.name.clone()),
                     &now,
                 );
+                player_ids.insert(external.client_id.clone(), player.player_id.clone());
                 player_records.push(player);
                 invitation_records.push(inv);
             }
         }
+
+        // Resolve a create-time score's client-side ids to real side/player ids
+        // (reject an unknown reference). This becomes a PENDING submission, not
+        // a confirmed score: the reported result awaits the other side(s)'
+        // confirmation via `POST /matches/:id/score-submissions/:sid/respond`
+        // (mirrors the post-creation flow). The submitter's side is implicitly
+        // confirmed.
+        let (resolved_score, resolved_winner) = match &input.score {
+            Some(score) => match resolve_score_ids(score, &side_ids, &player_ids) {
+                Some(resolved) => (
+                    Some(score_to_record(&resolved)),
+                    input
+                        .winner_side_id
+                        .as_ref()
+                        .and_then(|c| side_ids.get(c).cloned()),
+                ),
+                None => {
+                    return Ok(CreateMatchResponse::ValidationError(PlainText(
+                        "score references an unknown side or player".into(),
+                    )));
+                }
+            },
+            None => (None, None),
+        };
+
+        // A supplied score means the match was already played (Completed);
+        // otherwise it is Scheduled. Confirmation is independent of status — a
+        // Completed match may still carry an unconfirmed (pending) score.
+        let status = if resolved_score.is_some() {
+            "completed"
+        } else {
+            "scheduled"
+        };
 
         // A create-time score becomes a PENDING submission attributed to the
         // creator, with the creator's side pre-confirmed (mirrors the respond
@@ -2097,6 +2233,55 @@ impl Api {
         let valid_sides: std::collections::HashSet<&str> =
             agg.sides.iter().map(|s| s.side_id.as_str()).collect();
 
+        // Completing a live-scored football/cricket match still requires an
+        // explicit `score` from the client (see `LiveScoringPage`/
+        // `CricketLiveScoringPage`'s `finishMatch`, which now builds one
+        // locally from the same persisted live detail before sending it) —
+        // the server never fills one in silently. What it does instead is
+        // cross-check: derive its own score from the match's persisted live
+        // detail and, unless `override_live_score` says otherwise, reject a
+        // client score that disagrees with it, so confirmed results stay in
+        // sync with live scoring by default rather than by convention.
+        let mut derived_winner_side_id: Option<String> = None;
+        if input.status.as_ref().map(match_status_str) == Some("completed")
+            && matches!(agg.match_.match_type.as_str(), "football" | "cricket")
+            && let Some(record) = dao
+                .get_match_score(&match_id, &agg.match_.match_type)
+                .await
+                .map_err(dao_internal)?
+        {
+            let derived_score = match_score_from_record(&record);
+            let side_ids: Vec<String> = agg.sides.iter().map(|s| s.side_id.clone()).collect();
+            derived_winner_side_id = winner_from_score(&derived_score, &side_ids);
+
+            if let Some(client_score) = &input.score
+                && score_to_record(client_score) != score_to_record(&derived_score)
+                && !input.override_live_score.unwrap_or(false)
+            {
+                return Ok(UpdateMatchResponse::Conflict(PlainText(
+                    "the submitted score doesn't match the match's live result — refresh \
+                     and resubmit, or set override_live_score to submit it anyway"
+                        .into(),
+                )));
+            }
+        }
+        let effective_score = input.score.as_ref();
+        let effective_winner_side_id = input.winner_side_id.clone().or(derived_winner_side_id);
+
+        // A match can't land on `completed` with no score at all — supplied,
+        // or already recorded from an earlier submission (this PATCH might
+        // just be re-asserting `completed`, or editing something unrelated,
+        // on a match that already has one).
+        if resulting_status == "completed"
+            && effective_score.is_none()
+            && agg.match_.confirmed_score.is_none()
+            && agg.match_.pending_score.is_none()
+        {
+            return Ok(UpdateMatchResponse::ValidationError(PlainText(
+                "a completed match needs a score".into(),
+            )));
+        }
+
         // A supplied score creates a new submission only when it differs from
         // the current confirmed score. For a not-yet-played match, a new score
         // also completes it.
@@ -2110,16 +2295,17 @@ impl Api {
         // approval instead of silently overriding the rejection.
         let mut pending_score: Option<dao::records::PendingScoreRecord> = None;
 
-        if let Some(score) = &input.score {
+        if let Some(score) = effective_score {
             // Validate every scored side exists on the match.
             let score_sides: Vec<&str> = match score {
-                Score::Simple(s) => s.entries.iter().map(|e| e.side_id.as_str()).collect(),
-                Score::Sets(s) => s.entries.iter().map(|e| e.side_id.as_str()).collect(),
+                Score::Simple(s) => s.entries.keys().map(|k| k.as_str()).collect(),
+                Score::Sets(s) => s.entries.keys().map(|k| k.as_str()).collect(),
                 Score::Cricket(s) => s
                     .innings
                     .iter()
                     .flat_map(|i| [i.batting_side_id.as_str(), i.bowling_side_id.as_str()])
                     .collect(),
+                Score::Football(s) => s.score.keys().map(|k| k.as_str()).collect(),
             };
             if score_sides.iter().any(|sid| !valid_sides.contains(sid)) {
                 return Ok(UpdateMatchResponse::ValidationError(PlainText(
@@ -2168,13 +2354,13 @@ impl Api {
                 let pending = dao::records::PendingScoreRecord {
                     submission_id: submission_id.clone(),
                     score: new_record.clone(),
-                    winner_side_id: input.winner_side_id.clone(),
+                    winner_side_id: effective_winner_side_id.clone(),
                     confirmations: vec![confirmation],
                 };
                 let submission = dao::records::ScoreSubmissionRecord {
                     submission_id,
                     score: new_record,
-                    winner_side_id: input.winner_side_id.clone(),
+                    winner_side_id: effective_winner_side_id.clone(),
                     status: String::from("pending"),
                     submitted_by_player_id: caller_player_id.clone(),
                     submitted_at: submitted_at.clone(),
@@ -2200,15 +2386,15 @@ impl Api {
             }
         }
 
-        // Persist a manually-supplied detailed score (a match entered
+        // Persist a manually-supplied live-scoring record (a match entered
         // directly, without live scoring). For a live-scored match, there's
-        // nothing to do here even at completion: `GET /matches/:id/detailed-
-        // score` reads the same record live scoring has been keeping
-        // incrementally up to date all along (see `append_live_events`),
-        // so completing the match is just the status flip below.
+        // nothing to do here even at completion: `GET /matches/:id/score`
+        // reads the same record live scoring has been keeping incrementally
+        // up to date all along (see `append_live_events`), so completing the
+        // match is just the status flip below.
         if let Some(ds) = &input.detailed_score {
-            let record = detailed_score_to_record(ds, None);
-            dao.put_match_detailed_score(&match_id, &record)
+            let record = match_score_to_record(ds, None);
+            dao.put_match_score(&match_id, &record)
                 .await
                 .map_err(dao_internal)?;
         }
@@ -2292,22 +2478,23 @@ impl Api {
     /// Both sports' persisted records are kept incrementally correct by
     /// every live-scoring append (see `apply_live_events_incrementally`), so
     /// this trusts the persisted record directly, with a full refold only as
-    /// a recovery path for a missing or unparseable record. Manual entry (no
-    /// live log at all) always reads the persisted record too — there's
-    /// nothing else for it to be caught up with.
-    #[oai(path = "/matches/:match_id/detailed-score", method = "get")]
-    async fn get_match_detailed_score(
+    /// a recovery path for a missing record. Manual entry (no live log at
+    /// all) always reads the persisted record too — there's nothing else
+    /// for it to be caught up with. Not status-gated: this serves the same
+    /// `Score` whether the match is still being scored or long finished.
+    #[oai(path = "/matches/:match_id/score", method = "get")]
+    async fn get_match_score(
         &self,
         Data(dao): Data<&dao::Dao>,
         AuthSchema(_jwt_data): AuthSchema,
         Path(match_id): Path<String>,
-    ) -> Result<GetMatchDetailedScoreResponse> {
-        info!("Getting detailed score for match {match_id}");
+    ) -> Result<GetMatchScoreResponse> {
+        info!("Getting score for match {match_id}");
 
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
             None => {
-                return Ok(GetMatchDetailedScoreResponse::NotFound(PlainText(
+                return Ok(GetMatchScoreResponse::NotFound(PlainText(
                     "match not found".into(),
                 )));
             }
@@ -2315,36 +2502,37 @@ impl Api {
         let sport = agg.match_.match_type.as_str();
 
         let record = dao
-            .get_match_detailed_score(&match_id, sport)
+            .get_match_score(&match_id, sport)
             .await
             .map_err(dao_internal)?;
-        if let Some(ds) = record.as_ref().and_then(detailed_score_from_record) {
-            return Ok(GetMatchDetailedScoreResponse::DetailedScore(Json(ds)));
+        if let Some(record) = record {
+            return Ok(GetMatchScoreResponse::Score(Json(match_score_from_record(
+                &record,
+            ))));
         }
 
-        // No usable persisted record — recover by folding the event log, if
-        // there is one (e.g. a live-scored match whose record was somehow
-        // missing or unparseable). Persist the result so subsequent reads,
-        // and the next incremental append, have a fresh checkpoint to build
-        // on.
+        // No persisted record — recover by folding the event log, if there
+        // is one (e.g. a live-scored match whose record was somehow
+        // missing). Persist the result so subsequent reads, and the next
+        // incremental append, have a fresh checkpoint to build on.
         let records = dao
             .list_live_events(&match_id)
             .await
             .map_err(dao_internal)?;
         if records.is_empty() {
-            return Ok(GetMatchDetailedScoreResponse::NotFound(PlainText(
-                "match has no detailed score".into(),
+            return Ok(GetMatchScoreResponse::NotFound(PlainText(
+                "match has no score".into(),
             )));
         }
         let last_seq = records.iter().map(|r| r.seq).max().unwrap_or(0);
-        let Some(ds) = derive_live_detail(sport, &records, agg.match_.format.as_ref()) else {
-            return Ok(GetMatchDetailedScoreResponse::NotFound(PlainText(
-                "match has no detailed score".into(),
+        let Some(score) = derive_live_score(sport, &records, agg.match_.format.as_ref()) else {
+            return Ok(GetMatchScoreResponse::NotFound(PlainText(
+                "match has no score".into(),
             )));
         };
-        self.persist_detailed_score(dao, &match_id, &ds, Some(last_seq))
+        self.persist_score(dao, &match_id, &score, Some(last_seq))
             .await;
-        Ok(GetMatchDetailedScoreResponse::DetailedScore(Json(ds)))
+        Ok(GetMatchScoreResponse::Score(Json(score)))
     }
 
     /// Append a batch of live-scoring events (1 to
@@ -2394,6 +2582,17 @@ impl Api {
                 )));
             }
         };
+
+        // Only a participant may record live events — same gate as editing
+        // the match (`update_match`). Confirmation now covers the detail
+        // these events fold into, so a non-participant writing them isn't
+        // just noise, it's data someone else's confirmation would vouch for.
+        if !caller_can_manage_match(&agg, &uid) {
+            return Ok(AppendLiveEventsResponse::Forbidden(PlainText(
+                "only a participant can record live events for this match".into(),
+            )));
+        }
+
         let sport = agg.match_.match_type.clone();
 
         // Every event in the batch must match the match's own sport — a
@@ -2495,7 +2694,7 @@ impl Api {
         new_last_seq: u32,
     ) -> Result<Option<LiveScoreSnapshot>> {
         let Some(record) = dao
-            .get_match_detailed_score(match_id, sport)
+            .get_match_score(match_id, sport)
             .await
             .map_err(dao_internal)?
         else {
@@ -2504,12 +2703,10 @@ impl Api {
         if record.last_seq != Some(expected_last_seq) {
             return Ok(None);
         }
-        let Some(mut ds) = detailed_score_from_record(&record) else {
-            return Ok(None);
-        };
+        let mut score = match_score_from_record(&record);
 
-        match &mut ds {
-            DetailedScore::Cricket(detail) => {
+        match &mut score {
+            Score::Cricket(s) => {
                 let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) =
                     mapping::cricket_format_args(format);
                 for e in new_events {
@@ -2518,7 +2715,7 @@ impl Api {
                         // `append_live_events`; unreachable here in practice.
                         return Ok(None);
                     };
-                    detail.apply_event(
+                    s.apply_event(
                         event,
                         balls_per_over,
                         wide_is_extra_ball,
@@ -2526,22 +2723,25 @@ impl Api {
                     );
                 }
             }
-            DetailedScore::Football(detail) => {
+            Score::Football(s) => {
                 for e in new_events {
                     let LiveEventInput::Football(event) = &e.event else {
                         return Ok(None);
                     };
-                    detail.apply_event(e.occurred_at, event);
+                    s.apply_event(e.occurred_at, event);
                 }
             }
+            // Live scoring only ever creates a `Cricket`/`Football` record
+            // for this match_id/sport pair — unreachable in practice.
+            Score::Simple(_) | Score::Sets(_) => return Ok(None),
         }
 
-        self.persist_detailed_score(dao, match_id, &ds, Some(new_last_seq))
+        self.persist_score(dao, match_id, &score, Some(new_last_seq))
             .await;
 
         Ok(Some(LiveScoreSnapshot {
             last_seq: new_last_seq,
-            detail: ds,
+            score,
         }))
     }
 
@@ -2670,9 +2870,9 @@ impl Api {
         )))
     }
 
-    /// Derives the current detail by folding the full event log — the slow
-    /// path: bootstrapping a match's first detailed score, recovering from a
-    /// missing or unparseable persisted record, and rebuilding after an undo
+    /// Derives the current score by folding the full event log — the slow
+    /// path: bootstrapping a match's first live-scoring record, recovering
+    /// from a missing persisted record, and rebuilding after an undo
     /// (removing the tip isn't a single incremental step the way appending
     /// is — see `apply_live_events_incrementally` for that fast path).
     /// Persists the result so subsequent reads and the next incremental
@@ -2688,30 +2888,30 @@ impl Api {
         let records = dao.list_live_events(match_id).await.map_err(dao_internal)?;
         let last_seq = records.iter().map(|r| r.seq).max().unwrap_or(0);
 
-        let Some(detail) = derive_live_detail(sport, &records, format) else {
+        let Some(score) = derive_live_score(sport, &records, format) else {
             return Ok(None);
         };
 
-        self.persist_detailed_score(dao, match_id, &detail, Some(last_seq))
+        self.persist_score(dao, match_id, &score, Some(last_seq))
             .await;
 
-        Ok(Some(LiveScoreSnapshot { last_seq, detail }))
+        Ok(Some(LiveScoreSnapshot { last_seq, score }))
     }
 
     /// Best-effort persisted-record write, shared by the incremental append
     /// path and the full-refold path — never fails the caller's request;
     /// the record is always safely recomputable from the event log if this
     /// write is lost or the record goes stale.
-    async fn persist_detailed_score(
+    async fn persist_score(
         &self,
         dao: &dao::Dao,
         match_id: &str,
-        ds: &DetailedScore,
+        score: &Score,
         last_seq: Option<u32>,
     ) {
-        let record = detailed_score_to_record(ds, last_seq);
-        if let Err(e) = dao.put_match_detailed_score(match_id, &record).await {
-            error!("Failed to persist detailed score for match {match_id}: {e}");
+        let record = match_score_to_record(score, last_seq);
+        if let Err(e) = dao.put_match_score(match_id, &record).await {
+            error!("Failed to persist live-scoring record for match {match_id}: {e}");
         }
     }
 
@@ -4320,38 +4520,101 @@ impl Api {
     }
 }
 
-/// Re-point a `Score`'s side ids from request-scoped client ids to the real
-/// side ids assigned at creation. Returns None if any referenced side id is
+/// Re-point a `Score`'s request-scoped client ids to the real side/player ids
+/// assigned at creation — side ids via `CreateMatchSideInput.client_id`,
+/// player ids via a real user's own id or a guest's `CreateMatchExternalInviteInput.client_id`
+/// (see `create_match`). Returns `None` if any referenced side or player is
 /// unknown.
-fn resolve_score_side_ids(
+fn resolve_score_ids(
     score: &Score,
     side_ids: &std::collections::HashMap<String, String>,
+    player_ids: &std::collections::HashMap<String, String>,
 ) -> Option<Score> {
     let map = |client_id: &str| side_ids.get(client_id).cloned();
+    let pmap = |client_id: &str| player_ids.get(client_id).cloned();
+    let pmap_opt = |id: &Option<String>| -> Option<Option<String>> {
+        match id {
+            Some(id) => pmap(id).map(Some),
+            None => Some(None),
+        }
+    };
     match score {
         Score::Simple(s) => {
-            let mut entries = Vec::with_capacity(s.entries.len());
-            for e in &s.entries {
-                entries.push(SimpleScoreEntry {
-                    side_id: map(&e.side_id)?,
-                    points: e.points,
-                });
+            let mut entries = HashMap::with_capacity(s.entries.len());
+            for (side_id, points) in &s.entries {
+                entries.insert(map(side_id)?, *points);
             }
             Some(Score::Simple(SimpleScore { entries }))
         }
         Score::Sets(s) => {
-            let mut entries = Vec::with_capacity(s.entries.len());
-            for e in &s.entries {
-                entries.push(SetsScoreEntry {
-                    side_id: map(&e.side_id)?,
-                    sets: e.sets.clone(),
-                });
+            let mut entries = HashMap::with_capacity(s.entries.len());
+            for (side_id, sets) in &s.entries {
+                entries.insert(map(side_id)?, sets.clone());
             }
             Some(Score::Sets(SetsScore { entries }))
         }
         Score::Cricket(s) => {
             let mut innings = Vec::with_capacity(s.innings.len());
             for i in &s.innings {
+                let batting = match &i.batting {
+                    Some(bs) => {
+                        let mut out = Vec::with_capacity(bs.len());
+                        for b in bs {
+                            let dismissal = match &b.dismissal {
+                                Some(d) => Some(CricketDismissal {
+                                    kind: d.kind.clone(),
+                                    bowler_player_id: pmap_opt(&d.bowler_player_id)?,
+                                    fielder_player_id: pmap_opt(&d.fielder_player_id)?,
+                                }),
+                                None => None,
+                            };
+                            out.push(CricketBattingEntry {
+                                player_id: pmap(&b.player_id)?,
+                                runs: b.runs,
+                                balls_faced: b.balls_faced,
+                                fours: b.fours,
+                                sixes: b.sixes,
+                                dismissal,
+                                batting_position: b.batting_position,
+                            });
+                        }
+                        Some(out)
+                    }
+                    None => None,
+                };
+                let bowling = match &i.bowling {
+                    Some(bs) => {
+                        let mut out = Vec::with_capacity(bs.len());
+                        for b in bs {
+                            out.push(CricketBowlingEntry {
+                                player_id: pmap(&b.player_id)?,
+                                overs: b.overs,
+                                maidens: b.maidens,
+                                runs_conceded: b.runs_conceded,
+                                wickets: b.wickets,
+                                wides: b.wides,
+                                no_balls: b.no_balls,
+                            });
+                        }
+                        Some(out)
+                    }
+                    None => None,
+                };
+                let fall_of_wickets = match &i.fall_of_wickets {
+                    Some(fs) => {
+                        let mut out = Vec::with_capacity(fs.len());
+                        for f in fs {
+                            out.push(CricketFallOfWicket {
+                                wicket: f.wicket,
+                                runs: f.runs,
+                                player_id: pmap(&f.player_id)?,
+                                overs: f.overs,
+                            });
+                        }
+                        Some(out)
+                    }
+                    None => None,
+                };
                 innings.push(CricketScoreInnings {
                     batting_side_id: map(&i.batting_side_id)?,
                     bowling_side_id: map(&i.bowling_side_id)?,
@@ -4359,10 +4622,201 @@ fn resolve_score_side_ids(
                     wickets: i.wickets,
                     overs: i.overs,
                     declared: i.declared,
+                    batting,
+                    bowling,
+                    fall_of_wickets,
+                    extras: i.extras.clone(),
                 });
             }
-            Some(Score::Cricket(CricketScore { innings }))
+            let recent_deliveries = match &s.recent_deliveries {
+                Some(ds) => {
+                    let mut out = Vec::with_capacity(ds.len());
+                    for d in ds {
+                        out.push(CricketDelivery {
+                            over: d.over,
+                            ball: d.ball,
+                            bowler_player_id: pmap(&d.bowler_player_id)?,
+                            striker_player_id: pmap(&d.striker_player_id)?,
+                            non_striker_player_id: pmap(&d.non_striker_player_id)?,
+                            runs_off_bat: d.runs_off_bat,
+                            extra: d.extra.clone(),
+                            wicket: match &d.wicket {
+                                Some(w) => Some(CricketDeliveryWicket {
+                                    kind: w.kind.clone(),
+                                    dismissed_player_id: pmap(&w.dismissed_player_id)?,
+                                    bowler_player_id: pmap_opt(&w.bowler_player_id)?,
+                                    fielder_player_id: pmap_opt(&w.fielder_player_id)?,
+                                }),
+                                None => None,
+                            },
+                        });
+                    }
+                    Some(out)
+                }
+                None => None,
+            };
+            let next_ball_context = match &s.next_ball_context {
+                Some(ctx) => Some(NextBallContext {
+                    striker_player_id: pmap_opt(&ctx.striker_player_id)?,
+                    non_striker_player_id: pmap_opt(&ctx.non_striker_player_id)?,
+                    bowler_player_id: pmap_opt(&ctx.bowler_player_id)?,
+                    over: ctx.over,
+                    ball: ctx.ball,
+                    previous_over_bowler_player_id: pmap_opt(&ctx.previous_over_bowler_player_id)?,
+                    runs_conceded_this_over: ctx.runs_conceded_this_over,
+                }),
+                None => None,
+            };
+            Some(Score::Cricket(CricketScore {
+                innings,
+                recent_deliveries,
+                next_ball_context,
+                awaiting_next_innings: s.awaiting_next_innings,
+            }))
         }
+        Score::Football(s) => {
+            let mut score = HashMap::with_capacity(s.score.len());
+            for (side_id, goals) in &s.score {
+                score.insert(map(side_id)?, *goals);
+            }
+            let goals = match &s.goals {
+                Some(gs) => {
+                    let mut out = Vec::with_capacity(gs.len());
+                    for g in gs {
+                        out.push(FootballGoalEvent {
+                            side_id: map(&g.side_id)?,
+                            scorer_player_id: pmap_opt(&g.scorer_player_id)?,
+                            assist_player_id: pmap_opt(&g.assist_player_id)?,
+                            own_goal: g.own_goal,
+                            penalty: g.penalty,
+                            minute: g.minute,
+                        });
+                    }
+                    Some(out)
+                }
+                None => None,
+            };
+            let cards = match &s.cards {
+                Some(cs) => {
+                    let mut out = Vec::with_capacity(cs.len());
+                    for c in cs {
+                        out.push(FootballCardEvent {
+                            side_id: map(&c.side_id)?,
+                            player_id: pmap(&c.player_id)?,
+                            color: c.color.clone(),
+                            minute: c.minute,
+                        });
+                    }
+                    Some(out)
+                }
+                None => None,
+            };
+            let substitutions = match &s.substitutions {
+                Some(subs) => {
+                    let mut out = Vec::with_capacity(subs.len());
+                    for sub in subs {
+                        out.push(FootballSubstitutionEvent {
+                            side_id: map(&sub.side_id)?,
+                            player_in_id: pmap(&sub.player_in_id)?,
+                            player_out_id: pmap(&sub.player_out_id)?,
+                            minute: sub.minute,
+                        });
+                    }
+                    Some(out)
+                }
+                None => None,
+            };
+            let penalty_shootout = match &s.penalty_shootout {
+                Some(ks) => {
+                    let mut out = Vec::with_capacity(ks.len());
+                    for k in ks {
+                        out.push(FootballPenaltyShootoutKick {
+                            side_id: map(&k.side_id)?,
+                            scored: k.scored,
+                        });
+                    }
+                    Some(out)
+                }
+                None => None,
+            };
+            let penalty_shootout_score = match &s.penalty_shootout_score {
+                Some(pss) => {
+                    let mut out = HashMap::with_capacity(pss.len());
+                    for (side_id, kicks) in pss {
+                        out.insert(map(side_id)?, *kicks);
+                    }
+                    Some(out)
+                }
+                None => None,
+            };
+            Some(Score::Football(FootballScore {
+                score,
+                goals,
+                cards,
+                substitutions,
+                period: s.period,
+                period_times: s.period_times.clone(),
+                penalty_shootout,
+                penalty_shootout_score,
+            }))
+        }
+    }
+}
+
+/// Derives the winner (when decidable) from a live-scored match's persisted
+/// score — used by `update_match` to finish a live-scored match without the
+/// client having to work out and resubmit a margin the server already has
+/// enough to compute (see `LiveScoringPage`/`CricketLiveScoringPage`'s
+/// `finishMatch`). `side_ids` is the match's own two side ids, needed
+/// because a tally map only holds entries for sides that are actually on the
+/// board — "absence means zero" — so the winner comparison needs to know
+/// both ids to look up, not just iterate whatever's present. `None` for
+/// `Score::Simple`/`Score::Sets` — winner derivation for those sports isn't
+/// this function's job (the client always supplies `winner_side_id` itself
+/// for a manual entry/correction on those sports).
+fn winner_from_score(score: &Score, side_ids: &[String]) -> Option<String> {
+    match score {
+        Score::Football(s) => {
+            // Still level on goals falls back to the penalty-shootout tally,
+            // same as the client-side logic this replaces.
+            two_side_winner(side_ids, |sid| *s.score.get(sid).unwrap_or(&0) as i64).or_else(|| {
+                two_side_winner(side_ids, |sid| {
+                    s.penalty_shootout_score
+                        .as_ref()
+                        .and_then(|pss| pss.get(sid))
+                        .copied()
+                        .unwrap_or(0) as i64
+                })
+            })
+        }
+        Score::Cricket(s) => {
+            // The winner is the summed match totals (two-innings formats add
+            // up both) — the same comparison `CricketLiveScoringPage` used to
+            // make client-side.
+            let mut totals: HashMap<&str, u32> = HashMap::new();
+            for i in &s.innings {
+                *totals.entry(i.batting_side_id.as_str()).or_insert(0) += i.runs;
+            }
+            two_side_winner(side_ids, |sid| *totals.get(sid).unwrap_or(&0) as i64)
+        }
+        Score::Simple(_) | Score::Sets(_) => None,
+    }
+}
+
+/// Compares two sides by a score function and returns the higher-scoring
+/// side's id — `None` if tied, or if there aren't exactly two sides (every
+/// match today is exactly two, but this stays honest rather than guessing
+/// for a hypothetical multi-side match).
+fn two_side_winner(side_ids: &[String], score_for: impl Fn(&str) -> i64) -> Option<String> {
+    let [a_id, b_id] = side_ids else { return None };
+    let a = score_for(a_id);
+    let b = score_for(b_id);
+    if a == b {
+        None
+    } else if a > b {
+        Some(a_id.clone())
+    } else {
+        Some(b_id.clone())
     }
 }
 
@@ -4708,16 +5162,10 @@ fn mock_match(id: String) -> Match {
         ],
         confirmed_score: Some(ConfirmedScore {
             score: Score::Simple(SimpleScore {
-                entries: vec![
-                    SimpleScoreEntry {
-                        side_id: String::from("side_red"),
-                        points: 3,
-                    },
-                    SimpleScoreEntry {
-                        side_id: String::from("side_blue"),
-                        points: 1,
-                    },
-                ],
+                entries: HashMap::from([
+                    (String::from("side_red"), 3),
+                    (String::from("side_blue"), 1),
+                ]),
             }),
             winner_side_id: Some(String::from("side_red")),
         }),
@@ -4729,62 +5177,6 @@ fn mock_match(id: String) -> Match {
         },
         format: None,
     }
-}
-
-/// Builds a mock football detailed score matching the mock match's 3-1 result.
-fn mock_football_detailed_score() -> DetailedScore {
-    DetailedScore::Football(FootballDetail {
-        score: vec![
-            FootballSideGoals {
-                side_id: String::from("side_red"),
-                goals: 3,
-            },
-            FootballSideGoals {
-                side_id: String::from("side_blue"),
-                goals: 1,
-            },
-        ],
-        goals: vec![
-            FootballGoalEvent {
-                side_id: String::from("side_red"),
-                scorer_player_id: Some(String::from("player_red_1")),
-                assist_player_id: Some(String::from("player_red_2")),
-                own_goal: false,
-                penalty: false,
-                minute: Some(12),
-            },
-            FootballGoalEvent {
-                side_id: String::from("side_blue"),
-                scorer_player_id: Some(String::from("player_blue_1")),
-                assist_player_id: None,
-                own_goal: false,
-                penalty: false,
-                minute: Some(34),
-            },
-            FootballGoalEvent {
-                side_id: String::from("side_red"),
-                scorer_player_id: Some(String::from("player_red_2")),
-                assist_player_id: Some(String::from("player_red_1")),
-                own_goal: false,
-                penalty: false,
-                minute: Some(58),
-            },
-            FootballGoalEvent {
-                side_id: String::from("side_red"),
-                scorer_player_id: Some(String::from("player_red_1")),
-                assist_player_id: None,
-                own_goal: false,
-                penalty: true,
-                minute: Some(81),
-            },
-        ],
-        cards: vec![],
-        substitutions: vec![],
-        period: Some(FootballPeriod::FullTime),
-        period_times: std::collections::HashMap::new(),
-        penalty_shootout: vec![],
-        penalty_shootout_score: vec![],
-    })
 }
 
 /// A fixed timestamp for mock data (Date::now is unavailable in this context
@@ -4817,16 +5209,10 @@ fn mock_score_submission() -> ScoreSubmission {
     ScoreSubmission {
         id: String::from("submission_1"),
         score: Score::Simple(SimpleScore {
-            entries: vec![
-                SimpleScoreEntry {
-                    side_id: String::from("side_red"),
-                    points: 3,
-                },
-                SimpleScoreEntry {
-                    side_id: String::from("side_blue"),
-                    points: 1,
-                },
-            ],
+            entries: HashMap::from([
+                (String::from("side_red"), 3),
+                (String::from("side_blue"), 1),
+            ]),
         }),
         winner_side_id: Some(String::from("side_red")),
         status: ScoreSubmissionStatus::Confirmed,

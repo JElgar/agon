@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
-import { matchDetailedScoreQueryKey } from './useMatchDetailedScore'
+import { matchScoreQueryKey } from './useMatchScore'
 
 type LiveEvent = components['schemas']['LiveEvent']
 type NewLiveEventInput = components['schemas']['NewLiveEventInput']
@@ -27,14 +27,14 @@ async function drainLiveEvents(matchId: string): Promise<LiveEvent[]> {
 
 /**
  * A match's raw live-scoring event log, in append order. Unlike the derived
- * scorecard (`useMatchDetailedScore`), this has no size ceiling (one
- * DynamoDB item per event) and stays fully readable regardless of match
- * length or status, so a completed match's full run-progression graph reads
- * deliveries from here (see `inningsDeliveriesFromEvents`) rather than the
- * scorecard, which only ever carries the current innings' totals plus a
- * bounded recent-deliveries window. The endpoint itself is paginated (a long
- * match's log can run to thousands of events), so this drains every page —
- * fine for a one-shot fetch on a match detail page, not meant for polling.
+ * score (`useMatchScore`), this has no size ceiling (one DynamoDB item per
+ * event) and stays fully readable regardless of match length or status, so a
+ * completed match's full run-progression graph reads deliveries from here
+ * (see `inningsDeliveriesFromEvents`) rather than the score, which only ever
+ * carries the current innings' totals plus a bounded recent-deliveries
+ * window. The endpoint itself is paginated (a long match's log can run to
+ * thousands of events), so this drains every page — fine for a one-shot
+ * fetch on a match detail page, not meant for polling.
  */
 export function useLiveEvents(matchId: string | undefined, options?: { enabled?: boolean }) {
   return useQuery({
@@ -51,9 +51,9 @@ export function liveSeqQueryKey(matchId: string | undefined) {
 /**
  * The event log's current tip (`seq` of the most recently recorded event, 0
  * if none yet) — needed only for the optimistic-concurrency
- * `expected_last_seq` on the next append, not a read of the scorecard itself
- * (see `useMatchDetailedScore` for that; there's no separate "live state"
- * endpoint anymore). Seeded once by draining the raw event log, the same
+ * `expected_last_seq` on the next append, not a read of the score itself
+ * (see `useMatchScore` for that; there's no separate "live state" endpoint
+ * anymore). Seeded once by draining the raw event log, the same
  * one-shot-fetch pattern as `useLiveEvents`; every append after that updates
  * the cached value directly from its own response instead of refetching.
  */
@@ -73,8 +73,8 @@ export function useLiveSeq(matchId: string | undefined, options?: { enabled?: bo
  * Appends one sport-tagged live event to a match's log. Reads
  * `expected_last_seq` off the cached tip (0 if scoring hasn't started yet, or
  * this device hasn't loaded it) so the server can detect a lost update; on
- * success the returned snapshot's `last_seq` and `detail` replace the tip and
- * scorecard caches directly (cheaper and more current than invalidating +
+ * success the returned snapshot's `last_seq` and `score` replace the tip and
+ * score caches directly (cheaper and more current than invalidating +
  * refetching). Shared by the per-sport wrappers below — each just tags its
  * event with the right `sport` discriminator.
  *
@@ -108,7 +108,7 @@ function useAppendLiveEvent<T extends { kind: string }>(
     },
     onSuccess: (data) => {
       queryClient.setQueryData(liveSeqQueryKey(matchId), data.last_seq)
-      queryClient.setQueryData(matchDetailedScoreQueryKey(matchId), data.detail)
+      queryClient.setQueryData(matchScoreQueryKey(matchId), data.score)
       queryClient.invalidateQueries({ queryKey: ['match', matchId] })
       queryClient.invalidateQueries({ queryKey: ['feed'] })
     },

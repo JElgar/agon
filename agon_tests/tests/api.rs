@@ -152,7 +152,7 @@ fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
         invites: vec![models::CreateMatchInviteInput {
             side_client_id: Some("a".to_string()),
             invited_user_ids: vec![invited_user_id.to_string()],
-            invited_external_names: vec![],
+            invited_externals: vec![],
         }],
         creator_side_client_id: None,
         score: None,
@@ -175,7 +175,7 @@ fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::Create
     let invite_side = |client_id: &str, ids: &[&str]| models::CreateMatchInviteInput {
         side_client_id: Some(client_id.to_string()),
         invited_user_ids: ids.iter().map(|id| id.to_string()).collect(),
-        invited_external_names: vec![],
+        invited_externals: vec![],
     };
     models::CreateMatchInput {
         name: name.to_string(),
@@ -209,18 +209,26 @@ fn invite_users(side_client_id: &str, ids: &[&str]) -> models::CreateMatchInvite
     models::CreateMatchInviteInput {
         side_client_id: Some(side_client_id.to_string()),
         invited_user_ids: ids.iter().map(|id| id.to_string()).collect(),
-        invited_external_names: vec![],
+        invited_externals: vec![],
     }
 }
 
 /// Invite one or more external (unaccounted) people by name onto a side. Each
 /// gets a minted invite token, surfaced on the created match's external player —
-/// the credential the by-token accept flow (invite link) uses.
+/// the credential the by-token accept flow (invite link) uses. `client_id` is
+/// just `name` here (unique enough within a test), mirroring how a real
+/// client would generate one per tagged guest before the match exists.
 fn invite_externals(side_client_id: &str, names: &[&str]) -> models::CreateMatchInviteInput {
     models::CreateMatchInviteInput {
         side_client_id: Some(side_client_id.to_string()),
         invited_user_ids: vec![],
-        invited_external_names: names.iter().map(|n| n.to_string()).collect(),
+        invited_externals: names
+            .iter()
+            .map(|n| models::CreateMatchExternalInviteInput {
+                client_id: n.to_string(),
+                name: n.to_string(),
+            })
+            .collect(),
     }
 }
 
@@ -1499,16 +1507,10 @@ async fn being_invited_to_a_match_eventually_notifies_you() {
 /// side ids on the created match, so we read them off the created match).
 fn simple_score(side_a: &str, side_b: &str, a: i32, b: i32) -> models::Score {
     models::Score::Simple(Box::new(models::ScoreSimpleScore {
-        entries: vec![
-            models::SimpleScoreEntry {
-                side_id: side_a.to_string(),
-                points: a,
-            },
-            models::SimpleScoreEntry {
-                side_id: side_b.to_string(),
-                points: b,
-            },
-        ],
+        entries: std::collections::HashMap::from([
+            (side_a.to_string(), a),
+            (side_b.to_string(), b),
+        ]),
         r#type: Default::default(),
     }))
 }
@@ -1520,10 +1522,11 @@ fn simple_score_points(score: &models::Score) -> Vec<(String, i32)> {
         models::Score::Simple(s) => s
             .entries
             .iter()
-            .map(|e| (e.side_id.clone(), e.points))
+            .map(|(side_id, points)| (side_id.clone(), *points))
             .collect(),
         models::Score::Sets(_) => panic!("expected a simple score"),
         models::Score::Cricket(_) => panic!("expected a simple score"),
+        models::Score::Football(_) => panic!("expected a simple score"),
     }
 }
 
@@ -1582,7 +1585,7 @@ async fn rejecting_a_score_and_resubmitting_requires_approval_again() {
     input.invites = vec![models::CreateMatchInviteInput {
         side_client_id: Some("b".to_string()),
         invited_user_ids: vec![opponent.profile.id.clone()],
-        invited_external_names: vec![],
+        invited_externals: vec![],
     }];
     input.starts_at = iso_offset_hours(-2);
     input.creator_side_client_id = Some("a".to_string());
@@ -1706,7 +1709,7 @@ async fn match_with_a_confirmed_score() -> (
     input.invites = vec![models::CreateMatchInviteInput {
         side_client_id: Some("b".to_string()),
         invited_user_ids: vec![opponent.profile.id.clone()],
-        invited_external_names: vec![],
+        invited_externals: vec![],
     }];
     input.starts_at = iso_offset_hours(-2);
     input.creator_side_client_id = Some("a".to_string());
@@ -1894,7 +1897,7 @@ async fn submitting_a_score_notifies_the_other_side_to_confirm() {
     input.invites = vec![models::CreateMatchInviteInput {
         side_client_id: Some("b".to_string()),
         invited_user_ids: vec![opponent.profile.id.clone()],
-        invited_external_names: vec![],
+        invited_externals: vec![],
     }];
     input.creator_side_client_id = Some("a".to_string());
 
@@ -2016,7 +2019,7 @@ async fn inviting_with_a_score_does_not_duplicate_the_invite_notification() {
     input.invites = vec![models::CreateMatchInviteInput {
         side_client_id: Some("b".to_string()),
         invited_user_ids: vec![opponent.profile.id.clone()],
-        invited_external_names: vec![],
+        invited_externals: vec![],
     }];
     input.starts_at = iso_offset_hours(-2);
     input.creator_side_client_id = Some("a".to_string());

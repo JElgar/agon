@@ -1,18 +1,10 @@
-use poem_openapi::Union;
+//! Shared per-event/per-entry types used by `Score::Football`/`Score::Cricket`'s
+//! optional rich-detail fields (goals/cards/substitutions; batting/bowling
+//! cards, extras, fall-of-wickets) — reused verbatim by both the live-scoring
+//! event vocabulary (`live_score`) and the confirmable `Score` (`main.rs`).
+//! There's no separate "detailed score" type anymore: `Score` itself carries
+//! everything, live or finished, confirmed or not (see `Score`'s doc comment
+//! on `main.rs`).
 
 pub mod cricket;
 pub mod football;
-
-pub use cricket::CricketDetail;
-pub use football::FootballDetail;
-
-/// Optional, sport-specific detailed score (a full breakdown beyond the summary
-/// `Score`). One variant per sport; clients switch on `type`. Only shown on a
-/// match detail view, not the feed. New sports are added as new variants
-/// without breaking existing clients.
-#[derive(Union)]
-#[oai(one_of, discriminator_name = "type")]
-pub enum DetailedScore {
-    Football(FootballDetail),
-    Cricket(CricketDetail),
-}

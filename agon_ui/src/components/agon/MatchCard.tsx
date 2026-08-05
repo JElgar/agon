@@ -17,10 +17,9 @@ import { LiveMatchBlock } from './live/LiveMatchBlock'
 import { CricketMatchBlock } from './live/CricketMatchBlock'
 import { CricketScoreBlock } from './CricketScoreBlock'
 import { LiveIndicator } from './live/LiveIndicator'
-import { useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
-import { footballDetailFrom } from '@/lib/liveScore'
+import { useMatchScore } from '@/hooks/useMatchScore'
+import { describeEvent, eventEmoji, footballScoreFrom, recentGoalEvents } from '@/lib/liveScore'
 import {
-  cricketDetailFrom,
   cricketProgressFromScore,
   cricketScoreFrom,
   cricketStateDescription,
@@ -28,6 +27,7 @@ import {
 import { cricketFormat } from '@/lib/matchFormat'
 import {
   displayScore,
+  footballGoalsFromScore,
   headlineBySide,
   headlineLabel,
   setLine,
@@ -205,19 +205,33 @@ export function MatchCard({
 
   const isLiveSport = match.match_type === 'football' || match.match_type === 'cricket'
   const isCurrentlyLive = isLiveSport && match.status === 'in_progress'
-  const detailedScore = useMatchDetailedScore(match.id, {
+  // Only fetched while live — a finished match doesn't need it. Football's
+  // confirmed/pending `Score.Football` already embeds its goals (see
+  // `footballGoalsFromScore`/`finishedFootballEvents` below), and cricket's
+  // confirmed `Score.Cricket` already embeds its per-innings detail
+  // (`cricketScore` below) — both produced by finishing a live-scored match
+  // (see `finishMatch` in `LiveScoringPage`/`CricketLiveScoringPage`), same
+  // technique as `MatchDetailPage`'s completed scorecards but without that
+  // page's extra `/score` poll, which this compact card doesn't need.
+  const scoreQuery = useMatchScore(match.id, {
     enabled: isCurrentlyLive,
     refetchInterval: 20000,
   })
   // Gate on `isCurrentlyLive`, not just "did the fetch return something" —
-  // `detailedScore` is a react-query cache keyed only by match id, shared
-  // with `MatchDetailPage`, which fetches it for a *completed* match too (to
+  // `scoreQuery` is a react-query cache keyed only by match id, shared with
+  // `MatchDetailPage`, which fetches it for a *completed* match too (to
   // show the finished scorecard). `enabled: false` only stops a new fetch
   // here; it doesn't hide data another component already populated that
   // cache entry with, so without this guard a card could keep rendering the
   // live block/badge for a match that finished after the card last mounted.
-  const footballState = isCurrentlyLive ? footballDetailFrom(detailedScore.data) : null
-  const cricketState = isCurrentlyLive ? cricketDetailFrom(detailedScore.data) : null
+  const footballState = isCurrentlyLive ? footballScoreFrom(scoreQuery.data) : null
+  const cricketState = isCurrentlyLive ? cricketScoreFrom(scoreQuery.data) : null
+  // Recent goals for a finished football match, read straight off the
+  // confirmed/pending score (no fetch) — shown under the plain score box
+  // below (the live ticker in `LiveMatchBlock` only renders while
+  // `footballState` is set, i.e. while still in progress).
+  const finishedFootballGoals = scoreInfo && !isCurrentlyLive ? footballGoalsFromScore(scoreInfo.score) : null
+  const finishedFootballEvents = finishedFootballGoals ? recentGoalEvents(finishedFootballGoals, 3) : []
   const hasLiveState = !!footballState || !!cricketState
   // A cricket match's confirmed score carries its own per-innings detail once
   // it's been live-scored (`Score::Cricket`; see `finishMatch` in
@@ -232,7 +246,11 @@ export function MatchCard({
   // it (`showDescription`).
   const cricketFmt = cricketFormat(match.format)
   const cricketDescription = cricketState
-    ? cricketStateDescription(match, cricketState, cricketFmt)
+    ? cricketStateDescription(
+        match,
+        { innings: cricketState.innings, awaiting_next_innings: cricketState.awaiting_next_innings ?? true },
+        cricketFmt,
+      )
     : cricketScore
       ? cricketStateDescription(match, cricketProgressFromScore(cricketScore), cricketFmt)
       : null
@@ -333,6 +351,25 @@ export function MatchCard({
                     Set {i + 1} <span className="font-medium text-foreground">{s}</span>
                   </span>
                 ))}
+              </div>
+            )}
+            {finishedFootballEvents.length > 0 && (
+              <div className="mt-2.5 space-y-1 border-t pt-2">
+                {finishedFootballEvents.map((event, i) => {
+                  const isSideB = event.side_id === sideB?.id
+                  return (
+                    <p
+                      key={i}
+                      className={`flex items-baseline gap-1.5 truncate text-[11px] text-muted-foreground ${isSideB ? 'flex-row-reverse text-right' : ''}`}
+                    >
+                      <span aria-hidden>{eventEmoji(event.kind)}</span>
+                      {event.minute !== undefined && (
+                        <span className="font-medium text-foreground">{event.minute}'</span>
+                      )}
+                      <span className="truncate">{describeEvent(event, match)}</span>
+                    </p>
+                  )
+                })}
               </div>
             )}
           </div>

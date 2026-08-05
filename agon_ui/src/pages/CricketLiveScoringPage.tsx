@@ -6,7 +6,7 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { useAppendCricketEvent, useLiveSeq } from '@/hooks/useLiveScore'
-import { useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
+import { matchScoreQueryKey, useMatchScore } from '@/hooks/useMatchScore'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { SidePicker, PlayerPicker, sideName } from '@/components/agon/live/Pickers'
 import { WicketDialog } from '@/components/agon/live/WicketDialog'
@@ -15,13 +15,12 @@ import { NoBallDialog } from '@/components/agon/live/NoBallDialog'
 import { playersOnSide } from '@/lib/members'
 import { cricketFormat } from '@/lib/matchFormat'
 import {
-  cricketDetailFrom,
+  cricketScoreFrom,
   currentInnings,
   currentOverDeliveries,
   deliveryChipLabel,
   formatOvers,
   isChipHighlighted,
-  matchTotalsBySide,
   playerNameFor,
   runRate,
 } from '@/lib/cricketScore'
@@ -31,6 +30,7 @@ type CricketDelivery = components['schemas']['CricketDelivery']
 type CricketDeliveryWicket = components['schemas']['CricketDeliveryWicket']
 type InningsEndReason = components['schemas']['InningsEndReason']
 type UpdateMatchInput = components['schemas']['UpdateMatchInput']
+type Score = components['schemas']['Score']
 
 const END_REASONS: { value: InningsEndReason; label: string }[] = [
   { value: 'all_out', label: 'All out' },
@@ -50,10 +50,10 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
-  const detailedScore = useMatchDetailedScore(match.id, { refetchInterval: 8000 })
+  const scoreQuery = useMatchScore(match.id, { refetchInterval: 8000 })
   const seq = useLiveSeq(match.id)
   const appendEvent = useAppendCricketEvent(match.id)
-  const state = cricketDetailFrom(detailedScore.data)
+  const state = cricketScoreFrom(scoreQuery.data)
   const innings = state ? currentInnings(state) : null
   const format = cricketFormat(match.format)
   // The server folds this incrementally as events are recorded (see
@@ -123,44 +123,37 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [oversCompleteAwaitingEnd])
 
-  // Concludes the match: submits the per-innings totals as a `Cricket` score
-  // (so the completed tile can show overs/wickets and the result line
-  // without ever re-fetching the live event log — see `CricketScoreBlock`),
-  // the same way a manual "Add result" would, so it enters the normal
-  // confirmation flow rather than being auto-confirmed. The winner is still
-  // derived from the summed match totals (two-innings formats add up both).
-  // No `detailed_score` here: the backend derives and persists the full
-  // batting/bowling cards itself from the event log when a live-scored
-  // cricket match completes without one supplied (see `update_match`) — the
-  // authoritative source, and the only one with the full log to fold; this
-  // client only ever sees the bounded live summary.
+  // Concludes the match: flips it to `completed`, sending the score built
+  // from this device's own view of the live detail (per-innings totals plus
+  // batting/bowling detail). The server independently derives the same
+  // score from the match's persisted live detail — the authoritative source,
+  // and the only one with the full log to fold — and 409s if the two
+  // disagree (e.g. a delivery landed between this device's last poll and the
+  // tap). That's surfaced, not silently resolved: the live detail is
+  // refetched (so the summary above updates to what's actually current) and
+  // the button stays "Finish match" so the user reviews it and taps again
+  // themselves, rather than the app resubmitting on their behalf without
+  // them seeing what changed. Still enters the normal confirmation flow
+  // rather than being auto-confirmed, same as a manual "Add result" would.
   const finishMatch = useMutation({
     mutationFn: async () => {
       if (!state) throw new Error('No score recorded yet')
-      const totals = matchTotalsBySide(state)
-      const [sideA, sideB] = match.sides
-      const aId = sideA?.id ?? ''
-      const bId = sideB?.id ?? ''
-      const a = totals[aId] ?? 0
-      const b = totals[bId] ?? 0
-      const score = {
-        type: 'Cricket',
-        innings: state.innings.map((inn) => ({
-          batting_side_id: inn.batting_side_id,
-          bowling_side_id: inn.bowling_side_id,
-          runs: inn.runs,
-          wickets: inn.wickets,
-          overs: inn.overs,
-          declared: inn.declared,
-        })),
-      } as unknown as UpdateMatchInput['score']
-      const winner_side_id = a === b ? undefined : a > b ? aId : bId
-      const body: UpdateMatchInput = { score, status: 'completed' }
-      if (winner_side_id) body.winner_side_id = winner_side_id
-      const { error } = await fetchClient.PATCH('/matches/{match_id}', {
+
+      const fresh = cricketScoreFrom(
+        queryClient.getQueryData<Score | null>(matchScoreQueryKey(match.id)),
+      )
+      const body: UpdateMatchInput = {
+        status: 'completed',
+        score: fresh ?? undefined,
+      }
+      const { error, response } = await fetchClient.PATCH('/matches/{match_id}', {
         params: { path: { match_id: match.id } },
         body,
       })
+      if (response.status === 409) {
+        await queryClient.refetchQueries({ queryKey: matchScoreQueryKey(match.id) })
+        throw new Error('The live score just changed — check the updated score above, then finish again')
+      }
       if (error) throw new Error('Failed to finish the match')
     },
     onSuccess: () => {
@@ -170,7 +163,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
     },
   })
 
-  if (detailedScore.isLoading || seq.isLoading) {
+  if (scoreQuery.isLoading || seq.isLoading) {
     return (
       <div className="mx-auto max-w-xl">
         <div className="h-64 animate-pulse rounded-xl border bg-card" aria-hidden />
@@ -359,13 +352,13 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   const crr = runRate(innings.runs, innings.overs, format.balls_per_over)
   const overBalls = currentOverDeliveries(state!.recent_deliveries ?? [])
   // Excluded from the batter picker in addition to whoever's currently at
-  // the crease — `innings.batting` carries the full card (see
-  // `CricketDetail`), so a dismissal here is as reliable as the server's own
-  // scorecard, not just a locally-replayed guess. Retired hurt is excluded
-  // from this list on purpose: unlike every other dismissal it isn't final —
-  // the same batter can simply be picked again to resume (see
-  // `CricketRetireEvent`'s doc comment on the backend).
-  const outBatters = innings.batting
+  // the crease — `innings.batting` carries the full card while live-scored,
+  // so a dismissal here is as reliable as the server's own scorecard, not
+  // just a locally-replayed guess. Retired hurt is excluded from this list
+  // on purpose: unlike every other dismissal it isn't final — the same
+  // batter can simply be picked again to resume (see `CricketRetireEvent`'s
+  // doc comment on the backend).
+  const outBatters = (innings.batting ?? [])
     .filter((b) => b.dismissal && b.dismissal.kind !== 'retired_hurt')
     .map((b) => b.player_id)
 

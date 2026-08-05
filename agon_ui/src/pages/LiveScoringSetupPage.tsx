@@ -7,9 +7,9 @@ import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { useAppendFootballEvent } from '@/hooks/useLiveScore'
-import { useMatchDetailedScore } from '@/hooks/useMatchDetailedScore'
+import { useMatchScore } from '@/hooks/useMatchScore'
 import {
-  footballDetailFrom,
+  footballScoreFrom,
   loadTrackPrefs,
   periodTime,
   saveTrackPrefs,
@@ -93,8 +93,8 @@ export function LiveScoringSetupPage() {
   // Whether the match's live clock has already started (a KickOff period
   // marker already recorded) — determines whether "Start scoring" needs to
   // record one, and whether the button reads "Start" vs "Continue".
-  const detailedScore = useMatchDetailedScore(matchId)
-  const liveState = footballDetailFrom(detailedScore.data)
+  const scoreQuery = useMatchScore(matchId)
+  const liveState = footballScoreFrom(scoreQuery.data)
   const alreadyKickedOff = !!liveState && !!periodTime(liveState, 'kick_off')
   const appendEvent = useAppendFootballEvent(matchId ?? '')
 

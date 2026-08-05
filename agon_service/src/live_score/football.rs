@@ -2,9 +2,10 @@ use std::collections::HashMap;
 
 use poem_openapi::{Object, Union};
 
+use crate::FootballScore;
 use crate::detailed_score::football::{
-    FootballCardEvent, FootballDetail, FootballGoalEvent, FootballPenaltyShootoutKick,
-    FootballPeriod, FootballShootoutTally, FootballSideGoals, FootballSubstitutionEvent,
+    FootballCardEvent, FootballGoalEvent, FootballPenaltyShootoutKick, FootballPeriod,
+    FootballSubstitutionEvent,
 };
 
 /// Football live-scoring events, nested under the outer sport union
@@ -30,35 +31,38 @@ pub struct FootballPeriodEvent {
     pub period: FootballPeriod,
 }
 
-impl FootballDetail {
-    /// Folds the whole event log into a `FootballDetail` from scratch — the
-    /// slow path, used to bootstrap a match's first detail or recover from a
+impl FootballScore {
+    /// Folds the whole event log into a `FootballScore` from scratch — the
+    /// slow path, used to bootstrap a match's first score or recover from a
     /// missing/unparseable persisted record. Just `apply_event` run once per
     /// event in order; the fast (single-event) and slow (whole-log) paths
     /// share the exact same fold, so they can't disagree — same pattern as
-    /// `CricketDetail::from_events`.
+    /// `CricketScore::from_events`.
     pub fn from_events(events: &[(chrono::DateTime<chrono::Utc>, FootballLiveEvent)]) -> Self {
-        let mut detail = FootballDetail {
-            score: Vec::new(),
-            goals: Vec::new(),
-            cards: Vec::new(),
-            substitutions: Vec::new(),
+        let mut score = FootballScore {
+            score: HashMap::new(),
+            goals: Some(Vec::new()),
+            cards: Some(Vec::new()),
+            substitutions: Some(Vec::new()),
             period: None,
-            period_times: HashMap::new(),
-            penalty_shootout: Vec::new(),
-            penalty_shootout_score: Vec::new(),
+            period_times: Some(HashMap::new()),
+            penalty_shootout: Some(Vec::new()),
+            penalty_shootout_score: Some(HashMap::new()),
         };
         for (occurred_at, event) in events {
-            detail.apply_event(*occurred_at, event);
+            score.apply_event(*occurred_at, event);
         }
-        detail
+        score
     }
 
-    /// Folds one new event into this detail in place — the fast path, run on
+    /// Folds one new event into this score in place — the fast path, run on
     /// every append. `occurred_at` (not `recorded_at`) is threaded through
     /// separately from `event` so a period marker's timestamp reflects when
     /// the half actually started/ended on the pitch, not when the server
-    /// received it.
+    /// received it. Every optional field is populated (`Some`, even if
+    /// empty) by the time this is called from a live-scoring path — only a
+    /// bare manual entry ever leaves them `None` — so this always writes
+    /// into an existing `Some`, never leaves a field `None` behind.
     pub fn apply_event(
         &mut self,
         occurred_at: chrono::DateTime<chrono::Utc>,
@@ -66,42 +70,34 @@ impl FootballDetail {
     ) {
         match event {
             FootballLiveEvent::Goal(g) => {
-                if let Some(s) = self.score.iter_mut().find(|s| s.side_id == g.side_id) {
-                    s.goals += 1;
-                } else {
-                    self.score.push(FootballSideGoals {
-                        side_id: g.side_id.clone(),
-                        goals: 1,
-                    });
-                }
-                self.goals.push(g.clone());
+                *self.score.entry(g.side_id.clone()).or_insert(0) += 1;
+                self.goals.get_or_insert_with(Vec::new).push(g.clone());
             }
             FootballLiveEvent::Card(c) => {
-                self.cards.push(c.clone());
+                self.cards.get_or_insert_with(Vec::new).push(c.clone());
             }
             FootballLiveEvent::Substitution(sub) => {
-                self.substitutions.push(sub.clone());
+                self.substitutions
+                    .get_or_insert_with(Vec::new)
+                    .push(sub.clone());
             }
             FootballLiveEvent::Period(p) => {
-                self.period_times.insert(p.period, occurred_at);
+                self.period_times
+                    .get_or_insert_with(HashMap::new)
+                    .insert(p.period, occurred_at);
                 self.period = Some(p.period);
             }
             FootballLiveEvent::PenaltyShootoutKick(k) => {
                 if k.scored {
-                    if let Some(s) = self
+                    *self
                         .penalty_shootout_score
-                        .iter_mut()
-                        .find(|s| s.side_id == k.side_id)
-                    {
-                        s.scored += 1;
-                    } else {
-                        self.penalty_shootout_score.push(FootballShootoutTally {
-                            side_id: k.side_id.clone(),
-                            scored: 1,
-                        });
-                    }
+                        .get_or_insert_with(HashMap::new)
+                        .entry(k.side_id.clone())
+                        .or_insert(0) += 1;
                 }
-                self.penalty_shootout.push(k.clone());
+                self.penalty_shootout
+                    .get_or_insert_with(Vec::new)
+                    .push(k.clone());
             }
         }
     }
@@ -169,21 +165,27 @@ mod tests {
             ),
         ];
 
-        let detail = FootballDetail::from_events(&events);
+        let score = FootballScore::from_events(&events);
 
-        assert_eq!(detail.score.len(), 1);
-        assert_eq!(detail.score[0].side_id, "riverside");
-        assert_eq!(detail.score[0].goals, 2);
-        assert_eq!(detail.goals.len(), 2);
-        assert_eq!(detail.cards.len(), 1);
-        assert_eq!(detail.substitutions.len(), 1);
-        assert!(matches!(detail.period, Some(FootballPeriod::FullTime)));
+        assert_eq!(score.score.len(), 1);
+        assert_eq!(score.score.get("riverside"), Some(&2));
+        assert_eq!(score.goals.as_ref().unwrap().len(), 2);
+        assert_eq!(score.cards.as_ref().unwrap().len(), 1);
+        assert_eq!(score.substitutions.as_ref().unwrap().len(), 1);
+        assert!(matches!(score.period, Some(FootballPeriod::FullTime)));
         assert_eq!(
-            detail.period_times.get(&FootballPeriod::FullTime),
+            score
+                .period_times
+                .as_ref()
+                .unwrap()
+                .get(&FootballPeriod::FullTime),
             Some(&ts(94))
         );
-        assert!(detail.goals[1].own_goal);
-        assert_eq!(detail.substitutions[0].player_out_id, "khan");
+        assert!(score.goals.as_ref().unwrap()[1].own_goal);
+        assert_eq!(
+            score.substitutions.as_ref().unwrap()[0].player_out_id,
+            "khan"
+        );
     }
 
     #[test]
@@ -209,23 +211,18 @@ mod tests {
             ),
         ];
 
-        let detail = FootballDetail::from_events(&events);
+        let score = FootballScore::from_events(&events);
+        let period_times = score.period_times.as_ref().unwrap();
 
+        assert_eq!(period_times.get(&FootballPeriod::KickOff), Some(&ts(0)));
+        assert_eq!(period_times.get(&FootballPeriod::HalfTime), Some(&ts(46)));
         assert_eq!(
-            detail.period_times.get(&FootballPeriod::KickOff),
-            Some(&ts(0))
-        );
-        assert_eq!(
-            detail.period_times.get(&FootballPeriod::HalfTime),
-            Some(&ts(46))
-        );
-        assert_eq!(
-            detail.period_times.get(&FootballPeriod::SecondHalfKickOff),
+            period_times.get(&FootballPeriod::SecondHalfKickOff),
             Some(&ts(60))
         );
-        assert_eq!(detail.period_times.get(&FootballPeriod::FullTime), None);
+        assert_eq!(period_times.get(&FootballPeriod::FullTime), None);
         assert!(matches!(
-            detail.period,
+            score.period,
             Some(FootballPeriod::SecondHalfKickOff)
         ));
     }
@@ -265,28 +262,27 @@ mod tests {
             ),
         ];
 
-        let detail = FootballDetail::from_events(&events);
+        let score = FootballScore::from_events(&events);
+        let period_times = score.period_times.as_ref().unwrap();
 
         assert_eq!(
-            detail.period_times.get(&FootballPeriod::ExtraTimeKickOff),
+            period_times.get(&FootballPeriod::ExtraTimeKickOff),
             Some(&ts(90))
         );
         assert_eq!(
-            detail.period_times.get(&FootballPeriod::ExtraTimeHalfTime),
+            period_times.get(&FootballPeriod::ExtraTimeHalfTime),
             Some(&ts(105))
         );
         assert_eq!(
-            detail
-                .period_times
-                .get(&FootballPeriod::ExtraTimeSecondHalfKickOff),
+            period_times.get(&FootballPeriod::ExtraTimeSecondHalfKickOff),
             Some(&ts(120))
         );
         assert_eq!(
-            detail.period_times.get(&FootballPeriod::ExtraTimeFullTime),
+            period_times.get(&FootballPeriod::ExtraTimeFullTime),
             Some(&ts(150))
         );
         assert_eq!(
-            detail.period_times.get(&FootballPeriod::PenaltiesComplete),
+            period_times.get(&FootballPeriod::PenaltiesComplete),
             Some(&ts(160))
         );
     }
@@ -324,27 +320,18 @@ mod tests {
             ),
         ];
 
-        let detail = FootballDetail::from_events(&events);
+        let score = FootballScore::from_events(&events);
+        let shootout_score = score.penalty_shootout_score.as_ref().unwrap();
 
-        assert_eq!(detail.penalty_shootout.len(), 4);
+        assert_eq!(score.penalty_shootout.as_ref().unwrap().len(), 4);
         // Only sides with at least one scored kick get a tally entry — same
-        // "absence means zero" convention as `score`/`FootballSideGoals`.
-        assert_eq!(detail.penalty_shootout_score.len(), 2);
-        let riverside = detail
-            .penalty_shootout_score
-            .iter()
-            .find(|s| s.side_id == "riverside")
-            .unwrap();
-        assert_eq!(riverside.scored, 2);
-        let oak_park = detail
-            .penalty_shootout_score
-            .iter()
-            .find(|s| s.side_id == "oak_park")
-            .unwrap();
-        assert_eq!(oak_park.scored, 1);
+        // "absence means zero" convention as `score`.
+        assert_eq!(shootout_score.len(), 2);
+        assert_eq!(shootout_score.get("riverside"), Some(&2));
+        assert_eq!(shootout_score.get("oak_park"), Some(&1));
         // A shootout kick never counts as a match goal.
-        assert!(detail.score.is_empty());
-        assert!(detail.goals.is_empty());
+        assert!(score.score.is_empty());
+        assert!(score.goals.as_ref().unwrap().is_empty());
     }
 
     #[test]
@@ -378,27 +365,33 @@ mod tests {
             ),
         ];
 
-        let full = FootballDetail::from_events(&events);
+        let full = FootballScore::from_events(&events);
 
         // Apply the same events one at a time, incrementally, and check the
         // final state matches the full fold exactly.
-        let mut incremental = FootballDetail {
-            score: Vec::new(),
-            goals: Vec::new(),
-            cards: Vec::new(),
-            substitutions: Vec::new(),
+        let mut incremental = FootballScore {
+            score: HashMap::new(),
+            goals: Some(Vec::new()),
+            cards: Some(Vec::new()),
+            substitutions: Some(Vec::new()),
             period: None,
-            period_times: HashMap::new(),
-            penalty_shootout: Vec::new(),
-            penalty_shootout_score: Vec::new(),
+            period_times: Some(HashMap::new()),
+            penalty_shootout: Some(Vec::new()),
+            penalty_shootout_score: Some(HashMap::new()),
         };
         for (occurred_at, event) in &events {
             incremental.apply_event(*occurred_at, event);
         }
 
         assert_eq!(incremental.score.len(), full.score.len());
-        assert_eq!(incremental.goals.len(), full.goals.len());
-        assert_eq!(incremental.cards.len(), full.cards.len());
+        assert_eq!(
+            incremental.goals.as_ref().unwrap().len(),
+            full.goals.as_ref().unwrap().len()
+        );
+        assert_eq!(
+            incremental.cards.as_ref().unwrap().len(),
+            full.cards.as_ref().unwrap().len()
+        );
         assert_eq!(incremental.period_times, full.period_times);
     }
 }

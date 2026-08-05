@@ -26,7 +26,7 @@ impl Dao {
             .key_condition_expression("#pk = :pk AND begins_with(SK, :sk)")
             .expression_attribute_names("#pk", ATTR_PK)
             .expression_attribute_values(":pk", s(Pk::Match(match_id.into()).to_string()))
-            .expression_attribute_values(":sk", s(Sk::StatContribution(String::new()).prefix()))
+            .expression_attribute_values(":sk", s(Sk::stat_contribution_prefix()))
             .send()
             .await
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;

@@ -1,6 +1,5 @@
 import type { components } from '@/types/api'
 import {
-  bowlingFigures,
   dismissalLabel,
   formatOvers,
   playerNameFor,
@@ -110,14 +109,20 @@ function InningsCard({ match, innings }: { match: Match; innings: CricketInnings
           <TableHeader>
             <TableRow>
               <TableHead>Bowler</TableHead>
-              <TableHead className="text-right">O-M-R-W</TableHead>
+              <TableHead className="text-right">O</TableHead>
+              <TableHead className="text-right">M</TableHead>
+              <TableHead className="text-right">R</TableHead>
+              <TableHead className="text-right">W</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {bowling.map((bw: CricketBowlingEntry) => (
               <TableRow key={bw.player_id}>
                 <TableCell className="font-medium">{playerNameFor(match, bw.player_id)}</TableCell>
-                <TableCell className="text-right tabular-nums">{bowlingFigures(bw)}</TableCell>
+                <TableCell className="text-right tabular-nums">{formatOvers(bw.overs)}</TableCell>
+                <TableCell className="text-right tabular-nums">{bw.maidens}</TableCell>
+                <TableCell className="text-right tabular-nums">{bw.runs_conceded}</TableCell>
+                <TableCell className="text-right tabular-nums">{bw.wickets}</TableCell>
               </TableRow>
             ))}
           </TableBody>

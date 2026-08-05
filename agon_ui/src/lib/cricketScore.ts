@@ -256,13 +256,6 @@ export function creditsBowler(kind: CricketDismissalKind): boolean {
   )
 }
 
-/** "3.2-0-24-1" bowling figures (overs-maidens-runs-wickets), or an em dash
- *  before the bowler has sent down a delivery. */
-export function bowlingFigures(entry: CricketBowlingEntry | null): string {
-  if (!entry) return '—'
-  return `${formatOvers(entry.overs)}-${entry.maidens}-${entry.runs_conceded}-${entry.wickets}`
-}
-
 /** Total runs scored by each side across every completed innings so far —
  *  the input to a final result once the match is done (sums across both
  *  innings for a two-innings-per-side format, not just the latest one). */

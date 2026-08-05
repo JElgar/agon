@@ -44,6 +44,7 @@ impl Dao {
     /// Create an invitation. Projects to GSI1 (`UINV#<inviteeUserId>`) if it
     /// targets a known user, and to GSI2 (`TOKEN#<token>`) if it has a token.
     /// `Conflict` if the invitation id already exists.
+    #[tracing::instrument(skip(self, inv), fields(invitation_id = %inv.id))]
     pub async fn create_invitation(&self, inv: &InvitationRecord) -> DaoResult<()> {
         let item = self.invitation_item(inv)?;
 
@@ -68,6 +69,7 @@ impl Dao {
     }
 
     /// Fetch an invitation by id. `None` if absent.
+    #[tracing::instrument(skip(self))]
     pub async fn get_invitation(&self, invitation_id: &str) -> DaoResult<Option<InvitationRecord>> {
         let out = self
             .client
@@ -85,6 +87,7 @@ impl Dao {
     }
 
     /// Look up an invitation by its bearer token, via GSI2. `None` if no match.
+    #[tracing::instrument(skip(self))]
     pub async fn get_invitation_by_token(
         &self,
         token: &str,
@@ -110,6 +113,7 @@ impl Dao {
 
     /// List a user's invitation inbox via GSI1, optionally filtered to one
     /// status. Cursor-paginated.
+    #[tracing::instrument(skip(self))]
     pub async fn list_user_invitations(
         &self,
         user_id: &str,
@@ -143,6 +147,7 @@ impl Dao {
     /// Note: this updates only the invitation entity. Side effects of
     /// acceptance (linking an external member to a user, adding to a roster,
     /// notifications, feed) are orchestrated by the caller / async workers.
+    #[tracing::instrument(skip(self))]
     pub async fn respond_to_invitation(
         &self,
         invitation_id: &str,
@@ -186,6 +191,7 @@ impl Dao {
     }
 
     /// Delete (revoke) an invitation. Idempotent.
+    #[tracing::instrument(skip(self))]
     pub async fn delete_invitation(&self, invitation_id: &str) -> DaoResult<()> {
         self.client
             .delete_item()

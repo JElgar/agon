@@ -25,6 +25,7 @@ impl Dao {
     /// this user's internal id — each requiring `attribute_not_exists(PK)`. If the
     /// email, the `sub`, or the id already exists the whole transaction fails and
     /// we return `Conflict`. `user.id` is the internal id (not the `sub`).
+    #[tracing::instrument(skip(self, user), fields(user_id = %user.id))]
     pub async fn create_user(&self, sub: &str, user: &UserRecord) -> DaoResult<()> {
         let profile_item = to_item(&Pk::User(user.id.clone()), &Sk::Profile, TYPE_USER, user)?;
 
@@ -85,6 +86,7 @@ impl Dao {
     ///
     /// Looks up the `AUTH#<sub>` guard. Returns `None` if no user has signed up
     /// with this `sub`.
+    #[tracing::instrument(skip(self))]
     pub async fn get_user_id_by_sub(&self, sub: &str) -> DaoResult<Option<String>> {
         let out = self
             .client
@@ -107,6 +109,7 @@ impl Dao {
 
     /// Fetch a user profile by identity-provider `sub`, resolving through the
     /// auth-identity mapping. `None` if the `sub` maps to no user.
+    #[tracing::instrument(skip(self))]
     pub async fn get_user_by_sub(&self, sub: &str) -> DaoResult<Option<UserRecord>> {
         match self.get_user_id_by_sub(sub).await? {
             Some(user_id) => self.get_user(&user_id).await,
@@ -115,6 +118,7 @@ impl Dao {
     }
 
     /// Fetch a user profile by internal id. `None` if no such user.
+    #[tracing::instrument(skip(self))]
     pub async fn get_user(&self, user_id: &str) -> DaoResult<Option<UserRecord>> {
         let out = self
             .client
@@ -142,6 +146,7 @@ impl Dao {
     /// every current caller hydrates a single, service-capped page.
     ///
     /// [`batch_get_all`]: Dao::batch_get_all
+    #[tracing::instrument(skip(self))]
     pub async fn batch_get_users(
         &self,
         user_ids: &[String],
@@ -171,6 +176,7 @@ impl Dao {
     /// Update a user's mutable profile fields (name, profile image). Email
     /// changes are handled separately (they must re-run the guard) and are not
     /// covered here. Fails with `NotFound` if the user doesn't exist.
+    #[tracing::instrument(skip(self))]
     pub async fn update_user_profile(
         &self,
         user_id: &str,

@@ -57,7 +57,11 @@ pub enum ScoreRecord {
         awaiting_next_innings: Option<bool>,
     },
     Football {
-        /// Goal tally, keyed by side id.
+        /// Goal tally, keyed by side id. `#[serde(default)]` because this
+        /// field didn't exist before the tally was embedded here — a record
+        /// written in that gap has no `score` to fall back to, so it
+        /// deserializes as an empty tally rather than 500ing.
+        #[serde(default)]
         score: HashMap<String, u32>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         goals: Option<Vec<FootballGoalEventRecord>>,
@@ -981,4 +985,73 @@ pub struct StatContributionRecord {
     pub played: u64,
     /// 1 while the user's side is the confirmed winner; 0 otherwise.
     pub won: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aws_sdk_dynamodb::types::AttributeValue;
+
+    /// `Simple`/`Sets` `entries` round-trip through the side_id-keyed map
+    /// shape. (Data written before this shape landed no longer needs
+    /// handling here — see `migrate_score_entries.py`, the one-off script
+    /// that backfilled every match's `confirmed_score`/`pending_score`/
+    /// score-submission history to this shape.)
+    #[test]
+    fn simple_map_shape_deserializes() {
+        let map_shape = AttributeValue::M(HashMap::from([
+            ("sideA".to_string(), AttributeValue::N("6".into())),
+            ("sideB".to_string(), AttributeValue::N("3".into())),
+        ]));
+        let score_av = AttributeValue::M(HashMap::from([
+            ("type".to_string(), AttributeValue::S("simple".into())),
+            ("entries".to_string(), map_shape),
+        ]));
+        let rec: ScoreRecord = serde_dynamo::from_attribute_value(score_av).unwrap();
+        match rec {
+            ScoreRecord::Simple { entries } => {
+                assert_eq!(entries.get("sideA"), Some(&6));
+                assert_eq!(entries.get("sideB"), Some(&3));
+            }
+            _ => panic!("expected simple"),
+        }
+    }
+
+    #[test]
+    fn sets_map_shape_deserializes() {
+        let map_shape = AttributeValue::M(HashMap::from([(
+            "sideA".to_string(),
+            AttributeValue::L(vec![
+                AttributeValue::N("6".into()),
+                AttributeValue::N("4".into()),
+            ]),
+        )]));
+        let score_av = AttributeValue::M(HashMap::from([
+            ("type".to_string(), AttributeValue::S("sets".into())),
+            ("entries".to_string(), map_shape),
+        ]));
+        let rec: ScoreRecord = serde_dynamo::from_attribute_value(score_av).unwrap();
+        match rec {
+            ScoreRecord::Sets { entries } => {
+                assert_eq!(entries.get("sideA"), Some(&vec![6, 4]));
+            }
+            _ => panic!("expected sets"),
+        }
+    }
+
+    /// A `Football` score written in the brief window before the `score`
+    /// tally field existed (just `goals`, no aggregate) deserializes to an
+    /// empty tally rather than 500ing on a missing field.
+    #[test]
+    fn football_score_missing_tally_field_deserializes() {
+        let score_av = AttributeValue::M(HashMap::from([
+            ("type".to_string(), AttributeValue::S("football".into())),
+            ("goals".to_string(), AttributeValue::L(vec![])),
+        ]));
+        let rec: ScoreRecord = serde_dynamo::from_attribute_value(score_av).unwrap();
+        match rec {
+            ScoreRecord::Football { score, .. } => assert!(score.is_empty()),
+            _ => panic!("expected football"),
+        }
+    }
 }

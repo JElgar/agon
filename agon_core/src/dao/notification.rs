@@ -26,6 +26,10 @@ impl Dao {
     /// redelivered stream event (the async worker generates notifications with a
     /// deterministic id per source event) is a no-op and does not double-count
     /// the unread badge. See docs/async-design.md §3.
+    #[tracing::instrument(
+        skip(self, notif),
+        fields(user_id = %notif.user_id, notification_id = %notif.id)
+    )]
     pub async fn create_notification(&self, notif: &NotificationRecord) -> DaoResult<()> {
         let item = ItemBuilder::new(to_item(
             &Pk::User(notif.user_id.clone()),
@@ -67,6 +71,7 @@ impl Dao {
     }
 
     /// List a user's notifications, newest first, via GSI1.
+    #[tracing::instrument(skip(self))]
     pub async fn list_notifications(
         &self,
         user_id: &str,
@@ -90,6 +95,7 @@ impl Dao {
 
     /// The unread notification count for the bell badge (read off the profile
     /// counter). Zero if the user or counter is absent.
+    #[tracing::instrument(skip(self))]
     pub async fn unread_notification_count(&self, user_id: &str) -> DaoResult<u64> {
         let out = self
             .client
@@ -116,6 +122,7 @@ impl Dao {
     /// Mark a single notification read (addressed by id). Only decrements
     /// `unread_count` if the notification was actually unread (conditional), so
     /// the counter can't drift below zero on repeated calls.
+    #[tracing::instrument(skip(self))]
     pub async fn mark_notification_read(
         &self,
         user_id: &str,
@@ -161,6 +168,7 @@ impl Dao {
     /// this zeroes the badge counter; flipping every notification's `is_read`
     /// flag is left to the async worker (a bulk update over the collection) so
     /// the request stays O(1).
+    #[tracing::instrument(skip(self))]
     pub async fn mark_all_notifications_read(&self, user_id: &str) -> DaoResult<()> {
         self.client
             .update_item()

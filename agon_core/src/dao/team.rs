@@ -29,6 +29,7 @@ impl Dao {
     /// Create a team and its creator's membership in one transaction. The
     /// creator becomes an `admin` member. `Conflict` if the team id already
     /// exists.
+    #[tracing::instrument(skip(self, team, creator), fields(team_id = %team.id))]
     pub async fn create_team(
         &self,
         team: &TeamRecord,
@@ -71,6 +72,7 @@ impl Dao {
     }
 
     /// Fetch a team's meta only (no members).
+    #[tracing::instrument(skip(self))]
     pub async fn get_team_meta(&self, team_id: &str) -> DaoResult<Option<TeamRecord>> {
         let out = self
             .client
@@ -92,6 +94,7 @@ impl Dao {
     /// `batch_get_users`. Used to resolve match-side team names for a whole
     /// feed/list page in one round trip instead of one `get_team_meta` per
     /// side.
+    #[tracing::instrument(skip(self))]
     pub async fn batch_get_team_metas(
         &self,
         team_ids: &[String],
@@ -121,6 +124,7 @@ impl Dao {
     /// Fetch the full team aggregate (meta + all members) in a single query on
     /// the `TEAM#<id>` partition, splitting the collection by SK prefix.
     /// `None` if the team's meta item is absent.
+    #[tracing::instrument(skip(self))]
     pub async fn get_team(&self, team_id: &str) -> DaoResult<Option<TeamAggregate>> {
         let out = self
             .client
@@ -150,6 +154,7 @@ impl Dao {
 
     /// Update a team's mutable fields (currently just `name`). `NotFound` if the
     /// team doesn't exist.
+    #[tracing::instrument(skip(self))]
     pub async fn update_team(&self, team_id: &str, name: Option<&str>) -> DaoResult<()> {
         let Some(name) = name else {
             return Ok(());
@@ -178,6 +183,7 @@ impl Dao {
 
     /// Add (or overwrite) a single team member. Used for both single adds and
     /// the fan-out of a bulk invite (call per member).
+    #[tracing::instrument(skip(self, member), fields(membership_id = %member.membership_id))]
     pub async fn put_team_member(&self, team_id: &str, member: &TeamMemberRecord) -> DaoResult<()> {
         let item = self.team_member_item(team_id, member)?;
         self.client
@@ -193,6 +199,7 @@ impl Dao {
     /// Remove a member from a team by membership id. Delete-by-id, not a
     /// toggle, so errors with `DaoError::NotFound` if the membership doesn't
     /// exist rather than silently succeeding.
+    #[tracing::instrument(skip(self))]
     pub async fn remove_team_member(&self, team_id: &str, membership_id: &str) -> DaoResult<()> {
         let result = self
             .client
@@ -215,6 +222,7 @@ impl Dao {
     }
 
     /// List the teams a user is a member of, via GSI1 (`UTEAMS#<userId>`).
+    #[tracing::instrument(skip(self))]
     pub async fn list_user_teams(
         &self,
         user_id: &str,

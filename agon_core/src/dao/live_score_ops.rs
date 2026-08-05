@@ -50,6 +50,7 @@ impl Dao {
     ///
     /// Returns the new tip seq on success. `events` must be non-empty and at
     /// most [`MAX_LIVE_EVENTS_PER_BATCH`].
+    #[tracing::instrument(skip(self))]
     pub async fn append_live_events(
         &self,
         match_id: &str,
@@ -139,6 +140,7 @@ impl Dao {
     /// if it's already gone. Doesn't touch `live_seq`: that counter only
     /// ever tracks the highest seq ever assigned, which stays a valid fact
     /// regardless of which earlier seqs still physically exist.
+    #[tracing::instrument(skip(self))]
     pub async fn delete_live_event(&self, match_id: &str, seq: u32) -> DaoResult<()> {
         let result = self
             .client
@@ -166,6 +168,7 @@ impl Dao {
     /// the seq doesn't exist. Unconditional beyond that: two people amending
     /// the exact same ball at the exact same moment is not a case this app's
     /// usage pattern (one active scorer at a time) needs to guard against.
+    #[tracing::instrument(skip(self))]
     pub async fn amend_live_event(
         &self,
         match_id: &str,
@@ -202,6 +205,7 @@ impl Dao {
     /// size concern the way one record holding the whole log would have.
     /// Internal use only (folding the whole log) — the public API paginates
     /// via `list_live_events_page` instead of ever returning this whole.
+    #[tracing::instrument(skip(self))]
     pub async fn list_live_events(&self, match_id: &str) -> DaoResult<Vec<LiveEventRecord>> {
         self.query_match_collection(match_id, &Sk::live_event_prefix())
             .await
@@ -210,6 +214,7 @@ impl Dao {
     /// One page of the match's live event log, oldest first (`seq` order —
     /// the zero-padded key sorts numerically). What `GET
     /// /matches/:id/live/events` actually serves.
+    #[tracing::instrument(skip(self))]
     pub async fn list_live_events_page(
         &self,
         match_id: &str,

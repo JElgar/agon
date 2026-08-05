@@ -31,6 +31,7 @@ impl Dao {
     /// `UnprocessedItems` DynamoDB returns (throttling) until the batch drains.
     ///
     /// `viewer_ids` should already be deduplicated by the caller.
+    #[tracing::instrument(skip(self))]
     pub async fn write_feed_items(
         &self,
         viewer_ids: &[String],
@@ -85,6 +86,7 @@ impl Dao {
     }
 
     /// List a viewer's feed newest-first (by match `starts_at`), paginated.
+    #[tracing::instrument(skip(self))]
     pub async fn list_feed(
         &self,
         viewer_id: &str,

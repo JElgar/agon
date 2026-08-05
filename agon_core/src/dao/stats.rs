@@ -18,6 +18,7 @@ impl Dao {
     /// User ids that currently have a stored stat contribution for this match.
     /// The reconciler unions these with the match's current participants so a
     /// player removed from the roster still gets their contribution backed out.
+    #[tracing::instrument(skip(self))]
     pub async fn list_stat_contribution_user_ids(&self, match_id: &str) -> DaoResult<Vec<String>> {
         let out = self
             .client
@@ -59,6 +60,7 @@ impl Dao {
     /// Concurrency: the contribution write is conditional on the value we read,
     /// so two racing reconciles can't both apply a delta — the loser's
     /// transaction fails (`Conflict`) and redelivery re-reads and converges.
+    #[tracing::instrument(skip(self))]
     pub async fn reconcile_match_contribution(
         &self,
         match_id: &str,

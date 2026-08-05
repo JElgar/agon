@@ -27,6 +27,7 @@ impl Dao {
     /// item into `T`. The caller supplies everything except `limit` and the
     /// start key. Results honour the query's own sort direction (set
     /// `scan_index_forward(false)` on the builder for newest-first).
+    #[tracing::instrument(skip(self))]
     pub(super) async fn query_page<T: DeserializeOwned>(
         &self,
         query: QueryFluentBuilder,

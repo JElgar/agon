@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { isSetsSport } from '@/lib/sports'
 import { FootballScoreFields } from '@/components/agon/FootballScoreFields'
 import { CricketScoreFields } from '@/components/agon/CricketScoreFields'
-import { headlineBySide } from '@/lib/score'
+import { displayScore, headlineBySide } from '@/lib/score'
 import { cricketProgressFromScore, matchTotalsBySide } from '@/lib/cricketScore'
 
 type Match = components['schemas']['Match']
@@ -35,11 +35,12 @@ function sideLabel(match: Match, index: number, fallback: string): string {
 }
 
 /**
- * Seed the sets editor from the match's confirmed score, if it's a sets score
- * keyed to these two sides. Falls back to two empty rows for a fresh result.
+ * Seed the sets editor from the match's current score (confirmed, or pending
+ * if not yet confirmed — see `displayScore`), if it's a sets score keyed to
+ * these two sides. Falls back to two empty rows for a fresh result.
  */
 function seedSets(match: Match, aId: string, bId: string): SetRow[] {
-  const score = match.confirmed_score?.score
+  const score = displayScore(match)?.score
   if (score && score.type === 'Sets') {
     const a = score.entries[aId] ?? []
     const b = score.entries[bId] ?? []
@@ -57,9 +58,10 @@ function seedSets(match: Match, aId: string, bId: string): SetRow[] {
   ]
 }
 
-/** Seed the simple points editor from a confirmed simple score, else blanks. */
+/** Seed the simple points editor from the match's current simple score
+ *  (confirmed, or pending if not yet confirmed), else blanks. */
 function seedPoints(match: Match, aId: string, bId: string): [string, string] {
-  const score = match.confirmed_score?.score
+  const score = displayScore(match)?.score
   if (score && score.type === 'Simple') {
     const a = score.entries[aId]
     const b = score.entries[bId]
@@ -72,8 +74,9 @@ function seedPoints(match: Match, aId: string, bId: string): [string, string] {
  * Inline editor for a match's result, opened from the detail card. Renders a
  * sets grid for racket sports, the football/cricket editors (goal-by-goal /
  * innings detail, optional) for those sports, and a single points pair
- * otherwise (mirroring the create flow), seeded from any existing confirmed
- * score. On save it PATCHes the score against the match's real side ids; a
+ * otherwise (mirroring the create flow), seeded from the match's current
+ * result — confirmed if there is one, else a still-pending submission (see
+ * `displayScore`). On save it PATCHes the score against the match's real side ids; a
  * changed score re-enters the confirmation flow server-side (the other side
  * is asked to confirm), so we also refresh so the pending-score prompt
  * appears.
@@ -102,6 +105,9 @@ export function MatchResultEditor({
   const isFootball = match.match_type === 'football'
   const isCricket = match.match_type === 'cricket'
   const setsMode = isSetsSport(match.match_type)
+  // The result to prepopulate the form with: confirmed if there is one, else
+  // a still-pending submission awaiting the other side's confirmation.
+  const currentScore = displayScore(match)?.score
   const [sets, setSets] = useState<SetRow[]>(() => seedSets(match, aId, bId))
   const [points, setPoints] = useState<[string, string]>(() => seedPoints(match, aId, bId))
   const [pointsA, pointsB] = points
@@ -212,7 +218,7 @@ export function MatchResultEditor({
           sideA={sideA}
           sideB={sideB}
           players={match.players}
-          initial={match.confirmed_score?.score}
+          initial={currentScore}
           onChange={setDetailBuilt}
         />
       ) : isCricket && sideA && sideB ? (
@@ -220,7 +226,7 @@ export function MatchResultEditor({
           sideA={sideA}
           sideB={sideB}
           players={match.players}
-          initial={match.confirmed_score?.score}
+          initial={currentScore}
           onChange={setDetailBuilt}
         />
       ) : setsMode ? (

@@ -261,82 +261,25 @@ impl Dao {
         Ok(out)
     }
 
-    /// Fetch match aggregates (meta + sides + players) for many matches at
-    /// once — e.g. to hydrate a whole feed page without one `get_match` per
-    /// entry. Missing ids are simply absent from the map. Callers must pass at
-    /// most `BATCH_GET_MAX` ids — a single, service-capped page.
+    /// Fetch match summaries (meta + sides, *no* players) for many matches at
+    /// once — the feed's and search's hydration path, neither of which
+    /// renders a full roster (see [`MatchSummary`]). Missing ids are simply
+    /// absent from the map. Callers must pass at most `BATCH_GET_MAX` ids.
     ///
     /// The meta reads collapse into a single `BatchGetItem` via
     /// [`batch_get_match_metas`], so that part of the cost is flat regardless
-    /// of page size. Sides and players can't collapse the same way: each is a
+    /// of page size. Sides can't collapse the same way: it's a
     /// `begins_with(SK, ...)` collection query scoped to one match's
-    /// partition, and side/player ids aren't known ahead of the read (see
+    /// partition, and side ids aren't known ahead of the read (see
     /// [`get_match`]'s doc comment for why `BatchGetItem` isn't an option
     /// there) — DynamoDB's `Query` is inherently per-partition, so this still
-    /// issues two queries per match. Those queries do run concurrently
-    /// (one task per match, `sides`/`players` fetched together within it)
-    /// rather than one-at-a-time, so wall-clock latency doesn't stack with
-    /// page size the way the old sequential loop did — only the request count
-    /// does.
+    /// issues one query per match. Those queries do run concurrently (one
+    /// task per match) rather than one-at-a-time, so wall-clock latency
+    /// doesn't stack with page size — only the request count does. Players
+    /// are skipped entirely (never fetched and discarded) — that's the one
+    /// query per match this type exists to avoid.
     ///
     /// [`batch_get_match_metas`]: Dao::batch_get_match_metas
-    #[tracing::instrument(skip(self))]
-    pub async fn batch_get_match_aggregates(
-        &self,
-        match_ids: &[String],
-    ) -> DaoResult<HashMap<String, MatchAggregate>> {
-        let mut metas = self.batch_get_match_metas(match_ids).await?;
-        if metas.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        let mut tasks = JoinSet::new();
-        for match_id in metas.keys().cloned() {
-            let dao = self.clone();
-            tasks.spawn(async move {
-                let side_prefix = Sk::side_prefix();
-                let player_prefix = Sk::player_prefix();
-                let result = tokio::try_join!(
-                    dao.query_match_collection::<MatchSideRecord>(&match_id, &side_prefix),
-                    dao.query_match_collection::<MatchPlayerRecord>(&match_id, &player_prefix),
-                );
-                (match_id, result)
-            });
-        }
-
-        let mut out = HashMap::with_capacity(metas.len());
-        while let Some(joined) = tasks.join_next().await {
-            let (match_id, result) = joined.map_err(|e| {
-                DaoError::Dynamo(format!("match collection fetch task panicked: {e}"))
-            })?;
-            let (sides, players) = result?;
-            if let Some(match_) = metas.remove(&match_id) {
-                out.insert(
-                    match_id,
-                    MatchAggregate {
-                        match_,
-                        sides,
-                        players,
-                    },
-                );
-            }
-        }
-        Ok(out)
-    }
-
-    /// Fetch match summaries (meta + sides, *no* players) for many matches at
-    /// once — the feed's hydration path, which never renders a full roster
-    /// (see [`MatchSummary`]). Missing ids are simply absent from the map.
-    /// Callers must pass at most `BATCH_GET_MAX` ids.
-    ///
-    /// Same shape as [`batch_get_match_aggregates`] minus the players query —
-    /// one `BatchGetItem` for the metas, then one concurrent `Query` per match
-    /// for sides only (still per-match; side ids aren't known ahead of the
-    /// read, same reasoning as `get_match`'s doc comment). Skipping the
-    /// players query entirely, rather than fetching and discarding it, is the
-    /// whole point: it's the one query per match this type exists to avoid.
-    ///
-    /// [`batch_get_match_aggregates`]: Dao::batch_get_match_aggregates
     #[tracing::instrument(skip(self))]
     pub async fn batch_get_match_summaries(
         &self,

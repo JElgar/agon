@@ -17,11 +17,21 @@ pub struct AgonActivities {
     pub search: SearchClient,
 }
 
-/// The result of resolving a match's fan-out: who should see it and the match's
-/// start time (the feed sort key material).
+/// One audience member: the viewer plus their capped "people you follow in
+/// this match" list and their own side (if they're a participant) — see
+/// `agon_core::dao::audience::AudienceMember`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FeedViewer {
+    pub viewer_id: String,
+    pub known_player_ids: Vec<String>,
+    pub viewer_side_id: Option<String>,
+}
+
+/// The result of resolving a match's fan-out: who should see it (with their
+/// known-players list) and the match's start time (the feed sort key material).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FanoutAudience {
-    pub viewer_ids: Vec<String>,
+    pub viewers: Vec<FeedViewer>,
     pub starts_at: String,
     /// False if the match no longer exists (workflow should stop).
     pub match_exists: bool,
@@ -30,7 +40,7 @@ pub struct FanoutAudience {
 /// One chunk of feed writes: the viewers in this batch for a given match.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WriteFeedChunk {
-    pub viewer_ids: Vec<String>,
+    pub viewers: Vec<FeedViewer>,
     pub match_id: String,
     pub starts_at: String,
     /// Processing timestamp, stamped by the workflow (deterministic per run).
@@ -59,19 +69,27 @@ impl AgonActivities {
             Some(agg) => agg.match_.starts_at,
             None => {
                 return Ok(FanoutAudience {
-                    viewer_ids: Vec::new(),
+                    viewers: Vec::new(),
                     starts_at: String::new(),
                     match_exists: false,
                 });
             }
         };
-        let viewer_ids = self
+        let audience = self
             .dao
             .resolve_fanout_audience(&match_id)
             .await
             .map_err(activity_err)?;
+        let viewers = audience
+            .into_iter()
+            .map(|(viewer_id, member)| FeedViewer {
+                viewer_id,
+                known_player_ids: member.known_player_ids,
+                viewer_side_id: member.viewer_side_id,
+            })
+            .collect();
         Ok(FanoutAudience {
-            viewer_ids,
+            viewers,
             starts_at,
             match_exists: true,
         })
@@ -85,13 +103,19 @@ impl AgonActivities {
         _ctx: ActivityContext,
         chunk: WriteFeedChunk,
     ) -> Result<(), ActivityError> {
+        let viewers: Vec<agon_core::dao::feed::FeedViewer> = chunk
+            .viewers
+            .into_iter()
+            .map(|v| agon_core::dao::feed::FeedViewer {
+                viewer_id: v.viewer_id,
+                audience: agon_core::dao::audience::AudienceMember {
+                    known_player_ids: v.known_player_ids,
+                    viewer_side_id: v.viewer_side_id,
+                },
+            })
+            .collect();
         self.dao
-            .write_feed_items(
-                &chunk.viewer_ids,
-                &chunk.match_id,
-                &chunk.starts_at,
-                &chunk.now,
-            )
+            .write_feed_items(&viewers, &chunk.match_id, &chunk.starts_at, &chunk.now)
             .await
             .map_err(activity_err)
     }
@@ -146,6 +170,22 @@ impl AgonActivities {
                 &input.accepting_user_id,
                 &input.responded_at,
             )
+            .await
+            .map_err(activity_err)
+    }
+
+    /// Refresh every side's cached roster preview from the match's current
+    /// player collection. Idempotent. Used by the accept saga — linking an
+    /// invitee can flip a cached preview entry from external to a real user
+    /// (see `Dao::refresh_side_roster_previews`).
+    #[activity]
+    pub async fn refresh_side_roster_previews(
+        self: std::sync::Arc<Self>,
+        _ctx: ActivityContext,
+        match_id: String,
+    ) -> Result<(), ActivityError> {
+        self.dao
+            .refresh_side_roster_previews(&match_id)
             .await
             .map_err(activity_err)
     }

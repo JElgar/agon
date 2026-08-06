@@ -459,6 +459,34 @@ pub struct MatchSideRecord {
     pub team_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Total players currently on this side. Denormalized alongside
+    /// `roster_preview` (kept in sync on every roster-changing write — see
+    /// `Dao::refresh_side_roster_previews`) so the feed can decide "show
+    /// players" vs "show team" without a live players query.
+    /// `#[serde(default)]` for items written before this field existed.
+    #[serde(default)]
+    pub player_count: u32,
+    /// This side's *entire* roster, cached — but only when it fits within
+    /// `ROSTER_PREVIEW_CAP`. When `player_count` exceeds the cap this is
+    /// empty: a partial peek ("3 of 11") isn't useful to show, so callers
+    /// should fall back to `team_id`/`name` instead. Not live — a snapshot as
+    /// of the last roster-changing write.
+    #[serde(default)]
+    pub roster_preview: Vec<SideRosterMemberRecord>,
+}
+
+/// One player in a side's cached `roster_preview` — just enough to resolve a
+/// live `Member` at read time. `user_id` is looked up fresh (name/avatar
+/// hydrated via `batch_get_users`, same as everywhere else) so a stale cache
+/// never shows an outdated photo; `display_name` is stored directly for an
+/// external (unlinked) player, same as `MatchPlayerRecord`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SideRosterMemberRecord {
+    pub player_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 /// `MATCH#<matchId>` / `PLAYER#<playerId>` — a player in a match. Embeds the
@@ -929,6 +957,24 @@ pub struct FeedItemRecord {
     pub starts_at: String,
     /// When this feed entry was written (for debugging / potential TTL).
     pub created_at: String,
+    /// Up to `MAX_KNOWN_PLAYERS` user ids of this match's participants that the
+    /// viewer follows — "people you know are playing", denormalized at fan-out
+    /// time so a feed read never queries the match's player collection.
+    /// Snapshot, not live: it reflects the audience computation's state as of
+    /// the last fan-out (match creation, or an accepted invitation re-running
+    /// it), not subsequent follow/unfollow activity. `#[serde(default)]` for
+    /// feed items written before this field existed.
+    #[serde(default)]
+    pub known_player_ids: Vec<String>,
+    /// The side *this viewer* plays on, if they're themselves a participant
+    /// in the match — lets their own feed card show the score confirm/dispute
+    /// prompt without a live player query. `None` for a viewer in the
+    /// audience only via a follow (they're not playing) or a not-yet-assigned
+    /// participant. Same snapshot/refresh characteristics as
+    /// `known_player_ids`. `#[serde(default)]` for feed items written before
+    /// this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewer_side_id: Option<String>,
 }
 
 /// Aggregate stats for one sport, stored inline on `UserRecord::stats` keyed

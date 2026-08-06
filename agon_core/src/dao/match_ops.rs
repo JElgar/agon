@@ -15,13 +15,50 @@ use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::{
     ConfirmedScoreRecord, HeaderPhotoRecord, MatchFormatRecord, MatchPlayerRecord, MatchRecord,
-    MatchScoreRecord, MatchSideRecord, PendingScoreRecord,
+    MatchScoreRecord, MatchSideRecord, PendingScoreRecord, SideRosterMemberRecord,
 };
 
 pub const TYPE_MATCH: &str = "match";
 pub const TYPE_MATCH_SIDE: &str = "match_side";
 pub const TYPE_MATCH_PLAYER: &str = "match_player";
 pub const TYPE_MATCH_SCORE: &str = "match_score";
+
+/// A side's roster is cached in full (`MatchSideRecord::roster_preview`) only
+/// when it's this small or smaller — enough for 1v1 and doubles/small squads.
+/// Above the cap the preview is left empty and callers fall back to
+/// team name/logo (see the field's doc comment for why a partial peek isn't
+/// stored). A feed reading the *stored* cache doesn't need this constant: an
+/// empty `roster_preview` already means "show the team instead," by
+/// construction. `agon_service` does need it — to make the same "small
+/// enough to show players" call when resolving a `Match`'s sides *live* from
+/// a full player list (see `Api::resolve_side_names`), so both paths agree.
+pub const ROSTER_PREVIEW_CAP: usize = 4;
+
+/// Group `players` by `side.side_id` and compute the `(player_count,
+/// roster_preview)` pair to store on that side — the roster only when it fits
+/// within [`ROSTER_PREVIEW_CAP`], otherwise empty. Pure/sync; shared by
+/// `create_match` (already has the full roster in memory) and
+/// `refresh_side_roster_previews` (re-queries it).
+fn side_roster(side_id: &str, players: &[MatchPlayerRecord]) -> (u32, Vec<SideRosterMemberRecord>) {
+    let on_side: Vec<&MatchPlayerRecord> = players
+        .iter()
+        .filter(|p| p.side_id.as_deref() == Some(side_id))
+        .collect();
+    let player_count = on_side.len() as u32;
+    let roster_preview = if on_side.len() <= ROSTER_PREVIEW_CAP {
+        on_side
+            .into_iter()
+            .map(|p| SideRosterMemberRecord {
+                player_id: p.player_id.clone(),
+                user_id: p.user_id.clone(),
+                display_name: p.display_name.clone(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    (player_count, roster_preview)
+}
 
 /// A match plus its sides and players, assembled from one collection query.
 /// Excludes the live-scoring score record, likes and comments (fetched separately).
@@ -30,6 +67,15 @@ pub struct MatchAggregate {
     pub match_: MatchRecord,
     pub sides: Vec<MatchSideRecord>,
     pub players: Vec<MatchPlayerRecord>,
+}
+
+/// A match plus its sides, *without* players — for contexts (the feed) that
+/// don't render the roster and shouldn't pay for querying it. See
+/// [`Dao::batch_get_match_summaries`].
+#[derive(Debug)]
+pub struct MatchSummary {
+    pub match_: MatchRecord,
+    pub sides: Vec<MatchSideRecord>,
 }
 
 impl Dao {
@@ -65,11 +111,17 @@ impl Dao {
             .transact_items(TransactWriteItem::builder().put(put_meta).build());
 
         for side in sides {
+            let (player_count, roster_preview) = side_roster(&side.side_id, players);
+            let side = MatchSideRecord {
+                player_count,
+                roster_preview,
+                ..side.clone()
+            };
             let item = to_item(
                 &Pk::Match(match_.id.clone()),
                 &Sk::Side(side.side_id.clone()),
                 TYPE_MATCH_SIDE,
-                side,
+                &side,
             )?;
             let put = Put::builder()
                 .table_name(self.table())
@@ -96,8 +148,14 @@ impl Dao {
             // is harmless.
             let joined = player.invitation.is_none();
             if let (Some(uid), true) = (&player.user_id, joined) {
-                let feed_item =
-                    self.feed_item(uid, &match_.id, &match_.starts_at, &match_.created_at)?;
+                let feed_item = self.feed_item(
+                    uid,
+                    &match_.id,
+                    &match_.starts_at,
+                    &match_.created_at,
+                    &[],
+                    player.side_id.clone(),
+                )?;
                 let feed_put = Put::builder()
                     .table_name(self.table())
                     .set_item(Some(feed_item))
@@ -261,6 +319,54 @@ impl Dao {
                         players,
                     },
                 );
+            }
+        }
+        Ok(out)
+    }
+
+    /// Fetch match summaries (meta + sides, *no* players) for many matches at
+    /// once — the feed's hydration path, which never renders a full roster
+    /// (see [`MatchSummary`]). Missing ids are simply absent from the map.
+    /// Callers must pass at most `BATCH_GET_MAX` ids.
+    ///
+    /// Same shape as [`batch_get_match_aggregates`] minus the players query —
+    /// one `BatchGetItem` for the metas, then one concurrent `Query` per match
+    /// for sides only (still per-match; side ids aren't known ahead of the
+    /// read, same reasoning as `get_match`'s doc comment). Skipping the
+    /// players query entirely, rather than fetching and discarding it, is the
+    /// whole point: it's the one query per match this type exists to avoid.
+    ///
+    /// [`batch_get_match_aggregates`]: Dao::batch_get_match_aggregates
+    #[tracing::instrument(skip(self))]
+    pub async fn batch_get_match_summaries(
+        &self,
+        match_ids: &[String],
+    ) -> DaoResult<HashMap<String, MatchSummary>> {
+        let mut metas = self.batch_get_match_metas(match_ids).await?;
+        if metas.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut tasks = JoinSet::new();
+        for match_id in metas.keys().cloned() {
+            let dao = self.clone();
+            tasks.spawn(async move {
+                let side_prefix = Sk::side_prefix();
+                let sides = dao
+                    .query_match_collection::<MatchSideRecord>(&match_id, &side_prefix)
+                    .await;
+                (match_id, sides)
+            });
+        }
+
+        let mut out = HashMap::with_capacity(metas.len());
+        while let Some(joined) = tasks.join_next().await {
+            let (match_id, sides) = joined.map_err(|e| {
+                DaoError::Dynamo(format!("match collection fetch task panicked: {e}"))
+            })?;
+            let sides = sides?;
+            if let Some(match_) = metas.remove(&match_id) {
+                out.insert(match_id, MatchSummary { match_, sides });
             }
         }
         Ok(out)
@@ -451,6 +557,44 @@ impl Dao {
             .send()
             .await
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Recompute and store every side's `player_count`/`roster_preview` from
+    /// the match's *current* player collection. Call after any write that can
+    /// change a side's composition or a player's identity within it —
+    /// invitation acceptance (linking external → user) and `put_match_player`
+    /// (roster reconciliation / late adds). `create_match` doesn't need this:
+    /// it computes the same thing inline, from the roster it already has in
+    /// memory, within the same transaction.
+    ///
+    /// Two `Query`s (current sides, current players — both "a handful of
+    /// items," same as `get_match`) plus one `UpdateItem` per side. This runs
+    /// on the rarer roster-mutating write paths, never on a feed read — the
+    /// whole point is for the feed to *avoid* re-deriving this live.
+    #[tracing::instrument(skip(self))]
+    pub async fn refresh_side_roster_previews(&self, match_id: &str) -> DaoResult<()> {
+        let side_prefix = Sk::side_prefix();
+        let player_prefix = Sk::player_prefix();
+        let (sides, players) = tokio::try_join!(
+            self.query_match_collection::<MatchSideRecord>(match_id, &side_prefix),
+            self.query_match_collection::<MatchPlayerRecord>(match_id, &player_prefix),
+        )?;
+
+        for side in &sides {
+            let (player_count, roster_preview) = side_roster(&side.side_id, &players);
+            self.client
+                .update_item()
+                .table_name(self.table())
+                .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+                .key(ATTR_SK, s(Sk::Side(side.side_id.clone()).to_string()))
+                .update_expression("SET player_count = :pc, roster_preview = :rp")
+                .expression_attribute_values(":pc", to_attr(&player_count)?)
+                .expression_attribute_values(":rp", to_attr(&roster_preview)?)
+                .send()
+                .await
+                .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        }
         Ok(())
     }
 

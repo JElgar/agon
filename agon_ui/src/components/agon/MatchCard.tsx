@@ -35,10 +35,14 @@ import {
 import { myPendingInvitation } from '@/lib/members'
 
 type Match = components['schemas']['Match']
+type FeedMatch = components['schemas']['FeedMatch']
 type MatchSide = components['schemas']['MatchSide']
 
 export interface MatchCardProps extends React.HTMLAttributes<HTMLDivElement> {
-  match: Match
+  /** A detail-view `Match` (full roster) or a feed's lighter `FeedMatch` (no
+   *  roster — see `FeedMatch.known_participants`/`viewer_side_id`). Every
+   *  field this card actually reads is present on both. */
+  match: Match | FeedMatch
   /** Called when the card body is activated (navigate to match detail). */
   onOpen?: () => void
   /** The signed-in user's id. When they're a participant with a pending score to
@@ -62,7 +66,7 @@ function InviteResponseBar({
   match,
   currentUserId,
 }: {
-  match: Match
+  match: Match | FeedMatch
   currentUserId?: string
 }) {
   const queryClient = useQueryClient()
@@ -136,7 +140,7 @@ function InviteResponseBar({
  * `CopyInviteButton`'s fallback chain, with a transient checkmark standing in
  * for its "Copied!" label since this is an icon-only button.
  */
-function ShareMatchButton({ match }: { match: Match }) {
+function ShareMatchButton({ match }: { match: Match | FeedMatch }) {
   const [copied, setCopied] = useState(false)
 
   useEffect(() => {

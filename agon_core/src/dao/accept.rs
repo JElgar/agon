@@ -68,7 +68,7 @@ impl Dao {
         // 2 + 3. Link the roster entry, and (match) the accepter's own feed row.
         let (roster_item, feed_put, match_id) = match &inv.context {
             InvitationContextRecord::Match { match_id, .. } => {
-                let (item, starts_at) = self
+                let (item, starts_at, side_id) = self
                     .linked_match_player_item(
                         match_id,
                         invitation_id,
@@ -76,7 +76,8 @@ impl Dao {
                         responded_at,
                     )
                     .await?;
-                let feed_item = self.feed_item(accepting_user_id, match_id, &starts_at, now)?;
+                let feed_item =
+                    self.feed_item(accepting_user_id, match_id, &starts_at, now, &[], side_id)?;
                 let feed_put = Put::builder()
                     .table_name(self.table())
                     .set_item(Some(feed_item))
@@ -122,7 +123,9 @@ impl Dao {
     }
 
     /// Build the linked match-player item (external → user) for `invitation_id`,
-    /// returning it together with the match's `starts_at` (feed sort material).
+    /// returning it together with the match's `starts_at` (feed sort material)
+    /// and the player's `side_id` (feed material too — the accepter's own
+    /// feed row records which side they play on).
     /// Keeps the stable `player_id` so score references survive the flip.
     async fn linked_match_player_item(
         &self,
@@ -130,7 +133,7 @@ impl Dao {
         invitation_id: &str,
         accepting_user_id: &str,
         responded_at: &str,
-    ) -> DaoResult<(Item, String)> {
+    ) -> DaoResult<(Item, String, Option<String>)> {
         let Some(agg) = self.get_match(match_id).await? else {
             return Err(DaoError::NotFound(format!("match {match_id}")));
         };
@@ -152,8 +155,13 @@ impl Dao {
             inv.status = "accepted".to_string();
             inv.responded_at = Some(responded_at.to_string());
         }
+        let side_id = player.side_id.clone();
 
-        Ok((self.match_player_item(match_id, &player)?, starts_at))
+        Ok((
+            self.match_player_item(match_id, &player)?,
+            starts_at,
+            side_id,
+        ))
     }
 
     /// Build the linked team-member item (external → user) for `invitation_id`.
@@ -211,7 +219,7 @@ impl Dao {
 
         match &inv.context {
             InvitationContextRecord::Match { match_id, .. } => {
-                let (item, _) = self
+                let (item, _, _) = self
                     .linked_match_player_item(
                         match_id,
                         invitation_id,

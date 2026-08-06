@@ -15,6 +15,7 @@ import {
 const CLOCK_TICK_MS = 15_000
 
 type Match = components['schemas']['Match']
+type FeedMatch = components['schemas']['FeedMatch']
 type MatchSide = components['schemas']['MatchSide']
 
 function sideName(side: MatchSide | undefined, fallback: string): string {
@@ -34,7 +35,7 @@ export function LiveMatchBlock({
   state,
   tickerLimit = 2,
 }: {
-  match: Match
+  match: Match | FeedMatch
   state: FootballScore
   /** How many recent events to show under the score. */
   tickerLimit?: number

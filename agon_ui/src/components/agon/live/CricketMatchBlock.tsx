@@ -16,6 +16,7 @@ import {
 import { cricketFormat } from '@/lib/matchFormat'
 
 type Match = components['schemas']['Match']
+type FeedMatch = components['schemas']['FeedMatch']
 
 /** One ball's chip in the "this over" row (mockup: "1  4  W  ·  2"). */
 function BallChip({ label, kind }: { label: string; kind: 'boundary' | 'wicket' | null }) {
@@ -44,7 +45,7 @@ export function CricketMatchBlock({
   state,
   showDescription = true,
 }: {
-  match: Match
+  match: Match | FeedMatch
   state: CricketScore
   /** Whether to show the state-of-game line (target/leading/result) here.
    *  Callers that already surface it elsewhere (the feed card's header)

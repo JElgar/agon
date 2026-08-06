@@ -6,7 +6,11 @@ export type FootballGoalEvent = components['schemas']['FootballGoalEvent']
 type FootballCardEvent = components['schemas']['FootballCardEvent']
 type FootballSubstitutionEvent = components['schemas']['FootballSubstitutionEvent']
 type Score = components['schemas']['Score']
-type Match = components['schemas']['Match']
+type MatchPlayer = components['schemas']['MatchPlayer']
+type FeedMatch = components['schemas']['FeedMatch']
+/** Anything with an optional `players` list — see `members.ts`'s `MatchLike`
+ *  for why `FeedMatch` needs its own explicit branch. */
+type MatchLike = { players?: MatchPlayer[] } | FeedMatch
 
 /** A football `Score` — live or finished, confirmed or not, it's the same
  *  shape either way (see `Score`'s doc comment on the backend). Narrowed via
@@ -184,9 +188,10 @@ export function recentGoalEvents(goals: FootballGoalEvent[], limit: number): Foo
 }
 
 /** Player display name for a member id, if it's on the roster. */
-function playerNameFor(match: Pick<Match, 'players'>, playerId: string | undefined): string | null {
+function playerNameFor(match: MatchLike, playerId: string | undefined): string | null {
   if (!playerId) return null
-  const player = match.players.find((p) => p.member.id === playerId)
+  const players = ('players' in match && match.players) || []
+  const player = players.find((p) => p.member.id === playerId)
   return player ? memberName(player.member) : null
 }
 
@@ -195,10 +200,7 @@ function playerNameFor(match: Pick<Match, 'players'>, playerId: string | undefin
  *  mini-ticker. Which side it belongs to isn't repeated in the text; callers
  *  convey that by aligning/positioning the row using `event.side_id`
  *  instead (see `LiveScoringPage`/`LiveMatchBlock`). */
-export function describeEvent(
-  event: FootballEventView,
-  match: Pick<Match, 'players'>,
-): string {
+export function describeEvent(event: FootballEventView, match: MatchLike): string {
   const scorer = playerNameFor(match, event.player_id)
 
   switch (event.kind) {

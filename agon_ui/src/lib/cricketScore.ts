@@ -15,6 +15,11 @@ export type CricketLiveEvent = components['schemas']['CricketLiveEvent']
 type LiveEvent = components['schemas']['LiveEvent']
 type Score = components['schemas']['Score']
 type Match = components['schemas']['Match']
+type MatchPlayer = components['schemas']['MatchPlayer']
+type FeedMatch = components['schemas']['FeedMatch']
+/** Anything with an optional `players` list — see `members.ts`'s `MatchLike`
+ *  for why `FeedMatch` needs its own explicit branch. */
+type MatchLike = { players?: MatchPlayer[] } | FeedMatch
 
 /** Narrows a match's score to its cricket variant — innings plus, while a
  *  match is actually being live-scored, the bounded recent-ball window and
@@ -292,7 +297,7 @@ export function matchTotalsBySide(state: CricketMatchProgress): Record<string, n
  * side batting first finishing ahead.
  */
 export function cricketStateDescription(
-  match: Pick<Match, 'sides' | 'players'>,
+  match: Pick<Match, 'sides'> & Partial<Pick<Match, 'players'>>,
   state: CricketMatchProgress,
   format: Pick<CricketFormat, 'innings_per_side' | 'overs_per_innings'>,
 ): string | null {
@@ -340,7 +345,11 @@ export function cricketStateDescription(
     last.overs.balls === 0
 
   if (battingTotal > bowlingTotal && !oversAllUsed) {
-    const rosterSize = match.players.filter((p) => p.side_id === last.batting_side_id).length
+    // No roster (a feed card's `FeedMatch` never carries one) → fall back to
+    // the standard 11-a-side assumption rather than under-count wickets.
+    const rosterSize = (match.players ?? []).filter(
+      (p) => p.side_id === last.batting_side_id,
+    ).length
     const maxWickets = rosterSize > 1 ? rosterSize - 1 : 10
     const remaining = Math.max(maxWickets - last.wickets, 0)
     return `${sideNameFor(match, last.batting_side_id)} won by ${remaining} wicket${remaining === 1 ? '' : 's'}`
@@ -355,13 +364,17 @@ export function sideNameFor(match: Pick<Match, 'sides'>, sideId: string): string
   return match.sides.find((s) => s.id === sideId)?.name?.trim() || 'This side'
 }
 
-/** Player display name for a member id, if it's on the roster. */
+/** Player display name for a member id, if it's on the roster. A feed card's
+ *  `FeedMatch` never carries one (see `cricketStateDescription`), so a
+ *  batter/bowler name on a live feed card falls back to "—" rather than
+ *  crashing — full names are available on the match detail view. */
 export function playerNameFor(
-  match: Pick<Match, 'players'>,
+  match: MatchLike,
   playerId: string | undefined | null,
 ): string {
   if (!playerId) return '—'
-  const player = match.players.find((p) => p.member.id === playerId)
+  const players = ('players' in match && match.players) || []
+  const player = players.find((p) => p.member.id === playerId)
   return player ? memberName(player.member) : '—'
 }
 

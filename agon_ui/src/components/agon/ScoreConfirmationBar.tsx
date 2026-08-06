@@ -7,9 +7,13 @@ import { Button } from '@/components/ui/button'
 import { confirmationState } from '@/lib/confirmation'
 
 type Match = components['schemas']['Match']
+type FeedMatch = components['schemas']['FeedMatch']
 
 export interface ScoreConfirmationBarProps {
-  match: Match
+  /** A detail-view `Match` (full roster) or a feed's lighter `FeedMatch` —
+   *  `confirmationState` resolves "which side is the viewer on" from
+   *  whichever shape it's given. */
+  match: Match | FeedMatch
   currentUserId: string | undefined
   /** Compact layout for the feed card vs. a fuller block on match detail. */
   variant?: 'card' | 'detail'

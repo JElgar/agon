@@ -4,10 +4,25 @@ type Member = components['schemas']['Member']
 type MatchPlayer = components['schemas']['MatchPlayer']
 type MatchSide = components['schemas']['MatchSide']
 type Match = components['schemas']['Match']
+type FeedMatch = components['schemas']['FeedMatch']
 type Invitation = components['schemas']['Invitation']
 // The generated `invitation.kind` type erases the discriminant (`Omit<…,"type">
 // & unknown`), so `.type` won't narrow. Use the real union for token extraction.
 type InvitationKind = components['schemas']['InvitationKind']
+
+/**
+ * Anything with an optional `players` list: a full `Match`, a locally-built
+ * draft (e.g. `FootballScoreFields`' not-yet-created match), or a feed's
+ * lighter `FeedMatch`, which has no `players` field at all — see
+ * `FeedMatch.known_participants`/`viewer_side_id`.
+ *
+ * The `FeedMatch` branch is listed explicitly (rather than relying on
+ * `{ players?: ... }` alone) because TypeScript's weak-type check rejects a
+ * `FeedMatch` argument against an all-optional object type on its own: it
+ * shares literally no properties with `{ players?: ... }`. Narrow with
+ * `'players' in match`.
+ */
+type MatchLike = { players?: MatchPlayer[] } | FeedMatch
 
 /**
  * The bearer invite token for a member with a pending token-invitation, else
@@ -31,13 +46,19 @@ export function inviteLink(token: string): string {
  * known Agon user) and haven't yet responded — else null. Lets match views show
  * the viewer their invite and an accept/decline action, mirroring the inbox.
  * Only user-kind invites apply: the viewer is a signed-in account, matched by id.
+ *
+ * Also accepts a feed's `FeedMatch`, which never carries the full roster —
+ * always `null` there, which is correct: an invitee has no feed row for a
+ * match until they accept (see the server's fan-out doc comments), so a feed
+ * card never has a pending invitation to show in the first place.
  */
 export function myPendingInvitation(
-  match: Pick<Match, 'players'>,
+  match: MatchLike,
   currentUserId: string | undefined,
 ): Invitation | null {
   if (!currentUserId) return null
-  for (const player of match.players) {
+  const players = ('players' in match && match.players) || []
+  for (const player of players) {
     if (player.member.type !== 'User') continue
     if (player.member.user_id !== currentUserId) continue
     const invitation = player.member.invitation
@@ -81,13 +102,18 @@ export function withInvitationStatus(
  * either added ad-hoc (no invitation) or has accepted. Mirrors the server's
  * `caller_is_participant`: participants may edit the match, invite others, and
  * record the result. Pending/declined invitees are not participants.
+ *
+ * Also accepts a feed's `FeedMatch` (see `myPendingInvitation`'s doc comment)
+ * — always `false` there; check `FeedMatch.viewer_side_id` instead if you
+ * need "is the viewer playing" from a feed card.
  */
 export function isParticipant(
-  match: Pick<Match, 'players'>,
+  match: MatchLike,
   currentUserId: string | undefined,
 ): boolean {
   if (!currentUserId) return false
-  return match.players.some((player) => {
+  const players = ('players' in match && match.players) || []
+  return players.some((player) => {
     if (player.member.type !== 'User') return false
     if (player.member.user_id !== currentUserId) return false
     const invitation = player.member.invitation

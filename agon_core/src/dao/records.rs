@@ -35,19 +35,11 @@ pub struct HeaderPhotoRecord {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ScoreRecord {
     Simple {
-        /// Points per side, keyed by side id. Accepts the pre-migration
-        /// `Vec<{side_id, points}>` shape on read (see
-        /// `deserialize_simple_entries`) so a match doesn't 500 just because
-        /// it hasn't been through `migrate_score_entries.py` yet.
-        #[serde(deserialize_with = "deserialize_simple_entries")]
+        /// Points per side, keyed by side id.
         entries: HashMap<String, u32>,
     },
     Sets {
-        /// Games won per set per side, keyed by side id. Accepts the
-        /// pre-migration `Vec<{side_id, sets}>` shape on read (see
-        /// `deserialize_sets_entries`) so a match doesn't 500 just because it
-        /// hasn't been through `migrate_score_entries.py` yet.
-        #[serde(deserialize_with = "deserialize_sets_entries")]
+        /// Games won per set per side, keyed by side id.
         entries: HashMap<String, Vec<u32>>,
     },
     Cricket {
@@ -90,64 +82,6 @@ pub enum ScoreRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         penalty_shootout_score: Option<HashMap<String, u32>>,
     },
-}
-
-/// Legacy pre-migration shape for one `Simple` score entry: `{"side_id":
-/// ..., "points": ...}`. Only ever seen on read, from items written before
-/// `entries` became a side_id-keyed map.
-#[derive(Deserialize)]
-struct LegacySimpleEntry {
-    side_id: String,
-    points: u32,
-}
-
-/// Accepts `entries` as either the current side_id-keyed map or the
-/// pre-migration `Vec<{side_id, points}>` list, so a `Simple` score
-/// deserializes regardless of whether the item has been through
-/// `migrate_score_entries.py` yet. `#[serde(untagged)]` buffers the value and
-/// tries each shape in turn — cheap here since scores are small.
-fn deserialize_simple_entries<'de, D>(deserializer: D) -> Result<HashMap<String, u32>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Shape {
-        Map(HashMap<String, u32>),
-        List(Vec<LegacySimpleEntry>),
-    }
-    Ok(match Shape::deserialize(deserializer)? {
-        Shape::Map(map) => map,
-        Shape::List(list) => list.into_iter().map(|e| (e.side_id, e.points)).collect(),
-    })
-}
-
-/// Legacy pre-migration shape for one `Sets` score entry: `{"side_id": ...,
-/// "sets": [...]}`. Only ever seen on read, from items written before
-/// `entries` became a side_id-keyed map.
-#[derive(Deserialize)]
-struct LegacySetsEntry {
-    side_id: String,
-    sets: Vec<u32>,
-}
-
-/// Accepts `entries` as either the current side_id-keyed map or the
-/// pre-migration `Vec<{side_id, sets}>` list — see
-/// `deserialize_simple_entries`, the `Simple`-score counterpart.
-fn deserialize_sets_entries<'de, D>(deserializer: D) -> Result<HashMap<String, Vec<u32>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Shape {
-        Map(HashMap<String, Vec<u32>>),
-        List(Vec<LegacySetsEntry>),
-    }
-    Ok(match Shape::deserialize(deserializer)? {
-        Shape::Map(map) => map,
-        Shape::List(list) => list.into_iter().map(|e| (e.side_id, e.sets)).collect(),
-    })
 }
 
 /// One innings' final totals, as stored on a match's confirmed/pending
@@ -1030,7 +964,10 @@ mod tests {
     use aws_sdk_dynamodb::types::AttributeValue;
 
     /// `Simple`/`Sets` `entries` round-trip through the side_id-keyed map
-    /// shape — the shape every write produces today.
+    /// shape. (Data written before this shape landed no longer needs
+    /// handling here — see `migrate_score_entries.py`, the one-off script
+    /// that backfilled every match's `confirmed_score`/`pending_score`/
+    /// score-submission history to this shape.)
     #[test]
     fn simple_map_shape_deserializes() {
         let map_shape = AttributeValue::M(HashMap::from([
@@ -1040,37 +977,6 @@ mod tests {
         let score_av = AttributeValue::M(HashMap::from([
             ("type".to_string(), AttributeValue::S("simple".into())),
             ("entries".to_string(), map_shape),
-        ]));
-        let rec: ScoreRecord = serde_dynamo::from_attribute_value(score_av).unwrap();
-        match rec {
-            ScoreRecord::Simple { entries } => {
-                assert_eq!(entries.get("sideA"), Some(&6));
-                assert_eq!(entries.get("sideB"), Some(&3));
-            }
-            _ => panic!("expected simple"),
-        }
-    }
-
-    /// `Simple` `entries` also deserializes from the pre-migration
-    /// `Vec<{side_id, points}>` list shape, so a match written before the
-    /// side_id-keyed map landed still reads (e.g. from the API's feed/match
-    /// endpoints) even if `migrate_score_entries.py` hasn't reached it yet —
-    /// see `deserialize_simple_entries`.
-    #[test]
-    fn simple_legacy_list_shape_deserializes() {
-        let list_shape = AttributeValue::L(vec![
-            AttributeValue::M(HashMap::from([
-                ("side_id".to_string(), AttributeValue::S("sideA".into())),
-                ("points".to_string(), AttributeValue::N("6".into())),
-            ])),
-            AttributeValue::M(HashMap::from([
-                ("side_id".to_string(), AttributeValue::S("sideB".into())),
-                ("points".to_string(), AttributeValue::N("3".into())),
-            ])),
-        ]);
-        let score_av = AttributeValue::M(HashMap::from([
-            ("type".to_string(), AttributeValue::S("simple".into())),
-            ("entries".to_string(), list_shape),
         ]));
         let rec: ScoreRecord = serde_dynamo::from_attribute_value(score_av).unwrap();
         match rec {
@@ -1094,35 +1000,6 @@ mod tests {
         let score_av = AttributeValue::M(HashMap::from([
             ("type".to_string(), AttributeValue::S("sets".into())),
             ("entries".to_string(), map_shape),
-        ]));
-        let rec: ScoreRecord = serde_dynamo::from_attribute_value(score_av).unwrap();
-        match rec {
-            ScoreRecord::Sets { entries } => {
-                assert_eq!(entries.get("sideA"), Some(&vec![6, 4]));
-            }
-            _ => panic!("expected sets"),
-        }
-    }
-
-    /// `Sets` `entries` also deserializes from the pre-migration
-    /// `Vec<{side_id, sets}>` list shape — see
-    /// `simple_legacy_list_shape_deserializes`, the `Simple`-score
-    /// counterpart.
-    #[test]
-    fn sets_legacy_list_shape_deserializes() {
-        let list_shape = AttributeValue::L(vec![AttributeValue::M(HashMap::from([
-            ("side_id".to_string(), AttributeValue::S("sideA".into())),
-            (
-                "sets".to_string(),
-                AttributeValue::L(vec![
-                    AttributeValue::N("6".into()),
-                    AttributeValue::N("4".into()),
-                ]),
-            ),
-        ]))]);
-        let score_av = AttributeValue::M(HashMap::from([
-            ("type".to_string(), AttributeValue::S("sets".into())),
-            ("entries".to_string(), list_shape),
         ]));
         let rec: ScoreRecord = serde_dynamo::from_attribute_value(score_av).unwrap();
         match rec {

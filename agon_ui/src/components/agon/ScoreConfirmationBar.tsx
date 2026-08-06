@@ -8,12 +8,14 @@ import { confirmationState } from '@/lib/confirmation'
 
 type Match = components['schemas']['Match']
 type FeedMatch = components['schemas']['FeedMatch']
+type SearchMatch = components['schemas']['SearchMatch']
 
 export interface ScoreConfirmationBarProps {
-  /** A detail-view `Match` (full roster) or a feed's lighter `FeedMatch` —
-   *  `confirmationState` resolves "which side is the viewer on" from
-   *  whichever shape it's given. */
-  match: Match | FeedMatch
+  /** A detail-view `Match`, a feed's `FeedMatch`, or a search/profile-activity
+   *  `SearchMatch` — `confirmationState` resolves "which side is the viewer
+   *  on" from whichever shape it's given (`SearchMatch` has no per-viewer
+   *  side info at all, so it always renders nothing). */
+  match: Match | FeedMatch | SearchMatch
   currentUserId: string | undefined
   /** Compact layout for the feed card vs. a fuller block on match detail. */
   variant?: 'card' | 'detail'

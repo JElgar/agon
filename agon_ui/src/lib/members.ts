@@ -5,6 +5,7 @@ type MatchPlayer = components['schemas']['MatchPlayer']
 type MatchSide = components['schemas']['MatchSide']
 type Match = components['schemas']['Match']
 type FeedMatch = components['schemas']['FeedMatch']
+type SearchMatch = components['schemas']['SearchMatch']
 type Invitation = components['schemas']['Invitation']
 // The generated `invitation.kind` type erases the discriminant (`Omit<…,"type">
 // & unknown`), so `.type` won't narrow. Use the real union for token extraction.
@@ -12,17 +13,18 @@ type InvitationKind = components['schemas']['InvitationKind']
 
 /**
  * Anything with an optional `players` list: a full `Match`, a locally-built
- * draft (e.g. `FootballScoreFields`' not-yet-created match), or a feed's
- * lighter `FeedMatch`, which has no `players` field at all — see
- * `FeedMatch.known_participants`/`viewer_side_id`.
+ * draft (e.g. `FootballScoreFields`' not-yet-created match), or one of the
+ * trimmed shapes with no `players` field at all — a feed's `FeedMatch` (see
+ * `known_participants`/`viewer_side_id`) or search/profile-activity's
+ * `SearchMatch`.
  *
- * The `FeedMatch` branch is listed explicitly (rather than relying on
- * `{ players?: ... }` alone) because TypeScript's weak-type check rejects a
- * `FeedMatch` argument against an all-optional object type on its own: it
- * shares literally no properties with `{ players?: ... }`. Narrow with
+ * The `FeedMatch`/`SearchMatch` branches are listed explicitly (rather than
+ * relying on `{ players?: ... }` alone) because TypeScript's weak-type check
+ * rejects such an argument against an all-optional object type on its own:
+ * it shares literally no properties with `{ players?: ... }`. Narrow with
  * `'players' in match`.
  */
-type MatchLike = { players?: MatchPlayer[] } | FeedMatch
+type MatchLike = { players?: MatchPlayer[] } | FeedMatch | SearchMatch
 
 /**
  * The bearer invite token for a member with a pending token-invitation, else

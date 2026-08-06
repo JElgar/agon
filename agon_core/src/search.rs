@@ -89,6 +89,32 @@ pub struct SearchQuery {
     pub limit: u32,
 }
 
+/// A queried participant's result in a match, resolved from the match search
+/// document's outcome buckets (see [`search_matches`](SearchClient::search_matches)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchOutcome {
+    Won,
+    Lost,
+    Draw,
+}
+
+/// One match search hit, with the outcome of whichever participant the
+/// caller asked about (see [`SearchClient::search_matches`]).
+#[derive(Debug, Clone)]
+pub struct MatchSearchHit {
+    pub id: String,
+    /// `None` when the search wasn't scoped to a participant, or when it was
+    /// but the match has no confirmed result yet — not a draw, just unknown.
+    pub outcome: Option<MatchOutcome>,
+}
+
+/// A page of match search hits, with an offset to fetch the next page.
+#[derive(Debug, Clone)]
+pub struct MatchSearchHits {
+    pub items: Vec<MatchSearchHit>,
+    pub next_offset: Option<u32>,
+}
+
 /// A Meilisearch client wrapping the official SDK. Cheap to clone (the SDK's
 /// `Client` wraps its `reqwest::Client` internally).
 #[derive(Clone)]
@@ -101,6 +127,19 @@ pub struct SearchClient {
 #[derive(Deserialize)]
 struct IdOnly {
     id: String,
+}
+
+/// What [`SearchClient::search_matches`] retrieves from a match hit — enough
+/// to resolve a participant's outcome without a second lookup.
+#[derive(Deserialize)]
+struct MatchOutcomeDoc {
+    id: String,
+    #[serde(default)]
+    winning_participant_ids: Vec<String>,
+    #[serde(default)]
+    losing_participant_ids: Vec<String>,
+    #[serde(default)]
+    drawing_participant_ids: Vec<String>,
 }
 
 impl SearchClient {
@@ -171,6 +210,78 @@ impl SearchClient {
         let next_offset = (consumed < total).then_some(consumed);
 
         Ok(SearchHits { ids, next_offset })
+    }
+
+    /// Search the matches index, resolving each hit's outcome for
+    /// `participant_id` (if given) from the document's outcome buckets —
+    /// `winning_participant_ids`/`losing_participant_ids`/
+    /// `drawing_participant_ids` (see `agon_worker`'s `MatchDoc`) — instead of
+    /// a second lookup. Free: those fields ride along on the same hit a
+    /// `participant` filter already retrieves.
+    ///
+    /// `participant_id` only makes sense paired with a `query.filter` that
+    /// already scopes results to that participant (e.g. `participant_ids =
+    /// "<id>"`) — this method doesn't add that filter itself, callers already
+    /// building one for the `participant` discovery param should reuse it as
+    /// the outcome subject.
+    pub async fn search_matches(
+        &self,
+        query: &SearchQuery,
+        participant_id: Option<&str>,
+    ) -> SearchResult<MatchSearchHits> {
+        let idx = self.client.index(Index::Matches.name());
+        let mut builder = idx.search();
+        builder
+            .with_query(&query.q)
+            .with_offset(query.offset as usize)
+            .with_limit(query.limit as usize)
+            .with_attributes_to_retrieve(Selectors::Some(&[
+                "id",
+                "winning_participant_ids",
+                "losing_participant_ids",
+                "drawing_participant_ids",
+            ]));
+        if let Some(filter) = &query.filter {
+            builder.with_filter(filter);
+        }
+        let sort_refs: Vec<&str> = query.sort.iter().map(String::as_str).collect();
+        if !sort_refs.is_empty() {
+            builder.with_sort(&sort_refs);
+        }
+
+        let results = builder
+            .execute::<MatchOutcomeDoc>()
+            .await
+            .map_err(|e| SearchError(e.to_string()))?;
+
+        let items: Vec<MatchSearchHit> = results
+            .hits
+            .into_iter()
+            .map(|h| {
+                let doc = h.result;
+                let outcome = participant_id.and_then(|p| {
+                    if doc.winning_participant_ids.iter().any(|id| id == p) {
+                        Some(MatchOutcome::Won)
+                    } else if doc.losing_participant_ids.iter().any(|id| id == p) {
+                        Some(MatchOutcome::Lost)
+                    } else if doc.drawing_participant_ids.iter().any(|id| id == p) {
+                        Some(MatchOutcome::Draw)
+                    } else {
+                        None
+                    }
+                });
+                MatchSearchHit {
+                    id: doc.id,
+                    outcome,
+                }
+            })
+            .collect();
+
+        let consumed = query.offset.saturating_add(items.len() as u32);
+        let total = results.estimated_total_hits.unwrap_or(consumed as usize) as u32;
+        let next_offset = (consumed < total).then_some(consumed);
+
+        Ok(MatchSearchHits { items, next_offset })
     }
 
     /// Configure one index's settings (creating the index if absent) so its

@@ -17,9 +17,10 @@ type Score = components['schemas']['Score']
 type Match = components['schemas']['Match']
 type MatchPlayer = components['schemas']['MatchPlayer']
 type FeedMatch = components['schemas']['FeedMatch']
+type SearchMatch = components['schemas']['SearchMatch']
 /** Anything with an optional `players` list — see `members.ts`'s `MatchLike`
- *  for why `FeedMatch` needs its own explicit branch. */
-type MatchLike = { players?: MatchPlayer[] } | FeedMatch
+ *  for why `FeedMatch`/`SearchMatch` need their own explicit branches. */
+type MatchLike = { players?: MatchPlayer[] } | FeedMatch | SearchMatch
 
 /** Narrows a match's score to its cricket variant — innings plus, while a
  *  match is actually being live-scored, the bounded recent-ball window and

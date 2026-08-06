@@ -8,9 +8,10 @@ type FootballSubstitutionEvent = components['schemas']['FootballSubstitutionEven
 type Score = components['schemas']['Score']
 type MatchPlayer = components['schemas']['MatchPlayer']
 type FeedMatch = components['schemas']['FeedMatch']
+type SearchMatch = components['schemas']['SearchMatch']
 /** Anything with an optional `players` list — see `members.ts`'s `MatchLike`
- *  for why `FeedMatch` needs its own explicit branch. */
-type MatchLike = { players?: MatchPlayer[] } | FeedMatch
+ *  for why `FeedMatch`/`SearchMatch` need their own explicit branches. */
+type MatchLike = { players?: MatchPlayer[] } | FeedMatch | SearchMatch
 
 /** A football `Score` — live or finished, confirmed or not, it's the same
  *  shape either way (see `Score`'s doc comment on the backend). Narrowed via

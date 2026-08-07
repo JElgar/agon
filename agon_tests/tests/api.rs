@@ -1734,8 +1734,11 @@ async fn match_with_a_confirmed_score() -> (
     let created = matches_post(&owner_config, input)
         .await
         .expect("create match");
-    let side_a = created.sides[0].id.clone();
-    let side_b = created.sides[1].id.clone();
+    // `created.sides` is keyed (and returned) by side id, not creation order,
+    // so `sides[0]`/`sides[1]` aren't reliably "a" then "b" — resolve each
+    // real side id off the roster instead, by who's on it.
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+    let side_b = side_id_for_user(&created, &opponent.profile.id);
     let first_submission_id = created
         .pending_score
         .as_ref()
@@ -2761,6 +2764,20 @@ fn external_invite_token(match_: &models::Match) -> String {
 // ---------------------------------------------------------------------------
 // Local helpers
 // ---------------------------------------------------------------------------
+
+/// The real side id a linked Agon user is assigned to on a match. Sides are
+/// returned keyed (and sorted) by side id, not creation order, so
+/// `match_.sides[0]`/`[1]` don't reliably correspond to a particular
+/// `side_client_id` used at create time — resolve by roster membership
+/// instead.
+fn side_id_for_user(match_: &models::Match, user_id: &str) -> String {
+    match_
+        .players
+        .iter()
+        .find(|p| matches!(&*p.member, models::Member::User(u) if u.user_id == user_id))
+        .and_then(|p| p.side_id.clone())
+        .expect("player with a side assigned")
+}
 
 /// The (linked user id, stable membership id) of each team member that is a
 /// linked Agon user. External (unlinked) members have no user id, so they're

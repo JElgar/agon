@@ -1873,6 +1873,17 @@ impl Api {
             }
         }
 
+        // `confirmed_score`/`pending_score`'s scorer/batter names — same
+        // batched-across-the-page treatment as everything else here, not a
+        // per-match live-score fetch (see
+        // `hydrate_confirmed_pending_score_players`'s doc comment).
+        let mut score_refs: Vec<_> = built
+            .iter_mut()
+            .map(|m| (m.id.as_str(), &mut m.confirmed_score, &mut m.pending_score))
+            .collect();
+        self.hydrate_confirmed_pending_score_players(dao, &mut score_refs)
+            .await?;
+
         let items = built.into_iter().map(FeedItem::Match).collect();
 
         Ok(GetFeedResponse::Feed(Json(FeedPage {
@@ -2012,6 +2023,17 @@ impl Api {
                 items.push(m);
             }
         }
+
+        // `confirmed_score`/`pending_score`'s scorer/batter names — same
+        // batched-across-the-page treatment as everything else here, not a
+        // per-match live-score fetch (see
+        // `hydrate_confirmed_pending_score_players`'s doc comment).
+        let mut score_refs: Vec<_> = items
+            .iter_mut()
+            .map(|m| (m.id.as_str(), &mut m.confirmed_score, &mut m.pending_score))
+            .collect();
+        self.hydrate_confirmed_pending_score_players(dao, &mut score_refs)
+            .await?;
 
         Ok(ListMatchesResponse::Matches(Json(MatchPage {
             items,
@@ -2819,10 +2841,63 @@ impl Api {
                 )
             })
             .collect();
-        match score {
-            Score::Cricket(s) => s.players = resolved,
-            Score::Football(s) => s.players = resolved,
-            Score::Simple(_) | Score::Sets(_) => {}
+        set_score_players(score, resolved);
+        Ok(())
+    }
+
+    /// Resolve `players` on every match's `confirmed_score`/`pending_score`
+    /// across a whole feed/search page in one shot — the completed/disputed-
+    /// result counterpart to [`Self::hydrate_score_players`] (which handles
+    /// a single match's *live* score, `GET /matches/:id/score`). Doing this
+    /// per match here would reintroduce the exact per-page-size cost this
+    /// whole endpoint was rewritten to avoid (see `batch_get_match_summaries`'s
+    /// doc comment), so instead every match's referenced player ids
+    /// (`score_player_ids`, paired with that match's own id) go into one
+    /// cross-match `BatchGetItem` (`Dao::batch_get_players_across_matches`)
+    /// regardless of how many distinct matches are on the page.
+    async fn hydrate_confirmed_pending_score_players(
+        &self,
+        dao: &dao::Dao,
+        matches: &mut [(&str, &mut Option<ConfirmedScore>, &mut Option<PendingScore>)],
+    ) -> Result<()> {
+        let mut keys: Vec<(String, String)> = Vec::new();
+        for (match_id, confirmed, pending) in matches.iter() {
+            if let Some(cs) = confirmed {
+                keys.extend(
+                    score_player_ids(&cs.score)
+                        .into_iter()
+                        .map(|pid| (match_id.to_string(), pid)),
+                );
+            }
+            if let Some(ps) = pending {
+                keys.extend(
+                    score_player_ids(&ps.score)
+                        .into_iter()
+                        .map(|pid| (match_id.to_string(), pid)),
+                );
+            }
+        }
+        if keys.is_empty() {
+            return Ok(());
+        }
+
+        let match_players = dao
+            .batch_get_players_across_matches(&keys)
+            .await
+            .map_err(dao_internal)?;
+        let user_ids: Vec<String> = match_players
+            .values()
+            .filter_map(|p| p.user_id.clone())
+            .collect();
+        let users = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
+
+        for (match_id, confirmed, pending) in matches.iter_mut() {
+            if let Some(cs) = confirmed {
+                resolve_score_players_for_match(&mut cs.score, match_id, &match_players, &users);
+            }
+            if let Some(ps) = pending {
+                resolve_score_players_for_match(&mut ps.score, match_id, &match_players, &users);
+            }
         }
         Ok(())
     }
@@ -5134,6 +5209,45 @@ fn resolve_score_ids(
             }))
         }
     }
+}
+
+/// Set a score's resolved-players map (`CricketScore.players`/
+/// `FootballScore.players`), whichever variant it is. No-op for
+/// `Score::Simple`/`Score::Sets`, which have no such field.
+fn set_score_players(score: &mut Score, resolved: HashMap<String, RosterPreviewPlayer>) {
+    match score {
+        Score::Cricket(s) => s.players = resolved,
+        Score::Football(s) => s.players = resolved,
+        Score::Simple(_) | Score::Sets(_) => {}
+    }
+}
+
+/// Look up `score`'s own referenced player ids (`score_player_ids`) in a
+/// cross-match batch result (keyed by `(match_id, player_id)`) and set
+/// `score`'s resolved-players map from whichever of them belong to
+/// `match_id`. Shared by [`Api::hydrate_confirmed_pending_score_players`]'s
+/// `confirmed_score`/`pending_score` handling.
+fn resolve_score_players_for_match(
+    score: &mut Score,
+    match_id: &str,
+    match_players: &HashMap<(String, String), dao::records::MatchPlayerRecord>,
+    users: &HashMap<String, dao::records::UserRecord>,
+) {
+    let ids = score_player_ids(score);
+    if ids.is_empty() {
+        return;
+    }
+    let resolved: HashMap<String, RosterPreviewPlayer> = ids
+        .into_iter()
+        .filter_map(|pid| {
+            let p = match_players.get(&(match_id.to_string(), pid.clone()))?;
+            Some((
+                pid,
+                roster_preview_player(p.user_id.as_deref(), p.display_name.as_deref(), users),
+            ))
+        })
+        .collect();
+    set_score_players(score, resolved);
 }
 
 /// Every player id referenced anywhere in a score — the set

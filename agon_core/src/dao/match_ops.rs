@@ -10,7 +10,7 @@ use aws_sdk_dynamodb::types::{AttributeValue, Put, TransactWriteItem};
 
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
-use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, s, to_item};
+use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_pk, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::{
     ConfirmedScoreRecord, HeaderPhotoRecord, MatchFormatRecord, MatchPlayerRecord, MatchRecord,
@@ -291,6 +291,56 @@ impl Dao {
         for item in items {
             let record: MatchPlayerRecord = from_item(item)?;
             out.insert(record.player_id.clone(), record);
+        }
+        Ok(out)
+    }
+
+    /// Fetch specific players spanning possibly many *different* matches, in
+    /// one round-trip — the multi-match counterpart to
+    /// [`batch_get_match_players`]. `BatchGetItem` doesn't care that the keys
+    /// span different partitions (a different match's `PK` each), so this is
+    /// still one request-shape whether `keys` names one match or a whole
+    /// feed/search page's worth. Used to resolve a page of matches'
+    /// `confirmed_score`/`pending_score` player ids without the cost scaling
+    /// with page size — see `Api::hydrate_score_players_across_matches`.
+    /// Keyed by `(match_id, player_id)` in the result (unlike the
+    /// single-match version, a bare player id isn't unique across matches).
+    /// Missing pairs are simply absent from the map.
+    ///
+    /// [`batch_get_match_players`]: Dao::batch_get_match_players
+    #[tracing::instrument(skip(self))]
+    pub async fn batch_get_players_across_matches(
+        &self,
+        keys: &[(String, String)],
+    ) -> DaoResult<HashMap<(String, String), MatchPlayerRecord>> {
+        let mut seen = std::collections::HashSet::new();
+        let dynamo_keys: Vec<_> = keys
+            .iter()
+            .filter(|key| seen.insert((*key).clone()))
+            .map(|(match_id, player_id)| {
+                HashMap::from([
+                    (
+                        ATTR_PK.to_string(),
+                        s(Pk::Match(match_id.clone()).to_string()),
+                    ),
+                    (
+                        ATTR_SK.to_string(),
+                        s(Sk::Player(player_id.clone()).to_string()),
+                    ),
+                ])
+            })
+            .collect();
+
+        let items = self.batch_get_all(dynamo_keys, None).await?;
+        let mut out = HashMap::with_capacity(items.len());
+        for item in items {
+            let Pk::Match(match_id) = item_pk(&item)? else {
+                return Err(DaoError::Malformed(
+                    "batch_get_players_across_matches returned a non-match item".into(),
+                ));
+            };
+            let record: MatchPlayerRecord = from_item(item)?;
+            out.insert((match_id, record.player_id.clone()), record);
         }
         Ok(out)
     }

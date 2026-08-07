@@ -56,5 +56,11 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # ignore-error: the GHA cache backend occasionally 504s with an
+          # HTML error page instead of JSON ("invalid character '<' looking
+          # for beginning of value") — a flaky GitHub-side cache API issue,
+          # not a build problem. Without this the whole push fails even
+          # though the image itself built fine; with it, a failed cache
+          # export just means the next build warms the cache from scratch.
+          cache-to: type=gha,mode=max,ignore-error=true
           platforms: linux/amd64

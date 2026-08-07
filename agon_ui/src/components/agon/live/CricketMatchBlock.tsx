@@ -105,15 +105,13 @@ export function CricketMatchBlock({
   const battingName = sideNameFor(match, innings.batting_side_id)
   const bowlingName = sideNameFor(match, innings.bowling_side_id)
   const next = state.next_ball_context
-  // The server resolves these (`Api::hydrate_current_batters`) so they're
-  // available even on a feed/search card, whose trimmed match type carries
-  // no player roster to resolve `playerNameFor` against locally — that's
-  // only a fallback here for the (match-detail-only) case where the score
-  // predates the hydration, e.g. a cached query result. Neither known →
-  // the line below is omitted entirely rather than showing a placeholder.
-  const strikerName = state.current_striker?.name || playerNameFor(match, next?.striker_player_id)
-  const nonStrikerName =
-    state.current_non_striker?.name || playerNameFor(match, next?.non_striker_player_id)
+  // `state.players` is resolved server-side (`Api::hydrate_score_players`)
+  // for exactly the ids this score references, so it's available even on a
+  // feed/search card, whose trimmed match type carries no player roster to
+  // resolve `playerNameFor` against locally. Neither known → the line below
+  // is omitted entirely rather than showing a placeholder.
+  const strikerName = playerNameFor(match, next?.striker_player_id, state.players)
+  const nonStrikerName = playerNameFor(match, next?.non_striker_player_id, state.players)
   const overBalls = currentOverDeliveries(state.recent_deliveries ?? [])
   const crr = runRate(innings.runs, innings.overs, format.balls_per_over)
 

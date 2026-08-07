@@ -7,6 +7,16 @@ type Match = components['schemas']['Match']
 type FeedMatch = components['schemas']['FeedMatch']
 type SearchMatch = components['schemas']['SearchMatch']
 type Invitation = components['schemas']['Invitation']
+/** Name/avatar only, not the full `Member` shape — a side's `roster_preview`
+ *  entry, or a resolved id in a cricket/football score's `players` map (see
+ *  `CricketScore.players`'s backend doc comment). */
+export type RosterPreviewPlayer = components['schemas']['RosterPreviewPlayer']
+/** A cricket or football score's resolved-name lookup (`CricketScore.players`
+ *  / `FootballScore.players`), keyed by match-scoped player id — what
+ *  `playerNameFor` (both sports' versions) checks before falling back to
+ *  scanning the match's full roster, which a feed/search card doesn't carry
+ *  at all. */
+export type ScorePlayers = Record<string, RosterPreviewPlayer>
 // The generated `invitation.kind` type erases the discriminant (`Omit<…,"type">
 // & unknown`), so `.type` won't narrow. Use the real union for token extraction.
 type InvitationKind = components['schemas']['InvitationKind']

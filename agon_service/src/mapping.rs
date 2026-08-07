@@ -202,10 +202,9 @@ pub fn score_from_record(rec: &ScoreRecord) -> Score {
                 .as_ref()
                 .map(next_ball_context_from_record),
             awaiting_next_innings: *awaiting_next_innings,
-            // Not stored — `Api::get_match_score` hydrates these afterward
-            // (see `CricketScore::current_striker`'s doc comment).
-            current_striker: None,
-            current_non_striker: None,
+            // Not stored — `Api::hydrate_score_players` fills this afterward
+            // (see `CricketScore::players`' doc comment).
+            players: std::collections::HashMap::new(),
         }),
         ScoreRecord::Football {
             score,
@@ -244,6 +243,8 @@ pub fn score_from_record(rec: &ScoreRecord) -> Score {
                     .collect()
             }),
             penalty_shootout_score: penalty_shootout_score.clone(),
+            // Not stored — `Api::hydrate_score_players` fills this afterward.
+            players: std::collections::HashMap::new(),
         }),
     }
 }
@@ -1892,8 +1893,7 @@ mod tests {
                 recent_deliveries: None,
                 next_ball_context: None,
                 awaiting_next_innings: None,
-                current_striker: None,
-                current_non_striker: None,
+                players: HashMap::new(),
             }),
             // A live-scored cricket result: full per-player detail.
             Score::Cricket(CricketScore {
@@ -1960,8 +1960,7 @@ mod tests {
                     runs_conceded_this_over: 1,
                 }),
                 awaiting_next_innings: Some(false),
-                current_striker: None,
-                current_non_striker: None,
+                players: HashMap::new(),
             }),
             // A manually-entered football result: totals only, no detail.
             Score::Football(FootballScore {
@@ -1973,6 +1972,7 @@ mod tests {
                 period_times: None,
                 penalty_shootout: None,
                 penalty_shootout_score: None,
+                players: HashMap::new(),
             }),
             // A live-scored football result: full goal/card/sub detail.
             Score::Football(FootballScore {
@@ -2023,6 +2023,7 @@ mod tests {
                     scored: true,
                 }]),
                 penalty_shootout_score: Some(HashMap::from([("side_red".to_string(), 1)])),
+                players: HashMap::new(),
             }),
         ];
 

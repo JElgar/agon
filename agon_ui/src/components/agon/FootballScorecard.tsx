@@ -35,7 +35,7 @@ export function FootballScorecard({ match, detail }: { match: Match; detail: Foo
               <span className="font-medium tabular-nums text-muted-foreground">
                 {minuteLabel(event.minute)}
               </span>
-              <span>{describeEvent(event, match)}</span>
+              <span>{describeEvent(event, match, detail.players)}</span>
             </p>
           )
         })}

@@ -1,5 +1,5 @@
 import type { components } from '@/types/api'
-import { memberName } from './members'
+import { memberName, type ScorePlayers } from './members'
 
 export type FootballPeriod = components['schemas']['FootballPeriod']
 export type FootballGoalEvent = components['schemas']['FootballGoalEvent']
@@ -30,11 +30,15 @@ export function footballScoreFrom(score: Score | null | undefined): FootballScor
 /** What `eventsFromDetail` actually reads off a `FootballScore` — narrowed
  *  so a finished match's `Score.Football` (whose `goals`/`cards`/
  *  `substitutions` are optional) and a live one (same optionality now) can
- *  both feed the same timeline via `footballEventSourceFromScore`. */
+ *  both feed the same timeline via `footballEventSourceFromScore`. Carries
+ *  `players` (the score's resolved-name map) alongside so `describeEvent`
+ *  can name scorers/assists/subs on a feed/search card too — see
+ *  `playerNameFor`. */
 export type FootballEventSource = {
   goals: FootballGoalEvent[]
   cards: FootballCardEvent[]
   substitutions: FootballSubstitutionEvent[]
+  players: ScorePlayers
 }
 
 /** A football match's event timeline straight off its score — `null` if
@@ -49,6 +53,7 @@ export function footballEventSourceFromScore(score: Score | null | undefined): F
     goals: score.goals ?? [],
     cards: score.cards ?? [],
     substitutions: score.substitutions ?? [],
+    players: score.players,
   }
 }
 
@@ -172,6 +177,7 @@ export function recentEvents(detail: FootballScore, limit: number): FootballEven
     goals: detail.goals ?? [],
     cards: detail.cards ?? [],
     substitutions: detail.substitutions ?? [],
+    players: detail.players,
   })
     .reverse()
     .slice(0, limit)
@@ -188,9 +194,21 @@ export function recentGoalEvents(goals: FootballGoalEvent[], limit: number): Foo
     .slice(0, limit)
 }
 
-/** Player display name for a member id, if it's on the roster. */
-function playerNameFor(match: MatchLike, playerId: string | undefined): string | null {
+/** Player display name for a match-scoped player id. Checks `scorePlayers`
+ *  first — `FootballScore.players`, resolved server-side for exactly the
+ *  ids a score references (see its backend doc comment) — since that's the
+ *  only source a feed/search card's trimmed match type has at all (it never
+ *  carries a `players` list). Falls back to scanning the match's own roster,
+ *  always present on the full `Match` type a detail view uses. Same
+ *  contract as cricket's `playerNameFor` in `lib/cricketScore.ts`. */
+function playerNameFor(
+  match: MatchLike,
+  playerId: string | undefined,
+  scorePlayers?: ScorePlayers,
+): string | null {
   if (!playerId) return null
+  const resolved = scorePlayers?.[playerId]
+  if (resolved) return resolved.name
   const players = ('players' in match && match.players) || []
   const player = players.find((p) => p.member.id === playerId)
   return player ? memberName(player.member) : null
@@ -200,14 +218,19 @@ function playerNameFor(match: MatchLike, playerId: string | undefined): string |
  *  (A. Silva)" or "Sub — Moreno on for Khan" — used by the event log and
  *  mini-ticker. Which side it belongs to isn't repeated in the text; callers
  *  convey that by aligning/positioning the row using `event.side_id`
- *  instead (see `LiveScoringPage`/`LiveMatchBlock`). */
-export function describeEvent(event: FootballEventView, match: MatchLike): string {
-  const scorer = playerNameFor(match, event.player_id)
+ *  instead (see `LiveScoringPage`/`LiveMatchBlock`). `scorePlayers` is the
+ *  owning score's resolved-name map — see `playerNameFor`. */
+export function describeEvent(
+  event: FootballEventView,
+  match: MatchLike,
+  scorePlayers?: ScorePlayers,
+): string {
+  const scorer = playerNameFor(match, event.player_id, scorePlayers)
 
   switch (event.kind) {
     case 'goal':
     case 'penalty': {
-      const assist = playerNameFor(match, event.assist_player_id)
+      const assist = playerNameFor(match, event.assist_player_id, scorePlayers)
       const base = scorer ? `${eventLabel(event.kind)} — ${scorer}` : eventLabel(event.kind)
       return assist ? `${base} (${assist})` : base
     }
@@ -217,7 +240,7 @@ export function describeEvent(event: FootballEventView, match: MatchLike): strin
     case 'red_card':
       return scorer ? `${eventLabel(event.kind)} — ${scorer}` : eventLabel(event.kind)
     case 'substitution': {
-      const out = playerNameFor(match, event.substituted_player_id)
+      const out = playerNameFor(match, event.substituted_player_id, scorePlayers)
       return scorer && out ? `Sub — ${scorer} on for ${out}` : 'Substitution'
     }
   }

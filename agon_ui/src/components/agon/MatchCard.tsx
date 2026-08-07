@@ -238,6 +238,12 @@ export function MatchCard({
   // `footballState` is set, i.e. while still in progress).
   const finishedFootballGoals = scoreInfo && !isCurrentlyLive ? footballGoalsFromScore(scoreInfo.score) : null
   const finishedFootballEvents = finishedFootballGoals ? recentGoalEvents(finishedFootballGoals, 3) : []
+  // Resolved server-side on `confirmed_score`/`pending_score` itself (see
+  // `Api::hydrate_confirmed_pending_score_players`) — this card's `match` is
+  // a `FeedMatch`/`SearchMatch`/`Match`, none of which reliably carry a full
+  // player roster to resolve `describeEvent`'s names from locally.
+  const finishedFootballScorePlayers =
+    scoreInfo && !isCurrentlyLive ? footballScoreFrom(scoreInfo.score)?.players : undefined
   const hasLiveState = !!footballState || !!cricketState
   // A cricket match's confirmed score carries its own per-innings detail once
   // it's been live-scored (`Score::Cricket`; see `finishMatch` in
@@ -372,7 +378,9 @@ export function MatchCard({
                       {event.minute !== undefined && (
                         <span className="font-medium text-foreground">{event.minute}'</span>
                       )}
-                      <span className="truncate">{describeEvent(event, match)}</span>
+                      <span className="truncate">
+                        {describeEvent(event, match, finishedFootballScorePlayers)}
+                      </span>
                     </p>
                   )
                 })}

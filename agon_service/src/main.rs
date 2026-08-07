@@ -39,13 +39,13 @@ use auth::{JwtClaims, JwtVerifier};
 // Boundary mapping between API models and DAO records.
 mod mapping;
 use mapping::{
-    comment_from_record, dao_internal, derive_live_score, invitation_detail_from_record,
-    invitation_from_record, invitation_status_from_str, invitation_status_str,
-    live_event_from_record, match_format_sport_tag, match_format_to_record, match_from_records,
-    match_score_from_record, match_score_to_record, match_status_str, match_type_tag,
-    new_live_event_to_dao, notification_actor_id, notification_from_record,
-    score_submission_from_record, score_to_record, team_from_records, team_list_item_from_record,
-    user_profile_from_record,
+    comment_from_record, dao_internal, derive_live_score, feed_match_from_records,
+    invitation_detail_from_record, invitation_from_record, invitation_status_from_str,
+    invitation_status_str, live_event_from_record, match_format_sport_tag, match_format_to_record,
+    match_from_records, match_score_from_record, match_score_to_record, match_status_str,
+    match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
+    score_submission_from_record, score_to_record, search_match_from_records, team_from_records,
+    team_list_item_from_record, user_profile_from_record,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -281,6 +281,26 @@ struct MatchSide {
     /// per-request rather than stored so it can't go stale and "your side"
     /// always means the caller.
     name: Option<String>,
+    /// This side's full roster, when small enough to show directly instead of
+    /// just `name`/`team_id`'s logo (1v1, doubles, a small squad). `None`
+    /// when the side has more players than that — render `name`/the team's
+    /// logo instead. On `Match` this is resolved live from `players`; on a
+    /// feed's `FeedMatch` (which never fetches the full roster) it comes from
+    /// a denormalized cache refreshed whenever the roster changes, so it can
+    /// occasionally lag a just-now roster change.
+    roster_preview: Option<Vec<RosterPreviewPlayer>>,
+}
+
+/// A player in a side's `roster_preview` — name/avatar only, not the full
+/// `MatchPlayer`/`Member` shape (no invitation status; this is a display hint,
+/// not the roster management view).
+#[derive(Object)]
+struct RosterPreviewPlayer {
+    /// Present for a linked Agon account; `None` for an unlinked "external"
+    /// player (only a display name known).
+    user_id: Option<String>,
+    name: String,
+    avatar_url: Option<String>,
 }
 
 /// A player in a match. Held in a flat match-level list (not nested under a
@@ -820,7 +840,43 @@ struct UpdateMatchInput {
 #[derive(Union)]
 #[oai(one_of, discriminator_name = "type")]
 enum FeedItem {
-    Match(Match),
+    Match(FeedMatch),
+}
+
+/// A match as it appears in the feed — everything [`Match`] has except the
+/// full roster (`players`), which the feed never renders and so never fetches
+/// (see `Dao::batch_get_match_summaries`). In its place, `known_participants`:
+/// a capped, denormalized hint ("people you follow are playing") computed at
+/// fan-out time. For the full roster, fetch the match itself via
+/// `GET /matches/:match_id`.
+#[derive(Object)]
+struct FeedMatch {
+    id: String,
+    name: String,
+    description: String,
+    match_type: MatchType,
+    status: MatchStatus,
+    /// When the match starts / started.
+    starts_at: chrono::DateTime<chrono::Utc>,
+    location: Option<Location>,
+    header_photos: Vec<Photo>,
+    /// The opposing sides (always present — score needs them).
+    sides: Vec<MatchSide>,
+    /// Up to a few participants the viewer follows, so the card can show
+    /// "you know who's playing" without the full roster. Always populated
+    /// with `is_followed_by_me: true` (that's why they're on the list) —
+    /// empty if the viewer doesn't follow any participant directly (e.g. they
+    /// only follow an involved team), or for the viewer's own matches.
+    known_participants: Vec<UserProfile>,
+    /// The side *the caller themselves* plays on, if they're a participant in
+    /// this match — `None` if they're not playing (they're seeing this card
+    /// via a follow) or not yet assigned a side. Lets a client resolve the
+    /// score confirm/dispute prompt without the full roster `Match` carries.
+    viewer_side_id: Option<String>,
+    confirmed_score: Option<ConfirmedScore>,
+    pending_score: Option<PendingScore>,
+    social: MatchSocial,
+    format: Option<MatchFormat>,
 }
 
 /// One page of the feed. `next_cursor` is an opaque token; when it is
@@ -831,10 +887,49 @@ struct FeedPage {
     next_cursor: Option<String>,
 }
 
+/// A queried `participant`'s result in a match — resolved from the search
+/// index's outcome buckets (see `agon_core::search::SearchClient::search_matches`),
+/// no extra lookup.
+#[derive(Enum)]
+#[oai(rename_all = "snake_case")]
+enum MatchOutcome {
+    Won,
+    Lost,
+    Draw,
+}
+
+/// A match as it appears in discovery/search results — the same trimmed
+/// shape as the feed's `FeedMatch` (no full roster; `MatchSide.roster_preview`
+/// covers "show players directly" for small sides), minus the feed-specific
+/// `known_participants` (a per-viewer fan-out concept that doesn't apply to
+/// a generic search hit) and `viewer_side_id` (no per-viewer audience to
+/// source it from cheaply here — see `outcome` below for what a `participant`
+/// filter *can* get for free instead).
+#[derive(Object)]
+struct SearchMatch {
+    id: String,
+    name: String,
+    description: String,
+    match_type: MatchType,
+    status: MatchStatus,
+    starts_at: chrono::DateTime<chrono::Utc>,
+    location: Option<Location>,
+    header_photos: Vec<Photo>,
+    sides: Vec<MatchSide>,
+    /// The `participant` query parameter's result in this match — `None` if
+    /// no `participant` filter was supplied, or if the match has no
+    /// confirmed result yet (not a draw, just undecided).
+    outcome: Option<MatchOutcome>,
+    confirmed_score: Option<ConfirmedScore>,
+    pending_score: Option<PendingScore>,
+    social: MatchSocial,
+    format: Option<MatchFormat>,
+}
+
 /// One page of matches from discovery/search. `next_cursor` absent => end.
 #[derive(Object)]
 struct MatchPage {
-    items: Vec<Match>,
+    items: Vec<SearchMatch>,
     next_cursor: Option<String>,
 }
 
@@ -1625,7 +1720,8 @@ impl Api {
         AuthSchema(jwt_data): AuthSchema,
         /// Opaque cursor from the previous page's `next_cursor`. Omit for the first page.
         Query(cursor): Query<Option<String>>,
-        /// Maximum number of items to return (defaults to 20, capped at 50).
+        /// Maximum number of items to return (defaults to 20, capped at 20 —
+        /// tighter than other list endpoints, see `FEED_MAX_PAGE_LIMIT`).
         Query(limit): Query<Option<u32>>,
         /// Only include items at or after this time (inclusive).
         Query(from): Query<Option<chrono::DateTime<chrono::Utc>>>,
@@ -1639,7 +1735,7 @@ impl Api {
         // from people/teams they follow). No user_id / sport filtering here —
         // that is the match-discovery endpoint (GET /matches), served by search.
 
-        let limit = page_limit(limit);
+        let limit = feed_page_limit(limit);
 
         // Reject an inverted date range early.
         if let (Some(from), Some(to)) = (from, to)
@@ -1664,7 +1760,15 @@ impl Api {
             Err(e) => return Err(dao_internal(e)),
         };
 
-        let mut built: Vec<Match> = Vec::with_capacity(page.items.len());
+        // (match_id, known_player_ids) for entries that pass the date filter —
+        // `known_player_ids`/`viewer_side_id` are already on the feed entry
+        // (denormalized at fan-out time), never fetched here.
+        struct EligibleEntry {
+            match_id: String,
+            known_player_ids: Vec<String>,
+            viewer_side_id: Option<String>,
+        }
+        let mut eligible: Vec<EligibleEntry> = Vec::with_capacity(page.items.len());
         for entry in &page.items {
             // Apply the optional date range on the entry's start time (cheap;
             // avoids hydrating matches outside the window).
@@ -1675,25 +1779,81 @@ impl Api {
             if entry.ref_type != "match" {
                 continue;
             }
-            if let Some(agg) = dao.get_match(&entry.ref_id).await.map_err(dao_internal)? {
-                let i_liked = dao
-                    .has_liked_match(&entry.ref_id, &uid)
-                    .await
-                    .map_err(dao_internal)?;
-                let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
-                sign_match_headers(assets, &mut m);
+            eligible.push(EligibleEntry {
+                match_id: entry.ref_id.clone(),
+                known_player_ids: entry.known_player_ids.clone(),
+                viewer_side_id: entry.viewer_side_id.clone(),
+            });
+        }
+        let match_ids: Vec<String> = eligible.iter().map(|e| e.match_id.clone()).collect();
+
+        // Hydrate every referenced match's meta + sides (never players — the
+        // feed doesn't render the full roster, see `FeedMatch`) and this
+        // viewer's likes, in two round-trips total, run concurrently. Neither
+        // call's DB request count grows with page size.
+        let (summaries, liked) = tokio::try_join!(
+            dao.batch_get_match_summaries(&match_ids),
+            dao.batch_has_liked_matches(&match_ids, &uid),
+        )
+        .map_err(dao_internal)?;
+
+        // One more round-trip: every user this page needs to hydrate by name/
+        // avatar — the union of each entry's `known_participants` and each
+        // match's small per-side `roster_preview`s (both id-only; see
+        // `MatchSideRecord::roster_preview`'s doc comment on why a live name/
+        // avatar beats a possibly-stale cached one). `batch_get_users` chunks
+        // internally if the union happens to exceed one `BatchGetItem`, but
+        // page size is capped specifically so it normally won't need to.
+        let mut user_ids: Vec<String> = Vec::new();
+        for entry in &eligible {
+            user_ids.extend(entry.known_player_ids.iter().cloned());
+        }
+        for summary in summaries.values() {
+            for side in &summary.sides {
+                user_ids.extend(side.roster_preview.iter().filter_map(|p| p.user_id.clone()));
+            }
+        }
+        let users = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
+
+        // Side names need the same team-name fallback `Match` gets (via
+        // `hydrate_matches`) — without it a team-linked side with no custom
+        // name would render blank. `roster_preview` already covers the
+        // "sole player's name" case, so only team names need a batch fetch.
+        let team_ids: Vec<String> = summaries
+            .values()
+            .flat_map(|s| s.sides.iter().filter_map(|s| s.team_id.clone()))
+            .collect();
+        let team_names = self.batch_team_names(dao, &team_ids).await?;
+
+        let mut built: Vec<FeedMatch> = Vec::with_capacity(eligible.len());
+        for entry in &eligible {
+            if let Some(summary) = summaries.get(&entry.match_id) {
+                let i_liked = liked.contains(&entry.match_id);
+                let known_participants = entry
+                    .known_player_ids
+                    .iter()
+                    .filter_map(|uid| users.get(uid))
+                    .map(|record| user_profile_from_record(record, true))
+                    .collect();
+                let mut m = feed_match_from_records(
+                    &summary.match_,
+                    &summary.sides,
+                    &users,
+                    known_participants,
+                    entry.viewer_side_id.clone(),
+                    i_liked,
+                );
+                Self::resolve_side_names_from_cache(
+                    &mut m.sides,
+                    entry.viewer_side_id.as_deref(),
+                    &team_names,
+                );
+                sign_feed_match_headers(assets, &mut m);
                 built.push(m);
             }
         }
 
-        // Hydrate the whole page's player profiles and side names in one
-        // batch read each, instead of per-match round trips.
-        let items = self
-            .hydrate_matches(dao, built, &uid)
-            .await?
-            .into_iter()
-            .map(FeedItem::Match)
-            .collect();
+        let items = built.into_iter().map(FeedItem::Match).collect();
 
         Ok(GetFeedResponse::Feed(Json(FeedPage {
             items,
@@ -1776,30 +1936,62 @@ impl Api {
             offset,
             limit: page_limit(limit),
         };
+        // `participant` doubles as the outcome subject: the same id already
+        // scoping the filter is who `search_matches` resolves won/lost/draw
+        // for, off the same hit — no second lookup.
         let hits = search
-            .search(agon_core::search::Index::Matches, &q)
+            .search_matches(&q, participant.as_deref())
             .await
             .map_err(search_internal)?;
+        let match_ids: Vec<String> = hits.items.iter().map(|h| h.id.clone()).collect();
 
-        // Hydrate each match from DynamoDB (the index carries only filter/sort
-        // fields). `i_liked` needs the caller's like state; resolve per match.
-        // TODO: BatchGet + batch the like checks (N+1 for now).
-        let mut built: Vec<Match> = Vec::with_capacity(hits.ids.len());
-        for id in &hits.ids {
-            if let Some(agg) = dao.get_match(id).await.map_err(dao_internal)? {
-                let i_liked = dao
-                    .has_liked_match(id, &caller_uid)
-                    .await
-                    .map_err(dao_internal)?;
-                let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
-                sign_match_headers(assets, &mut m);
-                built.push(m);
+        // Hydrate each match's meta + sides (never players — search results
+        // don't render the full roster, see `SearchMatch`) and this caller's
+        // like state, in two round-trips total instead of a `get_match` +
+        // `has_liked_match` per hit.
+        let (summaries, liked) = tokio::try_join!(
+            dao.batch_get_match_summaries(&match_ids),
+            dao.batch_has_liked_matches(&match_ids, &caller_uid),
+        )
+        .map_err(dao_internal)?;
+
+        // Side `roster_preview` entries' live name/avatar, and team names for
+        // the side-name fallback chain (same two batch reads the feed makes;
+        // no per-viewer `known_participants` here, so no user-id union from
+        // that source).
+        let mut user_ids: Vec<String> = Vec::new();
+        for summary in summaries.values() {
+            for side in &summary.sides {
+                user_ids.extend(side.roster_preview.iter().filter_map(|p| p.user_id.clone()));
             }
         }
+        let team_ids: Vec<String> = summaries
+            .values()
+            .flat_map(|s| s.sides.iter().filter_map(|s| s.team_id.clone()))
+            .collect();
+        let (users, team_names) = tokio::try_join!(
+            async { dao.batch_get_users(&user_ids).await.map_err(dao_internal) },
+            async { self.batch_team_names(dao, &team_ids).await },
+        )?;
 
-        // Hydrate the whole page's player profiles and side names in one
-        // batch read each, instead of per-match round trips.
-        let items = self.hydrate_matches(dao, built, &caller_uid).await?;
+        let mut items: Vec<SearchMatch> = Vec::with_capacity(hits.items.len());
+        for hit in &hits.items {
+            if let Some(summary) = summaries.get(&hit.id) {
+                let i_liked = liked.contains(&hit.id);
+                let mut m = search_match_from_records(
+                    &summary.match_,
+                    &summary.sides,
+                    &users,
+                    hit.outcome,
+                    i_liked,
+                );
+                // No per-viewer `viewer_side_id` for a search hit, so no
+                // "Your side"/"Opposition" — falls to team name / Team A/B.
+                Self::resolve_side_names_from_cache(&mut m.sides, None, &team_names);
+                sign_search_match_headers(assets, &mut m);
+                items.push(m);
+            }
+        }
 
         Ok(ListMatchesResponse::Matches(Json(MatchPage {
             items,
@@ -1894,19 +2086,29 @@ impl Api {
 
         // Assign a real side id per input side and remember the client_id -> id
         // mapping so invites and the score can be re-pointed at real ids.
+        // Keyed by side_id (not a Vec) — sides are embedded on the match
+        // record as a map, see `MatchRecord::sides`.
         let mut side_ids: std::collections::HashMap<String, String> = Default::default();
-        let mut side_records: Vec<dao::records::MatchSideRecord> = Vec::new();
+        let mut sides: std::collections::HashMap<String, dao::records::MatchSideRecord> =
+            Default::default();
         for side in &input.sides {
             let side_id = new_id();
             side_ids.insert(side.client_id.clone(), side_id.clone());
-            side_records.push(dao::records::MatchSideRecord {
-                side_id,
-                team_id: side.team_id.clone(),
-                // Validated above: a name is only allowed here without a team,
-                // or alongside a team shared with another side (to tell the
-                // two apart) — never a lone team-assigned side.
-                name: side.name.clone(),
-            });
+            sides.insert(
+                side_id.clone(),
+                dao::records::MatchSideRecord {
+                    side_id,
+                    team_id: side.team_id.clone(),
+                    // Validated above: a name is only allowed here without a
+                    // team, or alongside a team shared with another side (to
+                    // tell the two apart) — never a lone team-assigned side.
+                    name: side.name.clone(),
+                    // `Dao::create_match` recomputes both from the players
+                    // list it's given, in the same transaction — placeholders.
+                    player_count: 0,
+                    roster_preview: Vec::new(),
+                },
+            );
         }
 
         // Build a player + invitation per invitee. Externals get a minted token
@@ -2080,6 +2282,7 @@ impl Api {
                 longitude: l.longitude,
             }),
             header_photos,
+            sides,
             confirmed_score: None,
             pending_score,
             like_count: 0,
@@ -2089,10 +2292,7 @@ impl Api {
             created_at: now.clone(),
         };
 
-        match dao
-            .create_match(&match_record, &side_records, &player_records)
-            .await
-        {
+        match dao.create_match(&match_record, &player_records).await {
             Ok(()) => {}
             Err(dao::DaoError::Conflict(msg)) => {
                 return Ok(CreateMatchResponse::ValidationError(PlainText(msg)));
@@ -2114,7 +2314,14 @@ impl Api {
                 .map_err(dao_internal)?;
         }
 
-        let mut m = match_from_records(&match_record, &side_records, &player_records, false);
+        // Stable order for the response (`hydrate_match` below re-resolves
+        // each side's real name/roster_preview live from `player_records`
+        // anyway — this only needs the right side_id/team_id/name per side).
+        let mut sides_for_response: Vec<dao::records::MatchSideRecord> =
+            match_record.sides.values().cloned().collect();
+        sides_for_response.sort_by(|a, b| a.side_id.cmp(&b.side_id));
+
+        let mut m = match_from_records(&match_record, &sides_for_response, &player_records, false);
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m, &uid).await?;
         Ok(CreateMatchResponse::Match(Json(m)))
@@ -2457,6 +2664,14 @@ impl Api {
                     }
                 }
             }
+        }
+        // A roster change can move players between sides (or add new ones) —
+        // refresh each side's cached roster preview once from the now-current
+        // roster, rather than per player_id above.
+        if input.added_players.is_some() || input.side_assignments.is_some() {
+            dao.refresh_side_roster_previews(&match_id)
+                .await
+                .map_err(dao_internal)?;
         }
 
         // Return the updated aggregate.
@@ -3725,6 +3940,14 @@ impl Api {
                 .map_err(dao_internal)?;
             created.push(invitation_from_record(&invitation));
         }
+        // New roster slots move players onto sides — refresh each side's
+        // cached roster preview (see `PATCH /matches/:match_id`'s roster
+        // block for the same call).
+        if !created.is_empty() {
+            dao.refresh_side_roster_previews(&match_id)
+                .await
+                .map_err(dao_internal)?;
+        }
 
         // Roster/player writes don't trigger the stream (only `#META` does), so
         // touch the match meta to re-run fan-out / search indexing with the new
@@ -4452,17 +4675,40 @@ impl Api {
         });
 
         for (i, side) in m.sides.iter_mut().enumerate() {
-            let mut on_side = m
+            let on_side: Vec<&MatchPlayer> = m
                 .players
                 .iter()
-                .filter(|p| p.side_id.as_deref() == Some(side.id.as_str()));
-            let sole_player_name = match (on_side.next(), on_side.next()) {
-                (Some(p), None) => Some(match &p.member {
+                .filter(|p| p.side_id.as_deref() == Some(side.id.as_str()))
+                .collect();
+            let sole_player_name = match on_side.as_slice() {
+                [p] => Some(match &p.member {
                     Member::User(u) => u.name.clone(),
                     Member::External(e) => e.display_name.clone(),
                 }),
                 _ => None,
             };
+            // Same "small enough to show players directly" call the feed
+            // makes from its denormalized cache (`ROSTER_PREVIEW_CAP`) — here
+            // computed live, since the full roster is already in memory.
+            side.roster_preview = (on_side.len() <= agon_core::dao::match_ops::ROSTER_PREVIEW_CAP
+                && !on_side.is_empty())
+            .then(|| {
+                on_side
+                    .iter()
+                    .map(|p| match &p.member {
+                        Member::User(u) => RosterPreviewPlayer {
+                            user_id: Some(u.user_id.clone()),
+                            name: u.name.clone(),
+                            avatar_url: u.avatar_url.clone(),
+                        },
+                        Member::External(e) => RosterPreviewPlayer {
+                            user_id: None,
+                            name: e.display_name.clone(),
+                            avatar_url: None,
+                        },
+                    })
+                    .collect()
+            });
 
             let custom_name = side
                 .name
@@ -4485,6 +4731,54 @@ impl Api {
                             .unwrap_or_else(|| "Team".to_string()),
                         None => match &viewer_side_id {
                             Some(vs) if vs == &side.id => "Your side".to_string(),
+                            Some(_) => "Opposition".to_string(),
+                            None if i == 0 => "Team A".to_string(),
+                            None => "Team B".to_string(),
+                        },
+                    },
+                },
+            });
+        }
+    }
+
+    /// The same side-name priority chain as [`Self::resolve_side_names`]
+    /// (sole player's name → custom name → team name → "Your
+    /// side"/"Opposition" → neutral "Team A"/"Team B"), for a `FeedMatch` or
+    /// `SearchMatch` — which never have the full player list to scan.
+    ///
+    /// `roster_preview` already gives the *complete* roster whenever a side
+    /// has one player, so "the sole player's name" is recovered from it
+    /// (`Some([p])`) rather than the live roster — same fact, cheaper source.
+    /// `viewer_side_id` is `None` for a search hit (not derived from a
+    /// per-viewer fan-out, so there's no "Your side" to resolve) and
+    /// `Some`/`None` per feed entry for a feed card.
+    fn resolve_side_names_from_cache(
+        sides: &mut [MatchSide],
+        viewer_side_id: Option<&str>,
+        team_names: &std::collections::HashMap<String, String>,
+    ) {
+        for (i, side) in sides.iter_mut().enumerate() {
+            let sole_player_name = match side.roster_preview.as_deref() {
+                Some([p]) => Some(p.name.clone()),
+                _ => None,
+            };
+            let custom_name = side
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|n| !n.is_empty());
+
+            side.name = Some(match sole_player_name {
+                Some(name) => name,
+                None => match custom_name {
+                    Some(name) => name.to_string(),
+                    None => match &side.team_id {
+                        Some(team_id) => team_names
+                            .get(team_id)
+                            .cloned()
+                            .unwrap_or_else(|| "Team".to_string()),
+                        None => match viewer_side_id {
+                            Some(vs) if vs == side.id => "Your side".to_string(),
                             Some(_) => "Opposition".to_string(),
                             None if i == 0 => "Team A".to_string(),
                             None => "Team B".to_string(),
@@ -5034,6 +5328,18 @@ fn sign_match_headers(assets: &Assets, m: &mut Match) {
     }
 }
 
+fn sign_feed_match_headers(assets: &Assets, m: &mut FeedMatch) {
+    for photo in &mut m.header_photos {
+        photo.image_url = assets.sign_get(&photo.image_url);
+    }
+}
+
+fn sign_search_match_headers(assets: &Assets, m: &mut SearchMatch) {
+    for photo in &mut m.header_photos {
+        photo.image_url = assets.sign_get(&photo.image_url);
+    }
+}
+
 /// Builds a mock `Pending` asset with a presigned upload target.
 fn mock_pending_asset(id: String, content_type: String) -> Asset {
     Asset {
@@ -5121,11 +5427,13 @@ fn mock_match(id: String) -> Match {
                 id: String::from("side_red"),
                 team_id: Some(String::from("team_red")),
                 name: Some(String::from("Red Team")),
+                roster_preview: None,
             },
             MatchSide {
                 id: String::from("side_blue"),
                 team_id: Some(String::from("team_blue")),
                 name: Some(String::from("Blue Team")),
+                roster_preview: None,
             },
         ],
         players: vec![
@@ -5491,6 +5799,12 @@ fn within_range(
 const DEFAULT_PAGE_LIMIT: u32 = 20;
 /// Hard cap so a client cannot request an unbounded page.
 const MAX_PAGE_LIMIT: u32 = 50;
+/// Hard cap on a feed page, tighter than `MAX_PAGE_LIMIT`: at
+/// `agon_core::dao::audience::MAX_KNOWN_PLAYERS` (5) known participants per
+/// match, 20 matches is exactly `BATCH_GET_MAX` (100) — the largest page that
+/// still hydrates `known_participants` in a single `BatchGetItem`, regardless
+/// of how full every match's list happens to be.
+const FEED_MAX_PAGE_LIMIT: u32 = 20;
 
 /// Maximum size of an uploaded asset, in bytes (10 MB). Enforced at asset
 /// creation and baked into the presigned PUT so S3 rejects a mismatch too.
@@ -5499,6 +5813,11 @@ const MAX_UPLOAD_BYTES: i64 = 10 * 1024 * 1024;
 /// Clamps a client-supplied limit to `[_, MAX_PAGE_LIMIT]`, defaulting when absent.
 fn page_limit(limit: Option<u32>) -> u32 {
     limit.unwrap_or(DEFAULT_PAGE_LIMIT).min(MAX_PAGE_LIMIT)
+}
+
+/// Clamps a client-supplied feed-page limit to `[_, FEED_MAX_PAGE_LIMIT]`.
+fn feed_page_limit(limit: Option<u32>) -> u32 {
+    limit.unwrap_or(DEFAULT_PAGE_LIMIT).min(FEED_MAX_PAGE_LIMIT)
 }
 
 /// Decode a search-endpoint cursor into a zero-based offset. Search pagination

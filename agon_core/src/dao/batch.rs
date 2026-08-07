@@ -41,24 +41,43 @@ pub(super) async fn backoff(attempt: u32) {
 }
 
 impl Dao {
-    /// Fetch every base-table item for `keys` in one `BatchGetItem`, re-requesting
-    /// any `UnprocessedKeys` with [`backoff`] between attempts. Returns the items
-    /// that came back, in no particular order; keys with no item are simply
-    /// absent (so the caller keys the result by id and treats a miss as `None`).
+    /// Fetch every base-table item for `keys`, in as few `BatchGetItem`
+    /// requests as `BATCH_GET_MAX` allows. Returns the items that came back,
+    /// in no particular order; keys with no item are simply absent (so the
+    /// caller keys the result by id and treats a miss as `None`).
     ///
     /// `projection` optionally restricts the attributes fetched (e.g. just the
-    /// `PK` for an existence check). `keys` must hold at most [`BATCH_GET_MAX`]
-    /// entries and must be free of duplicates — DynamoDB rejects a request that
-    /// repeats a key; callers de-dup while building the key list.
+    /// `PK` for an existence check). `keys` must be free of duplicates —
+    /// DynamoDB rejects a request that repeats a key; callers de-dup while
+    /// building the key list. Most callers' input is bounded by a
+    /// service-capped page and fits in one request; a caller unioning ids
+    /// across several sources per page (e.g. a feed page's known-participant
+    /// and roster-preview ids together) may occasionally need a couple more —
+    /// still a small, bounded number of requests, not one per source item.
     #[tracing::instrument(skip(self))]
     pub(super) async fn batch_get_all(
         &self,
         keys: Vec<Item>,
         projection: Option<&str>,
     ) -> DaoResult<Vec<Item>> {
+        let mut out = Vec::with_capacity(keys.len());
+        for chunk in keys.chunks(BATCH_GET_MAX) {
+            out.extend(self.batch_get_chunk(chunk.to_vec(), projection).await?);
+        }
+        Ok(out)
+    }
+
+    /// One `BatchGetItem` request's worth of work (at most [`BATCH_GET_MAX`]
+    /// keys): send, and re-request any `UnprocessedKeys` with [`backoff`]
+    /// between attempts until the chunk fully drains.
+    async fn batch_get_chunk(
+        &self,
+        keys: Vec<Item>,
+        projection: Option<&str>,
+    ) -> DaoResult<Vec<Item>> {
         debug_assert!(
             keys.len() <= BATCH_GET_MAX,
-            "batch_get_all called with more than the BatchGetItem key limit"
+            "batch_get_chunk called with more than the BatchGetItem key limit"
         );
         let mut pending = keys;
         let mut out = Vec::new();

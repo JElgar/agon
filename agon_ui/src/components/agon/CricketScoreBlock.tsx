@@ -10,6 +10,8 @@ import {
 import { cricketFormat } from '@/lib/matchFormat'
 
 type Match = components['schemas']['Match']
+type FeedMatch = components['schemas']['FeedMatch']
+type SearchMatch = components['schemas']['SearchMatch']
 
 /**
  * The cricket score tile for a match that's been fully scored and confirmed
@@ -24,7 +26,7 @@ export function CricketScoreBlock({
   score,
   showDescription = true,
 }: {
-  match: Match
+  match: Match | FeedMatch | SearchMatch
   score: CricketScore
   /** Whether to show the result line here. Callers that already surface it
    *  elsewhere (the feed card's header) pass `false` so it isn't said twice. */

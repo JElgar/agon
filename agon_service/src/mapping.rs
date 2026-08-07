@@ -36,10 +36,11 @@ use crate::notification::{
 };
 use crate::team::{Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
-    Comment, ConfirmedScore, CricketScore, CricketScoreInnings, FootballScore, Location, Match,
-    MatchPlayer, MatchSide, MatchSocial, MatchStatus, MatchType, PendingScore, Photo, Score,
-    ScoreConfirmation, ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse,
-    ScoreSubmissionStatus, SetsScore, SimpleScore, UserProfile, UserSportStats,
+    Comment, ConfirmedScore, CricketScore, CricketScoreInnings, FeedMatch, FootballScore, Location,
+    Match, MatchOutcome, MatchPlayer, MatchSide, MatchSocial, MatchStatus, MatchType, PendingScore,
+    Photo, RosterPreviewPlayer, Score, ScoreConfirmation, ScoreResponseKind, ScoreSubmission,
+    ScoreSubmissionResponse, ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore,
+    UserProfile, UserSportStats,
 };
 use agon_core::dao::error::DaoError;
 use agon_core::dao::live_score_ops::NewLiveEvent;
@@ -744,7 +745,52 @@ pub fn match_side_from_record(rec: &MatchSideRecord) -> MatchSide {
         id: rec.side_id.clone(),
         team_id: rec.team_id.clone(),
         name: rec.name.clone(),
+        // Filled in afterward: live from `players` for `Match`
+        // (`Api::resolve_side_names`), or from the denormalized cache for a
+        // feed's `FeedMatch` (`feed_roster_preview`, below).
+        roster_preview: None,
     }
+}
+
+/// Build a feed side's `roster_preview` from the denormalized cache
+/// (`MatchSideRecord::player_count`/`roster_preview`) — the feed's
+/// counterpart to `Api::resolve_side_names`'s live computation, since a feed
+/// match never fetches the full player collection. `users` is the page-wide
+/// `batch_get_users` map the caller already built (same one
+/// `known_participants` hydrates from); a linked player's live name/avatar
+/// comes from there, an external player's stored `display_name` directly.
+///
+/// `None` when the cache is empty — either nobody's assigned yet, or the side
+/// exceeded `ROSTER_PREVIEW_CAP` players at its last refresh (by construction
+/// the cache is never a partial peek, see `MatchSideRecord::roster_preview`'s
+/// doc comment) — callers should fall back to `name`/`team_id`.
+pub fn feed_roster_preview(
+    side: &MatchSideRecord,
+    users: &std::collections::HashMap<String, UserRecord>,
+) -> Option<Vec<RosterPreviewPlayer>> {
+    if side.roster_preview.is_empty() {
+        return None;
+    }
+    Some(
+        side.roster_preview
+            .iter()
+            .map(|p| match &p.user_id {
+                Some(uid) => {
+                    let record = users.get(uid);
+                    RosterPreviewPlayer {
+                        user_id: Some(uid.clone()),
+                        name: record.map(|u| u.name.clone()).unwrap_or_default(),
+                        avatar_url: record.and_then(|u| u.profile_image_url.clone()),
+                    }
+                }
+                None => RosterPreviewPlayer {
+                    user_id: None,
+                    name: p.display_name.clone().unwrap_or_default(),
+                    avatar_url: None,
+                },
+            })
+            .collect(),
+    )
 }
 
 // ===========================================================================
@@ -791,6 +837,124 @@ pub fn match_from_records(
             i_liked,
         },
         format: rec.format.as_ref().map(match_format_from_record),
+    }
+}
+
+/// Build the feed's `FeedMatch` from a match summary (meta + sides, no
+/// players) and the viewer's already-resolved `known_participants` — the
+/// feed's equivalent of [`match_from_records`], but never touches the
+/// player roster.
+pub fn feed_match_from_records(
+    rec: &MatchRecord,
+    sides: &[MatchSideRecord],
+    users: &std::collections::HashMap<String, UserRecord>,
+    known_participants: Vec<UserProfile>,
+    viewer_side_id: Option<String>,
+    i_liked: bool,
+) -> FeedMatch {
+    FeedMatch {
+        id: rec.id.clone(),
+        name: rec.name.clone(),
+        description: rec.description.clone(),
+        match_type: match_type_from_tag(&rec.match_type),
+        status: match_status_from_str(&rec.status),
+        starts_at: parse_ts(&rec.starts_at),
+        location: rec.location.as_ref().map(|l| Location {
+            latitude: l.latitude,
+            longitude: l.longitude,
+        }),
+        header_photos: rec
+            .header_photos
+            .iter()
+            .map(|p| Photo {
+                image_url: p.url.clone(),
+                asset_id: Some(p.asset_id.clone()),
+            })
+            .collect(),
+        sides: sides
+            .iter()
+            .map(|s| {
+                let mut side = match_side_from_record(s);
+                side.roster_preview = feed_roster_preview(s, users);
+                side
+            })
+            .collect(),
+        known_participants,
+        viewer_side_id,
+        confirmed_score: rec
+            .confirmed_score
+            .as_ref()
+            .map(confirmed_score_from_record),
+        pending_score: rec.pending_score.as_ref().map(pending_score_from_record),
+        social: MatchSocial {
+            like_count: rec.like_count as u32,
+            comment_count: rec.comment_count as u32,
+            i_liked,
+        },
+        format: rec.format.as_ref().map(match_format_from_record),
+    }
+}
+
+/// Build a search hit's `SearchMatch` from a match summary (meta + sides, no
+/// players) — the search counterpart to [`feed_match_from_records`]. `users`
+/// hydrates side `roster_preview` entries' live name/avatar, same as the
+/// feed. `outcome` is the search client's already-resolved result for the
+/// queried participant, if any (see `SearchClient::search_matches`).
+pub fn search_match_from_records(
+    rec: &MatchRecord,
+    sides: &[MatchSideRecord],
+    users: &std::collections::HashMap<String, UserRecord>,
+    outcome: Option<agon_core::search::MatchOutcome>,
+    i_liked: bool,
+) -> SearchMatch {
+    SearchMatch {
+        id: rec.id.clone(),
+        name: rec.name.clone(),
+        description: rec.description.clone(),
+        match_type: match_type_from_tag(&rec.match_type),
+        status: match_status_from_str(&rec.status),
+        starts_at: parse_ts(&rec.starts_at),
+        location: rec.location.as_ref().map(|l| Location {
+            latitude: l.latitude,
+            longitude: l.longitude,
+        }),
+        header_photos: rec
+            .header_photos
+            .iter()
+            .map(|p| Photo {
+                image_url: p.url.clone(),
+                asset_id: Some(p.asset_id.clone()),
+            })
+            .collect(),
+        sides: sides
+            .iter()
+            .map(|s| {
+                let mut side = match_side_from_record(s);
+                side.roster_preview = feed_roster_preview(s, users);
+                side
+            })
+            .collect(),
+        outcome: outcome.map(match_outcome_from_search),
+        confirmed_score: rec
+            .confirmed_score
+            .as_ref()
+            .map(confirmed_score_from_record),
+        pending_score: rec.pending_score.as_ref().map(pending_score_from_record),
+        social: MatchSocial {
+            like_count: rec.like_count as u32,
+            comment_count: rec.comment_count as u32,
+            i_liked,
+        },
+        format: rec.format.as_ref().map(match_format_from_record),
+    }
+}
+
+/// Map the search client's outcome enum to the API's.
+fn match_outcome_from_search(outcome: agon_core::search::MatchOutcome) -> MatchOutcome {
+    match outcome {
+        agon_core::search::MatchOutcome::Won => MatchOutcome::Won,
+        agon_core::search::MatchOutcome::Lost => MatchOutcome::Lost,
+        agon_core::search::MatchOutcome::Draw => MatchOutcome::Draw,
     }
 }
 

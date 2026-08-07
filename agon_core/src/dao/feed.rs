@@ -13,6 +13,7 @@
 
 use aws_sdk_dynamodb::types::{PutRequest, WriteRequest};
 
+use super::audience::AudienceMember;
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::item::{ItemBuilder, to_item};
@@ -25,24 +26,43 @@ pub const TYPE_FEED_ITEM: &str = "feed_item";
 /// DynamoDB's hard cap on items per `BatchWriteItem` request.
 const BATCH_WRITE_MAX: usize = 25;
 
+/// One viewer's feed entry to write for a match — the viewer id plus their
+/// [`AudienceMember`] data (known-players list / own side, see
+/// `Dao::resolve_fanout_audience`).
+#[derive(Debug, Clone)]
+pub struct FeedViewer {
+    pub viewer_id: String,
+    pub audience: AudienceMember,
+}
+
 impl Dao {
     /// Write one feed entry per viewer for a match, in batches. Idempotent on
-    /// `<starts_at>#<matchId>` (an overwrite is a no-op in effect). Retries any
-    /// `UnprocessedItems` DynamoDB returns (throttling) until the batch drains.
+    /// `<starts_at>#<matchId>` (an overwrite is a no-op in effect, and fully
+    /// replaces the item — including `known_player_ids`/`viewer_side_id` — so
+    /// a re-fan-out refreshes it to the audience computation's current
+    /// state). Retries any `UnprocessedItems` DynamoDB returns (throttling)
+    /// until the batch drains.
     ///
-    /// `viewer_ids` should already be deduplicated by the caller.
+    /// `viewers` should already be deduplicated by the caller.
     #[tracing::instrument(skip(self))]
     pub async fn write_feed_items(
         &self,
-        viewer_ids: &[String],
+        viewers: &[FeedViewer],
         match_id: &str,
         starts_at: &str,
         now: &str,
     ) -> DaoResult<()> {
-        for chunk in viewer_ids.chunks(BATCH_WRITE_MAX) {
+        for chunk in viewers.chunks(BATCH_WRITE_MAX) {
             let mut requests = Vec::with_capacity(chunk.len());
-            for viewer_id in chunk {
-                let item = self.feed_item(viewer_id, match_id, starts_at, now)?;
+            for viewer in chunk {
+                let item = self.feed_item(
+                    &viewer.viewer_id,
+                    match_id,
+                    starts_at,
+                    now,
+                    &viewer.audience.known_player_ids,
+                    viewer.audience.viewer_side_id.clone(),
+                )?;
                 let put = PutRequest::builder()
                     .set_item(Some(item))
                     .build()
@@ -58,13 +78,17 @@ impl Dao {
     /// Build one viewer's feed-entry item for a match. Idempotent on the sort key
     /// `<starts_at>#<matchId>`, so writing it again (via fan-out) overwrites the
     /// identical row. Shared with the accept / create transactions, which write a
-    /// participant's *own* row synchronously.
+    /// participant's *own* row synchronously (with an empty `known_player_ids` —
+    /// it's their own match, not someone they follow playing in it — and their
+    /// own `side_id`, if assigned).
     pub(super) fn feed_item(
         &self,
         viewer_id: &str,
         match_id: &str,
         starts_at: &str,
         now: &str,
+        known_player_ids: &[String],
+        viewer_side_id: Option<String>,
     ) -> DaoResult<super::item::Item> {
         let record = FeedItemRecord {
             viewer_id: viewer_id.into(),
@@ -72,6 +96,8 @@ impl Dao {
             ref_id: match_id.into(),
             starts_at: starts_at.into(),
             created_at: now.into(),
+            known_player_ids: known_player_ids.to_vec(),
+            viewer_side_id,
         };
         Ok(ItemBuilder::new(to_item(
             &Pk::UserFeed(viewer_id.into()),

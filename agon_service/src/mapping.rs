@@ -202,6 +202,10 @@ pub fn score_from_record(rec: &ScoreRecord) -> Score {
                 .as_ref()
                 .map(next_ball_context_from_record),
             awaiting_next_innings: *awaiting_next_innings,
+            // Not stored — `Api::get_match_score` hydrates these afterward
+            // (see `CricketScore::current_striker`'s doc comment).
+            current_striker: None,
+            current_non_striker: None,
         }),
         ScoreRecord::Football {
             score,
@@ -774,23 +778,37 @@ pub fn feed_roster_preview(
     Some(
         side.roster_preview
             .iter()
-            .map(|p| match &p.user_id {
-                Some(uid) => {
-                    let record = users.get(uid);
-                    RosterPreviewPlayer {
-                        user_id: Some(uid.clone()),
-                        name: record.map(|u| u.name.clone()).unwrap_or_default(),
-                        avatar_url: record.and_then(|u| u.profile_image_url.clone()),
-                    }
-                }
-                None => RosterPreviewPlayer {
-                    user_id: None,
-                    name: p.display_name.clone().unwrap_or_default(),
-                    avatar_url: None,
-                },
-            })
+            .map(|p| roster_preview_player(p.user_id.as_deref(), p.display_name.as_deref(), users))
             .collect(),
     )
+}
+
+/// Build one `RosterPreviewPlayer` for a player identified either by a
+/// linked account (`user_id`, live name/avatar looked up in `users`) or an
+/// external display name. Shared by [`feed_roster_preview`] (a side's cached
+/// roster preview) and `Api`'s live-scoring current-batter resolution
+/// (`batch_get_match_players`) — same "prefer a live user record over
+/// whatever's stored on the player" rule either way.
+pub fn roster_preview_player(
+    user_id: Option<&str>,
+    display_name: Option<&str>,
+    users: &std::collections::HashMap<String, UserRecord>,
+) -> RosterPreviewPlayer {
+    match user_id {
+        Some(uid) => {
+            let record = users.get(uid);
+            RosterPreviewPlayer {
+                user_id: Some(uid.to_string()),
+                name: record.map(|u| u.name.clone()).unwrap_or_default(),
+                avatar_url: record.and_then(|u| u.profile_image_url.clone()),
+            }
+        }
+        None => RosterPreviewPlayer {
+            user_id: None,
+            name: display_name.unwrap_or_default().to_string(),
+            avatar_url: None,
+        },
+    }
 }
 
 // ===========================================================================
@@ -1874,6 +1892,8 @@ mod tests {
                 recent_deliveries: None,
                 next_ball_context: None,
                 awaiting_next_innings: None,
+                current_striker: None,
+                current_non_striker: None,
             }),
             // A live-scored cricket result: full per-player detail.
             Score::Cricket(CricketScore {
@@ -1940,6 +1960,8 @@ mod tests {
                     runs_conceded_this_over: 1,
                 }),
                 awaiting_next_innings: Some(false),
+                current_striker: None,
+                current_non_striker: None,
             }),
             // A manually-entered football result: totals only, no detail.
             Score::Football(FootballScore {

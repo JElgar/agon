@@ -44,8 +44,9 @@ use mapping::{
     invitation_status_str, live_event_from_record, match_format_sport_tag, match_format_to_record,
     match_from_records, match_score_from_record, match_score_to_record, match_status_str,
     match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
-    score_submission_from_record, score_to_record, search_match_from_records, team_from_records,
-    team_list_item_from_record, user_profile_from_record,
+    roster_preview_player, score_submission_from_record, score_to_record,
+    search_match_from_records, team_from_records, team_list_item_from_record,
+    user_profile_from_record,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -387,6 +388,19 @@ struct CricketScore {
     /// started yet (i.e. between innings, or nothing's been recorded).
     /// `None` for a result with no live log behind it.
     awaiting_next_innings: Option<bool>,
+    /// Live name/avatar for `next_ball_context`'s striker — whoever's
+    /// currently facing. Resolved separately from everything else on this
+    /// type: `score_from_record`/`CricketScore::from_events` (the DAO-only
+    /// paths) always leave this `None`, since neither has access to player
+    /// records; `Api::get_match_score` hydrates it afterward with a targeted
+    /// `Dao::batch_get_match_players` lookup, just for this one id, rather
+    /// than a full roster query. Exists so a feed/search card — whose
+    /// trimmed match type never carries the full player roster the match
+    /// detail view resolves names from locally — can still show who's
+    /// batting. Not persisted (no counterpart on `ScoreRecord`).
+    current_striker: Option<RosterPreviewPlayer>,
+    /// Same as `current_striker`, for `next_ball_context`'s non-striker.
+    current_non_striker: Option<RosterPreviewPlayer>,
 }
 
 /// One innings' totals, plus optional per-player detail. The totals
@@ -2723,34 +2737,88 @@ impl Api {
             .get_match_score(&match_id, sport)
             .await
             .map_err(dao_internal)?;
-        if let Some(record) = record {
-            return Ok(GetMatchScoreResponse::Score(Json(match_score_from_record(
-                &record,
-            ))));
+        let mut score = match record {
+            Some(record) => match_score_from_record(&record),
+            None => {
+                // No persisted record — recover by folding the event log, if
+                // there is one (e.g. a live-scored match whose record was
+                // somehow missing). Persist the result so subsequent reads,
+                // and the next incremental append, have a fresh checkpoint
+                // to build on.
+                let records = dao
+                    .list_live_events(&match_id)
+                    .await
+                    .map_err(dao_internal)?;
+                if records.is_empty() {
+                    return Ok(GetMatchScoreResponse::NotFound(PlainText(
+                        "match has no score".into(),
+                    )));
+                }
+                let last_seq = records.iter().map(|r| r.seq).max().unwrap_or(0);
+                let Some(score) = derive_live_score(sport, &records, agg.match_.format.as_ref())
+                else {
+                    return Ok(GetMatchScoreResponse::NotFound(PlainText(
+                        "match has no score".into(),
+                    )));
+                };
+                self.persist_score(dao, &match_id, &score, Some(last_seq))
+                    .await;
+                score
+            }
+        };
+
+        self.hydrate_current_batters(dao, &match_id, &mut score)
+            .await?;
+        Ok(GetMatchScoreResponse::Score(Json(score)))
+    }
+
+    /// Resolve live name/avatar for a cricket score's current striker/non-
+    /// striker (`CricketScore.current_striker`/`current_non_striker`), from
+    /// `next_ball_context`'s player ids. A targeted `BatchGetItem` for just
+    /// those 1-2 players (`Dao::batch_get_match_players`) — not the full
+    /// roster `Query` `Match.players` needs — plus `batch_get_users` for
+    /// whichever of them are linked accounts, same "live name/avatar over
+    /// stored" rule `feed_roster_preview` uses. No-op for any sport but
+    /// cricket, or once there's no current innings (`next_ball_context` is
+    /// `None`) — nothing to resolve either way.
+    async fn hydrate_current_batters(
+        &self,
+        dao: &dao::Dao,
+        match_id: &str,
+        score: &mut Score,
+    ) -> Result<()> {
+        let Score::Cricket(cricket) = score else {
+            return Ok(());
+        };
+        let Some(ctx) = &cricket.next_ball_context else {
+            return Ok(());
+        };
+        let mut player_ids = Vec::with_capacity(2);
+        if let Some(id) = &ctx.striker_player_id {
+            player_ids.push(id.clone());
+        }
+        if let Some(id) = &ctx.non_striker_player_id {
+            player_ids.push(id.clone());
+        }
+        if player_ids.is_empty() {
+            return Ok(());
         }
 
-        // No persisted record — recover by folding the event log, if there
-        // is one (e.g. a live-scored match whose record was somehow
-        // missing). Persist the result so subsequent reads, and the next
-        // incremental append, have a fresh checkpoint to build on.
-        let records = dao
-            .list_live_events(&match_id)
+        let players = dao
+            .batch_get_match_players(match_id, &player_ids)
             .await
             .map_err(dao_internal)?;
-        if records.is_empty() {
-            return Ok(GetMatchScoreResponse::NotFound(PlainText(
-                "match has no score".into(),
-            )));
-        }
-        let last_seq = records.iter().map(|r| r.seq).max().unwrap_or(0);
-        let Some(score) = derive_live_score(sport, &records, agg.match_.format.as_ref()) else {
-            return Ok(GetMatchScoreResponse::NotFound(PlainText(
-                "match has no score".into(),
-            )));
+        let user_ids: Vec<String> = players.values().filter_map(|p| p.user_id.clone()).collect();
+        let users = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
+
+        let resolve = |player_id: &Option<String>| {
+            players.get(player_id.as_ref()?).map(|p| {
+                roster_preview_player(p.user_id.as_deref(), p.display_name.as_deref(), &users)
+            })
         };
-        self.persist_score(dao, &match_id, &score, Some(last_seq))
-            .await;
-        Ok(GetMatchScoreResponse::Score(Json(score)))
+        cricket.current_striker = resolve(&ctx.striker_player_id);
+        cricket.current_non_striker = resolve(&ctx.non_striker_player_id);
+        Ok(())
     }
 
     /// Append a batch of live-scoring events (1 to
@@ -4969,6 +5037,8 @@ fn resolve_score_ids(
                 recent_deliveries,
                 next_ball_context,
                 awaiting_next_innings: s.awaiting_next_innings,
+                current_striker: None,
+                current_non_striker: None,
             }))
         }
         Score::Football(s) => {

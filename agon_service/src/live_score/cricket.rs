@@ -289,6 +289,8 @@ impl CricketScore {
             recent_deliveries: None,
             next_ball_context: None,
             awaiting_next_innings: Some(true),
+            current_striker: None,
+            current_non_striker: None,
         };
         for event in events {
             score.apply_event(
@@ -771,6 +773,8 @@ mod tests {
             recent_deliveries: None,
             next_ball_context: None,
             awaiting_next_innings: Some(true),
+            current_striker: None,
+            current_non_striker: None,
         };
         for event in &events {
             incremental.apply_event(event, 6, true, true);

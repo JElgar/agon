@@ -354,8 +354,14 @@ pub struct TeamMemberRecord {
 }
 
 /// `MATCH#<matchId>` / `#META` — match metadata + resolved scores + social
-/// counts. `sides`, `players`, the live-scoring score record, submissions,
-/// likes and comments live as separate items in the same partition.
+/// counts. `players`, the live-scoring score record, submissions, likes and
+/// comments live as separate items in the same partition; `sides` is
+/// embedded directly here (not a separate `SIDE#` item per side, unlike
+/// those) — a match never has more than a handful, they're never added,
+/// removed, or reordered after creation, and embedding them means a page's
+/// worth of matches' sides ride along for free on the same `BatchGetItem`
+/// that already fetches their metas, instead of one `Query` per match (see
+/// `Dao::batch_get_match_summaries`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MatchRecord {
     pub id: String,
@@ -373,6 +379,14 @@ pub struct MatchRecord {
     pub starts_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<LocationRecord>,
+    /// This match's sides, keyed by `side_id` — a DynamoDB map, not a list,
+    /// so a single side's `player_count`/`roster_preview` can be updated in
+    /// place by key (`Dao::refresh_side_roster_previews`) without needing to
+    /// know or preserve a position. `#[serde(default)]` for matches written
+    /// before this field existed — those still have their sides as separate
+    /// `SIDE#` items until migrated (see `bin/migrate_sides.rs`).
+    #[serde(default)]
+    pub sides: std::collections::HashMap<String, MatchSideRecord>,
     /// Header photos, in display order (first = shown first). `#[serde(default)]`
     /// for records written before this field existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

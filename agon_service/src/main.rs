@@ -2086,23 +2086,29 @@ impl Api {
 
         // Assign a real side id per input side and remember the client_id -> id
         // mapping so invites and the score can be re-pointed at real ids.
+        // Keyed by side_id (not a Vec) — sides are embedded on the match
+        // record as a map, see `MatchRecord::sides`.
         let mut side_ids: std::collections::HashMap<String, String> = Default::default();
-        let mut side_records: Vec<dao::records::MatchSideRecord> = Vec::new();
+        let mut sides: std::collections::HashMap<String, dao::records::MatchSideRecord> =
+            Default::default();
         for side in &input.sides {
             let side_id = new_id();
             side_ids.insert(side.client_id.clone(), side_id.clone());
-            side_records.push(dao::records::MatchSideRecord {
-                side_id,
-                team_id: side.team_id.clone(),
-                // Validated above: a name is only allowed here without a team,
-                // or alongside a team shared with another side (to tell the
-                // two apart) — never a lone team-assigned side.
-                name: side.name.clone(),
-                // `Dao::create_match` recomputes both from the players list
-                // it's given, in the same transaction — these are placeholders.
-                player_count: 0,
-                roster_preview: Vec::new(),
-            });
+            sides.insert(
+                side_id.clone(),
+                dao::records::MatchSideRecord {
+                    side_id,
+                    team_id: side.team_id.clone(),
+                    // Validated above: a name is only allowed here without a
+                    // team, or alongside a team shared with another side (to
+                    // tell the two apart) — never a lone team-assigned side.
+                    name: side.name.clone(),
+                    // `Dao::create_match` recomputes both from the players
+                    // list it's given, in the same transaction — placeholders.
+                    player_count: 0,
+                    roster_preview: Vec::new(),
+                },
+            );
         }
 
         // Build a player + invitation per invitee. Externals get a minted token
@@ -2276,6 +2282,7 @@ impl Api {
                 longitude: l.longitude,
             }),
             header_photos,
+            sides,
             confirmed_score: None,
             pending_score,
             like_count: 0,
@@ -2285,10 +2292,7 @@ impl Api {
             created_at: now.clone(),
         };
 
-        match dao
-            .create_match(&match_record, &side_records, &player_records)
-            .await
-        {
+        match dao.create_match(&match_record, &player_records).await {
             Ok(()) => {}
             Err(dao::DaoError::Conflict(msg)) => {
                 return Ok(CreateMatchResponse::ValidationError(PlainText(msg)));
@@ -2310,7 +2314,14 @@ impl Api {
                 .map_err(dao_internal)?;
         }
 
-        let mut m = match_from_records(&match_record, &side_records, &player_records, false);
+        // Stable order for the response (`hydrate_match` below re-resolves
+        // each side's real name/roster_preview live from `player_records`
+        // anyway — this only needs the right side_id/team_id/name per side).
+        let mut sides_for_response: Vec<dao::records::MatchSideRecord> =
+            match_record.sides.values().cloned().collect();
+        sides_for_response.sort_by(|a, b| a.side_id.cmp(&b.side_id));
+
+        let mut m = match_from_records(&match_record, &sides_for_response, &player_records, false);
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m, &uid).await?;
         Ok(CreateMatchResponse::Match(Json(m)))

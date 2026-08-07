@@ -1128,6 +1128,400 @@ async fn accepting_a_link_invite_updates_feed_and_stats() {
 }
 
 // ---------------------------------------------------------------------------
+// Stats reconciliation
+// ---------------------------------------------------------------------------
+//
+// `Dao::reconcile_match_contribution` (agon_core/src/dao/stats.rs) maintains
+// each user's per-sport `matches_played`/`wins` as a ledger: it diffs a
+// match's *desired* contribution against what's *stored* for that
+// (match, user) pair and applies only the delta, guarded by an optimistic
+// lock on the stored contribution. It's triggered from two independent
+// places — the `#META` DynamoDB-stream handler (any write to the match item:
+// status, score, even a like/comment bump) and the invite-accept saga
+// directly (a roster `PLAYER#` link alone doesn't touch `#META`, so accepting
+// into an already-completed match needs its own explicit reconcile). These
+// tests probe that ledger for drift: idempotency under repeated/concurrent
+// re-reconciliation, the one live "the count legitimately moves" case
+// (reassigning a side after the win was already counted), and the seam
+// between the two call paths racing on the same match — see the
+// investigation into a production `matches_played: -1` that motivated this
+// suite.
+//
+// Ruled out as unreachable via the current API surface (so not exercised
+// here as a "the count goes down" trigger): `confirmed_score` reverting to
+// unset (no clear path in `update_match_meta`, only set), a match's sport
+// changing post-creation (not a field on `UpdateMatchInput`), and a player
+// being removed from the roster outright (no such endpoint — only adding and
+// side-reassignment).
+
+/// The caller's own win percentage for a sport (`None` if no confirmed
+/// matches yet for it). Reads `/users/me`, mirroring `my_matches_played`.
+async fn my_win_percentage(config: &Configuration, sport: models::MatchType) -> Option<f32> {
+    let me = users_me_get(config).await.expect("get me");
+    me.profile
+        .stats
+        .iter()
+        .find(|s| s.match_type == sport)
+        .and_then(|s| s.win_percentage)
+}
+
+/// The match-player id (`Member::User.id`, what `SetPlayerSideInput.player_id`
+/// references) for `user_id` on `match_`. Panics if they're not a linked
+/// player.
+fn player_id_for(match_: &models::Match, user_id: &str) -> String {
+    match_
+        .players
+        .iter()
+        .find_map(|p| match &*p.member {
+            models::Member::User(u) if u.user_id == user_id => Some(u.id.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no linked player row for user {user_id}"))
+}
+
+/// `config`'s own pending invitation to `match_id`, off their inbox. Panics if
+/// absent — every caller here expects one to exist.
+async fn find_match_invitation(config: &Configuration, match_id: &str) -> models::InvitationDetail {
+    let inbox = users_me_invitations_get(config, None, None, None)
+        .await
+        .expect("inbox");
+    inbox
+        .items
+        .into_iter()
+        .find(|i| {
+            matches!(&*i.context,
+            models::InvitationContext::Match(ctx) if ctx.match_id == match_id)
+        })
+        .expect("match invitation in inbox")
+}
+
+/// A completed, fully-confirmed tennis match: owner on side "a" (auto-played,
+/// no invitation needed), opponent invited onto side "b", accepts, and
+/// confirms the owner's submitted 6-3 score. Both sides' stats are credited
+/// (waited for) before returning, so callers start from a known-good ledger
+/// state. Returns (owner_config, owner, opponent_config, opponent, match,
+/// side_a, side_b).
+async fn credited_match() -> (
+    Configuration,
+    models::User,
+    Configuration,
+    models::User,
+    models::Match,
+    String,
+    String,
+) {
+    let (owner_config, owner) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+
+    let created = matches_post(
+        &owner_config,
+        completed_match(vec![invite_users("b", &[&opponent.profile.id])]),
+    )
+    .await
+    .expect("create match");
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+
+    let detail = find_match_invitation(&opponent_config, &created.id).await;
+    invitations_invitation_id_respond_post(
+        &opponent_config,
+        &detail.invitation.id,
+        models::RespondToInvitationInput {
+            response: models::InvitationResponse::Accepted,
+            side_id: None,
+        },
+    )
+    .await
+    .expect("accept invitation");
+
+    let submission_id = created
+        .pending_score
+        .as_ref()
+        .expect("pending score at create time")
+        .submission_id
+        .clone();
+    matches_match_id_score_submissions_submission_id_respond_post(
+        &opponent_config,
+        &created.id,
+        &submission_id,
+        models::RespondToScoreInput {
+            response: models::ScoreResponseKind::Confirm,
+        },
+    )
+    .await
+    .expect("confirm score");
+
+    assert_matches_played_reaches(&owner_config, models::MatchType::Tennis, 1, "owner").await;
+    assert_matches_played_reaches(&opponent_config, models::MatchType::Tennis, 1, "opponent").await;
+
+    let match_ = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match");
+    (
+        owner_config,
+        owner,
+        opponent_config,
+        opponent,
+        match_,
+        side_a,
+        side_b,
+    )
+}
+
+/// A single redundant `#META` touch after both sides are already credited
+/// must not re-apply the ledger delta a second time — the reconciler's core
+/// idempotency claim ("unchanged state -> zero delta -> no write").
+#[tokio::test]
+async fn a_redundant_meta_touch_after_credit_does_not_change_matches_played() {
+    let (owner_config, _owner, opponent_config, _opponent, match_, _side_a, _side_b) =
+        credited_match().await;
+
+    // Like the match: an unrelated write to the SAME #META item, which
+    // re-triggers the stream-driven stats handler with no state change to
+    // reconcile.
+    matches_match_id_likes_post(&owner_config, &match_.id)
+        .await
+        .expect("like match");
+
+    // Give the async pipeline a beat to (not) do anything, then assert both
+    // sides are still credited exactly once — a fixed wait + direct assert,
+    // not `eventually`, since we're asserting nothing changes.
+    tokio::time::sleep(std::time::Duration::from_millis(3000)).await;
+    assert_eq!(
+        my_matches_played(&owner_config, models::MatchType::Tennis).await,
+        1,
+        "owner's matches_played must not drift on a redundant reconcile"
+    );
+    assert_eq!(
+        my_matches_played(&opponent_config, models::MatchType::Tennis).await,
+        1,
+        "opponent's matches_played must not drift on a redundant reconcile"
+    );
+}
+
+/// A burst of concurrent `#META` touches after credit — five independent
+/// bystanders liking the match in parallel, each a genuine distinct
+/// like_count bump/stream event landing at roughly the same moment — stresses
+/// the reconciler under something closer to SQS's
+/// at-least-once-and-possibly-concurrent delivery than a single serial
+/// re-touch. Must still converge to exactly 1 played each, not drift either
+/// way.
+#[tokio::test]
+async fn concurrent_meta_touches_after_credit_do_not_drift_matches_played() {
+    let (owner_config, _owner, opponent_config, _opponent, match_, _side_a, _side_b) =
+        credited_match().await;
+
+    let bystanders = futures::future::join_all((0..5).map(|_| new_user())).await;
+    futures::future::join_all(
+        bystanders
+            .iter()
+            .map(|(cfg, _)| matches_match_id_likes_post(cfg, &match_.id)),
+    )
+    .await
+    .into_iter()
+    .for_each(|r| r.expect("bystander like"));
+
+    tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
+    assert_eq!(
+        my_matches_played(&owner_config, models::MatchType::Tennis).await,
+        1,
+        "owner's matches_played must converge to 1 despite a burst of concurrent reconciles"
+    );
+    assert_eq!(
+        my_matches_played(&opponent_config, models::MatchType::Tennis).await,
+        1,
+        "opponent's matches_played must converge to 1 despite a burst of concurrent reconciles"
+    );
+}
+
+/// Reassigning a player to a different side after their win was already
+/// counted is a real, currently-reachable "the ledger legitimately moves"
+/// case: `won` should flip on the next reconcile, but `matches_played` must
+/// NOT change — they still played the match, just (per the correction) for
+/// the other side.
+#[tokio::test]
+async fn reassigning_the_winner_to_the_losing_side_flips_win_rate_without_changing_matches_played()
+{
+    let (owner_config, owner, _opponent_config, _opponent, match_, _side_a, side_b) =
+        credited_match().await;
+    assert_eq!(
+        my_win_percentage(&owner_config, models::MatchType::Tennis).await,
+        Some(100.0),
+        "setup: owner won"
+    );
+
+    let owner_player_id = player_id_for(&match_, &owner.profile.id);
+
+    matches_match_id_patch(
+        &owner_config,
+        &match_.id,
+        models::UpdateMatchInput {
+            side_assignments: Some(vec![models::SetPlayerSideInput {
+                player_id: owner_player_id,
+                side_id: Some(side_b.clone()),
+            }]),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("reassign side");
+
+    // side_assignments writes a PLAYER# item, not #META, so it doesn't itself
+    // trigger a reconcile — force one the way a real client interaction
+    // would (e.g. a like).
+    matches_match_id_likes_post(&owner_config, &match_.id)
+        .await
+        .expect("like match");
+
+    eventually(
+        "owner's win rate to flip to 0 after reassignment",
+        || async {
+            (my_win_percentage(&owner_config, models::MatchType::Tennis).await == Some(0.0))
+                .then_some(())
+        },
+    )
+    .await;
+    assert_eq!(
+        my_matches_played(&owner_config, models::MatchType::Tennis).await,
+        1,
+        "matches_played must be unaffected by a side reassignment — only `won` should move"
+    );
+}
+
+/// Accepting a NEW invite into an ALREADY-completed-and-confirmed match is
+/// the one case `reconcile_match_stats` explicitly documents as needing a
+/// second, independent trigger (the accept saga), because a roster `PLAYER#`
+/// link alone doesn't touch `#META`. Racing that accept against an ordinary
+/// `#META` touch (a like, landing via the stream-driven handler) from
+/// someone else at the same moment exercises the seam between the two call
+/// paths for the same match — the best candidate for uncovering a reconcile
+/// race that corrupts the ledger.
+#[tokio::test]
+async fn accepting_a_late_invite_races_a_concurrent_meta_touch_without_drift() {
+    let (owner_config, _owner, opponent_config, _opponent, match_, _side_a, side_b) =
+        credited_match().await;
+
+    let (latecomer_config, latecomer) = new_user().await;
+    matches_match_id_invitations_post(
+        &owner_config,
+        &match_.id,
+        models::AddInvitationsInput {
+            invited_user_ids: vec![latecomer.profile.id.clone()],
+            invited_external_names: vec![],
+            side_id: Some(side_b.clone()),
+        },
+    )
+    .await
+    .expect("invite latecomer");
+    let detail = find_match_invitation(&latecomer_config, &match_.id).await;
+
+    // Race: the latecomer accepts (accept-saga path) at the same moment the
+    // opponent likes the match (stream-driven #META path), for the same
+    // match.
+    let accept = invitations_invitation_id_respond_post(
+        &latecomer_config,
+        &detail.invitation.id,
+        models::RespondToInvitationInput {
+            response: models::InvitationResponse::Accepted,
+            side_id: None,
+        },
+    );
+    let like = matches_match_id_likes_post(&opponent_config, &match_.id);
+    let (accept_result, like_result) = tokio::join!(accept, like);
+    accept_result.expect("accept invitation");
+    like_result.expect("like match");
+
+    // The latecomer converges to exactly 1 played match...
+    assert_matches_played_reaches(&latecomer_config, models::MatchType::Tennis, 1, "latecomer")
+        .await;
+    // ...and the pre-existing participants' counts must be undisturbed by the
+    // race, not clobbered to 0 or driven negative.
+    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+    assert_eq!(
+        my_matches_played(&owner_config, models::MatchType::Tennis).await,
+        1,
+        "owner's matches_played must survive the concurrent accept/like race"
+    );
+    assert_eq!(
+        my_matches_played(&opponent_config, models::MatchType::Tennis).await,
+        1,
+        "opponent's matches_played must survive the concurrent accept/like race"
+    );
+}
+
+/// Multiple new invitees accepting into the SAME already-confirmed match
+/// concurrently: each accept independently reconciles the *full* match (the
+/// union of current participants and existing contributions), so this
+/// stresses that shared read-then-write logic running in parallel for one
+/// match, even though each accept's aggregate delta lands on a different
+/// user's own profile item.
+#[tokio::test]
+async fn concurrently_accepting_multiple_late_invites_credits_each_exactly_once() {
+    let (owner_config, _owner, opponent_config, _opponent, match_, _side_a, side_b) =
+        credited_match().await;
+
+    let latecomers = futures::future::join_all((0..3).map(|_| new_user())).await;
+    matches_match_id_invitations_post(
+        &owner_config,
+        &match_.id,
+        models::AddInvitationsInput {
+            invited_user_ids: latecomers
+                .iter()
+                .map(|(_, u)| u.profile.id.clone())
+                .collect(),
+            invited_external_names: vec![],
+            side_id: Some(side_b.clone()),
+        },
+    )
+    .await
+    .expect("invite latecomers");
+
+    let details = futures::future::join_all(
+        latecomers
+            .iter()
+            .map(|(cfg, _)| find_match_invitation(cfg, &match_.id)),
+    )
+    .await;
+
+    // All three accept at once.
+    futures::future::join_all(
+        latecomers
+            .iter()
+            .zip(details.iter())
+            .map(|((cfg, _), detail)| {
+                invitations_invitation_id_respond_post(
+                    cfg,
+                    &detail.invitation.id,
+                    models::RespondToInvitationInput {
+                        response: models::InvitationResponse::Accepted,
+                        side_id: None,
+                    },
+                )
+            }),
+    )
+    .await
+    .into_iter()
+    .for_each(|r| {
+        r.expect("accept invitation");
+    });
+
+    for (cfg, _) in &latecomers {
+        assert_matches_played_reaches(cfg, models::MatchType::Tennis, 1, "a latecomer").await;
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+    assert_eq!(
+        my_matches_played(&owner_config, models::MatchType::Tennis).await,
+        1,
+        "owner's matches_played must survive concurrent multi-accept"
+    );
+    assert_eq!(
+        my_matches_played(&opponent_config, models::MatchType::Tennis).await,
+        1,
+        "opponent's matches_played must survive concurrent multi-accept"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Notifications
 // ---------------------------------------------------------------------------
 

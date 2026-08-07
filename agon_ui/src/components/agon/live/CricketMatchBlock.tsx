@@ -105,6 +105,11 @@ export function CricketMatchBlock({
   const battingName = sideNameFor(match, innings.batting_side_id)
   const bowlingName = sideNameFor(match, innings.bowling_side_id)
   const next = state.next_ball_context
+  // `null` on a feed/search card (no `players` list to resolve against) —
+  // rather than showing a "—" placeholder, the line below is omitted
+  // entirely when neither name is known.
+  const strikerName = next ? playerNameFor(match, next.striker_player_id) : null
+  const nonStrikerName = next ? playerNameFor(match, next.non_striker_player_id) : null
   const overBalls = currentOverDeliveries(state.recent_deliveries ?? [])
   const crr = runRate(innings.runs, innings.overs, format.balls_per_over)
 
@@ -121,11 +126,11 @@ export function CricketMatchBlock({
               {crr.toFixed(2)})
             </span>
           </p>
-          {next && (next.striker_player_id || next.non_striker_player_id) && (
+          {(strikerName || nonStrikerName) && (
             <p className="mt-0.5 truncate text-xs text-muted-foreground">
-              {next.striker_player_id && <>{playerNameFor(match, next.striker_player_id)}*</>}
-              {next.striker_player_id && next.non_striker_player_id && ' · '}
-              {next.non_striker_player_id && <>{playerNameFor(match, next.non_striker_player_id)}</>}
+              {strikerName && <>{strikerName}*</>}
+              {strikerName && nonStrikerName && ' · '}
+              {nonStrikerName && <>{nonStrikerName}</>}
             </p>
           )}
           {showDescription && description && (

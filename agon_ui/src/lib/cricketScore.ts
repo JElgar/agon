@@ -365,18 +365,20 @@ export function sideNameFor(match: Pick<Match, 'sides'>, sideId: string): string
   return match.sides.find((s) => s.id === sideId)?.name?.trim() || 'This side'
 }
 
-/** Player display name for a member id, if it's on the roster. A feed card's
- *  `FeedMatch` never carries one (see `cricketStateDescription`), so a
- *  batter/bowler name on a live feed card falls back to "—" rather than
- *  crashing — full names are available on the match detail view. */
+/** Player display name for a member id, if it's on the roster — `null` if
+ *  not (a feed/search card's trimmed match type never carries a `players`
+ *  list at all, see `cricketStateDescription`), same "can't resolve → null,
+ *  let the caller decide how to degrade" contract as football's
+ *  `playerNameFor` in `lib/liveScore.ts`. Full names are always resolvable
+ *  from the match detail view, which does carry the full roster. */
 export function playerNameFor(
   match: MatchLike,
   playerId: string | undefined | null,
-): string {
-  if (!playerId) return '—'
+): string | null {
+  if (!playerId) return null
   const players = ('players' in match && match.players) || []
   const player = players.find((p) => p.member.id === playerId)
-  return player ? memberName(player.member) : '—'
+  return player ? memberName(player.member) : null
 }
 
 // `NextBallContext` (who's on strike/bowling for the next delivery) is now

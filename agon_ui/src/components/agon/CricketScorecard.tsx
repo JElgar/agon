@@ -89,7 +89,7 @@ function InningsCard({ match, innings }: { match: Match; innings: CricketInnings
             {batting.map((b: CricketBattingEntry) => (
               <TableRow key={b.player_id}>
                 <TableCell>
-                  <p className="font-medium">{playerNameFor(match, b.player_id)}</p>
+                  <p className="font-medium">{playerNameFor(match, b.player_id) ?? '—'}</p>
                   <p className="text-[11px] text-muted-foreground">
                     {b.dismissal ? dismissalLabel(b.dismissal.kind) : 'not out'}
                   </p>
@@ -118,7 +118,7 @@ function InningsCard({ match, innings }: { match: Match; innings: CricketInnings
           <TableBody>
             {bowling.map((bw: CricketBowlingEntry) => (
               <TableRow key={bw.player_id}>
-                <TableCell className="font-medium">{playerNameFor(match, bw.player_id)}</TableCell>
+                <TableCell className="font-medium">{playerNameFor(match, bw.player_id) ?? '—'}</TableCell>
                 <TableCell className="w-12 text-right tabular-nums">{formatOvers(bw.overs)}</TableCell>
                 <TableCell className="w-12 text-right tabular-nums">{bw.maidens}</TableCell>
                 <TableCell className="w-12 text-right tabular-nums">{bw.runs_conceded}</TableCell>

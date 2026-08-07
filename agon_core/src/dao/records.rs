@@ -382,10 +382,10 @@ pub struct MatchRecord {
     /// This match's sides, keyed by `side_id` — a DynamoDB map, not a list,
     /// so a single side's `player_count`/`roster_preview` can be updated in
     /// place by key (`Dao::refresh_side_roster_previews`) without needing to
-    /// know or preserve a position. `#[serde(default)]` for matches written
-    /// before this field existed — those still have their sides as separate
-    /// `SIDE#` items until migrated (see `bin/migrate_sides.rs`).
-    #[serde(default)]
+    /// know or preserve a position. Every match has this populated by
+    /// `create_match`; there is no fallback to a separate `SIDE#` item
+    /// collection (that storage predates this field and has been migrated
+    /// away — see the migration script, not checked into this repo).
     pub sides: std::collections::HashMap<String, MatchSideRecord>,
     /// Header photos, in display order (first = shown first). `#[serde(default)]`
     /// for records written before this field existed.

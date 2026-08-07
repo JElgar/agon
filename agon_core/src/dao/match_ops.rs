@@ -535,7 +535,6 @@ impl Dao {
     async fn match_side_ids(&self, match_id: &str) -> DaoResult<Vec<String>> {
         #[derive(serde::Deserialize)]
         struct SidesOnly {
-            #[serde(default)]
             sides: HashMap<String, MatchSideRecord>,
         }
 
@@ -550,12 +549,8 @@ impl Dao {
             .await
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
         let Some(item) = out.item else {
-            return Ok(Vec::new());
+            return Ok(Vec::new()); // Match gone.
         };
-        // A match with no `sides` attribute (not yet migrated, or genuinely
-        // absent) projects to an empty item — `#[serde(default)]` on the
-        // field turns that into an empty map, same as any other missing
-        // optional field.
         let parsed: SidesOnly = from_item(item)?;
         Ok(parsed.sides.into_keys().collect())
     }

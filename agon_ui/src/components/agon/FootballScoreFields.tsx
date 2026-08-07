@@ -117,9 +117,13 @@ export function FootballScoreFields({ sideA, sideB, players, initial, onChange }
       onChange(null)
       return
     }
+    // `players` (the score's resolved-name map) is server-only — the backend
+    // never persists it (see `FootballScore.players`'s doc comment) — so a
+    // manually-built score has nothing to put here.
     const score: Score = {
       type: 'Football',
       score: { [aId]: a, [bId]: b },
+      players: {},
       ...(hasDetail ? { goals, cards, substitutions } : {}),
     }
     const winnerSideId = a === b ? undefined : a > b ? aId : bId

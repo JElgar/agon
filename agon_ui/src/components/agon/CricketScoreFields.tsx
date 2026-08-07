@@ -217,7 +217,10 @@ export function CricketScoreFields({
     const a = totals[sideA.id] ?? 0
     const b = totals[sideB.id] ?? 0
     const winnerSideId = a === b ? undefined : a > b ? sideA.id : sideB.id
-    onChange({ score: { type: 'Cricket', innings: built }, winnerSideId })
+    // `players` (the score's resolved-name map) is server-only — the backend
+    // never persists it (see `CricketScore.players`'s doc comment) — so a
+    // manually-built score has nothing to put here.
+    onChange({ score: { type: 'Cricket', innings: built, players: {} }, winnerSideId })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [innings, sideA.id, sideB.id])
 

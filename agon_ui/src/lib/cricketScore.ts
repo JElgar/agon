@@ -1,5 +1,5 @@
 import type { components } from '@/types/api'
-import { memberName } from './members'
+import { memberName, type ScorePlayers } from './members'
 import type { CricketFormat } from './matchFormat'
 
 export type CricketDelivery = components['schemas']['CricketDelivery']
@@ -365,18 +365,27 @@ export function sideNameFor(match: Pick<Match, 'sides'>, sideId: string): string
   return match.sides.find((s) => s.id === sideId)?.name?.trim() || 'This side'
 }
 
-/** Player display name for a member id, if it's on the roster. A feed card's
- *  `FeedMatch` never carries one (see `cricketStateDescription`), so a
- *  batter/bowler name on a live feed card falls back to "—" rather than
- *  crashing — full names are available on the match detail view. */
+/** Player display name for a match-scoped player id — `null` if it can't be
+ *  resolved (same "can't resolve → null, let the caller decide how to
+ *  degrade" contract as football's `playerNameFor` in `lib/liveScore.ts`).
+ *
+ *  Checks `scorePlayers` first — `CricketScore.players`, resolved
+ *  server-side for exactly the ids a score references (see its backend doc
+ *  comment) — since that's the only source a feed/search card's trimmed
+ *  match type has at all (it never carries a `players` list). Falls back to
+ *  scanning the match's own roster, always present on the full `Match` type
+ *  a detail view uses. */
 export function playerNameFor(
   match: MatchLike,
   playerId: string | undefined | null,
-): string {
-  if (!playerId) return '—'
+  scorePlayers?: ScorePlayers,
+): string | null {
+  if (!playerId) return null
+  const resolved = scorePlayers?.[playerId]
+  if (resolved) return resolved.name
   const players = ('players' in match && match.players) || []
   const player = players.find((p) => p.member.id === playerId)
-  return player ? memberName(player.member) : '—'
+  return player ? memberName(player.member) : null
 }
 
 // `NextBallContext` (who's on strike/bowling for the next delivery) is now

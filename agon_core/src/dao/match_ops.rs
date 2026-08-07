@@ -257,6 +257,44 @@ impl Dao {
         Ok(out)
     }
 
+    /// Fetch specific players from one match by id, in one round-trip. Each
+    /// player's key (`PK = MATCH#<matchId>`, `SK = PLAYER#<playerId>`) is
+    /// already known to the caller (e.g. a live-scoring `next_ball_context`'s
+    /// striker/non-striker ids), so this is a `BatchGetItem` of exact keys —
+    /// not the `begins_with(SK, "PLAYER#")` `Query` `get_match` uses for the
+    /// *whole* roster. Resolving a couple of names this way stays flat-cost
+    /// regardless of squad size, unlike a full roster query. Missing ids are
+    /// simply absent from the map.
+    #[tracing::instrument(skip(self))]
+    pub async fn batch_get_match_players(
+        &self,
+        match_id: &str,
+        player_ids: &[String],
+    ) -> DaoResult<HashMap<String, MatchPlayerRecord>> {
+        let mut seen = std::collections::HashSet::new();
+        let keys: Vec<_> = player_ids
+            .iter()
+            .filter(|id| seen.insert((*id).clone()))
+            .map(|id| {
+                HashMap::from([
+                    (
+                        ATTR_PK.to_string(),
+                        s(Pk::Match(match_id.into()).to_string()),
+                    ),
+                    (ATTR_SK.to_string(), s(Sk::Player(id.clone()).to_string())),
+                ])
+            })
+            .collect();
+
+        let items = self.batch_get_all(keys, None).await?;
+        let mut out = HashMap::with_capacity(items.len());
+        for item in items {
+            let record: MatchPlayerRecord = from_item(item)?;
+            out.insert(record.player_id.clone(), record);
+        }
+        Ok(out)
+    }
+
     /// Fetch match summaries (meta + sides, *no* players) for many matches at
     /// once — the feed's and search's hydration path, neither of which
     /// renders a full roster (see [`MatchSummary`]). Missing ids are simply

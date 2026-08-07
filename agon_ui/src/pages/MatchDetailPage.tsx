@@ -142,7 +142,10 @@ function MatchDetail({
   const footballState = isCurrentlyLive ? footballScoreFrom(scoreQuery.data) : null
   const cricketState = isCurrentlyLive ? cricketScoreFrom(scoreQuery.data) : null
   const hasLiveState = !!footballState || !!cricketState
-  const cricketScore = scoreInfo ? cricketScoreFrom(scoreInfo.score) : null
+  // Same "live while in progress, else confirmed/pending" source as
+  // `cricketScoreInnings` below — needed here just for `.players` (the
+  // score's resolved-name map), passed to `CricketScorecard`.
+  const cricketScore = cricketScoreFrom(isCurrentlyLive ? scoreQuery.data : scoreInfo?.score)
   // `FootballScorecard`'s event timeline: the live running score while the
   // match is in progress, else straight off the confirmed/pending score —
   // stays visible once the match is completed, unlike `footballState` above.
@@ -322,7 +325,7 @@ function MatchDetail({
           once there's per-innings detail recorded (live-scored or entered
           directly). */}
       {cricketInnings && cricketInnings.length > 0 && (
-        <CricketScorecard match={match} innings={cricketInnings} />
+        <CricketScorecard match={match} innings={cricketInnings} players={cricketScore?.players} />
       )}
 
       {/* Football event timeline: goals/cards/subs, once there's detail

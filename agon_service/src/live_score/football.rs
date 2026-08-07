@@ -48,6 +48,7 @@ impl FootballScore {
             period_times: Some(HashMap::new()),
             penalty_shootout: Some(Vec::new()),
             penalty_shootout_score: Some(HashMap::new()),
+            players: HashMap::new(),
         };
         for (occurred_at, event) in events {
             score.apply_event(*occurred_at, event);
@@ -378,6 +379,7 @@ mod tests {
             period_times: Some(HashMap::new()),
             penalty_shootout: Some(Vec::new()),
             penalty_shootout_score: Some(HashMap::new()),
+            players: HashMap::new(),
         };
         for (occurred_at, event) in &events {
             incremental.apply_event(*occurred_at, event);

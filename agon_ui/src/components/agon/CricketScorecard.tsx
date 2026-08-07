@@ -9,6 +9,7 @@ import {
   type CricketInningsWithDeliveries,
 } from '@/lib/cricketScore'
 import { cricketFormat } from '@/lib/matchFormat'
+import type { ScorePlayers } from '@/lib/members'
 import { CricketRunRateChart, type RunRateSeries } from './CricketRunRateChart'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
@@ -25,8 +26,21 @@ function sideNameFor(match: Match, sideId: string): string {
  * ball-by-ball-scored innings, followed by each innings' batting/bowling
  * cards. Renders nothing if there's no per-innings detail to show (e.g. only
  * a headline score was ever recorded).
+ *
+ * `match` is always the full detail-page `Match` here (own roster included),
+ * so `players` (the score's resolved-name map) is a redundant-but-cheap
+ * first lookup rather than the only source `CricketMatchBlock`'s feed card
+ * relies on — see `playerNameFor`.
  */
-export function CricketScorecard({ match, innings }: { match: Match; innings: CricketInningsWithDeliveries[] }) {
+export function CricketScorecard({
+  match,
+  innings,
+  players,
+}: {
+  match: Match
+  innings: CricketInningsWithDeliveries[]
+  players?: ScorePlayers
+}) {
   if (innings.length === 0) return null
 
   const format = cricketFormat(match.format)
@@ -51,13 +65,21 @@ export function CricketScorecard({ match, innings }: { match: Match; innings: Cr
       )}
 
       {innings.map((inn, i) => (
-        <InningsCard key={`${inn.batting_side_id}-${i}`} match={match} innings={inn} />
+        <InningsCard key={`${inn.batting_side_id}-${i}`} match={match} innings={inn} players={players} />
       ))}
     </div>
   )
 }
 
-function InningsCard({ match, innings }: { match: Match; innings: CricketInningsWithDeliveries }) {
+function InningsCard({
+  match,
+  innings,
+  players,
+}: {
+  match: Match
+  innings: CricketInningsWithDeliveries
+  players?: ScorePlayers
+}) {
   const batting = innings.batting ?? []
   const bowling = innings.bowling ?? []
   if (batting.length === 0 && bowling.length === 0) return null
@@ -89,7 +111,7 @@ function InningsCard({ match, innings }: { match: Match; innings: CricketInnings
             {batting.map((b: CricketBattingEntry) => (
               <TableRow key={b.player_id}>
                 <TableCell>
-                  <p className="font-medium">{playerNameFor(match, b.player_id)}</p>
+                  <p className="font-medium">{playerNameFor(match, b.player_id, players) ?? '—'}</p>
                   <p className="text-[11px] text-muted-foreground">
                     {b.dismissal ? dismissalLabel(b.dismissal.kind) : 'not out'}
                   </p>
@@ -118,7 +140,7 @@ function InningsCard({ match, innings }: { match: Match; innings: CricketInnings
           <TableBody>
             {bowling.map((bw: CricketBowlingEntry) => (
               <TableRow key={bw.player_id}>
-                <TableCell className="font-medium">{playerNameFor(match, bw.player_id)}</TableCell>
+                <TableCell className="font-medium">{playerNameFor(match, bw.player_id, players) ?? '—'}</TableCell>
                 <TableCell className="w-12 text-right tabular-nums">{formatOvers(bw.overs)}</TableCell>
                 <TableCell className="w-12 text-right tabular-nums">{bw.maidens}</TableCell>
                 <TableCell className="w-12 text-right tabular-nums">{bw.runs_conceded}</TableCell>

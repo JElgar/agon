@@ -387,18 +387,23 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
         <div className="mt-3 space-y-1 border-t pt-3 text-sm">
           {effectiveStriker && (
             <div className="flex items-center justify-between">
-              <span className="font-medium">{playerNameFor(match, effectiveStriker)}*</span>
+              <span className="font-medium">
+                {playerNameFor(match, effectiveStriker, state?.players) ?? '—'}*
+              </span>
             </div>
           )}
           {effectiveNonStriker && (
             <div className="flex items-center justify-between">
-              <span>{playerNameFor(match, effectiveNonStriker)}</span>
+              <span>{playerNameFor(match, effectiveNonStriker, state?.players) ?? '—'}</span>
             </div>
           )}
           {effectiveBowler && (
             <div className="mt-1.5 flex items-center justify-between border-t pt-1.5 text-xs">
               <span className="text-muted-foreground">
-                Bowling: <span className="font-medium text-foreground">{playerNameFor(match, effectiveBowler)}</span>
+                Bowling:{' '}
+                <span className="font-medium text-foreground">
+                  {playerNameFor(match, effectiveBowler, state?.players) ?? '—'}
+                </span>
               </span>
             </div>
           )}

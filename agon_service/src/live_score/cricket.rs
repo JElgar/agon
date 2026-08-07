@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use poem_openapi::{Enum, Object, Union};
 
 use crate::detailed_score::cricket::{
@@ -289,6 +291,7 @@ impl CricketScore {
             recent_deliveries: None,
             next_ball_context: None,
             awaiting_next_innings: Some(true),
+            players: HashMap::new(),
         };
         for event in events {
             score.apply_event(
@@ -771,6 +774,7 @@ mod tests {
             recent_deliveries: None,
             next_ball_context: None,
             awaiting_next_innings: Some(true),
+            players: HashMap::new(),
         };
         for event in &events {
             incremental.apply_event(event, 6, true, true);

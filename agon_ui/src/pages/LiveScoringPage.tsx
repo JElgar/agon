@@ -247,6 +247,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
         goals: state.goals ?? [],
         cards: state.cards ?? [],
         substitutions: state.substitutions ?? [],
+        players: state.players,
       }).reverse()
     : []
 
@@ -417,7 +418,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
                     {event.minute !== undefined ? `${event.minute}'` : ''}
                   </span>
                   <span aria-hidden>{eventEmoji(event.kind)}</span>
-                  <span className="min-w-0 truncate">{describeEvent(event, match)}</span>
+                  <span className="min-w-0 truncate">{describeEvent(event, match, state?.players)}</span>
                 </div>
               )
             })}

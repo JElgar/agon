@@ -96,7 +96,7 @@ export function LiveMatchBlock({
                 {event.minute !== undefined && (
                   <span className="font-medium text-foreground">{event.minute}'</span>
                 )}
-                <span className="truncate">{describeEvent(event, match)}</span>
+                <span className="truncate">{describeEvent(event, match, state.players)}</span>
               </p>
             )
           })}

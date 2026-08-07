@@ -105,6 +105,13 @@ export function CricketMatchBlock({
   const battingName = sideNameFor(match, innings.batting_side_id)
   const bowlingName = sideNameFor(match, innings.bowling_side_id)
   const next = state.next_ball_context
+  // `state.players` is resolved server-side (`Api::hydrate_score_players`)
+  // for exactly the ids this score references, so it's available even on a
+  // feed/search card, whose trimmed match type carries no player roster to
+  // resolve `playerNameFor` against locally. Neither known → the line below
+  // is omitted entirely rather than showing a placeholder.
+  const strikerName = playerNameFor(match, next?.striker_player_id, state.players)
+  const nonStrikerName = playerNameFor(match, next?.non_striker_player_id, state.players)
   const overBalls = currentOverDeliveries(state.recent_deliveries ?? [])
   const crr = runRate(innings.runs, innings.overs, format.balls_per_over)
 
@@ -121,11 +128,11 @@ export function CricketMatchBlock({
               {crr.toFixed(2)})
             </span>
           </p>
-          {next && (next.striker_player_id || next.non_striker_player_id) && (
+          {(strikerName || nonStrikerName) && (
             <p className="mt-0.5 truncate text-xs text-muted-foreground">
-              {next.striker_player_id && <>{playerNameFor(match, next.striker_player_id)}*</>}
-              {next.striker_player_id && next.non_striker_player_id && ' · '}
-              {next.non_striker_player_id && <>{playerNameFor(match, next.non_striker_player_id)}</>}
+              {strikerName && <>{strikerName}*</>}
+              {strikerName && nonStrikerName && ' · '}
+              {nonStrikerName && <>{nonStrikerName}</>}
             </p>
           )}
           {showDescription && description && (

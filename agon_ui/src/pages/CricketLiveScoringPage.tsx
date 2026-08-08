@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { ChevronLeft } from 'lucide-react'
@@ -14,6 +14,7 @@ import { ExtraRunsDialog } from '@/components/agon/live/ExtraRunsDialog'
 import { NoBallDialog } from '@/components/agon/live/NoBallDialog'
 import { TargetReachedDialog } from '@/components/agon/live/TargetReachedDialog'
 import { AllOutDialog } from '@/components/agon/live/AllOutDialog'
+import { OversCompleteDialog } from '@/components/agon/live/OversCompleteDialog'
 import { playersOnSide } from '@/lib/members'
 import { cricketFormat } from '@/lib/matchFormat'
 import {
@@ -93,23 +94,31 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
     : null
   const allOut = wicketsRemaining === 0 && !target
 
-  // The over quota's been fully bowled but nothing on the backend blocks
-  // further deliveries (see `match_format`'s doc comment — enforcement is
-  // intentionally out of scope there), so the picker flow would otherwise
-  // just keep asking for a new bowler forever. The reason is unambiguous
-  // here — the overs ran out, nobody needs to be asked — so this ends the
-  // innings itself instead of prompting (see the auto-end effect below).
-  // Skipped while the target-reached or all-out popup is up (or would be)
-  // — those take priority on the rare last-ball-of-the-innings coincidence
-  // where more than one of these is true at once, since the scorer's
-  // choice there should win over an automatic overs_complete.
+  // The over quota's been fully bowled, right at the boundary before a new
+  // over's bowler is picked — same shape as `target`/`allOut` above: nothing
+  // on the backend blocks further deliveries (see `match_format`'s doc
+  // comment — enforcement is intentionally out of scope there), so this is
+  // surfaced as a popup rather than forced, since the scorer might want to
+  // play on past the quota (extra overs agreed on the day, a rain-affected
+  // restart, etc). `target`/`allOut` take priority on the rare coincidence
+  // of more than one of these being true at once — the scorer's choice
+  // there already decides the innings.
   const oversComplete =
     !!innings &&
     format.overs_per_innings != null &&
     innings.overs.overs >= format.overs_per_innings &&
-    innings.overs.balls === 0
-  const oversCompleteAwaitingEnd =
-    oversComplete && !next?.bowler_player_id && !target && !allOut
+    innings.overs.balls === 0 &&
+    !target &&
+    !allOut
+
+  // Monotonic version of the above (true from the moment the quota's first
+  // reached, and never false again for the rest of the innings — overs only
+  // go up) — used only to reset `oversContinued` at the right time. Unlike
+  // `oversComplete` itself, this doesn't flip back to false mid-over, so it
+  // can't be used to gate the popup's visibility, only to know when a new
+  // innings has started.
+  const oversQuotaReached =
+    !!innings && format.overs_per_innings != null && innings.overs.overs >= format.overs_per_innings
 
   // Locally-picked openers/replacement batter/next bowler — only used until
   // the server confirms them via an actual delivery, at which point
@@ -170,24 +179,20 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
     if (!allOutFlag) setAllOutContinued(false)
   }, [allOutFlag])
 
-  // Fires the `overs_complete` end-of-innings event itself the moment the
-  // quota's used up, rather than asking the scorer to pick a reason they
-  // didn't choose. Guarded by a ref (not `appendEvent.isPending`) so it
-  // fires exactly once per innings — `isPending` flips mid-flight and isn't
-  // a dependency here, so it can't retrigger the effect — and resets once
-  // the innings actually ends (`oversComplete` goes false) so the next
-  // innings' overs-complete moment can auto-end too.
-  const autoEndedOversRef = useRef(false)
+  // Ditto for the overs-complete popup — "Continue" dismisses it and lets
+  // the bowler picker underneath carry on for another over, unbounded.
+  // Can't reset on `oversComplete` going false the way the two above reset
+  // on their own flags: `oversComplete` flips back to false the moment the
+  // first ball of the next over's bowled (it's only true right at the
+  // boundary), so that would re-arm the popup every single over past the
+  // quota instead of just once. `oversQuotaReached` is the monotonic
+  // version of the same condition (true from the quota's first reached and
+  // never false again within the innings) — resetting on that instead means
+  // this only re-arms when a new innings actually starts.
+  const [oversContinued, setOversContinued] = useState(false)
   useEffect(() => {
-    if (!oversCompleteAwaitingEnd) {
-      autoEndedOversRef.current = false
-      return
-    }
-    if (autoEndedOversRef.current) return
-    autoEndedOversRef.current = true
-    appendEvent.mutate({ kind: 'InningsEnd', reason: 'overs_complete' })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [oversCompleteAwaitingEnd])
+    if (!oversQuotaReached) setOversContinued(false)
+  }, [oversQuotaReached])
 
   // Concludes the match: flips it to `completed`, sending the score built
   // from this device's own view of the live detail (per-innings totals plus
@@ -368,50 +373,6 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
     appendEvent.mutate(
       { kind: 'InningsEnd', reason },
       { onSuccess: () => setEndInningsOpen(false) },
-    )
-  }
-
-  if (oversCompleteAwaitingEnd) {
-    return (
-      <div className="mx-auto flex max-w-xl flex-col gap-4">
-        {header}
-        <div>
-          <h1 className="text-lg font-semibold">
-            {sideName(battingSide!, 'Side A')} vs {sideName(bowlingSide!, 'Side B')}
-          </h1>
-          <p className="text-sm text-muted-foreground">Overs complete</p>
-        </div>
-        <div className="rounded-xl border bg-card p-4">
-          <p className="text-sm font-medium">{sideName(battingSide!, 'Side A')} batting</p>
-          <p className="mt-0.5 text-3xl font-medium tracking-tight">
-            {innings.runs}/{innings.wickets}
-            <span className="ml-2 text-sm font-normal text-muted-foreground">
-              ({formatOvers(innings.overs)}/{format.overs_per_innings} ov)
-            </span>
-          </p>
-        </div>
-        <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
-          {appendEvent.isError ? (
-            <>
-              <p className="mb-3 text-sm font-medium">
-                All {format.overs_per_innings} overs bowled, but ending the innings failed.
-              </p>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={appendEvent.isPending}
-                onClick={() => endInnings('overs_complete')}
-              >
-                Try again
-              </Button>
-            </>
-          ) : (
-            <p className="text-sm font-medium text-muted-foreground">
-              All {format.overs_per_innings} overs bowled — ending the innings…
-            </p>
-          )}
-        </div>
-      </div>
     )
   }
 
@@ -698,6 +659,17 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
           submitting={appendEvent.isPending}
           onEnd={() => endInnings('all_out')}
           onContinue={() => setAllOutContinued(true)}
+        />
+      )}
+
+      {oversComplete && (
+        <OversCompleteDialog
+          open={!oversContinued}
+          battingSideName={sideNameFor(match, innings.batting_side_id)}
+          oversPerInnings={format.overs_per_innings!}
+          submitting={appendEvent.isPending}
+          onEnd={() => endInnings('overs_complete')}
+          onContinue={() => setOversContinued(true)}
         />
       )}
 

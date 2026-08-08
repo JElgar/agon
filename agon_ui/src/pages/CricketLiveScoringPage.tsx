@@ -12,6 +12,7 @@ import { SidePicker, PlayerPicker, sideName } from '@/components/agon/live/Picke
 import { WicketDialog } from '@/components/agon/live/WicketDialog'
 import { ExtraRunsDialog } from '@/components/agon/live/ExtraRunsDialog'
 import { NoBallDialog } from '@/components/agon/live/NoBallDialog'
+import { TargetReachedDialog } from '@/components/agon/live/TargetReachedDialog'
 import { playersOnSide } from '@/lib/members'
 import { cricketFormat } from '@/lib/matchFormat'
 import {
@@ -23,6 +24,8 @@ import {
   isChipHighlighted,
   playerNameFor,
   runRate,
+  sideNameFor,
+  targetReached,
 } from '@/lib/cricketScore'
 
 type Match = components['schemas']['Match']
@@ -61,18 +64,28 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   // replay needed for the online case.
   const next = state?.next_ball_context ?? null
 
+  // In the match's last innings, whether the chasing side has already
+  // passed the target — the win itself is decided, but unlike overs running
+  // out this doesn't have one obviously right next step, so it surfaces as
+  // a popup (below) rather than auto-ending the innings.
+  const target = state ? targetReached(match, state, format) : null
+
   // The over quota's been fully bowled but nothing on the backend blocks
   // further deliveries (see `match_format`'s doc comment — enforcement is
   // intentionally out of scope there), so the picker flow would otherwise
   // just keep asking for a new bowler forever. The reason is unambiguous
   // here — the overs ran out, nobody needs to be asked — so this ends the
   // innings itself instead of prompting (see the auto-end effect below).
+  // Skipped while the target-reached popup is up (or would be) — that takes
+  // priority on the rare last-ball-of-the-innings coincidence where both are
+  // true at once, since the scorer's choice there should win over an
+  // automatic overs_complete.
   const oversComplete =
     !!innings &&
     format.overs_per_innings != null &&
     innings.overs.overs >= format.overs_per_innings &&
     innings.overs.balls === 0
-  const oversCompleteAwaitingEnd = oversComplete && !next?.bowler_player_id
+  const oversCompleteAwaitingEnd = oversComplete && !next?.bowler_player_id && !target
 
   // Locally-picked openers/replacement batter/next bowler — only used until
   // the server confirms them via an actual delivery, at which point
@@ -103,6 +116,16 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   const [extraDialog, setExtraDialog] = useState<'no_ball' | 'bye' | null>(null)
   const [endInningsOpen, setEndInningsOpen] = useState(false)
   const [startBattingSide, setStartBattingSide] = useState<string | undefined>(undefined)
+
+  // "Play out the overs" just dismisses the target-reached popup — scoring
+  // carries on normally, and this stops it popping up again on every
+  // subsequent ball of the same chase. Resets once the target's no longer
+  // reached (a new innings started) so the next decider gets its own popup.
+  const [targetPopupDismissed, setTargetPopupDismissed] = useState(false)
+  const targetReachedFlag = !!target
+  useEffect(() => {
+    if (!targetReachedFlag) setTargetPopupDismissed(false)
+  }, [targetReachedFlag])
 
   // Fires the `overs_complete` end-of-innings event itself the moment the
   // quota's used up, rather than asking the scorer to pick a reason they
@@ -602,6 +625,17 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
         <Button variant="outline" onClick={() => setEndInningsOpen(true)}>
           End innings
         </Button>
+      )}
+
+      {target && (
+        <TargetReachedDialog
+          open={!targetPopupDismissed}
+          battingSideName={sideNameFor(match, target.battingSideId)}
+          wicketsRemaining={target.wicketsRemaining}
+          submitting={appendEvent.isPending}
+          onPlayOn={() => setTargetPopupDismissed(true)}
+          onFinish={() => endInnings('target_reached')}
+        />
       )}
 
       {readyToScore && (

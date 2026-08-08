@@ -273,6 +273,62 @@ export function matchTotalsBySide(state: CricketMatchProgress): Record<string, n
   return totals
 }
 
+/** Wickets a batting side still has in hand, against its own roster size
+ *  (players registered on that side, minus one — the last batter has no
+ *  partner left to bat with), falling back to the standard 10 if the roster
+ *  looks too small to make sense of (e.g. not fully set up). Shared by the
+ *  state-of-game sentence and the target-reached popup so both quote the
+ *  same margin. */
+export function wicketsInHand(
+  match: Pick<Match, 'sides'> & Partial<Pick<Match, 'players'>>,
+  battingSideId: string,
+  wicketsLost: number,
+): number {
+  const rosterSize = (match.players ?? []).filter((p) => p.side_id === battingSideId).length
+  const maxWickets = rosterSize > 1 ? rosterSize - 1 : 10
+  return Math.max(maxWickets - wicketsLost, 0)
+}
+
+/** Whether the innings currently open is the match's last (the one with a
+ *  fixed target) and the batting side's match aggregate has now passed the
+ *  bowling side's — i.e. the chase is won. Unlike overs running out (see
+ *  `oversComplete` in `CricketLiveScoringPage`, unambiguous and auto-ended),
+ *  reaching the target doesn't have one obviously right next step — some
+ *  scorers still want the over played out to a natural finish — so this is
+ *  just the detection; the live scoring page turns it into a popup with both
+ *  choices. `null` when the open innings isn't the decider, or the target
+ *  hasn't been reached (yet). */
+export function targetReached(
+  match: Pick<Match, 'sides'> & Partial<Pick<Match, 'players'>>,
+  score: CricketScore,
+  format: Pick<CricketFormat, 'innings_per_side'>,
+): {
+  battingSideId: string
+  bowlingSideId: string
+  target: number
+  battingTotal: number
+  wicketsRemaining: number
+} | null {
+  if (score.awaiting_next_innings ?? true) return null
+  const quota = match.sides.length * format.innings_per_side
+  if (score.innings.length !== quota) return null
+
+  const open = score.innings[score.innings.length - 1]
+  const totals = matchTotalsBySide({ innings: score.innings, awaiting_next_innings: false })
+  const battingTotal = totals[open.batting_side_id] ?? 0
+  const bowlingTotal = totals[open.bowling_side_id] ?? 0
+  const target = bowlingTotal + 1
+  if (battingTotal < target) return null
+
+  return {
+    battingSideId: open.batting_side_id,
+    bowlingSideId: open.bowling_side_id,
+    target,
+    battingTotal,
+    wicketsRemaining: wicketsInHand(match, open.batting_side_id, open.wickets),
+  }
+}
+
 /**
  * A one-line summary of where the match stands:
  *   - Mid-match, once the bowling side has a score on the board to compare
@@ -346,13 +402,9 @@ export function cricketStateDescription(
     last.overs.balls === 0
 
   if (battingTotal > bowlingTotal && !oversAllUsed) {
-    // No roster (a feed card's `FeedMatch` never carries one) → fall back to
-    // the standard 11-a-side assumption rather than under-count wickets.
-    const rosterSize = (match.players ?? []).filter(
-      (p) => p.side_id === last.batting_side_id,
-    ).length
-    const maxWickets = rosterSize > 1 ? rosterSize - 1 : 10
-    const remaining = Math.max(maxWickets - last.wickets, 0)
+    // No roster (a feed card's `FeedMatch` never carries one) → `wicketsInHand`
+    // falls back to the standard 11-a-side assumption rather than under-count.
+    const remaining = wicketsInHand(match, last.batting_side_id, last.wickets)
     return `${sideNameFor(match, last.batting_side_id)} won by ${remaining} wicket${remaining === 1 ? '' : 's'}`
   }
   const winnerSideId = battingTotal > bowlingTotal ? last.batting_side_id : last.bowling_side_id

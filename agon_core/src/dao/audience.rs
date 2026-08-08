@@ -38,12 +38,21 @@ const FOLLOWER_PAGE: u32 = 100;
 /// ("people you know are playing"). Keeps feed items small and, combined with
 /// the feed endpoint's own page-size cap, bounds the read-time
 /// `batch_get_users` hydration of known players to a single `BatchGetItem`.
+/// Only caps `AudienceMember::known_player_ids` — `known_player_count` still
+/// tracks the true total so a client can show it even past the cap.
 pub const MAX_KNOWN_PLAYERS: usize = 5;
 
 /// One audience member's per-viewer feed data — see the module doc comment.
 #[derive(Debug, Clone, Default)]
 pub struct AudienceMember {
+    /// Capped at `MAX_KNOWN_PLAYERS` — see `known_player_count` for the true,
+    /// uncapped total.
     pub known_player_ids: Vec<String>,
+    /// How many of the match's participants this viewer follows, in total —
+    /// unlike `known_player_ids`, never capped, so a client can render "+N
+    /// more" beyond the hydrated list even when more than `MAX_KNOWN_PLAYERS`
+    /// participants are followed.
+    pub known_player_count: u32,
     /// The side this viewer plays on, if they're themselves a participant —
     /// `None` for a viewer in the audience only via a follow (they're not
     /// playing) or a participant not yet assigned a side.
@@ -89,8 +98,9 @@ impl Dao {
     }
 
     /// Walk a participating user's followers, adding each to `audience` (as
-    /// an audience member) and, capped at `MAX_KNOWN_PLAYERS`, recording that
-    /// they follow `user_id`.
+    /// an audience member) and recording that they follow `user_id`: always
+    /// in `known_player_count`, and — capped at `MAX_KNOWN_PLAYERS` — in
+    /// `known_player_ids`.
     async fn collect_user_followers(
         &self,
         user_id: &str,
@@ -103,9 +113,12 @@ impl Dao {
                 .await?;
             for edge in &page.items {
                 let entry = audience.entry(edge.follower_id.clone()).or_default();
-                let known = &mut entry.known_player_ids;
-                if known.len() < MAX_KNOWN_PLAYERS && !known.iter().any(|id| id == user_id) {
-                    known.push(user_id.to_string());
+                if entry.known_player_ids.iter().any(|id| id == user_id) {
+                    continue;
+                }
+                entry.known_player_count += 1;
+                if entry.known_player_ids.len() < MAX_KNOWN_PLAYERS {
+                    entry.known_player_ids.push(user_id.to_string());
                 }
             }
             match page.next_cursor {

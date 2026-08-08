@@ -159,6 +159,7 @@ impl Dao {
                     &match_.starts_at,
                     &match_.created_at,
                     &[],
+                    0,
                     player.side_id.clone(),
                 )?;
                 let feed_put = Put::builder()

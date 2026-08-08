@@ -17,6 +17,7 @@ import { LiveMatchBlock } from './live/LiveMatchBlock'
 import { CricketMatchBlock } from './live/CricketMatchBlock'
 import { CricketScoreBlock } from './CricketScoreBlock'
 import { LiveIndicator } from './live/LiveIndicator'
+import { KnownPlayersRow } from './KnownPlayersRow'
 import { useMatchScore } from '@/hooks/useMatchScore'
 import { describeEvent, eventEmoji, footballScoreFrom, recentGoalEvents } from '@/lib/liveScore'
 import {
@@ -388,6 +389,17 @@ export function MatchCard({
             )}
           </div>
         )
+      )}
+
+      {/* "You follow Sofia, Raj +1" — who among the match's participants the
+          viewer follows. Only a feed card's `FeedMatch` carries this (a
+          per-viewer fan-out concept); `Match`/`SearchMatch` don't. */}
+      {'known_participants' in match && (
+        <KnownPlayersRow
+          participants={match.known_participants}
+          count={match.known_participants_count}
+          className="mx-3.5 mb-3 rounded-lg bg-muted/50 px-3.5 py-2.5"
+        />
       )}
 
       {/* Header photo, when the match has one. The gap above comes from the

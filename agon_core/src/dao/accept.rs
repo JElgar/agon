@@ -76,8 +76,15 @@ impl Dao {
                         responded_at,
                     )
                     .await?;
-                let feed_item =
-                    self.feed_item(accepting_user_id, match_id, &starts_at, now, &[], side_id)?;
+                let feed_item = self.feed_item(
+                    accepting_user_id,
+                    match_id,
+                    &starts_at,
+                    now,
+                    &[],
+                    0,
+                    side_id,
+                )?;
                 let feed_put = Put::builder()
                     .table_name(self.table())
                     .set_item(Some(feed_item))

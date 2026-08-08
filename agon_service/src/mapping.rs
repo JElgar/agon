@@ -868,6 +868,7 @@ pub fn feed_match_from_records(
     sides: &[MatchSideRecord],
     users: &std::collections::HashMap<String, UserRecord>,
     known_participants: Vec<UserProfile>,
+    known_participants_count: u32,
     viewer_side_id: Option<String>,
     i_liked: bool,
 ) -> FeedMatch {
@@ -899,6 +900,7 @@ pub fn feed_match_from_records(
             })
             .collect(),
         known_participants,
+        known_participants_count,
         viewer_side_id,
         confirmed_score: rec
             .confirmed_score

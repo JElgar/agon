@@ -60,8 +60,7 @@ impl Dao {
                     match_id,
                     starts_at,
                     now,
-                    &viewer.audience.known_player_ids,
-                    viewer.audience.viewer_side_id.clone(),
+                    &viewer.audience,
                 )?;
                 let put = PutRequest::builder()
                     .set_item(Some(item))
@@ -78,17 +77,17 @@ impl Dao {
     /// Build one viewer's feed-entry item for a match. Idempotent on the sort key
     /// `<starts_at>#<matchId>`, so writing it again (via fan-out) overwrites the
     /// identical row. Shared with the accept / create transactions, which write a
-    /// participant's *own* row synchronously (with an empty `known_player_ids` —
-    /// it's their own match, not someone they follow playing in it — and their
-    /// own `side_id`, if assigned).
+    /// participant's *own* row synchronously (with a default `AudienceMember` —
+    /// empty `known_player_ids`, zero `known_player_count` — it's their own
+    /// match, not someone they follow playing in it — plus their own `side_id`,
+    /// if assigned).
     pub(super) fn feed_item(
         &self,
         viewer_id: &str,
         match_id: &str,
         starts_at: &str,
         now: &str,
-        known_player_ids: &[String],
-        viewer_side_id: Option<String>,
+        audience: &AudienceMember,
     ) -> DaoResult<super::item::Item> {
         let record = FeedItemRecord {
             viewer_id: viewer_id.into(),
@@ -96,8 +95,9 @@ impl Dao {
             ref_id: match_id.into(),
             starts_at: starts_at.into(),
             created_at: now.into(),
-            known_player_ids: known_player_ids.to_vec(),
-            viewer_side_id,
+            known_player_ids: audience.known_player_ids.clone(),
+            known_player_count: audience.known_player_count,
+            viewer_side_id: audience.viewer_side_id.clone(),
         };
         Ok(ItemBuilder::new(to_item(
             &Pk::UserFeed(viewer_id.into()),

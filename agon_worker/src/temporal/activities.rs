@@ -24,6 +24,7 @@ pub struct AgonActivities {
 pub struct FeedViewer {
     pub viewer_id: String,
     pub known_player_ids: Vec<String>,
+    pub known_player_count: u32,
     pub viewer_side_id: Option<String>,
 }
 
@@ -85,6 +86,7 @@ impl AgonActivities {
             .map(|(viewer_id, member)| FeedViewer {
                 viewer_id,
                 known_player_ids: member.known_player_ids,
+                known_player_count: member.known_player_count,
                 viewer_side_id: member.viewer_side_id,
             })
             .collect();
@@ -110,6 +112,7 @@ impl AgonActivities {
                 viewer_id: v.viewer_id,
                 audience: agon_core::dao::audience::AudienceMember {
                     known_player_ids: v.known_player_ids,
+                    known_player_count: v.known_player_count,
                     viewer_side_id: v.viewer_side_id,
                 },
             })

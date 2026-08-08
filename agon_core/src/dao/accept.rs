@@ -18,6 +18,7 @@
 
 use aws_sdk_dynamodb::types::{Put, TransactWriteItem};
 
+use super::audience::AudienceMember;
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, Item};
@@ -81,9 +82,10 @@ impl Dao {
                     match_id,
                     &starts_at,
                     now,
-                    &[],
-                    0,
-                    side_id,
+                    &AudienceMember {
+                        viewer_side_id: side_id,
+                        ..Default::default()
+                    },
                 )?;
                 let feed_put = Put::builder()
                     .table_name(self.table())

@@ -8,6 +8,7 @@ use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 use aws_sdk_dynamodb::types::{AttributeValue, Put, TransactWriteItem};
 
+use super::audience::AudienceMember;
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_pk, s, to_item};
@@ -158,9 +159,10 @@ impl Dao {
                     &match_.id,
                     &match_.starts_at,
                     &match_.created_at,
-                    &[],
-                    0,
-                    player.side_id.clone(),
+                    &AudienceMember {
+                        viewer_side_id: player.side_id.clone(),
+                        ..Default::default()
+                    },
                 )?;
                 let feed_put = Put::builder()
                     .table_name(self.table())

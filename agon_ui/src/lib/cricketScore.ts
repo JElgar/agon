@@ -145,6 +145,25 @@ export function isLegalDelivery(
   return true
 }
 
+/** Runs charged to the bowler for a delivery: runs off the bat plus wides
+ *  and no-balls. Byes, leg-byes and penalties are not the bowler's
+ *  responsibility. Mirrors the backend's `runs_charged_to_bowler`
+ *  (`detailed_score::cricket`) — used by `cricketFold.ts`'s live-scoring
+ *  fold, kept alongside `isLegalDelivery` here since both are the same kind
+ *  of small, stable rule the backend and this fold need identically. */
+export function runsChargedToBowler(d: CricketDelivery): number {
+  const extraRuns = d.extra && (d.extra.kind === 'wide' || d.extra.kind === 'no_ball') ? d.extra.runs : 0
+  return d.runs_off_bat + extraRuns
+}
+
+/** Converts a count of legal balls into whole overs + balls, e.g. 13 balls
+ *  -> 2 overs + 1 ball, given how many legal deliveries make an over (6 for
+ *  almost everything, 5 for The Hundred). Mirrors the backend's
+ *  `balls_to_overs`. */
+export function ballsToOvers(balls: number, ballsPerOver: number): Overs {
+  return { overs: Math.floor(balls / ballsPerOver), balls: balls % ballsPerOver }
+}
+
 /** "19.4" — the conventional overs-and-balls display, e.g. 4 balls into the
  *  20th over. */
 export function formatOvers(overs: Overs): string {
@@ -388,10 +407,12 @@ export function playerNameFor(
   return player ? memberName(player.member) : null
 }
 
-// `NextBallContext` (who's on strike/bowling for the next delivery) is now
+// `NextBallContext` (who's on strike/bowling for the next delivery) is
 // folded server-side, incrementally, as part of `CricketScore` (see
 // `CricketScore.next_ball_context` and the backend's `apply_delivery`) — no
-// client-side replay needed for the online case. An offline-scoring client
-// will need its own local copy of that same incremental fold (applied to its
-// not-yet-synced queue) when that's built; it isn't yet, so there's nothing
-// here today.
+// client-side replay needed for the online case. `./cricketFold.ts` carries
+// the offline-scoring client's own local copy of that same incremental fold
+// (applied to its not-yet-synced queue, see `useOfflineLiveScoring.ts`) —
+// kept in sync by hand with `apply_delivery`/`CricketScore::apply_event` in
+// `agon_service/src/live_score/cricket.rs`, the same way that file's own
+// `NextBallContext` doc comment already promises.

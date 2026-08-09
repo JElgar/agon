@@ -5,9 +5,12 @@ import { ChevronLeft } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
-import { useAppendCricketEvent, useLiveSeq } from '@/hooks/useLiveScore'
+import { useLiveSeq } from '@/hooks/useLiveScore'
+import { useOfflineCricketScoring } from '@/hooks/useOfflineLiveScoring'
 import { matchScoreQueryKey, useMatchScore } from '@/hooks/useMatchScore'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
+import { OfflineIndicator } from '@/components/agon/live/OfflineIndicator'
+import { ConflictBanner } from '@/components/agon/live/ConflictBanner'
 import { SidePicker, PlayerPicker, sideName } from '@/components/agon/live/Pickers'
 import { WicketDialog } from '@/components/agon/live/WicketDialog'
 import { ExtraRunsDialog } from '@/components/agon/live/ExtraRunsDialog'
@@ -23,7 +26,16 @@ import {
   isChipHighlighted,
   playerNameFor,
   runRate,
+  type CricketLiveEvent,
 } from '@/lib/cricketScore'
+
+/** How long a quick-action button stays disabled after a tap — `recordEvent`
+ *  (see `useOfflineLiveScoring`) folds and returns synchronously rather than
+ *  waiting on a network round-trip, so the old `mutation.isPending`-driven
+ *  double-tap guard no longer exists on its own; this replaces it with an
+ *  explicit short lock instead of leaving a fast double-tap free to record
+ *  the same ball twice. */
+const RECORD_DEBOUNCE_MS = 400
 
 type Match = components['schemas']['Match']
 type CricketDelivery = components['schemas']['CricketDelivery']
@@ -52,14 +64,27 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
 
   const scoreQuery = useMatchScore(match.id, { refetchInterval: 8000 })
   const seq = useLiveSeq(match.id)
-  const appendEvent = useAppendCricketEvent(match.id)
+  const format = cricketFormat(match.format)
+  const offline = useOfflineCricketScoring(match.id, format)
   const state = cricketScoreFrom(scoreQuery.data)
   const innings = state ? currentInnings(state) : null
-  const format = cricketFormat(match.format)
-  // The server folds this incrementally as events are recorded (see
-  // `live_score::cricket::apply_delivery_to_context`) — no client-side
-  // replay needed for the online case.
+  // Folded incrementally as events are recorded — server-side once synced
+  // (`live_score::cricket::apply_delivery`), or locally by this same fold
+  // ported to TS (`lib/cricketFold.ts`) the moment a ball is recorded,
+  // ahead of the network round-trip either way (see `useOfflineLiveScoring`)
+  // — so this always reflects the latest tap, not just the latest sync.
   const next = state?.next_ball_context ?? null
+
+  // Fold-then-return (not a network round-trip) means there's no
+  // `mutation.isPending` to key a double-tap guard off anymore — this
+  // stands in for it. See `RECORD_DEBOUNCE_MS`.
+  const [recordLocked, setRecordLocked] = useState(false)
+  const record = (event: CricketLiveEvent) => {
+    if (recordLocked) return
+    setRecordLocked(true)
+    offline.recordEvent(event)
+    setTimeout(() => setRecordLocked(false), RECORD_DEBOUNCE_MS)
+  }
 
   // The over quota's been fully bowled but nothing on the backend blocks
   // further deliveries (see `match_format`'s doc comment — enforcement is
@@ -106,11 +131,12 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
 
   // Fires the `overs_complete` end-of-innings event itself the moment the
   // quota's used up, rather than asking the scorer to pick a reason they
-  // didn't choose. Guarded by a ref (not `appendEvent.isPending`) so it
-  // fires exactly once per innings — `isPending` flips mid-flight and isn't
-  // a dependency here, so it can't retrigger the effect — and resets once
-  // the innings actually ends (`oversComplete` goes false) so the next
-  // innings' overs-complete moment can auto-end too.
+  // didn't choose. Guarded by a ref so it fires exactly once per innings,
+  // and resets once the innings actually ends (`oversComplete` goes false)
+  // so the next innings' overs-complete moment can auto-end too.
+  // `recordEvent` folds locally immediately regardless of connectivity (see
+  // `useOfflineLiveScoring`), so there's no "did this actually go through"
+  // step to wait on here the way an in-flight mutation would need.
   const autoEndedOversRef = useRef(false)
   useEffect(() => {
     if (!oversCompleteAwaitingEnd) {
@@ -119,7 +145,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
     }
     if (autoEndedOversRef.current) return
     autoEndedOversRef.current = true
-    appendEvent.mutate({ kind: 'InningsEnd', reason: 'overs_complete' })
+    offline.recordEvent({ kind: 'InningsEnd', reason: 'overs_complete' })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [oversCompleteAwaitingEnd])
 
@@ -138,6 +164,17 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   const finishMatch = useMutation({
     mutationFn: async () => {
       if (!state) throw new Error('No score recorded yet')
+      // The server independently re-derives the score from the match's
+      // *persisted* live detail and 409s on any mismatch — while anything
+      // is still queued locally-only, `matchScoreQueryKey`'s cached score
+      // reflects deliveries the server has never seen, so this would 409
+      // spuriously and, worse, its handler would refetch and overwrite the
+      // local fold with the stale server score. Blocked in the UI (the
+      // button is hidden/disabled while `offline.pendingCount > 0`) —
+      // this is a defensive backstop, not the primary guard.
+      if (offline.pendingCount > 0) {
+        throw new Error('Sync the pending events before finishing the match')
+      }
 
       const fresh = cricketScoreFrom(
         queryClient.getQueryData<Score | null>(matchScoreQueryKey(match.id)),
@@ -172,12 +209,28 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   }
 
   const header = (
-    <div className="flex items-center justify-between">
+    <div className="flex items-center justify-between gap-2">
       <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${match.id}`)}>
         <ChevronLeft className="size-4" /> Back
       </Button>
-      <LiveIndicator />
+      <div className="flex items-center gap-2">
+        <OfflineIndicator
+          isOffline={offline.isOffline}
+          pendingCount={offline.pendingCount}
+          syncing={offline.syncing}
+          conflict={offline.conflict}
+          onSyncNow={offline.syncNow}
+        />
+        <LiveIndicator />
+      </div>
     </div>
+  )
+
+  const conflictBanner = offline.conflict && (
+    <ConflictBanner
+      pendingCount={offline.pendingCount}
+      onDiscardAndReload={offline.discardAndReloadAfterConflict}
+    />
   )
 
   // No innings open — either the match hasn't started, or we're between
@@ -192,6 +245,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
     return (
       <div className="mx-auto flex max-w-xl flex-col gap-4">
         {header}
+        {conflictBanner}
         <div>
           <h1 className="text-lg font-semibold">
             {match.sides[0]?.name?.trim() || 'Side A'} vs {match.sides[1]?.name?.trim() || 'Side B'}
@@ -235,21 +289,19 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
             </div>
             <Button
               size="lg"
-              disabled={!startBattingSide || appendEvent.isPending}
+              disabled={!startBattingSide || recordLocked}
               onClick={() => {
                 const bowlingSideId = match.sides.find((s) => s.id !== startBattingSide)?.id
                 if (!startBattingSide || !bowlingSideId) return
-                appendEvent.mutate(
-                  {
-                    kind: 'InningsStart',
-                    batting_side_id: startBattingSide,
-                    bowling_side_id: bowlingSideId,
-                  },
-                  { onSuccess: () => setStartBattingSide(undefined) },
-                )
+                record({
+                  kind: 'InningsStart',
+                  batting_side_id: startBattingSide,
+                  bowling_side_id: bowlingSideId,
+                })
+                setStartBattingSide(undefined)
               }}
             >
-              {appendEvent.isPending ? 'Starting…' : 'Start innings'}
+              Start innings
             </Button>
           </>
         )}
@@ -262,14 +314,21 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
                 {(finishMatch.error as Error).message}
               </p>
             )}
-            <Button
-              variant={allInningsComplete ? 'default' : 'outline'}
-              size="lg"
-              disabled={finishMatch.isPending}
-              onClick={() => finishMatch.mutate()}
-            >
-              {finishMatch.isPending ? 'Finishing…' : 'Finish match'}
-            </Button>
+            {offline.pendingCount > 0 ? (
+              <p className="text-center text-xs text-muted-foreground">
+                Sync {offline.pendingCount} pending event{offline.pendingCount === 1 ? '' : 's'} before
+                finishing.
+              </p>
+            ) : (
+              <Button
+                variant={allInningsComplete ? 'default' : 'outline'}
+                size="lg"
+                disabled={finishMatch.isPending}
+                onClick={() => finishMatch.mutate()}
+              >
+                {finishMatch.isPending ? 'Finishing…' : 'Finish match'}
+              </Button>
+            )}
           </>
         )}
       </div>
@@ -295,20 +354,23 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   })
 
   const recordDelivery = (overrides: Partial<CricketDelivery>) => {
-    appendEvent.mutate({ kind: 'Delivery', ...buildDelivery(overrides) })
+    record({ kind: 'Delivery', ...buildDelivery(overrides) })
   }
 
   const endInnings = (reason: InningsEndReason) => {
-    appendEvent.mutate(
-      { kind: 'InningsEnd', reason },
-      { onSuccess: () => setEndInningsOpen(false) },
-    )
+    record({ kind: 'InningsEnd', reason })
+    setEndInningsOpen(false)
   }
 
   if (oversCompleteAwaitingEnd) {
+    // Transitional only — `recordEvent` folds the auto-fired `InningsEnd`
+    // locally and near-instantly (see the auto-end effect above), so
+    // `innings` normally goes `null` (moving to the "no innings open"
+    // branch) within the same tick or two, regardless of connectivity.
     return (
       <div className="mx-auto flex max-w-xl flex-col gap-4">
         {header}
+        {conflictBanner}
         <div>
           <h1 className="text-lg font-semibold">
             {sideName(battingSide!, 'Side A')} vs {sideName(bowlingSide!, 'Side B')}
@@ -325,25 +387,9 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
           </p>
         </div>
         <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
-          {appendEvent.isError ? (
-            <>
-              <p className="mb-3 text-sm font-medium">
-                All {format.overs_per_innings} overs bowled, but ending the innings failed.
-              </p>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={appendEvent.isPending}
-                onClick={() => endInnings('overs_complete')}
-              >
-                Try again
-              </Button>
-            </>
-          ) : (
-            <p className="text-sm font-medium text-muted-foreground">
-              All {format.overs_per_innings} overs bowled — ending the innings…
-            </p>
-          )}
+          <p className="text-sm font-medium text-muted-foreground">
+            All {format.overs_per_innings} overs bowled — ending the innings…
+          </p>
         </div>
       </div>
     )
@@ -365,6 +411,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
       {header}
+      {conflictBanner}
 
       <div>
         <h1 className="text-lg font-semibold">
@@ -412,9 +459,21 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
 
       {overBalls.length > 0 && (
         <div>
-          <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            This over
-          </p>
+          <div className="mb-2 flex items-center justify-between">
+            <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+              This over
+            </p>
+            {offline.canUndo && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-auto px-0 text-xs text-muted-foreground hover:bg-transparent hover:underline"
+                onClick={offline.undo}
+              >
+                Undo last ball
+              </Button>
+            )}
+          </div>
           <div className="flex gap-2">
             {overBalls.map((d, i) => (
               <span
@@ -508,7 +567,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
               <button
                 key={n}
                 type="button"
-                disabled={appendEvent.isPending}
+                disabled={recordLocked}
                 onClick={() => recordDelivery({ runs_off_bat: n })}
                 className="rounded-xl border bg-card p-4 text-lg font-semibold transition-colors hover:bg-muted disabled:opacity-50"
               >
@@ -519,7 +578,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
               <button
                 key={n}
                 type="button"
-                disabled={appendEvent.isPending}
+                disabled={recordLocked}
                 onClick={() => recordDelivery({ runs_off_bat: n })}
                 className="rounded-xl border border-primary/30 bg-primary/10 p-4 text-lg font-semibold text-primary transition-colors hover:bg-primary/15 disabled:opacity-50"
               >
@@ -528,7 +587,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
             ))}
             <button
               type="button"
-              disabled={appendEvent.isPending}
+              disabled={recordLocked}
               onClick={() => setExtraDialog('bye')}
               className="rounded-xl border bg-card p-4 text-sm font-semibold transition-colors hover:bg-muted disabled:opacity-50"
             >
@@ -539,7 +598,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
           <div className="mt-2 grid grid-cols-3 gap-2">
             <button
               type="button"
-              disabled={appendEvent.isPending}
+              disabled={recordLocked}
               onClick={() =>
                 recordDelivery({ extra: { kind: 'wide', runs: format.wide_penalty_runs } })
               }
@@ -549,7 +608,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
             </button>
             <button
               type="button"
-              disabled={appendEvent.isPending}
+              disabled={recordLocked}
               onClick={() => setExtraDialog('no_ball')}
               className="rounded-xl border bg-card p-3 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50"
             >
@@ -557,7 +616,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
             </button>
             <button
               type="button"
-              disabled={appendEvent.isPending}
+              disabled={recordLocked}
               onClick={() => setWicketOpen(true)}
               className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm font-medium text-destructive transition-colors hover:bg-destructive/15 disabled:opacity-50"
             >
@@ -565,12 +624,6 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
             </button>
           </div>
         </div>
-      )}
-
-      {appendEvent.isError && (
-        <p className="text-center text-xs text-destructive">
-          Failed to record that ball — try again.
-        </p>
       )}
 
       {endInningsOpen ? (
@@ -582,7 +635,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
                 key={r.value}
                 variant="outline"
                 size="sm"
-                disabled={appendEvent.isPending}
+                disabled={recordLocked}
                 onClick={() => endInnings(r.value)}
               >
                 {r.label}
@@ -612,7 +665,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
             battingSideId={innings.batting_side_id}
             strikerPlayerId={effectiveStriker!}
             nonStrikerPlayerId={effectiveNonStriker!}
-            submitting={appendEvent.isPending}
+            submitting={recordLocked}
             onOpenChange={setWicketOpen}
             onSubmit={(wicket: CricketDeliveryWicket, runsBeforeDismissal) => {
               recordDelivery({ runs_off_bat: runsBeforeDismissal, wicket })
@@ -623,7 +676,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
           <NoBallDialog
             open={extraDialog === 'no_ball'}
             penaltyRuns={format.no_ball_penalty_runs}
-            submitting={appendEvent.isPending}
+            submitting={recordLocked}
             onOpenChange={(open) => !open && setExtraDialog(null)}
             onPick={(runsOffBat) => {
               recordDelivery({
@@ -640,7 +693,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
               { value: 'bye', label: 'Bye' },
               { value: 'leg_bye', label: 'Leg bye' },
             ]}
-            submitting={appendEvent.isPending}
+            submitting={recordLocked}
             onOpenChange={(open) => !open && setExtraDialog(null)}
             onPick={(kind, runs) => {
               recordDelivery({ extra: { kind, runs } })

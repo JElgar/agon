@@ -7,9 +7,15 @@ type LiveEvent = components['schemas']['LiveEvent']
 type NewLiveEventInput = components['schemas']['NewLiveEventInput']
 type FootballLiveEvent = components['schemas']['FootballLiveEvent']
 type CricketLiveEvent = components['schemas']['CricketLiveEvent']
+type AppendLiveEventsInput = components['schemas']['AppendLiveEventsInput']
+type LiveScoreSnapshot = components['schemas']['LiveScoreSnapshot']
 
-/** Drains every page of a match's raw live event log, oldest first. */
-async function drainLiveEvents(matchId: string): Promise<LiveEvent[]> {
+/** Drains every page of a match's raw live event log, oldest first. Also
+ *  used by `useOfflineLiveScoring`'s conflict reconciliation, which needs
+ *  to read "the log since my old tip" to diff against a rejected batch —
+ *  there's no `since_seq` query param, so that's a client-side filter over
+ *  the full drain, same as everything else that reads the raw log. */
+export async function drainLiveEvents(matchId: string): Promise<LiveEvent[]> {
   const events: LiveEvent[] = []
   let cursor: string | undefined
   for (;;) {
@@ -70,6 +76,30 @@ export function useLiveSeq(matchId: string | undefined, options?: { enabled?: bo
 }
 
 /**
+ * Raw batch-append call — POSTs directly, no cache reads/writes, no
+ * `expected_last_seq` default-guessing. Shared by `useAppendLiveEvent`
+ * below (the simple online-only per-tap path) and
+ * `useOfflineLiveScoring.ts`'s sync engine, which needs to send a whole
+ * queued backlog in ≤99-event chunks against an explicitly tracked
+ * baseline, not one event against the live-seq cache's tip. Resolves
+ * normally — checking `status`/`error` is the caller's job — for an
+ * HTTP-level failure like a `409` conflict; a genuine network failure (no
+ * response at all) rejects instead, which is what lets
+ * `useOfflineLiveScoring` tell "the server said no" apart from "there's no
+ * server to ask" (see `hooks/useOnlineStatus.ts`'s `isNetworkError`).
+ */
+export async function postLiveEventBatch(
+  matchId: string,
+  body: AppendLiveEventsInput,
+): Promise<{ data: LiveScoreSnapshot | undefined; status: number }> {
+  const { data, response } = await fetchClient.POST('/matches/{match_id}/live/events', {
+    params: { path: { match_id: matchId } },
+    body,
+  })
+  return { data, status: response.status }
+}
+
+/**
  * Appends one sport-tagged live event to a match's log. Reads
  * `expected_last_seq` off the cached tip (0 if scoring hasn't started yet, or
  * this device hasn't loaded it) so the server can detect a lost update; on
@@ -82,6 +112,10 @@ export function useLiveSeq(matchId: string | undefined, options?: { enabled?: bo
  * any live event is recorded, so every append also invalidates the match and
  * feed queries — that's the only signal the scorer's own client has that the
  * status (and therefore other viewers' "Live" gate) may have just changed.
+ *
+ * This is the plain online-only path — offline-aware recording goes through
+ * `useOfflineLiveScoring` instead, which queues locally on a network
+ * failure rather than surfacing one.
  */
 function useAppendLiveEvent<T extends { kind: string }>(
   matchId: string,
@@ -96,14 +130,11 @@ function useAppendLiveEvent<T extends { kind: string }>(
         occurred_at: new Date().toISOString(),
         event: { sport, ...event } as NewLiveEventInput['event'],
       }
-      const { data, error } = await fetchClient.POST('/matches/{match_id}/live/events', {
-        params: { path: { match_id: matchId } },
-        body: {
-          expected_last_seq: expected,
-          events: [input],
-        },
+      const { data, status } = await postLiveEventBatch(matchId, {
+        expected_last_seq: expected,
+        events: [input],
       })
-      if (error || !data) throw new Error('Failed to record event')
+      if (status >= 400 || !data) throw new Error('Failed to record event')
       return data
     },
     onSuccess: (data) => {
@@ -121,4 +152,42 @@ export function useAppendFootballEvent(matchId: string) {
 
 export function useAppendCricketEvent(matchId: string) {
   return useAppendLiveEvent<CricketLiveEvent>(matchId, 'Cricket')
+}
+
+/**
+ * Undo the most recently recorded live event — thin wrapper over
+ * `DELETE /matches/:id/live/events/:seq`. Only reached for the *synced*
+ * case (an event the server already has): `useOfflineLiveScoring` only
+ * calls this when its own local pending queue is empty — while anything's
+ * still queued locally, undo pops the queue instead, no network call (see
+ * `lib/offlineQueue.ts`'s `popLastPendingEvent`). The backend only accepts
+ * `seq` if it's still the current tip (`400`, "only the most recently
+ * recorded event can be undone," otherwise) — not a 404/409, so that's
+ * checked for explicitly rather than folded into a generic failure. Same
+ * cache-write pattern as `useAppendLiveEvent`'s `onSuccess`.
+ */
+export function useUndoLiveEvent(matchId: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (seq: number) => {
+      const { data, error, response } = await fetchClient.DELETE(
+        '/matches/{match_id}/live/events/{seq}',
+        { params: { path: { match_id: matchId, seq } } },
+      )
+      if (response.status === 400) {
+        throw new Error(
+          typeof error === 'string' ? error : 'Only the most recently recorded event can be undone',
+        )
+      }
+      if (error || !data) throw new Error('Failed to undo that event')
+      return data
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(liveSeqQueryKey(matchId), data.last_seq)
+      queryClient.setQueryData(matchScoreQueryKey(matchId), data.score)
+      queryClient.invalidateQueries({ queryKey: ['match', matchId] })
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
+    },
+  })
 }

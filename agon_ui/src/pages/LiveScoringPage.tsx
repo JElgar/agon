@@ -5,10 +5,13 @@ import { ChevronLeft, CircleDot, Flag, Repeat2, TimerReset } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
-import { useAppendFootballEvent, useLiveSeq } from '@/hooks/useLiveScore'
+import { useLiveSeq } from '@/hooks/useLiveScore'
+import { useOfflineFootballScoring } from '@/hooks/useOfflineLiveScoring'
 import { matchScoreQueryKey, useMatchScore } from '@/hooks/useMatchScore'
 import { RecordEventDialog, type EventKind } from '@/components/agon/live/RecordEventDialog'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
+import { OfflineIndicator } from '@/components/agon/live/OfflineIndicator'
+import { ConflictBanner } from '@/components/agon/live/ConflictBanner'
 import { CricketLiveScoringPage } from './CricketLiveScoringPage'
 import { footballFormat } from '@/lib/matchFormat'
 import {
@@ -30,6 +33,14 @@ import {
 type Match = components['schemas']['Match']
 type UpdateMatchInput = components['schemas']['UpdateMatchInput']
 type Score = components['schemas']['Score']
+type FootballLiveEvent = components['schemas']['FootballLiveEvent']
+
+/** Same reasoning as `CricketLiveScoringPage.tsx`'s `RECORD_DEBOUNCE_MS`:
+ *  `recordEvent` (see `useOfflineLiveScoring`) folds and returns
+ *  synchronously rather than waiting on a network round-trip, so this
+ *  stands in for the double-tap guard an in-flight mutation used to give
+ *  for free. */
+const RECORD_DEBOUNCE_MS = 400
 
 function sideName(match: Match, index: number, fallback: string): string {
   return match.sides[index]?.name?.trim() || fallback
@@ -97,7 +108,17 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
 
   const scoreQuery = useMatchScore(match.id, { refetchInterval: 8000 })
   const seq = useLiveSeq(match.id)
-  const append = useAppendFootballEvent(match.id)
+  const offline = useOfflineFootballScoring(match.id)
+
+  // Fold-then-return means there's no `mutation.isPending` to key a
+  // double-tap guard off anymore — this stands in for it.
+  const [recordLocked, setRecordLocked] = useState(false)
+  const record = (event: FootballLiveEvent) => {
+    if (recordLocked) return
+    setRecordLocked(true)
+    offline.recordEvent(event)
+    setTimeout(() => setRecordLocked(false), RECORD_DEBOUNCE_MS)
+  }
 
   const [now, setNow] = useState(() => new Date())
   useEffect(() => {
@@ -122,6 +143,13 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
   // auto-confirmed, same as a manual "Add result" would.
   const finishMatch = useMutation({
     mutationFn: async () => {
+      // Same reasoning as `CricketLiveScoringPage.tsx`'s `finishMatch`: the
+      // server independently re-derives the score from persisted live
+      // detail and 409s on any mismatch, which a still-unsynced local fold
+      // would trigger spuriously. Blocked in the UI; this is a backstop.
+      if (offline.pendingCount > 0) {
+        throw new Error('Sync the pending events before finishing the match')
+      }
       const state = footballScoreFrom(
         queryClient.getQueryData<Score | null>(matchScoreQueryKey(match.id)),
       )
@@ -173,7 +201,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
   const handleHalfFt = () => {
     const period = nextPeriodForPhase(phase, progressionCtx)
     if (!period) return
-    append.mutate({ kind: 'Period', period })
+    record({ kind: 'Period', period })
   }
 
   // These phases are where the match is up for grabs on a period-marker
@@ -253,12 +281,28 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${match.id}`)}>
           <ChevronLeft className="size-4" /> Back
         </Button>
-        <LiveIndicator />
+        <div className="flex items-center gap-2">
+          <OfflineIndicator
+            isOffline={offline.isOffline}
+            pendingCount={offline.pendingCount}
+            syncing={offline.syncing}
+            conflict={offline.conflict}
+            onSyncNow={offline.syncNow}
+          />
+          <LiveIndicator />
+        </div>
       </div>
+
+      {offline.conflict && (
+        <ConflictBanner
+          pendingCount={offline.pendingCount}
+          onDiscardAndReload={offline.discardAndReloadAfterConflict}
+        />
+      )}
 
       <div>
         <h1 className="text-lg font-semibold">
@@ -321,15 +365,15 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
               </p>
               <Button
                 variant="outline"
-                disabled={append.isPending || !sideId}
-                onClick={() => sideId && append.mutate({ kind: 'PenaltyShootoutKick', side_id: sideId, scored: true })}
+                disabled={recordLocked || !sideId}
+                onClick={() => sideId && record({ kind: 'PenaltyShootoutKick', side_id: sideId, scored: true })}
               >
                 Scored
               </Button>
               <Button
                 variant="ghost"
-                disabled={append.isPending || !sideId}
-                onClick={() => sideId && append.mutate({ kind: 'PenaltyShootoutKick', side_id: sideId, scored: false })}
+                disabled={recordLocked || !sideId}
+                onClick={() => sideId && record({ kind: 'PenaltyShootoutKick', side_id: sideId, scored: false })}
               >
                 Missed
               </Button>
@@ -357,8 +401,8 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
       {phase === 'penalties' && state && !penaltiesComplete(state) && (
         <Button
           variant="outline"
-          disabled={append.isPending}
-          onClick={() => append.mutate({ kind: 'Period', period: 'penalties_complete' })}
+          disabled={recordLocked}
+          onClick={() => record({ kind: 'Period', period: 'penalties_complete' })}
         >
           End penalties
         </Button>
@@ -366,13 +410,13 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
 
       {continuationAvailable && (
         <div className="flex flex-col gap-2">
-          <Button size="lg" disabled={append.isPending} onClick={handleHalfFt}>
+          <Button size="lg" disabled={recordLocked} onClick={handleHalfFt}>
             {nextPhaseActionLabel(phase, progressionCtx)}
           </Button>
           <Button
             variant="ghost"
             size="sm"
-            disabled={finishMatch.isPending}
+            disabled={finishMatch.isPending || offline.pendingCount > 0}
             onClick={() => finishMatch.mutate()}
           >
             Or finish as a draw
@@ -380,7 +424,14 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
         </div>
       )}
 
-      {readyToFinish && (
+      {readyToFinish && offline.pendingCount > 0 && (
+        <p className="text-center text-xs text-muted-foreground">
+          Sync {offline.pendingCount} pending event{offline.pendingCount === 1 ? '' : 's'} before
+          finishing.
+        </p>
+      )}
+
+      {readyToFinish && offline.pendingCount === 0 && (
         <Button size="lg" disabled={finishMatch.isPending} onClick={() => finishMatch.mutate()}>
           {finishMatch.isPending ? 'Finishing…' : 'Finish match'}
         </Button>
@@ -400,9 +451,21 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
       </Link>
 
       <div className="border-t pt-3">
-        <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          Match events
-        </p>
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Match events
+          </p>
+          {offline.canUndo && events.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-auto px-0 text-xs text-muted-foreground hover:bg-transparent hover:underline"
+              onClick={offline.undo}
+            >
+              Undo last event
+            </Button>
+          )}
+        </div>
         {events.length === 0 ? (
           <p className="text-sm text-muted-foreground">No events recorded yet.</p>
         ) : (
@@ -426,26 +489,16 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
         )}
       </div>
 
-      {append.isError && (
-        <p className="text-center text-xs text-destructive">
-          Failed to record that event — try again.
-        </p>
-      )}
-
       <RecordEventDialog
         open={dialogKind !== null}
         kind={dialogKind}
         match={match}
         initialMinute={minute ?? 0}
         onOpenChange={(open) => !open && setDialogKind(null)}
-        submitting={append.isPending}
+        submitting={recordLocked}
         onSubmit={(event) => {
-          append.mutate(event, {
-            onSuccess: () => {
-              setDialogKind(null)
-              queryClient.invalidateQueries({ queryKey: ['feed'] })
-            },
-          })
+          record(event)
+          setDialogKind(null)
         }}
       />
     </div>

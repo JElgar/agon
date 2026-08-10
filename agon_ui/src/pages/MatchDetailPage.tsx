@@ -16,7 +16,6 @@ import { CricketMatchBlock } from '@/components/agon/live/CricketMatchBlock'
 import { CricketScoreBlock } from '@/components/agon/CricketScoreBlock'
 import { CricketScorecard } from '@/components/agon/CricketScorecard'
 import { FootballScorecard } from '@/components/agon/FootballScorecard'
-import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { useLiveEvents } from '@/hooks/useLiveScore'
 import { useMatchScore } from '@/hooks/useMatchScore'
 import { footballScoreFrom, footballEventSourceFromScore } from '@/lib/liveScore'
@@ -258,7 +257,7 @@ function MatchDetail({
           )}
 
           <div className="mt-3 flex items-center justify-between">
-            {hasLiveState ? <LiveIndicator /> : <StatusBadge status={matchBadgeStatus(match)} />}
+            <StatusBadge status={matchBadgeStatus(match)} />
             <div className="flex items-center gap-1">
               {canEdit && isLiveSport && !cancelled && match.status !== 'completed' && (
                 <Button asChild variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs text-primary">

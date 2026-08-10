@@ -546,6 +546,85 @@ impl Dao {
         }
     }
 
+    /// Update the custom `name` on one or more of a match's sides, in place
+    /// on the embedded `sides` map (validation — e.g. the team/name
+    /// exclusivity rule — is the caller's job, same division of labor as
+    /// `create_match`). `Some(name)` sets it; `None` removes the attribute,
+    /// falling back at read time to the priority chain `Api::resolve_side_names`
+    /// implements (sole player, then team, then a neutral default). Only the
+    /// sides named in `updates` are touched. A no-op for an empty slice.
+    /// `NotFound` if the match doesn't exist.
+    #[tracing::instrument(skip(self))]
+    pub async fn update_match_side_names(
+        &self,
+        match_id: &str,
+        updates: &[(String, Option<String>)],
+    ) -> DaoResult<()> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+
+        let mut set_clauses = Vec::new();
+        let mut remove_clauses = Vec::new();
+        let mut names: HashMap<String, String> = HashMap::new();
+        let mut values: HashMap<String, AttributeValue> = HashMap::new();
+        names.insert("#name".into(), "name".into());
+        names.insert("#pk".into(), ATTR_PK.into());
+
+        for (i, (side_id, name)) in updates.iter().enumerate() {
+            let side_alias = format!("#s{i}");
+            names.insert(side_alias.clone(), side_id.clone());
+            match name {
+                Some(n) => {
+                    let value_alias = format!(":n{i}");
+                    set_clauses.push(format!("sides.{side_alias}.#name = {value_alias}"));
+                    values.insert(value_alias, s(n));
+                }
+                None => {
+                    remove_clauses.push(format!("sides.{side_alias}.#name"));
+                }
+            }
+        }
+
+        let mut expr = String::new();
+        if !set_clauses.is_empty() {
+            expr.push_str("SET ");
+            expr.push_str(&set_clauses.join(", "));
+        }
+        if !remove_clauses.is_empty() {
+            if !expr.is_empty() {
+                expr.push(' ');
+            }
+            expr.push_str("REMOVE ");
+            expr.push_str(&remove_clauses.join(", "));
+        }
+
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .update_expression(expr)
+            .condition_expression("attribute_exists(#pk)")
+            .set_expression_attribute_names(Some(names))
+            .set_expression_attribute_values(if values.is_empty() {
+                None
+            } else {
+                Some(values)
+            })
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => {
+                Err(DaoError::NotFound(format!("match {match_id}")))
+            }
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
     /// Add or update a single match player (roster reconciliation / late adds).
     #[tracing::instrument(skip(self, player), fields(player_id = %player.player_id))]
     pub async fn put_match_player(

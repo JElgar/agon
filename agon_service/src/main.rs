@@ -727,6 +727,17 @@ struct SetPlayerSideInput {
     side_id: Option<String>,
 }
 
+/// Rename an existing side. `name: None` clears any custom name, falling
+/// back to the priority chain in `MatchSide::name`'s doc comment (the sole
+/// player's name, then the linked team's name, then a neutral default) —
+/// the same validation as at create time applies: a name alongside a
+/// `team_id` is only allowed when another side shares that team.
+#[derive(Object)]
+struct UpdateMatchSideNameInput {
+    side_id: String,
+    name: Option<String>,
+}
+
 /// A side to create as part of a new match. The server assigns the real side id;
 /// `client_id` lets the request reference this side from `invites` and `score`.
 #[derive(Object)]
@@ -823,6 +834,10 @@ struct UpdateMatchInput {
     added_players: Option<Vec<AddMatchPlayerInput>>,
     /// Reassign existing players to sides (late changes to who played for whom).
     side_assignments: Option<Vec<SetPlayerSideInput>>,
+    /// Rename one or more of the match's sides — the custom name given at
+    /// creation (or a previous edit here). Only the sides listed are
+    /// touched; every other side's name is left alone.
+    side_names: Option<Vec<UpdateMatchSideNameInput>>,
     /// The result. Creates a score submission when changed; for a not-yet-played
     /// match this also completes it. `side_id`s reference the match's sides.
     /// Required to complete a match — there is no server-side fallback if
@@ -2493,6 +2508,33 @@ impl Api {
         let valid_sides: std::collections::HashSet<&str> =
             agg.sides.iter().map(|s| s.side_id.as_str()).collect();
 
+        // Renaming a side: every referenced side must exist, and — mirroring
+        // `create_match`'s validation — a side already linked to a team can
+        // only get a custom name when another side shares that same team
+        // (otherwise the team is the source of truth for the name).
+        if let Some(renames) = &input.side_names {
+            for rename in renames {
+                let Some(side) = agg.sides.iter().find(|s| s.side_id == rename.side_id) else {
+                    return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                        "side `{}` is not part of this match",
+                        rename.side_id
+                    ))));
+                };
+                if let (Some(team_id), Some(_)) = (&side.team_id, &rename.name) {
+                    let team_shared = agg.sides.iter().any(|other| {
+                        other.side_id != side.side_id && other.team_id.as_deref() == Some(team_id)
+                    });
+                    if !team_shared {
+                        return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                            "side `{}` can't have both a name and a team unless another side \
+                             shares that team",
+                            rename.side_id
+                        ))));
+                    }
+                }
+            }
+        }
+
         // Completing a live-scored football/cricket match still requires an
         // explicit `score` from the client (see `LiveScoringPage`/
         // `CricketLiveScoringPage`'s `finishMatch`, which now builds one
@@ -2681,6 +2723,22 @@ impl Api {
             }
             other => dao_internal(other),
         })?;
+
+        // Apply any side renames, validated above.
+        if let Some(renames) = &input.side_names {
+            let updates: Vec<(String, Option<String>)> = renames
+                .iter()
+                .map(|r| (r.side_id.clone(), r.name.clone()))
+                .collect();
+            dao.update_match_side_names(&match_id, &updates)
+                .await
+                .map_err(|e| match e {
+                    dao::DaoError::NotFound(_) => {
+                        Error::from_string("match not found", StatusCode::NOT_FOUND)
+                    }
+                    other => dao_internal(other),
+                })?;
+        }
 
         // Roster: add ad-hoc players (no invitation) then apply side reassigns.
         if let Some(added) = &input.added_players {

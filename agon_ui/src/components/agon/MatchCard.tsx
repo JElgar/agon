@@ -16,7 +16,6 @@ import { InvitationResponseDialog } from './InvitationResponseDialog'
 import { LiveMatchBlock } from './live/LiveMatchBlock'
 import { CricketMatchBlock } from './live/CricketMatchBlock'
 import { CricketScoreBlock } from './CricketScoreBlock'
-import { LiveIndicator } from './live/LiveIndicator'
 import { KnownPlayersRow } from './KnownPlayersRow'
 import { useMatchScore } from '@/hooks/useMatchScore'
 import { describeEvent, eventEmoji, footballScoreFrom, recentGoalEvents } from '@/lib/liveScore'
@@ -245,7 +244,6 @@ export function MatchCard({
   // player roster to resolve `describeEvent`'s names from locally.
   const finishedFootballScorePlayers =
     scoreInfo && !isCurrentlyLive ? footballScoreFrom(scoreInfo.score)?.players : undefined
-  const hasLiveState = !!footballState || !!cricketState
   // A cricket match's confirmed score carries its own per-innings detail once
   // it's been live-scored (`Score::Cricket`; see `finishMatch` in
   // `CricketLiveScoringPage`) — a manually-logged result still degrades to
@@ -452,11 +450,7 @@ export function MatchCard({
           <MessageCircle className="size-3.5" /> {comment_count}
         </button>
         <ShareMatchButton match={match} />
-        {hasLiveState ? (
-          <LiveIndicator className="ml-auto" />
-        ) : (
-          <StatusBadge status={matchBadgeStatus(match)} className="ml-auto" />
-        )}
+        <StatusBadge status={matchBadgeStatus(match)} className="ml-auto" />
       </div>
     </div>
   )

@@ -980,6 +980,14 @@ pub struct FeedItemRecord {
     /// feed items written before this field existed.
     #[serde(default)]
     pub known_player_ids: Vec<String>,
+    /// How many of the match's participants the viewer follows, in total —
+    /// unlike `known_player_ids`, never capped at `MAX_KNOWN_PLAYERS`, so the
+    /// feed can render "+N more" beyond the hydrated list. Same snapshot/
+    /// refresh characteristics as `known_player_ids`. `#[serde(default)]` for
+    /// feed items written before this field existed (back-fills to 0, which
+    /// undercounts pre-existing rows until their next fan-out re-run).
+    #[serde(default)]
+    pub known_player_count: u32,
     /// The side *this viewer* plays on, if they're themselves a participant
     /// in the match — lets their own feed card show the score confirm/dispute
     /// prompt without a live player query. `None` for a viewer in the

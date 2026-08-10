@@ -888,6 +888,11 @@ struct FeedMatch {
     /// empty if the viewer doesn't follow any participant directly (e.g. they
     /// only follow an involved team), or for the viewer's own matches.
     known_participants: Vec<UserProfile>,
+    /// How many of the match's participants the viewer follows, in total.
+    /// `known_participants` itself is capped (see
+    /// `agon_core::dao::audience::MAX_KNOWN_PLAYERS`), so this is what a
+    /// client uses to render "+N more" beyond the hydrated list.
+    known_participants_count: u32,
     /// The side *the caller themselves* plays on, if they're a participant in
     /// this match — `None` if they're not playing (they're seeing this card
     /// via a follow) or not yet assigned a side. Lets a client resolve the
@@ -1786,6 +1791,7 @@ impl Api {
         struct EligibleEntry {
             match_id: String,
             known_player_ids: Vec<String>,
+            known_player_count: u32,
             viewer_side_id: Option<String>,
         }
         let mut eligible: Vec<EligibleEntry> = Vec::with_capacity(page.items.len());
@@ -1802,6 +1808,7 @@ impl Api {
             eligible.push(EligibleEntry {
                 match_id: entry.ref_id.clone(),
                 known_player_ids: entry.known_player_ids.clone(),
+                known_player_count: entry.known_player_count,
                 viewer_side_id: entry.viewer_side_id.clone(),
             });
         }
@@ -1860,6 +1867,7 @@ impl Api {
                     &summary.sides,
                     &users,
                     known_participants,
+                    entry.known_player_count,
                     entry.viewer_side_id.clone(),
                     i_liked,
                 );

@@ -18,6 +18,7 @@
 
 use aws_sdk_dynamodb::types::{Put, TransactWriteItem};
 
+use super::audience::AudienceMember;
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, Item};
@@ -76,8 +77,16 @@ impl Dao {
                         responded_at,
                     )
                     .await?;
-                let feed_item =
-                    self.feed_item(accepting_user_id, match_id, &starts_at, now, &[], side_id)?;
+                let feed_item = self.feed_item(
+                    accepting_user_id,
+                    match_id,
+                    &starts_at,
+                    now,
+                    &AudienceMember {
+                        viewer_side_id: side_id,
+                        ..Default::default()
+                    },
+                )?;
                 let feed_put = Put::builder()
                     .table_name(self.table())
                     .set_item(Some(feed_item))

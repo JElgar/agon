@@ -589,10 +589,25 @@ function SideRoster({ title, players }: { title: string; players: MatchPlayer[] 
           // Token-invited (external) players have a shareable link; offer to
           // copy it instead of the bare "invited" label.
           const inviteToken = memberInviteToken(p.member)
+          // Only linked Agon users have a profile to open — external players
+          // (invited by name only) have no `user_id` and stay plain text.
+          const userId = p.member.type === 'User' ? p.member.user_id : undefined
           return (
             <div key={i} className="flex items-center gap-2">
-              <Avatar name={name} imageUrl={avatarUrl} size="md" />
-              <span className="flex-1 truncate text-sm">{name}</span>
+              {userId ? (
+                <Link
+                  to={`/users/${userId}`}
+                  className="flex min-w-0 flex-1 items-center gap-2"
+                >
+                  <Avatar name={name} imageUrl={avatarUrl} size="md" />
+                  <span className="flex-1 truncate text-sm">{name}</span>
+                </Link>
+              ) : (
+                <>
+                  <Avatar name={name} imageUrl={avatarUrl} size="md" />
+                  <span className="flex-1 truncate text-sm">{name}</span>
+                </>
+              )}
               {inviteToken ? (
                 <CopyInviteButton token={inviteToken} />
               ) : (

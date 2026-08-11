@@ -16,12 +16,13 @@ import { CricketMatchBlock } from '@/components/agon/live/CricketMatchBlock'
 import { CricketScoreBlock } from '@/components/agon/CricketScoreBlock'
 import { CricketScorecard } from '@/components/agon/CricketScorecard'
 import { FootballScorecard } from '@/components/agon/FootballScorecard'
+import { FootballScorersBySide } from '@/components/agon/FootballScorersBySide'
 import { useLiveEvents } from '@/hooks/useLiveScore'
 import { useMatchScore } from '@/hooks/useMatchScore'
 import { footballScoreFrom, footballEventSourceFromScore } from '@/lib/liveScore'
 import { cricketInningsFor, cricketScoreFrom, inningsDeliveriesFromEvents } from '@/lib/cricketScore'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
-import { displayScore, headlineBySide, headlineLabel, setLine } from '@/lib/score'
+import { displayScore, footballGoalsFromScore, headlineBySide, headlineLabel, setLine } from '@/lib/score'
 import {
   isParticipant,
   memberAvatarUrl,
@@ -143,6 +144,14 @@ function MatchDetail({
   const footballState = isCurrentlyLive ? footballScoreFrom(scoreQuery.data) : null
   const cricketState = isCurrentlyLive ? cricketScoreFrom(scoreQuery.data) : null
   const hasLiveState = !!footballState || !!cricketState
+  // Goals for a finished football match, read straight off the
+  // confirmed/pending score — shown as a scorer breakdown under the plain
+  // score box below (same as the feed/profile card's `MatchCard`); the full
+  // event timeline (goals *and* cards/subs) stays in `FootballScorecard`
+  // further down the page regardless.
+  const finishedFootballGoals = scoreInfo && !isCurrentlyLive ? footballGoalsFromScore(scoreInfo.score) : null
+  const finishedFootballScorePlayers =
+    scoreInfo && !isCurrentlyLive ? footballScoreFrom(scoreInfo.score)?.players : undefined
   // Same "live while in progress, else confirmed/pending" source as
   // `cricketScoreInnings` below — needed here just for `.players` (the
   // score's resolved-name map), passed to `CricketScorecard`.
@@ -256,6 +265,17 @@ function MatchDetail({
                 </span>
               ))}
             </div>
+          )}
+
+          {finishedFootballGoals && (
+            <FootballScorersBySide
+              goals={finishedFootballGoals}
+              match={match}
+              players={finishedFootballScorePlayers}
+              sideA={sideA}
+              sideB={sideB}
+              className="mt-2 text-xs"
+            />
           )}
 
           <div className="mt-3 flex items-center justify-between">

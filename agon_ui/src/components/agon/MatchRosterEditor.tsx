@@ -16,8 +16,16 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Avatar } from './Avatar'
 import { memberAvatarUrl, memberName, playerId } from '@/lib/members'
+
+/** "Alice", "Alice and Bob", or "Alice, Bob and Charlie" — for the removal
+ *  confirmation's "you're removing …" sentence. */
+function joinNames(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? ''
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+}
 
 type Match = components['schemas']['Match']
 type MatchPlayer = components['schemas']['MatchPlayer']
@@ -30,9 +38,12 @@ const UNASSIGNED = '__unassigned__'
  * Pre-game (or any time before it's locked in) roster editor: drag players
  * between sides — or into "Unassigned" — and remove anyone who shouldn't be
  * on the roster at all. Purely local state until "Save", which diffs against
- * the match's current roster and sends only what changed: `side_assignments`
- * for anyone whose side moved, `removed_player_ids` for anyone dropped.
- * Shown in place of the read-only roster grid when a participant taps "Edit".
+ * the match's current roster and sends only what changed — `side_assignments`
+ * for anyone whose side moved, `removed_player_ids` for anyone dropped — in
+ * one `PATCH`. Saving with any pending removals detours through a confirm
+ * dialog naming who's being cut, since that part can't be undone once it's
+ * sent; a save with only side moves goes straight through. Shown in place of
+ * the read-only roster grid when a participant taps "Edit".
  */
 export function MatchRosterEditor({
   match,
@@ -51,6 +62,7 @@ export function MatchRosterEditor({
   )
   const [removedIds, setRemovedIds] = useState<Set<string>>(new Set())
   const [activeId, setActiveId] = useState<string | null>(null)
+  const [confirmOpen, setConfirmOpen] = useState(false)
 
   const playersById = useMemo(
     () => new Map(match.players.map((p) => [playerId(p), p])),
@@ -136,6 +148,22 @@ export function MatchRosterEditor({
     },
   })
 
+  // Removing someone is destructive (no undo once saved), so saving with any
+  // pending removals detours through a confirmation naming who's being cut,
+  // rather than applying silently. A save with only side moves — reversible,
+  // no data lost — goes straight through.
+  const removedNames = Array.from(removedIds)
+    .map((id) => playersById.get(id))
+    .filter((p): p is MatchPlayer => !!p)
+    .map((p) => memberName(p.member))
+  const handleSaveClick = () => {
+    if (removedIds.size > 0) {
+      setConfirmOpen(true)
+    } else {
+      save.mutate()
+    }
+  }
+
   const activePlayer = activeId ? playersById.get(activeId) : undefined
 
   return (
@@ -210,7 +238,7 @@ export function MatchRosterEditor({
         <Button
           size="sm"
           disabled={!dirty || save.isPending}
-          onClick={() => save.mutate()}
+          onClick={handleSaveClick}
         >
           {save.isPending ? 'Saving…' : 'Save'}
         </Button>
@@ -223,6 +251,41 @@ export function MatchRosterEditor({
           Cancel
         </Button>
       </div>
+
+      <Dialog open={confirmOpen} onOpenChange={(open) => !save.isPending && setConfirmOpen(open)}>
+        <DialogContent className="max-w-sm text-center sm:text-center">
+          <DialogHeader className="text-center sm:text-center">
+            <DialogTitle>Remove {removedNames.length === 1 ? 'this player' : 'these players'}?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            You're removing {joinNames(removedNames)} from the match. This can't be undone
+            once saved.
+          </p>
+          {save.isError && (
+            <p className="text-xs text-destructive">
+              Something went wrong. Please try again.
+            </p>
+          )}
+          <div className="mt-2 flex flex-col gap-2">
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={save.isPending}
+              onClick={() => save.mutate()}
+            >
+              {save.isPending ? 'Saving…' : 'Yes, remove them'}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={save.isPending}
+              onClick={() => setConfirmOpen(false)}
+            >
+              Cancel
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

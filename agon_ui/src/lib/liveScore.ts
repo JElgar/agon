@@ -183,8 +183,10 @@ export function recentEvents(detail: FootballScore, limit: number): FootballEven
 }
 
 /** One goalscorer's line for a side's scorer list — every minute they scored
- *  merged onto one row, e.g. "James Elgar 5', 53'". `key` is stable for React
- *  lists (a player id, or `'own_goal'` — see `scorersBySide`). */
+ *  merged onto one row, e.g. "James Elgar 5', 53'" or "Own goal (J. Smith)
+ *  90'". `key` is stable for React lists (a player id, an
+ *  `own_goal:<player id>`, or `own_goal:unknown` for an unrecorded own-goal
+ *  scorer — see `scorersBySide`). */
 export interface FootballScorerLine {
   key: string
   name: string
@@ -197,12 +199,14 @@ export interface FootballScorerLine {
  *  `Score.Football` rather than a full live fetch, which a completed match
  *  no longer needs just to show who scored. Multiple goals by the same
  *  player become one line with every minute, ascending; lines are ordered by
- *  that player's first goal. Own goals never get a named line — regardless
- *  of whether a scorer is recorded, they're grouped under a single "Own
- *  goal" line per side, since `side_id` is the *benefiting* side, not the
- *  own-goal scorer's own team (see `FootballGoalEvent`'s doc comment) —
- *  naming them here would misattribute the scorer to the wrong side's
- *  column. */
+ *  that player's first goal. An own goal still lists under the *benefiting*
+ *  side's column, matching where it counts on the scoreboard (`side_id` is
+ *  the crediting side, not the own-goal scorer's own team — see
+ *  `FootballGoalEvent`'s doc comment), but is labeled "Own goal (Scorer)"
+ *  using the scorer's own name, resolved the same way a regular goal's is;
+ *  falls back to a bare "Own goal" line when no scorer was recorded. Own
+ *  goals by different players are never merged onto the same line, even
+ *  though they'd count for the same side. */
 export function scorersBySide(
   goals: FootballGoalEvent[],
   match: MatchLike,
@@ -211,10 +215,9 @@ export function scorersBySide(
   const bySide: Record<string, Map<string, FootballScorerLine>> = {}
   for (const g of goals) {
     const lines = (bySide[g.side_id] ??= new Map())
-    const key = g.own_goal ? 'own_goal' : (g.scorer_player_id ?? 'unknown')
-    const name = g.own_goal
-      ? 'Own goal'
-      : (playerNameFor(match, g.scorer_player_id, scorePlayers) ?? 'Unknown')
+    const scorer = playerNameFor(match, g.scorer_player_id, scorePlayers)
+    const key = g.own_goal ? `own_goal:${g.scorer_player_id ?? 'unknown'}` : (g.scorer_player_id ?? 'unknown')
+    const name = g.own_goal ? (scorer ? `Own goal (${scorer})` : 'Own goal') : (scorer ?? 'Unknown')
     const line = lines.get(key) ?? { key, name, minutes: [] }
     if (g.minute !== undefined) line.minutes.push(g.minute)
     lines.set(key, line)

@@ -4,6 +4,7 @@ import {
   useMutation,
   useQueryClient,
 } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 import { MessageCircle, Pencil, Trash2 } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
@@ -210,16 +211,35 @@ function CommentRow({
     )
   }
 
+  // Only a live (non-tombstone) comment has an author to link to.
+  const authorId = deleted ? undefined : comment.author?.id
+
   return (
     <div className="flex gap-2.5">
-      <Avatar
-        name={name}
-        imageUrl={comment.author?.profile_image?.image_url}
-        size="md"
-      />
+      {authorId ? (
+        <Link to={`/users/${authorId}`} className="shrink-0">
+          <Avatar
+            name={name}
+            imageUrl={comment.author?.profile_image?.image_url}
+            size="md"
+          />
+        </Link>
+      ) : (
+        <Avatar
+          name={name}
+          imageUrl={comment.author?.profile_image?.image_url}
+          size="md"
+        />
+      )}
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 text-xs">
-          <span className="font-medium">{deleted ? 'Deleted' : name}</span>
+          {authorId ? (
+            <Link to={`/users/${authorId}`} className="font-medium hover:underline">
+              {name}
+            </Link>
+          ) : (
+            <span className="font-medium">{deleted ? 'Deleted' : name}</span>
+          )}
           <span className="text-muted-foreground">
             {relativeTime(comment.created_at)}
           </span>

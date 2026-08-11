@@ -83,10 +83,9 @@ function cardKind(c: FootballCardEvent): FootballEventKind {
   return c.color === 'yellow' ? 'yellow_card' : 'red_card'
 }
 
-/** Maps a bare goals list — either `FootballScore.goals` or a finished
- *  match's goals (see `recentGoalEvents`) — to event views. Unsorted;
- *  callers order as needed (`eventsFromDetail` merges and sorts alongside
- *  cards/subs, `recentGoalEvents` sorts standalone). */
+/** Maps a bare goals list — `FootballScore.goals`, live or finished — to
+ *  event views. Unsorted; callers order as needed (`eventsFromDetail` merges
+ *  and sorts alongside cards/subs). */
 export function goalEventsToViews(goals: FootballGoalEvent[]): FootballEventView[] {
   return goals.map((g): FootballEventView => ({
     kind: goalKind(g),
@@ -183,15 +182,53 @@ export function recentEvents(detail: FootballScore, limit: number): FootballEven
     .slice(0, limit)
 }
 
-/** The most recent goals first, capped to `limit` — for a finished match's
- *  feed-card ticker, built straight from the goals embedded in its
+/** One goalscorer's line for a side's scorer list — every minute they scored
+ *  merged onto one row, e.g. "James Elgar 5', 53'" or "Own goal (J. Smith)
+ *  90'". `key` is stable for React lists (a player id, an
+ *  `own_goal:<player id>`, or `own_goal:unknown` for an unrecorded own-goal
+ *  scorer — see `scorersBySide`). */
+export interface FootballScorerLine {
+  key: string
+  name: string
+  minutes: number[]
+}
+
+/** All of a football match's goals, grouped by crediting side and then by
+ *  scorer — a side-by-side scorer list for a finished match's feed card,
+ *  built straight from the goals embedded in its confirmed/pending
  *  `Score.Football` rather than a full live fetch, which a completed match
- *  no longer needs just to show who scored. */
-export function recentGoalEvents(goals: FootballGoalEvent[], limit: number): FootballEventView[] {
-  return goalEventsToViews(goals)
-    .sort((a, b) => (a.minute ?? Infinity) - (b.minute ?? Infinity))
-    .reverse()
-    .slice(0, limit)
+ *  no longer needs just to show who scored. Multiple goals by the same
+ *  player become one line with every minute, ascending; lines are ordered by
+ *  that player's first goal. An own goal still lists under the *benefiting*
+ *  side's column, matching where it counts on the scoreboard (`side_id` is
+ *  the crediting side, not the own-goal scorer's own team — see
+ *  `FootballGoalEvent`'s doc comment), but is labeled "Own goal (Scorer)"
+ *  using the scorer's own name, resolved the same way a regular goal's is;
+ *  falls back to a bare "Own goal" line when no scorer was recorded. Own
+ *  goals by different players are never merged onto the same line, even
+ *  though they'd count for the same side. */
+export function scorersBySide(
+  goals: FootballGoalEvent[],
+  match: MatchLike,
+  scorePlayers?: ScorePlayers,
+): Record<string, FootballScorerLine[]> {
+  const bySide: Record<string, Map<string, FootballScorerLine>> = {}
+  for (const g of goals) {
+    const lines = (bySide[g.side_id] ??= new Map())
+    const scorer = playerNameFor(match, g.scorer_player_id, scorePlayers)
+    const key = g.own_goal ? `own_goal:${g.scorer_player_id ?? 'unknown'}` : (g.scorer_player_id ?? 'unknown')
+    const name = g.own_goal ? (scorer ? `Own goal (${scorer})` : 'Own goal') : (scorer ?? 'Unknown')
+    const line = lines.get(key) ?? { key, name, minutes: [] }
+    if (g.minute !== undefined) line.minutes.push(g.minute)
+    lines.set(key, line)
+  }
+  const out: Record<string, FootballScorerLine[]> = {}
+  for (const [sideId, lines] of Object.entries(bySide)) {
+    out[sideId] = [...lines.values()]
+      .map((line) => ({ ...line, minutes: [...line.minutes].sort((a, b) => a - b) }))
+      .sort((a, b) => (a.minutes[0] ?? Infinity) - (b.minutes[0] ?? Infinity))
+  }
+  return out
 }
 
 /** Player display name for a match-scoped player id. Checks `scorePlayers`

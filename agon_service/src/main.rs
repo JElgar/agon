@@ -2757,11 +2757,9 @@ impl Api {
             }
         }
         if let Some(removed_ids) = &input.removed_player_ids {
-            for player_id in removed_ids {
-                dao.remove_match_player(&match_id, player_id)
-                    .await
-                    .map_err(dao_internal)?;
-            }
+            dao.remove_match_players(&match_id, removed_ids)
+                .await
+                .map_err(dao_internal)?;
         }
         if let Some(assignments) = &input.side_assignments {
             // Reassign an existing player's side. Fetch current roster (after

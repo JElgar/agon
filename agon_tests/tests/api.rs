@@ -486,6 +486,153 @@ async fn patch_match_updates_name() {
     assert_eq!(updated.name, "Renamed Match");
 }
 
+/// A match's ad-hoc side names (given at create time) can be edited afterwards
+/// via `side_names`, and clearing one (`name: None`) falls back to the
+/// server-resolved default rather than staying stuck on the old custom name.
+///
+/// Renames side "b" specifically: side "a" carries the sole invited player,
+/// and a side with exactly one player always displays *that player's* name
+/// ahead of any custom name (see `Api::resolve_side_names`'s priority chain),
+/// so a rename there wouldn't be observable in the resolved `name`. Side "b"
+/// has no players, so its resolved name is its custom name (or, once
+/// cleared, the neutral "Team B" fallback — the owner isn't a participant on
+/// either side, so no "Your side"/"Opposition" applies) — a rename there is
+/// directly observable.
+#[tokio::test]
+async fn patch_match_renames_sides() {
+    let (config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+    assert_eq!(created.sides[1].name.as_deref(), Some("Side B"));
+
+    let renamed = matches_match_id_patch(
+        &config,
+        &created.id,
+        models::UpdateMatchInput {
+            side_names: Some(vec![models::UpdateMatchSideNameInput {
+                side_id: side_b.clone(),
+                name: Some("The Champions".to_string()),
+            }]),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("patch side name");
+    let renamed_b = renamed.sides.iter().find(|s| s.id == side_b).unwrap();
+    let untouched_a = renamed.sides.iter().find(|s| s.id == side_a).unwrap();
+    assert_eq!(renamed_b.name.as_deref(), Some("The Champions"));
+    assert_eq!(
+        untouched_a.name.as_deref(),
+        Some("Test User"),
+        "a side not named in the request is left alone (still showing its sole player's name)"
+    );
+
+    // Clearing the custom name (name: None) falls back to the neutral
+    // "Team B" default (no team, no sole player, caller not a participant).
+    let cleared = matches_match_id_patch(
+        &config,
+        &created.id,
+        models::UpdateMatchInput {
+            side_names: Some(vec![models::UpdateMatchSideNameInput {
+                side_id: side_b.clone(),
+                name: None,
+            }]),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("clear side name");
+    let cleared_b = cleared.sides.iter().find(|s| s.id == side_b).unwrap();
+    assert_eq!(
+        cleared_b.name.as_deref(),
+        Some("Team B"),
+        "clearing the custom name must not leave the old value in place"
+    );
+}
+
+/// Renaming a side that isn't part of the match is rejected.
+#[tokio::test]
+async fn patch_match_rename_unknown_side_is_rejected() {
+    let (config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    let response = matches_match_id_patch(
+        &config,
+        &created.id,
+        models::UpdateMatchInput {
+            side_names: Some(vec![models::UpdateMatchSideNameInput {
+                side_id: "not-a-real-side".to_string(),
+                name: Some("Ghost Team".to_string()),
+            }]),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::BAD_REQUEST,
+        "not part of this match",
+    );
+}
+
+/// The same team/name exclusivity rule enforced at create time
+/// (`match_with_a_team_side_fans_out_to_team_followers`'s sibling case) also
+/// applies to a post-creation rename: a side linked to a team can't be given
+/// a custom name unless another side shares that team.
+#[tokio::test]
+async fn patch_match_rename_team_side_without_shared_team_is_rejected() {
+    let (owner_config, owner) = new_user().await;
+    let (_opponent_config, opponent) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Rename FC".to_string(),
+        },
+    )
+    .await
+    .expect("create team");
+
+    let mut input = match_between(
+        "Team Rename Match",
+        &[&owner.profile.id],
+        &[&opponent.profile.id],
+    );
+    input.sides[0].team_id = Some(team.id.clone());
+    input.sides[0].name = None;
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("create match");
+    let team_side = created.sides[0].id.clone();
+
+    let response = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            side_names: Some(vec![models::UpdateMatchSideNameInput {
+                side_id: team_side,
+                name: Some("Not Allowed".to_string()),
+            }]),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::BAD_REQUEST,
+        "can't have both a name and a team",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Comments & likes
 // ---------------------------------------------------------------------------

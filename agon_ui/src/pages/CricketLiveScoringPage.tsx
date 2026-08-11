@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { useAppendCricketEvent, useLiveSeq } from '@/hooks/useLiveScore'
 import { matchScoreQueryKey, useMatchScore } from '@/hooks/useMatchScore'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
+import { UndoLastEventButton } from '@/components/agon/live/UndoLastEventButton'
 import { SidePicker, PlayerPicker, sideName } from '@/components/agon/live/Pickers'
 import { WicketDialog } from '@/components/agon/live/WicketDialog'
 import { ExtraRunsDialog } from '@/components/agon/live/ExtraRunsDialog'
@@ -247,7 +248,10 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
       <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${match.id}`)}>
         <ChevronLeft className="size-4" /> Back
       </Button>
-      <LiveIndicator />
+      <div className="flex items-center gap-1">
+        <UndoLastEventButton matchId={match.id} seq={seq.data} />
+        <LiveIndicator />
+      </div>
     </div>
   )
 

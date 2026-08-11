@@ -9,6 +9,7 @@ import { useAppendFootballEvent, useLiveSeq } from '@/hooks/useLiveScore'
 import { matchScoreQueryKey, useMatchScore } from '@/hooks/useMatchScore'
 import { RecordEventDialog, type EventKind } from '@/components/agon/live/RecordEventDialog'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
+import { UndoLastEventButton } from '@/components/agon/live/UndoLastEventButton'
 import { CricketLiveScoringPage } from './CricketLiveScoringPage'
 import { footballFormat } from '@/lib/matchFormat'
 import {
@@ -17,6 +18,7 @@ import {
   eventEmoji,
   eventsFromDetail,
   footballScoreFrom,
+  isLivePlayPhase,
   loadTrackPrefs,
   nextPeriodForPhase,
   nextPhaseActionLabel,
@@ -193,17 +195,22 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
   ]
   const showAdvanceClockTile = advanceClockPhases.includes(phase)
 
+  // Goal/card/sub are only offered while the ball's actually in play — not
+  // before kickoff, not at half-time/full-time, not during extra-time's
+  // break, and not during the penalty shootout (which has its own recording
+  // panel below). The clock-advance tile (kick off / start 2nd half / etc.)
+  // is offered independently via `showAdvanceClockTile`, so a break phase
+  // still gets its "move to the next phase" action even with no live events.
   const actions: {
     key: EventKind | 'half_ft'
     label: string
     icon: React.ReactNode
     onClick: () => void
     disabled?: boolean
-  }[] =
-    phase === 'penalties'
-      ? []
-      : [
-          { key: 'goal', label: 'Goal', icon: <CircleDot className="size-5" />, onClick: () => setDialogKind('goal') },
+  }[] = [
+    ...(isLivePlayPhase(phase)
+      ? [
+          { key: 'goal' as const, label: 'Goal', icon: <CircleDot className="size-5" />, onClick: () => setDialogKind('goal') },
           ...(prefs.cards
             ? [{ key: 'card' as const, label: 'Card', icon: <Flag className="size-5" />, onClick: () => setDialogKind('card') }]
             : []),
@@ -217,18 +224,20 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
                 },
               ]
             : []),
-          ...(showAdvanceClockTile
-            ? [
-                {
-                  key: 'half_ft' as const,
-                  label: nextPhaseActionLabel(phase, progressionCtx),
-                  icon: <TimerReset className="size-5" />,
-                  onClick: handleHalfFt,
-                  disabled: nextPeriodForPhase(phase, progressionCtx) === null,
-                },
-              ]
-            : []),
         ]
+      : []),
+    ...(showAdvanceClockTile
+      ? [
+          {
+            key: 'half_ft' as const,
+            label: nextPhaseActionLabel(phase, progressionCtx),
+            icon: <TimerReset className="size-5" />,
+            onClick: handleHalfFt,
+            disabled: nextPeriodForPhase(phase, progressionCtx) === null,
+          },
+        ]
+      : []),
+  ]
 
   // At full-time/extra-time-full-time still level, the format may call for
   // more play — offer it, with an explicit override to finish as a draw
@@ -257,7 +266,10 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
         <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${match.id}`)}>
           <ChevronLeft className="size-4" /> Back
         </Button>
-        <LiveIndicator />
+        <div className="flex items-center gap-1">
+          <UndoLastEventButton matchId={match.id} seq={seq.data} />
+          <LiveIndicator />
+        </div>
       </div>
 
       <div>

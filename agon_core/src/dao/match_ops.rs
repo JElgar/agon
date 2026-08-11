@@ -6,7 +6,9 @@ use std::collections::HashMap;
 
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
-use aws_sdk_dynamodb::types::{AttributeValue, Put, TransactWriteItem};
+use aws_sdk_dynamodb::types::{
+    AttributeValue, DeleteRequest, Put, TransactWriteItem, WriteRequest,
+};
 
 use super::audience::AudienceMember;
 use super::client::Dao;
@@ -591,6 +593,42 @@ impl Dao {
             .send()
             .await
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Remove players from a match's roster entirely (not just unassign their
+    /// side — see `put_match_player` with `side_id: None` for that), in one
+    /// batch delete (`BatchWriteItem`, `BATCH_WRITE_MAX` items/request — see
+    /// `dao::batch`) rather than a `DeleteItem` per player. Idempotent
+    /// (deleting a missing player is a no-op); a no-op itself for an empty
+    /// `player_ids`.
+    #[tracing::instrument(skip(self))]
+    pub async fn remove_match_players(
+        &self,
+        match_id: &str,
+        player_ids: &[String],
+    ) -> DaoResult<()> {
+        for chunk in player_ids.chunks(super::batch::BATCH_WRITE_MAX) {
+            let mut requests = Vec::with_capacity(chunk.len());
+            for player_id in chunk {
+                let key = HashMap::from([
+                    (
+                        ATTR_PK.to_string(),
+                        s(Pk::Match(match_id.into()).to_string()),
+                    ),
+                    (
+                        ATTR_SK.to_string(),
+                        s(Sk::Player(player_id.clone()).to_string()),
+                    ),
+                ]);
+                let delete = DeleteRequest::builder()
+                    .set_key(Some(key))
+                    .build()
+                    .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+                requests.push(WriteRequest::builder().delete_request(delete).build());
+            }
+            self.flush_batch_write(requests).await?;
+        }
         Ok(())
     }
 

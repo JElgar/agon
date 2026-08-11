@@ -1,6 +1,6 @@
 //! Shared batch-operation plumbing: `BatchGetItem` with unprocessed-key retry,
-//! and the backoff used between attempts by both the batch get here and the
-//! `BatchWriteItem` fan-out in `feed.rs`.
+//! `BatchWriteItem` with unprocessed-item retry, and the backoff used between
+//! attempts by both.
 //!
 //! `BatchGetItem` / `BatchWriteItem` can partially complete on a *successful*
 //! (200) response — under throttling or the 16 MB response cap DynamoDB returns
@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use aws_sdk_dynamodb::types::KeysAndAttributes;
+use aws_sdk_dynamodb::types::{KeysAndAttributes, WriteRequest};
 
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
@@ -20,6 +20,10 @@ use super::item::Item;
 /// at a time, which the service caps (`MAX_PAGE_LIMIT`) well below this, so no
 /// request ever needs splitting.
 pub(super) const BATCH_GET_MAX: usize = 100;
+
+/// DynamoDB's hard cap on items per `BatchWriteItem` request (puts and deletes
+/// alike). Callers chunk their requests into pages of this size.
+pub(super) const BATCH_WRITE_MAX: usize = 25;
 
 /// How many times to re-request unprocessed keys/items before giving up. A
 /// couple of retries clears transient throttling; past that we fail the whole
@@ -123,5 +127,47 @@ impl Dao {
         }
 
         Ok(out)
+    }
+
+    /// Submit one `BatchWriteItem` request's worth of work (at most
+    /// [`BATCH_WRITE_MAX`] requests — puts and/or deletes), retrying any
+    /// `UnprocessedItems` DynamoDB returns (throttling) with [`backoff`]
+    /// between attempts until the batch fully drains. Shared by every
+    /// batch-write caller (feed fan-out, roster removal, …) so they don't
+    /// each re-implement the retry loop.
+    pub(super) async fn flush_batch_write(&self, requests: Vec<WriteRequest>) -> DaoResult<()> {
+        debug_assert!(
+            requests.len() <= BATCH_WRITE_MAX,
+            "flush_batch_write called with more than the BatchWriteItem request limit"
+        );
+        let mut pending = requests;
+        for attempt in 0..MAX_BATCH_ATTEMPTS {
+            if pending.is_empty() {
+                return Ok(());
+            }
+            backoff(attempt).await;
+
+            let out = self
+                .client
+                .batch_write_item()
+                .request_items(self.table(), std::mem::take(&mut pending))
+                .send()
+                .await
+                .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+            if let Some(unprocessed) = out.unprocessed_items
+                && let Some(items) = unprocessed.get(self.table())
+                && !items.is_empty()
+            {
+                pending = items.clone();
+            }
+        }
+        if pending.is_empty() {
+            Ok(())
+        } else {
+            Err(DaoError::Dynamo(
+                "batch write did not drain unprocessed items".into(),
+            ))
+        }
     }
 }

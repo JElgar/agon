@@ -34,6 +34,7 @@ import { CopyInviteButton } from '@/components/agon/CopyInviteButton'
 import { MatchDetailsEditor } from '@/components/agon/MatchDetailsEditor'
 import { MatchFormatCard } from '@/components/agon/MatchFormatCard'
 import { MatchResultEditor } from '@/components/agon/MatchResultEditor'
+import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
 import { MatchComments } from '@/components/agon/MatchComments'
 import { useToggleLike } from '@/hooks/useToggleLike'
@@ -109,6 +110,7 @@ function MatchDetail({
 }) {
   const [editingDetails, setEditingDetails] = useState(false)
   const [editingResult, setEditingResult] = useState(false)
+  const [editingRoster, setEditingRoster] = useState(false)
   const [inviting, setInviting] = useState(false)
 
   const canEdit = isParticipant(match, currentUserId)
@@ -308,17 +310,36 @@ function MatchDetail({
         )
       )}
 
-      {/* Rosters, one column per side */}
-      <div className="grid grid-cols-2 gap-3">
-        <SideRoster
-          title={nameA}
-          players={match.players.filter((p) => p.side_id === sideA?.id)}
-        />
-        <SideRoster
-          title={nameB}
-          players={match.players.filter((p) => p.side_id === sideB?.id)}
-        />
-      </div>
+      {/* Rosters, one column per side — or the drag-to-reassign/remove editor
+          in place of it, for a participant reconciling the line-up. */}
+      {editingRoster ? (
+        <MatchRosterEditor match={match} onDone={() => setEditingRoster(false)} />
+      ) : (
+        <div className="flex flex-col gap-2">
+          {canEdit && !cancelled && (
+            <div className="flex justify-end">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1 px-2 text-xs text-muted-foreground"
+                onClick={() => setEditingRoster(true)}
+              >
+                <Pencil className="size-3" /> Edit roster
+              </Button>
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <SideRoster
+              title={nameA}
+              players={match.players.filter((p) => p.side_id === sideA?.id)}
+            />
+            <SideRoster
+              title={nameB}
+              players={match.players.filter((p) => p.side_id === sideB?.id)}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Cricket scorecard: run progression + per-player batting/bowling,
           once there's per-innings detail recorded (live-scored or entered

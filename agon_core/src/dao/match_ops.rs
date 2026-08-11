@@ -417,6 +417,16 @@ impl Dao {
     /// `description`, `status`, `starts_at`, `location` (Some(None) clears it),
     /// and the resolved `confirmed_score`/`pending_score` blobs. `NotFound` if
     /// the match is absent.
+    ///
+    /// `side_names` renames one or more sides in the same `UpdateItem` call as
+    /// everything else here — both target the same item, so folding it in
+    /// (rather than a second call) makes a request that edits, say, the
+    /// match's `name` and a side's `name` together atomic: either both land
+    /// or neither does, instead of one succeeding and the other failing
+    /// independently. `(side_id, Some(name))` sets that side's custom name;
+    /// `(side_id, None)` removes it, falling back at read time to the
+    /// priority chain `Api::resolve_side_names` implements (sole player, then
+    /// team, then a neutral default). An empty slice touches no sides.
     #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(skip(self))]
     pub async fn update_match_meta(
@@ -436,6 +446,7 @@ impl Dao {
         // overwrites. No "clear" case yet (Phase 1 doesn't need one — a
         // match's sport, and so its format shape, doesn't change).
         format: Option<MatchFormatRecord>,
+        side_names: &[(String, Option<String>)],
     ) -> DaoResult<()> {
         let mut set: Vec<String> = Vec::new();
         let mut remove: Vec<String> = Vec::new();
@@ -501,6 +512,26 @@ impl Dao {
             names.insert("#fmt".into(), "format".into());
             values.insert(":fmt".into(), to_attr(&fmt)?);
         }
+        if !side_names.is_empty() {
+            // Same literal attribute name ("name") as the top-level `#name`
+            // alias above — reinserting it with the same value is harmless,
+            // and lets a top-level rename and a side rename share one alias.
+            names.insert("#name".into(), "name".into());
+            for (i, (side_id, side_name)) in side_names.iter().enumerate() {
+                let side_alias = format!("#s{i}");
+                names.insert(side_alias.clone(), side_id.clone());
+                match side_name {
+                    Some(n) => {
+                        let value_alias = format!(":n{i}");
+                        set.push(format!("sides.{side_alias}.#name = {value_alias}"));
+                        values.insert(value_alias, s(n));
+                    }
+                    None => {
+                        remove.push(format!("sides.{side_alias}.#name"));
+                    }
+                }
+            }
+        }
 
         if set.is_empty() && remove.is_empty() {
             return Ok(());
@@ -526,85 +557,6 @@ impl Dao {
             .table_name(self.table())
             .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
             .key("SK", s(Sk::Meta.to_string()))
-            .update_expression(expr)
-            .condition_expression("attribute_exists(#pk)")
-            .set_expression_attribute_names(Some(names))
-            .set_expression_attribute_values(if values.is_empty() {
-                None
-            } else {
-                Some(values)
-            })
-            .send()
-            .await;
-
-        match result {
-            Ok(_) => Ok(()),
-            Err(e) if is_update_conditional_failure(&e) => {
-                Err(DaoError::NotFound(format!("match {match_id}")))
-            }
-            Err(e) => Err(DaoError::Dynamo(e.to_string())),
-        }
-    }
-
-    /// Update the custom `name` on one or more of a match's sides, in place
-    /// on the embedded `sides` map (validation — e.g. the team/name
-    /// exclusivity rule — is the caller's job, same division of labor as
-    /// `create_match`). `Some(name)` sets it; `None` removes the attribute,
-    /// falling back at read time to the priority chain `Api::resolve_side_names`
-    /// implements (sole player, then team, then a neutral default). Only the
-    /// sides named in `updates` are touched. A no-op for an empty slice.
-    /// `NotFound` if the match doesn't exist.
-    #[tracing::instrument(skip(self))]
-    pub async fn update_match_side_names(
-        &self,
-        match_id: &str,
-        updates: &[(String, Option<String>)],
-    ) -> DaoResult<()> {
-        if updates.is_empty() {
-            return Ok(());
-        }
-
-        let mut set_clauses = Vec::new();
-        let mut remove_clauses = Vec::new();
-        let mut names: HashMap<String, String> = HashMap::new();
-        let mut values: HashMap<String, AttributeValue> = HashMap::new();
-        names.insert("#name".into(), "name".into());
-        names.insert("#pk".into(), ATTR_PK.into());
-
-        for (i, (side_id, name)) in updates.iter().enumerate() {
-            let side_alias = format!("#s{i}");
-            names.insert(side_alias.clone(), side_id.clone());
-            match name {
-                Some(n) => {
-                    let value_alias = format!(":n{i}");
-                    set_clauses.push(format!("sides.{side_alias}.#name = {value_alias}"));
-                    values.insert(value_alias, s(n));
-                }
-                None => {
-                    remove_clauses.push(format!("sides.{side_alias}.#name"));
-                }
-            }
-        }
-
-        let mut expr = String::new();
-        if !set_clauses.is_empty() {
-            expr.push_str("SET ");
-            expr.push_str(&set_clauses.join(", "));
-        }
-        if !remove_clauses.is_empty() {
-            if !expr.is_empty() {
-                expr.push(' ');
-            }
-            expr.push_str("REMOVE ");
-            expr.push_str(&remove_clauses.join(", "));
-        }
-
-        let result = self
-            .client
-            .update_item()
-            .table_name(self.table())
-            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
-            .key(ATTR_SK, s(Sk::Meta.to_string()))
             .update_expression(expr)
             .condition_expression("attribute_exists(#pk)")
             .set_expression_attribute_names(Some(names))

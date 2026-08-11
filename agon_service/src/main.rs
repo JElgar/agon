@@ -2701,7 +2701,17 @@ impl Api {
                 .map_err(dao_internal)?;
         }
 
-        // Apply metadata + resolved score in one update.
+        // Side renames, validated above — folded into the same `UpdateItem`
+        // call as the rest of the metadata below so the two are atomic
+        // together (both land, or neither does).
+        let side_name_updates: Vec<(String, Option<String>)> = input
+            .side_names
+            .iter()
+            .flatten()
+            .map(|r| (r.side_id.clone(), r.name.clone()))
+            .collect();
+
+        // Apply metadata + resolved score + side renames in one update.
         dao.update_match_meta(
             &match_id,
             input.name.as_deref(),
@@ -2715,6 +2725,7 @@ impl Api {
             pending_score.map(Some),
             header_photos,
             input.format.as_ref().map(match_format_to_record),
+            &side_name_updates,
         )
         .await
         .map_err(|e| match e {
@@ -2723,22 +2734,6 @@ impl Api {
             }
             other => dao_internal(other),
         })?;
-
-        // Apply any side renames, validated above.
-        if let Some(renames) = &input.side_names {
-            let updates: Vec<(String, Option<String>)> = renames
-                .iter()
-                .map(|r| (r.side_id.clone(), r.name.clone()))
-                .collect();
-            dao.update_match_side_names(&match_id, &updates)
-                .await
-                .map_err(|e| match e {
-                    dao::DaoError::NotFound(_) => {
-                        Error::from_string("match not found", StatusCode::NOT_FOUND)
-                    }
-                    other => dao_internal(other),
-                })?;
-        }
 
         // Roster: add ad-hoc players (no invitation) then apply side reassigns.
         if let Some(added) = &input.added_players {
@@ -3073,6 +3068,7 @@ impl Api {
                 None,
                 None,
                 None,
+                &[],
             )
             .await
             .map_err(dao_internal)?;
@@ -3479,6 +3475,7 @@ impl Api {
                     Some(None),
                     None,
                     None,
+                    &[],
                 )
                 .await
                 .map_err(dao_internal)?;
@@ -3535,6 +3532,7 @@ impl Api {
                         Some(None),
                         None,
                         None,
+                        &[],
                     )
                     .await
                     .map_err(dao_internal)?;
@@ -4179,6 +4177,7 @@ impl Api {
                 None,
                 None,
                 None,
+                &[],
             )
             .await
             .map_err(dao_internal)?;

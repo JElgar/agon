@@ -428,6 +428,23 @@ export function currentMinute(state: FootballScore, now: Date = new Date()): num
   }
 }
 
+/** Whether the ball is actually in play right now — the phases where a goal
+ *  (or card/sub) can meaningfully happen. Excludes not just `penalties`
+ *  (which has its own dedicated recording UI) but every clock-stopped phase —
+ *  `not_started`, `half_time`, `full_time`, `extra_time_half_time`,
+ *  `extra_time_full_time` — since nothing should be recorded as happening
+ *  during a break that hasn't been played yet. Used to gate the live
+ *  scoring screen's Goal/Card/Sub quick actions on the current phase, not
+ *  just `!== 'penalties'` (see `LiveScoringPage`). */
+export function isLivePlayPhase(phase: ClockPhase): boolean {
+  return (
+    phase === 'first_half' ||
+    phase === 'second_half' ||
+    phase === 'extra_time_first_half' ||
+    phase === 'extra_time_second_half'
+  )
+}
+
 /** Human label for the current phase, e.g. "2nd half" / "Half-time". */
 export function phaseLabel(phase: ClockPhase): string {
   switch (phase) {

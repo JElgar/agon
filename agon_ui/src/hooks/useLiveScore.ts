@@ -122,3 +122,41 @@ export function useAppendFootballEvent(matchId: string) {
 export function useAppendCricketEvent(matchId: string) {
   return useAppendLiveEvent<CricketLiveEvent>(matchId, 'Cricket')
 }
+
+/**
+ * Undoes the most recently recorded live event — `DELETE
+ * /matches/:match_id/live/events/:seq`, which the server restricts to the
+ * current log tip (see `delete_live_event` on the backend): pass anything
+ * else and it 400s rather than deleting mid-log. Callers pass the `seq`
+ * they believe is the tip (typically straight off `useLiveSeq`) rather than
+ * this hook reading the cache itself, so a stale button — rendered before an
+ * in-flight append's response lands — surfaces that mismatch as an error
+ * instead of silently undoing the wrong thing.
+ *
+ * On success, updates the tip/score caches the same way `useAppendLiveEvent`
+ * does, from the response's already-recomputed snapshot rather than an
+ * extra refetch.
+ */
+export function useUndoLastLiveEvent(matchId: string) {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (seq: number) => {
+      const { data, error, response } = await fetchClient.DELETE(
+        '/matches/{match_id}/live/events/{seq}',
+        { params: { path: { match_id: matchId, seq } } },
+      )
+      if (response.status === 400) {
+        throw new Error('Only the most recently recorded event can be undone')
+      }
+      if (error || !data) throw new Error('Failed to undo that event')
+      return data
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData(liveSeqQueryKey(matchId), data.last_seq)
+      queryClient.setQueryData(matchScoreQueryKey(matchId), data.score)
+      queryClient.invalidateQueries({ queryKey: ['match', matchId] })
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
+    },
+  })
+}

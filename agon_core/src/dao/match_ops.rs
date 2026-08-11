@@ -563,6 +563,22 @@ impl Dao {
         Ok(())
     }
 
+    /// Remove a player from a match's roster entirely (not just unassign their
+    /// side — see `put_match_player` with `side_id: None` for that). Idempotent
+    /// (deleting a missing player is a no-op).
+    #[tracing::instrument(skip(self))]
+    pub async fn remove_match_player(&self, match_id: &str, player_id: &str) -> DaoResult<()> {
+        self.client
+            .delete_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Player(player_id.into()).to_string()))
+            .send()
+            .await
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        Ok(())
+    }
+
     /// Recompute and store every side's `player_count`/`roster_preview` from
     /// the match's *current* player collection. Call after any write that can
     /// change a side's composition or a player's identity within it —

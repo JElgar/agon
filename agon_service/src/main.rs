@@ -823,6 +823,11 @@ struct UpdateMatchInput {
     added_players: Option<Vec<AddMatchPlayerInput>>,
     /// Reassign existing players to sides (late changes to who played for whom).
     side_assignments: Option<Vec<SetPlayerSideInput>>,
+    /// Drop players from the roster entirely, by member id (e.g. someone added
+    /// by mistake, or who dropped out before the match). Unlike `side_assignments`
+    /// with a `None` side, this removes the player record itself rather than
+    /// just unassigning them from a side.
+    removed_player_ids: Option<Vec<String>>,
     /// The result. Creates a score submission when changed; for a not-yet-played
     /// match this also completes it. `side_id`s reference the match's sides.
     /// Required to complete a match — there is no server-side fallback if
@@ -2698,9 +2703,16 @@ impl Api {
                     .map_err(dao_internal)?;
             }
         }
+        if let Some(removed_ids) = &input.removed_player_ids {
+            for player_id in removed_ids {
+                dao.remove_match_player(&match_id, player_id)
+                    .await
+                    .map_err(dao_internal)?;
+            }
+        }
         if let Some(assignments) = &input.side_assignments {
-            // Reassign an existing player's side. Fetch current roster to
-            // preserve the player's other fields.
+            // Reassign an existing player's side. Fetch current roster (after
+            // any adds/removes above) to preserve the player's other fields.
             let current = dao.get_match(&match_id).await.map_err(dao_internal)?;
             if let Some(agg) = current {
                 for a in assignments {
@@ -2715,10 +2727,13 @@ impl Api {
                 }
             }
         }
-        // A roster change can move players between sides (or add new ones) —
+        // A roster change can move players between sides (or add/remove them) —
         // refresh each side's cached roster preview once from the now-current
         // roster, rather than per player_id above.
-        if input.added_players.is_some() || input.side_assignments.is_some() {
+        if input.added_players.is_some()
+            || input.side_assignments.is_some()
+            || input.removed_player_ids.is_some()
+        {
             dao.refresh_side_roster_previews(&match_id)
                 .await
                 .map_err(dao_internal)?;

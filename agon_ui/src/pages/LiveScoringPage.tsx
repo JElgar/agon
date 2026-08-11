@@ -9,6 +9,7 @@ import { useAppendFootballEvent, useLiveSeq } from '@/hooks/useLiveScore'
 import { matchScoreQueryKey, useMatchScore } from '@/hooks/useMatchScore'
 import { RecordEventDialog, type EventKind } from '@/components/agon/live/RecordEventDialog'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
+import { UndoLastEventButton } from '@/components/agon/live/UndoLastEventButton'
 import { CricketLiveScoringPage } from './CricketLiveScoringPage'
 import { footballFormat } from '@/lib/matchFormat'
 import {
@@ -265,7 +266,10 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
         <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${match.id}`)}>
           <ChevronLeft className="size-4" /> Back
         </Button>
-        <LiveIndicator />
+        <div className="flex items-center gap-1">
+          <UndoLastEventButton matchId={match.id} seq={seq.data} />
+          <LiveIndicator />
+        </div>
       </div>
 
       <div>

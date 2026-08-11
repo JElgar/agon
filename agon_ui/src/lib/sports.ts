@@ -4,6 +4,7 @@ import {
   Target,
   CircleDot,
   Circle,
+  Diamond,
   type LucideIcon,
 } from 'lucide-react'
 import type { components } from '@/types/api'
@@ -18,6 +19,7 @@ const SPORT_LABELS: Record<MatchType, string> = {
   table_tennis: 'Table Tennis',
   football: 'Football',
   cricket: 'Cricket',
+  rounders: 'Rounders',
   other: 'Other',
 }
 
@@ -34,6 +36,8 @@ const SPORT_ICONS: Record<MatchType, LucideIcon> = {
   table_tennis: CircleDot,
   football: Volleyball,
   cricket: Target,
+  // The four-post circuit reads closest to a diamond of any glyph on hand.
+  rounders: Diamond,
   other: Dumbbell,
 }
 
@@ -53,6 +57,7 @@ const SPORT_EMOJI: Record<MatchType, string> = {
   table_tennis: '🏓',
   football: '⚽',
   cricket: '🏏',
+  rounders: '🥎',
   other: '🏅',
 }
 

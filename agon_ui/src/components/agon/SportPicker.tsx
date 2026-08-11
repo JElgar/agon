@@ -9,6 +9,7 @@ const SPORTS: MatchType[] = [
   'table_tennis',
   'football',
   'cricket',
+  'rounders',
   'other',
 ]
 

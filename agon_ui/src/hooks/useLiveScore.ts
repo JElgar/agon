@@ -7,6 +7,7 @@ type LiveEvent = components['schemas']['LiveEvent']
 type NewLiveEventInput = components['schemas']['NewLiveEventInput']
 type FootballLiveEvent = components['schemas']['FootballLiveEvent']
 type CricketLiveEvent = components['schemas']['CricketLiveEvent']
+type RoundersLiveEvent = components['schemas']['RoundersLiveEvent']
 
 /** Drains every page of a match's raw live event log, oldest first. */
 async function drainLiveEvents(matchId: string): Promise<LiveEvent[]> {
@@ -121,6 +122,10 @@ export function useAppendFootballEvent(matchId: string) {
 
 export function useAppendCricketEvent(matchId: string) {
   return useAppendLiveEvent<CricketLiveEvent>(matchId, 'Cricket')
+}
+
+export function useAppendRoundersEvent(matchId: string) {
+  return useAppendLiveEvent<RoundersLiveEvent>(matchId, 'Rounders')
 }
 
 /**

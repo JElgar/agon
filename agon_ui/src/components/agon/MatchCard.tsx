@@ -18,7 +18,7 @@ import { CricketMatchBlock } from './live/CricketMatchBlock'
 import { CricketScoreBlock } from './CricketScoreBlock'
 import { KnownPlayersRow } from './KnownPlayersRow'
 import { useMatchScore } from '@/hooks/useMatchScore'
-import { describeEvent, eventEmoji, footballScoreFrom, recentGoalEvents } from '@/lib/liveScore'
+import { footballScoreFrom, scorersBySide } from '@/lib/liveScore'
 import {
   cricketProgressFromScore,
   cricketScoreFrom,
@@ -213,7 +213,7 @@ export function MatchCard({
   const isCurrentlyLive = isLiveSport && match.status === 'in_progress'
   // Only fetched while live — a finished match doesn't need it. Football's
   // confirmed/pending `Score.Football` already embeds its goals (see
-  // `footballGoalsFromScore`/`finishedFootballEvents` below), and cricket's
+  // `footballGoalsFromScore`/`finishedScorersBySide` below), and cricket's
   // confirmed `Score.Cricket` already embeds its per-innings detail
   // (`cricketScore` below) — both produced by finishing a live-scored match
   // (see `finishMatch` in `LiveScoringPage`/`CricketLiveScoringPage`), same
@@ -232,18 +232,24 @@ export function MatchCard({
   // live block/badge for a match that finished after the card last mounted.
   const footballState = isCurrentlyLive ? footballScoreFrom(scoreQuery.data) : null
   const cricketState = isCurrentlyLive ? cricketScoreFrom(scoreQuery.data) : null
-  // Recent goals for a finished football match, read straight off the
+  // Goals for a finished football match, read straight off the
   // confirmed/pending score (no fetch) — shown under the plain score box
   // below (the live ticker in `LiveMatchBlock` only renders while
   // `footballState` is set, i.e. while still in progress).
   const finishedFootballGoals = scoreInfo && !isCurrentlyLive ? footballGoalsFromScore(scoreInfo.score) : null
-  const finishedFootballEvents = finishedFootballGoals ? recentGoalEvents(finishedFootballGoals, 3) : []
   // Resolved server-side on `confirmed_score`/`pending_score` itself (see
   // `Api::hydrate_confirmed_pending_score_players`) — this card's `match` is
   // a `FeedMatch`/`SearchMatch`/`Match`, none of which reliably carry a full
-  // player roster to resolve `describeEvent`'s names from locally.
+  // player roster to resolve scorer names from locally.
   const finishedFootballScorePlayers =
     scoreInfo && !isCurrentlyLive ? footballScoreFrom(scoreInfo.score)?.players : undefined
+  // Every scorer, minutes merged onto one line each, grouped per side — see
+  // `scorersBySide`'s doc comment for why own goals never get a named line.
+  const finishedScorersBySide = finishedFootballGoals
+    ? scorersBySide(finishedFootballGoals, match, finishedFootballScorePlayers)
+    : null
+  const finishedScorersA = finishedScorersBySide?.[sideA?.id ?? ''] ?? []
+  const finishedScorersB = finishedScorersBySide?.[sideB?.id ?? ''] ?? []
   // A cricket match's confirmed score carries its own per-innings detail once
   // it's been live-scored (`Score::Cricket`; see `finishMatch` in
   // `CricketLiveScoringPage`) — a manually-logged result still degrades to
@@ -364,25 +370,38 @@ export function MatchCard({
                 ))}
               </div>
             )}
-            {finishedFootballEvents.length > 0 && (
-              <div className="mt-2.5 space-y-1 border-t pt-2">
-                {finishedFootballEvents.map((event, i) => {
-                  const isSideB = event.side_id === sideB?.id
-                  return (
-                    <p
-                      key={i}
-                      className={`flex items-baseline gap-1.5 truncate text-[11px] text-muted-foreground ${isSideB ? 'flex-row-reverse text-right' : ''}`}
-                    >
-                      <span aria-hidden>{eventEmoji(event.kind)}</span>
-                      {event.minute !== undefined && (
-                        <span className="font-medium text-foreground">{event.minute}'</span>
+            {(finishedScorersA.length > 0 || finishedScorersB.length > 0) && (
+              <div className="mt-2.5 flex justify-between gap-3 border-t pt-2 text-[11px] text-muted-foreground">
+                <div className="min-w-0 flex-1 space-y-1">
+                  {finishedScorersA.map((s) => (
+                    <p key={s.key} className="truncate">
+                      {s.name}
+                      {s.minutes.length > 0 && (
+                        <>
+                          {' '}
+                          <span className="font-medium text-foreground">
+                            {s.minutes.map((m) => `${m}'`).join(', ')}
+                          </span>
+                        </>
                       )}
-                      <span className="truncate">
-                        {describeEvent(event, match, finishedFootballScorePlayers)}
-                      </span>
                     </p>
-                  )
-                })}
+                  ))}
+                </div>
+                <div className="min-w-0 flex-1 space-y-1 text-right">
+                  {finishedScorersB.map((s) => (
+                    <p key={s.key} className="truncate">
+                      {s.name}
+                      {s.minutes.length > 0 && (
+                        <>
+                          {' '}
+                          <span className="font-medium text-foreground">
+                            {s.minutes.map((m) => `${m}'`).join(', ')}
+                          </span>
+                        </>
+                      )}
+                    </p>
+                  ))}
+                </div>
               </div>
             )}
           </div>

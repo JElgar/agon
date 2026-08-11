@@ -20,9 +20,11 @@ use poem_openapi::{Object, Union};
 
 pub mod cricket;
 pub mod football;
+pub mod rounders;
 
 pub use cricket::CricketLiveEvent;
 pub use football::FootballLiveEvent;
+pub use rounders::RoundersLiveEvent;
 
 /// A single live-scoring event, sport-first discriminated so a new sport is a
 /// new variant without touching existing ones — same pattern as `Score`.
@@ -33,6 +35,7 @@ pub use football::FootballLiveEvent;
 pub enum LiveEventInput {
     Football(FootballLiveEvent),
     Cricket(CricketLiveEvent),
+    Rounders(RoundersLiveEvent),
 }
 
 /// One event to append, before the server has assigned it a `seq`.

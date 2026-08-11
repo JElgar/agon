@@ -82,6 +82,15 @@ pub enum ScoreRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         penalty_shootout_score: Option<HashMap<String, u32>>,
     },
+    Rounders {
+        innings: Vec<RoundersScoreInningsRecord>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        recent_deliveries: Option<Vec<RoundersDeliveryRecord>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next_ball_context: Option<RoundersNextBallContextRecord>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        awaiting_next_innings: Option<bool>,
+    },
 }
 
 /// One innings' final totals, as stored on a match's confirmed/pending
@@ -170,6 +179,115 @@ pub struct CricketFallOfWicketRecord {
 pub struct OversRecord {
     pub overs: u32,
     pub balls: u32,
+}
+
+/// One innings' final totals, as stored on a match's confirmed/pending
+/// `Score` — mirrors the API's `RoundersScoreInnings`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoundersScoreInningsRecord {
+    pub batting_side_id: String,
+    pub fielding_side_id: String,
+    pub half_rounders: u32,
+    pub outs: u32,
+    pub good_balls_bowled: u32,
+    pub byes: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batting: Option<Vec<RoundersBattingEntryRecord>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bowling: Option<Vec<RoundersBowlingEntryRecord>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fall_of_outs: Option<Vec<RoundersFallOfOutRecord>>,
+}
+
+/// Mirrors the API's `detailed_score::rounders::RoundersOut`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoundersOutRecord {
+    pub kind: RoundersOutKindRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fielder_player_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoundersOutKindRecord {
+    Caught,
+    StumpedAtPost,
+    OvertookRunner,
+    Obstruction,
+    FailedToRun,
+}
+
+/// Mirrors the API's `main::RoundersBattingEntry`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoundersBattingEntryRecord {
+    pub player_id: String,
+    pub half_rounders: u32,
+    pub balls_faced: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out: Option<RoundersOutRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batting_position: Option<u32>,
+}
+
+/// Mirrors the API's `main::RoundersBowlingEntry`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoundersBowlingEntryRecord {
+    pub player_id: String,
+    pub balls_bowled: u32,
+    pub no_balls: u32,
+    pub outs: u32,
+    pub half_rounders_conceded: u32,
+}
+
+/// Mirrors the API's `main::RoundersFallOfOut`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoundersFallOfOutRecord {
+    pub out_number: u32,
+    pub half_rounders: u32,
+    pub player_id: String,
+    pub kind: RoundersOutKindRecord,
+}
+
+/// The four posts a batter runs around — mirrors the API's
+/// `detailed_score::rounders::RoundersPost`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoundersPostRecord {
+    First,
+    Second,
+    Third,
+    Fourth,
+}
+
+/// Mirrors the API's `detailed_score::rounders::RoundersRunnerMovement`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoundersRunnerMovementRecord {
+    pub player_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_reached: Option<RoundersPostRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub out: Option<RoundersOutRecord>,
+}
+
+/// Mirrors `detailed_score::rounders::RoundersDelivery` (reused verbatim as
+/// the API's live delivery payload).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoundersDeliveryRecord {
+    pub bowler_player_id: String,
+    pub striker_player_id: String,
+    pub no_ball: bool,
+    pub byes: bool,
+    pub movements: Vec<RoundersRunnerMovementRecord>,
+}
+
+/// Mirrors `detailed_score::rounders::RoundersNextBallContext`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoundersNextBallContextRecord {
+    #[serde(default)]
+    pub runners_on_base: HashMap<String, RoundersPostRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bowler_player_id: Option<String>,
+    pub balls_in_spell: u32,
 }
 
 /// The agreed, settled score of a match.
@@ -429,6 +547,7 @@ pub struct MatchRecord {
 pub enum MatchFormatRecord {
     Football(FootballFormatRecord),
     Cricket(CricketFormatRecord),
+    Rounders(RoundersFormatRecord),
 }
 
 /// Mirrors `agon_service::match_format::FootballFormat`.
@@ -463,6 +582,23 @@ pub struct CricketFormatRecord {
 
 fn default_true() -> bool {
     true
+}
+
+/// Mirrors `agon_service::match_format::RoundersFormat`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoundersFormatRecord {
+    pub innings_per_side: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub good_balls_per_innings: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub innings_length_minutes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_batter_bonus_balls: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balls_per_bowling_spell: Option<u32>,
+    pub half_rounders_count: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_ball_penalty_threshold: Option<u32>,
 }
 
 /// `MATCH#<matchId>` / `SIDE#<sideId>` — one side of a match.
@@ -576,6 +712,7 @@ pub struct LiveEventRecord {
 pub enum LiveEventPayloadRecord {
     Football(FootballLiveEventRecord),
     Cricket(CricketLiveEventRecord),
+    Rounders(RoundersLiveEventRecord),
 }
 
 // ---- Football live events --------------------------------------------------
@@ -761,6 +898,36 @@ pub enum InningsEndReasonRecord {
     OversComplete,
     Declared,
     TargetReached,
+}
+
+// ---- Rounders live events ---------------------------------------------------
+
+/// Mirrors `agon_service::live_score::rounders::RoundersLiveEvent`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RoundersLiveEventRecord {
+    Delivery(RoundersDeliveryRecord),
+    InningsStart(RoundersInningsStartEventRecord),
+    InningsEnd(RoundersInningsEndEventRecord),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoundersInningsStartEventRecord {
+    pub batting_side_id: String,
+    pub fielding_side_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoundersInningsEndEventRecord {
+    pub reason: RoundersInningsEndReasonRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoundersInningsEndReasonRecord {
+    AllBattersOut,
+    GoodBallsComplete,
+    TimeUp,
 }
 
 /// `MATCH#<matchId>` / `SCORESUB#<ts>#<subId>` — a score submission and its

@@ -66,6 +66,7 @@ use detailed_score::{
         FootballCardEvent, FootballGoalEvent, FootballPenaltyShootoutKick, FootballPeriod,
         FootballSubstitutionEvent,
     },
+    netball::{NetballFoulEvent, NetballGoalEvent, NetballPeriod},
 };
 
 mod live_score;
@@ -350,6 +351,10 @@ enum Score {
     /// completed football match — live-scored or manually entered. Carries
     /// enough to render the feed/detail goal ticker without a separate fetch.
     Football(FootballScore),
+    /// Goals scored (plus optional fouls and per-quarter breakdown), the
+    /// result of a completed netball match — live-scored (either
+    /// event-by-event or quarter-only) or manually entered.
+    Netball(NetballScore),
 }
 
 #[derive(Object)]
@@ -495,6 +500,43 @@ struct FootballScore {
     players: HashMap<String, RosterPreviewPlayer>,
 }
 
+/// A netball match's result: the goal tally, plus optional richer detail.
+/// See `live_score::netball`'s doc comment for how the two live-scoring
+/// methods (event-by-event, quarter-only) both fold into this one shape.
+#[derive(Object)]
+struct NetballScore {
+    /// Goal tally, keyed by side id — exactly one entry per side, same
+    /// "map, not a list" convention as `FootballScore.score`. In
+    /// event-by-event mode this is folded from `goals`; in quarter-only mode
+    /// it's just whatever the last `Period` marker said.
+    score: HashMap<String, u32>,
+    /// Every goal scored, if there's a goal-by-goal breakdown to hand over —
+    /// `None` for a quarter-only-scored or manually-entered result, which
+    /// has no such detail. Reuses `detailed_score::netball::NetballGoalEvent`
+    /// verbatim.
+    goals: Option<Vec<NetballGoalEvent>>,
+    /// Non-scoring infringements, for stat display — same role as
+    /// `FootballScore.cards`. `None` for a quarter-only-scored or
+    /// manually-entered result.
+    fouls: Option<Vec<NetballFoulEvent>>,
+    /// The most recent period marker seen, if any. `None` for a result with
+    /// no live detail behind it.
+    period: Option<NetballPeriod>,
+    /// When each period marker was recorded, keyed by kind — same convention
+    /// as `FootballScore.period_times`.
+    period_times: Option<HashMap<NetballPeriod, chrono::DateTime<chrono::Utc>>>,
+    /// The score *as of* each quarter-end marker — this is what lets a
+    /// client render "Q1 12-9, Q2 22-18, ..." regardless of which
+    /// live-scoring method produced it (see `live_score::netball::
+    /// NetballPeriodEvent::score`'s doc comment).
+    period_scores: Option<HashMap<NetballPeriod, HashMap<String, u32>>>,
+    /// Live name/avatar for every player id referenced anywhere else in this
+    /// score — goals' scorer, fouls' player — keyed by that same
+    /// (match-scoped) player id. Same mechanism and rationale as
+    /// `FootballScore.players`.
+    players: HashMap<String, RosterPreviewPlayer>,
+}
+
 /// The sport a match was played in. Determines the expected `Score` shape
 /// (e.g. racket sports use `Score::Sets`, football uses `Score::Football`,
 /// and cricket uses `Score::Cricket`). Extend as more sports are supported.
@@ -507,6 +549,7 @@ pub enum MatchType {
     TableTennis,
     Football,
     Cricket,
+    Netball,
     /// Fallback for sports not yet modelled explicitly.
     Other,
 }
@@ -2613,6 +2656,7 @@ impl Api {
                     .flat_map(|i| [i.batting_side_id.as_str(), i.bowling_side_id.as_str()])
                     .collect(),
                 Score::Football(s) => s.score.keys().map(|k| k.as_str()).collect(),
+                Score::Netball(s) => s.score.keys().map(|k| k.as_str()).collect(),
             };
             if score_sides.iter().any(|sid| !valid_sides.contains(sid)) {
                 return Ok(UpdateMatchResponse::ValidationError(PlainText(
@@ -3173,8 +3217,16 @@ impl Api {
                     s.apply_event(e.occurred_at, event);
                 }
             }
-            // Live scoring only ever creates a `Cricket`/`Football` record
-            // for this match_id/sport pair — unreachable in practice.
+            Score::Netball(s) => {
+                for e in new_events {
+                    let LiveEventInput::Netball(event) = &e.event else {
+                        return Ok(None);
+                    };
+                    s.apply_event(e.occurred_at, event);
+                }
+            }
+            // Live scoring only ever creates a `Cricket`/`Football`/`Netball`
+            // record for this match_id/sport pair — unreachable in practice.
             Score::Simple(_) | Score::Sets(_) => return Ok(None),
         }
 
@@ -5286,6 +5338,66 @@ fn resolve_score_ids(
                 players: HashMap::new(),
             }))
         }
+        Score::Netball(s) => {
+            let mut score = HashMap::with_capacity(s.score.len());
+            for (side_id, goals) in &s.score {
+                score.insert(map(side_id)?, *goals);
+            }
+            let goals = match &s.goals {
+                Some(gs) => {
+                    let mut out = Vec::with_capacity(gs.len());
+                    for g in gs {
+                        out.push(NetballGoalEvent {
+                            side_id: map(&g.side_id)?,
+                            scorer_player_id: pmap_opt(&g.scorer_player_id)?,
+                            scorer_position: g.scorer_position,
+                            two_points: g.two_points,
+                            minute: g.minute,
+                        });
+                    }
+                    Some(out)
+                }
+                None => None,
+            };
+            let fouls = match &s.fouls {
+                Some(fs) => {
+                    let mut out = Vec::with_capacity(fs.len());
+                    for fo in fs {
+                        out.push(NetballFoulEvent {
+                            side_id: map(&fo.side_id)?,
+                            player_id: pmap_opt(&fo.player_id)?,
+                            foul_kind: fo.foul_kind,
+                            minute: fo.minute,
+                        });
+                    }
+                    Some(out)
+                }
+                None => None,
+            };
+            let period_scores = match &s.period_scores {
+                Some(pss) => {
+                    let mut out = HashMap::with_capacity(pss.len());
+                    for (period, entries) in pss {
+                        let mut mapped = HashMap::with_capacity(entries.len());
+                        for (side_id, goals) in entries {
+                            mapped.insert(map(side_id)?, *goals);
+                        }
+                        out.insert(*period, mapped);
+                    }
+                    Some(out)
+                }
+                None => None,
+            };
+            Some(Score::Netball(NetballScore {
+                score,
+                goals,
+                fouls,
+                period: s.period,
+                period_times: s.period_times.clone(),
+                period_scores,
+                players: HashMap::new(),
+            }))
+        }
     }
 }
 
@@ -5296,6 +5408,7 @@ fn set_score_players(score: &mut Score, resolved: HashMap<String, RosterPreviewP
     match score {
         Score::Cricket(s) => s.players = resolved,
         Score::Football(s) => s.players = resolved,
+        Score::Netball(s) => s.players = resolved,
         Score::Simple(_) | Score::Sets(_) => {}
     }
 }
@@ -5336,6 +5449,7 @@ fn score_player_ids(score: &Score) -> Vec<String> {
     match score {
         Score::Cricket(s) => cricket_score_player_ids(s),
         Score::Football(s) => football_score_player_ids(s),
+        Score::Netball(s) => netball_score_player_ids(s),
         Score::Simple(_) | Score::Sets(_) => Vec::new(),
     }
 }
@@ -5401,6 +5515,20 @@ fn football_score_player_ids(score: &FootballScore) -> Vec<String> {
     ids
 }
 
+/// Every player id referenced in a `NetballScore`: each goal's scorer, each
+/// foul's player. Same "may repeat, deduped downstream" contract as
+/// [`cricket_score_player_ids`].
+fn netball_score_player_ids(score: &NetballScore) -> Vec<String> {
+    let mut ids = Vec::new();
+    for goal in score.goals.iter().flatten() {
+        ids.extend(goal.scorer_player_id.clone());
+    }
+    for foul in score.fouls.iter().flatten() {
+        ids.extend(foul.player_id.clone());
+    }
+    ids
+}
+
 /// Derives the winner (when decidable) from a live-scored match's persisted
 /// score — used by `update_match` to finish a live-scored match without the
 /// client having to work out and resubmit a margin the server already has
@@ -5436,6 +5564,9 @@ fn winner_from_score(score: &Score, side_ids: &[String]) -> Option<String> {
                 *totals.entry(i.batting_side_id.as_str()).or_insert(0) += i.runs;
             }
             two_side_winner(side_ids, |sid| *totals.get(sid).unwrap_or(&0) as i64)
+        }
+        Score::Netball(s) => {
+            two_side_winner(side_ids, |sid| *s.score.get(sid).unwrap_or(&0) as i64)
         }
         Score::Simple(_) | Score::Sets(_) => None,
     }

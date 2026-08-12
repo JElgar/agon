@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { isSetsSport } from '@/lib/sports'
 import { FootballScoreFields } from '@/components/agon/FootballScoreFields'
 import { CricketScoreFields } from '@/components/agon/CricketScoreFields'
+import { NetballScoreFields } from '@/components/agon/NetballScoreFields'
 import { displayScore, headlineBySide } from '@/lib/score'
 import { cricketProgressFromScore, matchTotalsBySide } from '@/lib/cricketScore'
 
@@ -104,6 +105,7 @@ export function MatchResultEditor({
 
   const isFootball = match.match_type === 'football'
   const isCricket = match.match_type === 'cricket'
+  const isNetball = match.match_type === 'netball'
   const setsMode = isSetsSport(match.match_type)
   // The result to prepopulate the form with: confirmed if there is one, else
   // a still-pending submission awaiting the other side's confirmation.
@@ -115,7 +117,7 @@ export function MatchResultEditor({
 
   /** Build the score payload + derived winner, or null when incomplete. */
   const build = (): { score: Score; winner?: string } | null => {
-    if (isFootball || isCricket) {
+    if (isFootball || isCricket || isNetball) {
       return detailBuilt ? { score: detailBuilt.score, winner: detailBuilt.winnerSideId } : null
     }
 
@@ -223,6 +225,14 @@ export function MatchResultEditor({
         />
       ) : isCricket && sideA && sideB ? (
         <CricketScoreFields
+          sideA={sideA}
+          sideB={sideB}
+          players={match.players}
+          initial={currentScore}
+          onChange={setDetailBuilt}
+        />
+      ) : isNetball && sideA && sideB ? (
+        <NetballScoreFields
           sideA={sideA}
           sideB={sideB}
           players={match.players}

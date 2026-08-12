@@ -15,11 +15,15 @@ import { MatchHeaderCarousel } from './MatchHeaderCarousel'
 import { InvitationResponseDialog } from './InvitationResponseDialog'
 import { LiveMatchBlock } from './live/LiveMatchBlock'
 import { CricketMatchBlock } from './live/CricketMatchBlock'
+import { NetballMatchBlock } from './live/NetballMatchBlock'
 import { CricketScoreBlock } from './CricketScoreBlock'
 import { KnownPlayersRow } from './KnownPlayersRow'
 import { FootballScorersBySide } from './FootballScorersBySide'
+import { NetballScorersBySide } from './NetballScorersBySide'
 import { useMatchScore } from '@/hooks/useMatchScore'
 import { footballScoreFrom } from '@/lib/liveScore'
+import { netballGoalsFromScore } from '@/lib/score'
+import { netballScoreFrom } from '@/lib/netballScore'
 import {
   cricketProgressFromScore,
   cricketScoreFrom,
@@ -210,7 +214,8 @@ export function MatchCard({
   const aWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
   const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
 
-  const isLiveSport = match.match_type === 'football' || match.match_type === 'cricket'
+  const isLiveSport =
+    match.match_type === 'football' || match.match_type === 'cricket' || match.match_type === 'netball'
   const isCurrentlyLive = isLiveSport && match.status === 'in_progress'
   // Only fetched while live — a finished match doesn't need it. Football's
   // confirmed/pending `Score.Football` already embeds its goals (see
@@ -233,17 +238,21 @@ export function MatchCard({
   // live block/badge for a match that finished after the card last mounted.
   const footballState = isCurrentlyLive ? footballScoreFrom(scoreQuery.data) : null
   const cricketState = isCurrentlyLive ? cricketScoreFrom(scoreQuery.data) : null
-  // Goals for a finished football match, read straight off the
+  const netballState = isCurrentlyLive ? netballScoreFrom(scoreQuery.data) : null
+  // Goals for a finished football/netball match, read straight off the
   // confirmed/pending score (no fetch) — shown under the plain score box
-  // below (the live ticker in `LiveMatchBlock` only renders while
-  // `footballState` is set, i.e. while still in progress).
+  // below (the live ticker in `LiveMatchBlock`/`NetballMatchBlock` only
+  // renders while still in progress).
   const finishedFootballGoals = scoreInfo && !isCurrentlyLive ? footballGoalsFromScore(scoreInfo.score) : null
+  const finishedNetballGoals = scoreInfo && !isCurrentlyLive ? netballGoalsFromScore(scoreInfo.score) : null
   // Resolved server-side on `confirmed_score`/`pending_score` itself (see
   // `Api::hydrate_confirmed_pending_score_players`) — this card's `match` is
   // a `FeedMatch`/`SearchMatch`/`Match`, none of which reliably carry a full
   // player roster to resolve scorer names from locally.
   const finishedFootballScorePlayers =
     scoreInfo && !isCurrentlyLive ? footballScoreFrom(scoreInfo.score)?.players : undefined
+  const finishedNetballScorePlayers =
+    scoreInfo && !isCurrentlyLive ? netballScoreFrom(scoreInfo.score)?.players : undefined
   // A cricket match's confirmed score carries its own per-innings detail once
   // it's been live-scored (`Score::Cricket`; see `finishMatch` in
   // `CricketLiveScoringPage`) — a manually-logged result still degrades to
@@ -323,6 +332,10 @@ export function MatchCard({
         <div className="mx-3.5 mb-3">
           <LiveMatchBlock match={match} state={footballState} />
         </div>
+      ) : netballState ? (
+        <div className="mx-3.5 mb-3">
+          <NetballMatchBlock match={match} state={netballState} />
+        </div>
       ) : cricketState ? (
         <div className="mx-3.5 mb-3">
           <CricketMatchBlock match={match} state={cricketState} showDescription={false} />
@@ -369,6 +382,16 @@ export function MatchCard({
                 goals={finishedFootballGoals}
                 match={match}
                 players={finishedFootballScorePlayers}
+                sideA={sideA}
+                sideB={sideB}
+                className="mt-2.5 text-[11px]"
+              />
+            )}
+            {finishedNetballGoals && (
+              <NetballScorersBySide
+                goals={finishedNetballGoals}
+                match={match}
+                players={finishedNetballScorePlayers}
                 sideA={sideA}
                 sideB={sideB}
                 className="mt-2.5 text-[11px]"

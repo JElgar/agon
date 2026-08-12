@@ -4,6 +4,7 @@ type Match = components['schemas']['Match']
 type Score = components['schemas']['Score']
 type MatchSide = components['schemas']['MatchSide']
 type FootballGoalEvent = components['schemas']['FootballGoalEvent']
+type NetballGoalEvent = components['schemas']['NetballGoalEvent']
 
 /** A finished football match's goals, straight off its confirmed/pending
  *  score — `null` for any other score type, or a football score with no
@@ -12,6 +13,14 @@ type FootballGoalEvent = components['schemas']['FootballGoalEvent']
  *  the match is over. */
 export function footballGoalsFromScore(score: Score): FootballGoalEvent[] | null {
   return score.type === 'Football' ? (score.goals ?? null) : null
+}
+
+/** A finished netball match's goals, straight off its confirmed/pending
+ *  score — `null` for any other score type, or a netball score with no
+ *  goal-by-goal detail attached (a quarter-only-scored or manual entry with
+ *  just the final tally). Same role as `footballGoalsFromScore`. */
+export function netballGoalsFromScore(score: Score): NetballGoalEvent[] | null {
+  return score.type === 'Netball' ? (score.goals ?? null) : null
 }
 
 /** The score to display for a match: the confirmed result if present, else the
@@ -40,14 +49,18 @@ export function displayScore(
  * The headline number a side shows: for a Sets score it's the count of sets won
  * (across index-aligned entries); for a Simple score it's the points; for a
  * Football score it's the goal tally (`score.score`, keyed by side id —
- * already correct including own goals, which credit the benefiting side).
- * Returns a map of side id → headline value. A `Cricket` score has no single
- * headline number to show here — `CricketMatchBlock`/`CricketScoreBlock`
- * render it their own way — so it's an empty map, same as "no score yet".
+ * already correct including own goals, which credit the benefiting side);
+ * for a Netball score it's the same kind of running goal tally, whichever of
+ * netball's two live-scoring methods produced it (see
+ * `NetballScore.score`'s backend doc comment). Returns a map of side id →
+ * headline value. A `Cricket` score has no single headline number to show
+ * here — `CricketMatchBlock`/`CricketScoreBlock` render it their own way —
+ * so it's an empty map, same as "no score yet".
  */
 export function headlineBySide(score: Score): Record<string, number> {
   if (score.type === 'Simple') return { ...score.entries }
   if (score.type === 'Football') return { ...score.score }
+  if (score.type === 'Netball') return { ...score.score }
   if (score.type === 'Cricket') return {}
   // Sets: a side wins a set at index i if its games exceed every other side's.
   const out: Record<string, number> = {}

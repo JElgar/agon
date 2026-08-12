@@ -1679,6 +1679,7 @@ fn simple_score_points(score: &models::Score) -> Vec<(String, i32)> {
         models::Score::Sets(_) => panic!("expected a simple score"),
         models::Score::Cricket(_) => panic!("expected a simple score"),
         models::Score::Football(_) => panic!("expected a simple score"),
+        models::Score::Netball(_) => panic!("expected a simple score"),
     };
     points.sort_by(|a, b| a.0.cmp(&b.0));
     points
@@ -3240,4 +3241,195 @@ async fn attach_rejects_wrong_purpose_asset() {
     )
     .await;
     assert_bad_request(response);
+}
+
+// ---------------------------------------------------------------------------
+// Netball live scoring — both of netball's two live-scoring methods
+// (event-by-event, quarter-only) fold through the same `NetballLiveEvent`
+// vocabulary, so both are exercised here against the real service.
+//
+// The append call is made with raw JSON over `reqwest` rather than the
+// generated client: the generated Rust model for a *sport* union nested
+// around a *kind* union (`LiveEventInput` -> `NetballLiveEvent`/
+// `FootballLiveEvent`/...) flattens incorrectly (a pre-existing
+// openapi-generator limitation that predates netball and affects football's
+// Goal/Card/Substitution/Period kinds too — see `docs/openapi-client.md`),
+// so its `kind` enum only ever contains one variant instead of all of them.
+// Reading the result back is unaffected — `GET /matches/:id/score` returns
+// `Score`, which embeds goals/fouls as plain (non-nested-union) structs — so
+// that leg of each test still goes through the typed client.
+// ---------------------------------------------------------------------------
+
+/// A netball match between two invited users, scheduled in the future (no
+/// create-time score) so live events can be appended afterward. The owner is
+/// assigned to side "a" so they're a participant and can record events.
+fn netball_match_input(invited_user_id: &str) -> models::CreateMatchInput {
+    let mut input = create_match_input(invited_user_id);
+    input.match_type = models::MatchType::Netball;
+    input.creator_side_client_id = Some("a".to_string());
+    input
+}
+
+fn netball_goal_event_json(side_id: &str, two_points: bool) -> serde_json::Value {
+    serde_json::json!({
+        "sport": "Netball",
+        "kind": "Goal",
+        "side_id": side_id,
+        "two_points": two_points,
+    })
+}
+
+fn netball_foul_event_json(side_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "sport": "Netball",
+        "kind": "Foul",
+        "side_id": side_id,
+        "foul_kind": "contact",
+    })
+}
+
+fn netball_period_event_json(period: &str, scores: &[(&str, i32)]) -> serde_json::Value {
+    serde_json::json!({
+        "sport": "Netball",
+        "kind": "Period",
+        "period": period,
+        "score": scores.iter().copied().collect::<std::collections::HashMap<_, _>>(),
+    })
+}
+
+/// POST `/matches/:id/live/events` with raw JSON events (see this section's
+/// doc comment for why), returning the parsed `LiveScoreSnapshot`.
+async fn append_live_events_raw(
+    config: &Configuration,
+    match_id: &str,
+    expected_last_seq: i32,
+    events: Vec<serde_json::Value>,
+) -> models::LiveScoreSnapshot {
+    let body = serde_json::json!({
+        "expected_last_seq": expected_last_seq,
+        "events": events
+            .into_iter()
+            .map(|event| serde_json::json!({ "occurred_at": iso_offset_hours(0), "event": event }))
+            .collect::<Vec<_>>(),
+    });
+    let res = reqwest::Client::new()
+        .post(format!(
+            "{}/matches/{match_id}/live/events",
+            config.base_path
+        ))
+        .bearer_auth(
+            config
+                .bearer_access_token
+                .as_ref()
+                .expect("config has a bearer token"),
+        )
+        .json(&body)
+        .send()
+        .await
+        .expect("send append request");
+    assert!(
+        res.status().is_success(),
+        "append live events failed: {} {}",
+        res.status(),
+        res.text().await.unwrap_or_default()
+    );
+    res.json().await.expect("parse LiveScoreSnapshot")
+}
+
+/// Appending `Goal`/`Foul` events (plus a `Period` marker for time-tracking)
+/// derives the running score from the goals themselves — the event-by-event
+/// method.
+#[tokio::test]
+async fn netball_event_by_event_scoring_derives_score_from_goals() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+
+    let snapshot = append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![
+            netball_goal_event_json(&side_a, false),
+            netball_goal_event_json(&side_a, true),
+            netball_goal_event_json(&side_b, false),
+            netball_foul_event_json(&side_b),
+            netball_period_event_json("quarter_one_end", &[(&side_a, 3), (&side_b, 1)]),
+        ],
+    )
+    .await;
+    assert_eq!(snapshot.last_seq, 5);
+
+    let score = matches_match_id_score_get(&owner_config, &created.id)
+        .await
+        .expect("get score");
+    match score {
+        models::Score::Netball(s) => {
+            assert_eq!(s.score.get(&side_a), Some(&3));
+            assert_eq!(s.score.get(&side_b), Some(&1));
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(3));
+            assert_eq!(s.fouls.as_ref().map(Vec::len), Some(1));
+            assert!(matches!(
+                s.period,
+                Some(models::NetballPeriod::QuarterOneEnd)
+            ));
+            let quarter_one_score = s
+                .period_scores
+                .as_ref()
+                .expect("period_scores present")
+                .get("quarter_one_end")
+                .expect("quarter one entry present");
+            assert_eq!(quarter_one_score.get(&side_a), Some(&3));
+            assert_eq!(quarter_one_score.get(&side_b), Some(&1));
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+}
+
+/// Appending only `Period` markers (no `Goal`/`Foul` events at all) derives
+/// the score purely from each marker's own `score` field — the quarter-only
+/// method.
+#[tokio::test]
+async fn netball_quarter_only_scoring_uses_period_marker_score_directly() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+
+    append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![
+            netball_period_event_json("quarter_one_end", &[(&side_a, 12), (&side_b, 9)]),
+            netball_period_event_json("quarter_two_end", &[(&side_a, 22), (&side_b, 18)]),
+        ],
+    )
+    .await;
+
+    let score = matches_match_id_score_get(&owner_config, &created.id)
+        .await
+        .expect("get score");
+    match score {
+        models::Score::Netball(s) => {
+            assert_eq!(s.score.get(&side_a), Some(&22));
+            assert_eq!(s.score.get(&side_b), Some(&18));
+            // No Goal events at all — no goal-by-goal detail to hand over.
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(0));
+            assert!(matches!(
+                s.period,
+                Some(models::NetballPeriod::QuarterTwoEnd)
+            ));
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
 }

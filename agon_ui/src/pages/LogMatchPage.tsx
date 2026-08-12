@@ -229,15 +229,19 @@ export function LogMatchPage() {
   // Validation: a sport, a match name, at least one player on your own side
   // (so the match is meaningful), a time valid for the mode, and — for a
   // completed match — a result. The opposition (side B) may be left empty —
-  // e.g. recording a result against a team you don't know the roster of.
+  // e.g. recording a result against a team you don't know the roster of —
+  // but then needs an explicit name (this flow has no team picker, so a
+  // player-less side has nothing else to show as its name; see the server's
+  // matching check in `create_match`).
   const valid = useMemo(() => {
     if (!sport) return false
     if (name.trim().length === 0) return false
     if (sideA.length === 0) return false
+    if (sideB.length === 0 && sideBName.trim().length === 0) return false
     if (timeError) return false
     if (scoreError) return false
     return true
-  }, [sport, name, sideA.length, timeError, scoreError])
+  }, [sport, name, sideA.length, sideB.length, sideBName, timeError, scoreError])
 
   const mutation = useMutation({
     mutationFn: async (body: CreateMatchInput) => {
@@ -466,6 +470,12 @@ export function LogMatchPage() {
             name={sideBName}
             onNameChange={setSideBName}
           />
+          {sideB.length === 0 && sideBName.trim().length === 0 && (
+            <p className="px-1 text-xs text-muted-foreground">
+              No opponents tagged — give this side a name above (e.g. a team
+              or club name) so the match can show who it was against.
+            </p>
+          )}
         </div>
       </Section>
 

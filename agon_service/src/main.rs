@@ -2296,6 +2296,24 @@ impl Api {
             }
         }
 
+        // A side with no players has no player to fall back on for its display
+        // name (see `Api::resolve_side_names`'s priority chain: sole player's
+        // name -> custom name -> team's name -> ...), so it needs a team or an
+        // explicit name to be identifiable at all — e.g. recording a result
+        // against an opposition you don't know the roster of.
+        for side in &input.sides {
+            let side_id = &side_ids[&side.client_id];
+            let has_players = player_records
+                .iter()
+                .any(|p| p.side_id.as_deref() == Some(side_id.as_str()));
+            if !has_players && side.team_id.is_none() && side.name.is_none() {
+                return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
+                    "side `{}` has no players, so it needs a name or a team",
+                    side.client_id
+                ))));
+            }
+        }
+
         // Resolve a create-time score's client-side ids to real side/player ids
         // (reject an unknown reference). This becomes a PENDING submission, not
         // a confirmed score: the reported result awaits the other side(s)'
@@ -2579,6 +2597,75 @@ impl Api {
                             rename.side_id
                         ))));
                     }
+                }
+            }
+        }
+
+        // A side with no players (after this request's roster edits, if any)
+        // needs a team or an explicit name to remain identifiable — same rule
+        // `create_match` enforces up front. Only worth projecting when this
+        // request can actually change a side's player count or name; an
+        // unrelated edit (e.g. renaming the match) leaves existing sides alone.
+        if input.added_players.is_some()
+            || input.removed_player_ids.is_some()
+            || input.side_assignments.is_some()
+            || input.side_names.is_some()
+        {
+            // Project each existing player's resulting side_id: drop removed
+            // ids, then apply this request's reassignments (unlisted players
+            // keep their current side). `added_players` contribute their own
+            // side_id straight away — they don't exist in `agg.players` yet.
+            let removed: std::collections::HashSet<&str> = input
+                .removed_player_ids
+                .iter()
+                .flatten()
+                .map(String::as_str)
+                .collect();
+            let reassigned: std::collections::HashMap<&str, &Option<String>> = input
+                .side_assignments
+                .iter()
+                .flatten()
+                .map(|a| (a.player_id.as_str(), &a.side_id))
+                .collect();
+
+            let mut final_side_ids: Vec<Option<String>> = agg
+                .players
+                .iter()
+                .filter(|p| !removed.contains(p.player_id.as_str()))
+                .map(|p| match reassigned.get(p.player_id.as_str()) {
+                    Some(side_id) => (*side_id).clone(),
+                    None => p.side_id.clone(),
+                })
+                .collect();
+            final_side_ids.extend(
+                input
+                    .added_players
+                    .iter()
+                    .flatten()
+                    .map(|p| p.side_id.clone()),
+            );
+
+            for side in &agg.sides {
+                let has_players = final_side_ids
+                    .iter()
+                    .any(|sid| sid.as_deref() == Some(side.side_id.as_str()));
+                if has_players {
+                    continue;
+                }
+                // A rename in this request wins over the side's existing
+                // custom name (mirrors how the rename itself is applied).
+                let effective_name = input
+                    .side_names
+                    .iter()
+                    .flatten()
+                    .find(|r| r.side_id == side.side_id)
+                    .map(|r| r.name.clone())
+                    .unwrap_or_else(|| side.name.clone());
+                if side.team_id.is_none() && effective_name.is_none() {
+                    return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                        "side `{}` would have no players, so it needs a name or a team",
+                        side.side_id
+                    ))));
                 }
             }
         }

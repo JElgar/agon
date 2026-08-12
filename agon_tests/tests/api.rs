@@ -2291,6 +2291,91 @@ async fn creating_a_match_with_one_side_is_rejected() {
     );
 }
 
+/// A side with no players is fine (recording a result against an opposition
+/// whose roster you don't know) as long as it's identifiable some other way —
+/// here, an explicit name. `create_match_input`'s side "b" already carries no
+/// invites, so this only has to strip its name.
+#[tokio::test]
+async fn creating_a_match_with_an_unnamed_empty_side_is_rejected() {
+    let (config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let mut input = create_match_input(&invitee.profile.id);
+    input.sides[1].name = None; // side "b": no players, no team, now no name either
+    let response = matches_post(&config, input).await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::BAD_REQUEST,
+        "needs a name or a team",
+    );
+}
+
+/// The counterpart to the rejection above: an empty side with an explicit
+/// name is accepted, and that name is what the side resolves to (no players
+/// to fall back on, no team, so the custom name is the only source left).
+#[tokio::test]
+async fn creating_a_match_with_a_named_empty_side_succeeds() {
+    let (config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let input = create_match_input(&invitee.profile.id); // side "b" is empty, named "Side B"
+    let created = matches_post(&config, input).await.expect("create match");
+    // Response side order isn't creation order (sides sort by their generated
+    // id), so find the empty one by roster rather than assuming an index.
+    let side_b = created
+        .sides
+        .iter()
+        .find(|s| !created.players.iter().any(|p| p.side_id.as_deref() == Some(s.id.as_str())))
+        .expect("one side has no players");
+    assert_eq!(side_b.name.as_deref(), Some("Side B"));
+}
+
+/// Same rule, projected forward at edit time: a request that would both clear
+/// a side's name *and* move its only player off it (leaving it with no
+/// players and no name) is rejected, mirroring `create_match`'s check.
+#[tokio::test]
+async fn emptying_an_unnamed_side_via_side_assignments_is_rejected() {
+    let (owner_config, owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let created = matches_post(
+        &owner_config,
+        match_between("Test Match", &[&owner.profile.id], &[&invitee.profile.id]),
+    )
+    .await
+    .expect("create match");
+
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+    let side_b = side_id_for_user(&created, &invitee.profile.id);
+    let player_b_id = created
+        .players
+        .iter()
+        .find_map(|p| match &*p.member {
+            models::Member::User(u) if u.user_id == invitee.profile.id => Some(u.id.clone()),
+            _ => None,
+        })
+        .expect("invitee player");
+
+    let response = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            side_names: Some(vec![models::UpdateMatchSideNameInput {
+                side_id: side_b.clone(),
+                name: None,
+            }]),
+            side_assignments: Some(vec![models::SetPlayerSideInput {
+                player_id: player_b_id,
+                side_id: Some(side_a),
+            }]),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::BAD_REQUEST,
+        "would have no players",
+    );
+}
+
 #[tokio::test]
 async fn scoring_an_unknown_side_is_rejected() {
     let (config, _owner) = new_user().await;

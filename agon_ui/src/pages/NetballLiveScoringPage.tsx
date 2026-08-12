@@ -22,13 +22,11 @@ import {
   eventEmoji,
   eventsFromDetail,
   isLivePlayPhase,
-  loadNetballScoringMethod,
   netballScoreFrom,
   nextPeriodForPhase,
   nextPhaseActionLabel,
   phaseFromState,
   phaseLabel,
-  saveNetballScoringMethod,
   type ClockPhase,
   type NetballPeriod,
   type NetballScore,
@@ -63,21 +61,27 @@ const QUARTER_SEQUENCE: NetballPeriod[] = [
  * a `Start` marker or any goal means event-by-event (quarter-only never
  * records `Start` — its first event is always a quarter-end marker, see
  * `NetballQuarterOnlyScoringPage`); a quarter-end marker with neither means
- * quarter-only. This device's own saved choice only fills in before that —
- * bootstrapping straight past the picker on this device for a match it
- * already started, or (absent even that) falling through to the picker.
- * Crucially, a `Start` marker with zero goals *yet* (right after tapping
- * "Start match", before the first goal) must still read as event-by-event,
- * not fall back to "no goals ⇒ quarter-only" — that inversion was a real bug
- * here: it flipped the screen to the quarter-only score-entry form the
- * instant the match started, before anyone could log a goal or foul.
+ * quarter-only. Crucially, a `Start` marker with zero goals *yet* (right
+ * after tapping "Start match", before the first goal) must still read as
+ * event-by-event, not fall back to "no goals ⇒ quarter-only" — that
+ * inversion was a real bug here: it flipped the screen to the quarter-only
+ * score-entry form the instant the match started, before anyone could log a
+ * goal or foul.
+ *
+ * Before anything's recorded there's no log to read, so the picked method
+ * lives only in this component's own state — not persisted anywhere. Nothing
+ * has been written to the server yet at that point, so there's nothing to
+ * lose by picking again: leaving the page and coming back (or tapping
+ * "Change scoring method" on either screen, offered only while the log is
+ * still empty) just re-shows the picker. Once the log says something,
+ * changing your mind means undoing that event instead (see
+ * `UndoLastEventButton`, present on both screens) — the log is the only
+ * source of truth then, not a component-local guess.
  */
 export function NetballLiveScoringPage({ match }: { match: Match }) {
   const scoreQuery = useMatchScore(match.id, { refetchInterval: 8000 })
   const state = netballScoreFrom(scoreQuery.data)
-  const [pickedMethod, setPickedMethod] = useState<NetballScoringMethod | null>(() =>
-    loadNetballScoringMethod(match.id),
-  )
+  const [pickedMethod, setPickedMethod] = useState<NetballScoringMethod | null>(null)
 
   if (scoreQuery.isLoading) {
     return (
@@ -97,21 +101,18 @@ export function NetballLiveScoringPage({ match }: { match: Match }) {
   const method = inferredMethod ?? pickedMethod
 
   if (!method) {
-    return (
-      <NetballScoringMethodPicker
-        match={match}
-        onChoose={(m) => {
-          saveNetballScoringMethod(match.id, m)
-          setPickedMethod(m)
-        }}
-      />
-    )
+    return <NetballScoringMethodPicker match={match} onChoose={setPickedMethod} />
   }
 
+  // Only offered while nothing's recorded yet — once the log has anything,
+  // `inferredMethod` (not this local pick) is what decides the screen, so
+  // "changing your mind" at that point means undoing the event instead.
+  const onBackToPicker = inferredMethod ? undefined : () => setPickedMethod(null)
+
   return method === 'event_by_event' ? (
-    <NetballEventByEventScoringPage match={match} state={state} />
+    <NetballEventByEventScoringPage match={match} state={state} onBackToPicker={onBackToPicker} />
   ) : (
-    <NetballQuarterOnlyScoringPage match={match} state={state} />
+    <NetballQuarterOnlyScoringPage match={match} state={state} onBackToPicker={onBackToPicker} />
   )
 }
 
@@ -200,7 +201,17 @@ const CLOCK_TICK_MS = 15_000
  * running goal tally the client already has — the user never types a number
  * here; that's quarter-only mode's job (`NetballQuarterOnlyScoringPage`).
  */
-function NetballEventByEventScoringPage({ match, state }: { match: Match; state: NetballScore | null }) {
+function NetballEventByEventScoringPage({
+  match,
+  state,
+  onBackToPicker,
+}: {
+  match: Match
+  state: NetballScore | null
+  /** Present only while nothing's been recorded yet — see
+   *  `NetballLiveScoringPage`'s doc comment. */
+  onBackToPicker?: () => void
+}) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const seq = useLiveSeq(match.id)
@@ -280,7 +291,17 @@ function NetballEventByEventScoringPage({ match, state }: { match: Match; state:
         <h1 className="text-lg font-semibold">
           {nameA} vs {nameB}
         </h1>
-        <p className="text-sm text-muted-foreground">You're scoring this match</p>
+        <p className="text-sm text-muted-foreground">
+          You're scoring this match — goal by goal
+          {onBackToPicker && (
+            <>
+              {' · '}
+              <button type="button" onClick={onBackToPicker} className="text-primary hover:underline">
+                Change scoring method
+              </button>
+            </>
+          )}
+        </p>
       </div>
 
       <div className="rounded-xl border bg-card p-4">
@@ -393,9 +414,20 @@ function NetballEventByEventScoringPage({ match, state }: { match: Match; state:
  * mode). Walks `QUARTER_SEQUENCE` one marker at a time; each already-entered
  * quarter shows in `NetballQuarterBreakdown` below.
  */
-function NetballQuarterOnlyScoringPage({ match, state }: { match: Match; state: NetballScore | null }) {
+function NetballQuarterOnlyScoringPage({
+  match,
+  state,
+  onBackToPicker,
+}: {
+  match: Match
+  state: NetballScore | null
+  /** Present only while nothing's been recorded yet — see
+   *  `NetballLiveScoringPage`'s doc comment. */
+  onBackToPicker?: () => void
+}) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  const seq = useLiveSeq(match.id)
   const append = useAppendNetballEvent(match.id)
   const finishMatch = useFinishNetballMatch(match)
 
@@ -449,14 +481,27 @@ function NetballQuarterOnlyScoringPage({ match, state }: { match: Match; state: 
         <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${match.id}`)}>
           Back
         </Button>
-        <LiveIndicator />
+        <div className="flex items-center gap-1">
+          <UndoLastEventButton matchId={match.id} seq={seq.data} />
+          <LiveIndicator />
+        </div>
       </div>
 
       <div>
         <h1 className="text-lg font-semibold">
           {nameA} vs {nameB}
         </h1>
-        <p className="text-sm text-muted-foreground">Scoring by quarter</p>
+        <p className="text-sm text-muted-foreground">
+          Scoring by quarter
+          {onBackToPicker && (
+            <>
+              {' · '}
+              <button type="button" onClick={onBackToPicker} className="text-primary hover:underline">
+                Change scoring method
+              </button>
+            </>
+          )}
+        </p>
       </div>
 
       <div className="rounded-xl border bg-card p-4">

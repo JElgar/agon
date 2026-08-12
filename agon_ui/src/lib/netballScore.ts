@@ -217,40 +217,18 @@ export function periodTime(detail: NetballScore, period: NetballPeriod): string 
   return detail.period_times?.[period]
 }
 
-// ---------------------------------------------------------------------------
-// Scoring method — which of netball's two live-scoring methods this match's
-// scorer is using. Client-only, same as football's `TrackPrefs`: the backend
-// doesn't need to know (both methods write the exact same `NetballLiveEvent`
-// vocabulary — see `NetballLiveEvent`'s backend doc comment), this just picks
-// which screen `NetballLiveScoringPage` shows. Chosen once, before the first
-// event, and inferred after that from whether the live state already has
-// goal-by-goal detail (see `NetballLiveScoringPage`), so this preference is
-// really just a tiebreaker for a fresh match with no events yet.
-// ---------------------------------------------------------------------------
-
+/**
+ * Which of netball's two live-scoring methods a match's scorer is using.
+ * Not persisted anywhere — the backend doesn't need to know (both methods
+ * write the exact same `NetballLiveEvent` vocabulary; see
+ * `NetballLiveEvent`'s backend doc comment) and neither does the client
+ * beyond the current page: once the match's live event log has anything
+ * recorded, the method is unambiguous from the log itself (see
+ * `NetballLiveScoringPage`'s doc comment), so there's nothing worth
+ * remembering across visits — before that point, asking again is cheap and
+ * correct.
+ */
 export type NetballScoringMethod = 'event_by_event' | 'quarter_only'
-
-function methodKey(matchId: string): string {
-  return `agon:netball-scoring-method:${matchId}`
-}
-
-export function loadNetballScoringMethod(matchId: string): NetballScoringMethod | null {
-  try {
-    const raw = localStorage.getItem(methodKey(matchId))
-    return raw === 'event_by_event' || raw === 'quarter_only' ? raw : null
-  } catch {
-    return null
-  }
-}
-
-export function saveNetballScoringMethod(matchId: string, method: NetballScoringMethod): void {
-  try {
-    localStorage.setItem(methodKey(matchId), method)
-  } catch {
-    // Best-effort — a private-browsing/full-storage failure just means the
-    // choice is asked again next visit, not worth surfacing.
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Match clock — derived from `NetballScore.period_times`, the same "shared

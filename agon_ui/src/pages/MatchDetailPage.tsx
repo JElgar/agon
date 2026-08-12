@@ -13,16 +13,28 @@ import { StatusBadge, matchBadgeStatus } from '@/components/agon/StatusBadge'
 import { ScoreConfirmationBar } from '@/components/agon/ScoreConfirmationBar'
 import { LiveMatchBlock } from '@/components/agon/live/LiveMatchBlock'
 import { CricketMatchBlock } from '@/components/agon/live/CricketMatchBlock'
+import { NetballMatchBlock } from '@/components/agon/live/NetballMatchBlock'
 import { CricketScoreBlock } from '@/components/agon/CricketScoreBlock'
 import { CricketScorecard } from '@/components/agon/CricketScorecard'
 import { FootballScorecard } from '@/components/agon/FootballScorecard'
 import { FootballScorersBySide } from '@/components/agon/FootballScorersBySide'
+import { NetballScorecard } from '@/components/agon/NetballScorecard'
+import { NetballScorersBySide } from '@/components/agon/NetballScorersBySide'
+import { NetballQuarterBreakdown } from '@/components/agon/NetballQuarterBreakdown'
 import { useLiveEvents } from '@/hooks/useLiveScore'
 import { useMatchScore } from '@/hooks/useMatchScore'
 import { footballScoreFrom, footballEventSourceFromScore } from '@/lib/liveScore'
+import { netballScoreFrom, netballEventSourceFromScore } from '@/lib/netballScore'
 import { cricketInningsFor, cricketScoreFrom, inningsDeliveriesFromEvents } from '@/lib/cricketScore'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
-import { displayScore, footballGoalsFromScore, headlineBySide, headlineLabel, setLine } from '@/lib/score'
+import {
+  displayScore,
+  footballGoalsFromScore,
+  netballGoalsFromScore,
+  headlineBySide,
+  headlineLabel,
+  setLine,
+} from '@/lib/score'
 import {
   isParticipant,
   memberAvatarUrl,
@@ -116,7 +128,8 @@ function MatchDetail({
 
   const canEdit = isParticipant(match, currentUserId)
   const cancelled = match.status === 'cancelled'
-  const isLiveSport = match.match_type === 'football' || match.match_type === 'cricket'
+  const isLiveSport =
+    match.match_type === 'football' || match.match_type === 'cricket' || match.match_type === 'netball'
 
   const [sideA, sideB] = match.sides
   const nameA = sideName(sideA, 'Side A')
@@ -143,15 +156,19 @@ function MatchDetail({
   const isCurrentlyLive = isLiveSport && match.status === 'in_progress'
   const footballState = isCurrentlyLive ? footballScoreFrom(scoreQuery.data) : null
   const cricketState = isCurrentlyLive ? cricketScoreFrom(scoreQuery.data) : null
-  const hasLiveState = !!footballState || !!cricketState
-  // Goals for a finished football match, read straight off the
+  const netballState = isCurrentlyLive ? netballScoreFrom(scoreQuery.data) : null
+  const hasLiveState = !!footballState || !!cricketState || !!netballState
+  // Goals for a finished football/netball match, read straight off the
   // confirmed/pending score — shown as a scorer breakdown under the plain
   // score box below (same as the feed/profile card's `MatchCard`); the full
-  // event timeline (goals *and* cards/subs) stays in `FootballScorecard`
-  // further down the page regardless.
+  // event timeline (goals *and* cards/subs, or goals *and* fouls) stays in
+  // `FootballScorecard`/`NetballScorecard` further down the page regardless.
   const finishedFootballGoals = scoreInfo && !isCurrentlyLive ? footballGoalsFromScore(scoreInfo.score) : null
   const finishedFootballScorePlayers =
     scoreInfo && !isCurrentlyLive ? footballScoreFrom(scoreInfo.score)?.players : undefined
+  const finishedNetballGoals = scoreInfo && !isCurrentlyLive ? netballGoalsFromScore(scoreInfo.score) : null
+  const finishedNetballScorePlayers =
+    scoreInfo && !isCurrentlyLive ? netballScoreFrom(scoreInfo.score)?.players : undefined
   // Same "live while in progress, else confirmed/pending" source as
   // `cricketScoreInnings` below — needed here just for `.players` (the
   // score's resolved-name map), passed to `CricketScorecard`.
@@ -162,10 +179,23 @@ function MatchDetail({
   const footballEventSource = footballEventSourceFromScore(
     isCurrentlyLive ? scoreQuery.data : scoreInfo?.score,
   )
-  // Football's setup screen also gates starting the clock; cricket has no
-  // equivalent preferences step, so it goes straight into scoring.
+  const netballEventSource = netballEventSourceFromScore(
+    isCurrentlyLive ? scoreQuery.data : scoreInfo?.score,
+  )
+  // Quarter-by-quarter breakdown reads the same way regardless of which of
+  // netball's two live-scoring methods produced the score (see
+  // `NetballQuarterBreakdown`'s doc comment) — shown even for a
+  // quarter-only-scored match with no goal-by-goal detail at all.
+  const netballQuarterScore = isCurrentlyLive ? netballState : netballScoreFrom(scoreInfo?.score ?? null)
+  // Football's and netball's setup screens also gate starting the clock;
+  // cricket has no equivalent preferences step, so it goes straight into
+  // scoring. Netball's "which live-scoring method" choice lives inline on
+  // its own live page instead of a separate setup route (see
+  // `NetballLiveScoringPage`).
   const liveEntryPath =
-    match.match_type === 'cricket' ? `/matches/${match.id}/live` : `/matches/${match.id}/live/setup`
+    match.match_type === 'cricket' || match.match_type === 'netball'
+      ? `/matches/${match.id}/live`
+      : `/matches/${match.id}/live/setup`
 
   // Each cricket innings' deliveries, folded in from the raw live event log
   // by matching innings order, for the run-rate graph — the score's own
@@ -222,6 +252,10 @@ function MatchDetail({
             <div className="mt-3">
               <LiveMatchBlock match={match} state={footballState} tickerLimit={3} />
             </div>
+          ) : netballState ? (
+            <div className="mt-3">
+              <NetballMatchBlock match={match} state={netballState} tickerLimit={3} />
+            </div>
           ) : cricketState ? (
             <div className="mt-3">
               <CricketMatchBlock match={match} state={cricketState} />
@@ -272,6 +306,17 @@ function MatchDetail({
               goals={finishedFootballGoals}
               match={match}
               players={finishedFootballScorePlayers}
+              sideA={sideA}
+              sideB={sideB}
+              className="mt-2 text-xs"
+            />
+          )}
+
+          {finishedNetballGoals && (
+            <NetballScorersBySide
+              goals={finishedNetballGoals}
+              match={match}
+              players={finishedNetballScorePlayers}
               sideA={sideA}
               sideB={sideB}
               className="mt-2 text-xs"
@@ -372,6 +417,19 @@ function MatchDetail({
           recorded (live-scored or entered directly) — stays visible after
           the match finishes, unlike the live score header above. */}
       {footballEventSource && <FootballScorecard match={match} detail={footballEventSource} />}
+
+      {/* Netball quarter breakdown — reads the same regardless of which
+          live-scoring method produced the score (see
+          `NetballQuarterBreakdown`'s doc comment), so it shows even for a
+          quarter-only-scored match. */}
+      {netballQuarterScore && (
+        <NetballQuarterBreakdown score={netballQuarterScore} sideA={sideA} sideB={sideB} />
+      )}
+
+      {/* Netball event timeline: goals/fouls, only present for an
+          event-by-event-scored match — stays visible after the match
+          finishes, unlike the live score header above. */}
+      {netballEventSource && <NetballScorecard match={match} detail={netballEventSource} />}
 
       {/* Invite more people (participants only). */}
       {canEdit && !cancelled && (

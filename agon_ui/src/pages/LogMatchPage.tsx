@@ -18,6 +18,7 @@ import {
 } from '@/components/agon/PlayerSideEditor'
 import { FootballScoreFields } from '@/components/agon/FootballScoreFields'
 import { CricketScoreFields } from '@/components/agon/CricketScoreFields'
+import { NetballScoreFields } from '@/components/agon/NetballScoreFields'
 import { cn } from '@/lib/utils'
 import { toDateTimeLocal } from '@/lib/datetime'
 import { addPendingMatch } from '@/hooks/usePendingMatches'
@@ -178,6 +179,7 @@ export function LogMatchPage() {
   const setsPlayable = isSetsSport(sport ?? 'other')
   const isFootball = sport === 'football'
   const isCricket = sport === 'cricket'
+  const isNetball = sport === 'netball'
 
   // Is the picked time valid for the chosen mode? Completed matches must be in
   // the past, scheduled ones in the future (matches the server's rule). Empty or
@@ -199,7 +201,7 @@ export function LogMatchPage() {
   // inline hint), or null when the score state is acceptable for the mode.
   const scoreError = useMemo((): string | null => {
     if (mode !== 'completed') return null
-    if (isFootball || isCricket) {
+    if (isFootball || isCricket || isNetball) {
       return detailBuilt ? null : 'Enter the score'
     }
     if (setsPlayable) {
@@ -222,7 +224,7 @@ export function LogMatchPage() {
     if (pointsA === '' || pointsB === '' || !Number.isFinite(a) || !Number.isFinite(b))
       return 'Enter the score for both sides'
     return null
-  }, [mode, isFootball, isCricket, detailBuilt, setsPlayable, sets, pointsA, pointsB])
+  }, [mode, isFootball, isCricket, isNetball, detailBuilt, setsPlayable, sets, pointsA, pointsB])
 
   // Validation: a sport, a match name, at least one player on each side (so the
   // match is meaningful), at least one opponent on side B, a time valid for the
@@ -298,7 +300,7 @@ export function LogMatchPage() {
     | null => {
     if (!recordResult || !sport) return null
 
-    if (isFootball || isCricket) {
+    if (isFootball || isCricket || isNetball) {
       if (!detailBuilt) return null
       return {
         score: detailBuilt.score as unknown as CreateMatchInput['score'],
@@ -405,8 +407,8 @@ export function LogMatchPage() {
         />
       </Section>
 
-      {/* Format (optional, football/cricket only) */}
-      {sport !== null && (sport === 'football' || sport === 'cricket') && (
+      {/* Format (optional, football/cricket/netball only) */}
+      {sport !== null && (sport === 'football' || sport === 'cricket' || sport === 'netball') && (
         <Section title="Match format">
           <MatchFormatEditor sport={sport} value={format} onChange={setFormat} />
         </Section>
@@ -509,7 +511,7 @@ export function LogMatchPage() {
       {mode === 'completed' &&
         (playersSet ? (
           <Section num={5} title="Score">
-          {(isFootball || isCricket) && (() => {
+          {(isFootball || isCricket || isNetball) && (() => {
             const sideAObj: MatchSide = { id: SIDE_A, name: sideAName.trim() || undefined }
             const sideBObj: MatchSide = { id: SIDE_B, name: sideBName.trim() || undefined }
             const players = [...toMatchPlayers(sideA, SIDE_A), ...toMatchPlayers(sideB, SIDE_B)]
@@ -520,8 +522,15 @@ export function LogMatchPage() {
                 players={players}
                 onChange={setDetailBuilt}
               />
-            ) : (
+            ) : isCricket ? (
               <CricketScoreFields
+                sideA={sideAObj}
+                sideB={sideBObj}
+                players={players}
+                onChange={setDetailBuilt}
+              />
+            ) : (
+              <NetballScoreFields
                 sideA={sideAObj}
                 sideB={sideBObj}
                 players={players}
@@ -530,7 +539,7 @@ export function LogMatchPage() {
             )
           })()}
 
-          {!isFootball && !isCricket && setsPlayable && (
+          {!isFootball && !isCricket && !isNetball && setsPlayable && (
             <div className="flex flex-col gap-2">
               <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-center text-[11px] uppercase tracking-wider text-muted-foreground">
                 <span className="truncate text-left">{sideName(sideA, sideAName, 'Your side')}</span>
@@ -594,7 +603,7 @@ export function LogMatchPage() {
             </div>
           )}
 
-          {!isFootball && !isCricket && !setsPlayable && (
+          {!isFootball && !isCricket && !isNetball && !setsPlayable && (
             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
               <div className="flex flex-col gap-1">
                 <span className="truncate text-center text-xs text-muted-foreground">

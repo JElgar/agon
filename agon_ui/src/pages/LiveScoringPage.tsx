@@ -11,6 +11,7 @@ import { RecordEventDialog, type EventKind } from '@/components/agon/live/Record
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { UndoLastEventButton } from '@/components/agon/live/UndoLastEventButton'
 import { CricketLiveScoringPage } from './CricketLiveScoringPage'
+import { NetballLiveScoringPage } from './NetballLiveScoringPage'
 import { footballFormat } from '@/lib/matchFormat'
 import {
   currentMinute,
@@ -39,9 +40,11 @@ function sideName(match: Match, index: number, fallback: string): string {
 
 /**
  * Route entry for `/matches/:matchId/live`: fetches the match once and
- * dispatches to the sport-specific scoring screen. Football and cricket have
- * different live-scoring shapes entirely (a running clock vs. overs/wickets),
- * so past the match fetch they don't share a component.
+ * dispatches to the sport-specific scoring screen. Football, cricket, and
+ * netball have different live-scoring shapes entirely (a running clock vs.
+ * overs/wickets vs. netball's own two-method choice — see
+ * `NetballLiveScoringPage`), so past the match fetch they don't share a
+ * component.
  */
 export function LiveScoringPage() {
   const { matchId } = useParams()
@@ -80,6 +83,9 @@ export function LiveScoringPage() {
   const match = matchQuery.data
   if (match.match_type === 'cricket') {
     return <CricketLiveScoringPage match={match} />
+  }
+  if (match.match_type === 'netball') {
+    return <NetballLiveScoringPage match={match} />
   }
   return <FootballLiveScoringPage match={match} />
 }

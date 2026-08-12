@@ -19,8 +19,9 @@ import { RoundersMatchBlock } from './live/RoundersMatchBlock'
 import { CricketScoreBlock } from './CricketScoreBlock'
 import { RoundersScoreBlock } from './RoundersScoreBlock'
 import { KnownPlayersRow } from './KnownPlayersRow'
+import { FootballScorersBySide } from './FootballScorersBySide'
 import { useMatchScore } from '@/hooks/useMatchScore'
-import { describeEvent, eventEmoji, footballScoreFrom, recentGoalEvents } from '@/lib/liveScore'
+import { footballScoreFrom } from '@/lib/liveScore'
 import {
   cricketProgressFromScore,
   cricketScoreFrom,
@@ -221,7 +222,7 @@ export function MatchCard({
   const isCurrentlyLive = isLiveSport && match.status === 'in_progress'
   // Only fetched while live — a finished match doesn't need it. Football's
   // confirmed/pending `Score.Football` already embeds its goals (see
-  // `footballGoalsFromScore`/`finishedFootballEvents` below), and cricket's
+  // `footballGoalsFromScore`/`FootballScorersBySide` below), and cricket's
   // confirmed `Score.Cricket` already embeds its per-innings detail
   // (`cricketScore` below) — both produced by finishing a live-scored match
   // (see `finishMatch` in `LiveScoringPage`/`CricketLiveScoringPage`), same
@@ -241,16 +242,15 @@ export function MatchCard({
   const footballState = isCurrentlyLive ? footballScoreFrom(scoreQuery.data) : null
   const cricketState = isCurrentlyLive ? cricketScoreFrom(scoreQuery.data) : null
   const roundersState = isCurrentlyLive ? roundersScoreFrom(scoreQuery.data) : null
-  // Recent goals for a finished football match, read straight off the
+  // Goals for a finished football match, read straight off the
   // confirmed/pending score (no fetch) — shown under the plain score box
   // below (the live ticker in `LiveMatchBlock` only renders while
   // `footballState` is set, i.e. while still in progress).
   const finishedFootballGoals = scoreInfo && !isCurrentlyLive ? footballGoalsFromScore(scoreInfo.score) : null
-  const finishedFootballEvents = finishedFootballGoals ? recentGoalEvents(finishedFootballGoals, 3) : []
   // Resolved server-side on `confirmed_score`/`pending_score` itself (see
   // `Api::hydrate_confirmed_pending_score_players`) — this card's `match` is
   // a `FeedMatch`/`SearchMatch`/`Match`, none of which reliably carry a full
-  // player roster to resolve `describeEvent`'s names from locally.
+  // player roster to resolve scorer names from locally.
   const finishedFootballScorePlayers =
     scoreInfo && !isCurrentlyLive ? footballScoreFrom(scoreInfo.score)?.players : undefined
   // A cricket match's confirmed score carries its own per-innings detail once
@@ -396,26 +396,15 @@ export function MatchCard({
                 ))}
               </div>
             )}
-            {finishedFootballEvents.length > 0 && (
-              <div className="mt-2.5 space-y-1 border-t pt-2">
-                {finishedFootballEvents.map((event, i) => {
-                  const isSideB = event.side_id === sideB?.id
-                  return (
-                    <p
-                      key={i}
-                      className={`flex items-baseline gap-1.5 truncate text-[11px] text-muted-foreground ${isSideB ? 'flex-row-reverse text-right' : ''}`}
-                    >
-                      <span aria-hidden>{eventEmoji(event.kind)}</span>
-                      {event.minute !== undefined && (
-                        <span className="font-medium text-foreground">{event.minute}'</span>
-                      )}
-                      <span className="truncate">
-                        {describeEvent(event, match, finishedFootballScorePlayers)}
-                      </span>
-                    </p>
-                  )
-                })}
-              </div>
+            {finishedFootballGoals && (
+              <FootballScorersBySide
+                goals={finishedFootballGoals}
+                match={match}
+                players={finishedFootballScorePlayers}
+                sideA={sideA}
+                sideB={sideB}
+                className="mt-2.5 text-[11px]"
+              />
             )}
           </div>
         )

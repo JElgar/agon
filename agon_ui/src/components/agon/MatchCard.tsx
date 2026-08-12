@@ -213,6 +213,12 @@ export function MatchCard({
   const nameB = sideName(sideB, 'Side B')
   const aWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
   const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
+  // The "X beat Y" headline needs the winner named first, or it reads
+  // backwards whenever B is the one who actually won (the score box below
+  // stays in match.sides order regardless — only this headline reorders).
+  // No winner (tie/vs case) just falls back to A/B order, same as before.
+  const winningTeamName = bWon ? nameB : nameA
+  const losingTeamName = bWon ? nameA : nameB
 
   const isLiveSport =
     match.match_type === 'football' || match.match_type === 'cricket' || match.match_type === 'netball'
@@ -298,12 +304,12 @@ export function MatchCard({
             <span>{cricketDescription}</span>
           ) : (
             <>
-              <span className={cn(aWon && 'font-medium')}>{nameA}</span>
+              <span className={cn(!!scoreInfo?.winnerSideId && 'font-medium')}>{winningTeamName}</span>
               <span className="text-primary">
                 {' '}
                 {match.match_type !== 'cricket' && scoreInfo?.winnerSideId ? 'beat' : 'vs'}{' '}
               </span>
-              <span className={cn(bWon && 'font-medium')}>{nameB}</span>
+              <span>{losingTeamName}</span>
             </>
           )}
           <span className="text-muted-foreground"> · {relativeTime(match.starts_at)}</span>

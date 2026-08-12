@@ -57,18 +57,24 @@ const QUARTER_SEQUENCE: NetballPeriod[] = [
  * from `LiveScoringPage`). Netball has two live-scoring methods sharing one
  * event vocabulary (see `live_score::netball`'s backend doc comment) — this
  * asks once, before the first event, which one this scorer wants, then
- * hands off to the matching screen. Once a match has *any* live state,
- * the method is inferred from it instead (goal-by-goal detail present =
- * event-by-event; otherwise quarter-only) rather than trusting the saved
- * preference, so a second device picking up an already-started match
- * renders the right screen even without its own local preference.
+ * hands off to the matching screen.
+ *
+ * The recorded log is the source of truth once it says anything unambiguous:
+ * a `Start` marker or any goal means event-by-event (quarter-only never
+ * records `Start` — its first event is always a quarter-end marker, see
+ * `NetballQuarterOnlyScoringPage`); a quarter-end marker with neither means
+ * quarter-only. This device's own saved choice only fills in before that —
+ * bootstrapping straight past the picker on this device for a match it
+ * already started, or (absent even that) falling through to the picker.
+ * Crucially, a `Start` marker with zero goals *yet* (right after tapping
+ * "Start match", before the first goal) must still read as event-by-event,
+ * not fall back to "no goals ⇒ quarter-only" — that inversion was a real bug
+ * here: it flipped the screen to the quarter-only score-entry form the
+ * instant the match started, before anyone could log a goal or foul.
  */
 export function NetballLiveScoringPage({ match }: { match: Match }) {
   const scoreQuery = useMatchScore(match.id, { refetchInterval: 8000 })
   const state = netballScoreFrom(scoreQuery.data)
-  // Only used as the picker's initial value below — once there's *any* live
-  // state, `method` is inferred from it instead (see the picker's own doc
-  // comment), so a stale/never-set local preference can't override reality.
   const [pickedMethod, setPickedMethod] = useState<NetballScoringMethod | null>(() =>
     loadNetballScoringMethod(match.id),
   )
@@ -82,9 +88,11 @@ export function NetballLiveScoringPage({ match }: { match: Match }) {
   }
 
   const inferredMethod: NetballScoringMethod | null = state
-    ? (state.goals?.length ?? 0) > 0
+    ? (state.goals?.length ?? 0) > 0 || !!state.period_times?.start
       ? 'event_by_event'
-      : 'quarter_only'
+      : Object.keys(state.period_scores ?? {}).length > 0
+        ? 'quarter_only'
+        : null
     : null
   const method = inferredMethod ?? pickedMethod
 

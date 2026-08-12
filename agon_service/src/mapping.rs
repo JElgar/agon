@@ -61,11 +61,11 @@ use agon_core::dao::records::{
     InningsEndReasonRecord, InvitationContextRecord, InvitationKindRecord, InvitationRecord,
     LiveEventPayloadRecord, LiveEventRecord, MatchFormatRecord, MatchLikeRecord, MatchPlayerRecord,
     MatchRecord, MatchScoreRecord, MatchSideRecord, NetballFormatRecord, NetballFoulEventRecord,
-    NetballFoulKindRecord, NetballGoalEventRecord, NetballLiveEventRecord, NetballPeriodEventRecord,
-    NetballPeriodRecord, NetballPositionRecord, NextBallContextRecord, NotificationKindRecord,
-    NotificationRecord, OversRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord,
-    ScoreResponseRecord, ScoreSubmissionRecord, TeamMemberRecord, TeamRecord, UserRecord,
-    UserSportStatsRecord,
+    NetballFoulKindRecord, NetballGoalEventRecord, NetballLiveEventRecord,
+    NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord, NextBallContextRecord,
+    NotificationKindRecord, NotificationRecord, OversRecord, PendingScoreRecord,
+    ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord, ScoreSubmissionRecord,
+    TeamMemberRecord, TeamRecord, UserRecord, UserSportStatsRecord,
 };
 
 /// Parse an RFC-3339 timestamp string stored by the DAO into a UTC datetime,
@@ -1407,7 +1407,10 @@ fn netball_goal_event_from_record(rec: &NetballGoalEventRecord) -> NetballGoalEv
     NetballGoalEvent {
         side_id: rec.side_id.clone(),
         scorer_player_id: rec.scorer_player_id.clone(),
-        scorer_position: rec.scorer_position.as_ref().map(netball_position_from_record),
+        scorer_position: rec
+            .scorer_position
+            .as_ref()
+            .map(netball_position_from_record),
         two_points: rec.two_points,
         minute: rec.minute,
     }
@@ -1773,9 +1776,7 @@ pub fn derive_live_score(
                     LiveEventPayloadRecord::Football(f) => {
                         Some((parse_ts(&r.occurred_at), football_live_event_from_record(f)))
                     }
-                    LiveEventPayloadRecord::Cricket(_) | LiveEventPayloadRecord::Netball(_) => {
-                        None
-                    }
+                    LiveEventPayloadRecord::Cricket(_) | LiveEventPayloadRecord::Netball(_) => None,
                 })
                 .collect();
             Some(Score::Football(FootballScore::from_events(&events)))
@@ -2076,10 +2077,7 @@ mod tests {
             }),
             NetballLiveEvent::Period(NetballPeriodEvent {
                 period: NetballPeriod::QuarterOneEnd,
-                score: HashMap::from([
-                    ("kestrels".to_string(), 12),
-                    ("harriers".to_string(), 9),
-                ]),
+                score: HashMap::from([("kestrels".to_string(), 12), ("harriers".to_string(), 9)]),
             }),
         ];
 
@@ -2322,10 +2320,7 @@ mod tests {
                     ),
                     (
                         NetballPeriod::FullTime,
-                        HashMap::from([
-                            ("kestrels".to_string(), 45),
-                            ("harriers".to_string(), 38),
-                        ]),
+                        HashMap::from([("kestrels".to_string(), 45), ("harriers".to_string(), 38)]),
                     ),
                 ])),
                 players: HashMap::new(),

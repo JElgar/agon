@@ -68,12 +68,14 @@ interface SetRow {
 /** Whether the match is upcoming (no score) or already played (with a score). */
 type MatchMode = 'scheduled' | 'completed'
 
-/** A display name for a side: the sole player's name, else the custom name
- *  typed for it (if any), else a generic fallback — mirrors the server's
+/** A display name for a side: the custom name typed for it (if any), else the
+ *  sole player's name, else a generic fallback — mirrors the server's
  *  resolution order for this compose form's own preview text. */
 function sideName(players: TaggedPlayer[], customName: string, fallback: string): string {
+  const trimmed = customName.trim()
+  if (trimmed) return trimmed
   if (players.length === 1) return players[0].name
-  return customName.trim() || fallback
+  return fallback
 }
 
 /** Default scheduled time: the next whole hour, at least an hour from now. */

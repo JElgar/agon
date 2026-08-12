@@ -487,17 +487,18 @@ async fn patch_match_updates_name() {
 }
 
 /// A match's ad-hoc side names (given at create time) can be edited afterwards
-/// via `side_names`, and clearing one (`name: None`) falls back to the
-/// server-resolved default rather than staying stuck on the old custom name.
+/// via `side_names`, and clearing one (`name: None`) falls back to the next
+/// entry in the priority chain rather than staying stuck on the old custom
+/// name.
 ///
-/// Renames side "b" specifically: side "a" carries the sole invited player,
-/// and a side with exactly one player always displays *that player's* name
-/// ahead of any custom name (see `Api::resolve_side_names`'s priority chain),
-/// so a rename there wouldn't be observable in the resolved `name`. Side "b"
-/// has no players, so its resolved name is its custom name (or, once
-/// cleared, the neutral "Team B" fallback — the owner isn't a participant on
-/// either side, so no "Your side"/"Opposition" applies) — a rename there is
-/// directly observable.
+/// Side "a" carries both a custom name *and* the sole invited player: an
+/// explicit name always wins over the sole player's name (see
+/// `Api::resolve_side_names`'s priority chain), so it resolves to "Side A"
+/// throughout, and clearing that name falls through to reveal the player's
+/// name underneath. Side "b" has no players, so its resolved name is its
+/// custom name; clearing *that* one is exercised separately (see
+/// `clearing_the_name_of_an_empty_side_is_rejected`) since an empty,
+/// teamless side can't be left without a name at all.
 #[tokio::test]
 async fn patch_match_renames_sides() {
     let (config, _owner) = new_user().await;
@@ -506,9 +507,25 @@ async fn patch_match_renames_sides() {
     let created = matches_post(&config, create_match_input(&invitee.profile.id))
         .await
         .expect("create match");
-    let side_a = created.sides[0].id.clone();
-    let side_b = created.sides[1].id.clone();
-    assert_eq!(created.sides[1].name.as_deref(), Some("Side B"));
+    // Response side order isn't creation order (sides sort by their
+    // generated id), so resolve "a"/"b" by roster rather than by index.
+    let side_a = side_id_for_user(&created, &invitee.profile.id);
+    let side_b = created
+        .sides
+        .iter()
+        .find(|s| s.id != side_a)
+        .expect("a second side")
+        .id
+        .clone();
+    assert_eq!(
+        created.sides.iter().find(|s| s.id == side_a).unwrap().name.as_deref(),
+        Some("Side A"),
+        "a custom name wins over the sole player's name"
+    );
+    assert_eq!(
+        created.sides.iter().find(|s| s.id == side_b).unwrap().name.as_deref(),
+        Some("Side B")
+    );
 
     let renamed = matches_match_id_patch(
         &config,
@@ -528,18 +545,19 @@ async fn patch_match_renames_sides() {
     assert_eq!(renamed_b.name.as_deref(), Some("The Champions"));
     assert_eq!(
         untouched_a.name.as_deref(),
-        Some("Test User"),
-        "a side not named in the request is left alone (still showing its sole player's name)"
+        Some("Side A"),
+        "a side not named in the request is left alone"
     );
 
-    // Clearing the custom name (name: None) falls back to the neutral
-    // "Team B" default (no team, no sole player, caller not a participant).
+    // Clearing side "a"'s custom name is safe (it still has a player to fall
+    // back on) and reveals the priority chain's next entry: the sole
+    // player's name.
     let cleared = matches_match_id_patch(
         &config,
         &created.id,
         models::UpdateMatchInput {
             side_names: Some(vec![models::UpdateMatchSideNameInput {
-                side_id: side_b.clone(),
+                side_id: side_a.clone(),
                 name: None,
             }]),
             ..Default::default()
@@ -547,11 +565,51 @@ async fn patch_match_renames_sides() {
     )
     .await
     .expect("clear side name");
-    let cleared_b = cleared.sides.iter().find(|s| s.id == side_b).unwrap();
+    let cleared_a = cleared.sides.iter().find(|s| s.id == side_a).unwrap();
     assert_eq!(
-        cleared_b.name.as_deref(),
-        Some("Team B"),
-        "clearing the custom name must not leave the old value in place"
+        cleared_a.name.as_deref(),
+        Some("Test User"),
+        "clearing the custom name falls back to the sole player's name"
+    );
+}
+
+/// The counterpart to `patch_match_renames_sides`'s side "a" case: side "b"
+/// has no players and no team, so its custom name is the only thing keeping
+/// it identifiable — clearing it (rather than replacing it) is rejected,
+/// same as at create time.
+#[tokio::test]
+async fn clearing_the_name_of_an_empty_side_is_rejected() {
+    let (config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = side_id_for_user(&created, &invitee.profile.id);
+    let side_b = created
+        .sides
+        .iter()
+        .find(|s| s.id != side_a)
+        .expect("a second side")
+        .id
+        .clone();
+
+    let response = matches_match_id_patch(
+        &config,
+        &created.id,
+        models::UpdateMatchInput {
+            side_names: Some(vec![models::UpdateMatchSideNameInput {
+                side_id: side_b,
+                name: None,
+            }]),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::BAD_REQUEST,
+        "would have no players",
     );
 }
 

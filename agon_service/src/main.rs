@@ -276,12 +276,12 @@ struct MatchSide {
     /// the pick-from-squad UI). None = ad-hoc side with manually picked players.
     team_id: Option<String>,
     /// Display name for this side, resolved fresh on every response (see
-    /// `Api::hydrate_match`) — never None in practice. Priority: the sole
-    /// player's name if there's exactly one, else a custom name the creator
-    /// gave the side, else the team's name, else "Your side"/"Opposition"
-    /// relative to the caller, else a neutral "Team A"/"Team B". Computed
-    /// per-request rather than stored so it can't go stale and "your side"
-    /// always means the caller.
+    /// `Api::hydrate_match`) — never None in practice. Priority: a custom
+    /// name the creator gave the side, else the sole player's name if
+    /// there's exactly one, else the team's name, else "Your
+    /// side"/"Opposition" relative to the caller, else a neutral "Team
+    /// A"/"Team B". Computed per-request rather than stored so it can't go
+    /// stale and "your side" always means the caller.
     name: Option<String>,
     /// This side's full roster, when small enough to show directly instead of
     /// just `name`/`team_id`'s logo (1v1, doubles, a small squad). `None`
@@ -2297,8 +2297,8 @@ impl Api {
         }
 
         // A side with no players has no player to fall back on for its display
-        // name (see `Api::resolve_side_names`'s priority chain: sole player's
-        // name -> custom name -> team's name -> ...), so it needs a team or an
+        // name (see `Api::resolve_side_names`'s priority chain: custom name ->
+        // sole player's name -> team's name -> ...), so it needs a team or an
         // explicit name to be identifiable at all — e.g. recording a result
         // against an opposition you don't know the roster of.
         for side in &input.sides {
@@ -4947,10 +4947,10 @@ impl Api {
 
     /// Hydrate every match in `matches` for one response: fill in each `User`
     /// player's `name`/`avatar_url` from their account, and resolve every
-    /// side's display `name` — the sole player's name if there's exactly one,
-    /// else a custom name the creator gave the side (an ad-hoc side, or one
-    /// of two sides sharing a team), else the assigned team's name, else a
-    /// fallback relative to `viewer_uid` — "Your side"/"Opposition" if
+    /// side's display `name` — a custom name the creator gave the side (an
+    /// ad-hoc side, or one of two sides sharing a team), else the sole
+    /// player's name if there's exactly one, else the assigned team's name,
+    /// else a fallback relative to `viewer_uid` — "Your side"/"Opposition" if
     /// they're actually playing in the match, else a neutral "Team A"/
     /// "Team B" by side order. Resolved per-request rather than stored, so a
     /// side's name can't go stale and "your side" always reflects whoever is
@@ -5082,14 +5082,14 @@ impl Api {
                 .map(str::trim)
                 .filter(|n| !n.is_empty());
 
-            side.name = Some(match sole_player_name {
-                Some(name) => name,
-                // A custom name (only ever set alongside a team when two
-                // sides share it — see the create-time validation) wins over
-                // the team's own name, since it's there specifically to tell
-                // those sides apart.
-                None => match custom_name {
-                    Some(name) => name.to_string(),
+            side.name = Some(match custom_name {
+                // An explicit name always wins, over both the sole player's
+                // name and the team's own name — it's there specifically
+                // because the creator wanted something other than either
+                // default (e.g. to tell two sides sharing one team apart).
+                Some(name) => name.to_string(),
+                None => match sole_player_name {
+                    Some(name) => name,
                     None => match &side.team_id {
                         Some(team_id) => team_names
                             .get(team_id)
@@ -5108,7 +5108,7 @@ impl Api {
     }
 
     /// The same side-name priority chain as [`Self::resolve_side_names`]
-    /// (sole player's name → custom name → team name → "Your
+    /// (custom name → sole player's name → team name → "Your
     /// side"/"Opposition" → neutral "Team A"/"Team B"), for a `FeedMatch` or
     /// `SearchMatch` — which never have the full player list to scan.
     ///
@@ -5134,10 +5134,12 @@ impl Api {
                 .map(str::trim)
                 .filter(|n| !n.is_empty());
 
-            side.name = Some(match sole_player_name {
-                Some(name) => name,
-                None => match custom_name {
-                    Some(name) => name.to_string(),
+            side.name = Some(match custom_name {
+                // Same priority as `resolve_side_names`: an explicit name
+                // always wins over the sole player's name.
+                Some(name) => name.to_string(),
+                None => match sole_player_name {
+                    Some(name) => name,
                     None => match &side.team_id {
                         Some(team_id) => team_names
                             .get(team_id)

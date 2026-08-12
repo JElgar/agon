@@ -226,18 +226,18 @@ export function LogMatchPage() {
     return null
   }, [mode, isFootball, isCricket, isNetball, detailBuilt, setsPlayable, sets, pointsA, pointsB])
 
-  // Validation: a sport, a match name, at least one player on each side (so the
-  // match is meaningful), at least one opponent on side B, a time valid for the
-  // mode, and — for a completed match — a result.
+  // Validation: a sport, a match name, at least one player on your own side
+  // (so the match is meaningful), a time valid for the mode, and — for a
+  // completed match — a result. The opposition (side B) may be left empty —
+  // e.g. recording a result against a team you don't know the roster of.
   const valid = useMemo(() => {
     if (!sport) return false
     if (name.trim().length === 0) return false
     if (sideA.length === 0) return false
-    if (sideB.length === 0) return false
     if (timeError) return false
     if (scoreError) return false
     return true
-  }, [sport, name, sideA.length, sideB.length, timeError, scoreError])
+  }, [sport, name, sideA.length, timeError, scoreError])
 
   const mutation = useMutation({
     mutationFn: async (body: CreateMatchInput) => {
@@ -385,7 +385,9 @@ export function LogMatchPage() {
     mutation.mutate(body)
   }
 
-  const playersSet = sport !== null && sideA.length > 0 && sideB.length > 0
+  // Side B (the opposition) is allowed to be empty — you might be recording
+  // your own team's result without knowing who's on the other side.
+  const playersSet = sport !== null && sideA.length > 0
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-3">
@@ -645,7 +647,7 @@ export function LogMatchPage() {
             hint={
               sport === null
                 ? 'Pick a sport to enter the score'
-                : 'Add players to both sides to enter the score'
+                : 'Add players to your side to enter the score'
             }
           />
         ))}

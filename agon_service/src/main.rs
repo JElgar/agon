@@ -66,6 +66,10 @@ use detailed_score::{
         FootballCardEvent, FootballGoalEvent, FootballPenaltyShootoutKick, FootballPeriod,
         FootballSubstitutionEvent,
     },
+    rounders::{
+        RoundersDelivery, RoundersNextBallContext, RoundersOut, RoundersOutKind,
+        RoundersRunnerMovement,
+    },
 };
 
 mod live_score;
@@ -350,6 +354,10 @@ enum Score {
     /// completed football match — live-scored or manually entered. Carries
     /// enough to render the feed/detail goal ticker without a separate fetch.
     Football(FootballScore),
+    /// Per-innings (half-)rounders/outs (plus optional per-player detail),
+    /// the result of a completed rounders match — live-scored or manually
+    /// entered.
+    Rounders(RoundersScore),
 }
 
 #[derive(Object)]
@@ -495,6 +503,121 @@ struct FootballScore {
     players: HashMap<String, RosterPreviewPlayer>,
 }
 
+/// A rounders match's result: per-innings totals, plus optional richer
+/// detail — same three-role shape as `CricketScore`/`FootballScore` (see
+/// `Score`'s doc comment).
+#[derive(Object)]
+struct RoundersScore {
+    /// One entry per innings played, in the order they were played.
+    innings: Vec<RoundersScoreInnings>,
+    /// The current/most recent innings' recent-ball window. `None` once
+    /// there isn't a current innings (between innings, match over) or for a
+    /// result with no ball-by-ball detail behind it.
+    recent_deliveries: Option<Vec<RoundersDelivery>>,
+    /// Who's where right now — who's on which post, who's bowling. `None`
+    /// once there isn't a next delivery to give context for.
+    next_ball_context: Option<RoundersNextBallContext>,
+    /// True once the log's last innings has ended and no following one has
+    /// started yet. `None` for a result with no live log behind it.
+    awaiting_next_innings: Option<bool>,
+    /// Live name/avatar for every player id referenced anywhere else in this
+    /// score, keyed by that same (match-scoped) player id. Same mechanism
+    /// and rationale as `CricketScore.players`.
+    players: HashMap<String, RosterPreviewPlayer>,
+}
+
+/// One innings' totals, plus optional per-player detail — the rounders
+/// analogue of `CricketScoreInnings`. Every field beyond `batting_side_id`/
+/// `fielding_side_id` is either a running total folded from the delivery
+/// log (`half_rounders`, `outs`, `good_balls_bowled`, `byes`) or optional
+/// per-player detail (`None` for a manually-entered result with no card
+/// behind it, populated for a live-scored or backfilled one) — nothing here
+/// is ever asserted directly by a client, only derived while folding (see
+/// `live_score::rounders::apply_delivery`).
+#[derive(Object)]
+struct RoundersScoreInnings {
+    /// The batting side for this innings (references MatchSide.id).
+    batting_side_id: String,
+    /// The fielding side for this innings.
+    fielding_side_id: String,
+    /// Half-rounder units — a full rounder is 2. Kept as an integer, same
+    /// reasoning as `Overs` splitting overs/balls instead of a float: exact
+    /// arithmetic, no rounding surprises. Render as `half_rounders / 2` +
+    /// ".5" when odd.
+    half_rounders: u32,
+    /// Batting-order slots marked out so far (max = the order's length,
+    /// usually 9 — the "Batters out" grid on the standard scoresheet).
+    outs: u32,
+    /// Good (fair) balls bowled so far this innings — no-balls excluded.
+    /// Compared against `match_format::RoundersFormat::good_balls_per_innings`
+    /// to drive `live_score::rounders::RoundersInningsEndReason::GoodBallsComplete`.
+    good_balls_bowled: u32,
+    /// Byes conceded this innings — not attributed to a specific bowler
+    /// (it's the backstop's doing, not theirs), same convention as cricket
+    /// crediting byes to `CricketExtras` rather than any bowler.
+    byes: u32,
+    batting: Option<Vec<RoundersBattingEntry>>,
+    bowling: Option<Vec<RoundersBowlingEntry>>,
+    fall_of_outs: Option<Vec<RoundersFallOfOut>>,
+}
+
+impl RoundersScoreInnings {
+    /// The state before any delivery has been recorded in this innings —
+    /// only ever constructed on a live-scoring path (`InningsStart`), same
+    /// convention as `CricketScoreInnings::opening`.
+    fn opening(batting_side_id: String, fielding_side_id: String) -> Self {
+        RoundersScoreInnings {
+            batting_side_id,
+            fielding_side_id,
+            half_rounders: 0,
+            outs: 0,
+            good_balls_bowled: 0,
+            byes: 0,
+            batting: Some(Vec::new()),
+            bowling: Some(Vec::new()),
+            fall_of_outs: Some(Vec::new()),
+        }
+    }
+}
+
+#[derive(Object)]
+struct RoundersBattingEntry {
+    player_id: String,
+    half_rounders: u32,
+    /// Faced across every turn at the square this innings — the batting
+    /// order can lap back around for anyone not yet out, so this can
+    /// accumulate over more than one turn (see
+    /// `detailed_score::rounders::RoundersDelivery::striker_player_id`'s
+    /// doc comment). Excludes no-balls, same convention as cricket's
+    /// `balls_faced`.
+    balls_faced: u32,
+    /// Set once — a batting-order slot is out at most once per innings,
+    /// even though the same player may have faced several separate turns
+    /// before that happened.
+    out: Option<RoundersOut>,
+    /// Position in the batting order (typically 1-9).
+    batting_position: Option<u32>,
+}
+
+#[derive(Object)]
+struct RoundersBowlingEntry {
+    player_id: String,
+    /// Good (fair) balls bowled — no-balls tracked separately.
+    balls_bowled: u32,
+    no_balls: u32,
+    outs: u32,
+    half_rounders_conceded: u32,
+}
+
+#[derive(Object)]
+struct RoundersFallOfOut {
+    out_number: u32,
+    /// The innings' `half_rounders` total at the moment of this out.
+    half_rounders: u32,
+    player_id: String,
+    kind: RoundersOutKind,
+}
+
 /// The sport a match was played in. Determines the expected `Score` shape
 /// (e.g. racket sports use `Score::Sets`, football uses `Score::Football`,
 /// and cricket uses `Score::Cricket`). Extend as more sports are supported.
@@ -507,6 +630,7 @@ pub enum MatchType {
     TableTennis,
     Football,
     Cricket,
+    Rounders,
     /// Fallback for sports not yet modelled explicitly.
     Other,
 }
@@ -2613,6 +2737,11 @@ impl Api {
                     .flat_map(|i| [i.batting_side_id.as_str(), i.bowling_side_id.as_str()])
                     .collect(),
                 Score::Football(s) => s.score.keys().map(|k| k.as_str()).collect(),
+                Score::Rounders(s) => s
+                    .innings
+                    .iter()
+                    .flat_map(|i| [i.batting_side_id.as_str(), i.fielding_side_id.as_str()])
+                    .collect(),
             };
             if score_sides.iter().any(|sid| !valid_sides.contains(sid)) {
                 return Ok(UpdateMatchResponse::ValidationError(PlainText(
@@ -3173,8 +3302,17 @@ impl Api {
                     s.apply_event(e.occurred_at, event);
                 }
             }
-            // Live scoring only ever creates a `Cricket`/`Football` record
-            // for this match_id/sport pair — unreachable in practice.
+            Score::Rounders(s) => {
+                for e in new_events {
+                    let LiveEventInput::Rounders(event) = &e.event else {
+                        return Ok(None);
+                    };
+                    s.apply_event(event);
+                }
+            }
+            // Live scoring only ever creates a `Cricket`/`Football`/
+            // `Rounders` record for this match_id/sport pair — unreachable
+            // in practice.
             Score::Simple(_) | Score::Sets(_) => return Ok(None),
         }
 
@@ -5286,6 +5424,123 @@ fn resolve_score_ids(
                 players: HashMap::new(),
             }))
         }
+        Score::Rounders(s) => {
+            let remap_out = |out: &Option<RoundersOut>| -> Option<Option<RoundersOut>> {
+                match out {
+                    Some(o) => Some(Some(RoundersOut {
+                        kind: o.kind,
+                        fielder_player_id: pmap_opt(&o.fielder_player_id)?,
+                    })),
+                    None => Some(None),
+                }
+            };
+            let mut innings = Vec::with_capacity(s.innings.len());
+            for i in &s.innings {
+                let batting = match &i.batting {
+                    Some(bs) => {
+                        let mut out = Vec::with_capacity(bs.len());
+                        for b in bs {
+                            out.push(RoundersBattingEntry {
+                                player_id: pmap(&b.player_id)?,
+                                half_rounders: b.half_rounders,
+                                balls_faced: b.balls_faced,
+                                out: remap_out(&b.out)?,
+                                batting_position: b.batting_position,
+                            });
+                        }
+                        Some(out)
+                    }
+                    None => None,
+                };
+                let bowling = match &i.bowling {
+                    Some(bs) => {
+                        let mut out = Vec::with_capacity(bs.len());
+                        for b in bs {
+                            out.push(RoundersBowlingEntry {
+                                player_id: pmap(&b.player_id)?,
+                                balls_bowled: b.balls_bowled,
+                                no_balls: b.no_balls,
+                                outs: b.outs,
+                                half_rounders_conceded: b.half_rounders_conceded,
+                            });
+                        }
+                        Some(out)
+                    }
+                    None => None,
+                };
+                let fall_of_outs = match &i.fall_of_outs {
+                    Some(fs) => {
+                        let mut out = Vec::with_capacity(fs.len());
+                        for f in fs {
+                            out.push(RoundersFallOfOut {
+                                out_number: f.out_number,
+                                half_rounders: f.half_rounders,
+                                player_id: pmap(&f.player_id)?,
+                                kind: f.kind,
+                            });
+                        }
+                        Some(out)
+                    }
+                    None => None,
+                };
+                innings.push(RoundersScoreInnings {
+                    batting_side_id: map(&i.batting_side_id)?,
+                    fielding_side_id: map(&i.fielding_side_id)?,
+                    half_rounders: i.half_rounders,
+                    outs: i.outs,
+                    good_balls_bowled: i.good_balls_bowled,
+                    byes: i.byes,
+                    batting,
+                    bowling,
+                    fall_of_outs,
+                });
+            }
+            let recent_deliveries = match &s.recent_deliveries {
+                Some(ds) => {
+                    let mut out = Vec::with_capacity(ds.len());
+                    for d in ds {
+                        let mut movements = Vec::with_capacity(d.movements.len());
+                        for m in &d.movements {
+                            movements.push(RoundersRunnerMovement {
+                                player_id: pmap(&m.player_id)?,
+                                post_reached: m.post_reached,
+                                out: remap_out(&m.out)?,
+                            });
+                        }
+                        out.push(RoundersDelivery {
+                            bowler_player_id: pmap(&d.bowler_player_id)?,
+                            striker_player_id: pmap(&d.striker_player_id)?,
+                            no_ball: d.no_ball,
+                            byes: d.byes,
+                            movements,
+                        });
+                    }
+                    Some(out)
+                }
+                None => None,
+            };
+            let next_ball_context = match &s.next_ball_context {
+                Some(ctx) => {
+                    let mut runners_on_base = HashMap::with_capacity(ctx.runners_on_base.len());
+                    for (player_id, post) in &ctx.runners_on_base {
+                        runners_on_base.insert(pmap(player_id)?, *post);
+                    }
+                    Some(RoundersNextBallContext {
+                        runners_on_base,
+                        bowler_player_id: pmap_opt(&ctx.bowler_player_id)?,
+                        balls_in_spell: ctx.balls_in_spell,
+                    })
+                }
+                None => None,
+            };
+            Some(Score::Rounders(RoundersScore {
+                innings,
+                recent_deliveries,
+                next_ball_context,
+                awaiting_next_innings: s.awaiting_next_innings,
+                players: HashMap::new(),
+            }))
+        }
     }
 }
 
@@ -5296,6 +5551,7 @@ fn set_score_players(score: &mut Score, resolved: HashMap<String, RosterPreviewP
     match score {
         Score::Cricket(s) => s.players = resolved,
         Score::Football(s) => s.players = resolved,
+        Score::Rounders(s) => s.players = resolved,
         Score::Simple(_) | Score::Sets(_) => {}
     }
 }
@@ -5336,6 +5592,7 @@ fn score_player_ids(score: &Score) -> Vec<String> {
     match score {
         Score::Cricket(s) => cricket_score_player_ids(s),
         Score::Football(s) => football_score_player_ids(s),
+        Score::Rounders(s) => rounders_score_player_ids(s),
         Score::Simple(_) | Score::Sets(_) => Vec::new(),
     }
 }
@@ -5401,6 +5658,45 @@ fn football_score_player_ids(score: &FootballScore) -> Vec<String> {
     ids
 }
 
+/// Every player id referenced in a `RoundersScore`: `next_ball_context`'s
+/// runners-on-base and bowler, each innings' batting/bowling/fall-of-out
+/// entries (plus a batting entry's dismissal fielder), and
+/// `recent_deliveries` (plus each delivery's runner movements and their
+/// dismissal fielders). Same "may repeat, deduped downstream" contract as
+/// [`cricket_score_player_ids`].
+fn rounders_score_player_ids(score: &RoundersScore) -> Vec<String> {
+    let mut ids = Vec::new();
+    if let Some(ctx) = &score.next_ball_context {
+        ids.extend(ctx.runners_on_base.keys().cloned());
+        ids.extend(ctx.bowler_player_id.clone());
+    }
+    for innings in &score.innings {
+        for entry in innings.batting.iter().flatten() {
+            ids.push(entry.player_id.clone());
+            if let Some(out) = &entry.out {
+                ids.extend(out.fielder_player_id.clone());
+            }
+        }
+        for entry in innings.bowling.iter().flatten() {
+            ids.push(entry.player_id.clone());
+        }
+        for fall in innings.fall_of_outs.iter().flatten() {
+            ids.push(fall.player_id.clone());
+        }
+    }
+    for delivery in score.recent_deliveries.iter().flatten() {
+        ids.push(delivery.bowler_player_id.clone());
+        ids.push(delivery.striker_player_id.clone());
+        for m in &delivery.movements {
+            ids.push(m.player_id.clone());
+            if let Some(out) = &m.out {
+                ids.extend(out.fielder_player_id.clone());
+            }
+        }
+    }
+    ids
+}
+
 /// Derives the winner (when decidable) from a live-scored match's persisted
 /// score — used by `update_match` to finish a live-scored match without the
 /// client having to work out and resubmit a margin the server already has
@@ -5434,6 +5730,15 @@ fn winner_from_score(score: &Score, side_ids: &[String]) -> Option<String> {
             let mut totals: HashMap<&str, u32> = HashMap::new();
             for i in &s.innings {
                 *totals.entry(i.batting_side_id.as_str()).or_insert(0) += i.runs;
+            }
+            two_side_winner(side_ids, |sid| *totals.get(sid).unwrap_or(&0) as i64)
+        }
+        Score::Rounders(s) => {
+            // The winner is the summed half-rounders across innings, same
+            // reasoning as cricket's summed runs.
+            let mut totals: HashMap<&str, u32> = HashMap::new();
+            for i in &s.innings {
+                *totals.entry(i.batting_side_id.as_str()).or_insert(0) += i.half_rounders;
             }
             two_side_winner(side_ids, |sid| *totals.get(sid).unwrap_or(&0) as i64)
         }

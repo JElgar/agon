@@ -4,13 +4,16 @@ import { Pencil } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
-import { CricketFields, FootballFields } from './MatchFormatEditor'
+import { CricketFields, FootballFields, RoundersFields } from './MatchFormatEditor'
 import {
   cricketFormat,
   footballFormat,
+  goodBallsLimitLabel,
   oversLimitLabel,
+  roundersFormat,
   type CricketFormat,
   type FootballFormat,
+  type RoundersFormat,
 } from '@/lib/matchFormat'
 
 type Match = components['schemas']['Match']
@@ -38,6 +41,15 @@ function FormatSummary({ match }: { match: Match }) {
         {fmt.num_halves} × {fmt.half_length_minutes}min
         {fmt.extra_time && ' · extra time'}
         {fmt.penalties && ' · penalties'}
+      </p>
+    )
+  }
+  if (match.match_type === 'rounders') {
+    const fmt = roundersFormat(match.format)
+    return (
+      <p className="text-xs text-muted-foreground">
+        {goodBallsLimitLabel(fmt)} · {fmt.innings_per_side === 1 ? 'single' : 'two'} innings
+        {fmt.last_batter_bonus_balls && ` · last batter gets ${fmt.last_batter_bonus_balls} balls`}
       </p>
     )
   }
@@ -71,6 +83,9 @@ export function MatchFormatCard({
   const [cricketDraft, setCricketDraft] = useState<CricketFormat>(() =>
     cricketFormat(match.format),
   )
+  const [roundersDraft, setRoundersDraft] = useState<RoundersFormat>(() =>
+    roundersFormat(match.format),
+  )
 
   const save = useMutation({
     mutationFn: async () => {
@@ -80,7 +95,9 @@ export function MatchFormatCard({
           format:
             match.match_type === 'cricket'
               ? { sport: 'Cricket', ...cricketDraft }
-              : { sport: 'Football', ...footballDraft },
+              : match.match_type === 'rounders'
+                ? { sport: 'Rounders', ...roundersDraft }
+                : { sport: 'Football', ...footballDraft },
         },
       })
       if (error) throw new Error('Failed to save the match format')
@@ -91,7 +108,8 @@ export function MatchFormatCard({
     },
   })
 
-  if (match.match_type !== 'football' && match.match_type !== 'cricket') return null
+  if (match.match_type !== 'football' && match.match_type !== 'cricket' && match.match_type !== 'rounders')
+    return null
 
   if (!editing) {
     return (
@@ -108,6 +126,7 @@ export function MatchFormatCard({
             onClick={() => {
               setFootballDraft(footballFormat(match.format))
               setCricketDraft(cricketFormat(match.format))
+              setRoundersDraft(roundersFormat(match.format))
               setEditing(true)
             }}
           >
@@ -123,6 +142,8 @@ export function MatchFormatCard({
       <p className="mb-3 text-sm font-medium">Format</p>
       {match.match_type === 'cricket' ? (
         <CricketFields value={cricketDraft} onChange={setCricketDraft} />
+      ) : match.match_type === 'rounders' ? (
+        <RoundersFields value={roundersDraft} onChange={setRoundersDraft} />
       ) : (
         <FootballFields value={footballDraft} onChange={setFootballDraft} />
       )}

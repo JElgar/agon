@@ -7,8 +7,10 @@ import { Input } from '@/components/ui/input'
 import { isSetsSport } from '@/lib/sports'
 import { FootballScoreFields } from '@/components/agon/FootballScoreFields'
 import { CricketScoreFields } from '@/components/agon/CricketScoreFields'
+import { RoundersScoreFields } from '@/components/agon/RoundersScoreFields'
 import { displayScore, headlineBySide } from '@/lib/score'
 import { cricketProgressFromScore, matchTotalsBySide } from '@/lib/cricketScore'
+import { roundersMatchTotalsBySide, roundersProgressFromScore } from '@/lib/roundersScore'
 
 type Match = components['schemas']['Match']
 type UpdateMatchInput = components['schemas']['UpdateMatchInput']
@@ -20,7 +22,11 @@ type Score = components['schemas']['Score']
  *  so it sums each side's runs across every innings played so far instead. */
 function scoreSummary(score: Score, aId: string, bId: string): string {
   const totals =
-    score.type === 'Cricket' ? matchTotalsBySide(cricketProgressFromScore(score)) : headlineBySide(score)
+    score.type === 'Cricket'
+      ? matchTotalsBySide(cricketProgressFromScore(score))
+      : score.type === 'Rounders'
+        ? roundersMatchTotalsBySide(roundersProgressFromScore(score))
+        : headlineBySide(score)
   return `${totals[aId] ?? 0}–${totals[bId] ?? 0}`
 }
 
@@ -104,6 +110,7 @@ export function MatchResultEditor({
 
   const isFootball = match.match_type === 'football'
   const isCricket = match.match_type === 'cricket'
+  const isRounders = match.match_type === 'rounders'
   const setsMode = isSetsSport(match.match_type)
   // The result to prepopulate the form with: confirmed if there is one, else
   // a still-pending submission awaiting the other side's confirmation.
@@ -115,7 +122,7 @@ export function MatchResultEditor({
 
   /** Build the score payload + derived winner, or null when incomplete. */
   const build = (): { score: Score; winner?: string } | null => {
-    if (isFootball || isCricket) {
+    if (isFootball || isCricket || isRounders) {
       return detailBuilt ? { score: detailBuilt.score, winner: detailBuilt.winnerSideId } : null
     }
 
@@ -223,6 +230,14 @@ export function MatchResultEditor({
         />
       ) : isCricket && sideA && sideB ? (
         <CricketScoreFields
+          sideA={sideA}
+          sideB={sideB}
+          players={match.players}
+          initial={currentScore}
+          onChange={setDetailBuilt}
+        />
+      ) : isRounders && sideA && sideB ? (
+        <RoundersScoreFields
           sideA={sideA}
           sideB={sideB}
           players={match.players}

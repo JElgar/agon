@@ -16,6 +16,10 @@ use crate::detailed_score::football::{
     FootballCardColor, FootballCardEvent, FootballGoalEvent, FootballPenaltyShootoutKick,
     FootballPeriod, FootballSubstitutionEvent,
 };
+use crate::detailed_score::rounders::{
+    RoundersDelivery, RoundersNextBallContext, RoundersOut, RoundersOutKind, RoundersPost,
+    RoundersRunnerMovement,
+};
 use crate::live_score::{
     LiveEvent, LiveEventInput, NewLiveEventInput,
     cricket::{
@@ -23,8 +27,12 @@ use crate::live_score::{
         InningsEndReason,
     },
     football::{FootballLiveEvent, FootballPeriodEvent},
+    rounders::{
+        RoundersInningsEndEvent, RoundersInningsEndReason, RoundersInningsStartEvent,
+        RoundersLiveEvent,
+    },
 };
-use crate::match_format::{CricketFormat, FootballFormat, MatchFormat};
+use crate::match_format::{CricketFormat, FootballFormat, MatchFormat, RoundersFormat};
 use crate::membership::{
     ExternalMember, Invitation, InvitationContext, InvitationKind, InvitationMatchContext,
     InvitationStatus, InvitationTeamContext, Member, TokenInvitation, UserInvitation, UserMember,
@@ -38,9 +46,10 @@ use crate::team::{Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
     Comment, ConfirmedScore, CricketScore, CricketScoreInnings, FeedMatch, FootballScore, Location,
     Match, MatchOutcome, MatchPlayer, MatchSide, MatchSocial, MatchStatus, MatchType, PendingScore,
-    Photo, RosterPreviewPlayer, Score, ScoreConfirmation, ScoreResponseKind, ScoreSubmission,
-    ScoreSubmissionResponse, ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore,
-    UserProfile, UserSportStats,
+    Photo, RosterPreviewPlayer, RoundersBattingEntry, RoundersBowlingEntry, RoundersFallOfOut,
+    RoundersScore, RoundersScoreInnings, Score, ScoreConfirmation, ScoreResponseKind,
+    ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus, SearchMatch, SetsScore,
+    SimpleScore, UserProfile, UserSportStats,
 };
 use agon_core::dao::error::DaoError;
 use agon_core::dao::live_score_ops::NewLiveEvent;
@@ -57,9 +66,13 @@ use agon_core::dao::records::{
     InningsEndReasonRecord, InvitationContextRecord, InvitationKindRecord, InvitationRecord,
     LiveEventPayloadRecord, LiveEventRecord, MatchFormatRecord, MatchLikeRecord, MatchPlayerRecord,
     MatchRecord, MatchScoreRecord, MatchSideRecord, NextBallContextRecord, NotificationKindRecord,
-    NotificationRecord, OversRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord,
-    ScoreResponseRecord, ScoreSubmissionRecord, TeamMemberRecord, TeamRecord, UserRecord,
-    UserSportStatsRecord,
+    NotificationRecord, OversRecord, PendingScoreRecord, RoundersBattingEntryRecord,
+    RoundersBowlingEntryRecord, RoundersDeliveryRecord, RoundersFallOfOutRecord,
+    RoundersFormatRecord, RoundersInningsEndEventRecord, RoundersInningsEndReasonRecord,
+    RoundersInningsStartEventRecord, RoundersLiveEventRecord, RoundersNextBallContextRecord,
+    RoundersOutKindRecord, RoundersOutRecord, RoundersPostRecord, RoundersRunnerMovementRecord,
+    RoundersScoreInningsRecord, ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord,
+    ScoreSubmissionRecord, TeamMemberRecord, TeamRecord, UserRecord, UserSportStatsRecord,
 };
 
 /// Parse an RFC-3339 timestamp string stored by the DAO into a UTC datetime,
@@ -94,6 +107,7 @@ pub fn match_type_from_tag(tag: &str) -> MatchType {
         "table_tennis" => MatchType::TableTennis,
         "football" => MatchType::Football,
         "cricket" => MatchType::Cricket,
+        "rounders" => MatchType::Rounders,
         _ => MatchType::Other,
     }
 }
@@ -107,6 +121,7 @@ pub fn match_type_tag(mt: &MatchType) -> &'static str {
         MatchType::TableTennis => "table_tennis",
         MatchType::Football => "football",
         MatchType::Cricket => "cricket",
+        MatchType::Rounders => "rounders",
         MatchType::Other => "other",
     }
 }
@@ -243,6 +258,26 @@ pub fn score_from_record(rec: &ScoreRecord) -> Score {
                     .collect()
             }),
             penalty_shootout_score: penalty_shootout_score.clone(),
+            // Not stored — `Api::hydrate_score_players` fills this afterward.
+            players: std::collections::HashMap::new(),
+        }),
+        ScoreRecord::Rounders {
+            innings,
+            recent_deliveries,
+            next_ball_context,
+            awaiting_next_innings,
+        } => Score::Rounders(RoundersScore {
+            innings: innings
+                .iter()
+                .map(rounders_score_innings_from_record)
+                .collect(),
+            recent_deliveries: recent_deliveries
+                .as_ref()
+                .map(|ds| ds.iter().map(rounders_delivery_from_record).collect()),
+            next_ball_context: next_ball_context
+                .as_ref()
+                .map(rounders_next_ball_context_from_record),
+            awaiting_next_innings: *awaiting_next_innings,
             // Not stored — `Api::hydrate_score_players` fills this afterward.
             players: std::collections::HashMap::new(),
         }),
@@ -413,6 +448,238 @@ fn cricket_score_innings_from_record(rec: &CricketScoreInningsRecord) -> Cricket
     }
 }
 
+// ---- Rounders score -----------------------------------------------------
+
+fn rounders_out_kind_to_record(kind: &RoundersOutKind) -> RoundersOutKindRecord {
+    match kind {
+        RoundersOutKind::Caught => RoundersOutKindRecord::Caught,
+        RoundersOutKind::StumpedAtPost => RoundersOutKindRecord::StumpedAtPost,
+        RoundersOutKind::OvertookRunner => RoundersOutKindRecord::OvertookRunner,
+        RoundersOutKind::Obstruction => RoundersOutKindRecord::Obstruction,
+        RoundersOutKind::FailedToRun => RoundersOutKindRecord::FailedToRun,
+    }
+}
+
+fn rounders_out_kind_from_record(rec: &RoundersOutKindRecord) -> RoundersOutKind {
+    match rec {
+        RoundersOutKindRecord::Caught => RoundersOutKind::Caught,
+        RoundersOutKindRecord::StumpedAtPost => RoundersOutKind::StumpedAtPost,
+        RoundersOutKindRecord::OvertookRunner => RoundersOutKind::OvertookRunner,
+        RoundersOutKindRecord::Obstruction => RoundersOutKind::Obstruction,
+        RoundersOutKindRecord::FailedToRun => RoundersOutKind::FailedToRun,
+    }
+}
+
+fn rounders_out_to_record(out: &RoundersOut) -> RoundersOutRecord {
+    RoundersOutRecord {
+        kind: rounders_out_kind_to_record(&out.kind),
+        fielder_player_id: out.fielder_player_id.clone(),
+    }
+}
+
+fn rounders_out_from_record(rec: &RoundersOutRecord) -> RoundersOut {
+    RoundersOut {
+        kind: rounders_out_kind_from_record(&rec.kind),
+        fielder_player_id: rec.fielder_player_id.clone(),
+    }
+}
+
+fn rounders_post_to_record(post: &RoundersPost) -> RoundersPostRecord {
+    match post {
+        RoundersPost::First => RoundersPostRecord::First,
+        RoundersPost::Second => RoundersPostRecord::Second,
+        RoundersPost::Third => RoundersPostRecord::Third,
+        RoundersPost::Fourth => RoundersPostRecord::Fourth,
+    }
+}
+
+fn rounders_post_from_record(rec: &RoundersPostRecord) -> RoundersPost {
+    match rec {
+        RoundersPostRecord::First => RoundersPost::First,
+        RoundersPostRecord::Second => RoundersPost::Second,
+        RoundersPostRecord::Third => RoundersPost::Third,
+        RoundersPostRecord::Fourth => RoundersPost::Fourth,
+    }
+}
+
+fn rounders_runner_movement_to_record(m: &RoundersRunnerMovement) -> RoundersRunnerMovementRecord {
+    RoundersRunnerMovementRecord {
+        player_id: m.player_id.clone(),
+        post_reached: m.post_reached.as_ref().map(rounders_post_to_record),
+        out: m.out.as_ref().map(rounders_out_to_record),
+    }
+}
+
+fn rounders_runner_movement_from_record(
+    rec: &RoundersRunnerMovementRecord,
+) -> RoundersRunnerMovement {
+    RoundersRunnerMovement {
+        player_id: rec.player_id.clone(),
+        post_reached: rec.post_reached.as_ref().map(rounders_post_from_record),
+        out: rec.out.as_ref().map(rounders_out_from_record),
+    }
+}
+
+fn rounders_delivery_to_record(d: &RoundersDelivery) -> RoundersDeliveryRecord {
+    RoundersDeliveryRecord {
+        bowler_player_id: d.bowler_player_id.clone(),
+        striker_player_id: d.striker_player_id.clone(),
+        no_ball: d.no_ball,
+        byes: d.byes,
+        movements: d
+            .movements
+            .iter()
+            .map(rounders_runner_movement_to_record)
+            .collect(),
+    }
+}
+
+fn rounders_delivery_from_record(rec: &RoundersDeliveryRecord) -> RoundersDelivery {
+    RoundersDelivery {
+        bowler_player_id: rec.bowler_player_id.clone(),
+        striker_player_id: rec.striker_player_id.clone(),
+        no_ball: rec.no_ball,
+        byes: rec.byes,
+        movements: rec
+            .movements
+            .iter()
+            .map(rounders_runner_movement_from_record)
+            .collect(),
+    }
+}
+
+fn rounders_next_ball_context_to_record(
+    ctx: &RoundersNextBallContext,
+) -> RoundersNextBallContextRecord {
+    RoundersNextBallContextRecord {
+        runners_on_base: ctx
+            .runners_on_base
+            .iter()
+            .map(|(id, post)| (id.clone(), rounders_post_to_record(post)))
+            .collect(),
+        bowler_player_id: ctx.bowler_player_id.clone(),
+        balls_in_spell: ctx.balls_in_spell,
+    }
+}
+
+fn rounders_next_ball_context_from_record(
+    rec: &RoundersNextBallContextRecord,
+) -> RoundersNextBallContext {
+    RoundersNextBallContext {
+        runners_on_base: rec
+            .runners_on_base
+            .iter()
+            .map(|(id, post)| (id.clone(), rounders_post_from_record(post)))
+            .collect(),
+        bowler_player_id: rec.bowler_player_id.clone(),
+        balls_in_spell: rec.balls_in_spell,
+    }
+}
+
+fn rounders_batting_entry_to_record(b: &RoundersBattingEntry) -> RoundersBattingEntryRecord {
+    RoundersBattingEntryRecord {
+        player_id: b.player_id.clone(),
+        half_rounders: b.half_rounders,
+        balls_faced: b.balls_faced,
+        out: b.out.as_ref().map(rounders_out_to_record),
+        batting_position: b.batting_position,
+    }
+}
+
+fn rounders_batting_entry_from_record(rec: &RoundersBattingEntryRecord) -> RoundersBattingEntry {
+    RoundersBattingEntry {
+        player_id: rec.player_id.clone(),
+        half_rounders: rec.half_rounders,
+        balls_faced: rec.balls_faced,
+        out: rec.out.as_ref().map(rounders_out_from_record),
+        batting_position: rec.batting_position,
+    }
+}
+
+fn rounders_bowling_entry_to_record(b: &RoundersBowlingEntry) -> RoundersBowlingEntryRecord {
+    RoundersBowlingEntryRecord {
+        player_id: b.player_id.clone(),
+        balls_bowled: b.balls_bowled,
+        no_balls: b.no_balls,
+        outs: b.outs,
+        half_rounders_conceded: b.half_rounders_conceded,
+    }
+}
+
+fn rounders_bowling_entry_from_record(rec: &RoundersBowlingEntryRecord) -> RoundersBowlingEntry {
+    RoundersBowlingEntry {
+        player_id: rec.player_id.clone(),
+        balls_bowled: rec.balls_bowled,
+        no_balls: rec.no_balls,
+        outs: rec.outs,
+        half_rounders_conceded: rec.half_rounders_conceded,
+    }
+}
+
+fn rounders_fall_of_out_to_record(f: &RoundersFallOfOut) -> RoundersFallOfOutRecord {
+    RoundersFallOfOutRecord {
+        out_number: f.out_number,
+        half_rounders: f.half_rounders,
+        player_id: f.player_id.clone(),
+        kind: rounders_out_kind_to_record(&f.kind),
+    }
+}
+
+fn rounders_fall_of_out_from_record(rec: &RoundersFallOfOutRecord) -> RoundersFallOfOut {
+    RoundersFallOfOut {
+        out_number: rec.out_number,
+        half_rounders: rec.half_rounders,
+        player_id: rec.player_id.clone(),
+        kind: rounders_out_kind_from_record(&rec.kind),
+    }
+}
+
+fn rounders_score_innings_to_record(i: &RoundersScoreInnings) -> RoundersScoreInningsRecord {
+    RoundersScoreInningsRecord {
+        batting_side_id: i.batting_side_id.clone(),
+        fielding_side_id: i.fielding_side_id.clone(),
+        half_rounders: i.half_rounders,
+        outs: i.outs,
+        good_balls_bowled: i.good_balls_bowled,
+        byes: i.byes,
+        batting: i
+            .batting
+            .as_ref()
+            .map(|bs| bs.iter().map(rounders_batting_entry_to_record).collect()),
+        bowling: i
+            .bowling
+            .as_ref()
+            .map(|bs| bs.iter().map(rounders_bowling_entry_to_record).collect()),
+        fall_of_outs: i
+            .fall_of_outs
+            .as_ref()
+            .map(|fs| fs.iter().map(rounders_fall_of_out_to_record).collect()),
+    }
+}
+
+fn rounders_score_innings_from_record(rec: &RoundersScoreInningsRecord) -> RoundersScoreInnings {
+    RoundersScoreInnings {
+        batting_side_id: rec.batting_side_id.clone(),
+        fielding_side_id: rec.fielding_side_id.clone(),
+        half_rounders: rec.half_rounders,
+        outs: rec.outs,
+        good_balls_bowled: rec.good_balls_bowled,
+        byes: rec.byes,
+        batting: rec
+            .batting
+            .as_ref()
+            .map(|bs| bs.iter().map(rounders_batting_entry_from_record).collect()),
+        bowling: rec
+            .bowling
+            .as_ref()
+            .map(|bs| bs.iter().map(rounders_bowling_entry_from_record).collect()),
+        fall_of_outs: rec
+            .fall_of_outs
+            .as_ref()
+            .map(|fs| fs.iter().map(rounders_fall_of_out_from_record).collect()),
+    }
+}
+
 pub fn score_to_record(score: &Score) -> ScoreRecord {
     match score {
         Score::Simple(s) => ScoreRecord::Simple {
@@ -472,6 +739,22 @@ pub fn score_to_record(score: &Score) -> ScoreRecord {
                     .collect()
             }),
             penalty_shootout_score: s.penalty_shootout_score.clone(),
+        },
+        Score::Rounders(s) => ScoreRecord::Rounders {
+            innings: s
+                .innings
+                .iter()
+                .map(rounders_score_innings_to_record)
+                .collect(),
+            recent_deliveries: s
+                .recent_deliveries
+                .as_ref()
+                .map(|ds| ds.iter().map(rounders_delivery_to_record).collect()),
+            next_ball_context: s
+                .next_ball_context
+                .as_ref()
+                .map(rounders_next_ball_context_to_record),
+            awaiting_next_innings: s.awaiting_next_innings,
         },
     }
 }
@@ -1026,6 +1309,7 @@ pub fn match_score_to_record(score: &Score, last_seq: Option<u32>) -> MatchScore
     let sport = match score {
         Score::Football(_) => "football",
         Score::Cricket(_) => "cricket",
+        Score::Rounders(_) => "rounders",
         Score::Simple(_) => "simple",
         Score::Sets(_) => "sets",
     }
@@ -1068,6 +1352,15 @@ pub fn match_format_to_record(fmt: &MatchFormat) -> MatchFormatRecord {
             no_ball_is_extra_ball: f.no_ball_is_extra_ball,
             free_hit_after_no_ball: f.free_hit_after_no_ball,
         }),
+        MatchFormat::Rounders(f) => MatchFormatRecord::Rounders(RoundersFormatRecord {
+            innings_per_side: f.innings_per_side,
+            good_balls_per_innings: f.good_balls_per_innings,
+            innings_length_minutes: f.innings_length_minutes,
+            last_batter_bonus_balls: f.last_batter_bonus_balls,
+            balls_per_bowling_spell: f.balls_per_bowling_spell,
+            half_rounders_count: f.half_rounders_count,
+            no_ball_penalty_threshold: f.no_ball_penalty_threshold,
+        }),
     }
 }
 
@@ -1092,6 +1385,15 @@ pub fn match_format_from_record(rec: &MatchFormatRecord) -> MatchFormat {
             no_ball_is_extra_ball: f.no_ball_is_extra_ball,
             free_hit_after_no_ball: f.free_hit_after_no_ball,
         }),
+        MatchFormatRecord::Rounders(f) => MatchFormat::Rounders(RoundersFormat {
+            innings_per_side: f.innings_per_side,
+            good_balls_per_innings: f.good_balls_per_innings,
+            innings_length_minutes: f.innings_length_minutes,
+            last_batter_bonus_balls: f.last_batter_bonus_balls,
+            balls_per_bowling_spell: f.balls_per_bowling_spell,
+            half_rounders_count: f.half_rounders_count,
+            no_ball_penalty_threshold: f.no_ball_penalty_threshold,
+        }),
     }
 }
 
@@ -1102,6 +1404,7 @@ pub fn match_format_sport_tag(fmt: &MatchFormat) -> &'static str {
     match fmt {
         MatchFormat::Football(_) => "football",
         MatchFormat::Cricket(_) => "cricket",
+        MatchFormat::Rounders(_) => "rounders",
     }
 }
 
@@ -1120,6 +1423,7 @@ pub fn live_event_sport_tag(event: &LiveEventInput) -> &'static str {
     match event {
         LiveEventInput::Football(_) => "football",
         LiveEventInput::Cricket(_) => "cricket",
+        LiveEventInput::Rounders(_) => "rounders",
     }
 }
 
@@ -1131,6 +1435,9 @@ pub fn live_event_input_to_record(event: &LiveEventInput) -> LiveEventPayloadRec
         LiveEventInput::Cricket(c) => {
             LiveEventPayloadRecord::Cricket(cricket_live_event_to_record(c))
         }
+        LiveEventInput::Rounders(r) => {
+            LiveEventPayloadRecord::Rounders(rounders_live_event_to_record(r))
+        }
     }
 }
 
@@ -1141,6 +1448,9 @@ pub fn live_event_payload_from_record(rec: &LiveEventPayloadRecord) -> LiveEvent
         }
         LiveEventPayloadRecord::Cricket(c) => {
             LiveEventInput::Cricket(cricket_live_event_from_record(c))
+        }
+        LiveEventPayloadRecord::Rounders(r) => {
+            LiveEventInput::Rounders(rounders_live_event_from_record(r))
         }
     }
 }
@@ -1497,6 +1807,70 @@ fn cricket_dismissal_kind_from_record(rec: &CricketDismissalKindRecord) -> Crick
     }
 }
 
+// ---- Rounders live events -------------------------------------------------
+
+fn rounders_live_event_to_record(event: &RoundersLiveEvent) -> RoundersLiveEventRecord {
+    match event {
+        RoundersLiveEvent::Delivery(d) => {
+            RoundersLiveEventRecord::Delivery(rounders_delivery_to_record(d))
+        }
+        RoundersLiveEvent::InningsStart(s) => {
+            RoundersLiveEventRecord::InningsStart(RoundersInningsStartEventRecord {
+                batting_side_id: s.batting_side_id.clone(),
+                fielding_side_id: s.fielding_side_id.clone(),
+            })
+        }
+        RoundersLiveEvent::InningsEnd(e) => {
+            RoundersLiveEventRecord::InningsEnd(RoundersInningsEndEventRecord {
+                reason: rounders_innings_end_reason_to_record(&e.reason),
+            })
+        }
+    }
+}
+
+pub fn rounders_live_event_from_record(rec: &RoundersLiveEventRecord) -> RoundersLiveEvent {
+    match rec {
+        RoundersLiveEventRecord::Delivery(d) => {
+            RoundersLiveEvent::Delivery(rounders_delivery_from_record(d))
+        }
+        RoundersLiveEventRecord::InningsStart(s) => {
+            RoundersLiveEvent::InningsStart(RoundersInningsStartEvent {
+                batting_side_id: s.batting_side_id.clone(),
+                fielding_side_id: s.fielding_side_id.clone(),
+            })
+        }
+        RoundersLiveEventRecord::InningsEnd(e) => {
+            RoundersLiveEvent::InningsEnd(RoundersInningsEndEvent {
+                reason: rounders_innings_end_reason_from_record(&e.reason),
+            })
+        }
+    }
+}
+
+fn rounders_innings_end_reason_to_record(
+    reason: &RoundersInningsEndReason,
+) -> RoundersInningsEndReasonRecord {
+    match reason {
+        RoundersInningsEndReason::AllBattersOut => RoundersInningsEndReasonRecord::AllBattersOut,
+        RoundersInningsEndReason::GoodBallsComplete => {
+            RoundersInningsEndReasonRecord::GoodBallsComplete
+        }
+        RoundersInningsEndReason::TimeUp => RoundersInningsEndReasonRecord::TimeUp,
+    }
+}
+
+fn rounders_innings_end_reason_from_record(
+    rec: &RoundersInningsEndReasonRecord,
+) -> RoundersInningsEndReason {
+    match rec {
+        RoundersInningsEndReasonRecord::AllBattersOut => RoundersInningsEndReason::AllBattersOut,
+        RoundersInningsEndReasonRecord::GoodBallsComplete => {
+            RoundersInningsEndReason::GoodBallsComplete
+        }
+        RoundersInningsEndReasonRecord::TimeUp => RoundersInningsEndReason::TimeUp,
+    }
+}
+
 // ---- Batch append / read / derive ---------------------------------------
 
 /// Build the DAO-layer append input from one API-level new-event input.
@@ -1550,7 +1924,9 @@ pub fn derive_live_score(
                     LiveEventPayloadRecord::Football(f) => {
                         Some((parse_ts(&r.occurred_at), football_live_event_from_record(f)))
                     }
-                    LiveEventPayloadRecord::Cricket(_) => None,
+                    LiveEventPayloadRecord::Cricket(_) | LiveEventPayloadRecord::Rounders(_) => {
+                        None
+                    }
                 })
                 .collect();
             Some(Score::Football(FootballScore::from_events(&events)))
@@ -1560,7 +1936,9 @@ pub fn derive_live_score(
                 .iter()
                 .filter_map(|r| match &r.payload {
                     LiveEventPayloadRecord::Cricket(c) => Some(cricket_live_event_from_record(c)),
-                    LiveEventPayloadRecord::Football(_) => None,
+                    LiveEventPayloadRecord::Football(_) | LiveEventPayloadRecord::Rounders(_) => {
+                        None
+                    }
                 })
                 .collect();
             let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) =
@@ -1571,6 +1949,18 @@ pub fn derive_live_score(
                 wide_is_extra_ball,
                 no_ball_is_extra_ball,
             )))
+        }
+        "rounders" => {
+            let events: Vec<RoundersLiveEvent> = records
+                .iter()
+                .filter_map(|r| match &r.payload {
+                    LiveEventPayloadRecord::Rounders(r) => Some(rounders_live_event_from_record(r)),
+                    LiveEventPayloadRecord::Football(_) | LiveEventPayloadRecord::Cricket(_) => {
+                        None
+                    }
+                })
+                .collect();
+            Some(Score::Rounders(RoundersScore::from_events(&events)))
         }
         _ => None,
     }
@@ -1818,6 +2208,52 @@ mod tests {
     }
 
     #[test]
+    fn rounders_live_event_round_trips_through_dao_mirror() {
+        let events = vec![
+            RoundersLiveEvent::Delivery(RoundersDelivery {
+                bowler_player_id: "patel".into(),
+                striker_player_id: "sharma".into(),
+                no_ball: false,
+                byes: false,
+                movements: vec![
+                    RoundersRunnerMovement {
+                        player_id: "sharma".into(),
+                        post_reached: Some(RoundersPost::Second),
+                        out: None,
+                    },
+                    RoundersRunnerMovement {
+                        player_id: "verma".into(),
+                        post_reached: Some(RoundersPost::Fourth),
+                        out: None,
+                    },
+                    RoundersRunnerMovement {
+                        player_id: "khan".into(),
+                        post_reached: None,
+                        out: Some(RoundersOut {
+                            kind: RoundersOutKind::Caught,
+                            fielder_player_id: Some("cole".into()),
+                        }),
+                    },
+                ],
+            }),
+            RoundersLiveEvent::InningsStart(RoundersInningsStartEvent {
+                batting_side_id: "warriors".into(),
+                fielding_side_id: "mill_lane".into(),
+            }),
+            RoundersLiveEvent::InningsEnd(RoundersInningsEndEvent {
+                reason: RoundersInningsEndReason::GoodBallsComplete,
+            }),
+        ];
+
+        for event in events {
+            let input = LiveEventInput::Rounders(event);
+            let original_json = input.to_json();
+            let round_tripped = live_event_payload_from_record(&live_event_input_to_record(&input));
+            assert_eq!(original_json, round_tripped.to_json());
+        }
+    }
+
+    #[test]
     fn match_format_round_trips_through_dao_mirror() {
         let formats = vec![
             MatchFormat::Football(FootballFormat {
@@ -1836,6 +2272,15 @@ mod tests {
                 wide_is_extra_ball: true,
                 no_ball_is_extra_ball: false,
                 free_hit_after_no_ball: false,
+            }),
+            MatchFormat::Rounders(RoundersFormat {
+                innings_per_side: 2,
+                good_balls_per_innings: Some(30),
+                innings_length_minutes: None,
+                last_batter_bonus_balls: Some(3),
+                balls_per_bowling_spell: Some(8),
+                half_rounders_count: true,
+                no_ball_penalty_threshold: Some(2),
             }),
         ];
 
@@ -2025,6 +2470,99 @@ mod tests {
                     scored: true,
                 }]),
                 penalty_shootout_score: Some(HashMap::from([("side_red".to_string(), 1)])),
+                players: HashMap::new(),
+            }),
+            // A manually-entered rounders result: totals only, no per-player detail.
+            Score::Rounders(RoundersScore {
+                innings: vec![
+                    RoundersScoreInnings {
+                        batting_side_id: "warriors".into(),
+                        fielding_side_id: "mill_lane".into(),
+                        half_rounders: 9,
+                        outs: 7,
+                        good_balls_bowled: 28,
+                        byes: 1,
+                        batting: None,
+                        bowling: None,
+                        fall_of_outs: None,
+                    },
+                    RoundersScoreInnings {
+                        batting_side_id: "mill_lane".into(),
+                        fielding_side_id: "warriors".into(),
+                        half_rounders: 6,
+                        outs: 9,
+                        good_balls_bowled: 24,
+                        byes: 0,
+                        batting: None,
+                        bowling: None,
+                        fall_of_outs: None,
+                    },
+                ],
+                recent_deliveries: None,
+                next_ball_context: None,
+                awaiting_next_innings: None,
+                players: HashMap::new(),
+            }),
+            // A live-scored rounders result: full per-player detail, a runner
+            // still out on the track, and one batter already out.
+            Score::Rounders(RoundersScore {
+                innings: vec![RoundersScoreInnings {
+                    batting_side_id: "warriors".into(),
+                    fielding_side_id: "mill_lane".into(),
+                    half_rounders: 3,
+                    outs: 1,
+                    good_balls_bowled: 5,
+                    byes: 1,
+                    batting: Some(vec![
+                        RoundersBattingEntry {
+                            player_id: "player_1".into(),
+                            half_rounders: 2,
+                            balls_faced: 1,
+                            out: None,
+                            batting_position: Some(1),
+                        },
+                        RoundersBattingEntry {
+                            player_id: "player_2".into(),
+                            half_rounders: 0,
+                            balls_faced: 1,
+                            out: Some(RoundersOut {
+                                kind: RoundersOutKind::StumpedAtPost,
+                                fielder_player_id: Some("player_6".into()),
+                            }),
+                            batting_position: Some(2),
+                        },
+                    ]),
+                    bowling: Some(vec![RoundersBowlingEntry {
+                        player_id: "player_5".into(),
+                        balls_bowled: 4,
+                        no_balls: 1,
+                        outs: 1,
+                        half_rounders_conceded: 2,
+                    }]),
+                    fall_of_outs: Some(vec![RoundersFallOfOut {
+                        out_number: 1,
+                        half_rounders: 2,
+                        player_id: "player_2".into(),
+                        kind: RoundersOutKind::StumpedAtPost,
+                    }]),
+                }],
+                recent_deliveries: Some(vec![RoundersDelivery {
+                    bowler_player_id: "player_5".into(),
+                    striker_player_id: "player_3".into(),
+                    no_ball: false,
+                    byes: true,
+                    movements: vec![RoundersRunnerMovement {
+                        player_id: "player_1".into(),
+                        post_reached: Some(RoundersPost::First),
+                        out: None,
+                    }],
+                }]),
+                next_ball_context: Some(RoundersNextBallContext {
+                    runners_on_base: HashMap::from([("player_1".to_string(), RoundersPost::First)]),
+                    bowler_player_id: Some("player_5".into()),
+                    balls_in_spell: 5,
+                }),
+                awaiting_next_innings: Some(false),
                 players: HashMap::new(),
             }),
         ];

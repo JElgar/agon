@@ -3,6 +3,7 @@ import type { components } from '@/types/api'
 export type MatchFormat = components['schemas']['MatchFormat']
 export type FootballFormat = components['schemas']['FootballFormat']
 export type CricketFormat = components['schemas']['CricketFormat']
+export type RoundersFormat = components['schemas']['RoundersFormat']
 
 /**
  * App-side defaults for an unconfigured match — the backend stores `format`
@@ -30,6 +31,18 @@ export const DEFAULT_CRICKET_FORMAT: CricketFormat = {
   free_hit_after_no_ball: true,
 }
 
+/** The standard Rounders England scoresheet's numbers — 2 innings, a 30
+ *  good-ball cap, 3 bonus balls for the last remaining batter. */
+export const DEFAULT_ROUNDERS_FORMAT: RoundersFormat = {
+  innings_per_side: 2,
+  good_balls_per_innings: 30,
+  innings_length_minutes: undefined,
+  last_batter_bonus_balls: 3,
+  balls_per_bowling_spell: undefined,
+  half_rounders_count: true,
+  no_ball_penalty_threshold: undefined,
+}
+
 // `Match.format`'s generated type erases the union discriminant (same quirk
 // as `Invitation.kind` in `lib/members.ts` — openapi-typescript widens a
 // union nested inside an object to `Omit<Union, "sport"> & unknown`, so
@@ -55,4 +68,19 @@ export function cricketFormat(format: unknown): CricketFormat {
 /** "20 overs" / "Unlimited overs" for a cricket format summary. */
 export function oversLimitLabel(fmt: CricketFormat): string {
   return fmt.overs_per_innings ? `${fmt.overs_per_innings} overs` : 'Unlimited overs'
+}
+
+/** The rounders format to use — the match's own if set for rounders, else
+ *  the app default. */
+export function roundersFormat(format: unknown): RoundersFormat {
+  const fmt = format as MatchFormat | null | undefined
+  if (fmt && fmt.sport === 'Rounders') return fmt
+  return DEFAULT_ROUNDERS_FORMAT
+}
+
+/** "30 good balls" / "Unlimited good balls" for a rounders format summary. */
+export function goodBallsLimitLabel(fmt: RoundersFormat): string {
+  return fmt.good_balls_per_innings
+    ? `${fmt.good_balls_per_innings} good balls`
+    : 'Unlimited good balls'
 }

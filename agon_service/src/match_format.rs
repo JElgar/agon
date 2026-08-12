@@ -23,6 +23,7 @@ use poem_openapi::{Object, Union};
 pub enum MatchFormat {
     Football(FootballFormat),
     Cricket(CricketFormat),
+    Rounders(RoundersFormat),
 }
 
 #[derive(Object, Clone)]
@@ -69,4 +70,37 @@ pub struct CricketFormat {
     pub no_ball_is_extra_ball: bool,
     /// Whether the delivery after a no-ball is a free hit.
     pub free_hit_after_no_ball: bool,
+}
+
+#[derive(Object, Clone)]
+pub struct RoundersFormat {
+    /// Innings per side — almost always 2.
+    pub innings_per_side: u32,
+    /// The "Good balls" cap per innings (30 on the standard Rounders
+    /// England scoresheet; other leagues play 18 or 20). Fair deliveries
+    /// only — a no-ball doesn't count against it, mirroring
+    /// `RoundersDelivery::no_ball` being excluded from
+    /// `RoundersScoreInnings::good_balls_bowled`. `None` = uncapped
+    /// (time-limited instead — see `innings_length_minutes`).
+    pub good_balls_per_innings: Option<u32>,
+    /// Minutes per innings, if time-limited instead of/alongside a
+    /// good-ball cap.
+    pub innings_length_minutes: Option<u32>,
+    /// Extra balls the last remaining batter gets once nobody's left behind
+    /// them in the order (commonly 3, vs. one ball for everyone else).
+    /// `None` = no bonus, they get one like everyone else.
+    pub last_batter_bonus_balls: Option<u32>,
+    /// Balls a single bowler may bowl before a mandatory change.
+    pub balls_per_bowling_spell: Option<u32>,
+    /// Whether completing the circuit over multiple stops counts as a half
+    /// rounder (the standard rule) as opposed to only single-hit circuits
+    /// scoring at all.
+    pub half_rounders_count: bool,
+    /// Consecutive no-balls to the same batter that award a penalty
+    /// (typically half a rounder plus a free run) — leagues vary on both
+    /// the threshold and the reward, so this is descriptive only for now,
+    /// same as `CricketFormat::free_hit_after_no_ball`: not automatically
+    /// applied by the live-scoring fold, just recorded as configuration.
+    /// `None` = this league doesn't play a no-ball penalty.
+    pub no_ball_penalty_threshold: Option<u32>,
 }

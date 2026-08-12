@@ -41,14 +41,15 @@ export function displayScore(
  * (across index-aligned entries); for a Simple score it's the points; for a
  * Football score it's the goal tally (`score.score`, keyed by side id —
  * already correct including own goals, which credit the benefiting side).
- * Returns a map of side id → headline value. A `Cricket` score has no single
- * headline number to show here — `CricketMatchBlock`/`CricketScoreBlock`
- * render it their own way — so it's an empty map, same as "no score yet".
+ * Returns a map of side id → headline value. A `Cricket`/`Rounders` score has
+ * no single headline number to show here — `CricketMatchBlock`/
+ * `CricketScoreBlock` and `RoundersMatchBlock`/`RoundersScoreBlock` render
+ * them their own way — so it's an empty map, same as "no score yet".
  */
 export function headlineBySide(score: Score): Record<string, number> {
   if (score.type === 'Simple') return { ...score.entries }
   if (score.type === 'Football') return { ...score.score }
-  if (score.type === 'Cricket') return {}
+  if (score.type === 'Cricket' || score.type === 'Rounders') return {}
   // Sets: a side wins a set at index i if its games exceed every other side's.
   const out: Record<string, number> = {}
   const entries = Object.entries(score.entries)

@@ -15,7 +15,9 @@ import { MatchHeaderCarousel } from './MatchHeaderCarousel'
 import { InvitationResponseDialog } from './InvitationResponseDialog'
 import { LiveMatchBlock } from './live/LiveMatchBlock'
 import { CricketMatchBlock } from './live/CricketMatchBlock'
+import { RoundersMatchBlock } from './live/RoundersMatchBlock'
 import { CricketScoreBlock } from './CricketScoreBlock'
+import { RoundersScoreBlock } from './RoundersScoreBlock'
 import { KnownPlayersRow } from './KnownPlayersRow'
 import { FootballScorersBySide } from './FootballScorersBySide'
 import { useMatchScore } from '@/hooks/useMatchScore'
@@ -25,7 +27,12 @@ import {
   cricketScoreFrom,
   cricketStateDescription,
 } from '@/lib/cricketScore'
-import { cricketFormat } from '@/lib/matchFormat'
+import {
+  roundersProgressFromScore,
+  roundersScoreFrom,
+  roundersStateDescription,
+} from '@/lib/roundersScore'
+import { cricketFormat, roundersFormat } from '@/lib/matchFormat'
 import {
   displayScore,
   footballGoalsFromScore,
@@ -210,7 +217,8 @@ export function MatchCard({
   const aWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
   const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
 
-  const isLiveSport = match.match_type === 'football' || match.match_type === 'cricket'
+  const isLiveSport =
+    match.match_type === 'football' || match.match_type === 'cricket' || match.match_type === 'rounders'
   const isCurrentlyLive = isLiveSport && match.status === 'in_progress'
   // Only fetched while live — a finished match doesn't need it. Football's
   // confirmed/pending `Score.Football` already embeds its goals (see
@@ -233,6 +241,7 @@ export function MatchCard({
   // live block/badge for a match that finished after the card last mounted.
   const footballState = isCurrentlyLive ? footballScoreFrom(scoreQuery.data) : null
   const cricketState = isCurrentlyLive ? cricketScoreFrom(scoreQuery.data) : null
+  const roundersState = isCurrentlyLive ? roundersScoreFrom(scoreQuery.data) : null
   // Goals for a finished football match, read straight off the
   // confirmed/pending score (no fetch) — shown under the plain score box
   // below (the live ticker in `LiveMatchBlock` only renders while
@@ -266,6 +275,19 @@ export function MatchCard({
       ? cricketStateDescription(match, cricketProgressFromScore(cricketScore), cricketFmt)
       : null
 
+  // Same role as `cricketScore`/`cricketDescription` above, for rounders.
+  const roundersScore = scoreInfo ? roundersScoreFrom(scoreInfo.score) : null
+  const roundersFmt = roundersFormat(match.format)
+  const roundersDescription = roundersState
+    ? roundersStateDescription(
+        match,
+        { innings: roundersState.innings, awaiting_next_innings: roundersState.awaiting_next_innings ?? true },
+        roundersFmt,
+      )
+    : roundersScore
+      ? roundersStateDescription(match, roundersProgressFromScore(roundersScore), roundersFmt)
+      : null
+
   const { like_count, comment_count, i_liked } = match.social
   const toggleLike = useToggleLike(match)
 
@@ -285,14 +307,16 @@ export function MatchCard({
         className="flex w-full items-start justify-between gap-3 p-3.5 text-left"
       >
         <p className="text-sm leading-snug">
-          {cricketDescription ? (
-            <span>{cricketDescription}</span>
+          {cricketDescription || roundersDescription ? (
+            <span>{cricketDescription || roundersDescription}</span>
           ) : (
             <>
               <span className={cn(aWon && 'font-medium')}>{nameA}</span>
               <span className="text-primary">
                 {' '}
-                {match.match_type !== 'cricket' && scoreInfo?.winnerSideId ? 'beat' : 'vs'}{' '}
+                {match.match_type !== 'cricket' && match.match_type !== 'rounders' && scoreInfo?.winnerSideId
+                  ? 'beat'
+                  : 'vs'}{' '}
               </span>
               <span className={cn(bWon && 'font-medium')}>{nameB}</span>
             </>
@@ -330,6 +354,14 @@ export function MatchCard({
       ) : cricketScore ? (
         <div className="mx-3.5 mb-3">
           <CricketScoreBlock match={match} score={cricketScore} showDescription={false} />
+        </div>
+      ) : roundersState ? (
+        <div className="mx-3.5 mb-3">
+          <RoundersMatchBlock match={match} state={roundersState} showDescription={false} />
+        </div>
+      ) : roundersScore ? (
+        <div className="mx-3.5 mb-3">
+          <RoundersScoreBlock match={match} score={roundersScore} showDescription={false} />
         </div>
       ) : (
         scoreInfo && (

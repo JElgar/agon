@@ -13,14 +13,18 @@ import { StatusBadge, matchBadgeStatus } from '@/components/agon/StatusBadge'
 import { ScoreConfirmationBar } from '@/components/agon/ScoreConfirmationBar'
 import { LiveMatchBlock } from '@/components/agon/live/LiveMatchBlock'
 import { CricketMatchBlock } from '@/components/agon/live/CricketMatchBlock'
+import { RoundersMatchBlock } from '@/components/agon/live/RoundersMatchBlock'
 import { CricketScoreBlock } from '@/components/agon/CricketScoreBlock'
+import { RoundersScoreBlock } from '@/components/agon/RoundersScoreBlock'
 import { CricketScorecard } from '@/components/agon/CricketScorecard'
+import { RoundersScorecard } from '@/components/agon/RoundersScorecard'
 import { FootballScorecard } from '@/components/agon/FootballScorecard'
 import { FootballScorersBySide } from '@/components/agon/FootballScorersBySide'
 import { useLiveEvents } from '@/hooks/useLiveScore'
 import { useMatchScore } from '@/hooks/useMatchScore'
 import { footballScoreFrom, footballEventSourceFromScore } from '@/lib/liveScore'
 import { cricketInningsFor, cricketScoreFrom, inningsDeliveriesFromEvents } from '@/lib/cricketScore'
+import { roundersInningsFor, roundersScoreFrom } from '@/lib/roundersScore'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { displayScore, footballGoalsFromScore, headlineBySide, headlineLabel, setLine } from '@/lib/score'
 import {
@@ -116,7 +120,8 @@ function MatchDetail({
 
   const canEdit = isParticipant(match, currentUserId)
   const cancelled = match.status === 'cancelled'
-  const isLiveSport = match.match_type === 'football' || match.match_type === 'cricket'
+  const isLiveSport =
+    match.match_type === 'football' || match.match_type === 'cricket' || match.match_type === 'rounders'
 
   const [sideA, sideB] = match.sides
   const nameA = sideName(sideA, 'Side A')
@@ -143,7 +148,8 @@ function MatchDetail({
   const isCurrentlyLive = isLiveSport && match.status === 'in_progress'
   const footballState = isCurrentlyLive ? footballScoreFrom(scoreQuery.data) : null
   const cricketState = isCurrentlyLive ? cricketScoreFrom(scoreQuery.data) : null
-  const hasLiveState = !!footballState || !!cricketState
+  const roundersState = isCurrentlyLive ? roundersScoreFrom(scoreQuery.data) : null
+  const hasLiveState = !!footballState || !!cricketState || !!roundersState
   // Goals for a finished football match, read straight off the
   // confirmed/pending score — shown as a scorer breakdown under the plain
   // score box below (same as the feed/profile card's `MatchCard`); the full
@@ -156,16 +162,21 @@ function MatchDetail({
   // `cricketScoreInnings` below — needed here just for `.players` (the
   // score's resolved-name map), passed to `CricketScorecard`.
   const cricketScore = cricketScoreFrom(isCurrentlyLive ? scoreQuery.data : scoreInfo?.score)
+  // Ditto for rounders — passed to `RoundersScorecard`.
+  const roundersScore = roundersScoreFrom(isCurrentlyLive ? scoreQuery.data : scoreInfo?.score)
   // `FootballScorecard`'s event timeline: the live running score while the
   // match is in progress, else straight off the confirmed/pending score —
   // stays visible once the match is completed, unlike `footballState` above.
   const footballEventSource = footballEventSourceFromScore(
     isCurrentlyLive ? scoreQuery.data : scoreInfo?.score,
   )
-  // Football's setup screen also gates starting the clock; cricket has no
-  // equivalent preferences step, so it goes straight into scoring.
+  // Football's setup screen also gates starting the clock; cricket and
+  // rounders have no equivalent preferences step (no clock), so they go
+  // straight into scoring.
   const liveEntryPath =
-    match.match_type === 'cricket' ? `/matches/${match.id}/live` : `/matches/${match.id}/live/setup`
+    match.match_type === 'cricket' || match.match_type === 'rounders'
+      ? `/matches/${match.id}/live`
+      : `/matches/${match.id}/live/setup`
 
   // Each cricket innings' deliveries, folded in from the raw live event log
   // by matching innings order, for the run-rate graph — the score's own
@@ -180,6 +191,10 @@ function MatchDetail({
     ...inn,
     deliveries: liveInningsDeliveries?.[i]?.deliveries ?? [],
   }))
+  // Rounders' scorecard reads each innings' batting/bowling cards straight
+  // off the score (no run-rate graph, so no need for the raw event log the
+  // way cricket's does — see `RoundersScorecard`'s doc comment).
+  const roundersInnings = roundersInningsFor(isCurrentlyLive ? scoreQuery.data : scoreInfo?.score)
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
@@ -229,6 +244,14 @@ function MatchDetail({
           ) : cricketScore ? (
             <div className="mt-3">
               <CricketScoreBlock match={match} score={cricketScore} />
+            </div>
+          ) : roundersState ? (
+            <div className="mt-3">
+              <RoundersMatchBlock match={match} state={roundersState} />
+            </div>
+          ) : roundersScore ? (
+            <div className="mt-3">
+              <RoundersScoreBlock match={match} score={roundersScore} />
             </div>
           ) : scoreInfo ? (
             <div className="mt-3 flex items-center justify-between">
@@ -366,6 +389,12 @@ function MatchDetail({
           directly). */}
       {cricketInnings && cricketInnings.length > 0 && (
         <CricketScorecard match={match} innings={cricketInnings} players={cricketScore?.players} />
+      )}
+
+      {/* Rounders scorecard: per-innings batting/bowling, once there's
+          per-innings detail recorded (live-scored or entered directly). */}
+      {roundersInnings && roundersInnings.length > 0 && (
+        <RoundersScorecard match={match} innings={roundersInnings} players={roundersScore?.players} />
       )}
 
       {/* Football event timeline: goals/cards/subs, once there's detail

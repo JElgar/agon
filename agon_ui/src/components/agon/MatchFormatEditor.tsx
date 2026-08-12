@@ -6,9 +6,11 @@ import type { MatchType } from '@/lib/sports'
 import {
   DEFAULT_CRICKET_FORMAT,
   DEFAULT_FOOTBALL_FORMAT,
+  DEFAULT_ROUNDERS_FORMAT,
   type CricketFormat,
   type FootballFormat,
   type MatchFormat,
+  type RoundersFormat,
 } from '@/lib/matchFormat'
 
 /**
@@ -185,6 +187,64 @@ export function CricketFields({
   )
 }
 
+export function RoundersFields({
+  value,
+  onChange,
+}: {
+  value: RoundersFormat
+  onChange: (value: RoundersFormat) => void
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="grid grid-cols-2 gap-2">
+        <NumberField
+          label="Innings per side"
+          value={value.innings_per_side}
+          min={1}
+          onChange={(v) => onChange({ ...value, innings_per_side: v ?? 1 })}
+        />
+        <NumberField
+          label="Good balls per innings"
+          value={value.good_balls_per_innings ?? undefined}
+          placeholder="Unlimited"
+          onChange={(v) => onChange({ ...value, good_balls_per_innings: v })}
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <NumberField
+          label="Innings length (min)"
+          value={value.innings_length_minutes ?? undefined}
+          placeholder="Untimed"
+          onChange={(v) => onChange({ ...value, innings_length_minutes: v })}
+        />
+        <NumberField
+          label="Last batter's bonus balls"
+          value={value.last_batter_bonus_balls ?? undefined}
+          placeholder="None"
+          onChange={(v) => onChange({ ...value, last_batter_bonus_balls: v })}
+        />
+      </div>
+      <NumberField
+        label="Balls per bowling spell"
+        value={value.balls_per_bowling_spell ?? undefined}
+        placeholder="Unlimited"
+        onChange={(v) => onChange({ ...value, balls_per_bowling_spell: v })}
+      />
+      <ToggleRow
+        label="Reaching home over multiple balls counts as a half rounder"
+        checked={value.half_rounders_count}
+        onChange={(half_rounders_count) => onChange({ ...value, half_rounders_count })}
+      />
+      <NumberField
+        label="No-ball penalty after (consecutive)"
+        value={value.no_ball_penalty_threshold ?? undefined}
+        placeholder="No penalty"
+        onChange={(v) => onChange({ ...value, no_ball_penalty_threshold: v })}
+      />
+    </div>
+  )
+}
+
 /**
  * Sport-specific match format settings (half length, overs limit, penalty
  * runs, ...) — `null` while unset, in which case the app just falls back to
@@ -208,7 +268,7 @@ export function MatchFormatEditor({
   value: MatchFormat | null
   onChange: (value: MatchFormat | null) => void
 }) {
-  if (sport !== 'football' && sport !== 'cricket') return null
+  if (sport !== 'football' && sport !== 'cricket' && sport !== 'rounders') return null
 
   const enabled = value !== null
 
@@ -225,7 +285,9 @@ export function MatchFormatEditor({
           onChange(
             sport === 'cricket'
               ? { sport: 'Cricket', ...DEFAULT_CRICKET_FORMAT }
-              : { sport: 'Football', ...DEFAULT_FOOTBALL_FORMAT },
+              : sport === 'rounders'
+                ? { sport: 'Rounders', ...DEFAULT_ROUNDERS_FORMAT }
+                : { sport: 'Football', ...DEFAULT_FOOTBALL_FORMAT },
           )
         }}
       />
@@ -235,6 +297,11 @@ export function MatchFormatEditor({
             <CricketFields
               value={value}
               onChange={(v) => onChange({ sport: 'Cricket', ...v })}
+            />
+          ) : value.sport === 'Rounders' ? (
+            <RoundersFields
+              value={value}
+              onChange={(v) => onChange({ sport: 'Rounders', ...v })}
             />
           ) : (
             <FootballFields

@@ -11,23 +11,13 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { playersOnSide } from '@/lib/members'
+import { FOUL_KINDS, foulKindLabel, type NetballFoulKind } from '@/lib/netballScore'
 import { PlayerPicker, SidePicker } from './Pickers'
 
 type Match = components['schemas']['Match']
 type NetballLiveEvent = components['schemas']['NetballLiveEvent']
-type NetballFoulKind = components['schemas']['NetballFoulKind']
 
 export type NetballEventKind = 'goal' | 'foul'
-
-const FOUL_KINDS: NetballFoulKind[] = ['contact', 'obstruction', 'footwork', 'offside', 'held_ball', 'other']
-const FOUL_KIND_LABEL: Record<NetballFoulKind, string> = {
-  contact: 'Contact',
-  obstruction: 'Obstruction',
-  footwork: 'Footwork',
-  offside: 'Offside',
-  held_ball: 'Held ball',
-  other: 'Other',
-}
 
 function MinuteField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
@@ -73,12 +63,26 @@ function toMinute(minute: string): number | undefined {
  * football's `RecordEventDialog`. Quarter-only scoring never opens this;
  * it records period-end scores directly (see `LiveScoringPage`'s netball
  * flow).
+ *
+ * Two callers, two time models:
+ * - Live scoring (`liveMode: true`, from `NetballLiveScoringPage`) hides the
+ *   minute field entirely — the event is timestamped by the server's own
+ *   clock the instant it's submitted (see `NetballGoalEvent.occurred_at`'s
+ *   backend doc comment). This is deliberate, not just simpler: a free-text
+ *   minute let a scorer backdate an event into the middle of the log, ahead
+ *   of things already recorded; only appending to the top of the stack keeps
+ *   the log an honest record of what was tapped when.
+ * - Manual/historical entry (`liveMode` omitted/false, from
+ *   `NetballScoreFields`) has no live clock to timestamp against at all — a
+ *   free-text minute is the only way to say roughly when a goal happened,
+ *   so that field stays.
  */
 export function RecordNetballEventDialog({
   open,
   kind,
   match,
-  initialMinute,
+  liveMode = false,
+  initialMinute = 0,
   onOpenChange,
   onSubmit,
   submitting,
@@ -89,7 +93,10 @@ export function RecordNetballEventDialog({
    *  match yet (see `NetballScoreFields`) can pass a synthetic object with
    *  just these two fields. */
   match: Pick<Match, 'sides' | 'players'>
-  initialMinute: number
+  /** Live scoring only — see the component doc comment. */
+  liveMode?: boolean
+  /** Manual entry only; ignored (and the field hidden) when `liveMode`. */
+  initialMinute?: number
   onOpenChange: (open: boolean) => void
   onSubmit: (event: NetballLiveEvent) => void
   submitting: boolean
@@ -120,7 +127,7 @@ export function RecordNetballEventDialog({
         side_id: goal.side_id,
         scorer_player_id: goal.scorer_player_id,
         two_points: goal.two_points,
-        minute: toMinute(goal.minute),
+        minute: liveMode ? undefined : toMinute(goal.minute),
       } as NetballLiveEvent)
     } else if (kind === 'foul' && foul.side_id && foul.foul_kind) {
       onSubmit({
@@ -128,7 +135,7 @@ export function RecordNetballEventDialog({
         side_id: foul.side_id,
         player_id: foul.player_id,
         foul_kind: foul.foul_kind,
-        minute: toMinute(foul.minute),
+        minute: liveMode ? undefined : toMinute(foul.minute),
       } as NetballLiveEvent)
     }
   }
@@ -211,20 +218,22 @@ export function RecordNetballEventDialog({
                         : 'text-muted-foreground hover:bg-muted',
                     )}
                   >
-                    {FOUL_KIND_LABEL[fk]}
+                    {foulKindLabel(fk)}
                   </button>
                 ))}
               </div>
             </>
           )}
 
-          <MinuteField
-            value={kind === 'goal' ? goal.minute : foul.minute}
-            onChange={(v) => {
-              if (kind === 'goal') setGoal((d) => ({ ...d, minute: v }))
-              else setFoul((d) => ({ ...d, minute: v }))
-            }}
-          />
+          {!liveMode && (
+            <MinuteField
+              value={kind === 'goal' ? goal.minute : foul.minute}
+              onChange={(v) => {
+                if (kind === 'goal') setGoal((d) => ({ ...d, minute: v }))
+                else setFoul((d) => ({ ...d, minute: v }))
+              }}
+            />
+          )}
 
           <Button disabled={!canSubmit || submitting} onClick={submit}>
             {submitting ? 'Saving…' : `Add ${title.toLowerCase()}`}

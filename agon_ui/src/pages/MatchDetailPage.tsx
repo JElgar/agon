@@ -169,6 +169,8 @@ function MatchDetail({
   const finishedNetballGoals = scoreInfo && !isCurrentlyLive ? netballGoalsFromScore(scoreInfo.score) : null
   const finishedNetballScorePlayers =
     scoreInfo && !isCurrentlyLive ? netballScoreFrom(scoreInfo.score)?.players : undefined
+  const finishedNetballPeriodTimes =
+    scoreInfo && !isCurrentlyLive ? netballScoreFrom(scoreInfo.score)?.period_times : undefined
   // Same "live while in progress, else confirmed/pending" source as
   // `cricketScoreInnings` below — needed here just for `.players` (the
   // score's resolved-name map), passed to `CricketScorecard`.
@@ -317,6 +319,7 @@ function MatchDetail({
               goals={finishedNetballGoals}
               match={match}
               players={finishedNetballScorePlayers}
+              periodTimes={finishedNetballPeriodTimes}
               sideA={sideA}
               sideB={sideB}
               className="mt-2 text-xs"

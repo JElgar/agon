@@ -6,6 +6,7 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { cn } from '@/lib/utils'
 import { useAppendNetballEvent, useLiveSeq } from '@/hooks/useLiveScore'
 import { matchScoreQueryKey, useMatchScore } from '@/hooks/useMatchScore'
 import {
@@ -17,11 +18,14 @@ import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { UndoLastEventButton } from '@/components/agon/live/UndoLastEventButton'
 import { netballFormat } from '@/lib/matchFormat'
 import {
-  currentMinute,
+  currentQuarterElapsedSeconds,
   describeEvent,
+  eventClockLabel,
   eventEmoji,
   eventsFromDetail,
+  formatClock,
   isLivePlayPhase,
+  isQuarterOvertime,
   netballScoreFrom,
   nextPeriodForPhase,
   nextPhaseActionLabel,
@@ -190,8 +194,11 @@ function useFinishNetballMatch(match: Match) {
   })
 }
 
-/** How often the on-screen clock re-renders while a quarter is running. */
-const CLOCK_TICK_MS = 15_000
+/** How often the on-screen clock re-renders while a quarter is running —
+ *  every second, so the scorer sees it actually ticking (not just jumping a
+ *  minute at a time) and notices promptly once it goes red (see
+ *  `isQuarterOvertime`). */
+const CLOCK_TICK_MS = 1_000
 
 /**
  * Event-by-event netball scoring: quick actions to log goals/fouls as they
@@ -234,17 +241,32 @@ function NetballEventByEventScoringPage({
 
   const format = netballFormat(match.format)
   const phase: ClockPhase = state ? phaseFromState(state) : 'not_started'
-  const minute = state ? currentMinute(state, now) : null
+  const elapsedSeconds = state ? currentQuarterElapsedSeconds(state, now) : null
+  const overtime = !!state && isQuarterOvertime(state, format, now)
   const isDraw = !!state && goalsFor(aId) === goalsFor(bId)
   const progressionCtx = { isDraw, extraTime: format.extra_time }
 
-  const handleQuarterEnd = () => {
+  const handleAdvancePhase = () => {
     const period = nextPeriodForPhase(phase, progressionCtx)
     if (!period) return
     append.mutate({ kind: 'Period', period, score: state?.score ?? {} })
   }
 
-  const advanceClockPhases: ClockPhase[] = ['not_started', 'quarter_1', 'quarter_2', 'quarter_3', 'quarter_4', 'extra_time']
+  // Every phase with an advance action: ending the current quarter, or
+  // (from a `break_*` phase) starting the next one once the scorer taps
+  // "start" — see `phaseFromState`'s doc comment for why a break doesn't
+  // advance on its own.
+  const advanceClockPhases: ClockPhase[] = [
+    'not_started',
+    'quarter_1',
+    'break_1',
+    'quarter_2',
+    'break_2',
+    'quarter_3',
+    'break_3',
+    'quarter_4',
+    'extra_time',
+  ]
   const showAdvanceClockTile = advanceClockPhases.includes(phase)
 
   const actions: { key: string; label: string; icon: React.ReactNode; onClick: () => void; disabled?: boolean }[] = [
@@ -257,10 +279,10 @@ function NetballEventByEventScoringPage({
     ...(showAdvanceClockTile
       ? [
           {
-            key: 'quarter_end',
+            key: 'advance_phase',
             label: nextPhaseActionLabel(phase, progressionCtx),
             icon: <TimerReset className="size-5" />,
-            onClick: handleQuarterEnd,
+            onClick: handleAdvancePhase,
             disabled: nextPeriodForPhase(phase, progressionCtx) === null,
           },
         ]
@@ -272,7 +294,12 @@ function NetballEventByEventScoringPage({
   const readyToFinish = (decidingPhase && !continuationAvailable) || phase === 'finished'
 
   const events = state
-    ? eventsFromDetail({ goals: state.goals ?? [], fouls: state.fouls ?? [], players: state.players }).reverse()
+    ? eventsFromDetail({
+        goals: state.goals ?? [],
+        fouls: state.fouls ?? [],
+        players: state.players,
+        period_times: state.period_times,
+      }).reverse()
     : []
 
   return (
@@ -313,8 +340,8 @@ function NetballEventByEventScoringPage({
               <span className="text-muted-foreground">–</span>
               {goalsFor(bId)}
             </div>
-            <div className="mt-0.5 text-xs text-primary">
-              {minute !== null && `${minute}' · `}
+            <div className={cn('mt-0.5 text-xs', overtime ? 'font-semibold text-destructive' : 'text-primary')}>
+              {elapsedSeconds !== null && `${formatClock(elapsedSeconds)} · `}
               {phaseLabel(phase)}
             </div>
           </div>
@@ -341,7 +368,7 @@ function NetballEventByEventScoringPage({
 
       {continuationAvailable && (
         <div className="flex flex-col gap-2">
-          <Button size="lg" disabled={append.isPending} onClick={handleQuarterEnd}>
+          <Button size="lg" disabled={append.isPending} onClick={handleAdvancePhase}>
             {nextPhaseActionLabel(phase, progressionCtx)}
           </Button>
           <Button variant="ghost" size="sm" disabled={finishMatch.isPending} onClick={() => finishMatch.mutate()}>
@@ -372,8 +399,8 @@ function NetballEventByEventScoringPage({
               const isSideB = event.side_id === match.sides[1]?.id
               return (
                 <div key={i} className={`flex items-baseline gap-2 text-sm ${isSideB ? 'flex-row-reverse text-right' : ''}`}>
-                  <span className="w-8 shrink-0 text-xs text-muted-foreground">
-                    {event.minute !== undefined ? `${event.minute}'` : ''}
+                  <span className="w-10 shrink-0 text-xs text-muted-foreground">
+                    {eventClockLabel(event, state?.period_times)}
                   </span>
                   <span aria-hidden>{eventEmoji(event.kind)}</span>
                   <span className="min-w-0 truncate">{describeEvent(event, match, state?.players)}</span>
@@ -390,7 +417,7 @@ function NetballEventByEventScoringPage({
         open={dialogKind !== null}
         kind={dialogKind}
         match={match}
-        initialMinute={minute ?? 0}
+        liveMode
         onOpenChange={(open) => !open && setDialogKind(null)}
         submitting={append.isPending}
         onSubmit={(event) => {
@@ -459,11 +486,19 @@ function NetballQuarterOnlyScoringPage({
     append.mutate({ kind: 'Period', period: nextPeriod, score: { [aId]: a, [bId]: b } })
   }
 
+  // Quarter-only mode has no live clock, so it never records the explicit
+  // `*Start` markers event-by-event mode's breaks use (see `NetballPeriod`'s
+  // backend doc comment) — `quarter_two_start`/`quarter_three_start`/
+  // `quarter_four_start` are listed here only because `NetballPeriod` needs
+  // every variant covered, not because this screen ever looks them up.
   const QUARTER_LABEL: Record<NetballPeriod, string> = {
     start: 'Start',
     quarter_one_end: 'End of 1st quarter',
+    quarter_two_start: 'Start of 2nd quarter',
     quarter_two_end: 'End of 2nd quarter (half-time)',
+    quarter_three_start: 'Start of 3rd quarter',
     quarter_three_end: 'End of 3rd quarter',
+    quarter_four_start: 'Start of 4th quarter',
     full_time: 'Full-time',
     extra_time_start: 'Extra time',
     extra_time_end: 'End of extra time',

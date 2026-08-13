@@ -816,6 +816,10 @@ pub struct NetballGoalEventRecord {
     pub two_points: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minute: Option<u32>,
+    /// Mirrors `agon_service::detailed_score::netball::NetballGoalEvent::occurred_at`
+    /// — RFC3339, same string convention as `LiveEventRecord::occurred_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -842,6 +846,9 @@ pub struct NetballFoulEventRecord {
     pub foul_kind: NetballFoulKindRecord,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minute: Option<u32>,
+    /// Mirrors `NetballGoalEventRecord::occurred_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -868,8 +875,11 @@ pub struct NetballPeriodEventRecord {
 pub enum NetballPeriodRecord {
     Start,
     QuarterOneEnd,
+    QuarterTwoStart,
     QuarterTwoEnd,
+    QuarterThreeStart,
     QuarterThreeEnd,
+    QuarterFourStart,
     FullTime,
     ExtraTimeStart,
     ExtraTimeEnd,

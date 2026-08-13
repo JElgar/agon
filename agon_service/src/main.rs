@@ -5353,6 +5353,7 @@ fn resolve_score_ids(
                             scorer_position: g.scorer_position,
                             two_points: g.two_points,
                             minute: g.minute,
+                            occurred_at: g.occurred_at,
                         });
                     }
                     Some(out)
@@ -5368,6 +5369,7 @@ fn resolve_score_ids(
                             player_id: pmap_opt(&fo.player_id)?,
                             foul_kind: fo.foul_kind,
                             minute: fo.minute,
+                            occurred_at: fo.occurred_at,
                         });
                     }
                     Some(out)

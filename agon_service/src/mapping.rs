@@ -1400,6 +1400,9 @@ fn netball_goal_event_to_record(g: &NetballGoalEvent) -> NetballGoalEventRecord 
         scorer_position: g.scorer_position.as_ref().map(netball_position_to_record),
         two_points: g.two_points,
         minute: g.minute,
+        occurred_at: g
+            .occurred_at
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
     }
 }
 
@@ -1413,6 +1416,7 @@ fn netball_goal_event_from_record(rec: &NetballGoalEventRecord) -> NetballGoalEv
             .map(netball_position_from_record),
         two_points: rec.two_points,
         minute: rec.minute,
+        occurred_at: parse_ts_opt(&rec.occurred_at),
     }
 }
 
@@ -1455,6 +1459,9 @@ fn netball_foul_event_to_record(fo: &NetballFoulEvent) -> NetballFoulEventRecord
             NetballFoulKind::Other => NetballFoulKindRecord::Other,
         },
         minute: fo.minute,
+        occurred_at: fo
+            .occurred_at
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
     }
 }
 
@@ -1471,6 +1478,7 @@ fn netball_foul_event_from_record(rec: &NetballFoulEventRecord) -> NetballFoulEv
             NetballFoulKindRecord::Other => NetballFoulKind::Other,
         },
         minute: rec.minute,
+        occurred_at: parse_ts_opt(&rec.occurred_at),
     }
 }
 
@@ -1481,8 +1489,11 @@ fn netball_period_to_record(period: &NetballPeriod) -> NetballPeriodRecord {
     match period {
         NetballPeriod::Start => NetballPeriodRecord::Start,
         NetballPeriod::QuarterOneEnd => NetballPeriodRecord::QuarterOneEnd,
+        NetballPeriod::QuarterTwoStart => NetballPeriodRecord::QuarterTwoStart,
         NetballPeriod::QuarterTwoEnd => NetballPeriodRecord::QuarterTwoEnd,
+        NetballPeriod::QuarterThreeStart => NetballPeriodRecord::QuarterThreeStart,
         NetballPeriod::QuarterThreeEnd => NetballPeriodRecord::QuarterThreeEnd,
+        NetballPeriod::QuarterFourStart => NetballPeriodRecord::QuarterFourStart,
         NetballPeriod::FullTime => NetballPeriodRecord::FullTime,
         NetballPeriod::ExtraTimeStart => NetballPeriodRecord::ExtraTimeStart,
         NetballPeriod::ExtraTimeEnd => NetballPeriodRecord::ExtraTimeEnd,
@@ -1493,8 +1504,11 @@ fn netball_period_from_record(rec: &NetballPeriodRecord) -> NetballPeriod {
     match rec {
         NetballPeriodRecord::Start => NetballPeriod::Start,
         NetballPeriodRecord::QuarterOneEnd => NetballPeriod::QuarterOneEnd,
+        NetballPeriodRecord::QuarterTwoStart => NetballPeriod::QuarterTwoStart,
         NetballPeriodRecord::QuarterTwoEnd => NetballPeriod::QuarterTwoEnd,
+        NetballPeriodRecord::QuarterThreeStart => NetballPeriod::QuarterThreeStart,
         NetballPeriodRecord::QuarterThreeEnd => NetballPeriod::QuarterThreeEnd,
+        NetballPeriodRecord::QuarterFourStart => NetballPeriod::QuarterFourStart,
         NetballPeriodRecord::FullTime => NetballPeriod::FullTime,
         NetballPeriodRecord::ExtraTimeStart => NetballPeriod::ExtraTimeStart,
         NetballPeriodRecord::ExtraTimeEnd => NetballPeriod::ExtraTimeEnd,
@@ -2068,12 +2082,14 @@ mod tests {
                 scorer_position: Some(NetballPosition::GoalShooter),
                 two_points: false,
                 minute: Some(4),
+                occurred_at: Some(parse_ts("2024-05-01T20:04:00.000Z")),
             }),
             NetballLiveEvent::Foul(NetballFoulEvent {
                 side_id: "harriers".into(),
                 player_id: Some("defender_1".into()),
                 foul_kind: NetballFoulKind::Contact,
                 minute: Some(6),
+                occurred_at: Some(parse_ts("2024-05-01T20:06:00.000Z")),
             }),
             NetballLiveEvent::Period(NetballPeriodEvent {
                 period: NetballPeriod::QuarterOneEnd,
@@ -2336,6 +2352,7 @@ mod tests {
                         scorer_position: Some(NetballPosition::GoalShooter),
                         two_points: false,
                         minute: Some(3),
+                        occurred_at: Some(parse_ts("2024-05-01T20:03:00.000Z")),
                     },
                     NetballGoalEvent {
                         side_id: "kestrels".into(),
@@ -2343,6 +2360,7 @@ mod tests {
                         scorer_position: Some(NetballPosition::GoalAttack),
                         two_points: true,
                         minute: Some(7),
+                        occurred_at: Some(parse_ts("2024-05-01T20:07:00.000Z")),
                     },
                 ]),
                 fouls: Some(vec![NetballFoulEvent {
@@ -2350,6 +2368,7 @@ mod tests {
                     player_id: Some("player_3".into()),
                     foul_kind: NetballFoulKind::Obstruction,
                     minute: Some(5),
+                    occurred_at: Some(parse_ts("2024-05-01T20:05:00.000Z")),
                 }]),
                 period: Some(NetballPeriod::QuarterOneEnd),
                 period_times: Some(HashMap::from([(

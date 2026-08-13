@@ -4,7 +4,7 @@ import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { RecordNetballEventDialog, type NetballEventKind } from '@/components/agon/live/RecordNetballEventDialog'
-import { describeEvent, eventEmoji, goalEventsToViews, type NetballEventView } from '@/lib/netballScore'
+import { describeEvent, eventClockLabel, eventEmoji, goalEventsToViews, type NetballEventView } from '@/lib/netballScore'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -122,7 +122,16 @@ export function NetballScoreFields({ sideA, sideB, players, initial, onChange }:
 
   const events: NetballEventView[] = [
     ...goalEventsToViews(goals),
-    ...fouls.map((f): NetballEventView => ({ kind: 'foul', side_id: f.side_id, minute: f.minute, player_id: f.player_id })),
+    ...fouls.map((f): NetballEventView => ({
+      kind: 'foul',
+      side_id: f.side_id,
+      minute: f.minute,
+      player_id: f.player_id,
+      foul_kind: f.foul_kind,
+    })),
+    // No live clock here (see this component's doc comment) — `minute` is
+    // the only time signal a manually entered event carries, so it's what
+    // interleaves goals and fouls into one list.
   ].sort((a, b) => (a.minute ?? Infinity) - (b.minute ?? Infinity))
 
   return (
@@ -171,8 +180,8 @@ export function NetballScoreFields({ sideA, sideB, players, initial, onChange }:
                     className={`flex items-baseline gap-1.5 text-xs ${isSideB ? 'flex-row-reverse text-right' : ''}`}
                   >
                     <span aria-hidden>{eventEmoji(event.kind)}</span>
-                    {event.minute !== undefined && (
-                      <span className="font-medium text-foreground">{event.minute}'</span>
+                    {eventClockLabel(event) && (
+                      <span className="font-medium text-foreground">{eventClockLabel(event)}</span>
                     )}
                     <span className="truncate">{describeEvent(event, match)}</span>
                   </p>

@@ -276,12 +276,12 @@ struct MatchSide {
     /// the pick-from-squad UI). None = ad-hoc side with manually picked players.
     team_id: Option<String>,
     /// Display name for this side, resolved fresh on every response (see
-    /// `Api::hydrate_match`) — never None in practice. Priority: the sole
-    /// player's name if there's exactly one, else a custom name the creator
-    /// gave the side, else the team's name, else "Your side"/"Opposition"
-    /// relative to the caller, else a neutral "Team A"/"Team B". Computed
-    /// per-request rather than stored so it can't go stale and "your side"
-    /// always means the caller.
+    /// `Api::hydrate_match`) — never None in practice. Priority: a custom
+    /// name the creator gave the side, else the sole player's name if
+    /// there's exactly one, else the team's name, else "Your
+    /// side"/"Opposition" relative to the caller, else a neutral "Team
+    /// A"/"Team B". Computed per-request rather than stored so it can't go
+    /// stale and "your side" always means the caller.
     name: Option<String>,
     /// This side's full roster, when small enough to show directly instead of
     /// just `name`/`team_id`'s logo (1v1, doubles, a small squad). `None`
@@ -2296,6 +2296,24 @@ impl Api {
             }
         }
 
+        // A side with no players has no player to fall back on for its display
+        // name (see `Api::resolve_side_names`'s priority chain: custom name ->
+        // sole player's name -> team's name -> ...), so it needs a team or an
+        // explicit name to be identifiable at all — e.g. recording a result
+        // against an opposition you don't know the roster of.
+        for side in &input.sides {
+            let side_id = &side_ids[&side.client_id];
+            let has_players = player_records
+                .iter()
+                .any(|p| p.side_id.as_deref() == Some(side_id.as_str()));
+            if !has_players && side.team_id.is_none() && side.name.is_none() {
+                return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
+                    "side `{}` has no players, so it needs a name or a team",
+                    side.client_id
+                ))));
+            }
+        }
+
         // Resolve a create-time score's client-side ids to real side/player ids
         // (reject an unknown reference). This becomes a PENDING submission, not
         // a confirmed score: the reported result awaits the other side(s)'
@@ -2579,6 +2597,75 @@ impl Api {
                             rename.side_id
                         ))));
                     }
+                }
+            }
+        }
+
+        // A side with no players (after this request's roster edits, if any)
+        // needs a team or an explicit name to remain identifiable — same rule
+        // `create_match` enforces up front. Only worth projecting when this
+        // request can actually change a side's player count or name; an
+        // unrelated edit (e.g. renaming the match) leaves existing sides alone.
+        if input.added_players.is_some()
+            || input.removed_player_ids.is_some()
+            || input.side_assignments.is_some()
+            || input.side_names.is_some()
+        {
+            // Project each existing player's resulting side_id: drop removed
+            // ids, then apply this request's reassignments (unlisted players
+            // keep their current side). `added_players` contribute their own
+            // side_id straight away — they don't exist in `agg.players` yet.
+            let removed: std::collections::HashSet<&str> = input
+                .removed_player_ids
+                .iter()
+                .flatten()
+                .map(String::as_str)
+                .collect();
+            let reassigned: std::collections::HashMap<&str, &Option<String>> = input
+                .side_assignments
+                .iter()
+                .flatten()
+                .map(|a| (a.player_id.as_str(), &a.side_id))
+                .collect();
+
+            let mut final_side_ids: Vec<Option<String>> = agg
+                .players
+                .iter()
+                .filter(|p| !removed.contains(p.player_id.as_str()))
+                .map(|p| match reassigned.get(p.player_id.as_str()) {
+                    Some(side_id) => (*side_id).clone(),
+                    None => p.side_id.clone(),
+                })
+                .collect();
+            final_side_ids.extend(
+                input
+                    .added_players
+                    .iter()
+                    .flatten()
+                    .map(|p| p.side_id.clone()),
+            );
+
+            for side in &agg.sides {
+                let has_players = final_side_ids
+                    .iter()
+                    .any(|sid| sid.as_deref() == Some(side.side_id.as_str()));
+                if has_players {
+                    continue;
+                }
+                // A rename in this request wins over the side's existing
+                // custom name (mirrors how the rename itself is applied).
+                let effective_name = input
+                    .side_names
+                    .iter()
+                    .flatten()
+                    .find(|r| r.side_id == side.side_id)
+                    .map(|r| r.name.clone())
+                    .unwrap_or_else(|| side.name.clone());
+                if side.team_id.is_none() && effective_name.is_none() {
+                    return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                        "side `{}` would have no players, so it needs a name or a team",
+                        side.side_id
+                    ))));
                 }
             }
         }
@@ -4860,10 +4947,10 @@ impl Api {
 
     /// Hydrate every match in `matches` for one response: fill in each `User`
     /// player's `name`/`avatar_url` from their account, and resolve every
-    /// side's display `name` — the sole player's name if there's exactly one,
-    /// else a custom name the creator gave the side (an ad-hoc side, or one
-    /// of two sides sharing a team), else the assigned team's name, else a
-    /// fallback relative to `viewer_uid` — "Your side"/"Opposition" if
+    /// side's display `name` — a custom name the creator gave the side (an
+    /// ad-hoc side, or one of two sides sharing a team), else the sole
+    /// player's name if there's exactly one, else the assigned team's name,
+    /// else a fallback relative to `viewer_uid` — "Your side"/"Opposition" if
     /// they're actually playing in the match, else a neutral "Team A"/
     /// "Team B" by side order. Resolved per-request rather than stored, so a
     /// side's name can't go stale and "your side" always reflects whoever is
@@ -4995,14 +5082,14 @@ impl Api {
                 .map(str::trim)
                 .filter(|n| !n.is_empty());
 
-            side.name = Some(match sole_player_name {
-                Some(name) => name,
-                // A custom name (only ever set alongside a team when two
-                // sides share it — see the create-time validation) wins over
-                // the team's own name, since it's there specifically to tell
-                // those sides apart.
-                None => match custom_name {
-                    Some(name) => name.to_string(),
+            side.name = Some(match custom_name {
+                // An explicit name always wins, over both the sole player's
+                // name and the team's own name — it's there specifically
+                // because the creator wanted something other than either
+                // default (e.g. to tell two sides sharing one team apart).
+                Some(name) => name.to_string(),
+                None => match sole_player_name {
+                    Some(name) => name,
                     None => match &side.team_id {
                         Some(team_id) => team_names
                             .get(team_id)
@@ -5021,7 +5108,7 @@ impl Api {
     }
 
     /// The same side-name priority chain as [`Self::resolve_side_names`]
-    /// (sole player's name → custom name → team name → "Your
+    /// (custom name → sole player's name → team name → "Your
     /// side"/"Opposition" → neutral "Team A"/"Team B"), for a `FeedMatch` or
     /// `SearchMatch` — which never have the full player list to scan.
     ///
@@ -5047,10 +5134,12 @@ impl Api {
                 .map(str::trim)
                 .filter(|n| !n.is_empty());
 
-            side.name = Some(match sole_player_name {
-                Some(name) => name,
-                None => match custom_name {
-                    Some(name) => name.to_string(),
+            side.name = Some(match custom_name {
+                // Same priority as `resolve_side_names`: an explicit name
+                // always wins over the sole player's name.
+                Some(name) => name.to_string(),
+                None => match sole_player_name {
+                    Some(name) => name,
                     None => match &side.team_id {
                         Some(team_id) => team_names
                             .get(team_id)

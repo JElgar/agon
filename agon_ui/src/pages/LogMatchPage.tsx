@@ -68,12 +68,14 @@ interface SetRow {
 /** Whether the match is upcoming (no score) or already played (with a score). */
 type MatchMode = 'scheduled' | 'completed'
 
-/** A display name for a side: the sole player's name, else the custom name
- *  typed for it (if any), else a generic fallback — mirrors the server's
+/** A display name for a side: the custom name typed for it (if any), else the
+ *  sole player's name, else a generic fallback — mirrors the server's
  *  resolution order for this compose form's own preview text. */
 function sideName(players: TaggedPlayer[], customName: string, fallback: string): string {
+  const trimmed = customName.trim()
+  if (trimmed) return trimmed
   if (players.length === 1) return players[0].name
-  return customName.trim() || fallback
+  return fallback
 }
 
 /** Default scheduled time: the next whole hour, at least an hour from now. */
@@ -226,18 +228,22 @@ export function LogMatchPage() {
     return null
   }, [mode, isFootball, isCricket, isNetball, detailBuilt, setsPlayable, sets, pointsA, pointsB])
 
-  // Validation: a sport, a match name, at least one player on each side (so the
-  // match is meaningful), at least one opponent on side B, a time valid for the
-  // mode, and — for a completed match — a result.
+  // Validation: a sport, a match name, at least one player on your own side
+  // (so the match is meaningful), a time valid for the mode, and — for a
+  // completed match — a result. The opposition (side B) may be left empty —
+  // e.g. recording a result against a team you don't know the roster of —
+  // but then needs an explicit name (this flow has no team picker, so a
+  // player-less side has nothing else to show as its name; see the server's
+  // matching check in `create_match`).
   const valid = useMemo(() => {
     if (!sport) return false
     if (name.trim().length === 0) return false
     if (sideA.length === 0) return false
-    if (sideB.length === 0) return false
+    if (sideB.length === 0 && sideBName.trim().length === 0) return false
     if (timeError) return false
     if (scoreError) return false
     return true
-  }, [sport, name, sideA.length, sideB.length, timeError, scoreError])
+  }, [sport, name, sideA.length, sideB.length, sideBName, timeError, scoreError])
 
   const mutation = useMutation({
     mutationFn: async (body: CreateMatchInput) => {
@@ -385,7 +391,9 @@ export function LogMatchPage() {
     mutation.mutate(body)
   }
 
-  const playersSet = sport !== null && sideA.length > 0 && sideB.length > 0
+  // Side B (the opposition) is allowed to be empty — you might be recording
+  // your own team's result without knowing who's on the other side.
+  const playersSet = sport !== null && sideA.length > 0
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-3">
@@ -464,6 +472,12 @@ export function LogMatchPage() {
             name={sideBName}
             onNameChange={setSideBName}
           />
+          {sideB.length === 0 && sideBName.trim().length === 0 && (
+            <p className="px-1 text-xs text-muted-foreground">
+              No opponents tagged — give this side a name above (e.g. a team
+              or club name) so the match can show who it was against.
+            </p>
+          )}
         </div>
       </Section>
 
@@ -645,7 +659,7 @@ export function LogMatchPage() {
             hint={
               sport === null
                 ? 'Pick a sport to enter the score'
-                : 'Add players to both sides to enter the score'
+                : 'Add players to your side to enter the score'
             }
           />
         ))}

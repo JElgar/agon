@@ -134,6 +134,57 @@ export function isParticipant(
 }
 
 /**
+ * The side the viewer themselves plays on, if they're a participant — so
+ * match views can put the viewer's own side on the left regardless of the
+ * order the server happens to store `sides` in (see `orderSidesForViewer`).
+ *
+ * A feed's `FeedMatch` already resolves this server-side (`viewer_side_id`,
+ * cheaper there than a roster scan — see its backend doc comment); a full
+ * `Match` carries the roster to look it up directly, mirroring
+ * `isParticipant`'s accepted/no-invitation check. `SearchMatch` has neither,
+ * so this is always `undefined` there — search/profile-activity cards keep
+ * the server's stored side order.
+ */
+export function mySideId(
+  match: MatchLike,
+  currentUserId: string | undefined,
+): string | undefined {
+  if (!currentUserId) return undefined
+  if ('viewer_side_id' in match) return match.viewer_side_id ?? undefined
+  const players = ('players' in match && match.players) || []
+  for (const player of players) {
+    if (player.member.type !== 'User') continue
+    if (player.member.user_id !== currentUserId) continue
+    const invitation = player.member.invitation
+    if (invitation && invitation.status !== 'accepted') continue
+    if (player.side_id) return player.side_id
+  }
+  return undefined
+}
+
+/**
+ * `sides` reordered so the viewer's own side (`mySideId`) comes first —
+ * "my team on the left" in the feed card and match detail score boxes.
+ * Everything downstream (headline/score lookups, scorer columns, roster
+ * columns) keys off side id rather than array position, so reordering here
+ * is enough to flip the whole view. Falls back to the given order when the
+ * viewer has no resolvable side (not a participant, not yet assigned, or a
+ * `SearchMatch` with nothing to resolve from).
+ */
+export function orderSidesForViewer(
+  sides: MatchSide[],
+  viewerSideId: string | undefined,
+): MatchSide[] {
+  if (!viewerSideId) return sides
+  const index = sides.findIndex((s) => s.id === viewerSideId)
+  if (index <= 0) return sides
+  const reordered = [...sides]
+  const [mine] = reordered.splice(index, 1)
+  reordered.unshift(mine)
+  return reordered
+}
+
+/**
  * Display name for a match player: a linked Agon user's name is hydrated onto
  * the member server-side, an external player carries a display name directly.
  */

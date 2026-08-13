@@ -63,13 +63,8 @@ export function headlineBySide(score: Score): Record<string, number> {
   if (score.type === 'Netball') return { ...score.score }
   if (score.type === 'Cricket') return {}
   // Sets: a side wins a set at index i if its games exceed every other side's.
-  // `score.entries` is guarded defensively (`?? {}`) even though the API type
-  // marks it required — a stale cached bundle can still be running against an
-  // already-redeployed API whose response shape moved on, and `Object.entries`
-  // on `undefined` throws ("can't convert undefined to object" in Firefox),
-  // crashing the whole feed instead of just rendering an empty headline.
   const out: Record<string, number> = {}
-  const entries = Object.entries(score.entries ?? {})
+  const entries = Object.entries(score.entries)
   const setCount = Math.max(0, ...entries.map(([, sets]) => sets.length))
   for (const [sideId] of entries) out[sideId] = 0
   for (let i = 0; i < setCount; i++) {
@@ -95,7 +90,7 @@ export function headlineBySide(score: Score): Record<string, number> {
 export function setLine(score: Score, sides: MatchSide[]): string[] {
   if (score.type !== 'Sets') return []
   const ordered = sides
-    .map((s) => score.entries?.[s.id])
+    .map((s) => score.entries[s.id])
     .filter((s): s is number[] => Array.isArray(s))
   if (ordered.length < 2) return []
   const setCount = Math.max(...ordered.map((s) => s.length))

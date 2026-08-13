@@ -3433,3 +3433,78 @@ async fn netball_quarter_only_scoring_uses_period_marker_score_directly() {
         other => panic!("expected a netball score, got {other:?}"),
     }
 }
+
+/// Completing a live-scored netball match cross-checks the submitted score
+/// against the match's own derived live result — same 409-on-disagreement
+/// guard `update_match` already applies to football/cricket (see its doc
+/// comment), which netball's `finishMatch` also relies on
+/// (`NetballLiveScoringPage`'s `useFinishNetballMatch`).
+#[tokio::test]
+async fn finishing_a_netball_match_rejects_a_score_that_disagrees_with_the_live_log() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+
+    append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![netball_period_event_json(
+            "quarter_one_end",
+            &[(&side_a, 12), (&side_b, 9)],
+        )],
+    )
+    .await;
+
+    // A score that disagrees with the live-derived one (12-9) is rejected.
+    let wrong_score = models::Score::Netball(Box::new(models::ScoreNetballScore {
+        score: std::collections::HashMap::from([(side_a.clone(), 1), (side_b.clone(), 0)]),
+        goals: None,
+        fouls: None,
+        period: None,
+        period_times: None,
+        period_scores: None,
+        players: std::collections::HashMap::new(),
+        r#type: Default::default(),
+    }));
+    let response = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            status: Some(models::MatchStatus::Completed),
+            score: Some(Box::new(wrong_score)),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_status(response, reqwest::StatusCode::CONFLICT);
+
+    // The live-derived score itself is accepted.
+    let matching_score = models::Score::Netball(Box::new(models::ScoreNetballScore {
+        score: std::collections::HashMap::from([(side_a.clone(), 12), (side_b.clone(), 9)]),
+        goals: None,
+        fouls: None,
+        period: None,
+        period_times: None,
+        period_scores: None,
+        players: std::collections::HashMap::new(),
+        r#type: Default::default(),
+    }));
+    let finished = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            status: Some(models::MatchStatus::Completed),
+            score: Some(Box::new(matching_score)),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("finish with the live-derived score");
+    assert!(matches!(finished.status, models::MatchStatus::Completed));
+}

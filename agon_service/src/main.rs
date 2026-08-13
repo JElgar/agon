@@ -2583,18 +2583,19 @@ impl Api {
             }
         }
 
-        // Completing a live-scored football/cricket match still requires an
-        // explicit `score` from the client (see `LiveScoringPage`/
-        // `CricketLiveScoringPage`'s `finishMatch`, which now builds one
-        // locally from the same persisted live detail before sending it) —
-        // the server never fills one in silently. What it does instead is
-        // cross-check: derive its own score from the match's persisted live
-        // detail and, unless `override_live_score` says otherwise, reject a
-        // client score that disagrees with it, so confirmed results stay in
-        // sync with live scoring by default rather than by convention.
+        // Completing a live-scored football/cricket/netball match still
+        // requires an explicit `score` from the client (see `LiveScoringPage`/
+        // `CricketLiveScoringPage`/`NetballLiveScoringPage`'s `finishMatch`,
+        // which now builds one locally from the same persisted live detail
+        // before sending it) — the server never fills one in silently. What
+        // it does instead is cross-check: derive its own score from the
+        // match's persisted live detail and, unless `override_live_score`
+        // says otherwise, reject a client score that disagrees with it, so
+        // confirmed results stay in sync with live scoring by default rather
+        // than by convention.
         let mut derived_winner_side_id: Option<String> = None;
         if input.status.as_ref().map(match_status_str) == Some("completed")
-            && matches!(agg.match_.match_type.as_str(), "football" | "cricket")
+            && matches!(agg.match_.match_type.as_str(), "football" | "cricket" | "netball")
             && let Some(record) = dao
                 .get_match_score(&match_id, &agg.match_.match_type)
                 .await

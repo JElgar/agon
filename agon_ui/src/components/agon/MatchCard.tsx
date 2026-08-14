@@ -37,7 +37,7 @@ import {
   headlineLabel,
   setLine,
 } from '@/lib/score'
-import { myPendingInvitation } from '@/lib/members'
+import { myPendingInvitation, mySideId, orderSidesForViewer } from '@/lib/members'
 
 type Match = components['schemas']['Match']
 type FeedMatch = components['schemas']['FeedMatch']
@@ -204,10 +204,19 @@ export function MatchCard({
   className,
   ...props
 }: MatchCardProps) {
-  const [sideA, sideB] = match.sides
+  // The viewer's own side, when resolvable, always renders first (left) —
+  // both here and on the match detail page. `orderedMatch` carries the same
+  // reordering into the live-score/scorer sub-components below, which each
+  // derive their own sideA/sideB straight off `match.sides` — passing this
+  // instead of `match` keeps them in sync with the score box without
+  // touching their internals (everything they key off is side id, not
+  // array position).
+  const orderedSides = orderSidesForViewer(match.sides, mySideId(match, currentUserId))
+  const orderedMatch = { ...match, sides: orderedSides }
+  const [sideA, sideB] = orderedSides
   const scoreInfo = displayScore(match)
   const headline = scoreInfo ? headlineBySide(scoreInfo.score) : {}
-  const sets = scoreInfo ? setLine(scoreInfo.score, match.sides) : []
+  const sets = scoreInfo ? setLine(scoreInfo.score, orderedSides) : []
 
   const nameA = sideName(sideA, 'Side A')
   const nameB = sideName(sideB, 'Side B')
@@ -336,19 +345,19 @@ export function MatchCard({
           per-innings detail gets its own tile too. */}
       {footballState ? (
         <div className="mx-3.5 mb-3">
-          <LiveMatchBlock match={match} state={footballState} />
+          <LiveMatchBlock match={orderedMatch} state={footballState} />
         </div>
       ) : netballState ? (
         <div className="mx-3.5 mb-3">
-          <NetballMatchBlock match={match} state={netballState} />
+          <NetballMatchBlock match={orderedMatch} state={netballState} />
         </div>
       ) : cricketState ? (
         <div className="mx-3.5 mb-3">
-          <CricketMatchBlock match={match} state={cricketState} showDescription={false} />
+          <CricketMatchBlock match={orderedMatch} state={cricketState} showDescription={false} />
         </div>
       ) : cricketScore ? (
         <div className="mx-3.5 mb-3">
-          <CricketScoreBlock match={match} score={cricketScore} showDescription={false} />
+          <CricketScoreBlock match={orderedMatch} score={cricketScore} showDescription={false} />
         </div>
       ) : (
         scoreInfo && (
@@ -386,7 +395,7 @@ export function MatchCard({
             {finishedFootballGoals && (
               <FootballScorersBySide
                 goals={finishedFootballGoals}
-                match={match}
+                match={orderedMatch}
                 players={finishedFootballScorePlayers}
                 sideA={sideA}
                 sideB={sideB}
@@ -396,7 +405,7 @@ export function MatchCard({
             {finishedNetballGoals && (
               <NetballScorersBySide
                 goals={finishedNetballGoals}
-                match={match}
+                match={orderedMatch}
                 players={finishedNetballScorePlayers}
                 sideA={sideA}
                 sideB={sideB}

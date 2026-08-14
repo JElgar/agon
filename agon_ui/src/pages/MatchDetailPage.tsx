@@ -41,6 +41,8 @@ import {
   memberInviteToken,
   memberName,
   myPendingInvitation,
+  mySideId,
+  orderSidesForViewer,
   withInvitationStatus,
 } from '@/lib/members'
 import { CopyInviteButton } from '@/components/agon/CopyInviteButton'
@@ -131,13 +133,22 @@ function MatchDetail({
   const isLiveSport =
     match.match_type === 'football' || match.match_type === 'cricket' || match.match_type === 'netball'
 
-  const [sideA, sideB] = match.sides
+  // The viewer's own side, when they're playing, always renders first (left)
+  // — mirrors the feed card (`MatchCard`). `orderedMatch` carries the same
+  // reordering into the live-score/scorecard sub-components below, which
+  // each derive their own sideA/sideB straight off `match.sides` — passing
+  // this instead of `match` keeps them in sync with the score box without
+  // touching their internals (everything they key off is side id, not
+  // array position).
+  const orderedSides = orderSidesForViewer(match.sides, mySideId(match, currentUserId))
+  const orderedMatch = { ...match, sides: orderedSides }
+  const [sideA, sideB] = orderedSides
   const nameA = sideName(sideA, 'Side A')
   const nameB = sideName(sideB, 'Side B')
 
   const scoreInfo = displayScore(match)
   const headline = scoreInfo ? headlineBySide(scoreInfo.score) : {}
-  const sets = scoreInfo ? setLine(scoreInfo.score, match.sides) : []
+  const sets = scoreInfo ? setLine(scoreInfo.score, orderedSides) : []
   const aWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
   const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
 
@@ -250,19 +261,19 @@ function MatchDetail({
               the usual confirmed/pending result. */}
           {footballState ? (
             <div className="mt-3">
-              <LiveMatchBlock match={match} state={footballState} tickerLimit={3} />
+              <LiveMatchBlock match={orderedMatch} state={footballState} tickerLimit={3} />
             </div>
           ) : netballState ? (
             <div className="mt-3">
-              <NetballMatchBlock match={match} state={netballState} tickerLimit={3} />
+              <NetballMatchBlock match={orderedMatch} state={netballState} tickerLimit={3} />
             </div>
           ) : cricketState ? (
             <div className="mt-3">
-              <CricketMatchBlock match={match} state={cricketState} />
+              <CricketMatchBlock match={orderedMatch} state={cricketState} />
             </div>
           ) : cricketScore ? (
             <div className="mt-3">
-              <CricketScoreBlock match={match} score={cricketScore} />
+              <CricketScoreBlock match={orderedMatch} score={cricketScore} />
             </div>
           ) : scoreInfo ? (
             <div className="mt-3 flex items-center justify-between">
@@ -304,7 +315,7 @@ function MatchDetail({
           {finishedFootballGoals && (
             <FootballScorersBySide
               goals={finishedFootballGoals}
-              match={match}
+              match={orderedMatch}
               players={finishedFootballScorePlayers}
               sideA={sideA}
               sideB={sideB}
@@ -315,7 +326,7 @@ function MatchDetail({
           {finishedNetballGoals && (
             <NetballScorersBySide
               goals={finishedNetballGoals}
-              match={match}
+              match={orderedMatch}
               players={finishedNetballScorePlayers}
               sideA={sideA}
               sideB={sideB}
@@ -410,13 +421,13 @@ function MatchDetail({
           once there's per-innings detail recorded (live-scored or entered
           directly). */}
       {cricketInnings && cricketInnings.length > 0 && (
-        <CricketScorecard match={match} innings={cricketInnings} players={cricketScore?.players} />
+        <CricketScorecard match={orderedMatch} innings={cricketInnings} players={cricketScore?.players} />
       )}
 
       {/* Football event timeline: goals/cards/subs, once there's detail
           recorded (live-scored or entered directly) — stays visible after
           the match finishes, unlike the live score header above. */}
-      {footballEventSource && <FootballScorecard match={match} detail={footballEventSource} />}
+      {footballEventSource && <FootballScorecard match={orderedMatch} detail={footballEventSource} />}
 
       {/* Netball quarter breakdown — reads the same regardless of which
           live-scoring method produced the score (see
@@ -429,7 +440,7 @@ function MatchDetail({
       {/* Netball event timeline: goals/fouls, only present for an
           event-by-event-scored match — stays visible after the match
           finishes, unlike the live score header above. */}
-      {netballEventSource && <NetballScorecard match={match} detail={netballEventSource} />}
+      {netballEventSource && <NetballScorecard match={orderedMatch} detail={netballEventSource} />}
 
       {/* Invite more people (participants only). */}
       {canEdit && !cancelled && (

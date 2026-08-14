@@ -9,7 +9,27 @@ pub struct FootballGoalEvent {
     pub assist_player_id: Option<String>,
     pub own_goal: bool,
     pub penalty: bool,
+    /// Free-text minutes-into-the-match, only ever set by a manually logged
+    /// historical result (no live clock to timestamp against — see
+    /// `agon_ui`'s `FootballScoreFields`). A live-scored goal leaves this
+    /// unset; `occurred_at` is its source of truth instead (see that field's
+    /// doc comment).
     pub minute: Option<u32>,
+    /// When this actually happened, wall-clock — always overwritten by the
+    /// server from the live event envelope's own `occurred_at` for anything
+    /// recorded through `/live/events` (see `FootballScore::apply_event`),
+    /// ignoring whatever a client sends here. `None` for a manually logged
+    /// historical result, same as `minute` above.
+    ///
+    /// This — not the free-text `minute` — is what a live-scored event's
+    /// displayed minute is derived from, bracketed against
+    /// `FootballScore.period_times` the same way the live clock itself is
+    /// (see `agon_ui`'s `lib/liveScore.ts`): added time carries over between
+    /// halves and extra time layers on top, all computed from period
+    /// boundaries rather than trusted from what was typed in. Second
+    /// precision also means two events recorded a few seconds apart no
+    /// longer collide on the same displayed minute.
+    pub occurred_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Enum, Clone)]
@@ -24,7 +44,10 @@ pub struct FootballCardEvent {
     pub side_id: String,
     pub player_id: String,
     pub color: FootballCardColor,
+    /// Same convention as `FootballGoalEvent::minute` — manual entry only.
     pub minute: Option<u32>,
+    /// Same convention as `FootballGoalEvent::occurred_at`.
+    pub occurred_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Object, Clone)]
@@ -32,7 +55,10 @@ pub struct FootballSubstitutionEvent {
     pub side_id: String,
     pub player_in_id: String,
     pub player_out_id: String,
+    /// Same convention as `FootballGoalEvent::minute` — manual entry only.
     pub minute: Option<u32>,
+    /// Same convention as `FootballGoalEvent::occurred_at`.
+    pub occurred_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// One kick in a penalty shootout.

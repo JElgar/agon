@@ -1,6 +1,6 @@
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
-import { scorersBySide, type FootballScorerLine } from '@/lib/liveScore'
+import { scorersBySide, type FootballPeriodTimes, type FootballScorerLine } from '@/lib/liveScore'
 import type { ScorePlayers } from '@/lib/members'
 
 type FootballGoalEvent = components['schemas']['FootballGoalEvent']
@@ -24,6 +24,7 @@ export function FootballScorersBySide({
   goals,
   match,
   players,
+  periodTimes,
   sideA,
   sideB,
   className,
@@ -31,11 +32,14 @@ export function FootballScorersBySide({
   goals: FootballGoalEvent[]
   match: Match | FeedMatch | SearchMatch
   players?: ScorePlayers
+  /** Lets a live-scored goal's time show as a derived match minute — see
+   *  `scorersBySide`. */
+  periodTimes?: FootballPeriodTimes
   sideA: MatchSide | undefined
   sideB: MatchSide | undefined
   className?: string
 }) {
-  const bySide = scorersBySide(goals, match, players)
+  const bySide = scorersBySide(goals, match, players, periodTimes)
   const scorersA = bySide[sideA?.id ?? ''] ?? []
   const scorersB = bySide[sideB?.id ?? ''] ?? []
 
@@ -61,12 +65,10 @@ function ScorerColumn({
       {scorers.map((s) => (
         <p key={s.key} className="truncate">
           {s.name}
-          {s.minutes.length > 0 && (
+          {s.times.length > 0 && (
             <>
               {' '}
-              <span className="font-medium text-foreground">
-                {s.minutes.map((m) => `${m}'`).join(', ')}
-              </span>
+              <span className="font-medium text-foreground">{s.times.join(', ')}</span>
             </>
           )}
         </p>

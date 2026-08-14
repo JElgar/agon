@@ -16,6 +16,7 @@ import { footballFormat } from '@/lib/matchFormat'
 import {
   currentMinute,
   describeEvent,
+  eventClockLabel,
   eventEmoji,
   eventsFromDetail,
   footballScoreFrom,
@@ -263,6 +264,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
         cards: state.cards ?? [],
         substitutions: state.substitutions ?? [],
         players: state.players,
+        period_times: state.period_times,
       }).reverse()
     : []
 
@@ -432,8 +434,8 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
                   key={i}
                   className={`flex items-baseline gap-2 text-sm ${isSideB ? 'flex-row-reverse text-right' : ''}`}
                 >
-                  <span className="w-8 shrink-0 text-xs text-muted-foreground">
-                    {event.minute !== undefined ? `${event.minute}'` : ''}
+                  <span className="w-10 shrink-0 text-xs text-muted-foreground">
+                    {eventClockLabel(event, state?.period_times)}
                   </span>
                   <span aria-hidden>{eventEmoji(event.kind)}</span>
                   <span className="min-w-0 truncate">{describeEvent(event, match, state?.players)}</span>
@@ -454,7 +456,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
         open={dialogKind !== null}
         kind={dialogKind}
         match={match}
-        initialMinute={minute ?? 0}
+        liveMode
         onOpenChange={(open) => !open && setDialogKind(null)}
         submitting={append.isPending}
         onSubmit={(event) => {

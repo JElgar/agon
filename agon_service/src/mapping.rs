@@ -1243,6 +1243,9 @@ fn football_goal_event_to_record(g: &FootballGoalEvent) -> FootballGoalEventReco
         own_goal: g.own_goal,
         penalty: g.penalty,
         minute: g.minute,
+        occurred_at: g
+            .occurred_at
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
     }
 }
 
@@ -1254,6 +1257,7 @@ fn football_goal_event_from_record(rec: &FootballGoalEventRecord) -> FootballGoa
         own_goal: rec.own_goal,
         penalty: rec.penalty,
         minute: rec.minute,
+        occurred_at: parse_ts_opt(&rec.occurred_at),
     }
 }
 
@@ -1268,6 +1272,9 @@ fn football_card_event_to_record(c: &FootballCardEvent) -> FootballCardEventReco
             FootballCardColor::Red => FootballCardColorRecord::Red,
         },
         minute: c.minute,
+        occurred_at: c
+            .occurred_at
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
     }
 }
 
@@ -1280,6 +1287,7 @@ fn football_card_event_from_record(rec: &FootballCardEventRecord) -> FootballCar
             FootballCardColorRecord::Red => FootballCardColor::Red,
         },
         minute: rec.minute,
+        occurred_at: parse_ts_opt(&rec.occurred_at),
     }
 }
 
@@ -1291,6 +1299,9 @@ fn football_substitution_event_to_record(
         player_in_id: s.player_in_id.clone(),
         player_out_id: s.player_out_id.clone(),
         minute: s.minute,
+        occurred_at: s
+            .occurred_at
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
     }
 }
 
@@ -1302,6 +1313,7 @@ fn football_substitution_event_from_record(
         player_in_id: rec.player_in_id.clone(),
         player_out_id: rec.player_out_id.clone(),
         minute: rec.minute,
+        occurred_at: parse_ts_opt(&rec.occurred_at),
     }
 }
 
@@ -1643,6 +1655,9 @@ fn cricket_delivery_to_record(d: &CricketDelivery) -> CricketDeliveryRecord {
         runs_off_bat: d.runs_off_bat,
         extra: d.extra.as_ref().map(cricket_delivery_extra_to_record),
         wicket: d.wicket.as_ref().map(cricket_delivery_wicket_to_record),
+        occurred_at: d
+            .occurred_at
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
     }
 }
 
@@ -1656,6 +1671,7 @@ fn cricket_delivery_from_record(rec: &CricketDeliveryRecord) -> CricketDelivery 
         runs_off_bat: rec.runs_off_bat,
         extra: rec.extra.as_ref().map(cricket_delivery_extra_from_record),
         wicket: rec.wicket.as_ref().map(cricket_delivery_wicket_from_record),
+        occurred_at: parse_ts_opt(&rec.occurred_at),
     }
 }
 
@@ -1796,10 +1812,12 @@ pub fn derive_live_score(
             Some(Score::Football(FootballScore::from_events(&events)))
         }
         "cricket" => {
-            let events: Vec<CricketLiveEvent> = records
+            let events: Vec<(chrono::DateTime<chrono::Utc>, CricketLiveEvent)> = records
                 .iter()
                 .filter_map(|r| match &r.payload {
-                    LiveEventPayloadRecord::Cricket(c) => Some(cricket_live_event_from_record(c)),
+                    LiveEventPayloadRecord::Cricket(c) => {
+                        Some((parse_ts(&r.occurred_at), cricket_live_event_from_record(c)))
+                    }
                     LiveEventPayloadRecord::Football(_) | LiveEventPayloadRecord::Netball(_) => {
                         None
                     }
@@ -1995,18 +2013,21 @@ mod tests {
                 own_goal: true,
                 penalty: false,
                 minute: Some(63),
+                occurred_at: Some(parse_ts("2024-05-01T20:03:00.000Z")),
             }),
             FootballLiveEvent::Card(FootballCardEvent {
                 side_id: "oak_park".into(),
                 player_id: "khan".into(),
                 color: FootballCardColor::Red,
                 minute: None,
+                occurred_at: None,
             }),
             FootballLiveEvent::Substitution(FootballSubstitutionEvent {
                 side_id: "oak_park".into(),
                 player_in_id: "moreno".into(),
                 player_out_id: "khan".into(),
                 minute: Some(70),
+                occurred_at: Some(parse_ts("2024-05-01T20:10:00.000Z")),
             }),
             FootballLiveEvent::Period(FootballPeriodEvent {
                 period: FootballPeriod::ExtraTimeKickOff,
@@ -2051,6 +2072,7 @@ mod tests {
                     bowler_player_id: Some("patel".into()),
                     fielder_player_id: Some("cole".into()),
                 }),
+                occurred_at: Some(parse_ts("2024-05-01T20:04:03.000Z")),
             }),
             CricketLiveEvent::Retire(CricketRetireEvent {
                 batter_player_id: "sharma".into(),
@@ -2245,6 +2267,7 @@ mod tests {
                     runs_off_bat: 1,
                     extra: None,
                     wicket: None,
+                    occurred_at: Some(parse_ts("2024-05-01T20:08:03.000Z")),
                 }]),
                 next_ball_context: Some(NextBallContext {
                     striker_player_id: Some("player_2".into()),
@@ -2281,6 +2304,7 @@ mod tests {
                         own_goal: false,
                         penalty: false,
                         minute: Some(23),
+                        occurred_at: Some(parse_ts("2024-05-01T20:23:00.000Z")),
                     },
                     FootballGoalEvent {
                         side_id: "side_blue".into(),
@@ -2289,6 +2313,7 @@ mod tests {
                         own_goal: true,
                         penalty: false,
                         minute: None,
+                        occurred_at: None,
                     },
                 ]),
                 cards: Some(vec![FootballCardEvent {
@@ -2296,12 +2321,14 @@ mod tests {
                     player_id: "player_3".into(),
                     color: FootballCardColor::Yellow,
                     minute: Some(60),
+                    occurred_at: Some(parse_ts("2024-05-01T21:00:00.000Z")),
                 }]),
                 substitutions: Some(vec![FootballSubstitutionEvent {
                     side_id: "side_red".into(),
                     player_in_id: "player_4".into(),
                     player_out_id: "player_1".into(),
                     minute: Some(75),
+                    occurred_at: Some(parse_ts("2024-05-01T21:15:00.000Z")),
                 }]),
                 period: Some(FootballPeriod::FullTime),
                 period_times: Some(HashMap::from([

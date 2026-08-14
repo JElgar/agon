@@ -6,6 +6,11 @@ export type FootballGoalEvent = components['schemas']['FootballGoalEvent']
 type FootballCardEvent = components['schemas']['FootballCardEvent']
 type FootballSubstitutionEvent = components['schemas']['FootballSubstitutionEvent']
 type Score = components['schemas']['Score']
+/** A period-marker timestamp map, straight off `FootballScore.period_times`
+ *  — the schema widens the key to a bare string, so this is what every
+ *  helper below that just needs the timestamps (not the rest of a
+ *  `FootballScore`) accepts. Same role as netball's `NetballPeriodTimes`. */
+export type FootballPeriodTimes = Record<string, string>
 type MatchPlayer = components['schemas']['MatchPlayer']
 type FeedMatch = components['schemas']['FeedMatch']
 type SearchMatch = components['schemas']['SearchMatch']
@@ -39,6 +44,7 @@ export type FootballEventSource = {
   cards: FootballCardEvent[]
   substitutions: FootballSubstitutionEvent[]
   players: ScorePlayers
+  period_times?: FootballPeriodTimes
 }
 
 /** A football match's event timeline straight off its score — `null` if
@@ -54,6 +60,7 @@ export function footballEventSourceFromScore(score: Score | null | undefined): F
     cards: score.cards ?? [],
     substitutions: score.substitutions ?? [],
     players: score.players,
+    period_times: score.period_times,
   }
 }
 
@@ -67,7 +74,15 @@ export type FootballEventKind = 'goal' | 'own_goal' | 'penalty' | 'yellow_card' 
 export interface FootballEventView {
   kind: FootballEventKind
   side_id: string
+  /** Free-text minutes-into-the-match — only ever set on a manually logged
+   *  historical event (no live clock). A live-scored event's minute is
+   *  derived from `occurred_at` instead; see `eventClockLabel`. */
   minute?: number
+  /** Wall-clock time, set on every live-scored event (and unset on a
+   *  manually logged one) — the source of truth for both display (via
+   *  `eventClockLabel`) and chronological order (via `eventsFromDetail`'s
+   *  sort). */
+  occurred_at?: string
   player_id?: string
   assist_player_id?: string
   substituted_player_id?: string
@@ -91,16 +106,26 @@ export function goalEventsToViews(goals: FootballGoalEvent[]): FootballEventView
     kind: goalKind(g),
     side_id: g.side_id,
     minute: g.minute,
+    occurred_at: g.occurred_at,
     player_id: g.scorer_player_id,
     assist_player_id: g.assist_player_id,
   }))
 }
 
+/** Sort key for ordering events chronologically: `occurred_at` (a
+ *  live-scored event's wall-clock time) when present, else a coarse
+ *  fallback off the free-text `minute` a manually logged event carries
+ *  instead, else last. Same reasoning as netball's `eventSortKey`. */
+function eventSortKey(view: { occurred_at?: string; minute?: number }): number {
+  if (view.occurred_at) return new Date(view.occurred_at).getTime()
+  if (view.minute !== undefined) return view.minute * 60_000
+  return Infinity
+}
+
 /** All of a football score's goals/cards/substitutions merged into one
- *  timeline, ordered by minute (undated events last — the scorer always
- *  fills in a minute in practice, so this only matters for edge cases).
- *  Takes just `FootballEventSource` (not the full `FootballScore`) so a
- *  finished match's `Score.Football` can feed it too — see
+ *  timeline, in true chronological order (undated events last). Takes just
+ *  `FootballEventSource` (not the full `FootballScore`) so a finished
+ *  match's `Score.Football` can feed it too — see
  *  `footballEventSourceFromScore`. */
 export function eventsFromDetail(detail: FootballEventSource): FootballEventView[] {
   const events: FootballEventView[] = [
@@ -109,17 +134,19 @@ export function eventsFromDetail(detail: FootballEventSource): FootballEventView
       kind: cardKind(c),
       side_id: c.side_id,
       minute: c.minute,
+      occurred_at: c.occurred_at,
       player_id: c.player_id,
     })),
     ...detail.substitutions.map((s): FootballEventView => ({
       kind: 'substitution',
       side_id: s.side_id,
       minute: s.minute,
+      occurred_at: s.occurred_at,
       player_id: s.player_in_id,
       substituted_player_id: s.player_out_id,
     })),
   ]
-  return events.sort((a, b) => (a.minute ?? Infinity) - (b.minute ?? Infinity))
+  return events.sort((a, b) => eventSortKey(a) - eventSortKey(b))
 }
 
 /** Label + emoji for each football live-event kind, for the event log/ticker. */
@@ -149,7 +176,10 @@ export function eventEmoji(kind: FootballEventKind): string {
   return EVENT_EMOJI[kind]
 }
 
-/** "63'" for a recorded minute, else a blank string. */
+/** "63'" for a recorded free-text minute (manual entry only — see
+ *  `FootballGoalEvent.minute`'s backend doc comment), else a blank string. A
+ *  live-scored event should use `eventClockLabel` instead, which prefers
+ *  `occurred_at`. */
 export function minuteLabel(minute: number | undefined): string {
   return minute === undefined ? '' : `${minute}'`
 }
@@ -177,6 +207,7 @@ export function recentEvents(detail: FootballScore, limit: number): FootballEven
     cards: detail.cards ?? [],
     substitutions: detail.substitutions ?? [],
     players: detail.players,
+    period_times: detail.period_times,
   })
     .reverse()
     .slice(0, limit)
@@ -190,7 +221,9 @@ export function recentEvents(detail: FootballScore, limit: number): FootballEven
 export interface FootballScorerLine {
   key: string
   name: string
-  minutes: number[]
+  /** Already display-formatted (mm' or the legacy bare-minute label — see
+   *  `eventClockLabel`), one per goal, in chronological order. */
+  times: string[]
 }
 
 /** All of a football match's goals, grouped by crediting side and then by
@@ -211,22 +244,33 @@ export function scorersBySide(
   goals: FootballGoalEvent[],
   match: MatchLike,
   scorePlayers?: ScorePlayers,
+  periodTimes?: FootballPeriodTimes,
 ): Record<string, FootballScorerLine[]> {
-  const bySide: Record<string, Map<string, FootballScorerLine>> = {}
+  const bySide: Record<string, Map<string, { name: string; entries: { key: number; label: string }[] }>> = {}
   for (const g of goals) {
     const lines = (bySide[g.side_id] ??= new Map())
     const scorer = playerNameFor(match, g.scorer_player_id, scorePlayers)
     const key = g.own_goal ? `own_goal:${g.scorer_player_id ?? 'unknown'}` : (g.scorer_player_id ?? 'unknown')
     const name = g.own_goal ? (scorer ? `Own goal (${scorer})` : 'Own goal') : (scorer ?? 'Unknown')
-    const line = lines.get(key) ?? { key, name, minutes: [] }
-    if (g.minute !== undefined) line.minutes.push(g.minute)
+    const line = lines.get(key) ?? { name, entries: [] }
+    const view: FootballEventView = { kind: goalKind(g), side_id: g.side_id, minute: g.minute, occurred_at: g.occurred_at }
+    line.entries.push({ key: eventSortKey(view), label: eventClockLabel(view, periodTimes) })
     lines.set(key, line)
   }
   const out: Record<string, FootballScorerLine[]> = {}
   for (const [sideId, lines] of Object.entries(bySide)) {
-    out[sideId] = [...lines.values()]
-      .map((line) => ({ ...line, minutes: [...line.minutes].sort((a, b) => a - b) }))
-      .sort((a, b) => (a.minutes[0] ?? Infinity) - (b.minutes[0] ?? Infinity))
+    out[sideId] = [...lines.entries()]
+      .map(([key, line]) => {
+        const sorted = [...line.entries].sort((a, b) => a.key - b.key)
+        return {
+          key,
+          name: line.name,
+          times: sorted.filter((e) => e.label).map((e) => e.label),
+          firstKey: sorted[0]?.key ?? Infinity,
+        }
+      })
+      .sort((a, b) => a.firstKey - b.firstKey)
+      .map(({ key, name, times }) => ({ key, name, times }))
   }
   return out
 }
@@ -346,6 +390,14 @@ export function periodTime(detail: FootballScore, period: FootballPeriod): strin
   return detail.period_times?.[period]
 }
 
+/** Same lookup as `periodTime`, but off a bare `FootballPeriodTimes` map
+ *  instead of a full `FootballScore` — for helpers (`minuteAt`,
+ *  `eventClockLabel`) that need to work from just the timestamps, e.g. a
+ *  finished match's `FootballEventSource`, which doesn't carry a full score. */
+function periodTimeFrom(periodTimes: FootballPeriodTimes | undefined, period: FootballPeriod): string | undefined {
+  return periodTimes?.[period]
+}
+
 export type ClockPhase =
   | 'not_started'
   | 'first_half'
@@ -401,25 +453,23 @@ function minutesBetween(from: string, to: Date | string): number {
   return Math.max(0, Math.floor((new Date(to).getTime() - new Date(from).getTime()) / 60_000))
 }
 
-/**
- * The current match minute, e.g. for the live clock display or to prefill an
- * event's minute field (still overridable — see `RecordEventDialog`). `null`
- * before kickoff or during an unclocked phase (penalties). Added time in a
- * half carries over automatically into the next one — first half into
- * second half, and normal time into extra time — so the clock counts up
- * continuously (e.g. 94', then 106' once extra time starts) rather than
- * resetting to a fixed 45'/90' each time.
- */
-export function currentMinute(state: FootballScore, now: Date = new Date()): number | null {
-  const phase = phaseFromState(state)
-  const kickoffAt = periodTime(state, 'kick_off')
-  const halfTimeAt = periodTime(state, 'half_time')
-  const secondHalfKickoffAt = periodTime(state, 'second_half_kick_off')
-  const fullTimeAt = periodTime(state, 'full_time')
-  const etKickoffAt = periodTime(state, 'extra_time_kick_off')
-  const etHalfTimeAt = periodTime(state, 'extra_time_half_time')
-  const etSecondHalfKickoffAt = periodTime(state, 'extra_time_second_half_kick_off')
-  const etFullTimeAt = periodTime(state, 'extra_time_full_time')
+/** The cumulative-minute baselines each live-play bracket starts from —
+ *  shared by `currentMinute` (evaluated at "now") and `minuteAt` (evaluated
+ *  at an arbitrary past instant, e.g. a recorded event's `occurred_at`) so
+ *  the two can never disagree about where the clock resumes after a break.
+ *  Added time in a half carries over automatically into the next one —
+ *  first half into second half, and normal time into extra time — so the
+ *  clock counts up continuously (e.g. 94', then 106' once extra time
+ *  starts) rather than resetting to a fixed 45'/90' each time. */
+function clockBaselines(periodTimes: FootballPeriodTimes | undefined) {
+  const kickoffAt = periodTimeFrom(periodTimes, 'kick_off')
+  const halfTimeAt = periodTimeFrom(periodTimes, 'half_time')
+  const secondHalfKickoffAt = periodTimeFrom(periodTimes, 'second_half_kick_off')
+  const fullTimeAt = periodTimeFrom(periodTimes, 'full_time')
+  const etKickoffAt = periodTimeFrom(periodTimes, 'extra_time_kick_off')
+  const etHalfTimeAt = periodTimeFrom(periodTimes, 'extra_time_half_time')
+  const etSecondHalfKickoffAt = periodTimeFrom(periodTimes, 'extra_time_second_half_kick_off')
+  const etFullTimeAt = periodTimeFrom(periodTimes, 'extra_time_full_time')
 
   const firstHalfMinutes = kickoffAt && halfTimeAt ? minutesBetween(kickoffAt, halfTimeAt) : 0
   const normalTimeMinutes = fullTimeAt
@@ -430,6 +480,42 @@ export function currentMinute(state: FootballScore, now: Date = new Date()): num
         : 0
     : 0
   const etFirstHalfMinutes = etKickoffAt && etHalfTimeAt ? minutesBetween(etKickoffAt, etHalfTimeAt) : 0
+
+  return {
+    kickoffAt,
+    halfTimeAt,
+    secondHalfKickoffAt,
+    fullTimeAt,
+    etKickoffAt,
+    etHalfTimeAt,
+    etSecondHalfKickoffAt,
+    etFullTimeAt,
+    firstHalfMinutes,
+    normalTimeMinutes,
+    etFirstHalfMinutes,
+  }
+}
+
+/**
+ * The current match minute, e.g. for the live clock display. `null` before
+ * kickoff or during an unclocked phase (penalties). See `clockBaselines` for
+ * how added time/extra time carry over.
+ */
+export function currentMinute(state: FootballScore, now: Date = new Date()): number | null {
+  const phase = phaseFromState(state)
+  const {
+    kickoffAt,
+    halfTimeAt,
+    secondHalfKickoffAt,
+    fullTimeAt,
+    etKickoffAt,
+    etHalfTimeAt,
+    etSecondHalfKickoffAt,
+    etFullTimeAt,
+    firstHalfMinutes,
+    normalTimeMinutes,
+    etFirstHalfMinutes,
+  } = clockBaselines(state.period_times)
 
   switch (phase) {
     case 'first_half':
@@ -463,6 +549,51 @@ export function currentMinute(state: FootballScore, now: Date = new Date()): num
     case 'other':
       return null
   }
+}
+
+/** The match minute a past instant (`occurredAt`) fell in — the same
+ *  bracket-and-carry-over math as `currentMinute`, but bracketing an
+ *  arbitrary timestamp against the recorded markers instead of dispatching
+ *  on the match's *current* phase. This is what a live-scored event's
+ *  displayed minute is derived from (see `eventClockLabel`), rather than
+ *  trusting a stored/typed number: extra time layers on top of normal time
+ *  automatically, and a break's duration is never counted, exactly like the
+ *  live clock itself. `null` if `occurredAt` predates kickoff (shouldn't
+ *  happen for a real event, but keeps this total rather than guessing). */
+export function minuteAt(periodTimes: FootballPeriodTimes | undefined, occurredAt: string): number | null {
+  const b = clockBaselines(periodTimes)
+  const t = new Date(occurredAt).getTime()
+  const since = (marker: string) => minutesBetween(marker, occurredAt)
+
+  // Checked from the latest bracket backward — an event's `occurred_at`
+  // should never predate the marker that started its own bracket, so the
+  // first (latest) marker it's at-or-after is the one it belongs to.
+  if (b.etSecondHalfKickoffAt && t >= new Date(b.etSecondHalfKickoffAt).getTime()) {
+    return b.normalTimeMinutes + b.etFirstHalfMinutes + since(b.etSecondHalfKickoffAt)
+  }
+  if (b.etKickoffAt && t >= new Date(b.etKickoffAt).getTime()) {
+    return b.normalTimeMinutes + since(b.etKickoffAt)
+  }
+  if (b.secondHalfKickoffAt && t >= new Date(b.secondHalfKickoffAt).getTime()) {
+    return b.firstHalfMinutes + since(b.secondHalfKickoffAt)
+  }
+  if (b.kickoffAt && t >= new Date(b.kickoffAt).getTime()) {
+    return since(b.kickoffAt)
+  }
+  return null
+}
+
+/** Display label for one event's time — "63'" for a live-scored event,
+ *  derived from `occurred_at` plus the match's recorded period markers
+ *  (`minuteAt`); the legacy free-text minute label (`minuteLabel`) for a
+ *  manually logged one. Blank if neither is known (e.g. `periodTimes` wasn't
+ *  available to bracket a live event against). */
+export function eventClockLabel(event: FootballEventView, periodTimes?: FootballPeriodTimes): string {
+  if (event.occurred_at) {
+    const minute = minuteAt(periodTimes, event.occurred_at)
+    if (minute !== null) return `${minute}'`
+  }
+  return minuteLabel(event.minute)
 }
 
 /** Whether the ball is actually in play right now — the phases where a goal

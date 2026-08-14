@@ -257,6 +257,8 @@ export function MatchCard({
   // player roster to resolve scorer names from locally.
   const finishedFootballScorePlayers =
     scoreInfo && !isCurrentlyLive ? footballScoreFrom(scoreInfo.score)?.players : undefined
+  const finishedFootballPeriodTimes =
+    scoreInfo && !isCurrentlyLive ? footballScoreFrom(scoreInfo.score)?.period_times : undefined
   const finishedNetballScorePlayers =
     scoreInfo && !isCurrentlyLive ? netballScoreFrom(scoreInfo.score)?.players : undefined
   const finishedNetballPeriodTimes =
@@ -390,6 +392,7 @@ export function MatchCard({
                 goals={finishedFootballGoals}
                 match={match}
                 players={finishedFootballScorePlayers}
+                periodTimes={finishedFootballPeriodTimes}
                 sideA={sideA}
                 sideB={sideB}
                 className="mt-2.5 text-[11px]"

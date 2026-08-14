@@ -103,6 +103,7 @@ mod tests {
             player_id: "p1".into(),
             color: FootballCardColor::Yellow,
             minute: Some(58),
+            occurred_at: None,
         }));
 
         let json = event.to_json().expect("serializes");

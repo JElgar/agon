@@ -166,6 +166,8 @@ function MatchDetail({
   const finishedFootballGoals = scoreInfo && !isCurrentlyLive ? footballGoalsFromScore(scoreInfo.score) : null
   const finishedFootballScorePlayers =
     scoreInfo && !isCurrentlyLive ? footballScoreFrom(scoreInfo.score)?.players : undefined
+  const finishedFootballPeriodTimes =
+    scoreInfo && !isCurrentlyLive ? footballScoreFrom(scoreInfo.score)?.period_times : undefined
   const finishedNetballGoals = scoreInfo && !isCurrentlyLive ? netballGoalsFromScore(scoreInfo.score) : null
   const finishedNetballScorePlayers =
     scoreInfo && !isCurrentlyLive ? netballScoreFrom(scoreInfo.score)?.players : undefined
@@ -308,6 +310,7 @@ function MatchDetail({
               goals={finishedFootballGoals}
               match={match}
               players={finishedFootballScorePlayers}
+              periodTimes={finishedFootballPeriodTimes}
               sideA={sideA}
               sideB={sideB}
               className="mt-2 text-xs"

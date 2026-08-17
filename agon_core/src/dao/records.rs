@@ -1006,7 +1006,19 @@ pub struct FeedItemRecord {
 pub struct UserSportStatsRecord {
     pub matches_played: u64,
     pub wins: u64,
+    pub draws: u64,
+    pub losses: u64,
     // Win percentage is derived (wins / matches_played) at the API layer.
+    /// Sport-specific counters — e.g. "runs"/"wickets"/"fours"/"sixes" for
+    /// cricket, "goals"/"assists" for football — stored flat alongside the
+    /// four counters above rather than nested, so a single family of
+    /// `ADD stats.#sport.#counter :d` update expressions
+    /// (`agon_core::dao::stats`) can address any counter of any sport the
+    /// same way, without the DAO needing to know per-sport field names.
+    /// Empty for a sport with no per-player box score to derive extras from
+    /// (tennis, badminton, squash, table tennis, "other").
+    #[serde(flatten, default)]
+    pub extra: HashMap<String, u64>,
 }
 
 /// `MATCH#<mid>` / `STATCONTRIB#<uid>` — what a single match currently
@@ -1024,6 +1036,17 @@ pub struct StatContributionRecord {
     pub played: u64,
     /// 1 while the user's side is the confirmed winner; 0 otherwise.
     pub won: u64,
+    /// 1 while the match completed with no winner (both sides tied); 0
+    /// otherwise. Mutually exclusive with `won`/`lost`.
+    pub drawn: u64,
+    /// 1 while the match completed and the user's side was not the winner
+    /// and it wasn't a draw; 0 otherwise.
+    pub lost: u64,
+    /// Sport-specific counters this match contributed for this user (e.g.
+    /// cricket runs/wickets, football goals/assists) — empty when `played`
+    /// is 0 or the sport has no per-player box score to derive them from.
+    #[serde(default)]
+    pub counters: HashMap<String, u64>,
 }
 
 #[cfg(test)]

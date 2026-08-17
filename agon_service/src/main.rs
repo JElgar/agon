@@ -116,14 +116,58 @@ async fn jwt_checker(req: &Request, bearer: Bearer) -> Result<JwtClaims, poem::e
 
 struct Api;
 
+/// Lifetime stats common to every sport: matches played and the outcome
+/// breakdown (win/draw/loss), plus a derived win percentage. Also the full
+/// shape for a sport with no richer per-player detail to add (tennis,
+/// badminton, squash, table tennis, "other") — `CricketPlayerStats`/
+/// `FootballPlayerStats` flatten this in and add their own fields on top.
 #[derive(Object)]
-pub struct UserSportStats {
-    pub match_type: MatchType,
+pub struct GenericPlayerStats {
     pub matches_played: i32,
+    pub wins: i32,
+    pub draws: i32,
+    pub losses: i32,
     /// `None` when no confirmed matches have been played yet — display as
     /// "-", not 0%.
     pub win_percentage: Option<f32>,
     // TODO Elo
+}
+
+/// Lifetime cricket stats: the common counters plus a batting/bowling summary
+/// derived from every confirmed match's box score.
+#[derive(Object)]
+pub struct CricketPlayerStats {
+    #[oai(flatten)]
+    pub common: GenericPlayerStats,
+    pub runs: i32,
+    pub wickets: i32,
+    pub fours: i32,
+    pub sixes: i32,
+}
+
+/// Lifetime football stats: the common counters plus goals/assists derived
+/// from every confirmed match's goal log.
+#[derive(Object)]
+pub struct FootballPlayerStats {
+    #[oai(flatten)]
+    pub common: GenericPlayerStats,
+    pub goals: i32,
+    pub assists: i32,
+}
+
+/// A user's lifetime stats, one field per sport — `None` for a sport they've
+/// never played a confirmed match in. Explicit per-sport fields rather than a
+/// list/map so each sport's shape is self-describing: cricket and football
+/// carry their own typed detail, everything else is the common shape as-is.
+#[derive(Object)]
+pub struct UserStats {
+    pub cricket: Option<CricketPlayerStats>,
+    pub football: Option<FootballPlayerStats>,
+    pub tennis: Option<GenericPlayerStats>,
+    pub badminton: Option<GenericPlayerStats>,
+    pub squash: Option<GenericPlayerStats>,
+    pub table_tennis: Option<GenericPlayerStats>,
+    pub other: Option<GenericPlayerStats>,
 }
 
 #[derive(Object)]
@@ -133,7 +177,7 @@ pub struct UserProfile {
     /// Profile image. Uploaded by the client directly to object storage
     /// (Supabase Storage); the API only stores/returns the resulting URL.
     pub profile_image: Option<Photo>,
-    pub stats: Vec<UserSportStats>,
+    pub stats: UserStats,
     pub follower_count: u32,
     pub following_count: u32,
     /// Whether the requesting user follows this profile. False for your own.
@@ -5664,11 +5708,21 @@ fn mock_user_profile(id: String, name: String) -> UserProfile {
             image_url: String::from("https://cdn.example.com/users/avatar.jpg"),
             asset_id: None,
         }),
-        stats: vec![UserSportStats {
-            match_type: MatchType::Tennis,
-            matches_played: 12,
-            win_percentage: Some(58.3),
-        }],
+        stats: UserStats {
+            cricket: None,
+            football: None,
+            tennis: Some(GenericPlayerStats {
+                matches_played: 12,
+                wins: 7,
+                draws: 0,
+                losses: 5,
+                win_percentage: Some(58.3),
+            }),
+            badminton: None,
+            squash: None,
+            table_tennis: None,
+            other: None,
+        },
         follower_count: 42,
         following_count: 17,
         is_followed_by_me: false,

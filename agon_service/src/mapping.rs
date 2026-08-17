@@ -4,6 +4,8 @@
 //! module is the single place that translates between the two, so handlers stay
 //! thin and the coupling lives in one file.
 
+use std::collections::HashMap;
+
 use poem::error::InternalServerError;
 use tracing::error;
 
@@ -36,11 +38,12 @@ use crate::notification::{
 };
 use crate::team::{Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
-    Comment, ConfirmedScore, CricketScore, CricketScoreInnings, FeedMatch, FootballScore, Location,
-    Match, MatchOutcome, MatchPlayer, MatchSide, MatchSocial, MatchStatus, MatchType, PendingScore,
-    Photo, RosterPreviewPlayer, Score, ScoreConfirmation, ScoreResponseKind, ScoreSubmission,
+    Comment, ConfirmedScore, CricketPlayerStats, CricketScore, CricketScoreInnings, FeedMatch,
+    FootballPlayerStats, FootballScore, GenericPlayerStats, Location, Match, MatchOutcome,
+    MatchPlayer, MatchSide, MatchSocial, MatchStatus, MatchType, PendingScore, Photo,
+    RosterPreviewPlayer, Score, ScoreConfirmation, ScoreResponseKind, ScoreSubmission,
     ScoreSubmissionResponse, ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore,
-    UserProfile, UserSportStats,
+    UserProfile, UserStats,
 };
 use agon_core::dao::error::DaoError;
 use agon_core::dao::live_score_ops::NewLiveEvent;
@@ -114,11 +117,6 @@ pub fn match_type_tag(mt: &MatchType) -> &'static str {
 /// Build the public `UserProfile` from a stored user record (its inline
 /// per-sport `stats` map) and the viewer-relative follow flag.
 pub fn user_profile_from_record(user: &UserRecord, is_followed_by_me: bool) -> UserProfile {
-    // Sort by sport tag for a deterministic response order (a `HashMap`'s
-    // iteration order isn't).
-    let mut entries: Vec<(&String, &UserSportStatsRecord)> = user.stats.iter().collect();
-    entries.sort_by(|a, b| a.0.cmp(b.0));
-
     UserProfile {
         id: user.id.clone(),
         name: user.name.clone(),
@@ -126,27 +124,59 @@ pub fn user_profile_from_record(user: &UserRecord, is_followed_by_me: bool) -> U
             image_url: url.clone(),
             asset_id: None,
         }),
-        stats: entries
-            .into_iter()
-            .map(|(sport, rec)| sport_stats_from_record(sport, rec))
-            .collect(),
+        stats: user_stats_from_record(&user.stats),
         follower_count: user.follower_count as u32,
         following_count: user.following_count as u32,
         is_followed_by_me,
     }
 }
 
-/// Map a stored per-sport stats record to the API model, deriving win %.
-pub fn sport_stats_from_record(sport: &str, rec: &UserSportStatsRecord) -> UserSportStats {
+/// Map the stored per-sport `stats` map to the public, one-field-per-sport
+/// `UserStats` — `None` for any sport tag with no stored entry.
+pub fn user_stats_from_record(stats: &HashMap<String, UserSportStatsRecord>) -> UserStats {
+    UserStats {
+        cricket: stats.get("cricket").map(cricket_stats_from_record),
+        football: stats.get("football").map(football_stats_from_record),
+        tennis: stats.get("tennis").map(generic_stats_from_record),
+        badminton: stats.get("badminton").map(generic_stats_from_record),
+        squash: stats.get("squash").map(generic_stats_from_record),
+        table_tennis: stats.get("table_tennis").map(generic_stats_from_record),
+        other: stats.get("other").map(generic_stats_from_record),
+    }
+}
+
+/// Map the counters common to every sport, deriving win % from matches
+/// played. Shared by every per-sport mapping function below.
+fn generic_stats_from_record(rec: &UserSportStatsRecord) -> GenericPlayerStats {
     let win_percentage = if rec.matches_played == 0 {
         None
     } else {
         Some((rec.wins as f32 / rec.matches_played as f32) * 100.0)
     };
-    UserSportStats {
-        match_type: match_type_from_tag(sport),
+    GenericPlayerStats {
         matches_played: rec.matches_played as i32,
+        wins: rec.wins as i32,
+        draws: rec.draws as i32,
+        losses: rec.losses as i32,
         win_percentage,
+    }
+}
+
+fn cricket_stats_from_record(rec: &UserSportStatsRecord) -> CricketPlayerStats {
+    CricketPlayerStats {
+        common: generic_stats_from_record(rec),
+        runs: *rec.extra.get("runs").unwrap_or(&0) as i32,
+        wickets: *rec.extra.get("wickets").unwrap_or(&0) as i32,
+        fours: *rec.extra.get("fours").unwrap_or(&0) as i32,
+        sixes: *rec.extra.get("sixes").unwrap_or(&0) as i32,
+    }
+}
+
+fn football_stats_from_record(rec: &UserSportStatsRecord) -> FootballPlayerStats {
+    FootballPlayerStats {
+        common: generic_stats_from_record(rec),
+        goals: *rec.extra.get("goals").unwrap_or(&0) as i32,
+        assists: *rec.extra.get("assists").unwrap_or(&0) as i32,
     }
 }
 

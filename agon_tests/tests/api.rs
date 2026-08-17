@@ -1036,22 +1036,20 @@ async fn accepting_a_normal_invite_updates_feed_and_stats() {
     .expect("confirm score");
 
     // ...and their stats now credit the confirmed match they played in (they
-    // were on the losing side, so one played, zero wins).
+    // were on the losing side, so one played, zero wins, one loss).
     assert_matches_played_reaches(&invitee_config, models::MatchType::Tennis, 1, "invitee").await;
     let stats = users_me_get(&invitee_config)
         .await
         .expect("get me")
         .profile
         .stats;
-    let tennis = stats
-        .iter()
-        .find(|s| s.match_type == models::MatchType::Tennis)
-        .expect("a tennis stat row");
+    let tennis = stats.tennis.expect("a tennis stat row");
     assert_eq!(
         tennis.win_percentage,
         Some(0.0),
         "invitee was on the losing side"
     );
+    assert_eq!(tennis.losses, 1, "invitee was on the losing side");
 }
 
 /// End-to-end for the *invite-link* (bearer token) acceptance flow into an
@@ -1760,7 +1758,10 @@ async fn match_with_a_confirmed_score() -> (
     let confirmed = matches_match_id_get(&owner_config, &created.id)
         .await
         .expect("get match");
-    assert!(confirmed.confirmed_score.is_some(), "setup: score confirmed");
+    assert!(
+        confirmed.confirmed_score.is_some(),
+        "setup: score confirmed"
+    );
 
     (
         owner_config,
@@ -2714,15 +2715,20 @@ async fn assert_match_absent_from_feed(config: &Configuration, match_id: &str, w
 }
 
 /// The caller's own `matches_played` for a sport (0 if they have no stat row for
-/// it yet). Reads `/users/me`, whose profile carries the per-sport stats.
+/// it yet). Reads `/users/me`, whose profile carries one field per sport.
 async fn my_matches_played(config: &Configuration, sport: models::MatchType) -> i32 {
     let me = users_me_get(config).await.expect("get me");
-    me.profile
-        .stats
-        .iter()
-        .find(|s| s.match_type == sport)
-        .map(|s| s.matches_played)
-        .unwrap_or(0)
+    let stats = &me.profile.stats;
+    let matches_played = match sport {
+        models::MatchType::Cricket => stats.cricket.as_ref().map(|s| s.matches_played),
+        models::MatchType::Football => stats.football.as_ref().map(|s| s.matches_played),
+        models::MatchType::Tennis => stats.tennis.as_ref().map(|s| s.matches_played),
+        models::MatchType::Badminton => stats.badminton.as_ref().map(|s| s.matches_played),
+        models::MatchType::Squash => stats.squash.as_ref().map(|s| s.matches_played),
+        models::MatchType::TableTennis => stats.table_tennis.as_ref().map(|s| s.matches_played),
+        models::MatchType::Other => stats.other.as_ref().map(|s| s.matches_played),
+    };
+    matches_played.unwrap_or(0)
 }
 
 /// Poll the caller's own stats until they've played `expected` matches of a
@@ -2833,10 +2839,7 @@ const TINY_PNG: &[u8] = &[
 ];
 
 /// Create a pending asset for the given purpose sized to `TINY_PNG`.
-async fn create_png_asset(
-    config: &Configuration,
-    purpose: models::UploadPurpose,
-) -> models::Asset {
+async fn create_png_asset(config: &Configuration, purpose: models::UploadPurpose) -> models::Asset {
     assets_post(
         config,
         models::CreateAssetInput {
@@ -2853,7 +2856,10 @@ async fn create_png_asset(
 /// wait for the storage-event worker to flip the asset to `uploaded`. Returns the
 /// uploaded asset. This drives the real S3 PUT + async pipeline.
 async fn upload_and_confirm(config: &Configuration, asset: &models::Asset) -> models::Asset {
-    let target = asset.upload.as_ref().expect("pending asset has an upload target");
+    let target = asset
+        .upload
+        .as_ref()
+        .expect("pending asset has an upload target");
     let client = reqwest::Client::new();
     let mut req = client
         .request(
@@ -2889,8 +2895,13 @@ async fn create_asset_returns_pending_with_upload_target() {
 
     assert!(matches!(asset.status, models::AssetStatus::Pending));
     assert_eq!(asset.content_type, "image/png");
-    assert!(asset.url.is_none(), "a pending asset has no serving url yet");
-    let target = asset.upload.expect("pending asset carries an upload target");
+    assert!(
+        asset.url.is_none(),
+        "a pending asset has no serving url yet"
+    );
+    let target = asset
+        .upload
+        .expect("pending asset carries an upload target");
     assert_eq!(target.method, "PUT");
     assert!(
         target.upload_url.starts_with("http"),
@@ -2963,8 +2974,14 @@ async fn upload_profile_image_end_to_end() {
     // Create -> PUT -> worker marks uploaded.
     let asset = create_png_asset(&config, models::UploadPurpose::ProfileImage).await;
     let uploaded = upload_and_confirm(&config, &asset).await;
-    assert!(uploaded.url.is_some(), "uploaded asset carries a serving url");
-    assert!(uploaded.upload.is_none(), "uploaded asset has no upload target");
+    assert!(
+        uploaded.url.is_some(),
+        "uploaded asset carries a serving url"
+    );
+    assert!(
+        uploaded.upload.is_none(),
+        "uploaded asset has no upload target"
+    );
 
     // Attach it to the profile; it should surface on /users/me.
     let updated = users_me_patch(

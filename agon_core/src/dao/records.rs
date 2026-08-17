@@ -634,6 +634,10 @@ pub struct FootballGoalEventRecord {
     pub penalty: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minute: Option<u32>,
+    /// Mirrors `agon_service::detailed_score::football::FootballGoalEvent::occurred_at`
+    /// — RFC3339, same string convention as `LiveEventRecord::occurred_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -643,6 +647,9 @@ pub struct FootballCardEventRecord {
     pub color: FootballCardColorRecord,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minute: Option<u32>,
+    /// Mirrors `FootballGoalEventRecord::occurred_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -659,6 +666,9 @@ pub struct FootballSubstitutionEventRecord {
     pub player_out_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minute: Option<u32>,
+    /// Mirrors `FootballGoalEventRecord::occurred_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -712,6 +722,10 @@ pub struct CricketDeliveryRecord {
     pub extra: Option<CricketDeliveryExtraRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wicket: Option<CricketDeliveryWicketRecord>,
+    /// Mirrors `agon_service::detailed_score::cricket::CricketDelivery::occurred_at`
+    /// — RFC3339, same string convention as `LiveEventRecord::occurred_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -816,6 +830,10 @@ pub struct NetballGoalEventRecord {
     pub two_points: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minute: Option<u32>,
+    /// Mirrors `agon_service::detailed_score::netball::NetballGoalEvent::occurred_at`
+    /// — RFC3339, same string convention as `LiveEventRecord::occurred_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -842,6 +860,9 @@ pub struct NetballFoulEventRecord {
     pub foul_kind: NetballFoulKindRecord,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minute: Option<u32>,
+    /// Mirrors `NetballGoalEventRecord::occurred_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -868,8 +889,11 @@ pub struct NetballPeriodEventRecord {
 pub enum NetballPeriodRecord {
     Start,
     QuarterOneEnd,
+    QuarterTwoStart,
     QuarterTwoEnd,
+    QuarterThreeStart,
     QuarterThreeEnd,
+    QuarterFourStart,
     FullTime,
     ExtraTimeStart,
     ExtraTimeEnd,

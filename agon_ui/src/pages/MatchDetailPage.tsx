@@ -177,9 +177,13 @@ function MatchDetail({
   const finishedFootballGoals = scoreInfo && !isCurrentlyLive ? footballGoalsFromScore(scoreInfo.score) : null
   const finishedFootballScorePlayers =
     scoreInfo && !isCurrentlyLive ? footballScoreFrom(scoreInfo.score)?.players : undefined
+  const finishedFootballPeriodTimes =
+    scoreInfo && !isCurrentlyLive ? footballScoreFrom(scoreInfo.score)?.period_times : undefined
   const finishedNetballGoals = scoreInfo && !isCurrentlyLive ? netballGoalsFromScore(scoreInfo.score) : null
   const finishedNetballScorePlayers =
     scoreInfo && !isCurrentlyLive ? netballScoreFrom(scoreInfo.score)?.players : undefined
+  const finishedNetballPeriodTimes =
+    scoreInfo && !isCurrentlyLive ? netballScoreFrom(scoreInfo.score)?.period_times : undefined
   // Same "live while in progress, else confirmed/pending" source as
   // `cricketScoreInnings` below — needed here just for `.players` (the
   // score's resolved-name map), passed to `CricketScorecard`.
@@ -317,6 +321,7 @@ function MatchDetail({
               goals={finishedFootballGoals}
               match={orderedMatch}
               players={finishedFootballScorePlayers}
+              periodTimes={finishedFootballPeriodTimes}
               sideA={sideA}
               sideB={sideB}
               className="mt-2 text-xs"
@@ -328,6 +333,7 @@ function MatchDetail({
               goals={finishedNetballGoals}
               match={orderedMatch}
               players={finishedNetballScorePlayers}
+              periodTimes={finishedNetballPeriodTimes}
               sideA={sideA}
               sideB={sideB}
               className="mt-2 text-xs"

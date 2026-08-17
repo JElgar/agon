@@ -4,6 +4,7 @@ import { Avatar } from '@/components/agon/Avatar'
 import { LiveIndicator } from './LiveIndicator'
 import {
   describeEvent,
+  eventClockLabel,
   eventEmoji,
   liveClockLabel,
   recentEvents,
@@ -93,8 +94,8 @@ export function LiveMatchBlock({
                 className={`flex items-baseline gap-1.5 truncate text-xs text-muted-foreground ${isSideB ? 'flex-row-reverse text-right' : ''}`}
               >
                 <span aria-hidden>{eventEmoji(event.kind)}</span>
-                {event.minute !== undefined && (
-                  <span className="font-medium text-foreground">{event.minute}'</span>
+                {eventClockLabel(event, state.period_times) && (
+                  <span className="font-medium text-foreground">{eventClockLabel(event, state.period_times)}</span>
                 )}
                 <span className="truncate">{describeEvent(event, match, state.players)}</span>
               </p>

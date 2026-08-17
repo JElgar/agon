@@ -80,10 +80,20 @@ impl NetballScore {
             NetballLiveEvent::Goal(g) => {
                 *self.score.entry(g.side_id.clone()).or_insert(0) +=
                     if g.two_points { 2 } else { 1 };
-                self.goals.get_or_insert_with(Vec::new).push(g.clone());
+                // Stamp with the envelope's own `occurred_at` — the
+                // recording device's clock — regardless of whatever (if
+                // anything) the client sent in the payload itself. This is
+                // what makes `occurred_at`, not the quarter-relative
+                // `minute`, the authoritative order for a live-scored goal
+                // (see `NetballGoalEvent::occurred_at`'s doc comment).
+                let mut g = g.clone();
+                g.occurred_at = Some(occurred_at);
+                self.goals.get_or_insert_with(Vec::new).push(g);
             }
             NetballLiveEvent::Foul(fo) => {
-                self.fouls.get_or_insert_with(Vec::new).push(fo.clone());
+                let mut fo = fo.clone();
+                fo.occurred_at = Some(occurred_at);
+                self.fouls.get_or_insert_with(Vec::new).push(fo);
             }
             NetballLiveEvent::Period(p) => {
                 self.period_times
@@ -118,6 +128,7 @@ mod tests {
             scorer_position: Some(NetballPosition::GoalShooter),
             two_points: false,
             minute: Some(minute),
+            occurred_at: None,
         })
     }
 
@@ -134,6 +145,7 @@ mod tests {
                     player_id: Some("defender_1".into()),
                     foul_kind: NetballFoulKind::Contact,
                     minute: Some(10),
+                    occurred_at: None,
                 }),
             ),
             (
@@ -234,11 +246,47 @@ mod tests {
                 scorer_position: Some(NetballPosition::GoalAttack),
                 two_points: true,
                 minute: Some(4),
+                occurred_at: None,
             }),
         )];
 
         let score = NetballScore::from_events(&events);
         assert_eq!(score.score.get("kestrels"), Some(&2));
+    }
+
+    /// The bug this guards against: `minute` is quarter-relative and reset
+    /// every quarter, so two goals in different quarters can carry the same
+    /// (or an out-of-order) `minute` — sorting the events list on that alone
+    /// scrambles later quarters in with earlier ones. `occurred_at` is
+    /// absolute, so folding always produces goals/fouls in true chronological
+    /// (recorded) order regardless of what `minute` says, and it's stamped
+    /// from the envelope's own clock even when the client sends none.
+    #[test]
+    fn goals_and_fouls_are_stamped_with_occurred_at_from_the_envelope_in_recorded_order() {
+        let events = vec![
+            (ts(0), goal("kestrels", 3)),
+            (
+                ts(1),
+                NetballLiveEvent::Period(NetballPeriodEvent {
+                    period: NetballPeriod::QuarterOneEnd,
+                    score: HashMap::from([("kestrels".to_string(), 1)]),
+                }),
+            ),
+            // A new quarter's clock resets, so this goal's `minute` (2) is
+            // numerically *less* than the first goal's (3) despite happening
+            // later in the match — exactly the scrambling `minute`-only
+            // sorting produced.
+            (ts(2), goal("kestrels", 2)),
+        ];
+
+        let score = NetballScore::from_events(&events);
+        let goals = score.goals.as_ref().unwrap();
+        assert_eq!(goals.len(), 2);
+        assert_eq!(goals[0].occurred_at, Some(ts(0)));
+        assert_eq!(goals[1].occurred_at, Some(ts(2)));
+        // Recorded (array) order already reflects true chronological order,
+        // regardless of the quarter-relative `minute` values above.
+        assert!(goals[0].occurred_at < goals[1].occurred_at);
     }
 
     #[test]

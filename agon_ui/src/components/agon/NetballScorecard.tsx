@@ -1,5 +1,5 @@
 import type { components } from '@/types/api'
-import { describeEvent, eventEmoji, eventsFromDetail, minuteLabel, type NetballEventSource } from '@/lib/netballScore'
+import { describeEvent, eventClockLabel, eventEmoji, eventsFromDetail, type NetballEventSource } from '@/lib/netballScore'
 
 type Match = components['schemas']['Match']
 
@@ -32,7 +32,7 @@ export function NetballScorecard({ match, detail }: { match: Match; detail: Netb
             >
               <span aria-hidden>{eventEmoji(event.kind)}</span>
               <span className="font-medium tabular-nums text-muted-foreground">
-                {minuteLabel(event.minute)}
+                {eventClockLabel(event, detail.period_times)}
               </span>
               <span>{describeEvent(event, match, detail.players)}</span>
             </p>

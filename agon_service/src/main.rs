@@ -3289,6 +3289,7 @@ impl Api {
                         return Ok(None);
                     };
                     s.apply_event(
+                        e.occurred_at,
                         event,
                         balls_per_over,
                         wide_is_extra_ball,
@@ -5314,6 +5315,7 @@ fn resolve_score_ids(
                                 }),
                                 None => None,
                             },
+                            occurred_at: d.occurred_at,
                         });
                     }
                     Some(out)
@@ -5356,6 +5358,7 @@ fn resolve_score_ids(
                             own_goal: g.own_goal,
                             penalty: g.penalty,
                             minute: g.minute,
+                            occurred_at: g.occurred_at,
                         });
                     }
                     Some(out)
@@ -5371,6 +5374,7 @@ fn resolve_score_ids(
                             player_id: pmap(&c.player_id)?,
                             color: c.color.clone(),
                             minute: c.minute,
+                            occurred_at: c.occurred_at,
                         });
                     }
                     Some(out)
@@ -5386,6 +5390,7 @@ fn resolve_score_ids(
                             player_in_id: pmap(&sub.player_in_id)?,
                             player_out_id: pmap(&sub.player_out_id)?,
                             minute: sub.minute,
+                            occurred_at: sub.occurred_at,
                         });
                     }
                     Some(out)
@@ -5442,6 +5447,7 @@ fn resolve_score_ids(
                             scorer_position: g.scorer_position,
                             two_points: g.two_points,
                             minute: g.minute,
+                            occurred_at: g.occurred_at,
                         });
                     }
                     Some(out)
@@ -5457,6 +5463,7 @@ fn resolve_score_ids(
                             player_id: pmap_opt(&fo.player_id)?,
                             foul_kind: fo.foul_kind,
                             minute: fo.minute,
+                            occurred_at: fo.occurred_at,
                         });
                     }
                     Some(out)

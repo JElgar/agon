@@ -69,12 +69,27 @@ function toMinute(minute: string): number | undefined {
  * screen. One component covers all three recordable football event kinds
  * (goal / card / substitution) since they share the same side→details shape;
  * `kind` picks which fields step 2 asks for.
+ *
+ * Two callers, two time models (same split as netball's
+ * `RecordNetballEventDialog`):
+ * - Live scoring (`liveMode: true`, from `LiveScoringPage`) hides the minute
+ *   field entirely — the event is timestamped by the server's own clock the
+ *   instant it's submitted (see `FootballGoalEvent.occurred_at`'s backend
+ *   doc comment). This is deliberate: a free-text minute let a scorer
+ *   backdate an event into the middle of the log, ahead of things already
+ *   recorded; only appending to the top of the stack keeps the log an
+ *   honest record of what was tapped when.
+ * - Manual/historical entry (`liveMode` omitted/false, from
+ *   `FootballScoreFields`) has no live clock to timestamp against at all —
+ *   a free-text minute is the only way to say roughly when something
+ *   happened, so that field stays.
  */
 export function RecordEventDialog({
   open,
   kind,
   match,
-  initialMinute,
+  liveMode = false,
+  initialMinute = 0,
   onOpenChange,
   onSubmit,
   submitting,
@@ -85,7 +100,10 @@ export function RecordEventDialog({
    *  match yet (see `FootballScoreFields`) can pass a synthetic object with
    *  just these two fields. */
   match: Pick<Match, 'sides' | 'players'>
-  initialMinute: number
+  /** Live scoring only — see the component doc comment. */
+  liveMode?: boolean
+  /** Manual entry only; ignored (and the field hidden) when `liveMode`. */
+  initialMinute?: number
   onOpenChange: (open: boolean) => void
   onSubmit: (event: FootballLiveEvent) => void
   submitting: boolean
@@ -129,7 +147,7 @@ export function RecordEventDialog({
         assist_player_id: goal.own_goal ? undefined : goal.assist_player_id,
         own_goal: goal.own_goal,
         penalty: goal.penalty,
-        minute: toMinute(goal.minute),
+        minute: liveMode ? undefined : toMinute(goal.minute),
       } as FootballLiveEvent)
     } else if (kind === 'card' && card.side_id && card.player_id && card.color) {
       onSubmit({
@@ -137,7 +155,7 @@ export function RecordEventDialog({
         side_id: card.side_id,
         player_id: card.player_id,
         color: card.color,
-        minute: toMinute(card.minute),
+        minute: liveMode ? undefined : toMinute(card.minute),
       } as FootballLiveEvent)
     } else if (kind === 'substitution' && sub.side_id && sub.player_out_id && sub.player_in_id) {
       onSubmit({
@@ -145,7 +163,7 @@ export function RecordEventDialog({
         side_id: sub.side_id,
         player_in_id: sub.player_in_id,
         player_out_id: sub.player_out_id,
-        minute: toMinute(sub.minute),
+        minute: liveMode ? undefined : toMinute(sub.minute),
       } as FootballLiveEvent)
     }
   }
@@ -293,14 +311,16 @@ export function RecordEventDialog({
             </>
           )}
 
-          <MinuteField
-            value={kind === 'goal' ? goal.minute : kind === 'card' ? card.minute : sub.minute}
-            onChange={(v) => {
-              if (kind === 'goal') setGoal((d) => ({ ...d, minute: v }))
-              else if (kind === 'card') setCard((d) => ({ ...d, minute: v }))
-              else setSub((d) => ({ ...d, minute: v }))
-            }}
-          />
+          {!liveMode && (
+            <MinuteField
+              value={kind === 'goal' ? goal.minute : kind === 'card' ? card.minute : sub.minute}
+              onChange={(v) => {
+                if (kind === 'goal') setGoal((d) => ({ ...d, minute: v }))
+                else if (kind === 'card') setCard((d) => ({ ...d, minute: v }))
+                else setSub((d) => ({ ...d, minute: v }))
+              }}
+            />
+          )}
 
           <Button disabled={!canSubmit || submitting} onClick={submit}>
             {submitting ? 'Saving…' : `Add ${title.toLowerCase()}`}

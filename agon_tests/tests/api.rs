@@ -670,7 +670,15 @@ async fn patch_match_rename_team_side_without_shared_team_is_rejected() {
     let created = matches_post(&owner_config, input)
         .await
         .expect("create match");
-    let team_side = created.sides[0].id.clone();
+    // Sides come back sorted by their server-assigned id, not input order, so
+    // find the team-linked side by its `team_id` rather than assuming index 0.
+    let team_side = created
+        .sides
+        .iter()
+        .find(|s| s.team_id.as_deref() == Some(team.id.as_str()))
+        .expect("team side present")
+        .id
+        .clone();
 
     let response = matches_match_id_patch(
         &owner_config,

@@ -3576,3 +3576,180 @@ async fn netball_quarter_only_scoring_uses_period_marker_score_directly() {
         other => panic!("expected a netball score, got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Undo (`DELETE /matches/:id/live/events/:seq`) — restricted to the log's
+// current tip. Exercised against netball's event vocabulary since the
+// underlying append/delete/seq machinery under test is shared by every sport
+// (see `Dao::append_live_events`/`delete_live_event`); nothing here is
+// netball-specific.
+// ---------------------------------------------------------------------------
+
+/// Regression test for the bug where undoing the tip event left the client
+/// unable to record anything else afterward.
+///
+/// `delete_live_event` deliberately never rewinds the match's `live_seq`
+/// counter (it's a high-water mark, so a seq is never reused — see that
+/// DAO method's doc comment), but the snapshot handed back from the delete
+/// call must still report that same counter as `last_seq`, since that's the
+/// value the caller then sends back as `expected_last_seq` on its very next
+/// append. If it instead reported one less (the deleted tip's seq no longer
+/// physically present), every append after an undo would send a stale
+/// `expected_last_seq` that could never satisfy the server's optimistic-
+/// concurrency check, and would 409 forever — exactly what was reported:
+/// undo appears to succeed, then every subsequent event fails to record.
+#[tokio::test]
+async fn undoing_the_tip_lets_scoring_continue_without_reusing_its_seq() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+
+    // Three events: two goals for A (seq 1, 2), then a foul on B (seq 3) that
+    // we'll undo.
+    let snapshot = append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![
+            netball_goal_event_json(&side_a, false),
+            netball_goal_event_json(&side_a, true),
+            netball_foul_event_json(&side_b),
+        ],
+    )
+    .await;
+    assert_eq!(snapshot.last_seq, 3);
+
+    // Undo the tip (the foul, seq 3).
+    let after_undo = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 3)
+        .await
+        .expect("undo tip event");
+
+    // The counter doesn't rewind on delete — this is the value the client
+    // caches as its next `expected_last_seq`, so it must still read 3, not 2.
+    assert_eq!(
+        after_undo.last_seq, 3,
+        "last_seq after undoing the tip must stay at the (never-reused) counter value"
+    );
+    match *after_undo.score {
+        models::Score::Netball(s) => {
+            // The foul is gone from the derived score...
+            assert_eq!(s.fouls.as_ref().map(Vec::len), Some(0));
+            // ...but the two goals that preceded it are untouched.
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(2));
+            assert_eq!(s.score.get(&side_a), Some(&3));
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+
+    // The very next append — this is the call that used to 409 forever after
+    // an undo — using the `last_seq` the delete just handed back.
+    let after_append = append_live_events_raw(
+        &owner_config,
+        &created.id,
+        after_undo.last_seq,
+        vec![netball_goal_event_json(&side_b, false)],
+    )
+    .await;
+    // The new event lands at seq 4, not the freed-up seq 3 — seq numbers are
+    // never reused once assigned, even across an undo.
+    assert_eq!(after_append.last_seq, 4);
+
+    // The physical log confirms the gap: 1, 2, 4 — seq 3 stays deleted for
+    // good, not reused by the new event.
+    let page = matches_match_id_live_events_get(&owner_config, &created.id, None, None)
+        .await
+        .expect("list live events");
+    let seqs: Vec<i32> = page.items.iter().map(|e| e.seq).collect();
+    assert_eq!(seqs, vec![1, 2, 4]);
+
+    let score = matches_match_id_score_get(&owner_config, &created.id)
+        .await
+        .expect("get score");
+    match score {
+        models::Score::Netball(s) => {
+            assert_eq!(s.score.get(&side_a), Some(&3));
+            assert_eq!(s.score.get(&side_b), Some(&1));
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(3));
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+}
+
+/// Only the current tip can be undone — a mid-log seq is rejected with a 400
+/// rather than silently reordering the log (see `delete_live_event`'s doc
+/// comment on the backend). The tip itself stays intact after the rejection.
+#[tokio::test]
+async fn undoing_a_non_tip_event_is_rejected() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+
+    let snapshot = append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![
+            netball_goal_event_json(&side_a, false),
+            netball_goal_event_json(&side_a, false),
+        ],
+    )
+    .await;
+    assert_eq!(snapshot.last_seq, 2);
+
+    // seq 1 is no longer the tip (seq 2 is) — rejected.
+    let response = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 1).await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::BAD_REQUEST,
+        "only the most recently recorded event can be undone",
+    );
+
+    // Confirmed untouched: both goals are still there, and the tip is still 2.
+    let score = matches_match_id_score_get(&owner_config, &created.id)
+        .await
+        .expect("get score");
+    match score {
+        models::Score::Netball(s) => assert_eq!(s.goals.as_ref().map(Vec::len), Some(2)),
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+}
+
+/// Undoing the same (only) event twice: the counter doesn't rewind on
+/// delete (see `Dao::delete_live_event`'s doc comment), so seq 1 still reads
+/// as the tip and passes that check the second time too — the rejection
+/// this time comes from the delete itself finding nothing left at that seq,
+/// a 404 rather than the 400 a genuinely non-tip seq gets.
+#[tokio::test]
+async fn undoing_the_same_event_twice_404s_on_the_second_attempt() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+
+    append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![netball_goal_event_json(&side_a, false)],
+    )
+    .await;
+
+    matches_match_id_live_events_seq_delete(&owner_config, &created.id, 1)
+        .await
+        .expect("undo the only event");
+
+    let response = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 1).await;
+    assert_not_found(response);
+}

@@ -3382,6 +3382,12 @@ impl Api {
     /// been built on the thing being removed. History is genuinely removed,
     /// not marked; the returned detail reflects the log as if the event had
     /// never been recorded.
+    ///
+    /// The tip check itself now lives entirely in `Dao::delete_live_event`
+    /// (atomic against the live `live_seq` counter, not a value read a
+    /// moment earlier here) — a `Conflict` back from it means `seq` wasn't
+    /// the tip at commit time, surfaced the same way as any other "the log
+    /// moved on" case.
     #[oai(path = "/matches/:match_id/live/events/:seq", method = "delete")]
     async fn delete_live_event(
         &self,
@@ -3402,21 +3408,20 @@ impl Api {
             }
         };
 
-        if seq != agg.match_.live_seq {
-            return Ok(DeleteLiveEventResponse::ValidationError(PlainText(
-                "only the most recently recorded event can be undone".into(),
-            )));
-        }
-
-        match dao.delete_live_event(&match_id, seq).await {
-            Ok(()) => {}
+        let new_tip = match dao.delete_live_event(&match_id, seq).await {
+            Ok(new_tip) => new_tip,
             Err(dao::DaoError::NotFound(_)) => {
                 return Ok(DeleteLiveEventResponse::NotFound(PlainText(
                     "live event not found".into(),
                 )));
             }
+            Err(dao::DaoError::Conflict(_)) => {
+                return Ok(DeleteLiveEventResponse::ValidationError(PlainText(
+                    "only the most recently recorded event can be undone".into(),
+                )));
+            }
             Err(e) => return Err(dao_internal(e)),
-        }
+        };
 
         match self
             .derive_live_snapshot(
@@ -3424,9 +3429,10 @@ impl Api {
                 &match_id,
                 &agg.match_.match_type,
                 agg.match_.format.as_ref(),
-                // Unchanged by the delete (see `Dao::delete_live_event`'s doc
-                // comment) — still the correct tip for the next append.
-                agg.match_.live_seq,
+                // The DAO's freshly-bumped counter, not `agg.match_.live_seq`
+                // (fetched before the delete — now stale, since the delete
+                // itself advances the counter).
+                new_tip,
             )
             .await?
         {
@@ -3472,17 +3478,18 @@ impl Api {
     /// append have a fresh checkpoint to build on. Returns `None` if `sport`
     /// doesn't support live scoring.
     ///
-    /// `live_seq` is the authoritative tip — the match's `live_seq` counter,
-    /// which (per `Dao::delete_live_event`'s doc comment) only ever tracks
-    /// the highest seq ever assigned and is never reused, even once an undo
-    /// physically removes that event. It must come from the caller rather
-    /// than be recomputed as `max(records.seq)` here: after an undo, that
-    /// max is one behind the counter (the deleted tip's seq no longer
-    /// appears among the remaining records), and persisting that lower value
-    /// as the checkpoint's `last_seq` — the same value the client then caches
-    /// as its next `expected_last_seq` — would desync it from the real
-    /// counter, so every subsequent append's conditional update fails with a
-    /// `Conflict` (see `append_live_events`'s `live_seq = :expected` check).
+    /// `live_seq` is the authoritative tip — the match's `live_seq` counter —
+    /// and must come from the caller rather than be recomputed as
+    /// `max(records.seq)` here. An append and a delete (see
+    /// `Dao::delete_live_event`) both advance the real counter without
+    /// necessarily leaving a matching physical event at every number (a
+    /// delete's own seq, and the number it bumps past, are both permanently
+    /// skipped), so the physical log's max can lag behind it. Persisting
+    /// that lower, recomputed value as the checkpoint's `last_seq` — the
+    /// same value the client then caches as its next `expected_last_seq` —
+    /// would desync it from the real counter, so every subsequent append's
+    /// conditional update would fail with a `Conflict` (see
+    /// `append_live_events`'s `live_seq = :expected` check).
     async fn derive_live_snapshot(
         &self,
         dao: &dao::Dao,

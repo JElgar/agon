@@ -3588,16 +3588,16 @@ async fn netball_quarter_only_scoring_uses_period_marker_score_directly() {
 /// Regression test for the bug where undoing the tip event left the client
 /// unable to record anything else afterward.
 ///
-/// `delete_live_event` deliberately never rewinds the match's `live_seq`
-/// counter (it's a high-water mark, so a seq is never reused — see that
-/// DAO method's doc comment), but the snapshot handed back from the delete
-/// call must still report that same counter as `last_seq`, since that's the
-/// value the caller then sends back as `expected_last_seq` on its very next
-/// append. If it instead reported one less (the deleted tip's seq no longer
-/// physically present), every append after an undo would send a stale
-/// `expected_last_seq` that could never satisfy the server's optimistic-
-/// concurrency check, and would 409 forever — exactly what was reported:
-/// undo appears to succeed, then every subsequent event fails to record.
+/// `delete_live_event` bumps the match's `live_seq` counter by one on every
+/// undo (see that DAO method's doc comment) — so the snapshot handed back
+/// from delete must report `seq + 1` as `last_seq`, the value the caller
+/// then sends back as `expected_last_seq` on its very next append. Before
+/// this, the endpoint instead reported one *less* than that (the deleted
+/// tip's seq no longer physically present among the remaining events), so
+/// every append after an undo sent a stale `expected_last_seq` that could
+/// never satisfy the server's optimistic-concurrency check, and 409'd
+/// forever — exactly what was reported: undo appears to succeed, then every
+/// subsequent event fails to record.
 #[tokio::test]
 async fn undoing_the_tip_lets_scoring_continue_without_reusing_its_seq() {
     let (owner_config, _owner) = new_user().await;
@@ -3629,11 +3629,12 @@ async fn undoing_the_tip_lets_scoring_continue_without_reusing_its_seq() {
         .await
         .expect("undo tip event");
 
-    // The counter doesn't rewind on delete — this is the value the client
-    // caches as its next `expected_last_seq`, so it must still read 3, not 2.
+    // The counter advances *past* the deleted seq (3 -> 4) rather than
+    // staying put — this is the value the client caches as its next
+    // `expected_last_seq`.
     assert_eq!(
-        after_undo.last_seq, 3,
-        "last_seq after undoing the tip must stay at the (never-reused) counter value"
+        after_undo.last_seq, 4,
+        "last_seq after undoing seq 3 must be the bumped counter (4)"
     );
     match *after_undo.score {
         models::Score::Netball(s) => {
@@ -3655,17 +3656,19 @@ async fn undoing_the_tip_lets_scoring_continue_without_reusing_its_seq() {
         vec![netball_goal_event_json(&side_b, false)],
     )
     .await;
-    // The new event lands at seq 4, not the freed-up seq 3 — seq numbers are
-    // never reused once assigned, even across an undo.
-    assert_eq!(after_append.last_seq, 4);
+    // The new event lands at seq 5, not the freed-up seq 3 or the burned
+    // seq 4 — seq numbers are never reused once assigned, even across an
+    // undo.
+    assert_eq!(after_append.last_seq, 5);
 
-    // The physical log confirms the gap: 1, 2, 4 — seq 3 stays deleted for
-    // good, not reused by the new event.
+    // The physical log confirms the (two-number) gap: 1, 2, 5 — seq 3
+    // (deleted) and seq 4 (burned by the undo's counter bump) both stay
+    // permanently absent, never reused by the new event.
     let page = matches_match_id_live_events_get(&owner_config, &created.id, None, None)
         .await
         .expect("list live events");
     let seqs: Vec<i32> = page.items.iter().map(|e| e.seq).collect();
-    assert_eq!(seqs, vec![1, 2, 4]);
+    assert_eq!(seqs, vec![1, 2, 5]);
 
     let score = matches_match_id_score_get(&owner_config, &created.id)
         .await
@@ -3681,8 +3684,11 @@ async fn undoing_the_tip_lets_scoring_continue_without_reusing_its_seq() {
 }
 
 /// Only the current tip can be undone — a mid-log seq is rejected with a 400
-/// rather than silently reordering the log (see `delete_live_event`'s doc
-/// comment on the backend). The tip itself stays intact after the rejection.
+/// rather than silently reordering the log. This check is now enforced
+/// atomically inside `Dao::delete_live_event`'s transaction (against the
+/// live counter at commit time) rather than as a separate read-then-check in
+/// the handler, but the outward behavior is unchanged: the tip itself stays
+/// intact after the rejection.
 #[tokio::test]
 async fn undoing_a_non_tip_event_is_rejected() {
     let (owner_config, _owner) = new_user().await;
@@ -3723,13 +3729,12 @@ async fn undoing_a_non_tip_event_is_rejected() {
     }
 }
 
-/// Undoing the same (only) event twice: the counter doesn't rewind on
-/// delete (see `Dao::delete_live_event`'s doc comment), so seq 1 still reads
-/// as the tip and passes that check the second time too — the rejection
-/// this time comes from the delete itself finding nothing left at that seq,
-/// a 404 rather than the 400 a genuinely non-tip seq gets.
+/// Retrying an undo with the *same, now-stale* seq 400s just like any other
+/// non-tip delete: the counter has already moved past it (see the previous
+/// test's sibling scenario), so a second call with that same number no
+/// longer matches the current tip.
 #[tokio::test]
-async fn undoing_the_same_event_twice_404s_on_the_second_attempt() {
+async fn retrying_an_undo_with_the_same_seq_is_rejected_as_non_tip() {
     let (owner_config, _owner) = new_user().await;
     let (_invitee_config, invitee) = new_user().await;
 
@@ -3750,6 +3755,52 @@ async fn undoing_the_same_event_twice_404s_on_the_second_attempt() {
         .await
         .expect("undo the only event");
 
+    // seq 1 was the tip a moment ago, but the counter has since bumped to 2
+    // (see `undoing_the_tip_lets_scoring_continue_without_reusing_its_seq`)
+    // — a repeat call with the same stale seq is exactly the "not the tip
+    // anymore" case, same as a genuinely non-tip seq.
     let response = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 1).await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::BAD_REQUEST,
+        "only the most recently recorded event can be undone",
+    );
+}
+
+/// Undoing *the counter's current value* when nothing physically lives
+/// there — the realistic "hit undo twice in a row" case, since a client
+/// caches the server's returned (bumped) `last_seq` as its next tip and
+/// would retry against that, not the original seq. The tip check passes
+/// (it genuinely is the current counter value), but there's nothing left to
+/// delete: `live_seq` having advanced past the log's last real event
+/// doesn't mean a real event lives at that new number.
+#[tokio::test]
+async fn undoing_the_bumped_tip_with_nothing_left_to_delete_is_not_found() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+
+    append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![netball_goal_event_json(&side_a, false)],
+    )
+    .await;
+
+    let after_undo = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 1)
+        .await
+        .expect("undo the only event");
+    assert_eq!(after_undo.last_seq, 2);
+
+    // A client would cache `2` (the response above) as its next tip and
+    // retry undo against that, exactly like this.
+    let response =
+        matches_match_id_live_events_seq_delete(&owner_config, &created.id, after_undo.last_seq)
+            .await;
     assert_not_found(response);
 }

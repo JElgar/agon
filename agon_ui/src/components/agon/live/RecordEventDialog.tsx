@@ -128,6 +128,12 @@ export function RecordEventDialog({
     (s) => s.id === (kind === 'goal' ? goal.side_id : kind === 'card' ? card.side_id : sub.side_id),
   )
   const roster = side ? playersOnSide(match.players, side) : []
+  // An own goal counts for `side` (the benefiting side — see
+  // `FootballGoalEvent`'s backend doc comment) but is physically put in by a
+  // player on the *other* side, so the scorer picker for that case draws
+  // from the opposing roster, not `side`'s own.
+  const otherSide = kind === 'goal' ? match.sides.find((s) => s.id !== goal.side_id) : undefined
+  const otherRoster = otherSide ? playersOnSide(match.players, otherSide) : []
 
   const title = kind === 'goal' ? 'Goal' : kind === 'card' ? 'Card' : 'Substitution'
 
@@ -143,7 +149,7 @@ export function RecordEventDialog({
       onSubmit({
         kind: 'Goal',
         side_id: goal.side_id,
-        scorer_player_id: goal.own_goal ? undefined : goal.scorer_player_id,
+        scorer_player_id: goal.scorer_player_id,
         assist_player_id: goal.own_goal ? undefined : goal.assist_player_id,
         own_goal: goal.own_goal,
         penalty: goal.penalty,
@@ -198,7 +204,20 @@ export function RecordEventDialog({
                   <input
                     type="checkbox"
                     checked={goal.own_goal}
-                    onChange={(e) => setGoal((d) => ({ ...d, own_goal: e.target.checked }))}
+                    onChange={(e) =>
+                      setGoal((d) => ({
+                        ...d,
+                        own_goal: e.target.checked,
+                        // The scorer picker switches rosters (this side's ↔
+                        // the opposing side's) when this flips, so a
+                        // previously picked player is very unlikely to still
+                        // be valid — clear it rather than silently keep a
+                        // scorer from the wrong roster. Own goals never carry
+                        // an assist.
+                        scorer_player_id: undefined,
+                        assist_player_id: undefined,
+                      }))
+                    }
                   />
                   Own goal
                 </label>
@@ -212,18 +231,16 @@ export function RecordEventDialog({
                   Penalty
                 </label>
               </div>
-              {!goal.own_goal && (
-                <div>
-                  <p className="mb-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                    Scorer
-                  </p>
-                  <PlayerPicker
-                    players={roster}
-                    value={goal.scorer_player_id}
-                    onChange={(id) => setGoal((d) => ({ ...d, scorer_player_id: id }))}
-                  />
-                </div>
-              )}
+              <div>
+                <p className="mb-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  {goal.own_goal ? 'Own goal by (optional)' : 'Scorer'}
+                </p>
+                <PlayerPicker
+                  players={goal.own_goal ? otherRoster : roster}
+                  value={goal.scorer_player_id}
+                  onChange={(id) => setGoal((d) => ({ ...d, scorer_player_id: id }))}
+                />
+              </div>
               {!goal.own_goal && goal.scorer_player_id && roster.length > 1 && (
                 <div>
                   <p className="mb-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">

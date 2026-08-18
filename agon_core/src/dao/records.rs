@@ -1019,6 +1019,20 @@ pub struct UserSportStatsRecord {
     /// (tennis, badminton, squash, table tennis, "other").
     #[serde(flatten, default)]
     pub extra: HashMap<String, u64>,
+    /// Personal-best single-match value per sport-specific counter (e.g.
+    /// most wickets in a game, highest score, most goals/assists in a game),
+    /// keyed by the same counter names as `extra`. See
+    /// `Dao::update_best_figures` for why this only ever ratchets up.
+    #[serde(default)]
+    pub best: HashMap<String, BestFigureRecord>,
+}
+
+/// A personal-best single-match value for one counter, plus the match it was
+/// set in. Stored at `UserSportStatsRecord::best[<counter>]`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BestFigureRecord {
+    pub value: u64,
+    pub match_id: String,
 }
 
 /// `MATCH#<mid>` / `STATCONTRIB#<uid>` — what a single match currently

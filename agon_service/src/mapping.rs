@@ -38,9 +38,9 @@ use crate::notification::{
 };
 use crate::team::{Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
-    Comment, ConfirmedScore, CricketPlayerStats, CricketScore, CricketScoreInnings, FeedMatch,
-    FootballPlayerStats, FootballScore, GenericPlayerStats, Location, Match, MatchOutcome,
-    MatchPlayer, MatchSide, MatchSocial, MatchStatus, MatchType, PendingScore, Photo,
+    BestFigure, Comment, ConfirmedScore, CricketPlayerStats, CricketScore, CricketScoreInnings,
+    FeedMatch, FootballPlayerStats, FootballScore, GenericPlayerStats, Location, Match,
+    MatchOutcome, MatchPlayer, MatchSide, MatchSocial, MatchStatus, MatchType, PendingScore, Photo,
     RosterPreviewPlayer, Score, ScoreConfirmation, ScoreResponseKind, ScoreSubmission,
     ScoreSubmissionResponse, ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore,
     UserProfile, UserStats,
@@ -169,6 +169,8 @@ fn cricket_stats_from_record(rec: &UserSportStatsRecord) -> CricketPlayerStats {
         wickets: *rec.extra.get("wickets").unwrap_or(&0) as i32,
         fours: *rec.extra.get("fours").unwrap_or(&0) as i32,
         sixes: *rec.extra.get("sixes").unwrap_or(&0) as i32,
+        best_runs: best_figure_from_record(rec, "runs"),
+        best_wickets: best_figure_from_record(rec, "wickets"),
     }
 }
 
@@ -177,7 +179,17 @@ fn football_stats_from_record(rec: &UserSportStatsRecord) -> FootballPlayerStats
         common: generic_stats_from_record(rec),
         goals: *rec.extra.get("goals").unwrap_or(&0) as i32,
         assists: *rec.extra.get("assists").unwrap_or(&0) as i32,
+        best_goals: best_figure_from_record(rec, "goals"),
+        best_assists: best_figure_from_record(rec, "assists"),
     }
+}
+
+/// Map a stored personal-best entry to the API model, if one's been set.
+fn best_figure_from_record(rec: &UserSportStatsRecord, counter: &str) -> Option<BestFigure> {
+    rec.best.get(counter).map(|b| BestFigure {
+        value: b.value as i32,
+        match_id: b.match_id.clone(),
+    })
 }
 
 // ===========================================================================

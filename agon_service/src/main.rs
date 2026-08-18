@@ -133,6 +133,18 @@ pub struct GenericPlayerStats {
     // TODO Elo
 }
 
+/// A personal-best single-match value for one counter, plus the match it
+/// happened in — e.g. "5 wickets" and the match id of that bowling
+/// performance. `None` on the containing stats until the counter's ever
+/// been above zero in a single match. Only ever increases — see
+/// `agon_core::dao::stats::Dao::update_best_figures` for why a downward
+/// re-score or a cancelled match doesn't retroactively revise it.
+#[derive(Object)]
+pub struct BestFigure {
+    pub value: i32,
+    pub match_id: String,
+}
+
 /// Lifetime cricket stats: the common counters plus a batting/bowling summary
 /// derived from every confirmed match's box score.
 #[derive(Object)]
@@ -143,6 +155,10 @@ pub struct CricketPlayerStats {
     pub wickets: i32,
     pub fours: i32,
     pub sixes: i32,
+    /// Highest score in a single match.
+    pub best_runs: Option<BestFigure>,
+    /// Most wickets taken in a single match ("best bowling figures").
+    pub best_wickets: Option<BestFigure>,
 }
 
 /// Lifetime football stats: the common counters plus goals/assists derived
@@ -153,6 +169,10 @@ pub struct FootballPlayerStats {
     pub common: GenericPlayerStats,
     pub goals: i32,
     pub assists: i32,
+    /// Most goals scored in a single match.
+    pub best_goals: Option<BestFigure>,
+    /// Most assists in a single match.
+    pub best_assists: Option<BestFigure>,
 }
 
 /// A user's lifetime stats, one field per sport — `None` for a sport they've

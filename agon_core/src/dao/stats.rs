@@ -224,7 +224,17 @@ impl Dao {
             .send()
             .await
         {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                // Best-effort personal-best update — deliberately outside the
+                // transaction above (see `update_best_figures`), and only
+                // when the user actually played: a contribution being
+                // withdrawn (outcome -> None) can't set a new best.
+                if desired.outcome.is_some() {
+                    self.update_best_figures(user_id, sport, match_id, &desired.counters)
+                        .await?;
+                }
+                Ok(())
+            }
             // Lost an optimistic-lock race: another reconcile moved the stored
             // contribution between our read and write. Surface it so the message
             // is retried and re-reads the fresh state.
@@ -233,6 +243,89 @@ impl Dao {
             )),
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
+    }
+
+    /// Ratchet up `stats.<sport>.best.<counter>` for every counter in
+    /// `counters` whose value in *this* match exceeds any previously
+    /// recorded best — a personal-best single-match figure ("most wickets in
+    /// a game", "most goals in a game") alongside the match it happened in.
+    /// Counters at `0` are skipped (nothing to record).
+    ///
+    /// Deliberately one-directional: if the match that set a record is later
+    /// rescored downward, cancelled, or the player is removed from its
+    /// roster, the recorded best is NOT revisited — reproducing the true max
+    /// would mean scanning every match the user has ever played, which no
+    /// existing access pattern supports. An *upward* re-score IS picked up
+    /// correctly, since this recomputes fresh from the match's current
+    /// contribution on every reconcile.
+    ///
+    /// Independent of the guarded transaction in
+    /// `reconcile_match_contribution`: each counter's update is conditioned
+    /// on its own current best, so bundling it into that all-or-nothing
+    /// transaction would let one counter with "no improvement here" (an
+    /// expected, common case) cancel the legitimate counter-delta update
+    /// alongside it. A `ConditionalCheckFailedException` here just means
+    /// this match didn't beat the record — not an error.
+    async fn update_best_figures(
+        &self,
+        user_id: &str,
+        sport: &str,
+        match_id: &str,
+        counters: &HashMap<String, u64>,
+    ) -> DaoResult<()> {
+        let candidates: Vec<(&String, &u64)> = counters.iter().filter(|(_, v)| **v > 0).collect();
+        if candidates.is_empty() {
+            return Ok(());
+        }
+        let pk = s(Pk::User(user_id.into()).to_string());
+        let sk = s(Sk::Profile.to_string());
+
+        // `stats.#sport` is guaranteed to already exist by this point (the
+        // transaction just above always touches at least `matches_played`
+        // for a played contribution), but `stats.#sport.best` might not —
+        // ensure it's a map before setting counters within it, same
+        // two-step reasoning as `ensure_stats_sport`.
+        self.client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, pk.clone())
+            .key(ATTR_SK, sk.clone())
+            .update_expression("SET stats.#sport.best = if_not_exists(stats.#sport.best, :empty)")
+            .expression_attribute_names("#sport", sport)
+            .expression_attribute_values(":empty", AttributeValue::M(HashMap::new()))
+            .send()
+            .await
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        for (counter, value) in candidates {
+            let new_best = AttributeValue::M(HashMap::from([
+                ("value".to_string(), AttributeValue::N(value.to_string())),
+                ("match_id".to_string(), s(match_id)),
+            ]));
+            let result = self
+                .client
+                .update_item()
+                .table_name(self.table())
+                .key(ATTR_PK, pk.clone())
+                .key(ATTR_SK, sk.clone())
+                .update_expression("SET stats.#sport.best.#counter = :new")
+                .condition_expression(
+                    "attribute_not_exists(stats.#sport.best.#counter) OR stats.#sport.best.#counter.#val < :val",
+                )
+                .expression_attribute_names("#sport", sport)
+                .expression_attribute_names("#counter", counter.as_str())
+                .expression_attribute_names("#val", "value")
+                .expression_attribute_values(":new", new_best)
+                .expression_attribute_values(":val", AttributeValue::N(value.to_string()))
+                .send()
+                .await;
+            match result {
+                Ok(_) => {}
+                Err(e) if is_update_conditional_failure(&e) => {}
+                Err(e) => return Err(DaoError::Dynamo(e.to_string())),
+            }
+        }
+        Ok(())
     }
 
     /// One `ADD stats.#sport.#counter :d, ...` update on the user's profile
@@ -332,6 +425,22 @@ impl Dao {
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
         Ok(())
     }
+}
+
+/// True if a plain (non-transactional) `UpdateItem` failed its
+/// `ConditionExpression` — the expected outcome of a losing "is this a new
+/// best?" check in [`Dao::update_best_figures`], not a real error.
+fn is_update_conditional_failure(
+    err: &aws_sdk_dynamodb::error::SdkError<
+        aws_sdk_dynamodb::operation::update_item::UpdateItemError,
+    >,
+) -> bool {
+    use aws_sdk_dynamodb::error::SdkError;
+    use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
+    matches!(
+        err,
+        SdkError::ServiceError(se) if matches!(se.err(), UpdateItemError::ConditionalCheckFailedException(_))
+    )
 }
 
 /// Per-key delta (`new - old`) over the union of both maps' keys, treating a

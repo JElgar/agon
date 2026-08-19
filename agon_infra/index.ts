@@ -1016,10 +1016,24 @@ const firebaseProject = new gcp.firebase.Project("agon-firebase", {
 // Registers the PWA as a Firebase Web App, which is what the client SDK needs
 // to request an FCM token. Future: gcp.firebase.AndroidApp / AppleApp once
 // those clients exist — same project, no changes needed here.
-new gcp.firebase.WebApp("agon-pwa", {
+const firebaseWebApp = new gcp.firebase.WebApp("agon-pwa", {
 	project: gcpProjectId,
 	displayName: "agon-pwa",
 }, { dependsOn: [firebaseProject] });
+
+// The Firebase JS SDK's init config (apiKey, authDomain, messagingSenderId,
+// ...) for the PWA — fetched via a data source instead of copy-pasted from
+// the console. Exported as a stack output the UI build can consume directly.
+// NOT included: the VAPID key pair FCM's `getToken()` call needs — Google
+// has never exposed an API for Web Push certificates (verified against the
+// whole @pulumi/gcp package and the Terraform google provider; same
+// Console-only gap as the OAuth client above). Generate that once,
+// per project, at Console → Project Settings → Cloud Messaging → Web
+// configuration → Generate key pair.
+export const firebaseWebConfig = gcp.firebase.getWebAppConfigOutput({
+	webAppId: firebaseWebApp.appId,
+	project: gcpProjectId,
+});
 
 // ── Supabase Google Auth: OAuth consent screen + client ─────────────────────
 // Fully manual, per project — and NOT automatable at all right now, not even

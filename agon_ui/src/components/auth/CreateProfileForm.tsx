@@ -4,6 +4,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { $api } from '@/lib/api-client'
 import { useAuth } from '@/hooks/useAuth'
+import { joinName, splitName } from '@/lib/names'
 
 interface CreateProfileFormProps {
   /** The verified account email (from Supabase). Shown read-only; the API takes
@@ -12,18 +13,23 @@ interface CreateProfileFormProps {
   onProfileCreated: () => void
 }
 
-/** Best-effort display name from the Supabase identity (Google OAuth etc.). */
-function suggestedName(user: ReturnType<typeof useAuth>['user']): string {
+/** Best-effort first/last name from the Supabase identity (Google OAuth etc.). */
+function suggestedName(user: ReturnType<typeof useAuth>['user']): { firstName: string; lastName: string } {
   const profileData = {
     ...user?.user_metadata,
     ...user?.identities?.[0]?.identity_data,
   }
-  return profileData.name || profileData.full_name || ''
+  if (profileData.given_name || profileData.family_name) {
+    return { firstName: profileData.given_name || '', lastName: profileData.family_name || '' }
+  }
+  const fullName = profileData.name || profileData.full_name || ''
+  return splitName(fullName)
 }
 
 export function CreateProfileForm({ email, onProfileCreated }: CreateProfileFormProps) {
   const { user } = useAuth()
-  const [name, setName] = useState('')
+  const [firstName, setFirstName] = useState('')
+  const [lastName, setLastName] = useState('')
 
   const createUser = $api.useMutation('post', '/users', {
     onSuccess: () => onProfileCreated(),
@@ -32,13 +38,16 @@ export function CreateProfileForm({ email, onProfileCreated }: CreateProfileForm
   // Pre-fill the name from the OAuth identity, if present.
   useEffect(() => {
     const suggestion = suggestedName(user)
-    if (suggestion) setName(suggestion)
+    if (suggestion.firstName) setFirstName(suggestion.firstName)
+    if (suggestion.lastName) setLastName(suggestion.lastName)
   }, [user])
+
+  const canSubmit = firstName.trim() !== '' && lastName.trim() !== ''
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!name.trim()) return
-    createUser.mutate({ body: { name: name.trim() } })
+    if (!canSubmit) return
+    createUser.mutate({ body: { name: joinName(firstName, lastName) } })
   }
 
   return (
@@ -46,7 +55,7 @@ export function CreateProfileForm({ email, onProfileCreated }: CreateProfileForm
       <div className="text-center mb-6">
         <h2 className="text-2xl font-bold mb-2">Complete your profile</h2>
         <p className="text-muted-foreground">
-          Choose the display name others will see.
+          Tell us your name so others can recognize you.
         </p>
       </div>
 
@@ -62,16 +71,30 @@ export function CreateProfileForm({ email, onProfileCreated }: CreateProfileForm
           />
         </div>
 
-        <div>
-          <Label htmlFor="name">Display name</Label>
-          <Input
-            id="name"
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Enter your name"
-            required
-          />
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <Label htmlFor="first-name">First name</Label>
+            <Input
+              id="first-name"
+              type="text"
+              value={firstName}
+              onChange={(e) => setFirstName(e.target.value)}
+              placeholder="First name"
+              required
+            />
+          </div>
+
+          <div>
+            <Label htmlFor="last-name">Last name</Label>
+            <Input
+              id="last-name"
+              type="text"
+              value={lastName}
+              onChange={(e) => setLastName(e.target.value)}
+              placeholder="Last name"
+              required
+            />
+          </div>
         </div>
 
         {createUser.isError && (
@@ -84,7 +107,7 @@ export function CreateProfileForm({ email, onProfileCreated }: CreateProfileForm
 
         <Button
           type="submit"
-          disabled={createUser.isPending || !name.trim()}
+          disabled={createUser.isPending || !canSubmit}
           className="w-full"
         >
           {createUser.isPending ? 'Creating profile…' : 'Create profile'}

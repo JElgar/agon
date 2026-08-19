@@ -46,3 +46,9 @@ test-staging:
 
 run:
 	cargo run -p agon_service -- run-server abc.com
+
+# Full browser UI end-to-end tests (Playwright) — see agon_ui/e2e/README.md
+# for what's covered, how the test account works, and env var setup
+# (E2E_TEST_EMAIL / E2E_TEST_PASSWORD, optionally E2E_BASE_URL).
+test-ui-e2e:
+	cd agon_ui && npm run test:e2e

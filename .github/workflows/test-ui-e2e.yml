@@ -1,0 +1,71 @@
+on:
+  workflow_call:
+    inputs:
+      base-url:
+        description: The deployed UI to test against (e.g. https://agon.staging.get-agon.com).
+        required: true
+        type: string
+      stack-name:
+        required: true
+        type: string
+    secrets:
+      # Only the Pulumi access token — the e2e test account's own credentials
+      # live in Pulumi config (`e2eTestEmail`/`e2eTestPassword`, see
+      # agon_infra/index.ts), fetched below the same way test.yml fetches
+      # `agonTestJwtPrivateKey`, so there's one encrypted source of truth
+      # instead of a value duplicated into a GitHub secret too.
+      pulumi-access-token:
+        required: true
+
+jobs:
+  test-ui-e2e:
+    name: UI e2e
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+      - run: pnpm install
+        working-directory: agon_infra
+
+      - name: Read e2e test account from Pulumi
+        working-directory: agon_infra
+        run: |
+          pulumi stack select ${{ inputs.stack-name }}
+          EMAIL="$(pulumi config get e2eTestEmail)"
+          PASSWORD="$(pulumi config get e2eTestPassword)"
+          echo "::add-mask::$EMAIL"
+          echo "::add-mask::$PASSWORD"
+          echo "E2E_TEST_EMAIL=$EMAIL" >> "$GITHUB_ENV"
+          echo "E2E_TEST_PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.pulumi-access-token }}
+
+      - run: npm install
+        working-directory: agon_ui
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+        working-directory: agon_ui
+
+      - name: Run e2e tests
+        run: npm run test:e2e
+        working-directory: agon_ui
+        env:
+          E2E_BASE_URL: ${{ inputs.base-url }}
+
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: agon_ui/playwright-report/
+          retention-days: 14

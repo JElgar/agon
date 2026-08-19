@@ -167,7 +167,11 @@ export function PlayerSideEditor({
                   {p.name.slice(0, 2).toUpperCase()}
                 </span>
               )}
-              <span className="flex-1 truncate text-sm">{p.name}</span>
+              {/* data-testid: a tagged player's name has no other stable
+                  accessible hook — their "Remove" button is labelled by it,
+                  but that's an action, not the name itself. See
+                  agon_ui/e2e/README.md's locator guidance. */}
+              <span className="flex-1 truncate text-sm" data-testid="tagged-player-name">{p.name}</span>
               {isYou && (
                 <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
                   you

@@ -292,12 +292,15 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
         <div className="flex items-center justify-between">
           <p className="flex-1 truncate text-sm font-medium">{nameA}</p>
           <div className="px-3 text-center">
-            <div className="text-3xl font-medium tracking-tight">
+            {/* data-testid: the score/phase here is just digits and a status
+                word with no other accessible name to hang a locator off —
+                see agon_ui/e2e/README.md's locator guidance. */}
+            <div className="text-3xl font-medium tracking-tight" data-testid="live-score">
               {goalsFor(aId)}
               <span className="text-muted-foreground">–</span>
               {goalsFor(bId)}
             </div>
-            <div className="mt-0.5 text-xs text-primary">
+            <div className="mt-0.5 text-xs text-primary" data-testid="live-phase">
               {minute !== null && `${minute}' · `}
               {phaseLabel(phase)}
             </div>

@@ -36,3 +36,6 @@ config:
   agon_infra:agonStaticJwks: '{"keys":[{"kty":"EC","crv":"P-256","alg":"ES256","use":"sig","kid":"agon-test","x":"BfABiGvViutZXbhJ94phPDxQiSsx8srjwuS_GXDa_8I","y":"w9keuf1Io98x-EiIT0DLSeP7ttIUvPdBp9kOTq3p9tE"}]}'
   agon_infra:agonTestJwtPrivateKey:
     secure: AAABAP923pc6OZsaUFWAnpTHjytVeBFMvyTyE13JjtzA09rQldEacEkSi7BJzsg6K+qAfHS2af9vH8M4PNzrH37aSFSUrU2uurvNgRHsDA7ZncO8R0TiJ9zRLOf369YHua8gbEpNntutuddnx8qJMC5rTAxMvmWQYYmGADcZbK/3RYe0ACWGhcsy/5RrCsUi6XFDs4a38yFZ6/r1YqRmoXoh9RKWHtGczA71HsEy12sbb2r1FgkrbOZN6O5IqVT48rIwwkTTJ1Lb0AjCWEwC2h8eakaVCpFDSdOr0ztvtVgtBE5/jEhXSrdFT9ehXSE3NX09foX/OvnZ7KldfJqUD1s1yZdhk+JBUmsEjvXEbps=
+  agon_infra:e2eTestEmail: agon-e2e-bot@example.com
+  agon_infra:e2eTestPassword:
+    secure: AAABAE9V5+KRMo16ixwQd0wIbnDe7xMVvBUonynSo54h2iyd4eYXGPfNXu7Kfw==

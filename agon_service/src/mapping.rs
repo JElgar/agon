@@ -43,8 +43,8 @@ use crate::{
     Comment, ConfirmedScore, CricketScore, CricketScoreInnings, DevicePlatform, FeedMatch,
     FootballScore, Location, Match, MatchOutcome, MatchPlayer, MatchSide, MatchSocial, MatchStatus,
     MatchType, NetballScore, PendingScore, Photo, RosterPreviewPlayer, Score, ScoreConfirmation,
-    ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus, SearchMatch,
-    SetsScore, SimpleScore, UserProfile, UserSportStats,
+    ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus,
+    SearchMatch, SetsScore, SimpleScore, UserProfile, UserSportStats,
 };
 use agon_core::dao::error::DaoError;
 use agon_core::dao::live_score_ops::NewLiveEvent;

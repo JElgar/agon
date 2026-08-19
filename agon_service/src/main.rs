@@ -2987,14 +2987,16 @@ impl Api {
                         "match has no score".into(),
                     )));
                 }
-                let last_seq = records.iter().map(|r| r.seq).max().unwrap_or(0);
                 let Some(score) = derive_live_score(sport, &records, agg.match_.format.as_ref())
                 else {
                     return Ok(GetMatchScoreResponse::NotFound(PlainText(
                         "match has no score".into(),
                     )));
                 };
-                self.persist_score(dao, &match_id, &score, Some(last_seq))
+                // `agg.match_.live_seq`, not `max(records.seq)` — see
+                // `derive_live_snapshot`'s doc comment for why the latter can
+                // undercount once an undo has removed the log's former tip.
+                self.persist_score(dao, &match_id, &score, Some(agg.match_.live_seq))
                     .await;
                 score
             }
@@ -3236,8 +3238,14 @@ impl Api {
         {
             Some(snapshot) => Some(snapshot),
             None => {
-                self.derive_live_snapshot(dao, &match_id, &sport, agg.match_.format.as_ref())
-                    .await?
+                self.derive_live_snapshot(
+                    dao,
+                    &match_id,
+                    &sport,
+                    agg.match_.format.as_ref(),
+                    new_last_seq,
+                )
+                .await?
             }
         };
 
@@ -3374,6 +3382,12 @@ impl Api {
     /// been built on the thing being removed. History is genuinely removed,
     /// not marked; the returned detail reflects the log as if the event had
     /// never been recorded.
+    ///
+    /// The tip check itself now lives entirely in `Dao::delete_live_event`
+    /// (atomic against the live `live_seq` counter, not a value read a
+    /// moment earlier here) — a `Conflict` back from it means `seq` wasn't
+    /// the tip at commit time, surfaced the same way as any other "the log
+    /// moved on" case.
     #[oai(path = "/matches/:match_id/live/events/:seq", method = "delete")]
     async fn delete_live_event(
         &self,
@@ -3394,21 +3408,20 @@ impl Api {
             }
         };
 
-        if seq != agg.match_.live_seq {
-            return Ok(DeleteLiveEventResponse::ValidationError(PlainText(
-                "only the most recently recorded event can be undone".into(),
-            )));
-        }
-
-        match dao.delete_live_event(&match_id, seq).await {
-            Ok(()) => {}
+        let new_tip = match dao.delete_live_event(&match_id, seq).await {
+            Ok(new_tip) => new_tip,
             Err(dao::DaoError::NotFound(_)) => {
                 return Ok(DeleteLiveEventResponse::NotFound(PlainText(
                     "live event not found".into(),
                 )));
             }
+            Err(dao::DaoError::Conflict(_)) => {
+                return Ok(DeleteLiveEventResponse::ValidationError(PlainText(
+                    "only the most recently recorded event can be undone".into(),
+                )));
+            }
             Err(e) => return Err(dao_internal(e)),
-        }
+        };
 
         match self
             .derive_live_snapshot(
@@ -3416,6 +3429,10 @@ impl Api {
                 &match_id,
                 &agg.match_.match_type,
                 agg.match_.format.as_ref(),
+                // The DAO's freshly-bumped counter, not `agg.match_.live_seq`
+                // (fetched before the delete — now stale, since the delete
+                // itself advances the counter).
+                new_tip,
             )
             .await?
         {
@@ -3460,24 +3477,40 @@ impl Api {
     /// Persists the result so subsequent reads and the next incremental
     /// append have a fresh checkpoint to build on. Returns `None` if `sport`
     /// doesn't support live scoring.
+    ///
+    /// `live_seq` is the authoritative tip — the match's `live_seq` counter —
+    /// and must come from the caller rather than be recomputed as
+    /// `max(records.seq)` here. An append and a delete (see
+    /// `Dao::delete_live_event`) both advance the real counter without
+    /// necessarily leaving a matching physical event at every number (a
+    /// delete's own seq, and the number it bumps past, are both permanently
+    /// skipped), so the physical log's max can lag behind it. Persisting
+    /// that lower, recomputed value as the checkpoint's `last_seq` — the
+    /// same value the client then caches as its next `expected_last_seq` —
+    /// would desync it from the real counter, so every subsequent append's
+    /// conditional update would fail with a `Conflict` (see
+    /// `append_live_events`'s `live_seq = :expected` check).
     async fn derive_live_snapshot(
         &self,
         dao: &dao::Dao,
         match_id: &str,
         sport: &str,
         format: Option<&dao::records::MatchFormatRecord>,
+        live_seq: u32,
     ) -> Result<Option<LiveScoreSnapshot>> {
         let records = dao.list_live_events(match_id).await.map_err(dao_internal)?;
-        let last_seq = records.iter().map(|r| r.seq).max().unwrap_or(0);
 
         let Some(score) = derive_live_score(sport, &records, format) else {
             return Ok(None);
         };
 
-        self.persist_score(dao, match_id, &score, Some(last_seq))
+        self.persist_score(dao, match_id, &score, Some(live_seq))
             .await;
 
-        Ok(Some(LiveScoreSnapshot { last_seq, score }))
+        Ok(Some(LiveScoreSnapshot {
+            last_seq: live_seq,
+            score,
+        }))
     }
 
     /// Best-effort persisted-record write, shared by the incremental append

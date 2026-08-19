@@ -892,13 +892,17 @@ struct UpdateMatchInput {
     /// it's omitted, even for a live-scored match (see `override_live_score`
     /// for submitting one the server disagrees with).
     score: Option<Score>,
-    /// For a live-scored football/cricket match being completed: submit
-    /// `score` even though it doesn't match what the server derives from the
-    /// match's own persisted live detail. Without this, a mismatch is
-    /// rejected (409) rather than silently accepted, so `score` staying in
-    /// sync with live scoring is the default; this is the explicit escape
-    /// hatch for a deliberate correction. Ignored when there's no live
-    /// detail to disagree with.
+    /// For a live-scored football/cricket/netball match: submit `score` even
+    /// though it doesn't match what the server derives from the match's own
+    /// persisted live detail. Without this, a mismatch is rejected (409)
+    /// rather than silently accepted, so `score` staying in sync with live
+    /// scoring is the default; this is the explicit escape hatch for a
+    /// deliberate correction. Checked whenever the match has live detail
+    /// recorded, not just when the submission completes the match — so a
+    /// score submitted while live scoring is still in progress (e.g. from
+    /// the general result editor instead of finishing the live-scored game)
+    /// is held to the same standard. Ignored when there's no live detail to
+    /// disagree with.
     override_live_score: Option<bool>,
     winner_side_id: Option<String>,
     /// A separate, fuller version of `score` to persist as the match's
@@ -2670,18 +2674,33 @@ impl Api {
             }
         }
 
-        // Completing a live-scored football/cricket match still requires an
-        // explicit `score` from the client (see `LiveScoringPage`/
-        // `CricketLiveScoringPage`'s `finishMatch`, which now builds one
-        // locally from the same persisted live detail before sending it) —
-        // the server never fills one in silently. What it does instead is
-        // cross-check: derive its own score from the match's persisted live
-        // detail and, unless `override_live_score` says otherwise, reject a
-        // client score that disagrees with it, so confirmed results stay in
-        // sync with live scoring by default rather than by convention.
+        // Completing a live-scored football/cricket/netball match still
+        // requires an explicit `score` from the client (see
+        // `LiveScoringPage`/`CricketLiveScoringPage`'s `finishMatch`, which
+        // now builds one locally from the same persisted live detail before
+        // sending it) — the server never fills one in silently. What it does
+        // instead is cross-check: derive its own score from the match's
+        // persisted live detail and, unless `override_live_score` says
+        // otherwise, reject a client score that disagrees with it, so
+        // confirmed results stay in sync with live scoring by default rather
+        // than by convention.
+        //
+        // This check isn't limited to the PATCH that completes the match: it
+        // fires for any submitted `score` as long as the match has live
+        // detail recorded, whatever `status` this request carries (or
+        // doesn't). A match still `in_progress` under live scoring can be
+        // scored over by a plain "add/edit result" submission just as easily
+        // as by one that explicitly completes it — that score differing from
+        // the live detail is the same mistake either way (a separate score
+        // quietly displacing the live-scored one instead of finishing it),
+        // so it gets the same guard rather than only catching it at
+        // completion time.
         let mut derived_winner_side_id: Option<String> = None;
-        if input.status.as_ref().map(match_status_str) == Some("completed")
-            && matches!(agg.match_.match_type.as_str(), "football" | "cricket")
+        if input.score.is_some()
+            && matches!(
+                agg.match_.match_type.as_str(),
+                "football" | "cricket" | "netball"
+            )
             && let Some(record) = dao
                 .get_match_score(&match_id, &agg.match_.match_type)
                 .await

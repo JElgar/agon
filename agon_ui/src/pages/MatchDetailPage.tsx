@@ -350,7 +350,16 @@ function MatchDetail({
                   </Link>
                 </Button>
               )}
-              {canEdit && !cancelled && (
+              {/* Hidden while live scoring is actually under way (`hasLiveState`):
+                  that data belongs on the live scoring screen above, and
+                  finishing there is what completes the match with it. Opening
+                  this generic editor instead used to let a blank/separate
+                  score quietly displace the live-scored one — see
+                  `MatchResultEditor`'s doc comment and the matching
+                  server-side guard in `update_match`. Once the match is
+                  completed (or was never live-scored) this is the normal
+                  add/edit-result affordance again. */}
+              {canEdit && !cancelled && !hasLiveState && (
                 <Button
                   variant="ghost"
                   size="sm"

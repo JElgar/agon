@@ -90,6 +90,15 @@ pub struct CricketDelivery {
     pub extra: Option<CricketDeliveryExtra>,
     /// Wicket that fell on this delivery, if any.
     pub wicket: Option<CricketDeliveryWicket>,
+    /// When this actually happened, wall-clock — always overwritten by the
+    /// server from the live event envelope's own `occurred_at`, ignoring
+    /// whatever a client sends here. `None` for a manually logged result.
+    /// Cricket orders deliveries by over/ball rather than a clock, so unlike
+    /// `NetballGoalEvent::occurred_at`/`FootballGoalEvent::occurred_at` this
+    /// doesn't fix an ordering bug — it's stored for consistency with the
+    /// other sports and for any future pace-of-play-style stat, not read by
+    /// anything today.
+    pub occurred_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Object, Clone)]

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use poem_openapi::{Enum, Object, Union};
 
 use crate::detailed_score::cricket::{
@@ -279,7 +281,7 @@ impl CricketScore {
     /// (single-event) and slow (whole-log) paths share the exact same fold,
     /// so they can't disagree.
     pub fn from_events(
-        events: &[CricketLiveEvent],
+        events: &[(chrono::DateTime<chrono::Utc>, CricketLiveEvent)],
         balls_per_over: u32,
         wide_is_extra_ball: bool,
         no_ball_is_extra_ball: bool,
@@ -289,9 +291,11 @@ impl CricketScore {
             recent_deliveries: None,
             next_ball_context: None,
             awaiting_next_innings: Some(true),
+            players: HashMap::new(),
         };
-        for event in events {
+        for (occurred_at, event) in events {
             score.apply_event(
+                *occurred_at,
                 event,
                 balls_per_over,
                 wide_is_extra_ball,
@@ -302,9 +306,14 @@ impl CricketScore {
     }
 
     /// Folds one new event into this score in place — the fast path, run
-    /// on every append.
+    /// on every append. `occurred_at` (not `recorded_at`) is threaded
+    /// through separately from `event`, same reasoning as
+    /// `FootballScore::apply_event` — only `Delivery` reads it (see
+    /// `CricketDelivery::occurred_at`'s doc comment); every other variant
+    /// ignores it, same as before this parameter existed.
     pub fn apply_event(
         &mut self,
+        occurred_at: chrono::DateTime<chrono::Utc>,
         event: &CricketLiveEvent,
         balls_per_over: u32,
         wide_is_extra_ball: bool,
@@ -340,8 +349,14 @@ impl CricketScore {
                 );
                 self.next_ball_context = Some(next_context);
 
+                // Stamp with the envelope's own `occurred_at` before storing
+                // — see `CricketDelivery::occurred_at`'s doc comment. Stats
+                // are already folded above off the un-stamped `d`, so this
+                // only affects what gets stored/returned.
+                let mut d = d.clone();
+                d.occurred_at = Some(occurred_at);
                 let deliveries = self.recent_deliveries.get_or_insert_with(Vec::new);
-                deliveries.push(d.clone());
+                deliveries.push(d);
                 if deliveries.len() > RECENT_DELIVERIES_LIMIT {
                     deliveries.remove(0);
                 }
@@ -414,6 +429,11 @@ impl CricketScore {
 mod tests {
     use super::*;
     use crate::detailed_score::cricket::CricketDeliveryWicket;
+    use chrono::{DateTime, TimeZone, Utc};
+
+    fn ts(seconds: i64) -> DateTime<Utc> {
+        Utc.timestamp_opt(1_700_000_000 + seconds, 0).unwrap()
+    }
 
     fn ball(bowler: &str, striker: &str, non_striker: &str, runs: u32) -> CricketDelivery {
         CricketDelivery {
@@ -425,11 +445,45 @@ mod tests {
             runs_off_bat: runs,
             extra: None,
             wicket: None,
+            occurred_at: None,
         }
     }
 
+    /// Most tests only care about the fold's result, not real timestamps —
+    /// this pairs each event with a synthetic, strictly increasing one so
+    /// `from_events` (which now always wants a timestamp — see
+    /// `CricketScore::apply_event`) has something to thread through.
     fn score(events: &[CricketLiveEvent]) -> CricketScore {
-        CricketScore::from_events(events, 6, true, true)
+        let timed: Vec<_> = events
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (ts(i as i64), e.clone()))
+            .collect();
+        CricketScore::from_events(&timed, 6, true, true)
+    }
+
+    #[test]
+    fn deliveries_are_stamped_with_occurred_at_from_the_envelope() {
+        let events = vec![
+            (
+                ts(0),
+                CricketLiveEvent::InningsStart(CricketInningsStartEvent {
+                    batting_side_id: "warriors".into(),
+                    bowling_side_id: "mill_lane".into(),
+                }),
+            ),
+            (
+                ts(1),
+                CricketLiveEvent::Delivery(ball("patel", "sharma", "verma", 4)),
+            ),
+        ];
+
+        let d = CricketScore::from_events(&events, 6, true, true);
+
+        assert_eq!(
+            d.recent_deliveries.as_ref().unwrap()[0].occurred_at,
+            Some(ts(1))
+        );
     }
 
     #[test]
@@ -761,6 +815,11 @@ mod tests {
                 ..ball("patel", "verma", "sharma", 0)
             }),
         ];
+        let events: Vec<_> = events
+            .into_iter()
+            .enumerate()
+            .map(|(i, e)| (ts(i as i64), e))
+            .collect();
 
         let full = CricketScore::from_events(&events, 6, true, true);
 
@@ -771,9 +830,10 @@ mod tests {
             recent_deliveries: None,
             next_ball_context: None,
             awaiting_next_innings: Some(true),
+            players: HashMap::new(),
         };
-        for event in &events {
-            incremental.apply_event(event, 6, true, true);
+        for (occurred_at, event) in &events {
+            incremental.apply_event(*occurred_at, event, 6, true, true);
         }
 
         assert_eq!(incremental.innings.len(), full.innings.len());

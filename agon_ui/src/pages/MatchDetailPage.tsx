@@ -13,28 +13,43 @@ import { StatusBadge, matchBadgeStatus } from '@/components/agon/StatusBadge'
 import { ScoreConfirmationBar } from '@/components/agon/ScoreConfirmationBar'
 import { LiveMatchBlock } from '@/components/agon/live/LiveMatchBlock'
 import { CricketMatchBlock } from '@/components/agon/live/CricketMatchBlock'
+import { NetballMatchBlock } from '@/components/agon/live/NetballMatchBlock'
 import { CricketScoreBlock } from '@/components/agon/CricketScoreBlock'
 import { CricketScorecard } from '@/components/agon/CricketScorecard'
 import { FootballScorecard } from '@/components/agon/FootballScorecard'
-import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
+import { FootballScorersBySide } from '@/components/agon/FootballScorersBySide'
+import { NetballScorecard } from '@/components/agon/NetballScorecard'
+import { NetballScorersBySide } from '@/components/agon/NetballScorersBySide'
+import { NetballQuarterBreakdown } from '@/components/agon/NetballQuarterBreakdown'
 import { useLiveEvents } from '@/hooks/useLiveScore'
 import { useMatchScore } from '@/hooks/useMatchScore'
 import { footballScoreFrom, footballEventSourceFromScore } from '@/lib/liveScore'
+import { netballScoreFrom, netballEventSourceFromScore } from '@/lib/netballScore'
 import { cricketInningsFor, cricketScoreFrom, inningsDeliveriesFromEvents } from '@/lib/cricketScore'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
-import { displayScore, headlineBySide, headlineLabel, setLine } from '@/lib/score'
+import {
+  displayScore,
+  footballGoalsFromScore,
+  netballGoalsFromScore,
+  headlineBySide,
+  headlineLabel,
+  setLine,
+} from '@/lib/score'
 import {
   isParticipant,
   memberAvatarUrl,
   memberInviteToken,
   memberName,
   myPendingInvitation,
+  mySideId,
+  orderSidesForViewer,
   withInvitationStatus,
 } from '@/lib/members'
 import { CopyInviteButton } from '@/components/agon/CopyInviteButton'
 import { MatchDetailsEditor } from '@/components/agon/MatchDetailsEditor'
 import { MatchFormatCard } from '@/components/agon/MatchFormatCard'
 import { MatchResultEditor } from '@/components/agon/MatchResultEditor'
+import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
 import { MatchComments } from '@/components/agon/MatchComments'
 import { useToggleLike } from '@/hooks/useToggleLike'
@@ -110,19 +125,30 @@ function MatchDetail({
 }) {
   const [editingDetails, setEditingDetails] = useState(false)
   const [editingResult, setEditingResult] = useState(false)
+  const [editingRoster, setEditingRoster] = useState(false)
   const [inviting, setInviting] = useState(false)
 
   const canEdit = isParticipant(match, currentUserId)
   const cancelled = match.status === 'cancelled'
-  const isLiveSport = match.match_type === 'football' || match.match_type === 'cricket'
+  const isLiveSport =
+    match.match_type === 'football' || match.match_type === 'cricket' || match.match_type === 'netball'
 
-  const [sideA, sideB] = match.sides
+  // The viewer's own side, when they're playing, always renders first (left)
+  // — mirrors the feed card (`MatchCard`). `orderedMatch` carries the same
+  // reordering into the live-score/scorecard sub-components below, which
+  // each derive their own sideA/sideB straight off `match.sides` — passing
+  // this instead of `match` keeps them in sync with the score box without
+  // touching their internals (everything they key off is side id, not
+  // array position).
+  const orderedSides = orderSidesForViewer(match.sides, mySideId(match, currentUserId))
+  const orderedMatch = { ...match, sides: orderedSides }
+  const [sideA, sideB] = orderedSides
   const nameA = sideName(sideA, 'Side A')
   const nameB = sideName(sideB, 'Side B')
 
   const scoreInfo = displayScore(match)
   const headline = scoreInfo ? headlineBySide(scoreInfo.score) : {}
-  const sets = scoreInfo ? setLine(scoreInfo.score, match.sides) : []
+  const sets = scoreInfo ? setLine(scoreInfo.score, orderedSides) : []
   const aWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
   const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
 
@@ -141,18 +167,50 @@ function MatchDetail({
   const isCurrentlyLive = isLiveSport && match.status === 'in_progress'
   const footballState = isCurrentlyLive ? footballScoreFrom(scoreQuery.data) : null
   const cricketState = isCurrentlyLive ? cricketScoreFrom(scoreQuery.data) : null
-  const hasLiveState = !!footballState || !!cricketState
-  const cricketScore = scoreInfo ? cricketScoreFrom(scoreInfo.score) : null
+  const netballState = isCurrentlyLive ? netballScoreFrom(scoreQuery.data) : null
+  const hasLiveState = !!footballState || !!cricketState || !!netballState
+  // Goals for a finished football/netball match, read straight off the
+  // confirmed/pending score — shown as a scorer breakdown under the plain
+  // score box below (same as the feed/profile card's `MatchCard`); the full
+  // event timeline (goals *and* cards/subs, or goals *and* fouls) stays in
+  // `FootballScorecard`/`NetballScorecard` further down the page regardless.
+  const finishedFootballGoals = scoreInfo && !isCurrentlyLive ? footballGoalsFromScore(scoreInfo.score) : null
+  const finishedFootballScorePlayers =
+    scoreInfo && !isCurrentlyLive ? footballScoreFrom(scoreInfo.score)?.players : undefined
+  const finishedFootballPeriodTimes =
+    scoreInfo && !isCurrentlyLive ? footballScoreFrom(scoreInfo.score)?.period_times : undefined
+  const finishedNetballGoals = scoreInfo && !isCurrentlyLive ? netballGoalsFromScore(scoreInfo.score) : null
+  const finishedNetballScorePlayers =
+    scoreInfo && !isCurrentlyLive ? netballScoreFrom(scoreInfo.score)?.players : undefined
+  const finishedNetballPeriodTimes =
+    scoreInfo && !isCurrentlyLive ? netballScoreFrom(scoreInfo.score)?.period_times : undefined
+  // Same "live while in progress, else confirmed/pending" source as
+  // `cricketScoreInnings` below — needed here just for `.players` (the
+  // score's resolved-name map), passed to `CricketScorecard`.
+  const cricketScore = cricketScoreFrom(isCurrentlyLive ? scoreQuery.data : scoreInfo?.score)
   // `FootballScorecard`'s event timeline: the live running score while the
   // match is in progress, else straight off the confirmed/pending score —
   // stays visible once the match is completed, unlike `footballState` above.
   const footballEventSource = footballEventSourceFromScore(
     isCurrentlyLive ? scoreQuery.data : scoreInfo?.score,
   )
-  // Football's setup screen also gates starting the clock; cricket has no
-  // equivalent preferences step, so it goes straight into scoring.
+  const netballEventSource = netballEventSourceFromScore(
+    isCurrentlyLive ? scoreQuery.data : scoreInfo?.score,
+  )
+  // Quarter-by-quarter breakdown reads the same way regardless of which of
+  // netball's two live-scoring methods produced the score (see
+  // `NetballQuarterBreakdown`'s doc comment) — shown even for a
+  // quarter-only-scored match with no goal-by-goal detail at all.
+  const netballQuarterScore = isCurrentlyLive ? netballState : netballScoreFrom(scoreInfo?.score ?? null)
+  // Football's and netball's setup screens also gate starting the clock;
+  // cricket has no equivalent preferences step, so it goes straight into
+  // scoring. Netball's "which live-scoring method" choice lives inline on
+  // its own live page instead of a separate setup route (see
+  // `NetballLiveScoringPage`).
   const liveEntryPath =
-    match.match_type === 'cricket' ? `/matches/${match.id}/live` : `/matches/${match.id}/live/setup`
+    match.match_type === 'cricket' || match.match_type === 'netball'
+      ? `/matches/${match.id}/live`
+      : `/matches/${match.id}/live/setup`
 
   // Each cricket innings' deliveries, folded in from the raw live event log
   // by matching innings order, for the run-rate graph — the score's own
@@ -207,15 +265,19 @@ function MatchDetail({
               the usual confirmed/pending result. */}
           {footballState ? (
             <div className="mt-3">
-              <LiveMatchBlock match={match} state={footballState} tickerLimit={3} />
+              <LiveMatchBlock match={orderedMatch} state={footballState} tickerLimit={3} />
+            </div>
+          ) : netballState ? (
+            <div className="mt-3">
+              <NetballMatchBlock match={orderedMatch} state={netballState} tickerLimit={3} />
             </div>
           ) : cricketState ? (
             <div className="mt-3">
-              <CricketMatchBlock match={match} state={cricketState} />
+              <CricketMatchBlock match={orderedMatch} state={cricketState} />
             </div>
           ) : cricketScore ? (
             <div className="mt-3">
-              <CricketScoreBlock match={match} score={cricketScore} />
+              <CricketScoreBlock match={orderedMatch} score={cricketScore} />
             </div>
           ) : scoreInfo ? (
             <div className="mt-3 flex items-center justify-between">
@@ -254,8 +316,32 @@ function MatchDetail({
             </div>
           )}
 
+          {finishedFootballGoals && (
+            <FootballScorersBySide
+              goals={finishedFootballGoals}
+              match={orderedMatch}
+              players={finishedFootballScorePlayers}
+              periodTimes={finishedFootballPeriodTimes}
+              sideA={sideA}
+              sideB={sideB}
+              className="mt-2 text-xs"
+            />
+          )}
+
+          {finishedNetballGoals && (
+            <NetballScorersBySide
+              goals={finishedNetballGoals}
+              match={orderedMatch}
+              players={finishedNetballScorePlayers}
+              periodTimes={finishedNetballPeriodTimes}
+              sideA={sideA}
+              sideB={sideB}
+              className="mt-2 text-xs"
+            />
+          )}
+
           <div className="mt-3 flex items-center justify-between">
-            {hasLiveState ? <LiveIndicator /> : <StatusBadge status={matchBadgeStatus(match)} />}
+            <StatusBadge status={matchBadgeStatus(match)} />
             <div className="flex items-center gap-1">
               {canEdit && isLiveSport && !cancelled && match.status !== 'completed' && (
                 <Button asChild variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs text-primary">
@@ -306,29 +392,61 @@ function MatchDetail({
         )
       )}
 
-      {/* Rosters, one column per side */}
-      <div className="grid grid-cols-2 gap-3">
-        <SideRoster
-          title={nameA}
-          players={match.players.filter((p) => p.side_id === sideA?.id)}
-        />
-        <SideRoster
-          title={nameB}
-          players={match.players.filter((p) => p.side_id === sideB?.id)}
-        />
-      </div>
+      {/* Rosters, one column per side — or the drag-to-reassign/remove editor
+          in place of it, for a participant reconciling the line-up. */}
+      {editingRoster ? (
+        <MatchRosterEditor match={match} onDone={() => setEditingRoster(false)} />
+      ) : (
+        <div className="flex flex-col gap-2">
+          {canEdit && !cancelled && (
+            <div className="flex justify-end">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1 px-2 text-xs text-muted-foreground"
+                onClick={() => setEditingRoster(true)}
+              >
+                <Pencil className="size-3" /> Edit roster
+              </Button>
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <SideRoster
+              title={nameA}
+              players={match.players.filter((p) => p.side_id === sideA?.id)}
+            />
+            <SideRoster
+              title={nameB}
+              players={match.players.filter((p) => p.side_id === sideB?.id)}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Cricket scorecard: run progression + per-player batting/bowling,
           once there's per-innings detail recorded (live-scored or entered
           directly). */}
       {cricketInnings && cricketInnings.length > 0 && (
-        <CricketScorecard match={match} innings={cricketInnings} />
+        <CricketScorecard match={orderedMatch} innings={cricketInnings} players={cricketScore?.players} />
       )}
 
       {/* Football event timeline: goals/cards/subs, once there's detail
           recorded (live-scored or entered directly) — stays visible after
           the match finishes, unlike the live score header above. */}
-      {footballEventSource && <FootballScorecard match={match} detail={footballEventSource} />}
+      {footballEventSource && <FootballScorecard match={orderedMatch} detail={footballEventSource} />}
+
+      {/* Netball quarter breakdown — reads the same regardless of which
+          live-scoring method produced the score (see
+          `NetballQuarterBreakdown`'s doc comment), so it shows even for a
+          quarter-only-scored match. */}
+      {netballQuarterScore && (
+        <NetballQuarterBreakdown score={netballQuarterScore} sideA={sideA} sideB={sideB} />
+      )}
+
+      {/* Netball event timeline: goals/fouls, only present for an
+          event-by-event-scored match — stays visible after the match
+          finishes, unlike the live score header above. */}
+      {netballEventSource && <NetballScorecard match={orderedMatch} detail={netballEventSource} />}
 
       {/* Invite more people (participants only). */}
       {canEdit && !cancelled && (
@@ -587,10 +705,25 @@ function SideRoster({ title, players }: { title: string; players: MatchPlayer[] 
           // Token-invited (external) players have a shareable link; offer to
           // copy it instead of the bare "invited" label.
           const inviteToken = memberInviteToken(p.member)
+          // Only linked Agon users have a profile to open — external players
+          // (invited by name only) have no `user_id` and stay plain text.
+          const userId = p.member.type === 'User' ? p.member.user_id : undefined
           return (
             <div key={i} className="flex items-center gap-2">
-              <Avatar name={name} imageUrl={avatarUrl} size="md" />
-              <span className="flex-1 truncate text-sm">{name}</span>
+              {userId ? (
+                <Link
+                  to={`/users/${userId}`}
+                  className="flex min-w-0 flex-1 items-center gap-2"
+                >
+                  <Avatar name={name} imageUrl={avatarUrl} size="md" />
+                  <span className="flex-1 truncate text-sm">{name}</span>
+                </Link>
+              ) : (
+                <>
+                  <Avatar name={name} imageUrl={avatarUrl} size="md" />
+                  <span className="flex-1 truncate text-sm">{name}</span>
+                </>
+              )}
               {inviteToken ? (
                 <CopyInviteButton token={inviteToken} />
               ) : (

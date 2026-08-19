@@ -1,11 +1,13 @@
 //! Match likes, comments (+ replies, tombstone) and score submissions — the
 //! sub-collections under a match, with atomic counter maintenance.
 
+use std::collections::{HashMap, HashSet};
+
 use aws_sdk_dynamodb::types::{AttributeValue, Delete, Put, TransactWriteItem, Update};
 
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
-use super::item::{ATTR_GSI1PK, ATTR_PK, ItemBuilder, s, to_item};
+use super::item::{ATTR_GSI1PK, ATTR_PK, ATTR_SK, ItemBuilder, item_pk, s, to_item};
 use super::keys::{Pk, Sk};
 use super::page::Page;
 use super::records::{CommentRecord, MatchLikeRecord, ScoreSubmissionRecord};
@@ -106,6 +108,52 @@ impl Dao {
             .await
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
         Ok(out.item.is_some())
+    }
+
+    /// Of `match_ids`, which has `user_id` liked? Returns the subset as a set,
+    /// for populating `i_liked` across a page of matches (e.g. a feed page) in
+    /// one round-trip instead of one `has_liked_match` call each.
+    ///
+    /// Each like edge is an exact-key existence check (`MATCH#<id>` /
+    /// `LIKE#<uid>`), so these collapse into a single `BatchGetItem` (see
+    /// [`batch_get_all`] for the unprocessed-key retry); we project just the
+    /// `PK` since we only need existence, then recover which match ids came
+    /// back. Callers must pass at most `BATCH_GET_MAX` ids — a single,
+    /// service-capped page.
+    ///
+    /// [`batch_get_all`]: Dao::batch_get_all
+    #[tracing::instrument(skip(self))]
+    pub async fn batch_has_liked_matches(
+        &self,
+        match_ids: &[String],
+        user_id: &str,
+    ) -> DaoResult<HashSet<String>> {
+        let mut seen = HashSet::new();
+        let keys: Vec<_> = match_ids
+            .iter()
+            .filter(|id| seen.insert((*id).clone()))
+            .map(|match_id| {
+                HashMap::from([
+                    (
+                        ATTR_PK.to_string(),
+                        s(Pk::Match(match_id.clone()).to_string()),
+                    ),
+                    (
+                        ATTR_SK.to_string(),
+                        s(Sk::Like(user_id.to_string()).to_string()),
+                    ),
+                ])
+            })
+            .collect();
+
+        let items = self.batch_get_all(keys, Some(ATTR_PK)).await?;
+        let mut liked = HashSet::with_capacity(items.len());
+        for item in items {
+            if let Pk::Match(match_id) = item_pk(&item)? {
+                liked.insert(match_id);
+            }
+        }
+        Ok(liked)
     }
 
     /// List users who liked a match, cursor-paginated.

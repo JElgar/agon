@@ -15,7 +15,7 @@ import { useAuth } from '@/hooks/useAuth'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 
 type UserProfile = components['schemas']['UserProfile']
-type Match = components['schemas']['Match']
+type SearchMatch = components['schemas']['SearchMatch']
 
 /** Number of sports shown before the "See all sports" toggle reveals the rest. */
 const SPORT_SUMMARY_LIMIT = 3
@@ -60,7 +60,7 @@ export function ProfilePage() {
   const activityQuery = useQuery({
     queryKey: ['profile-activity', profileId],
     enabled: !!profileId,
-    queryFn: async (): Promise<Match[]> => {
+    queryFn: async (): Promise<SearchMatch[]> => {
       const { data, error } = await fetchClient.GET('/matches', {
         params: { query: { participant: profileId, limit: RECENT_LIMIT } },
       })
@@ -173,7 +173,7 @@ function AccountSettings() {
 }
 
 interface RecentActivityProps {
-  query: ReturnType<typeof useQuery<Match[]>>
+  query: ReturnType<typeof useQuery<SearchMatch[]>>
   onOpen: (matchId: string) => void
   currentUserId?: string
 }

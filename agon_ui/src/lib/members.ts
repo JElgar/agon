@@ -4,10 +4,37 @@ type Member = components['schemas']['Member']
 type MatchPlayer = components['schemas']['MatchPlayer']
 type MatchSide = components['schemas']['MatchSide']
 type Match = components['schemas']['Match']
+type FeedMatch = components['schemas']['FeedMatch']
+type SearchMatch = components['schemas']['SearchMatch']
 type Invitation = components['schemas']['Invitation']
+/** Name/avatar only, not the full `Member` shape — a side's `roster_preview`
+ *  entry, or a resolved id in a cricket/football score's `players` map (see
+ *  `CricketScore.players`'s backend doc comment). */
+export type RosterPreviewPlayer = components['schemas']['RosterPreviewPlayer']
+/** A cricket or football score's resolved-name lookup (`CricketScore.players`
+ *  / `FootballScore.players`), keyed by match-scoped player id — what
+ *  `playerNameFor` (both sports' versions) checks before falling back to
+ *  scanning the match's full roster, which a feed/search card doesn't carry
+ *  at all. */
+export type ScorePlayers = Record<string, RosterPreviewPlayer>
 // The generated `invitation.kind` type erases the discriminant (`Omit<…,"type">
 // & unknown`), so `.type` won't narrow. Use the real union for token extraction.
 type InvitationKind = components['schemas']['InvitationKind']
+
+/**
+ * Anything with an optional `players` list: a full `Match`, a locally-built
+ * draft (e.g. `FootballScoreFields`' not-yet-created match), or one of the
+ * trimmed shapes with no `players` field at all — a feed's `FeedMatch` (see
+ * `known_participants`/`viewer_side_id`) or search/profile-activity's
+ * `SearchMatch`.
+ *
+ * The `FeedMatch`/`SearchMatch` branches are listed explicitly (rather than
+ * relying on `{ players?: ... }` alone) because TypeScript's weak-type check
+ * rejects such an argument against an all-optional object type on its own:
+ * it shares literally no properties with `{ players?: ... }`. Narrow with
+ * `'players' in match`.
+ */
+type MatchLike = { players?: MatchPlayer[] } | FeedMatch | SearchMatch
 
 /**
  * The bearer invite token for a member with a pending token-invitation, else
@@ -31,13 +58,19 @@ export function inviteLink(token: string): string {
  * known Agon user) and haven't yet responded — else null. Lets match views show
  * the viewer their invite and an accept/decline action, mirroring the inbox.
  * Only user-kind invites apply: the viewer is a signed-in account, matched by id.
+ *
+ * Also accepts a feed's `FeedMatch`, which never carries the full roster —
+ * always `null` there, which is correct: an invitee has no feed row for a
+ * match until they accept (see the server's fan-out doc comments), so a feed
+ * card never has a pending invitation to show in the first place.
  */
 export function myPendingInvitation(
-  match: Pick<Match, 'players'>,
+  match: MatchLike,
   currentUserId: string | undefined,
 ): Invitation | null {
   if (!currentUserId) return null
-  for (const player of match.players) {
+  const players = ('players' in match && match.players) || []
+  for (const player of players) {
     if (player.member.type !== 'User') continue
     if (player.member.user_id !== currentUserId) continue
     const invitation = player.member.invitation
@@ -81,18 +114,74 @@ export function withInvitationStatus(
  * either added ad-hoc (no invitation) or has accepted. Mirrors the server's
  * `caller_is_participant`: participants may edit the match, invite others, and
  * record the result. Pending/declined invitees are not participants.
+ *
+ * Also accepts a feed's `FeedMatch` (see `myPendingInvitation`'s doc comment)
+ * — always `false` there; check `FeedMatch.viewer_side_id` instead if you
+ * need "is the viewer playing" from a feed card.
  */
 export function isParticipant(
-  match: Pick<Match, 'players'>,
+  match: MatchLike,
   currentUserId: string | undefined,
 ): boolean {
   if (!currentUserId) return false
-  return match.players.some((player) => {
+  const players = ('players' in match && match.players) || []
+  return players.some((player) => {
     if (player.member.type !== 'User') return false
     if (player.member.user_id !== currentUserId) return false
     const invitation = player.member.invitation
     return !invitation || invitation.status === 'accepted'
   })
+}
+
+/**
+ * The side the viewer themselves plays on, if they're a participant — so
+ * match views can put the viewer's own side on the left regardless of the
+ * order the server happens to store `sides` in (see `orderSidesForViewer`).
+ *
+ * A feed's `FeedMatch` already resolves this server-side (`viewer_side_id`,
+ * cheaper there than a roster scan — see its backend doc comment); a full
+ * `Match` carries the roster to look it up directly, mirroring
+ * `isParticipant`'s accepted/no-invitation check. `SearchMatch` has neither,
+ * so this is always `undefined` there — search/profile-activity cards keep
+ * the server's stored side order.
+ */
+export function mySideId(
+  match: MatchLike,
+  currentUserId: string | undefined,
+): string | undefined {
+  if (!currentUserId) return undefined
+  if ('viewer_side_id' in match) return match.viewer_side_id ?? undefined
+  const players = ('players' in match && match.players) || []
+  for (const player of players) {
+    if (player.member.type !== 'User') continue
+    if (player.member.user_id !== currentUserId) continue
+    const invitation = player.member.invitation
+    if (invitation && invitation.status !== 'accepted') continue
+    if (player.side_id) return player.side_id
+  }
+  return undefined
+}
+
+/**
+ * `sides` reordered so the viewer's own side (`mySideId`) comes first —
+ * "my team on the left" in the feed card and match detail score boxes.
+ * Everything downstream (headline/score lookups, scorer columns, roster
+ * columns) keys off side id rather than array position, so reordering here
+ * is enough to flip the whole view. Falls back to the given order when the
+ * viewer has no resolvable side (not a participant, not yet assigned, or a
+ * `SearchMatch` with nothing to resolve from).
+ */
+export function orderSidesForViewer(
+  sides: MatchSide[],
+  viewerSideId: string | undefined,
+): MatchSide[] {
+  if (!viewerSideId) return sides
+  const index = sides.findIndex((s) => s.id === viewerSideId)
+  if (index <= 0) return sides
+  const reordered = [...sides]
+  const [mine] = reordered.splice(index, 1)
+  reordered.unshift(mine)
+  return reordered
 }
 
 /**

@@ -48,6 +48,7 @@ impl FootballScore {
             period_times: Some(HashMap::new()),
             penalty_shootout: Some(Vec::new()),
             penalty_shootout_score: Some(HashMap::new()),
+            players: HashMap::new(),
         };
         for (occurred_at, event) in events {
             score.apply_event(*occurred_at, event);
@@ -71,15 +72,23 @@ impl FootballScore {
         match event {
             FootballLiveEvent::Goal(g) => {
                 *self.score.entry(g.side_id.clone()).or_insert(0) += 1;
-                self.goals.get_or_insert_with(Vec::new).push(g.clone());
+                // Stamp with the envelope's own `occurred_at` — the
+                // recording device's clock — regardless of whatever (if
+                // anything) the client sent in the payload itself (see
+                // `FootballGoalEvent::occurred_at`'s doc comment).
+                let mut g = g.clone();
+                g.occurred_at = Some(occurred_at);
+                self.goals.get_or_insert_with(Vec::new).push(g);
             }
             FootballLiveEvent::Card(c) => {
-                self.cards.get_or_insert_with(Vec::new).push(c.clone());
+                let mut c = c.clone();
+                c.occurred_at = Some(occurred_at);
+                self.cards.get_or_insert_with(Vec::new).push(c);
             }
             FootballLiveEvent::Substitution(sub) => {
-                self.substitutions
-                    .get_or_insert_with(Vec::new)
-                    .push(sub.clone());
+                let mut sub = sub.clone();
+                sub.occurred_at = Some(occurred_at);
+                self.substitutions.get_or_insert_with(Vec::new).push(sub);
             }
             FootballLiveEvent::Period(p) => {
                 self.period_times
@@ -125,6 +134,7 @@ mod tests {
                     own_goal: false,
                     penalty: false,
                     minute: Some(41),
+                    occurred_at: None,
                 }),
             ),
             (
@@ -134,6 +144,7 @@ mod tests {
                     player_id: "khan".into(),
                     color: FootballCardColor::Yellow,
                     minute: Some(58),
+                    occurred_at: None,
                 }),
             ),
             // An own goal counts for the side benefiting from it.
@@ -146,6 +157,7 @@ mod tests {
                     own_goal: true,
                     penalty: false,
                     minute: Some(63),
+                    occurred_at: None,
                 }),
             ),
             (
@@ -155,6 +167,7 @@ mod tests {
                     player_in_id: "moreno".into(),
                     player_out_id: "khan".into(),
                     minute: Some(70),
+                    occurred_at: None,
                 }),
             ),
             (
@@ -334,6 +347,45 @@ mod tests {
         assert!(score.goals.as_ref().unwrap().is_empty());
     }
 
+    /// Same guard as netball's — see
+    /// `netball::tests::goals_and_fouls_are_stamped_with_occurred_at_from_the_envelope_in_recorded_order`.
+    /// Football's `minute` doesn't reset per period the way netball's does,
+    /// so this doesn't fix a scrambling bug, but it still has to hold: a
+    /// live-scored goal is timestamped by the server's own clock, not
+    /// whatever (if anything) a client sends.
+    #[test]
+    fn goals_cards_and_subs_are_stamped_with_occurred_at_from_the_envelope() {
+        let events = vec![
+            (
+                ts(0),
+                FootballLiveEvent::Goal(FootballGoalEvent {
+                    side_id: "riverside".into(),
+                    scorer_player_id: Some("alvarez".into()),
+                    assist_player_id: None,
+                    own_goal: false,
+                    penalty: false,
+                    minute: None,
+                    occurred_at: None,
+                }),
+            ),
+            (
+                ts(1),
+                FootballLiveEvent::Card(FootballCardEvent {
+                    side_id: "oak_park".into(),
+                    player_id: "khan".into(),
+                    color: FootballCardColor::Yellow,
+                    minute: None,
+                    occurred_at: None,
+                }),
+            ),
+        ];
+
+        let score = FootballScore::from_events(&events);
+
+        assert_eq!(score.goals.as_ref().unwrap()[0].occurred_at, Some(ts(0)));
+        assert_eq!(score.cards.as_ref().unwrap()[0].occurred_at, Some(ts(1)));
+    }
+
     #[test]
     fn incremental_and_full_fold_agree() {
         let events = vec![
@@ -352,6 +404,7 @@ mod tests {
                     own_goal: false,
                     penalty: false,
                     minute: Some(12),
+                    occurred_at: None,
                 }),
             ),
             (
@@ -361,6 +414,7 @@ mod tests {
                     player_id: "khan".into(),
                     color: FootballCardColor::Yellow,
                     minute: Some(58),
+                    occurred_at: None,
                 }),
             ),
         ];
@@ -378,6 +432,7 @@ mod tests {
             period_times: Some(HashMap::new()),
             penalty_shootout: Some(Vec::new()),
             penalty_shootout_score: Some(HashMap::new()),
+            players: HashMap::new(),
         };
         for (occurred_at, event) in &events {
             incremental.apply_event(*occurred_at, event);

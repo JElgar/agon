@@ -15,10 +15,15 @@ import { MatchHeaderCarousel } from './MatchHeaderCarousel'
 import { InvitationResponseDialog } from './InvitationResponseDialog'
 import { LiveMatchBlock } from './live/LiveMatchBlock'
 import { CricketMatchBlock } from './live/CricketMatchBlock'
+import { NetballMatchBlock } from './live/NetballMatchBlock'
 import { CricketScoreBlock } from './CricketScoreBlock'
-import { LiveIndicator } from './live/LiveIndicator'
+import { KnownPlayersRow } from './KnownPlayersRow'
+import { FootballScorersBySide } from './FootballScorersBySide'
+import { NetballScorersBySide } from './NetballScorersBySide'
 import { useMatchScore } from '@/hooks/useMatchScore'
-import { describeEvent, eventEmoji, footballScoreFrom, recentGoalEvents } from '@/lib/liveScore'
+import { footballScoreFrom } from '@/lib/liveScore'
+import { netballGoalsFromScore } from '@/lib/score'
+import { netballScoreFrom } from '@/lib/netballScore'
 import {
   cricketProgressFromScore,
   cricketScoreFrom,
@@ -32,13 +37,19 @@ import {
   headlineLabel,
   setLine,
 } from '@/lib/score'
-import { myPendingInvitation } from '@/lib/members'
+import { myPendingInvitation, mySideId, orderSidesForViewer } from '@/lib/members'
 
 type Match = components['schemas']['Match']
+type FeedMatch = components['schemas']['FeedMatch']
+type SearchMatch = components['schemas']['SearchMatch']
 type MatchSide = components['schemas']['MatchSide']
 
 export interface MatchCardProps extends React.HTMLAttributes<HTMLDivElement> {
-  match: Match
+  /** A detail-view `Match` (full roster), a feed's lighter `FeedMatch`, or a
+   *  search/profile-activity `SearchMatch` — none of the trimmed shapes
+   *  carry the full roster. Every field this card actually reads is present
+   *  on all three. */
+  match: Match | FeedMatch | SearchMatch
   /** Called when the card body is activated (navigate to match detail). */
   onOpen?: () => void
   /** The signed-in user's id. When they're a participant with a pending score to
@@ -62,7 +73,7 @@ function InviteResponseBar({
   match,
   currentUserId,
 }: {
-  match: Match
+  match: Match | FeedMatch | SearchMatch
   currentUserId?: string
 }) {
   const queryClient = useQueryClient()
@@ -136,7 +147,7 @@ function InviteResponseBar({
  * `CopyInviteButton`'s fallback chain, with a transient checkmark standing in
  * for its "Copied!" label since this is an icon-only button.
  */
-function ShareMatchButton({ match }: { match: Match }) {
+function ShareMatchButton({ match }: { match: Match | FeedMatch | SearchMatch }) {
   const [copied, setCopied] = useState(false)
 
   useEffect(() => {
@@ -193,21 +204,37 @@ export function MatchCard({
   className,
   ...props
 }: MatchCardProps) {
-  const [sideA, sideB] = match.sides
+  // The viewer's own side, when resolvable, always renders first (left) —
+  // both here and on the match detail page. `orderedMatch` carries the same
+  // reordering into the live-score/scorer sub-components below, which each
+  // derive their own sideA/sideB straight off `match.sides` — passing this
+  // instead of `match` keeps them in sync with the score box without
+  // touching their internals (everything they key off is side id, not
+  // array position).
+  const orderedSides = orderSidesForViewer(match.sides, mySideId(match, currentUserId))
+  const orderedMatch = { ...match, sides: orderedSides }
+  const [sideA, sideB] = orderedSides
   const scoreInfo = displayScore(match)
   const headline = scoreInfo ? headlineBySide(scoreInfo.score) : {}
-  const sets = scoreInfo ? setLine(scoreInfo.score, match.sides) : []
+  const sets = scoreInfo ? setLine(scoreInfo.score, orderedSides) : []
 
   const nameA = sideName(sideA, 'Side A')
   const nameB = sideName(sideB, 'Side B')
   const aWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
   const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
+  // The "X beat Y" headline needs the winner named first, or it reads
+  // backwards whenever B is the one who actually won (the score box below
+  // stays in match.sides order regardless — only this headline reorders).
+  // No winner (tie/vs case) just falls back to A/B order, same as before.
+  const winningTeamName = bWon ? nameB : nameA
+  const losingTeamName = bWon ? nameA : nameB
 
-  const isLiveSport = match.match_type === 'football' || match.match_type === 'cricket'
+  const isLiveSport =
+    match.match_type === 'football' || match.match_type === 'cricket' || match.match_type === 'netball'
   const isCurrentlyLive = isLiveSport && match.status === 'in_progress'
   // Only fetched while live — a finished match doesn't need it. Football's
   // confirmed/pending `Score.Football` already embeds its goals (see
-  // `footballGoalsFromScore`/`finishedFootballEvents` below), and cricket's
+  // `footballGoalsFromScore`/`FootballScorersBySide` below), and cricket's
   // confirmed `Score.Cricket` already embeds its per-innings detail
   // (`cricketScore` below) — both produced by finishing a live-scored match
   // (see `finishMatch` in `LiveScoringPage`/`CricketLiveScoringPage`), same
@@ -226,13 +253,25 @@ export function MatchCard({
   // live block/badge for a match that finished after the card last mounted.
   const footballState = isCurrentlyLive ? footballScoreFrom(scoreQuery.data) : null
   const cricketState = isCurrentlyLive ? cricketScoreFrom(scoreQuery.data) : null
-  // Recent goals for a finished football match, read straight off the
+  const netballState = isCurrentlyLive ? netballScoreFrom(scoreQuery.data) : null
+  // Goals for a finished football/netball match, read straight off the
   // confirmed/pending score (no fetch) — shown under the plain score box
-  // below (the live ticker in `LiveMatchBlock` only renders while
-  // `footballState` is set, i.e. while still in progress).
+  // below (the live ticker in `LiveMatchBlock`/`NetballMatchBlock` only
+  // renders while still in progress).
   const finishedFootballGoals = scoreInfo && !isCurrentlyLive ? footballGoalsFromScore(scoreInfo.score) : null
-  const finishedFootballEvents = finishedFootballGoals ? recentGoalEvents(finishedFootballGoals, 3) : []
-  const hasLiveState = !!footballState || !!cricketState
+  const finishedNetballGoals = scoreInfo && !isCurrentlyLive ? netballGoalsFromScore(scoreInfo.score) : null
+  // Resolved server-side on `confirmed_score`/`pending_score` itself (see
+  // `Api::hydrate_confirmed_pending_score_players`) — this card's `match` is
+  // a `FeedMatch`/`SearchMatch`/`Match`, none of which reliably carry a full
+  // player roster to resolve scorer names from locally.
+  const finishedFootballScorePlayers =
+    scoreInfo && !isCurrentlyLive ? footballScoreFrom(scoreInfo.score)?.players : undefined
+  const finishedFootballPeriodTimes =
+    scoreInfo && !isCurrentlyLive ? footballScoreFrom(scoreInfo.score)?.period_times : undefined
+  const finishedNetballScorePlayers =
+    scoreInfo && !isCurrentlyLive ? netballScoreFrom(scoreInfo.score)?.players : undefined
+  const finishedNetballPeriodTimes =
+    scoreInfo && !isCurrentlyLive ? netballScoreFrom(scoreInfo.score)?.period_times : undefined
   // A cricket match's confirmed score carries its own per-innings detail once
   // it's been live-scored (`Score::Cricket`; see `finishMatch` in
   // `CricketLiveScoringPage`) — a manually-logged result still degrades to
@@ -278,12 +317,12 @@ export function MatchCard({
             <span>{cricketDescription}</span>
           ) : (
             <>
-              <span className={cn(aWon && 'font-medium')}>{nameA}</span>
+              <span className={cn(!!scoreInfo?.winnerSideId && 'font-medium')}>{winningTeamName}</span>
               <span className="text-primary">
                 {' '}
                 {match.match_type !== 'cricket' && scoreInfo?.winnerSideId ? 'beat' : 'vs'}{' '}
               </span>
-              <span className={cn(bWon && 'font-medium')}>{nameB}</span>
+              <span>{losingTeamName}</span>
             </>
           )}
           <span className="text-muted-foreground"> · {relativeTime(match.starts_at)}</span>
@@ -309,20 +348,28 @@ export function MatchCard({
           the usual confirmed/pending result; a finished cricket match with
           per-innings detail gets its own tile too. */}
       {footballState ? (
-        <div className="mx-3.5 mb-3">
-          <LiveMatchBlock match={match} state={footballState} />
-        </div>
+        <button type="button" onClick={onOpen} className="mx-3.5 mb-3 block w-full text-left">
+          <LiveMatchBlock match={orderedMatch} state={footballState} />
+        </button>
+      ) : netballState ? (
+        <button type="button" onClick={onOpen} className="mx-3.5 mb-3 block w-full text-left">
+          <NetballMatchBlock match={orderedMatch} state={netballState} />
+        </button>
       ) : cricketState ? (
-        <div className="mx-3.5 mb-3">
-          <CricketMatchBlock match={match} state={cricketState} showDescription={false} />
-        </div>
+        <button type="button" onClick={onOpen} className="mx-3.5 mb-3 block w-full text-left">
+          <CricketMatchBlock match={orderedMatch} state={cricketState} showDescription={false} />
+        </button>
       ) : cricketScore ? (
-        <div className="mx-3.5 mb-3">
-          <CricketScoreBlock match={match} score={cricketScore} showDescription={false} />
-        </div>
+        <button type="button" onClick={onOpen} className="mx-3.5 mb-3 block w-full text-left">
+          <CricketScoreBlock match={orderedMatch} score={cricketScore} showDescription={false} />
+        </button>
       ) : (
         scoreInfo && (
-          <div className="mx-3.5 mb-3 rounded-lg bg-muted/50 px-3.5 py-3">
+          <button
+            type="button"
+            onClick={onOpen}
+            className="mx-3.5 mb-3 block w-full rounded-lg bg-muted/50 px-3.5 py-3 text-left"
+          >
             <div className="flex items-center justify-between">
               <div className="flex min-w-0 flex-1 items-center gap-2">
                 <Avatar name={nameA} size="md" ring={aWon ? 'winner' : 'none'} />
@@ -353,27 +400,41 @@ export function MatchCard({
                 ))}
               </div>
             )}
-            {finishedFootballEvents.length > 0 && (
-              <div className="mt-2.5 space-y-1 border-t pt-2">
-                {finishedFootballEvents.map((event, i) => {
-                  const isSideB = event.side_id === sideB?.id
-                  return (
-                    <p
-                      key={i}
-                      className={`flex items-baseline gap-1.5 truncate text-[11px] text-muted-foreground ${isSideB ? 'flex-row-reverse text-right' : ''}`}
-                    >
-                      <span aria-hidden>{eventEmoji(event.kind)}</span>
-                      {event.minute !== undefined && (
-                        <span className="font-medium text-foreground">{event.minute}'</span>
-                      )}
-                      <span className="truncate">{describeEvent(event, match)}</span>
-                    </p>
-                  )
-                })}
-              </div>
+            {finishedFootballGoals && (
+              <FootballScorersBySide
+                goals={finishedFootballGoals}
+                match={orderedMatch}
+                players={finishedFootballScorePlayers}
+                periodTimes={finishedFootballPeriodTimes}
+                sideA={sideA}
+                sideB={sideB}
+                className="mt-2.5 text-[11px]"
+              />
             )}
-          </div>
+            {finishedNetballGoals && (
+              <NetballScorersBySide
+                goals={finishedNetballGoals}
+                match={orderedMatch}
+                players={finishedNetballScorePlayers}
+                periodTimes={finishedNetballPeriodTimes}
+                sideA={sideA}
+                sideB={sideB}
+                className="mt-2.5 text-[11px]"
+              />
+            )}
+          </button>
         )
+      )}
+
+      {/* "You follow Sofia, Raj +1" — who among the match's participants the
+          viewer follows. Only a feed card's `FeedMatch` carries this (a
+          per-viewer fan-out concept); `Match`/`SearchMatch` don't. */}
+      {'known_participants' in match && (
+        <KnownPlayersRow
+          participants={match.known_participants}
+          count={match.known_participants_count}
+          className="mx-3.5 mb-3 rounded-lg bg-muted/50 px-3.5 py-2.5"
+        />
       )}
 
       {/* Header photo, when the match has one. The gap above comes from the
@@ -416,7 +477,7 @@ export function MatchCard({
           )}
         >
           <Flame className={cn('size-3.5', i_liked && 'fill-current')} />{' '}
-          {like_count} kudos
+          {like_count}
         </button>
         <button
           type="button"
@@ -426,11 +487,7 @@ export function MatchCard({
           <MessageCircle className="size-3.5" /> {comment_count}
         </button>
         <ShareMatchButton match={match} />
-        {hasLiveState ? (
-          <LiveIndicator className="ml-auto" />
-        ) : (
-          <StatusBadge status={matchBadgeStatus(match)} className="ml-auto" />
-        )}
+        <StatusBadge status={matchBadgeStatus(match)} className="ml-auto" />
       </div>
     </div>
   )

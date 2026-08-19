@@ -82,6 +82,27 @@ pub enum ScoreRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         penalty_shootout_score: Option<HashMap<String, u32>>,
     },
+    Netball {
+        /// Goal tally, keyed by side id.
+        #[serde(default)]
+        score: HashMap<String, u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        goals: Option<Vec<NetballGoalEventRecord>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fouls: Option<Vec<NetballFoulEventRecord>>,
+        /// The most recent period marker seen, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        period: Option<NetballPeriodRecord>,
+        /// When each period marker was recorded, keyed by kind.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        period_times: Option<HashMap<NetballPeriodRecord, String>>,
+        /// The score as of each quarter-end marker, keyed by kind — the
+        /// *only* source of the score for a quarter-only-scored match. See
+        /// `agon_service::live_score::netball::NetballPeriodEvent::score`'s
+        /// doc comment.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        period_scores: Option<HashMap<NetballPeriodRecord, HashMap<String, u32>>>,
+    },
 }
 
 /// One innings' final totals, as stored on a match's confirmed/pending
@@ -354,8 +375,14 @@ pub struct TeamMemberRecord {
 }
 
 /// `MATCH#<matchId>` / `#META` — match metadata + resolved scores + social
-/// counts. `sides`, `players`, the live-scoring score record, submissions,
-/// likes and comments live as separate items in the same partition.
+/// counts. `players`, the live-scoring score record, submissions, likes and
+/// comments live as separate items in the same partition; `sides` is
+/// embedded directly here (not a separate `SIDE#` item per side, unlike
+/// those) — a match never has more than a handful, they're never added,
+/// removed, or reordered after creation, and embedding them means a page's
+/// worth of matches' sides ride along for free on the same `BatchGetItem`
+/// that already fetches their metas, instead of one `Query` per match (see
+/// `Dao::batch_get_match_summaries`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MatchRecord {
     pub id: String,
@@ -373,6 +400,14 @@ pub struct MatchRecord {
     pub starts_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<LocationRecord>,
+    /// This match's sides, keyed by `side_id` — a DynamoDB map, not a list,
+    /// so a single side's `player_count`/`roster_preview` can be updated in
+    /// place by key (`Dao::refresh_side_roster_previews`) without needing to
+    /// know or preserve a position. Every match has this populated by
+    /// `create_match`; there is no fallback to a separate `SIDE#` item
+    /// collection (that storage predates this field and has been migrated
+    /// away — see the migration script, not checked into this repo).
+    pub sides: std::collections::HashMap<String, MatchSideRecord>,
     /// Header photos, in display order (first = shown first). `#[serde(default)]`
     /// for records written before this field existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -415,6 +450,7 @@ pub struct MatchRecord {
 pub enum MatchFormatRecord {
     Football(FootballFormatRecord),
     Cricket(CricketFormatRecord),
+    Netball(NetballFormatRecord),
 }
 
 /// Mirrors `agon_service::match_format::FootballFormat`.
@@ -451,6 +487,15 @@ fn default_true() -> bool {
     true
 }
 
+/// Mirrors `agon_service::match_format::NetballFormat`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NetballFormatRecord {
+    pub num_quarters: u32,
+    pub quarter_length_minutes: u32,
+    pub two_point_zone: bool,
+    pub extra_time: bool,
+}
+
 /// `MATCH#<matchId>` / `SIDE#<sideId>` — one side of a match.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MatchSideRecord {
@@ -459,6 +504,34 @@ pub struct MatchSideRecord {
     pub team_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Total players currently on this side. Denormalized alongside
+    /// `roster_preview` (kept in sync on every roster-changing write — see
+    /// `Dao::refresh_side_roster_previews`) so the feed can decide "show
+    /// players" vs "show team" without a live players query.
+    /// `#[serde(default)]` for items written before this field existed.
+    #[serde(default)]
+    pub player_count: u32,
+    /// This side's *entire* roster, cached — but only when it fits within
+    /// `ROSTER_PREVIEW_CAP`. When `player_count` exceeds the cap this is
+    /// empty: a partial peek ("3 of 11") isn't useful to show, so callers
+    /// should fall back to `team_id`/`name` instead. Not live — a snapshot as
+    /// of the last roster-changing write.
+    #[serde(default)]
+    pub roster_preview: Vec<SideRosterMemberRecord>,
+}
+
+/// One player in a side's cached `roster_preview` — just enough to resolve a
+/// live `Member` at read time. `user_id` is looked up fresh (name/avatar
+/// hydrated via `batch_get_users`, same as everywhere else) so a stale cache
+/// never shows an outdated photo; `display_name` is stored directly for an
+/// external (unlinked) player, same as `MatchPlayerRecord`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SideRosterMemberRecord {
+    pub player_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 /// `MATCH#<matchId>` / `PLAYER#<playerId>` — a player in a match. Embeds the
@@ -534,6 +607,7 @@ pub struct LiveEventRecord {
 pub enum LiveEventPayloadRecord {
     Football(FootballLiveEventRecord),
     Cricket(CricketLiveEventRecord),
+    Netball(NetballLiveEventRecord),
 }
 
 // ---- Football live events --------------------------------------------------
@@ -560,6 +634,10 @@ pub struct FootballGoalEventRecord {
     pub penalty: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minute: Option<u32>,
+    /// Mirrors `agon_service::detailed_score::football::FootballGoalEvent::occurred_at`
+    /// — RFC3339, same string convention as `LiveEventRecord::occurred_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -569,6 +647,9 @@ pub struct FootballCardEventRecord {
     pub color: FootballCardColorRecord,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minute: Option<u32>,
+    /// Mirrors `FootballGoalEventRecord::occurred_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -585,6 +666,9 @@ pub struct FootballSubstitutionEventRecord {
     pub player_out_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minute: Option<u32>,
+    /// Mirrors `FootballGoalEventRecord::occurred_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -638,6 +722,10 @@ pub struct CricketDeliveryRecord {
     pub extra: Option<CricketDeliveryExtraRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wicket: Option<CricketDeliveryWicketRecord>,
+    /// Mirrors `agon_service::detailed_score::cricket::CricketDelivery::occurred_at`
+    /// — RFC3339, same string convention as `LiveEventRecord::occurred_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -719,6 +807,96 @@ pub enum InningsEndReasonRecord {
     OversComplete,
     Declared,
     TargetReached,
+}
+
+// ---- Netball live events ----------------------------------------------------
+
+/// Mirrors `agon_service::live_score::netball::NetballLiveEvent`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NetballLiveEventRecord {
+    Goal(NetballGoalEventRecord),
+    Foul(NetballFoulEventRecord),
+    Period(NetballPeriodEventRecord),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NetballGoalEventRecord {
+    pub side_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scorer_player_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scorer_position: Option<NetballPositionRecord>,
+    pub two_points: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minute: Option<u32>,
+    /// Mirrors `agon_service::detailed_score::netball::NetballGoalEvent::occurred_at`
+    /// — RFC3339, same string convention as `LiveEventRecord::occurred_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum NetballPositionRecord {
+    GoalShooter,
+    GoalAttack,
+    WingAttack,
+    Centre,
+    WingDefence,
+    GoalDefence,
+    GoalKeeper,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NetballFoulEventRecord {
+    pub side_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub player_id: Option<String>,
+    /// Named `foul_kind`, not `kind` — same collision-avoidance as the API's
+    /// `NetballFoulEvent::foul_kind` (`NetballLiveEventRecord`'s own
+    /// `#[serde(tag = "kind")]` would otherwise fight this field over the
+    /// same wire key once serde flattens the variant's fields in).
+    pub foul_kind: NetballFoulKindRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minute: Option<u32>,
+    /// Mirrors `NetballGoalEventRecord::occurred_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurred_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum NetballFoulKindRecord {
+    Contact,
+    Obstruction,
+    Footwork,
+    Offside,
+    HeldBall,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NetballPeriodEventRecord {
+    pub period: NetballPeriodRecord,
+    /// Cumulative score per side as of this marker — always present, same
+    /// reasoning as `agon_service::live_score::netball::NetballPeriodEvent`.
+    pub score: HashMap<String, u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum NetballPeriodRecord {
+    Start,
+    QuarterOneEnd,
+    QuarterTwoStart,
+    QuarterTwoEnd,
+    QuarterThreeStart,
+    QuarterThreeEnd,
+    QuarterFourStart,
+    FullTime,
+    ExtraTimeStart,
+    ExtraTimeEnd,
 }
 
 /// `MATCH#<matchId>` / `SCORESUB#<ts>#<subId>` — a score submission and its
@@ -958,6 +1136,32 @@ pub struct FeedItemRecord {
     pub starts_at: String,
     /// When this feed entry was written (for debugging / potential TTL).
     pub created_at: String,
+    /// Up to `MAX_KNOWN_PLAYERS` user ids of this match's participants that the
+    /// viewer follows — "people you know are playing", denormalized at fan-out
+    /// time so a feed read never queries the match's player collection.
+    /// Snapshot, not live: it reflects the audience computation's state as of
+    /// the last fan-out (match creation, or an accepted invitation re-running
+    /// it), not subsequent follow/unfollow activity. `#[serde(default)]` for
+    /// feed items written before this field existed.
+    #[serde(default)]
+    pub known_player_ids: Vec<String>,
+    /// How many of the match's participants the viewer follows, in total —
+    /// unlike `known_player_ids`, never capped at `MAX_KNOWN_PLAYERS`, so the
+    /// feed can render "+N more" beyond the hydrated list. Same snapshot/
+    /// refresh characteristics as `known_player_ids`. `#[serde(default)]` for
+    /// feed items written before this field existed (back-fills to 0, which
+    /// undercounts pre-existing rows until their next fan-out re-run).
+    #[serde(default)]
+    pub known_player_count: u32,
+    /// The side *this viewer* plays on, if they're themselves a participant
+    /// in the match — lets their own feed card show the score confirm/dispute
+    /// prompt without a live player query. `None` for a viewer in the
+    /// audience only via a follow (they're not playing) or a not-yet-assigned
+    /// participant. Same snapshot/refresh characteristics as
+    /// `known_player_ids`. `#[serde(default)]` for feed items written before
+    /// this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewer_side_id: Option<String>,
 }
 
 /// Aggregate stats for one sport, stored inline on `UserRecord::stats` keyed

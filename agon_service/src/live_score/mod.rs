@@ -20,9 +20,11 @@ use poem_openapi::{Object, Union};
 
 pub mod cricket;
 pub mod football;
+pub mod netball;
 
 pub use cricket::CricketLiveEvent;
 pub use football::FootballLiveEvent;
+pub use netball::NetballLiveEvent;
 
 /// A single live-scoring event, sport-first discriminated so a new sport is a
 /// new variant without touching existing ones — same pattern as `Score`.
@@ -33,6 +35,7 @@ pub use football::FootballLiveEvent;
 pub enum LiveEventInput {
     Football(FootballLiveEvent),
     Cricket(CricketLiveEvent),
+    Netball(NetballLiveEvent),
 }
 
 /// One event to append, before the server has assigned it a `seq`.
@@ -100,6 +103,7 @@ mod tests {
             player_id: "p1".into(),
             color: FootballCardColor::Yellow,
             minute: Some(58),
+            occurred_at: None,
         }));
 
         let json = event.to_json().expect("serializes");
@@ -118,6 +122,50 @@ mod tests {
             LiveEventInput::Football(FootballLiveEvent::Card(c)) => {
                 assert_eq!(c.player_id, "p1");
                 assert_eq!(c.minute, Some(58));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    /// `NetballFoulEvent::foul_kind` must survive serialization distinctly
+    /// from `NetballLiveEvent`'s own `kind` discriminator (`Goal`/`Foul`/
+    /// `Period`) once the two are flattened onto the same JSON object —
+    /// regression test for exactly this collision, which previously silently
+    /// dropped the foul's own kind (a naming clash, `NetballFoulEvent` field
+    /// also called `kind`, that `NetballGoalEvent`/`NetballPeriodEvent` don't
+    /// have — see `NetballFoulEvent::foul_kind`'s doc comment).
+    #[test]
+    fn netball_foul_kind_does_not_collide_with_the_outer_discriminator() {
+        use crate::detailed_score::netball::{NetballFoulEvent, NetballFoulKind};
+        use crate::live_score::netball::NetballLiveEvent;
+
+        let event = LiveEventInput::Netball(NetballLiveEvent::Foul(NetballFoulEvent {
+            side_id: "side_a".into(),
+            player_id: Some("p1".into()),
+            foul_kind: NetballFoulKind::Contact,
+            minute: Some(10),
+            occurred_at: None,
+        }));
+
+        let json = event.to_json().expect("serializes");
+        let obj = json.as_object().expect("flat object, not a wrapper");
+        assert_eq!(obj.get("sport").and_then(|v| v.as_str()), Some("Netball"));
+        // The outer union's own discriminator.
+        assert_eq!(obj.get("kind").and_then(|v| v.as_str()), Some("Foul"));
+        // The foul's own kind, under its own (non-colliding) key.
+        assert_eq!(
+            obj.get("foul_kind").and_then(|v| v.as_str()),
+            Some("contact")
+        );
+
+        let parsed = match LiveEventInput::parse_from_json(Some(json)) {
+            Ok(v) => v,
+            Err(_) => panic!("failed to parse back"),
+        };
+        match parsed {
+            LiveEventInput::Netball(NetballLiveEvent::Foul(fo)) => {
+                assert!(matches!(fo.foul_kind, NetballFoulKind::Contact));
+                assert_eq!(fo.player_id.as_deref(), Some("p1"));
             }
             _ => panic!("wrong variant"),
         }

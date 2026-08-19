@@ -25,4 +25,16 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // e2e specs/config run under Node (via Playwright's test runner), not
+    // the browser — they need `process` in scope, and don't use the
+    // React-specific rules above.
+    files: ['e2e/**/*.ts'],
+    languageOptions: {
+      globals: globals.node,
+    },
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
 )

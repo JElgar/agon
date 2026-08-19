@@ -1,5 +1,5 @@
 import type { components } from '@/types/api'
-import { describeEvent, eventEmoji, eventsFromDetail, minuteLabel, type FootballEventSource } from '@/lib/liveScore'
+import { describeEvent, eventClockLabel, eventEmoji, eventsFromDetail, type FootballEventSource } from '@/lib/liveScore'
 
 type Match = components['schemas']['Match']
 
@@ -33,9 +33,9 @@ export function FootballScorecard({ match, detail }: { match: Match; detail: Foo
             >
               <span aria-hidden>{eventEmoji(event.kind)}</span>
               <span className="font-medium tabular-nums text-muted-foreground">
-                {minuteLabel(event.minute)}
+                {eventClockLabel(event, detail.period_times)}
               </span>
-              <span>{describeEvent(event, match)}</span>
+              <span>{describeEvent(event, match, detail.players)}</span>
             </p>
           )
         })}

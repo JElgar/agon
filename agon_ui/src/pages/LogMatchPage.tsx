@@ -18,6 +18,7 @@ import {
 } from '@/components/agon/PlayerSideEditor'
 import { FootballScoreFields } from '@/components/agon/FootballScoreFields'
 import { CricketScoreFields } from '@/components/agon/CricketScoreFields'
+import { NetballScoreFields } from '@/components/agon/NetballScoreFields'
 import { cn } from '@/lib/utils'
 import { toDateTimeLocal } from '@/lib/datetime'
 import { addPendingMatch } from '@/hooks/usePendingMatches'
@@ -67,12 +68,14 @@ interface SetRow {
 /** Whether the match is upcoming (no score) or already played (with a score). */
 type MatchMode = 'scheduled' | 'completed'
 
-/** A display name for a side: the sole player's name, else the custom name
- *  typed for it (if any), else a generic fallback — mirrors the server's
+/** A display name for a side: the custom name typed for it (if any), else the
+ *  sole player's name, else a generic fallback — mirrors the server's
  *  resolution order for this compose form's own preview text. */
 function sideName(players: TaggedPlayer[], customName: string, fallback: string): string {
+  const trimmed = customName.trim()
+  if (trimmed) return trimmed
   if (players.length === 1) return players[0].name
-  return customName.trim() || fallback
+  return fallback
 }
 
 /** Default scheduled time: the next whole hour, at least an hour from now. */
@@ -178,6 +181,7 @@ export function LogMatchPage() {
   const setsPlayable = isSetsSport(sport ?? 'other')
   const isFootball = sport === 'football'
   const isCricket = sport === 'cricket'
+  const isNetball = sport === 'netball'
 
   // Is the picked time valid for the chosen mode? Completed matches must be in
   // the past, scheduled ones in the future (matches the server's rule). Empty or
@@ -199,7 +203,7 @@ export function LogMatchPage() {
   // inline hint), or null when the score state is acceptable for the mode.
   const scoreError = useMemo((): string | null => {
     if (mode !== 'completed') return null
-    if (isFootball || isCricket) {
+    if (isFootball || isCricket || isNetball) {
       return detailBuilt ? null : 'Enter the score'
     }
     if (setsPlayable) {
@@ -222,20 +226,24 @@ export function LogMatchPage() {
     if (pointsA === '' || pointsB === '' || !Number.isFinite(a) || !Number.isFinite(b))
       return 'Enter the score for both sides'
     return null
-  }, [mode, isFootball, isCricket, detailBuilt, setsPlayable, sets, pointsA, pointsB])
+  }, [mode, isFootball, isCricket, isNetball, detailBuilt, setsPlayable, sets, pointsA, pointsB])
 
-  // Validation: a sport, a match name, at least one player on each side (so the
-  // match is meaningful), at least one opponent on side B, a time valid for the
-  // mode, and — for a completed match — a result.
+  // Validation: a sport, a match name, at least one player on your own side
+  // (so the match is meaningful), a time valid for the mode, and — for a
+  // completed match — a result. The opposition (side B) may be left empty —
+  // e.g. recording a result against a team you don't know the roster of —
+  // but then needs an explicit name (this flow has no team picker, so a
+  // player-less side has nothing else to show as its name; see the server's
+  // matching check in `create_match`).
   const valid = useMemo(() => {
     if (!sport) return false
     if (name.trim().length === 0) return false
     if (sideA.length === 0) return false
-    if (sideB.length === 0) return false
+    if (sideB.length === 0 && sideBName.trim().length === 0) return false
     if (timeError) return false
     if (scoreError) return false
     return true
-  }, [sport, name, sideA.length, sideB.length, timeError, scoreError])
+  }, [sport, name, sideA.length, sideB.length, sideBName, timeError, scoreError])
 
   const mutation = useMutation({
     mutationFn: async (body: CreateMatchInput) => {
@@ -298,7 +306,7 @@ export function LogMatchPage() {
     | null => {
     if (!recordResult || !sport) return null
 
-    if (isFootball || isCricket) {
+    if (isFootball || isCricket || isNetball) {
       if (!detailBuilt) return null
       return {
         score: detailBuilt.score as unknown as CreateMatchInput['score'],
@@ -383,7 +391,9 @@ export function LogMatchPage() {
     mutation.mutate(body)
   }
 
-  const playersSet = sport !== null && sideA.length > 0 && sideB.length > 0
+  // Side B (the opposition) is allowed to be empty — you might be recording
+  // your own team's result without knowing who's on the other side.
+  const playersSet = sport !== null && sideA.length > 0
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-3">
@@ -405,8 +415,8 @@ export function LogMatchPage() {
         />
       </Section>
 
-      {/* Format (optional, football/cricket only) */}
-      {sport !== null && (sport === 'football' || sport === 'cricket') && (
+      {/* Format (optional, football/cricket/netball only) */}
+      {sport !== null && (sport === 'football' || sport === 'cricket' || sport === 'netball') && (
         <Section title="Match format">
           <MatchFormatEditor sport={sport} value={format} onChange={setFormat} />
         </Section>
@@ -462,6 +472,12 @@ export function LogMatchPage() {
             name={sideBName}
             onNameChange={setSideBName}
           />
+          {sideB.length === 0 && sideBName.trim().length === 0 && (
+            <p className="px-1 text-xs text-muted-foreground">
+              No opponents tagged — give this side a name above (e.g. a team
+              or club name) so the match can show who it was against.
+            </p>
+          )}
         </div>
       </Section>
 
@@ -509,7 +525,7 @@ export function LogMatchPage() {
       {mode === 'completed' &&
         (playersSet ? (
           <Section num={5} title="Score">
-          {(isFootball || isCricket) && (() => {
+          {(isFootball || isCricket || isNetball) && (() => {
             const sideAObj: MatchSide = { id: SIDE_A, name: sideAName.trim() || undefined }
             const sideBObj: MatchSide = { id: SIDE_B, name: sideBName.trim() || undefined }
             const players = [...toMatchPlayers(sideA, SIDE_A), ...toMatchPlayers(sideB, SIDE_B)]
@@ -520,8 +536,15 @@ export function LogMatchPage() {
                 players={players}
                 onChange={setDetailBuilt}
               />
-            ) : (
+            ) : isCricket ? (
               <CricketScoreFields
+                sideA={sideAObj}
+                sideB={sideBObj}
+                players={players}
+                onChange={setDetailBuilt}
+              />
+            ) : (
+              <NetballScoreFields
                 sideA={sideAObj}
                 sideB={sideBObj}
                 players={players}
@@ -530,7 +553,7 @@ export function LogMatchPage() {
             )
           })()}
 
-          {!isFootball && !isCricket && setsPlayable && (
+          {!isFootball && !isCricket && !isNetball && setsPlayable && (
             <div className="flex flex-col gap-2">
               <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-center text-[11px] uppercase tracking-wider text-muted-foreground">
                 <span className="truncate text-left">{sideName(sideA, sideAName, 'Your side')}</span>
@@ -594,7 +617,7 @@ export function LogMatchPage() {
             </div>
           )}
 
-          {!isFootball && !isCricket && !setsPlayable && (
+          {!isFootball && !isCricket && !isNetball && !setsPlayable && (
             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
               <div className="flex flex-col gap-1">
                 <span className="truncate text-center text-xs text-muted-foreground">
@@ -636,7 +659,7 @@ export function LogMatchPage() {
             hint={
               sport === null
                 ? 'Pick a sport to enter the score'
-                : 'Add players to both sides to enter the score'
+                : 'Add players to your side to enter the score'
             }
           />
         ))}

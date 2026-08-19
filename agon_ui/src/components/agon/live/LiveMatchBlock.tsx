@@ -4,6 +4,7 @@ import { Avatar } from '@/components/agon/Avatar'
 import { LiveIndicator } from './LiveIndicator'
 import {
   describeEvent,
+  eventClockLabel,
   eventEmoji,
   liveClockLabel,
   recentEvents,
@@ -15,6 +16,8 @@ import {
 const CLOCK_TICK_MS = 15_000
 
 type Match = components['schemas']['Match']
+type FeedMatch = components['schemas']['FeedMatch']
+type SearchMatch = components['schemas']['SearchMatch']
 type MatchSide = components['schemas']['MatchSide']
 
 function sideName(side: MatchSide | undefined, fallback: string): string {
@@ -34,7 +37,7 @@ export function LiveMatchBlock({
   state,
   tickerLimit = 2,
 }: {
-  match: Match
+  match: Match | FeedMatch | SearchMatch
   state: FootballScore
   /** How many recent events to show under the score. */
   tickerLimit?: number
@@ -91,10 +94,10 @@ export function LiveMatchBlock({
                 className={`flex items-baseline gap-1.5 truncate text-xs text-muted-foreground ${isSideB ? 'flex-row-reverse text-right' : ''}`}
               >
                 <span aria-hidden>{eventEmoji(event.kind)}</span>
-                {event.minute !== undefined && (
-                  <span className="font-medium text-foreground">{event.minute}'</span>
+                {eventClockLabel(event, state.period_times) && (
+                  <span className="font-medium text-foreground">{eventClockLabel(event, state.period_times)}</span>
                 )}
-                <span className="truncate">{describeEvent(event, match)}</span>
+                <span className="truncate">{describeEvent(event, match, state.players)}</span>
               </p>
             )
           })}

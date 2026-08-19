@@ -53,6 +53,19 @@ pub struct MatchDoc {
     /// the stable player ids — so the `participant` discovery filter matches
     /// either. Deduplicated.
     participant_ids: Vec<String>,
+    /// Which of `participant_ids` won / lost / drew, split into three
+    /// buckets rather than a single per-participant map — Meilisearch
+    /// documents are per-match, not per-viewer, so there's no single
+    /// "outcome" field to fetch; a search already filtered to one
+    /// `participant_ids` value can instead check which bucket that id
+    /// landed in, for free, off the same hit (see `SearchClient::search_matches`).
+    /// All three are empty until the match has a confirmed score — a
+    /// missing outcome, not a draw.
+    winning_participant_ids: Vec<String>,
+    losing_participant_ids: Vec<String>,
+    /// Populated only when the confirmed score has no single winner (a tie) —
+    /// every participant with an assigned side lands here.
+    drawing_participant_ids: Vec<String>,
 }
 
 /// Handle an index-relevant change event. Returns `Ok(())` for events that are
@@ -146,10 +159,32 @@ fn match_doc(agg: &MatchAggregate) -> MatchDoc {
     // Both linked user ids and stable player ids identify a participant, so the
     // discovery `participant` filter matches whichever the caller supplies.
     let mut participant_ids = std::collections::BTreeSet::new();
+    let mut winning_participant_ids = std::collections::BTreeSet::new();
+    let mut losing_participant_ids = std::collections::BTreeSet::new();
+    let mut drawing_participant_ids = std::collections::BTreeSet::new();
+    // `None` = no confirmed result yet, so every player's ids stay out of all
+    // three outcome buckets. `Some(None)` = confirmed but tied (no single
+    // winning side). `Some(Some(side))` = that side won.
+    let winner_side_id: Option<Option<&String>> = m
+        .confirmed_score
+        .as_ref()
+        .map(|cs| cs.winner_side_id.as_ref());
     for player in &agg.players {
-        participant_ids.insert(player.player_id.clone());
+        let mut ids = vec![player.player_id.clone()];
         if let Some(uid) = &player.user_id {
-            participant_ids.insert(uid.clone());
+            ids.push(uid.clone());
+        }
+        participant_ids.extend(ids.iter().cloned());
+        // A player who was never assigned a side (shouldn't happen for a
+        // finished match, but no roster invariant guarantees it) has no
+        // outcome to report — leave them out of every bucket.
+        if let (Some(side_id), Some(winner)) = (&player.side_id, winner_side_id) {
+            let bucket = match winner {
+                Some(winning_side) if winning_side == side_id => &mut winning_participant_ids,
+                Some(_) => &mut losing_participant_ids,
+                None => &mut drawing_participant_ids,
+            };
+            bucket.extend(ids);
         }
     }
     // Parse the ISO-8601 start time to a Unix timestamp for numeric filter/sort.
@@ -167,5 +202,8 @@ fn match_doc(agg: &MatchAggregate) -> MatchDoc {
         starts_at: m.starts_at.clone(),
         starts_at_ts,
         participant_ids: participant_ids.into_iter().collect(),
+        winning_participant_ids: winning_participant_ids.into_iter().collect(),
+        losing_participant_ids: losing_participant_ids.into_iter().collect(),
+        drawing_participant_ids: drawing_participant_ids.into_iter().collect(),
     }
 }

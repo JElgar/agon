@@ -71,11 +71,11 @@ impl FanOutMatch {
         // 2. Write feed entries in checkpointed chunks. Each chunk is its own
         //    activity, so a failure resumes at the failed chunk on replay.
         let now = workflow_now(ctx);
-        for chunk in audience.viewer_ids.chunks(FEED_CHUNK) {
+        for chunk in audience.viewers.chunks(FEED_CHUNK) {
             ctx.start_activity(
                 AgonActivities::write_feed_chunk,
                 WriteFeedChunk {
-                    viewer_ids: chunk.to_vec(),
+                    viewers: chunk.to_vec(),
                     match_id: match_id.clone(),
                     starts_at: audience.starts_at.clone(),
                     now: now.clone(),
@@ -150,11 +150,11 @@ impl AcceptInvitation {
 
             if audience.match_exists {
                 let now = workflow_now(ctx);
-                for chunk in audience.viewer_ids.chunks(FEED_CHUNK) {
+                for chunk in audience.viewers.chunks(FEED_CHUNK) {
                     ctx.start_activity(
                         AgonActivities::write_feed_chunk,
                         WriteFeedChunk {
-                            viewer_ids: chunk.to_vec(),
+                            viewers: chunk.to_vec(),
                             match_id: match_id.clone(),
                             starts_at: audience.starts_at.clone(),
                             now: now.clone(),
@@ -169,6 +169,16 @@ impl AcceptInvitation {
                 ctx.start_activity(
                     AgonActivities::reconcile_match_stats,
                     match_id.clone(),
+                    activity_opts(),
+                )
+                .await?;
+
+                // 4. Refresh side roster previews — linking an invitee can
+                //    flip a cached preview entry from external to a real user
+                //    even when the side's composition doesn't change.
+                ctx.start_activity(
+                    AgonActivities::refresh_side_roster_previews,
+                    match_id,
                     activity_opts(),
                 )
                 .await?;

@@ -18,6 +18,7 @@ const SPORT_LABELS: Record<MatchType, string> = {
   table_tennis: 'Table Tennis',
   football: 'Football',
   cricket: 'Cricket',
+  netball: 'Netball',
   other: 'Other',
 }
 
@@ -34,6 +35,7 @@ const SPORT_ICONS: Record<MatchType, LucideIcon> = {
   table_tennis: CircleDot,
   football: Volleyball,
   cricket: Target,
+  netball: Target,
   other: Dumbbell,
 }
 
@@ -53,6 +55,7 @@ const SPORT_EMOJI: Record<MatchType, string> = {
   table_tennis: '🏓',
   football: '⚽',
   cricket: '🏏',
+  netball: '🏐',
   other: '🏅',
 }
 

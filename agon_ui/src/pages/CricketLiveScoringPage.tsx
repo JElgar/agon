@@ -1,17 +1,21 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { ChevronLeft } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
-import { useAppendCricketEvent, useLiveSeq } from '@/hooks/useLiveScore'
+import { useAppendCricketEvent, useLiveSeq, useUndoTargetSeq } from '@/hooks/useLiveScore'
 import { matchScoreQueryKey, useMatchScore } from '@/hooks/useMatchScore'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
+import { UndoLastEventButton } from '@/components/agon/live/UndoLastEventButton'
 import { SidePicker, PlayerPicker, sideName } from '@/components/agon/live/Pickers'
 import { WicketDialog } from '@/components/agon/live/WicketDialog'
 import { ExtraRunsDialog } from '@/components/agon/live/ExtraRunsDialog'
 import { NoBallDialog } from '@/components/agon/live/NoBallDialog'
+import { TargetReachedDialog } from '@/components/agon/live/TargetReachedDialog'
+import { AllOutDialog } from '@/components/agon/live/AllOutDialog'
+import { OversCompleteDialog } from '@/components/agon/live/OversCompleteDialog'
 import { playersOnSide } from '@/lib/members'
 import { cricketFormat } from '@/lib/matchFormat'
 import {
@@ -23,6 +27,9 @@ import {
   isChipHighlighted,
   playerNameFor,
   runRate,
+  sideNameFor,
+  targetReached,
+  wicketsInHand,
 } from '@/lib/cricketScore'
 
 type Match = components['schemas']['Match']
@@ -52,6 +59,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
 
   const scoreQuery = useMatchScore(match.id, { refetchInterval: 8000 })
   const seq = useLiveSeq(match.id)
+  const undoSeq = useUndoTargetSeq(match.id)
   const appendEvent = useAppendCricketEvent(match.id)
   const state = cricketScoreFrom(scoreQuery.data)
   const innings = state ? currentInnings(state) : null
@@ -61,18 +69,58 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   // replay needed for the online case.
   const next = state?.next_ball_context ?? null
 
-  // The over quota's been fully bowled but nothing on the backend blocks
-  // further deliveries (see `match_format`'s doc comment — enforcement is
-  // intentionally out of scope there), so the picker flow would otherwise
-  // just keep asking for a new bowler forever. The reason is unambiguous
-  // here — the overs ran out, nobody needs to be asked — so this ends the
-  // innings itself instead of prompting (see the auto-end effect below).
+  // In the match's last innings, whether the chasing side has already
+  // passed the target — the win itself is decided, but unlike overs running
+  // out this doesn't have one obviously right next step, so it surfaces as
+  // a popup (below) rather than auto-ending the innings.
+  const target = state ? targetReached(match, state, format) : null
+
+  // Batters already dismissed for the innings currently open — computed
+  // early (before any conditional return below) so both the "all out" check
+  // and the picker-panel exclude lists can see it. Retired hurt is excluded
+  // on purpose: unlike every other dismissal it isn't final — the same
+  // batter can simply be picked again to resume (see `CricketRetireEvent`'s
+  // doc comment on the backend).
+  const outBatters = (innings?.batting ?? [])
+    .filter((b) => b.dismissal && b.dismissal.kind !== 'retired_hurt')
+    .map((b) => b.player_id)
+
+  // The batting side has lost enough wickets that nobody's left to send in
+  // — "all out". Same shape as `target` just above: detected here but not
+  // auto-ended (see `AllOutDialog`'s doc comment for why), and `target`
+  // takes priority on the rare coincidence of both at once (e.g. the
+  // winning run comes off a run-out that's also the side's last wicket) —
+  // the chase being won already decides the match.
+  const wicketsRemaining = innings
+    ? wicketsInHand(match, innings.batting_side_id, innings.wickets)
+    : null
+  const allOut = wicketsRemaining === 0 && !target
+
+  // The over quota's been fully bowled, right at the boundary before a new
+  // over's bowler is picked — same shape as `target`/`allOut` above: nothing
+  // on the backend blocks further deliveries (see `match_format`'s doc
+  // comment — enforcement is intentionally out of scope there), so this is
+  // surfaced as a popup rather than forced, since the scorer might want to
+  // play on past the quota (extra overs agreed on the day, a rain-affected
+  // restart, etc). `target`/`allOut` take priority on the rare coincidence
+  // of more than one of these being true at once — the scorer's choice
+  // there already decides the innings.
   const oversComplete =
     !!innings &&
     format.overs_per_innings != null &&
     innings.overs.overs >= format.overs_per_innings &&
-    innings.overs.balls === 0
-  const oversCompleteAwaitingEnd = oversComplete && !next?.bowler_player_id
+    innings.overs.balls === 0 &&
+    !target &&
+    !allOut
+
+  // Monotonic version of the above (true from the moment the quota's first
+  // reached, and never false again for the rest of the innings — overs only
+  // go up) — used only to reset `oversContinued` at the right time. Unlike
+  // `oversComplete` itself, this doesn't flip back to false mid-over, so it
+  // can't be used to gate the popup's visibility, only to know when a new
+  // innings has started.
+  const oversQuotaReached =
+    !!innings && format.overs_per_innings != null && innings.overs.overs >= format.overs_per_innings
 
   // Locally-picked openers/replacement batter/next bowler — only used until
   // the server confirms them via an actual delivery, at which point
@@ -80,10 +128,16 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   const [pickedStriker, setPickedStriker] = useState<string | null>(null)
   const [pickedNonStriker, setPickedNonStriker] = useState<string | null>(null)
   const [pickedBowler, setPickedBowler] = useState<string | null>(null)
+  // Whether the batter picker is revealing already-out players as options
+  // (see the "Show players who've already batted" toggle below) — reset
+  // alongside the local picks themselves, once the server's confirmed a
+  // fresh pick, so the next picker moment starts with it hidden again.
+  const [showOutBatters, setShowOutBatters] = useState(false)
   useEffect(() => {
     if (next?.striker_player_id) setPickedStriker(null)
     if (next?.non_striker_player_id) setPickedNonStriker(null)
     if (next?.bowler_player_id) setPickedBowler(null)
+    if (next?.striker_player_id || next?.non_striker_player_id) setShowOutBatters(false)
   }, [next?.striker_player_id, next?.non_striker_player_id, next?.bowler_player_id])
 
   // Lets the scorer step back into the opener/bowler picker after all three
@@ -104,24 +158,43 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   const [endInningsOpen, setEndInningsOpen] = useState(false)
   const [startBattingSide, setStartBattingSide] = useState<string | undefined>(undefined)
 
-  // Fires the `overs_complete` end-of-innings event itself the moment the
-  // quota's used up, rather than asking the scorer to pick a reason they
-  // didn't choose. Guarded by a ref (not `appendEvent.isPending`) so it
-  // fires exactly once per innings — `isPending` flips mid-flight and isn't
-  // a dependency here, so it can't retrigger the effect — and resets once
-  // the innings actually ends (`oversComplete` goes false) so the next
-  // innings' overs-complete moment can auto-end too.
-  const autoEndedOversRef = useRef(false)
+  // "Play out the overs" just dismisses the target-reached popup — scoring
+  // carries on normally, and this stops it popping up again on every
+  // subsequent ball of the same chase. Resets once the target's no longer
+  // reached (a new innings started) so the next decider gets its own popup.
+  const [targetPopupDismissed, setTargetPopupDismissed] = useState(false)
+  const targetReachedFlag = !!target
   useEffect(() => {
-    if (!oversCompleteAwaitingEnd) {
-      autoEndedOversRef.current = false
-      return
-    }
-    if (autoEndedOversRef.current) return
-    autoEndedOversRef.current = true
-    appendEvent.mutate({ kind: 'InningsEnd', reason: 'overs_complete' })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [oversCompleteAwaitingEnd])
+    if (!targetReachedFlag) setTargetPopupDismissed(false)
+  }, [targetReachedFlag])
+
+  // Ditto for the all-out popup — "Continue" dismisses it and hands off to
+  // the batter picker underneath, which is now free to bring a previously-
+  // out player back in (see `allOut`/`includeOutBatters` below). Wickets
+  // lost never go back down, so `allOut` stays true for the rest of the
+  // innings once it's first true — meaning once dismissed here, it stays
+  // dismissed rather than re-popping on every later wicket. Resets when a
+  // new innings starts (the only way `allOut` itself goes back to false).
+  const [allOutContinued, setAllOutContinued] = useState(false)
+  const allOutFlag = !!allOut
+  useEffect(() => {
+    if (!allOutFlag) setAllOutContinued(false)
+  }, [allOutFlag])
+
+  // Ditto for the overs-complete popup — "Continue" dismisses it and lets
+  // the bowler picker underneath carry on for another over, unbounded.
+  // Can't reset on `oversComplete` going false the way the two above reset
+  // on their own flags: `oversComplete` flips back to false the moment the
+  // first ball of the next over's bowled (it's only true right at the
+  // boundary), so that would re-arm the popup every single over past the
+  // quota instead of just once. `oversQuotaReached` is the monotonic
+  // version of the same condition (true from the quota's first reached and
+  // never false again within the innings) — resetting on that instead means
+  // this only re-arms when a new innings actually starts.
+  const [oversContinued, setOversContinued] = useState(false)
+  useEffect(() => {
+    if (!oversQuotaReached) setOversContinued(false)
+  }, [oversQuotaReached])
 
   // Concludes the match: flips it to `completed`, sending the score built
   // from this device's own view of the live detail (per-innings totals plus
@@ -176,7 +249,10 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
       <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${match.id}`)}>
         <ChevronLeft className="size-4" /> Back
       </Button>
-      <LiveIndicator />
+      <div className="flex items-center gap-1">
+        <UndoLastEventButton matchId={match.id} seq={undoSeq.data} />
+        <LiveIndicator />
+      </div>
     </div>
   )
 
@@ -305,62 +381,13 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
     )
   }
 
-  if (oversCompleteAwaitingEnd) {
-    return (
-      <div className="mx-auto flex max-w-xl flex-col gap-4">
-        {header}
-        <div>
-          <h1 className="text-lg font-semibold">
-            {sideName(battingSide!, 'Side A')} vs {sideName(bowlingSide!, 'Side B')}
-          </h1>
-          <p className="text-sm text-muted-foreground">Overs complete</p>
-        </div>
-        <div className="rounded-xl border bg-card p-4">
-          <p className="text-sm font-medium">{sideName(battingSide!, 'Side A')} batting</p>
-          <p className="mt-0.5 text-3xl font-medium tracking-tight">
-            {innings.runs}/{innings.wickets}
-            <span className="ml-2 text-sm font-normal text-muted-foreground">
-              ({formatOvers(innings.overs)}/{format.overs_per_innings} ov)
-            </span>
-          </p>
-        </div>
-        <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
-          {appendEvent.isError ? (
-            <>
-              <p className="mb-3 text-sm font-medium">
-                All {format.overs_per_innings} overs bowled, but ending the innings failed.
-              </p>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={appendEvent.isPending}
-                onClick={() => endInnings('overs_complete')}
-              >
-                Try again
-              </Button>
-            </>
-          ) : (
-            <p className="text-sm font-medium text-muted-foreground">
-              All {format.overs_per_innings} overs bowled — ending the innings…
-            </p>
-          )}
-        </div>
-      </div>
-    )
-  }
-
   const crr = runRate(innings.runs, innings.overs, format.balls_per_over)
   const overBalls = currentOverDeliveries(state!.recent_deliveries ?? [])
-  // Excluded from the batter picker in addition to whoever's currently at
-  // the crease — `innings.batting` carries the full card while live-scored,
-  // so a dismissal here is as reliable as the server's own scorecard, not
-  // just a locally-replayed guess. Retired hurt is excluded from this list
-  // on purpose: unlike every other dismissal it isn't final — the same
-  // batter can simply be picked again to resume (see `CricketRetireEvent`'s
-  // doc comment on the backend).
-  const outBatters = (innings.batting ?? [])
-    .filter((b) => b.dismissal && b.dismissal.kind !== 'retired_hurt')
-    .map((b) => b.player_id)
+  // Whether the striker/non-striker pickers should offer already-out
+  // batters as options — always true once the side's genuinely all out
+  // (there's nothing else to offer), otherwise only once the scorer's
+  // explicitly asked via the "Show players who've already batted" toggle.
+  const includeOutBatters = allOut || showOutBatters
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
@@ -387,18 +414,23 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
         <div className="mt-3 space-y-1 border-t pt-3 text-sm">
           {effectiveStriker && (
             <div className="flex items-center justify-between">
-              <span className="font-medium">{playerNameFor(match, effectiveStriker)}*</span>
+              <span className="font-medium">
+                {playerNameFor(match, effectiveStriker, state?.players) ?? '—'}*
+              </span>
             </div>
           )}
           {effectiveNonStriker && (
             <div className="flex items-center justify-between">
-              <span>{playerNameFor(match, effectiveNonStriker)}</span>
+              <span>{playerNameFor(match, effectiveNonStriker, state?.players) ?? '—'}</span>
             </div>
           )}
           {effectiveBowler && (
             <div className="mt-1.5 flex items-center justify-between border-t pt-1.5 text-xs">
               <span className="text-muted-foreground">
-                Bowling: <span className="font-medium text-foreground">{playerNameFor(match, effectiveBowler)}</span>
+                Bowling:{' '}
+                <span className="font-medium text-foreground">
+                  {playerNameFor(match, effectiveBowler, state?.players) ?? '—'}
+                </span>
               </span>
             </div>
           )}
@@ -434,11 +466,13 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
           <p className="mb-3 text-sm font-medium">
             {editingOpeningPicks && readyToScore
               ? 'Edit your selections'
-              : !effectiveBowler && (!effectiveStriker || !effectiveNonStriker)
-                ? 'New over, new batter — who is it?'
-                : !effectiveBowler
-                  ? "New over — who's bowling?"
-                  : 'Wicket! Who is coming in to bat?'}
+              : allOut
+                ? "Everyone's out — who's coming back in?"
+                : !effectiveBowler && (!effectiveStriker || !effectiveNonStriker)
+                  ? 'New over, new batter — who is it?'
+                  : !effectiveBowler
+                    ? "New over — who's bowling?"
+                    : 'Wicket! Who is coming in to bat?'}
           </p>
           {(!effectiveStriker || editingOpeningPicks) && (
             <div className="mb-3">
@@ -446,7 +480,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
               <PlayerPicker
                 players={playersOnSide(match.players, battingSide!)}
                 value={pickedStriker ?? undefined}
-                exclude={[effectiveNonStriker, ...outBatters]}
+                exclude={includeOutBatters ? [effectiveNonStriker] : [effectiveNonStriker, ...outBatters]}
                 onChange={setPickedStriker}
               />
             </div>
@@ -457,11 +491,24 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
               <PlayerPicker
                 players={playersOnSide(match.players, battingSide!)}
                 value={pickedNonStriker ?? undefined}
-                exclude={[effectiveStriker, ...outBatters]}
+                exclude={includeOutBatters ? [effectiveStriker] : [effectiveStriker, ...outBatters]}
                 onChange={setPickedNonStriker}
               />
             </div>
           )}
+          {(!effectiveStriker || !effectiveNonStriker || editingOpeningPicks) &&
+            !allOut &&
+            !showOutBatters &&
+            outBatters.length > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="mb-3 h-auto px-0 text-xs text-muted-foreground hover:bg-transparent hover:underline"
+                onClick={() => setShowOutBatters(true)}
+              >
+                Show players who've already batted
+              </Button>
+            )}
           {(!effectiveBowler || editingOpeningPicks) && (
             <div>
               <p className="mb-1.5 text-xs text-muted-foreground">Bowler</p>
@@ -597,6 +644,38 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
         <Button variant="outline" onClick={() => setEndInningsOpen(true)}>
           End innings
         </Button>
+      )}
+
+      {target && (
+        <TargetReachedDialog
+          open={!targetPopupDismissed}
+          battingSideName={sideNameFor(match, target.battingSideId)}
+          wicketsRemaining={target.wicketsRemaining}
+          submitting={appendEvent.isPending}
+          onPlayOn={() => setTargetPopupDismissed(true)}
+          onFinish={() => endInnings('target_reached')}
+        />
+      )}
+
+      {allOut && (
+        <AllOutDialog
+          open={!allOutContinued}
+          battingSideName={sideNameFor(match, innings.batting_side_id)}
+          submitting={appendEvent.isPending}
+          onEnd={() => endInnings('all_out')}
+          onContinue={() => setAllOutContinued(true)}
+        />
+      )}
+
+      {oversComplete && (
+        <OversCompleteDialog
+          open={!oversContinued}
+          battingSideName={sideNameFor(match, innings.batting_side_id)}
+          oversPerInnings={format.overs_per_innings!}
+          submitting={appendEvent.isPending}
+          onEnd={() => endInnings('overs_complete')}
+          onContinue={() => setOversContinued(true)}
+        />
       )}
 
       {readyToScore && (

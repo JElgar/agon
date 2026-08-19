@@ -4,7 +4,7 @@ import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { RecordEventDialog, type EventKind } from '@/components/agon/live/RecordEventDialog'
-import { describeEvent, eventEmoji, goalEventsToViews, type FootballEventView } from '@/lib/liveScore'
+import { describeEvent, eventClockLabel, eventEmoji, goalEventsToViews, type FootballEventView } from '@/lib/liveScore'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -117,9 +117,13 @@ export function FootballScoreFields({ sideA, sideB, players, initial, onChange }
       onChange(null)
       return
     }
+    // `players` (the score's resolved-name map) is server-only — the backend
+    // never persists it (see `FootballScore.players`'s doc comment) — so a
+    // manually-built score has nothing to put here.
     const score: Score = {
       type: 'Football',
       score: { [aId]: a, [bId]: b },
+      players: {},
       ...(hasDetail ? { goals, cards, substitutions } : {}),
     }
     const winnerSideId = a === b ? undefined : a > b ? aId : bId
@@ -179,8 +183,8 @@ export function FootballScoreFields({ sideA, sideB, players, initial, onChange }
                     className={`flex items-baseline gap-1.5 text-xs ${isSideB ? 'flex-row-reverse text-right' : ''}`}
                   >
                     <span aria-hidden>{eventEmoji(event.kind)}</span>
-                    {event.minute !== undefined && (
-                      <span className="font-medium text-foreground">{event.minute}'</span>
+                    {eventClockLabel(event) && (
+                      <span className="font-medium text-foreground">{eventClockLabel(event)}</span>
                     )}
                     <span className="truncate">{describeEvent(event, match)}</span>
                   </p>

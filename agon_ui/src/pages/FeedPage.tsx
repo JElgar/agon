@@ -13,7 +13,12 @@ import {
 } from '@/hooks/usePendingMatches'
 
 type FeedPageData = components['schemas']['FeedPage']
-type FeedItem = components['schemas']['FeedItem']
+type FeedMatch = components['schemas']['FeedMatch']
+type Match = components['schemas']['Match']
+/** A server feed item (`FeedMatch`) or a viewer's own just-created `Match`,
+ *  shown in the pending overlay until the async fan-out lands it in
+ *  `GET /feed` (see `usePendingMatches`). `MatchCard` renders either. */
+type FeedCardItem = FeedMatch | Match
 
 /** Page size for the feed. The API caps at 50; 20 matches its default. */
 const PAGE_SIZE = 20
@@ -78,10 +83,8 @@ export function FeedPage() {
   // Merge the pending overlay ahead of the server feed, deduped by id (a match
   // that's in both — mid-reconciliation — renders once, from the server copy).
   const serverIds = new Set(serverItems.map((i) => i.id))
-  const pendingItems: FeedItem[] = pending
-    .filter((m) => !serverIds.has(m.id))
-    .map((m) => ({ ...m, type: 'Match' }) as FeedItem)
-  const items = [...pendingItems, ...serverItems]
+  const pendingItems: Match[] = pending.filter((m) => !serverIds.has(m.id))
+  const items: FeedCardItem[] = [...pendingItems, ...serverItems]
 
   if (items.length === 0) {
     return (
@@ -135,8 +138,10 @@ export function FeedPage() {
  * sorted by `starts_at`, so this only needs to notice when the label changes,
  * not re-sort anything.
  */
-function groupByDay(items: FeedItem[]): { label: string; items: FeedItem[] }[] {
-  const sections: { label: string; items: FeedItem[] }[] = []
+function groupByDay(
+  items: FeedCardItem[],
+): { label: string; items: FeedCardItem[] }[] {
+  const sections: { label: string; items: FeedCardItem[] }[] = []
   for (const item of items) {
     const label = dayLabel(item.starts_at)
     const last = sections[sections.length - 1]

@@ -4,16 +4,22 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 
 type Match = components['schemas']['Match']
+type MatchSocial = components['schemas']['MatchSocial']
 type FeedPage = components['schemas']['FeedPage']
+
+/** The only shape this patch actually reads/writes — satisfied by a `Match`,
+ *  a feed's `FeedMatch`, or anything else with the same social summary. */
+type Likeable = { id: string; social: MatchSocial }
 
 /**
  * Apply `i_liked` + `like_count` to whichever cached match(es) match `matchId`,
  * across the shapes a match is cached in: a single `Match`, a `FeedPage`
- * infinite query, and the `Match[]` profile-activity lists. Anything else is
- * returned untouched, so this is safe to run over every cache entry.
+ * infinite query (whose items are a feed's lighter `FeedMatch`), and the
+ * `Match[]` profile-activity lists. Anything else is returned untouched, so
+ * this is safe to run over every cache entry.
  */
 function patchLiked(matchId: string, liked: boolean) {
-  const applyToMatch = <T extends Match>(m: T): T => {
+  const applyToMatch = <T extends Likeable>(m: T): T => {
     if (m.id !== matchId) return m
     // Guard the count so a double-fire can't drift it: only move it when the
     // liked state actually flips relative to what's cached.
@@ -32,9 +38,9 @@ function patchLiked(matchId: string, liked: boolean) {
     if (!data || typeof data !== 'object') return data
     // Single match.
     if ('id' in data && 'social' in data) {
-      return applyToMatch(data as Match)
+      return applyToMatch(data as Likeable)
     }
-    // Feed: an infinite query of FeedPage. Feed items extend Match.
+    // Feed: an infinite query of FeedPage.
     if ('pages' in data) {
       const inf = data as InfiniteData<FeedPage>
       return {
@@ -47,7 +53,7 @@ function patchLiked(matchId: string, liked: boolean) {
     }
     // Profile activity: a bare array of matches.
     if (Array.isArray(data)) {
-      return (data as Match[]).map((m) => applyToMatch(m))
+      return (data as Likeable[]).map((m) => applyToMatch(m))
     }
     return data
   }

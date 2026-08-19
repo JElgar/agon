@@ -5,18 +5,22 @@ import { ChevronLeft, CircleDot, Flag, Repeat2, TimerReset } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
-import { useAppendFootballEvent, useLiveSeq } from '@/hooks/useLiveScore'
+import { useAppendFootballEvent, useLiveSeq, useUndoTargetSeq } from '@/hooks/useLiveScore'
 import { matchScoreQueryKey, useMatchScore } from '@/hooks/useMatchScore'
 import { RecordEventDialog, type EventKind } from '@/components/agon/live/RecordEventDialog'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
+import { UndoLastEventButton } from '@/components/agon/live/UndoLastEventButton'
 import { CricketLiveScoringPage } from './CricketLiveScoringPage'
+import { NetballLiveScoringPage } from './NetballLiveScoringPage'
 import { footballFormat } from '@/lib/matchFormat'
 import {
   currentMinute,
   describeEvent,
+  eventClockLabel,
   eventEmoji,
   eventsFromDetail,
   footballScoreFrom,
+  isLivePlayPhase,
   loadTrackPrefs,
   nextPeriodForPhase,
   nextPhaseActionLabel,
@@ -37,9 +41,11 @@ function sideName(match: Match, index: number, fallback: string): string {
 
 /**
  * Route entry for `/matches/:matchId/live`: fetches the match once and
- * dispatches to the sport-specific scoring screen. Football and cricket have
- * different live-scoring shapes entirely (a running clock vs. overs/wickets),
- * so past the match fetch they don't share a component.
+ * dispatches to the sport-specific scoring screen. Football, cricket, and
+ * netball have different live-scoring shapes entirely (a running clock vs.
+ * overs/wickets vs. netball's own two-method choice — see
+ * `NetballLiveScoringPage`), so past the match fetch they don't share a
+ * component.
  */
 export function LiveScoringPage() {
   const { matchId } = useParams()
@@ -79,6 +85,9 @@ export function LiveScoringPage() {
   if (match.match_type === 'cricket') {
     return <CricketLiveScoringPage match={match} />
   }
+  if (match.match_type === 'netball') {
+    return <NetballLiveScoringPage match={match} />
+  }
   return <FootballLiveScoringPage match={match} />
 }
 
@@ -97,6 +106,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
 
   const scoreQuery = useMatchScore(match.id, { refetchInterval: 8000 })
   const seq = useLiveSeq(match.id)
+  const undoSeq = useUndoTargetSeq(match.id)
   const append = useAppendFootballEvent(match.id)
 
   const [now, setNow] = useState(() => new Date())
@@ -193,17 +203,22 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
   ]
   const showAdvanceClockTile = advanceClockPhases.includes(phase)
 
+  // Goal/card/sub are only offered while the ball's actually in play — not
+  // before kickoff, not at half-time/full-time, not during extra-time's
+  // break, and not during the penalty shootout (which has its own recording
+  // panel below). The clock-advance tile (kick off / start 2nd half / etc.)
+  // is offered independently via `showAdvanceClockTile`, so a break phase
+  // still gets its "move to the next phase" action even with no live events.
   const actions: {
     key: EventKind | 'half_ft'
     label: string
     icon: React.ReactNode
     onClick: () => void
     disabled?: boolean
-  }[] =
-    phase === 'penalties'
-      ? []
-      : [
-          { key: 'goal', label: 'Goal', icon: <CircleDot className="size-5" />, onClick: () => setDialogKind('goal') },
+  }[] = [
+    ...(isLivePlayPhase(phase)
+      ? [
+          { key: 'goal' as const, label: 'Goal', icon: <CircleDot className="size-5" />, onClick: () => setDialogKind('goal') },
           ...(prefs.cards
             ? [{ key: 'card' as const, label: 'Card', icon: <Flag className="size-5" />, onClick: () => setDialogKind('card') }]
             : []),
@@ -217,18 +232,20 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
                 },
               ]
             : []),
-          ...(showAdvanceClockTile
-            ? [
-                {
-                  key: 'half_ft' as const,
-                  label: nextPhaseActionLabel(phase, progressionCtx),
-                  icon: <TimerReset className="size-5" />,
-                  onClick: handleHalfFt,
-                  disabled: nextPeriodForPhase(phase, progressionCtx) === null,
-                },
-              ]
-            : []),
         ]
+      : []),
+    ...(showAdvanceClockTile
+      ? [
+          {
+            key: 'half_ft' as const,
+            label: nextPhaseActionLabel(phase, progressionCtx),
+            icon: <TimerReset className="size-5" />,
+            onClick: handleHalfFt,
+            disabled: nextPeriodForPhase(phase, progressionCtx) === null,
+          },
+        ]
+      : []),
+  ]
 
   // At full-time/extra-time-full-time still level, the format may call for
   // more play — offer it, with an explicit override to finish as a draw
@@ -247,6 +264,8 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
         goals: state.goals ?? [],
         cards: state.cards ?? [],
         substitutions: state.substitutions ?? [],
+        players: state.players,
+        period_times: state.period_times,
       }).reverse()
     : []
 
@@ -256,7 +275,10 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
         <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${match.id}`)}>
           <ChevronLeft className="size-4" /> Back
         </Button>
-        <LiveIndicator />
+        <div className="flex items-center gap-1">
+          <UndoLastEventButton matchId={match.id} seq={undoSeq.data} />
+          <LiveIndicator />
+        </div>
       </div>
 
       <div>
@@ -270,12 +292,15 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
         <div className="flex items-center justify-between">
           <p className="flex-1 truncate text-sm font-medium">{nameA}</p>
           <div className="px-3 text-center">
-            <div className="text-3xl font-medium tracking-tight">
+            {/* data-testid: the score/phase here is just digits and a status
+                word with no other accessible name to hang a locator off —
+                see agon_ui/e2e/README.md's locator guidance. */}
+            <div className="text-3xl font-medium tracking-tight" data-testid="live-score">
               {goalsFor(aId)}
               <span className="text-muted-foreground">–</span>
               {goalsFor(bId)}
             </div>
-            <div className="mt-0.5 text-xs text-primary">
+            <div className="mt-0.5 text-xs text-primary" data-testid="live-phase">
               {minute !== null && `${minute}' · `}
               {phaseLabel(phase)}
             </div>
@@ -413,11 +438,11 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
                   key={i}
                   className={`flex items-baseline gap-2 text-sm ${isSideB ? 'flex-row-reverse text-right' : ''}`}
                 >
-                  <span className="w-8 shrink-0 text-xs text-muted-foreground">
-                    {event.minute !== undefined ? `${event.minute}'` : ''}
+                  <span className="w-10 shrink-0 text-xs text-muted-foreground">
+                    {eventClockLabel(event, state?.period_times)}
                   </span>
                   <span aria-hidden>{eventEmoji(event.kind)}</span>
-                  <span className="min-w-0 truncate">{describeEvent(event, match)}</span>
+                  <span className="min-w-0 truncate">{describeEvent(event, match, state?.players)}</span>
                 </div>
               )
             })}
@@ -435,7 +460,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
         open={dialogKind !== null}
         kind={dialogKind}
         match={match}
-        initialMinute={minute ?? 0}
+        liveMode
         onOpenChange={(open) => !open && setDialogKind(null)}
         submitting={append.isPending}
         onSubmit={(event) => {

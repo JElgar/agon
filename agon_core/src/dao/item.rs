@@ -42,8 +42,38 @@ pub fn to_item<T: Serialize>(pk: &Pk, sk: &Sk, type_tag: &str, data: &T) -> DaoR
 
 /// Deserialize a stored item map back into a data struct. The `PK`/`SK`/`type`
 /// and GSI attributes are ignored (the struct doesn't declare them).
+///
+/// On failure, the error carries the item's `PK`/`SK` and the target type
+/// name (peeked before `item` is consumed below) — e.g. a stray legacy value
+/// somewhere in a match's stored score shows up in the logs as exactly which
+/// match failed and which type it failed deserializing into, not just a bare
+/// "invalid type" message with no way to find the row it came from.
 pub fn from_item<T: DeserializeOwned>(item: Item) -> DaoResult<T> {
-    Ok(serde_dynamo::from_item(item)?)
+    let pk = attr_s(&item, ATTR_PK);
+    let sk = attr_s(&item, ATTR_SK);
+    serde_dynamo::from_item(item).map_err(|source| DaoError::SerdeItem {
+        type_name: short_type_name::<T>(),
+        pk,
+        sk,
+        source,
+    })
+}
+
+/// Best-effort string peek at an attribute, for error context only — `"?"`
+/// if absent or not a string (never itself a reason to fail the read).
+fn attr_s(item: &Item, attr: &str) -> String {
+    match item.get(attr) {
+        Some(AttributeValue::S(v)) => v.clone(),
+        _ => "?".to_string(),
+    }
+}
+
+/// `T`'s type name with the module path stripped (`agon_core::dao::records::
+/// MatchRecord` -> `MatchRecord`) — plenty to identify the record shape in a
+/// log line without the noise.
+fn short_type_name<T>() -> &'static str {
+    let full = std::any::type_name::<T>();
+    full.rsplit("::").next().unwrap_or(full)
 }
 
 /// Fluent helper to add GSI projection keys onto an item after [`to_item`].
@@ -104,4 +134,70 @@ pub fn item_sk(item: &Item) -> DaoResult<Sk> {
 /// Convenience: a string AttributeValue.
 pub fn s(v: impl Into<String>) -> AttributeValue {
     AttributeValue::S(v.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::Deserialize;
+
+    use super::*;
+    use crate::dao::error::DaoError;
+
+    /// A deserialize failure names the offending item's `PK`/`SK` and the
+    /// target type in the error, not just the bare serde message — this is
+    /// what makes an unlocatable "invalid type"-style error actually
+    /// actionable from the logs alone.
+    #[test]
+    fn from_item_error_carries_key_and_type_context() {
+        #[derive(Debug, Deserialize)]
+        struct Widget {
+            #[allow(dead_code)]
+            count: u32,
+        }
+
+        let mut item: Item = HashMap::new();
+        item.insert(ATTR_PK.into(), s("MATCH#abc123"));
+        item.insert(ATTR_SK.into(), s("#META"));
+        // `count` needs a number; a string here forces a deserialize failure.
+        item.insert("count".into(), s("not-a-number"));
+
+        let err = from_item::<Widget>(item).unwrap_err();
+        match err {
+            DaoError::SerdeItem {
+                type_name,
+                pk,
+                sk,
+                source: _,
+            } => {
+                assert_eq!(type_name, "Widget");
+                assert_eq!(pk, "MATCH#abc123");
+                assert_eq!(sk, "#META");
+            }
+            other => panic!("expected SerdeItem, got {other:?}"),
+        }
+    }
+
+    /// Missing PK/SK (shouldn't happen for a real stored item, but the error
+    /// path must not panic on it) falls back to "?" rather than failing to
+    /// construct the error itself.
+    #[test]
+    fn from_item_error_context_defaults_when_keys_absent() {
+        #[derive(Debug, Deserialize)]
+        struct Widget {
+            #[allow(dead_code)]
+            count: u32,
+        }
+
+        let mut item: Item = HashMap::new();
+        item.insert("count".into(), s("not-a-number"));
+
+        let err = from_item::<Widget>(item).unwrap_err();
+        match err {
+            DaoError::SerdeItem { pk, sk, .. } => {
+                assert_eq!(pk, "?");
+                assert_eq!(sk, "?");
+            }
+            other => panic!("expected SerdeItem, got {other:?}"),
+        }
+    }
 }

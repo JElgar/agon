@@ -477,7 +477,7 @@ export function MatchCard({
           )}
         >
           <Flame className={cn('size-3.5', i_liked && 'fill-current')} />{' '}
-          {like_count} kudos
+          {like_count}
         </button>
         <button
           type="button"

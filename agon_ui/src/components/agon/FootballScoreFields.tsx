@@ -65,6 +65,11 @@ export function FootballScoreFields({ sideA, sideB, players, initial, onChange }
   )
   const [detailOpen, setDetailOpen] = useState(goals.length > 0)
   const [dialogKind, setDialogKind] = useState<EventKind | null>(null)
+  // For a live-scored match's goals (`occurred_at` set, no free-text
+  // `minute` — see `FootballGoalEvent.minute`'s backend doc comment),
+  // bracketing against the score's own period markers is what turns that
+  // into a real "63'" instead of falling through to a blank/`minuteLabel`.
+  const periodTimes = initial?.type === 'Football' ? initial.period_times : undefined
 
   const match: Pick<Match, 'sides' | 'players'> = { sides: [sideA, sideB], players }
 
@@ -183,8 +188,8 @@ export function FootballScoreFields({ sideA, sideB, players, initial, onChange }
                     className={`flex items-baseline gap-1.5 text-xs ${isSideB ? 'flex-row-reverse text-right' : ''}`}
                   >
                     <span aria-hidden>{eventEmoji(event.kind)}</span>
-                    {eventClockLabel(event) && (
-                      <span className="font-medium text-foreground">{eventClockLabel(event)}</span>
+                    {eventClockLabel(event, periodTimes) && (
+                      <span className="font-medium text-foreground">{eventClockLabel(event, periodTimes)}</span>
                     )}
                     <span className="truncate">{describeEvent(event, match)}</span>
                   </p>

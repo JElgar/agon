@@ -179,9 +179,11 @@ export function eventEmoji(kind: FootballEventKind): string {
 /** "63'" for a recorded free-text minute (manual entry only — see
  *  `FootballGoalEvent.minute`'s backend doc comment), else a blank string. A
  *  live-scored event should use `eventClockLabel` instead, which prefers
- *  `occurred_at`. */
-export function minuteLabel(minute: number | undefined): string {
-  return minute === undefined ? '' : `${minute}'`
+ *  `occurred_at`. `null` (a live-scored goal's unset `minute`, sent as JSON
+ *  `null` rather than omitted — see that field's backend doc comment) is
+ *  blank too, same as `undefined`. */
+export function minuteLabel(minute: number | undefined | null): string {
+  return minute == null ? '' : `${minute}'`
 }
 
 const PERIOD_LABEL: Record<FootballPeriod, string> = {

@@ -180,9 +180,12 @@ export function foulKindLabel(kind: NetballFoulKind): string {
 /** "12'" for a recorded free-text minute (minutes into the *current
  *  quarter*, manual entry only — see `NetballGoalEvent.minute`'s backend doc
  *  comment), else a blank string. A live-scored event should use
- *  `eventClockLabel` instead, which prefers `occurred_at`. */
-export function minuteLabel(minute: number | undefined): string {
-  return minute === undefined ? '' : `${minute}'`
+ *  `eventClockLabel` instead, which prefers `occurred_at`. `null` (a
+ *  live-scored goal's unset `minute`, sent as JSON `null` rather than
+ *  omitted — see that field's backend doc comment) is blank too, same as
+ *  `undefined`. */
+export function minuteLabel(minute: number | undefined | null): string {
+  return minute == null ? '' : `${minute}'`
 }
 
 /** "3:45" for a whole number of seconds — the live clock's display format,

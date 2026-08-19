@@ -37,7 +37,10 @@ export default defineConfig({
   workers: 1,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
-  reporter: process.env.CI ? 'dot' : 'list',
+  // In CI, an HTML report is what test-ui-e2e.yml uploads as an artifact on
+  // failure, and the `github` reporter annotates failures straight onto the
+  // run. Locally, `list` is just nicer to watch scroll by.
+  reporter: process.env.CI ? [['html', { open: 'never' }], ['github']] : 'list',
   timeout: 60_000,
   use: {
     baseURL,

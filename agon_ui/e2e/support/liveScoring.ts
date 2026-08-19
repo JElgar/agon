@@ -22,16 +22,19 @@ export async function startFootballScoring(page: Page): Promise<void> {
   await expect(phaseLabel(page)).toContainText('1st half')
 }
 
-/** The live-scoring screen's own score box, e.g. "1–0". */
+/** The live-scoring screen's own score box, e.g. "1–0" — just digits and a
+ *  dash with no accessible name to target, hence the `data-testid` (see
+ *  `LiveScoringPage`'s `live-score` element and `e2e/README.md`'s locator
+ *  guidance). */
 export function liveScoreBox(page: Page): Locator {
-  return page.locator('.text-3xl.font-medium.tracking-tight')
+  return page.getByTestId('live-score')
 }
 
 /** The running-clock/phase line under the score, e.g. "12' · 1st half" or
- *  just "Half-time" once the clock stops — see `FootballLiveScoringPage`'s
- *  score box. */
+ *  just "Half-time" once the clock stops — see `LiveScoringPage`'s
+ *  `live-phase` element. */
 export function phaseLabel(page: Page): Locator {
-  return page.locator('.mt-0\\.5.text-xs.text-primary')
+  return page.getByTestId('live-phase')
 }
 
 /**

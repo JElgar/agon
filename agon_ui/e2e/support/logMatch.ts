@@ -56,8 +56,9 @@ export async function logFootballMatch(
 
   // The signed-in user is seeded onto "Your side" as soon as their profile
   // loads — read their name back before adding anyone else, while there's
-  // still exactly one roster row on that side to disambiguate.
-  const selfRow = page.locator('.rounded-md.bg-card > span.flex-1.truncate.text-sm').first()
+  // still exactly one tagged-player row on the page to disambiguate (see
+  // `PlayerSideEditor`'s `tagged-player-name` element).
+  const selfRow = page.getByTestId('tagged-player-name').first()
   await expect(selfRow).toBeVisible()
   const selfName = (await selfRow.innerText()).trim()
 

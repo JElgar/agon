@@ -1,0 +1,47 @@
+on:
+  workflow_call:
+    inputs:
+      base-url:
+        description: The deployed UI to test against (e.g. https://agon.staging.get-agon.com).
+        required: true
+        type: string
+    secrets:
+      # The fixed Supabase test account the suite logs in as — see
+      # agon_ui/e2e/README.md#provisioning-the-test-user. Not sourced from
+      # Pulumi (unlike the API tests' signing key): it's a real Supabase user,
+      # not a locally-trusted key.
+      e2e-test-email:
+        required: true
+      e2e-test-password:
+        required: true
+
+jobs:
+  test-ui-e2e:
+    name: UI e2e
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./agon_ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: npm install
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run e2e tests
+        run: npm run test:e2e
+        env:
+          E2E_BASE_URL: ${{ inputs.base-url }}
+          E2E_TEST_EMAIL: ${{ secrets.e2e-test-email }}
+          E2E_TEST_PASSWORD: ${{ secrets.e2e-test-password }}
+
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: agon_ui/playwright-report/
+          retention-days: 14

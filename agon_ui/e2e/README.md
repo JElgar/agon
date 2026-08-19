@@ -98,13 +98,18 @@ Opposition …` etc. so they're easy to spot.
 
 ## Notes for adding more tests
 
-- There are no `data-testid` hooks in the app — the codebase doesn't use
-  them, and existing markup is accessible enough (labelled inputs, buttons
-  with real text) that role/label/text locators work throughout. Prefer
-  those (`getByRole`, `getByLabel`, `getByPlaceholder`) over CSS selectors;
-  the couple of spots in `support/` that fall back to a class selector do so
-  because the element genuinely has no accessible name (e.g. the bare score
-  digits) — keep that the exception, not the pattern.
+- Locator priority, in order: `getByRole` / `getByLabel` / `getByPlaceholder`
+  first — most of the app's markup is accessible enough (labelled inputs,
+  buttons with real text) that these work throughout and stay meaningful if
+  the visual design changes. Where an element genuinely has no accessible
+  name (e.g. the bare live-score digits, a tagged player's name — which is
+  just text, not a control), add a `data-testid` to the source component
+  instead of reaching for a CSS selector — see `live-score`/`live-phase` in
+  `LiveScoringPage.tsx` and `tagged-player-name` in `PlayerSideEditor.tsx`
+  for the pattern. **Never** select on Tailwind utility classes (`text-xs`,
+  `text-3xl`, `mt-0.5`, …): those are styling, not identity — a font-size or
+  spacing tweak in a totally unrelated redesign would silently break the
+  test. A `data-testid` only changes if someone deliberately renames it.
 - Tests run serially against one shared account and one shared backend
   (`fullyParallel: false`, `workers: 1` in `playwright.config.ts`) — two
   tests racing live-scoring mutations on the same match would be flaky by

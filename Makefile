@@ -19,6 +19,23 @@ generate-schema:
 	# already-correct) field defaults when absent. See docs/openapi-client.md.
 	find openapi_client/src/models -name '*.rs' -exec \
 		perl -0pi -e 's/#\[serde\(rename = "type"\)\]\n(\s*)pub r#type: Type,/#[serde(rename = "type", default)]\n$1pub r#type: Type,/g' {} +
+	# Post-process: `LiveEventInput` nests a second discriminated union (each
+	# sport's own `kind`-tagged event union) inside its own `sport`-tagged
+	# variants. The generator handles that inner `oneOf` correctly wherever
+	# it's referenced directly (`FootballLiveEvent`/`CricketLiveEvent`/
+	# `NetballLiveEvent` each come out as a proper enum with every kind), but
+	# for the *outer* variant it instead flattens `allOf[{sport}, {$ref to
+	# the inner oneOf}]` into one struct that merges every kind's fields
+	# together and collapses the inner discriminator down to a single-value
+	# enum (whichever kind happened to be generated last) — so deserializing
+	# any other kind fails with "unknown variant". Point the outer variants
+	# at the correctly-generated standalone enums instead of the broken
+	# merged structs; serde's internally-tagged (`tag = "..."`) enums nest
+	# fine (both discriminators live on the same flat JSON object), so this
+	# is a pure type-reference swap, no behavior change beyond fixing the
+	# bug. See docs/openapi-client.md.
+	perl -pi -e 's/models::LiveEventInput(Football|Cricket|Netball)LiveEvent/models::$1LiveEvent/g' \
+		openapi_client/src/models/live_event_input.rs
 
 generate:
 	make generate-schema

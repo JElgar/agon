@@ -299,9 +299,16 @@ enum DeleteLiveEventFailure {
 /// them in) rather than by inspecting each reason's `item` payload, the same
 /// way `super::is_transaction_conditional_failure` treats the list
 /// elsewhere in this crate — just distinguishing *which* item failed instead
-/// of collapsing straight to a bool. `EventMissing` takes priority when both
-/// conditions failed at once: the event being gone outright is the more
-/// fundamental fact to report.
+/// of collapsing straight to a bool. `NotTip` takes priority when both
+/// conditions failed at once: whenever `seq` isn't the current tip, that's
+/// the more fundamental fact to report, even if the item at `seq` also
+/// happens to be physically gone (e.g. a retried undo replaying a seq that
+/// a previous call already deleted — the counter has moved on *and* nothing
+/// lives there any more; "not the tip" is still the right rejection, not a
+/// bare "not found" that would suggest `seq` was never valid at all).
+/// `EventMissing` alone (tip condition satisfied, delete condition failed)
+/// means `seq` genuinely is the current counter value but nothing was ever
+/// written there.
 fn delete_live_event_failure(
     err: &SdkError<TransactWriteItemsError>,
 ) -> Option<DeleteLiveEventFailure> {
@@ -317,10 +324,10 @@ fn delete_live_event_failure(
             .get(i)
             .is_some_and(|r| r.code() == Some("ConditionalCheckFailed"))
     };
-    if failed(0) {
-        Some(DeleteLiveEventFailure::EventMissing)
-    } else if failed(1) {
+    if failed(1) {
         Some(DeleteLiveEventFailure::NotTip)
+    } else if failed(0) {
+        Some(DeleteLiveEventFailure::EventMissing)
     } else {
         None
     }

@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { logFootballMatch, uniqueSuffix } from '../support/logMatch'
+import { escapeRegExp } from '../support/util'
 
 test.describe('creating a match', () => {
   test('a newly logged match appears in the feed and opens', async ({ page }) => {
@@ -10,11 +11,16 @@ test.describe('creating a match', () => {
     // shows this match instantly from a client-side overlay ahead of the
     // async fan-out worker landing it in `GET /feed` (see
     // `hooks/usePendingMatches`), so there's nothing to wait on here.
-    const card = page.getByText(name, { exact: true }).first()
-    await expect(card).toBeVisible()
+    await expect(page.getByText(name, { exact: true }).first()).toBeVisible()
     await expect(page.getByText(opponentName, { exact: true }).first()).toBeVisible()
 
-    await card.click()
+    // The card's header line (team names + sport badge) is what's actually
+    // wired to open the match — the name/title text above is inert (see
+    // `MatchCard`; `openMatchFromFeed` in support/liveScoring.ts has the
+    // same reasoning). Matching on `opponentName` (unique per run) picks out
+    // this card's header button specifically.
+    await page.getByRole('button', { name: new RegExp(escapeRegExp(opponentName)) }).first().click()
+
     await expect(page).toHaveURL(/\/matches\/[^/]+$/)
     await expect(page.getByText(name, { exact: true }).first()).toBeVisible()
     await expect(page.getByText(opponentName, { exact: true }).first()).toBeVisible()

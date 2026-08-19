@@ -1,10 +1,19 @@
 import { type Page, type Locator, expect } from '@playwright/test'
+import { escapeRegExp } from './util'
 
-/** Opens a match from the feed by the name it was logged under (see
- *  `logFootballMatch`) and lands on its detail page. */
-export async function openMatchFromFeed(page: Page, matchName: string): Promise<void> {
+/**
+ * Opens a match from the feed and lands on its detail page. Clicks the
+ * card's header line (team names + sport badge, e.g. "Home vs E2E Away …"),
+ * not the match name/title text below it — `MatchCard` only wires
+ * `onClick={onOpen}` onto that header button and the footer's comment-count
+ * button, not the whole card (the name/title `<p>` in between is inert).
+ * `opponentName` is unique per test run, so matching the header button's
+ * accessible name against it identifies the right card without depending on
+ * the exact "vs"/"beat" wording or side order.
+ */
+export async function openMatchFromFeed(page: Page, opponentName: string): Promise<void> {
   await page.goto('/feed')
-  await page.getByText(matchName, { exact: true }).first().click()
+  await page.getByRole('button', { name: new RegExp(escapeRegExp(opponentName)) }).first().click()
   await expect(page).toHaveURL(/\/matches\/[^/]+$/)
 }
 

@@ -14,11 +14,11 @@ import {
 test.describe('football live scoring', () => {
   test('goals with an assist, undo, half-time, and finishing the match', async ({ page }) => {
     const opponentName = `E2E Away ${uniqueSuffix()}`
-    const { name, homeName, selfName, teammateName, awayPlayerName } = await logFootballMatch(page, {
+    const { homeName, selfName, teammateName, awayPlayerName } = await logFootballMatch(page, {
       opponentName,
     })
 
-    await openMatchFromFeed(page, name)
+    await openMatchFromFeed(page, opponentName)
     await startFootballScoring(page)
 
     // --- First half: a goal with an assist, then undo it ---------------------

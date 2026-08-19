@@ -28,6 +28,13 @@ const usingLocalDevServer = !process.env.E2E_BASE_URL
 
 const authFile = path.join(__dirname, '.auth/user.json')
 
+// Chromium doesn't read the standard *_PROXY env vars the way curl/Node do —
+// it needs an explicit launch option — so an environment that routes
+// outbound HTTPS through an egress proxy (a sandboxed CI runner, a corporate
+// network) would otherwise see every page.goto() fail even though the proxy
+// itself is reachable and correctly configured for every other tool.
+const httpsProxy = process.env.HTTPS_PROXY ?? process.env.https_proxy
+
 export default defineConfig({
   testDir: './tests',
   // Every test signs in as the same fixed account and mutates real shared
@@ -46,6 +53,7 @@ export default defineConfig({
     baseURL,
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
+    proxy: httpsProxy ? { server: httpsProxy, bypass: 'localhost,127.0.0.1' } : undefined,
   },
   webServer: usingLocalDevServer
     ? {

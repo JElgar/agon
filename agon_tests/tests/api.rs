@@ -3934,3 +3934,86 @@ async fn undoing_multiple_times_in_a_row_removes_each_real_tip_in_turn() {
         other => panic!("expected a netball score, got {other:?}"),
     }
 }
+
+/// Undo, then append (log not empty — covered by
+/// `undoing_the_tip_lets_scoring_continue_without_reusing_its_seq`), then
+/// undo *again* — this time undoing the event that append just added. Checks
+/// that a freshly-appended event becomes a correctly-deletable tip in its
+/// own right, i.e. that appending after an undo doesn't leave the counter
+/// and the physical log in some inconsistent state that only tolerates
+/// further appends, not a subsequent real undo too.
+#[tokio::test]
+async fn undoing_then_appending_then_undoing_the_new_event_stays_consistent() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+
+    // Two goals for A (seq 1, 2).
+    let snapshot = append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![
+            netball_goal_event_json(&side_a, false),
+            netball_goal_event_json(&side_a, false),
+        ],
+    )
+    .await;
+    assert_eq!(snapshot.last_seq, 2);
+
+    // Undo the tip (seq 2) — one goal remains (seq 1), log not empty.
+    let after_undo = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 2)
+        .await
+        .expect("undo the second goal");
+    assert_eq!(after_undo.last_seq, 3);
+
+    // Append a goal for B — lands at seq 4 (the bumped counter + 1), not
+    // seq 2 (the deleted goal's old, never-reused identity).
+    let after_append = append_live_events_raw(
+        &owner_config,
+        &created.id,
+        after_undo.last_seq,
+        vec![netball_goal_event_json(&side_b, false)],
+    )
+    .await;
+    assert_eq!(after_append.last_seq, 4);
+    match *after_append.score {
+        models::Score::Netball(s) => {
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(2));
+            assert_eq!(s.score.get(&side_a), Some(&1));
+            assert_eq!(s.score.get(&side_b), Some(&1));
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+
+    // Now undo the *newly appended* event (seq 4) — the real question this
+    // test asks: does the append above leave seq 4 undoable, same as any
+    // other tip?
+    let after_second_undo = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 4)
+        .await
+        .expect("undo the newly appended goal");
+    assert_eq!(after_second_undo.last_seq, 5);
+    match *after_second_undo.score {
+        models::Score::Netball(s) => {
+            // Back to just the one surviving original goal.
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(1));
+            assert_eq!(s.score.get(&side_a), Some(&1));
+            assert_eq!(s.score.get(&side_b), None);
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+
+    // The physical log agrees: only seq 1 (the first goal) survives all of
+    // this — 2 and 4 were both undone, 3 was never a real event (just a
+    // burned counter value).
+    let page = matches_match_id_live_events_get(&owner_config, &created.id, None, None)
+        .await
+        .expect("list live events");
+    let seqs: Vec<i32> = page.items.iter().map(|e| e.seq).collect();
+    assert_eq!(seqs, vec![1]);
+}

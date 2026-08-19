@@ -39,13 +39,35 @@ it, so the suite doesn't repeat a real Supabase password grant per test.
 ### Provisioning the test user
 
 Create the account once, in whichever Supabase project the target
-environment's `VITE_SUPABASE_URL` points at (staging, typically):
+environment's `VITE_SUPABASE_URL` points at (staging, typically) — either
+Supabase dashboard → Authentication → Users → **Add user**, with email
+confirmed, or the [Admin API](https://supabase.com/docs/reference/api/introduction)
+directly:
 
-- Supabase dashboard → Authentication → Users → **Add user**, with email
-  confirmed, or
-- the [Supabase Admin API](https://supabase.com/docs/reference/api/introduction)
-  (`POST /auth/v1/admin/users` with `email_confirm: true`) using the
-  project's service role key.
+```bash
+curl -X POST "https://gkebmzhvdbsktamfdsil.supabase.co/auth/v1/admin/users" \
+  -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" \
+  -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "agon-e2e-bot@example.com",
+    "password": "<a real password>",
+    "email_confirm": true
+  }'
+```
+
+`email_confirm: true` is what makes the account usable immediately, without
+clicking a confirmation link `signUp` would otherwise send. The URL above is
+staging's project (`supabaseUrl` in `Pulumi.staging.yaml`) — swap it for
+whichever project the target environment actually uses.
+
+`SUPABASE_SERVICE_ROLE_KEY` is the project's **service role key** (Supabase
+dashboard → Project Settings → API), not the anon key — it bypasses every
+RLS policy and has full admin auth access. Export it in your shell just for
+this one call; **don't** put it in Pulumi config, a `.env` file, or anywhere
+else persistent — nothing in this codebase needs it on an ongoing basis,
+only this one-off account bootstrap, so there's no case for storing it
+long-term.
 
 Pick a password, then store both in **Pulumi config** on the target stack —
 not a GitHub secret, and not committed anywhere. This is the same pattern

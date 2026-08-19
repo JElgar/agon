@@ -5,14 +5,16 @@ on:
         description: The deployed UI to test against (e.g. https://agon.staging.get-agon.com).
         required: true
         type: string
-    secrets:
-      # The fixed Supabase test account the suite logs in as — see
-      # agon_ui/e2e/README.md#provisioning-the-test-user. Not sourced from
-      # Pulumi (unlike the API tests' signing key): it's a real Supabase user,
-      # not a locally-trusted key.
-      e2e-test-email:
+      stack-name:
         required: true
-      e2e-test-password:
+        type: string
+    secrets:
+      # Only the Pulumi access token — the e2e test account's own credentials
+      # live in Pulumi config (`e2eTestEmail`/`e2eTestPassword`, see
+      # agon_infra/index.ts), fetched below the same way test.yml fetches
+      # `agonTestJwtPrivateKey`, so there's one encrypted source of truth
+      # instead of a value duplicated into a GitHub secret too.
+      pulumi-access-token:
         required: true
 
 jobs:
@@ -22,21 +24,43 @@ jobs:
     defaults:
       run:
         shell: bash
-        working-directory: ./agon_ui
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+      - run: pnpm install
+        working-directory: agon_infra
+
+      - name: Read e2e test account from Pulumi
+        working-directory: agon_infra
+        run: |
+          pulumi stack select ${{ inputs.stack-name }}
+          EMAIL="$(pulumi config get e2eTestEmail)"
+          PASSWORD="$(pulumi config get e2eTestPassword)"
+          echo "::add-mask::$EMAIL"
+          echo "::add-mask::$PASSWORD"
+          echo "E2E_TEST_EMAIL=$EMAIL" >> "$GITHUB_ENV"
+          echo "E2E_TEST_PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.pulumi-access-token }}
+
       - run: npm install
+        working-directory: agon_ui
 
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
+        working-directory: agon_ui
 
       - name: Run e2e tests
         run: npm run test:e2e
+        working-directory: agon_ui
         env:
           E2E_BASE_URL: ${{ inputs.base-url }}
-          E2E_TEST_EMAIL: ${{ secrets.e2e-test-email }}
-          E2E_TEST_PASSWORD: ${{ secrets.e2e-test-password }}
 
       - name: Upload Playwright report
         if: ${{ !cancelled() }}

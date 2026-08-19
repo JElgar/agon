@@ -47,13 +47,25 @@ environment's `VITE_SUPABASE_URL` points at (staging, typically):
   (`POST /auth/v1/admin/users` with `email_confirm: true`) using the
   project's service role key.
 
-Pick a password, then set both as env vars wherever the suite runs (a local
-`.env`, or CI secrets) — **not** committed anywhere:
+Pick a password, then store both in **Pulumi config** on the target stack —
+not a GitHub secret, and not committed anywhere. This is the same pattern
+`agonTestJwtPrivateKey` already uses (see `agon_infra/index.ts`): one
+encrypted source of truth that CI reads live via `pulumi config get`
+(`.github/workflows/test-ui-e2e.yml`), rather than duplicating the value into
+a second secret store that can drift out of sync:
 
+```bash
+cd agon_infra
+pulumi stack select staging
+pulumi config set e2eTestEmail agon-e2e-bot@example.com
+pulumi config set --secret e2eTestPassword '<a real password>'
 ```
-E2E_TEST_EMAIL=agon-e2e-bot@example.com
-E2E_TEST_PASSWORD=<a real password>
-```
+
+`e2eTestEmail`/`e2eTestPassword` are `config.require`/`requireSecret`d in
+`index.ts` (exported, like `agonTestJwtPrivateKey`, purely so CI can fetch
+them — nothing deploys them anywhere), which means **`pulumi up`/`preview`
+on a stack fails until it has both set**. Set them on staging before the
+next deploy after pulling in this change.
 
 The very first login creates the account's Agon profile too (via
 `CreateProfileForm`, driven automatically by `auth.setup.ts`) — nothing else
@@ -61,11 +73,22 @@ to provision by hand.
 
 ## Running
 
+Locally, the suite just reads plain env vars — Pulumi is only wired into the
+CI job (`test-ui-e2e.yml`), not into `npm run test:e2e` itself:
+
 ```bash
 cd agon_ui
 npm install
 npx playwright install --with-deps chromium   # once, to fetch the browser
 E2E_TEST_EMAIL=... E2E_TEST_PASSWORD=... npm run test:e2e
+```
+
+Pull the values straight from Pulumi instead of retyping them:
+
+```bash
+E2E_TEST_EMAIL="$(cd ../agon_infra && pulumi config get e2eTestEmail --stack staging)" \
+E2E_TEST_PASSWORD="$(cd ../agon_infra && pulumi config get e2eTestPassword --stack staging)" \
+npm run test:e2e
 ```
 
 By default this starts the local Vite dev server (`npm run dev`), which

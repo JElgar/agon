@@ -844,6 +844,20 @@ const awsSecret = new k8s.core.v1.Secret("aws-credentials", {
 //   pulumi config set --secret agonTestJwtPrivateKey "$(cat test_ec_pkcs8.pem)"
 export const agonTestJwtPrivateKey = config.requireSecret("agonTestJwtPrivateKey");
 
+// ── UI e2e test account ──────────────────────────────────────────────────────
+// The fixed Supabase user the UI e2e suite (agon_ui/e2e) logs in as through the
+// real login form — a real Supabase account, not a locally-trusted key, so it
+// has to be created once by hand (Supabase dashboard or admin API — see
+// agon_ui/e2e/README.md#provisioning-the-test-user). Its credentials live here
+// (not a GitHub secret) for the same reason as `agonTestJwtPrivateKey` above:
+// one encrypted source of truth that CI reads live via `pulumi config get`
+// (see .github/workflows/test-ui-e2e.yml), rather than a value duplicated
+// between two secret stores that can drift out of sync.
+//   pulumi config set e2eTestEmail agon-e2e-bot@example.com
+//   pulumi config set --secret e2eTestPassword '<a real password>'
+export const e2eTestEmail = config.require("e2eTestEmail");
+export const e2eTestPassword = config.requireSecret("e2eTestPassword");
+
 // ───────────────────────────────────────────────────────────────────────────
 // Meilisearch: search / discovery index
 // Self-hosted search engine backing the discovery endpoints (users / teams /

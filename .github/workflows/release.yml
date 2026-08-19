@@ -56,6 +56,6 @@ jobs:
     uses: JElgar/agon/.github/workflows/test-ui-e2e.yml@main
     with:
       base-url: ${{ needs.deploy.outputs.agon-url }}
+      stack-name: staging
     secrets:
-      e2e-test-email: ${{ secrets.E2E_TEST_EMAIL }}
-      e2e-test-password: ${{ secrets.E2E_TEST_PASSWORD }}
+      pulumi-access-token: ${{ secrets.PULUMI_ACCESS_TOKEN }}

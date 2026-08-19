@@ -48,7 +48,19 @@ run:
 	cargo run -p agon_service -- run-server abc.com
 
 # Full browser UI end-to-end tests (Playwright) — see agon_ui/e2e/README.md
-# for what's covered, how the test account works, and env var setup
-# (E2E_TEST_EMAIL / E2E_TEST_PASSWORD, optionally E2E_BASE_URL).
+# for what's covered and how the test account works. Reads E2E_TEST_EMAIL /
+# E2E_TEST_PASSWORD / E2E_BASE_URL from the environment (or .env); use
+# test-ui-e2e-staging below to pull the test account from Pulumi instead.
 test-ui-e2e:
-	cd agon_ui && npm run test:e2e
+	npm --prefix agon_ui run test:e2e
+
+# Same, against the deployed staging UI, fetching the fixed test account from
+# Pulumi config (single source of truth — see e2eTestEmail/e2eTestPassword in
+# agon_infra/index.ts, same pattern as test-staging's signing key above).
+UI_STAGING_URL ?= https://agon.staging.get-agon.com
+
+test-ui-e2e-staging:
+	E2E_BASE_URL=$(UI_STAGING_URL) \
+	E2E_TEST_EMAIL="$$(cd agon_infra && pulumi config get e2eTestEmail --stack $(STACK))" \
+	E2E_TEST_PASSWORD="$$(cd agon_infra && pulumi config get e2eTestPassword --stack $(STACK))" \
+	npm --prefix agon_ui run test:e2e

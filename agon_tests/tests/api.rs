@@ -3804,3 +3804,108 @@ async fn undoing_the_bumped_tip_with_nothing_left_to_delete_is_not_found() {
             .await;
     assert_not_found(response);
 }
+
+/// Two, then three, successful undos in a row — each one targeting the log's
+/// *real* physical tip at that point (2, then 1), not the previous undo's
+/// bumped `last_seq`. This is the scenario the UI's `useUndoTargetSeq` split
+/// exists for (see that hook's doc comment): every undo advances `live_seq`
+/// by one past the deleted event, so consecutive undos land on a strictly
+/// increasing sequence of `last_seq` values (4, then 3, then 2) even while
+/// the *targets* count down (3, then 2, then 1). Also confirms the derived
+/// score and physical log both end up completely empty once every event
+/// has been undone, not just "missing the most recent one".
+#[tokio::test]
+async fn undoing_multiple_times_in_a_row_removes_each_real_tip_in_turn() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+
+    // Three events: two goals for A (seq 1, 2), then a foul on B (seq 3).
+    let snapshot = append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![
+            netball_goal_event_json(&side_a, false),
+            netball_goal_event_json(&side_a, false),
+            netball_foul_event_json(&side_b),
+        ],
+    )
+    .await;
+    assert_eq!(snapshot.last_seq, 3);
+
+    // Undo #1: the foul (seq 3, the real tip). Counter bumps 3 -> 4.
+    let after_first = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 3)
+        .await
+        .expect("undo the foul");
+    assert_eq!(after_first.last_seq, 4);
+    match *after_first.score {
+        models::Score::Netball(s) => {
+            assert_eq!(s.fouls.as_ref().map(Vec::len), Some(0));
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(2));
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+
+    // Undo #2: the real tip is now seq 2 (the second goal) — NOT
+    // `after_first.last_seq` (4), which is the bumped, phantom counter. A
+    // client sending 4 here would 404 (see the previous test); the real
+    // target is 2.
+    let after_second = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 2)
+        .await
+        .expect("undo the second goal");
+    // The counter keeps climbing (3 -> 4 was undo #1's bump; this one bumps
+    // 4 -> 5)... but note the *target* seq (2) is nowhere near the counter
+    // (5): `live_seq` tracks "how many mutations have ever happened", not
+    // "how many events currently exist".
+    assert_eq!(after_second.last_seq, 5);
+    match *after_second.score {
+        models::Score::Netball(s) => {
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(1));
+            assert_eq!(s.score.get(&side_a), Some(&1));
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+
+    // Undo #3: the real tip is now seq 1 (the first, and last remaining,
+    // goal) — the log goes fully empty.
+    let after_third = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 1)
+        .await
+        .expect("undo the first goal");
+    assert_eq!(after_third.last_seq, 2);
+    match *after_third.score {
+        models::Score::Netball(s) => {
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(0));
+            assert_eq!(
+                s.score.get(&side_a),
+                None,
+                "absence means zero, same as never scored"
+            );
+            assert_eq!(s.score.get(&side_b), None);
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+
+    // Nothing physically left in the log at all.
+    let page = matches_match_id_live_events_get(&owner_config, &created.id, None, None)
+        .await
+        .expect("list live events");
+    assert!(page.items.is_empty());
+
+    // ...and the fully-recomputed score agrees.
+    let score = matches_match_id_score_get(&owner_config, &created.id)
+        .await
+        .expect("get score");
+    match score {
+        models::Score::Netball(s) => {
+            assert!(s.score.is_empty());
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(0));
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+}

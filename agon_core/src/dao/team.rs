@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use aws_sdk_dynamodb::error::SdkError;
+use aws_sdk_dynamodb::operation::delete_item::DeleteItemError;
 use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 use aws_sdk_dynamodb::types::AttributeValue;
 
@@ -195,19 +196,29 @@ impl Dao {
         Ok(())
     }
 
-    /// Remove a member from a team by membership id. Idempotent (deleting a
-    /// missing member is a no-op).
+    /// Remove a member from a team by membership id. Delete-by-id, not a
+    /// toggle, so errors with `DaoError::NotFound` if the membership doesn't
+    /// exist rather than silently succeeding.
     #[tracing::instrument(skip(self))]
     pub async fn remove_team_member(&self, team_id: &str, membership_id: &str) -> DaoResult<()> {
-        self.client
+        let result = self
+            .client
             .delete_item()
             .table_name(self.table())
             .key(ATTR_PK, s(Pk::Team(team_id.into()).to_string()))
             .key("SK", s(Sk::Member(membership_id.into()).to_string()))
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
             .send()
-            .await
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-        Ok(())
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_delete_conditional_failure(&e) => Err(DaoError::NotFound(format!(
+                "membership {membership_id} on team {team_id}"
+            ))),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
     }
 
     /// List the teams a user is a member of, via GSI1 (`UTEAMS#<userId>`).
@@ -264,5 +275,13 @@ fn is_update_conditional_failure(err: &SdkError<UpdateItemError>) -> bool {
         err,
         SdkError::ServiceError(se)
             if matches!(se.err(), UpdateItemError::ConditionalCheckFailedException(_))
+    )
+}
+
+fn is_delete_conditional_failure(err: &SdkError<DeleteItemError>) -> bool {
+    matches!(
+        err,
+        SdkError::ServiceError(se)
+            if matches!(se.err(), DeleteItemError::ConditionalCheckFailedException(_))
     )
 }

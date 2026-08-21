@@ -23,6 +23,13 @@ pub struct Config {
     pub meili_url: String,
     /// Meilisearch API key (`MEILI_MASTER_KEY`).
     pub meili_key: String,
+    /// The FCM sender's GCP service-account key, as downloaded JSON
+    /// (`AGON_FCM_SERVICE_ACCOUNT_JSON`) — verbatim, so Pulumi can hand it
+    /// through with no reshaping. Optional like `OTEL_EXPORTER_OTLP_ENDPOINT`:
+    /// unset means "push disabled" (e.g. local dev without a GCP project),
+    /// not a startup failure. If set, it must parse — a broken credential is a
+    /// real misconfiguration, not an intentional opt-out.
+    pub fcm_service_account_json: Option<String>,
     /// Max messages to pull per SQS receive (1..=10).
     pub batch_size: i32,
     /// SQS long-poll wait time in seconds (0..=20).
@@ -44,6 +51,7 @@ impl Config {
                 .to_string(),
             meili_url: required("MEILI_URL")?,
             meili_key: required("MEILI_MASTER_KEY")?,
+            fcm_service_account_json: env::var("AGON_FCM_SERVICE_ACCOUNT_JSON").ok(),
             batch_size: optional_parsed("AGON_WORKER_BATCH_SIZE", 10)?,
             wait_time_seconds: optional_parsed("AGON_WORKER_WAIT_SECONDS", 20)?,
             visibility_timeout_seconds: optional_parsed("AGON_WORKER_VISIBILITY_SECONDS", 60)?,

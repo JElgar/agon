@@ -1006,6 +1006,17 @@ const firebaseApi = new gcp.projects.Service("firebase-api", {
 	disableOnDestroy: false,
 });
 
+// Needed by the `gcp.serviceaccount.Account` below — creating a service
+// account is an IAM API call, so on a project where IAM has never been
+// touched (e.g. a fresh "agon-502111"), that create fails with "Identity
+// and Access Management (IAM) API has not been used in this project
+// before or it is disabled" unless something enables it first.
+const iamApi = new gcp.projects.Service("iam-api", {
+	project: gcpProjectId,
+	service: "iam.googleapis.com",
+	disableOnDestroy: false,
+});
+
 // Attaches Firebase to the project. If "agon" already has Firebase attached
 // (e.g. from prior manual clicking-around), this create may fail with
 // "already exists" — `pulumi import` it instead in that case, one-time.
@@ -1062,7 +1073,7 @@ const fcmServiceAccount = new gcp.serviceaccount.Account("agon-fcm-sender", {
 	project: gcpProjectId,
 	accountId: "agon-fcm-sender",
 	displayName: "agon FCM sender",
-}, { dependsOn: [firebaseApi] });
+}, { dependsOn: [firebaseApi, iamApi] });
 
 new gcp.projects.IAMMember("agon-fcm-sender-role", {
 	project: gcpProjectId,

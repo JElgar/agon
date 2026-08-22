@@ -27,23 +27,29 @@ const messaging = firebase.messaging();
 // foreground case is handled in-app via `onMessage` (see
 // usePushNotifications.tsx), which just refreshes the notification queries
 // instead of popping a duplicate system notification.
+//
+// The backend (agon_core::push::PushClient::send) deliberately sends a
+// data-only message — title/body/link all under `payload.data`, nothing
+// under `payload.notification` — because a `notification` payload gets
+// auto-displayed by the browser using its own default handling whenever the
+// page isn't foregrounded, bypassing this handler entirely (so a click on it
+// couldn't carry `link` anywhere). Data-only always reaches us here.
 messaging.onBackgroundMessage((payload) => {
-  const { title, body } = payload.notification || {};
+  const { title, body, link } = payload.data || {};
   if (!title) return;
   self.registration.showNotification(title, {
     body,
     icon: '/pwa-192x192.png',
+    // Read back in notificationclick below. `link` is absent when the
+    // backend has no AGON_UI_URL configured — falls back to the app root.
+    data: { link },
   });
 });
 
-// Focus an existing tab, or open one, on click. Always lands on the app root
-// and lets it route from there — the backend's push payload only carries
-// title/body today (see agon_worker/src/handlers/push.rs), no deep link.
-// Follow-up: have push.rs's FCM `send()` attach a `data.link` (mirroring
-// NotificationsPage's `describe()`.href) and read it here instead of '/'.
+// Focus an existing tab already on that link, or open one, on click.
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const url = self.location.origin + '/';
+  const url = event.notification.data?.link || self.location.origin + '/';
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
       for (const client of clients) {

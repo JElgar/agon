@@ -10,6 +10,11 @@ import * as tls from "@pulumi/tls";
 const config = new pulumi.Config();
 const subdomainPrefix = pulumi.getStack();
 const baseDomain = `${subdomainPrefix}.get-agon.com`;
+// The UI's public URL — same host as `fullDomain` further down (kept as a
+// separate constant: that one's a bare hostname for the Ingress `host`
+// field, this is a full URL the worker uses to build push-notification deep
+// links, needed up here since it's declared well before `fullDomain` is).
+const agonUiUrl = `https://agon.${baseDomain}`;
 
 // pulumi config set --secret privateKeyBase64 "$(cat ~/.ssh/pulumi_agon_key | base64)"
 const privateKeyBase64 = config.requireSecret("privateKeyBase64");
@@ -1735,6 +1740,12 @@ new k8s.apps.v1.Deployment("agon-worker-deployment", {
 										key: "AGON_FCM_SERVICE_ACCOUNT_JSON",
 									}
 								},
+							},
+							// The UI's public URL, so push notifications can carry a full
+							// deep-link (see handlers::push::push_link in agon_worker).
+							{
+								name: "AGON_UI_URL",
+								value: agonUiUrl,
 							},
 							// Temporal connection. The SDK config loader reads these
 							// (TEMPORAL_ADDRESS / TEMPORAL_NAMESPACE); it otherwise defaults to

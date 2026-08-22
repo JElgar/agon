@@ -7,7 +7,9 @@
 //! Shared by the worker (which sends a push whenever a `NotificationRecord`
 //! is created — see `agon_worker/src/handlers/push.rs`).
 
-use google_fcm1::api::{Message, Notification, SendMessageRequest};
+use std::collections::HashMap;
+
+use google_fcm1::api::{Message, SendMessageRequest};
 use google_fcm1::hyper_rustls::{self, HttpsConnector};
 use google_fcm1::hyper_util::client::legacy::connect::HttpConnector;
 use google_fcm1::hyper_util::{self, client::legacy::Client as HyperClient};
@@ -65,16 +67,38 @@ impl PushClient {
         })
     }
 
-    /// Send one push notification to a device's registration token.
-    pub async fn send(&self, push_token: &str, title: &str, body: &str) -> PushResult<PushOutcome> {
+    /// Send one push notification to a device's registration token, optionally
+    /// carrying a `link` to open (a full URL — see `agon_worker::handlers::push`
+    /// for how it's built) when the notification is clicked.
+    ///
+    /// Deliberately sent as a **data-only** message (everything — including
+    /// title/body — in `data`, `notification` left unset) rather than FCM's
+    /// `notification` field: on web, a message with a `notification` payload
+    /// is auto-displayed by the browser using its own default handling
+    /// whenever the page isn't in the foreground, which bypasses our service
+    /// worker's `onBackgroundMessage` entirely — so a click on it can't carry
+    /// our `link` anywhere. Data-only messages always reach
+    /// `onBackgroundMessage`, giving us full control over both the display
+    /// and the click behavior. See public/firebase-messaging-sw.js.
+    pub async fn send(
+        &self,
+        push_token: &str,
+        title: &str,
+        body: &str,
+        link: Option<&str>,
+    ) -> PushResult<PushOutcome> {
+        let mut data = HashMap::from([
+            ("title".to_string(), title.to_string()),
+            ("body".to_string(), body.to_string()),
+        ]);
+        if let Some(link) = link {
+            data.insert("link".to_string(), link.to_string());
+        }
+
         let request = SendMessageRequest {
             message: Some(Message {
                 token: Some(push_token.to_string()),
-                notification: Some(Notification {
-                    title: Some(title.to_string()),
-                    body: Some(body.to_string()),
-                    image: None,
-                }),
+                data: Some(data),
                 ..Default::default()
             }),
             validate_only: None,

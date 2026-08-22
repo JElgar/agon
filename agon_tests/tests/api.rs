@@ -3692,6 +3692,81 @@ async fn netball_quarter_only_scoring_uses_period_marker_score_directly() {
 // netball-specific.
 // ---------------------------------------------------------------------------
 
+/// Regression test for the bug where a UI client seeded its append token
+/// (`expected_last_seq`) from the physical event log's own max seq — fine
+/// before any undo, but permanently wrong after one, since undoing bumps the
+/// real `live_seq` counter past the deleted event without leaving a matching
+/// physical item behind (see `Dao::delete_live_event`'s doc comment). In the
+/// app this showed up as: undo an event, refresh the page (throwing away the
+/// in-session cache that had been seeded correctly from the undo's own
+/// response), and every append from then on 409s forever. `GET
+/// /matches/:id/live/seq` exists precisely so a fresh client has a correct
+/// value to seed from instead of falling back to the event log.
+#[tokio::test]
+async fn live_seq_endpoint_reflects_the_real_counter_not_the_physical_log_max() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+
+    // No events yet — the counter is 0.
+    let seq = matches_match_id_live_seq_get(&owner_config, &created.id)
+        .await
+        .expect("get live seq");
+    assert_eq!(seq.last_seq, 0);
+
+    append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![
+            netball_goal_event_json(&side_a, false),
+            netball_goal_event_json(&side_a, false),
+        ],
+    )
+    .await;
+
+    let seq = matches_match_id_live_seq_get(&owner_config, &created.id)
+        .await
+        .expect("get live seq");
+    assert_eq!(seq.last_seq, 2);
+
+    // Undo the tip — the physical log's own max seq drops to 1, but the real
+    // counter is 3 (bumped past the deleted event). This endpoint must
+    // report the counter, not the physical max.
+    matches_match_id_live_events_seq_delete(&owner_config, &created.id, 2)
+        .await
+        .expect("undo the second goal");
+
+    let page = matches_match_id_live_events_get(&owner_config, &created.id, None, None)
+        .await
+        .expect("list live events");
+    let physical_max = page.items.iter().map(|e| e.seq).max().unwrap_or(0);
+    assert_eq!(physical_max, 1, "physical log's own max seq after the undo");
+
+    let seq = matches_match_id_live_seq_get(&owner_config, &created.id)
+        .await
+        .expect("get live seq");
+    assert_eq!(
+        seq.last_seq, 3,
+        "the real counter, not the physical log's max seq (1)"
+    );
+
+    // And it's exactly the value the very next append needs as
+    // expected_last_seq — the point of the whole endpoint.
+    let after_append = append_live_events_raw(
+        &owner_config,
+        &created.id,
+        seq.last_seq,
+        vec![netball_goal_event_json(&side_a, false)],
+    )
+    .await;
+    assert_eq!(after_append.last_seq, 4);
+}
+
 /// Regression test for the bug where undoing the tip event left the client
 /// unable to record anything else afterward.
 ///

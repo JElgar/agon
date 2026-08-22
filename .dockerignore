@@ -6,6 +6,20 @@ target/
 agon_infra/
 agon_ui/
 
+# Not a workspace member built by either image (see root Cargo.toml
+# `exclude`); gitignored so it's normally absent anyway, but skip it
+# explicitly for local builds where it may exist.
+agon_tests/
+openapi_client/
+schema.json
+
+# Docs/CI/VCS/editor cruft — irrelevant to the compiled binaries, but still
+# part of the build context, so a docs-only change would otherwise bust the
+# final COPY layer for no reason.
+.github/
+docs/
+*.md
+
 # Local env / VCS / editor cruft.
 .git/
 .env

@@ -4607,28 +4607,36 @@ impl Api {
             .await
             .map_err(dao_internal)?;
 
+        // Hydrate every actor profile (every current kind has one) with a
+        // single batched lookup across the page, rather than one `get_user`
+        // per notification.
+        let actor_ids: Vec<String> = page
+            .items
+            .iter()
+            .map(|rec| notification_actor_id(&rec.kind).to_string())
+            .collect();
+        let actor_records = dao.batch_get_users(&actor_ids).await.map_err(dao_internal)?;
+
         let mut items = Vec::with_capacity(page.items.len());
         for rec in page.items {
-            // Hydrate the actor profile (every current kind has one).
-            let actor = self
-                .try_user_profile(dao, notification_actor_id(&rec.kind))
-                .await?
-                .unwrap_or_else(|| {
-                    user_profile_from_record(
-                        &dao::records::UserRecord {
-                            id: notification_actor_id(&rec.kind).to_string(),
-                            email: String::new(),
-                            name: String::new(),
-                            profile_image_url: None,
-                            follower_count: 0,
-                            following_count: 0,
-                            unread_count: 0,
-                            stats: std::collections::HashMap::new(),
-                            created_at: String::new(),
-                        },
-                        false,
-                    )
-                });
+            let actor_id = notification_actor_id(&rec.kind);
+            let actor = match actor_records.get(actor_id) {
+                Some(record) => user_profile_from_record(record, false),
+                None => user_profile_from_record(
+                    &dao::records::UserRecord {
+                        id: actor_id.to_string(),
+                        email: String::new(),
+                        name: String::new(),
+                        profile_image_url: None,
+                        follower_count: 0,
+                        following_count: 0,
+                        unread_count: 0,
+                        stats: std::collections::HashMap::new(),
+                        created_at: String::new(),
+                    },
+                    false,
+                ),
+            };
             items.push(notification_from_record(&rec, actor));
         }
 

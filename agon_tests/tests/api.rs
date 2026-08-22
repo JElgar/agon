@@ -2373,6 +2373,7 @@ async fn list_matches_accepts_filters() {
         &config,
         Some("test"),
         None,
+        None,
         Some(models::MatchType::Tennis),
         Some("2026-01-01T00:00:00Z".to_string()),
         Some("2026-12-31T00:00:00Z".to_string()),
@@ -2393,6 +2394,7 @@ async fn list_matches_rejects_inverted_date_range() {
         None,
         None,
         None,
+        None,
         Some("2026-12-31T00:00:00Z".to_string()),
         Some("2026-01-01T00:00:00Z".to_string()),
         None,
@@ -2403,6 +2405,89 @@ async fn list_matches_rejects_inverted_date_range() {
         response,
         reqwest::StatusCode::BAD_REQUEST,
         "`from` must be before `to`",
+    );
+}
+
+/// The `team` filter on `GET /matches` finds a match via its team-linked side —
+/// exercises the indexed `team_ids` facet end to end (worker indexing +
+/// Meilisearch filter), not just that the endpoint accepts the param.
+#[tokio::test]
+async fn list_matches_filters_by_team() {
+    let (owner_config, owner) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Discovery FC".to_string(),
+        },
+    )
+    .await
+    .expect("create team");
+
+    let mut input = match_between(
+        "Team Discovery Match",
+        &[&owner.profile.id],
+        &[&opponent.profile.id],
+    );
+    // Same disambiguation as `match_with_a_team_side_fans_out_to_team_followers`:
+    // drop the placeholder name so side "a" can carry the team id instead.
+    input.sides[0].team_id = Some(team.id.clone());
+    input.sides[0].name = None;
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("create match");
+
+    // Indexing is async (stream -> SQS -> worker -> Meilisearch), so poll.
+    let found = eventually("match to be searchable by team", || {
+        let config = &owner_config;
+        let team_id = &team.id;
+        let match_id = &created.id;
+        async move {
+            let page = matches_get(
+                config,
+                None,
+                None,
+                Some(team_id),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .ok()?;
+            page.items.into_iter().find(|m| &m.id == match_id)
+        }
+    })
+    .await;
+    assert_eq!(found.id, created.id);
+
+    // A team with no matches finds nothing.
+    let other_team = teams_post(
+        &opponent_config,
+        models::CreateTeamInput {
+            name: "Unrelated FC".to_string(),
+        },
+    )
+    .await
+    .expect("create team");
+    let page = matches_get(
+        &owner_config,
+        None,
+        None,
+        Some(&other_team.id),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("list matches");
+    assert!(
+        !page.items.iter().any(|m| m.id == created.id),
+        "unrelated team should not match"
     );
 }
 

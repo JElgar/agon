@@ -2015,6 +2015,10 @@ impl Api {
         Query(query): Query<Option<String>>,
         /// Only matches this user played in (member id or user id).
         Query(participant): Query<Option<String>>,
+        /// Only matches this team was involved in (a side's `team_id`). Powers
+        /// a team profile's matches tab, the same way `participant` powers a
+        /// user profile's.
+        Query(team): Query<Option<String>>,
         /// Only matches of this sport.
         Query(match_type): Query<Option<MatchType>>,
         /// Only matches at or after this time (inclusive).
@@ -2031,9 +2035,10 @@ impl Api {
 
         // Match discovery is served by the search index (Meilisearch), NOT
         // DynamoDB — it supports arbitrary combinations of text / participant /
-        // sport / date-range with date sorting. This is distinct from GET /feed
-        // (the caller's social feed). Powers the profile "recent activity" view
-        // (participant = the profile's user) and general match search.
+        // team / sport / date-range with date sorting. This is distinct from
+        // GET /feed (the caller's social feed). Powers the profile "recent
+        // activity" view (participant = the profile's user), a team profile's
+        // matches tab (team = the team's id), and general match search.
         if let (Some(from), Some(to)) = (from, to)
             && from > to
         {
@@ -2062,6 +2067,9 @@ impl Api {
         }
         if let Some(p) = &participant {
             clauses.push(format!("participant_ids = \"{p}\""));
+        }
+        if let Some(t) = &team {
+            clauses.push(format!("team_ids = \"{t}\""));
         }
         if let Some(from) = from {
             clauses.push(format!("starts_at_ts >= {}", from.timestamp()));

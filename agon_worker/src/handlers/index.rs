@@ -53,6 +53,10 @@ pub struct MatchDoc {
     /// the stable player ids — so the `participant` discovery filter matches
     /// either. Deduplicated.
     participant_ids: Vec<String>,
+    /// Ids of every team involved in this match (one per side that has a
+    /// `team_id`), so the `team` discovery filter can list a team's matches.
+    /// Deduplicated.
+    team_ids: Vec<String>,
     /// Which of `participant_ids` won / lost / drew, split into three
     /// buckets rather than a single per-participant map — Meilisearch
     /// documents are per-match, not per-viewer, so there's no single
@@ -159,6 +163,11 @@ fn match_doc(agg: &MatchAggregate) -> MatchDoc {
     // Both linked user ids and stable player ids identify a participant, so the
     // discovery `participant` filter matches whichever the caller supplies.
     let mut participant_ids = std::collections::BTreeSet::new();
+    let team_ids: std::collections::BTreeSet<String> = agg
+        .sides
+        .iter()
+        .filter_map(|s| s.team_id.clone())
+        .collect();
     let mut winning_participant_ids = std::collections::BTreeSet::new();
     let mut losing_participant_ids = std::collections::BTreeSet::new();
     let mut drawing_participant_ids = std::collections::BTreeSet::new();
@@ -202,6 +211,7 @@ fn match_doc(agg: &MatchAggregate) -> MatchDoc {
         starts_at: m.starts_at.clone(),
         starts_at_ts,
         participant_ids: participant_ids.into_iter().collect(),
+        team_ids: team_ids.into_iter().collect(),
         winning_participant_ids: winning_participant_ids.into_iter().collect(),
         losing_participant_ids: losing_participant_ids.into_iter().collect(),
         drawing_participant_ids: drawing_participant_ids.into_iter().collect(),

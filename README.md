@@ -8,6 +8,11 @@ docker compose up -d
 make run
 ```
 
+`docker compose up -d` starts Meilisearch only — DynamoDB stays real/cloud
+regardless. For a fully local stack (local Supabase Auth + Temporal too, for
+running `agon_ui`'s e2e suite or `agon_worker` without touching staging), see
+`agon_ui/e2e/README.md`'s "Running fully local" section.
+
 ## Test
 
 ```

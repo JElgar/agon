@@ -128,6 +128,80 @@ npm run test:e2e
 `npm run test:e2e:ui` opens Playwright's UI mode for interactively stepping
 through a run.
 
+## Running fully local
+
+Everything above targets staging: staging Supabase for auth, staging
+`agon_service` for the API. To run the whole thing — UI, auth, API, worker —
+against your own machine instead, with nothing external but AWS DynamoDB
+(still real/cloud either way, see the root `CLAUDE.md`):
+
+1. **Bring up the backing services** — Meilisearch plus a local Supabase Auth
+   (Postgres + GoTrue + Kong) and a local Temporal, via the `full`
+   docker-compose profile (see `local/README.md` for what's actually in it):
+
+   ```bash
+   docker compose --profile full up -d
+   ```
+
+2. **Seed the test account** against the local Supabase Auth stack (the local
+   counterpart to "Provisioning the test user" above — no Pulumi, no real
+   Supabase project involved):
+
+   ```bash
+   node agon_ui/e2e/local-seed-user.mjs
+   ```
+
+3. **Run `agon_service`** pointed at the local JWKS instead of a real
+   Supabase project — add to the root `.env` (see `.env.example`):
+
+   ```
+   SUPABASE_JWKS_URL=http://localhost:8000/auth/v1/.well-known/jwks.json
+   ```
+
+   then `make run` as usual. DynamoDB/AWS creds are still required — that
+   part isn't local (see `CLAUDE.md`).
+
+4. **Run `agon_worker`** too — `tests/match-feed.spec.ts` depends on it: a
+   logged match only shows up in the feed after the fan-out workflow
+   (`agon_worker/src/temporal`) runs. Point it at the local Temporal (add
+   `TEMPORAL_ADDRESS=localhost:7233` to `.env`, already in `.env.example`),
+   then:
+
+   ```bash
+   cargo run -p agon_worker
+   ```
+
+   (Needs `protobuf-compiler` installed — `agon_worker`'s Temporal
+   dependencies need `protoc` to build, unlike `agon_service`.)
+
+5. **Point the UI at the local stack** — add to `agon_ui/.env` (see
+   `agon_ui/.env.example`):
+
+   ```
+   VITE_SUPABASE_URL=http://localhost:8000
+   VITE_SUPABASE_ANON_KEY=local-dev-anon-key
+   AGON_API_PROXY_TARGET=http://localhost:7000
+   ```
+
+6. **Run the tests**, same as always — the local Supabase Auth stack has no
+   Pulumi-stored secret, so the test account's email/password are whatever
+   you passed `local-seed-user.mjs` (or its defaults, `e2e@example.com` /
+   `local-e2e-test-password`, if you ran it with none):
+
+   ```bash
+   E2E_TEST_EMAIL=e2e@example.com E2E_TEST_PASSWORD=local-e2e-test-password \
+   npm run test:e2e
+   ```
+
+`docker compose --profile full up -d` (no flags at all) only starts
+Meilisearch, same as always — the `full` profile is additional weight (two
+Postgres instances, GoTrue, Kong, Temporal) most day-to-day work doesn't
+need, so it's opt-in.
+
+`make test-ui-e2e-local` wraps steps 2 and 6 (seed + run, with matching
+defaults) — steps 1, 3–5 (the backing services and the three app processes)
+still need to be up first.
+
 ## What's covered
 
 - `tests/match-feed.spec.ts` — logging a match through the real "Log a

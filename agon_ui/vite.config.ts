@@ -1,11 +1,20 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 import path from 'path'
 import tailwindcss from "@tailwindcss/vite"
 
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  // Not VITE_-prefixed on purpose: this only steers this config file's own
+  // dev-server proxy, never shipped to client code (unlike VITE_* vars,
+  // which Vite exposes in the built bundle). loadEnv (rather than plain
+  // process.env) is what actually reads .env for a config-time value like
+  // this — Vite only auto-loads .env into process.env for client code.
+  const env = loadEnv(mode, __dirname, '')
+  const apiProxyTarget = env.AGON_API_PROXY_TARGET || 'https://agon.staging.get-agon.com'
+
+  return {
   plugins: [
     react(),
     tailwindcss(),
@@ -88,13 +97,17 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     proxy: {
-      // Local dev proxies /api to the staging backend, so the UI can run without
-      // a local agon_service (which needs DynamoDB/Meilisearch/AWS creds). Auth
-      // tokens validate against the same staging Supabase project the UI uses.
-      // Staging serves the API under /api (via the ingress), so — unlike a local
-      // server at root on :7000 — the /api prefix is kept, not stripped.
+      // Local dev proxies /api to the staging backend by default, so the UI
+      // can run without a local agon_service (which needs
+      // DynamoDB/Meilisearch/AWS creds) — auth tokens validate against the
+      // same staging Supabase project the UI uses by default. Set
+      // AGON_API_PROXY_TARGET=http://localhost:7000 (agon_ui/.env) to point
+      // at a local agon_service instead — see agon_ui/e2e/README.md's
+      // "Running fully local" section. Staging serves the API under /api
+      // (via the ingress) and so does agon_service locally, so the /api
+      // prefix is kept either way, not stripped.
       '/api': {
-        target: 'https://agon.staging.get-agon.com',
+        target: apiProxyTarget,
         changeOrigin: true,
       }
     },
@@ -115,4 +128,5 @@ export default defineConfig({
       },
     }
   },
+  }
 })

@@ -64,6 +64,13 @@ test-staging:
 run:
 	cargo run -p agon_service -- run-server abc.com
 
+# agon_worker: consumes the DynamoDB stream + runs the Temporal workflows
+# (feed fan-out, accept-invitation). Needs the `full` docker-compose profile
+# up (Temporal) — see local/README.md. Requires protobuf-compiler (`protoc`)
+# to build, unlike agon_service.
+run-worker:
+	cargo run -p agon_worker
+
 # Full browser UI end-to-end tests (Playwright) — see agon_ui/e2e/README.md
 # for what's covered and how the test account works. Reads E2E_TEST_EMAIL /
 # E2E_TEST_PASSWORD / E2E_BASE_URL from the environment (or .env); use
@@ -80,4 +87,18 @@ test-ui-e2e-staging:
 	E2E_BASE_URL=$(UI_STAGING_URL) \
 	E2E_TEST_EMAIL="$$(cd agon_infra && pulumi config get e2eTestEmail --stack $(STACK))" \
 	E2E_TEST_PASSWORD="$$(cd agon_infra && pulumi config get e2eTestPassword --stack $(STACK))" \
+	npm --prefix agon_ui run test:e2e
+
+# Same, against a fully local stack instead — see agon_ui/e2e/README.md's
+# "Running fully local" section for the full setup (docker-compose `full`
+# profile, agon_service + agon_worker running locally, agon_ui/.env pointed
+# at it). This only seeds the local Supabase test account and runs the
+# suite; it doesn't bring up the rest of the stack for you.
+E2E_LOCAL_EMAIL ?= e2e@example.com
+E2E_LOCAL_PASSWORD ?= local-e2e-test-password
+
+test-ui-e2e-local:
+	E2E_TEST_EMAIL=$(E2E_LOCAL_EMAIL) E2E_TEST_PASSWORD=$(E2E_LOCAL_PASSWORD) \
+	node agon_ui/e2e/local-seed-user.mjs
+	E2E_TEST_EMAIL=$(E2E_LOCAL_EMAIL) E2E_TEST_PASSWORD=$(E2E_LOCAL_PASSWORD) \
 	npm --prefix agon_ui run test:e2e

@@ -42,6 +42,11 @@ cp .env.example .env
 docker compose up -d  # Starts local Meilisearch (DynamoDB is a real/cloud table)
 ```
 
+For a fully local stack (local Supabase Auth + Temporal, for `agon_ui`'s
+Playwright e2e suite or running `agon_worker` without touching staging):
+`docker compose --profile full up -d` — see `agon_ui/e2e/README.md`'s
+"Running fully local" section and `local/README.md`.
+
 ### Building
 ```bash
 make build  # Generates OpenAPI schema and builds entire workspace

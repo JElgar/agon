@@ -34,12 +34,13 @@ pub async fn route(
     dao: &Dao,
     search: &SearchClient,
     push: Option<&PushClient>,
+    ui_base_url: Option<&str>,
     ev: &ChangeEvent,
     now: &str,
 ) -> WorkerResult<()> {
     index::handle(dao, search, ev).await?;
     notify::handle(dao, ev, now).await?;
-    push::handle(dao, push, ev).await?;
+    push::handle(dao, push, ui_base_url, ev).await?;
     stats::handle(dao, ev).await?;
     Ok(())
 }

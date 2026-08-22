@@ -30,6 +30,13 @@ pub struct Config {
     /// not a startup failure. If set, it must parse — a broken credential is a
     /// real misconfiguration, not an intentional opt-out.
     pub fcm_service_account_json: Option<String>,
+    /// The web app's public base URL (`AGON_UI_URL`, e.g.
+    /// `https://agon.staging.get-agon.com`), used to build the full deep-link
+    /// URL attached to a push notification (see
+    /// `handlers::push::push_link`). Optional like the FCM credential above:
+    /// unset just means push notifications open the app with no deep link
+    /// rather than failing to send at all.
+    pub ui_base_url: Option<String>,
     /// Max messages to pull per SQS receive (1..=10).
     pub batch_size: i32,
     /// SQS long-poll wait time in seconds (0..=20).
@@ -52,6 +59,9 @@ impl Config {
             meili_url: required("MEILI_URL")?,
             meili_key: required("MEILI_MASTER_KEY")?,
             fcm_service_account_json: env::var("AGON_FCM_SERVICE_ACCOUNT_JSON").ok(),
+            ui_base_url: env::var("AGON_UI_URL")
+                .ok()
+                .map(|v| v.trim_end_matches('/').to_string()),
             batch_size: optional_parsed("AGON_WORKER_BATCH_SIZE", 10)?,
             wait_time_seconds: optional_parsed("AGON_WORKER_WAIT_SECONDS", 20)?,
             visibility_timeout_seconds: optional_parsed("AGON_WORKER_VISIBILITY_SECONDS", 60)?,

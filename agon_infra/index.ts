@@ -10,6 +10,11 @@ import * as tls from "@pulumi/tls";
 const config = new pulumi.Config();
 const subdomainPrefix = pulumi.getStack();
 const baseDomain = `${subdomainPrefix}.get-agon.com`;
+// The UI's public URL — same host as `fullDomain` further down (kept as a
+// separate constant: that one's a bare hostname for the Ingress `host`
+// field, this is a full URL the worker uses to build push-notification deep
+// links, needed up here since it's declared well before `fullDomain` is).
+const agonUiUrl = `https://agon.${baseDomain}`;
 
 // pulumi config set --secret privateKeyBase64 "$(cat ~/.ssh/pulumi_agon_key | base64)"
 const privateKeyBase64 = config.requireSecret("privateKeyBase64");
@@ -1736,6 +1741,12 @@ new k8s.apps.v1.Deployment("agon-worker-deployment", {
 									}
 								},
 							},
+							// The UI's public URL, so push notifications can carry a full
+							// deep-link (see handlers::push::push_link in agon_worker).
+							{
+								name: "AGON_UI_URL",
+								value: agonUiUrl,
+							},
 							// Temporal connection. The SDK config loader reads these
 							// (TEMPORAL_ADDRESS / TEMPORAL_NAMESPACE); it otherwise defaults to
 							// http://localhost:7233, which would crash-loop the worker since a
@@ -1777,6 +1788,44 @@ new k8s.apps.v1.Deployment("agon-ui-deployment", {
 							{
 								name: "VITE_SUPABASE_ANON_KEY",
 								value: config.get("supabaseAnonKey"),
+							},
+							// Firebase Web SDK config for push notifications — all
+							// public/client-safe values, pulled straight from the
+							// firebaseWebApp / firebaseWebConfig resources above rather
+							// than copy-pasted, same spirit as the Supabase pair (just
+							// not manual, since these ARE automatable).
+							{
+								name: "VITE_FIREBASE_API_KEY",
+								value: firebaseWebConfig.apply(c => c.apiKey),
+							},
+							{
+								name: "VITE_FIREBASE_AUTH_DOMAIN",
+								value: firebaseWebConfig.apply(c => c.authDomain),
+							},
+							{
+								name: "VITE_FIREBASE_PROJECT_ID",
+								value: gcpProjectId,
+							},
+							{
+								name: "VITE_FIREBASE_STORAGE_BUCKET",
+								value: firebaseWebConfig.apply(c => c.storageBucket),
+							},
+							{
+								name: "VITE_FIREBASE_MESSAGING_SENDER_ID",
+								value: firebaseWebConfig.apply(c => c.messagingSenderId),
+							},
+							{
+								name: "VITE_FIREBASE_APP_ID",
+								value: firebaseWebApp.appId,
+							},
+							// The one piece that isn't automatable (see the VAPID-key
+							// comment above firebaseWebConfig) — unset until someone
+							// pastes it in via `pulumi config set firebaseVapidKey`, which
+							// just leaves push notifications disabled client-side (see
+							// isFirebaseConfigured in agon_ui/src/lib/firebase.ts).
+							{
+								name: "VITE_FIREBASE_VAPID_KEY",
+								value: config.get("firebaseVapidKey"),
 							},
 						],
 					},

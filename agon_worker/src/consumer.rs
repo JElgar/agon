@@ -158,7 +158,15 @@ impl Consumer {
         let event = ChangeEvent::from_envelope(&envelope)?;
 
         let now = Utc::now().to_rfc3339();
-        handlers::route(&self.dao, &self.search, self.push.as_ref(), &event, &now).await?;
+        handlers::route(
+            &self.dao,
+            &self.search,
+            self.push.as_ref(),
+            self.config.ui_base_url.as_deref(),
+            &event,
+            &now,
+        )
+        .await?;
 
         // Multi-step work: start the relevant Temporal workflow (idempotent via
         // deterministic ids). A start failure is transient, so the message is left

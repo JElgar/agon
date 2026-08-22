@@ -41,3 +41,7 @@ opentelemetry = "0.32"
 opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "trace", "metrics", "logs"] }
 opentelemetry-appender-tracing = "0.32"
+# Only for `crypto::ring::default_provider().install_default()` in
+# `telemetry::init` — see its doc comment. `ring` (not `aws-lc-rs`) to match
+# what the Temporal SDK / reqwest's `rustls-tls` already pull in.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }

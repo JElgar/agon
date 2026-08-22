@@ -22,6 +22,7 @@ dependencies = [
  "opentelemetry-appender-tracing",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "rustls 0.23.28",
  "serde",
  "serde_dynamo",
  "serde_json",

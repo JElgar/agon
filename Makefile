@@ -12,13 +12,28 @@ generate-schema:
 	cargo run -p agon_service -- generate-schema
 	openapi-generator-cli generate -i schema.json -g rust -o openapi_client
 	echo "disable_all_formatting = true" > openapi_client/.rustfmt.toml
-	# Post-process: for discriminated unions the enum is `#[serde(tag = "type")]`
-	# (serde consumes `type` to pick the variant), but the generator ALSO emits a
-	# required `type` field on each variant struct — so deserializing fails with
-	# "missing field `type`". Add `#[serde(default)]` so the (single-valued,
-	# already-correct) field defaults when absent. See docs/openapi-client.md.
+	# Post-process: for a discriminated union whose variants are flat objects
+	# (not another nested union — see the `LiveEventInput` fix below for
+	# that case), the enum is `#[serde(tag = "<name>")]` (serde consumes
+	# `<name>` to pick the variant), but the generator ALSO emits a required
+	# `<name>` field on each variant struct — so deserializing can fail
+	# (`missing field`, or — once the variant has enough other fields that
+	# the same broken reconstruction misaligns a *different*, non-optional
+	# one instead — a spurious type-mismatch on that field, e.g. "invalid
+	# type: null, expected a string" on a plain required `side_id: String`
+	# that was never actually null on the wire). Add `#[serde(default)]` so
+	# the (single-valued, already-correct) discriminator field defaults
+	# when the reconstruction doesn't see it. This API uses three such
+	# discriminator names: `type` (e.g. `Score`), `sport` (`MatchFormat`),
+	# and `kind` (the football/cricket/netball live-event unions nested
+	# inside `LiveEventInput`) — all three need the same fix, not just
+	# `type`. See docs/openapi-client.md.
 	find openapi_client/src/models -name '*.rs' -exec \
 		perl -0pi -e 's/#\[serde\(rename = "type"\)\]\n(\s*)pub r#type: Type,/#[serde(rename = "type", default)]\n$1pub r#type: Type,/g' {} +
+	find openapi_client/src/models -name '*.rs' -exec \
+		perl -0pi -e 's/#\[serde\(rename = "sport"\)\]\n(\s*)pub sport: Sport,/#[serde(rename = "sport", default)]\n$1pub sport: Sport,/g' {} +
+	find openapi_client/src/models -name '*.rs' -exec \
+		perl -0pi -e 's/#\[serde\(rename = "kind"\)\]\n(\s*)pub kind: Kind,/#[serde(rename = "kind", default)]\n$1pub kind: Kind,/g' {} +
 	# Post-process: `LiveEventInput` nests a second discriminated union (each
 	# sport's own `kind`-tagged event union) inside its own `sport`-tagged
 	# variants. The generator handles that inner `oneOf` correctly wherever

@@ -1407,6 +1407,27 @@ struct LiveEventPage {
     next_cursor: Option<String>,
 }
 
+/// The match's current live-scoring counter — `GET
+/// /matches/:match_id/live/seq`. A client with no cached mutation response
+/// to seed `expected_last_seq` from (a fresh page load, a different device)
+/// needs this: the physical event log's own max seq (`GET
+/// /matches/:match_id/live/events`) is *not* a safe substitute once any
+/// event has ever been undone — it permanently understates the true
+/// counter from that point on (see `Dao::delete_live_event`'s doc comment).
+#[derive(Object)]
+struct LiveSeq {
+    last_seq: u32,
+}
+
+#[derive(ApiResponse)]
+enum GetLiveSeqResponse {
+    #[oai(status = 200)]
+    Ok(Json<LiveSeq>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
 #[derive(ApiResponse)]
 enum ListLiveEventsResponse {
     #[oai(status = 200)]
@@ -3374,6 +3395,38 @@ impl Api {
             last_seq: new_last_seq,
             score,
         }))
+    }
+
+    /// The match's current live-scoring counter — what a client with no
+    /// cached mutation response should seed `expected_last_seq` from (a
+    /// fresh page load, or a device that's never scored this match before).
+    /// Reads `MatchRecord.live_seq` directly off the same `get_match` call
+    /// every other match read already makes — no extra table read beyond
+    /// that. Deliberately *not* derived from the physical event log's max
+    /// seq the way `GET /matches/:match_id/live/events` would suggest:
+    /// once any event has ever been undone, `live_seq` permanently outruns
+    /// that log's own max (see `Dao::delete_live_event`'s doc comment), so
+    /// a client that seeded its append token from the log instead would
+    /// send a stale `expected_last_seq` on every append from then on and
+    /// get rejected with `Conflict` forever.
+    #[oai(path = "/matches/:match_id/live/seq", method = "get")]
+    async fn get_live_seq(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(_jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+    ) -> Result<GetLiveSeqResponse> {
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(GetLiveSeqResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        Ok(GetLiveSeqResponse::Ok(Json(LiveSeq {
+            last_seq: agg.match_.live_seq,
+        })))
     }
 
     /// The raw live event log, oldest first — for reconstructing the full

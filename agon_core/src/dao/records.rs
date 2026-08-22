@@ -428,8 +428,28 @@ pub struct MatchRecord {
     /// `append_live_events`: a batch must state the tip it last saw, and the
     /// counter bump that reserves its seq range is conditioned on this value.
     /// `#[serde(default)]` for matches written before live scoring existed.
+    ///
+    /// A monotonically-*increasing* reservation counter, not a mirror of the
+    /// physical log's max seq once a `LIVEEVT#` has ever been deleted — see
+    /// `live_tip_seq` for that instead.
     #[serde(default)]
     pub live_seq: u32,
+    /// The seq of the log's current physical tip — the highest `LIVEEVT#`
+    /// that actually exists — `None` if the log is empty. DAO-internal
+    /// bookkeeping for `Dao::delete_live_event`'s "only the tip can be
+    /// undone" guard; nothing outside `live_score_ops.rs` reads or writes
+    /// this directly (it's set via raw attribute updates there, not through
+    /// this struct). Deliberately a second field rather than reusing
+    /// `live_seq` for both jobs: `live_seq` only ever climbs (bumped by
+    /// every append *and* every delete, so appends never reuse a seq), so it
+    /// stops equaling the physical tip's own seq the moment a delete ever
+    /// bumps it past one — `live_tip_seq` is what stays accurate across
+    /// consecutive deletes. `#[serde(default)]` covers both matches written
+    /// before live scoring existed and matches whose log predates this
+    /// field: for either, the first `delete_live_event` call falls back to
+    /// checking `live_seq` instead (see that method).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_tip_seq: Option<u32>,
     /// Match format/rules configuration (overs per innings, half length, and
     /// so on). Embedded directly on the match record (not a separate item,
     /// unlike the live-scoring score record) because live scoring wants it

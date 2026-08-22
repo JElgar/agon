@@ -3917,7 +3917,7 @@ async fn undoing_the_bumped_tip_with_nothing_left_to_delete_is_not_found() {
 /// bumped `last_seq`. This is the scenario the UI's `useUndoTargetSeq` split
 /// exists for (see that hook's doc comment): every undo advances `live_seq`
 /// by one past the deleted event, so consecutive undos land on a strictly
-/// increasing sequence of `last_seq` values (4, then 3, then 2) even while
+/// increasing sequence of `last_seq` values (4, then 5, then 6) even while
 /// the *targets* count down (3, then 2, then 1). Confirms the derived score
 /// and physical log both end up completely empty once every event has been
 /// undone, not just "missing the most recent one" — and, the actual point
@@ -3983,11 +3983,14 @@ async fn undoing_multiple_times_in_a_row_removes_each_real_tip_in_turn() {
     }
 
     // Undo #3: the real tip is now seq 1 (the first, and last remaining,
-    // goal) — the log goes fully empty.
+    // goal) — the log goes fully empty. The counter keeps climbing the same
+    // way it did for undo #2 (5 -> 6), even though there's nothing left to
+    // undo afterward — `live_seq` never resets just because the log is
+    // momentarily empty.
     let after_third = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 1)
         .await
         .expect("undo the first goal");
-    assert_eq!(after_third.last_seq, 2);
+    assert_eq!(after_third.last_seq, 6);
     match *after_third.score {
         models::Score::Netball(s) => {
             assert_eq!(s.goals.as_ref().map(Vec::len), Some(0));
@@ -4020,7 +4023,7 @@ async fn undoing_multiple_times_in_a_row_removes_each_real_tip_in_turn() {
     }
 
     // The actual point of all this: scoring can still continue afterward.
-    // `expected_last_seq` must be `after_third.last_seq` (2) — the climbed
+    // `expected_last_seq` must be `after_third.last_seq` (6) — the climbed
     // counter, not 0 — even though every event ever recorded has now been
     // undone.
     let after_append = append_live_events_raw(
@@ -4030,9 +4033,9 @@ async fn undoing_multiple_times_in_a_row_removes_each_real_tip_in_turn() {
         vec![netball_goal_event_json(&side_a, false)],
     )
     .await;
-    // Lands at seq 3, continuing on from the counter — not seq 1, which
+    // Lands at seq 7, continuing on from the counter — not seq 1, which
     // would silently collide with the (deleted) first goal's old identity.
-    assert_eq!(after_append.last_seq, 3);
+    assert_eq!(after_append.last_seq, 7);
     match *after_append.score {
         models::Score::Netball(s) => {
             assert_eq!(s.goals.as_ref().map(Vec::len), Some(1));

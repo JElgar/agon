@@ -61,6 +61,9 @@ make run  # Starts Docker services and runs the API server on port 7000
 ```bash
 make test  # Runs integration tests in agon_tests package
 ```
+Needs `agon_service` running and a DynamoDB table reachable — real AWS
+creds, or `docker compose --profile dynamodb up -d` + `AWS_ENDPOINT_URL` in
+`.env` for DynamoDB Local (see `local/README.md`).
 
 ### OpenAPI Schema Generation
 ```bash

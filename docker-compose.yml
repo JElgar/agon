@@ -193,6 +193,48 @@ services:
     ports:
       - 8080:8080
 
+  # ── `dynamodb` profile (also included by `full`): DynamoDB Local ──────────
+  #
+  # Real DynamoDB is deliberately kept out of the default local setup (see
+  # the note on `meilisearch`, top of this file) — most day-to-day work
+  # doesn't need a local table, and a real/cloud table is one less thing to
+  # keep in sync with what staging actually runs on. This is for the cases
+  # that do: `make test` (agon_tests) without AWS credentials, or working on
+  # `agon_worker` end-to-end without touching a real table. A separate
+  # profile (not folded into `full`) since agon_tests needs only this and
+  # Meilisearch — not Supabase/Temporal — so `docker compose --profile
+  # dynamodb up -d` alone is enough for it.
+  #
+  # `-inMemory`: state resets on every restart. Fine for tests (they create
+  # their own users/teams/matches per run); if that ever stops being true,
+  # switch to a mounted `-dbPath` volume instead.
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    restart: unless-stopped
+    profiles: [dynamodb, full]
+    command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
+    ports:
+      - 8002:8000
+
+  # One-shot: creates the `agon` table (schema mirrored from
+  # agon_infra/index.ts — see local/dynamodb/create-table.sh) and exits.
+  # Re-run safe (idempotent) — matters because `-inMemory` above means the
+  # table needs recreating on every `dynamodb-local` restart, and compose
+  # restarts this alongside it every time regardless of the table's state.
+  dynamodb-local-init:
+    image: public.ecr.aws/aws-cli/aws-cli:latest
+    profiles: [dynamodb, full]
+    depends_on:
+      - dynamodb-local
+    environment:
+      AWS_ENDPOINT_URL: http://dynamodb-local:8000
+      AWS_REGION: eu-west-1
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+    entrypoint: ["/bin/sh", "/create-table.sh"]
+    volumes:
+      - ./local/dynamodb/create-table.sh:/create-table.sh:ro
+
 volumes:
   meili_data:
   supabase_db_data:

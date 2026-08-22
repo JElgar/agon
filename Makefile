@@ -4,6 +4,19 @@ ifneq (,$(wildcard ./.env))
 	export
 endif
 
+# The dev-only test-signing private key, for agon_tests / `generate-token`.
+# Deliberately NOT in .env: .env is also read directly by `docker compose`
+# (auto-loaded for variable substitution) whose parser rejects a `define`/
+# `endef` block outright ("key cannot contain a space") — and without that,
+# Make's own simple `VAR=value` line-based parsing has no way to hold a real
+# multi-line PEM (a `"...\n...\n..."`-escaped single line looks appealing but
+# doesn't work either: neither Make's `include` nor the Rust code that reads
+# this var unescape `\n`, so it fails to parse as PEM — this used to be
+# .env.example's documented format, and it was always broken for local use).
+# A plain file has none of these problems. `?=` so `test-staging`'s own
+# recipe-level override (a real key from Pulumi) still wins.
+AGON_TEST_JWT_PRIVATE_KEY ?= $(shell cat local/agon-test-key.pem 2>/dev/null)
+
 init:
 	[[ -d openapi_client ]] || cargo new --lib --name openapi openapi_client
 

@@ -19,6 +19,13 @@ running `agon_ui`'s e2e suite or `agon_worker` without touching staging), see
 make test
 ```
 
+Needs a running `agon_service` (`make run`) and, since `agon_tests` talks to
+real DynamoDB by default, either real AWS credentials or a local table:
+`docker compose --profile dynamodb up -d` + uncomment `AWS_ENDPOINT_URL` in
+`.env` — see `local/README.md`'s `local/dynamodb/` section (including a
+known gap: worker-dependent tests still fail without a local async
+pipeline).
+
 ## TODO
 
 - Random team assignment

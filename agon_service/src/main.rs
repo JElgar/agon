@@ -2459,6 +2459,7 @@ impl Api {
             like_count: 0,
             comment_count: 0,
             live_seq: 0,
+            live_tip_seq: None,
             format: input.format.as_ref().map(match_format_to_record),
             created_at: now.clone(),
         };

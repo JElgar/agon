@@ -46,4 +46,12 @@ services:
             - Content-Type
             - apikey
             - X-Client-Info
+            # supabase-js v2 sends this on every request (its own client
+            # version, not the GoTrue API version despite the name) — without
+            # it explicitly allowed, the browser's CORS preflight rejects the
+            # real request before it's ever sent, surfacing as a generic
+            # "Failed to fetch" in the UI with no other clue. Real Supabase
+            # projects don't need this listed because their Kong config
+            # allows it by default; this stack's minimal config doesn't.
+            - X-Supabase-Api-Version
           credentials: false

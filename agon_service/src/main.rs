@@ -4622,30 +4622,23 @@ impl Api {
 
         let mut items = Vec::with_capacity(page.items.len());
         for rec in page.items {
-            // There's no user-deletion path today, so every actor id should
-            // resolve — this branch is unreachable in practice. Degrade to a
-            // blank profile rather than fail the whole page over one
-            // notification, the same call `hydrate_comments` makes for a
-            // missing comment author: a page fails closed for real errors
-            // (the `dao_internal` above), not for one orphaned reference.
+            // There's no user-deletion path today, so every actor id must
+            // resolve — a miss here means a notification record is pointing
+            // at a user id `batch_get_users` couldn't find, which is a data
+            // bug (or, in the future, an unhandled account-deletion case),
+            // not something the caller can do anything about. Fail loudly:
+            // a blank-profile row that silently swallowed a broken
+            // reference would look like a UI bug and could go unnoticed
+            // indefinitely.
             let actor_id = notification_actor_id(&rec.kind);
-            let actor = match actor_records.get(actor_id) {
-                Some(record) => user_profile_from_record(record, false),
-                None => user_profile_from_record(
-                    &dao::records::UserRecord {
-                        id: actor_id.to_string(),
-                        email: String::new(),
-                        name: String::new(),
-                        profile_image_url: None,
-                        follower_count: 0,
-                        following_count: 0,
-                        unread_count: 0,
-                        stats: std::collections::HashMap::new(),
-                        created_at: String::new(),
-                    },
-                    false,
-                ),
-            };
+            let actor_record = actor_records.get(actor_id).ok_or_else(|| {
+                error!(
+                    "notification {} references unknown actor {actor_id}",
+                    rec.id
+                );
+                Error::from_status(StatusCode::INTERNAL_SERVER_ERROR)
+            })?;
+            let actor = user_profile_from_record(actor_record, false);
             items.push(notification_from_record(&rec, actor));
         }
 

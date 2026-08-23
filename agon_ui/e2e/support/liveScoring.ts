@@ -54,7 +54,13 @@ export async function recordGoal(
   await dialog.getByRole('button', { name: side, exact: true }).click()
   await dialog.getByRole('button', { name: scorer, exact: true }).click()
   if (assist) {
-    await dialog.getByRole('button', { name: assist, exact: true }).click()
+    // Once a scorer is picked, the dialog shows the (still unfiltered)
+    // Scorer picker *and* the Assist picker at once — if the assist happens
+    // to still be an option in the Scorer list too (i.e. isn't the player
+    // just picked as scorer), the same name matches a button in both
+    // sections. The Assist section always renders after Scorer, so its
+    // match is the last one.
+    await dialog.getByRole('button', { name: assist, exact: true }).last().click()
   }
   await dialog.getByRole('button', { name: 'Add goal', exact: true }).click()
   await expect(dialog).toBeHidden()

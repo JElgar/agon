@@ -25,8 +25,9 @@ real DynamoDB by default, either real AWS credentials or a local table:
 `.env` — see `local/README.md`'s `local/dynamodb/` section. Worker-dependent
 tests (search indexing, feed fan-out) additionally need `agon_worker` and
 `local/dynamodb-stream-bridge` (`make run-worker` / `make run-stream-bridge`)
-running — without those, only asset-upload tests should still fail (no local
-S3, a separate known gap — see `local/README.md`).
+running. That leaves only the asset-upload tests (`upload_*_end_to_end`,
+`attach_*`) still failing — a separate known gap, see `local/README.md`'s
+"S3 (asset uploads)" section.
 
 ## TODO
 

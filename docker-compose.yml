@@ -193,17 +193,19 @@ services:
     ports:
       - 8080:8080
 
-  # ── `dynamodb` profile (also included by `full`): DynamoDB Local + SQS ─────
+  # ── `dynamodb` profile (also included by `full`): DynamoDB Local + SQS + S3 ─
   #
-  # Real DynamoDB (and SQS) are deliberately kept out of the default local
-  # setup (see the note on `meilisearch`, top of this file) — most day-to-day
-  # work doesn't need a local table, and a real/cloud table is one less thing
-  # to keep in sync with what staging actually runs on. This is for the cases
+  # Real DynamoDB/SQS/S3 are deliberately kept out of the default local setup
+  # (see the note on `meilisearch`, top of this file) — most day-to-day work
+  # doesn't need any of this, and real/cloud resources are one less thing to
+  # keep in sync with what staging actually runs on. This is for the cases
   # that do: `make test` (agon_tests) without AWS credentials, or running
   # agon_worker locally end-to-end. A separate profile (not folded into
   # `full`) since agon_tests needs only this and Meilisearch — not
   # Supabase/Temporal — so `docker compose --profile dynamodb up -d` alone is
-  # enough for it.
+  # enough for it. (The name predates S3 joining the profile — kept as
+  # `dynamodb` rather than renamed, since it's already the documented,
+  # muscle-memory command by the time S3 was added.)
   #
   # Streaming is enabled on the table (see create-table.sh), but nothing here
   # feeds those stream records to the `elasticmq` queues below — that's
@@ -240,7 +242,7 @@ services:
       AWS_ENDPOINT_URL: http://dynamodb-local:8000
       AWS_REGION: eu-west-1
       AWS_ACCESS_KEY_ID: local
-      AWS_SECRET_ACCESS_KEY: local
+      AWS_SECRET_ACCESS_KEY: localsecret
     entrypoint: ["/bin/sh", "/create-table.sh"]
     volumes:
       - ./local/dynamodb/create-table.sh:/create-table.sh:ro
@@ -267,10 +269,44 @@ services:
       AWS_ENDPOINT_URL_SQS: http://elasticmq:9324
       AWS_REGION: eu-west-1
       AWS_ACCESS_KEY_ID: local
-      AWS_SECRET_ACCESS_KEY: local
+      AWS_SECRET_ACCESS_KEY: localsecret
     entrypoint: ["/bin/sh", "/create-queues.sh"]
     volumes:
       - ./local/dynamodb/create-queues.sh:/create-queues.sh:ro
+
+  # S3 stand-in for asset uploads (agon_service's presigned PUT flow — see
+  # agon_service/src/assets.rs). Requires real, validated credentials
+  # (unlike dynamodb-local/elasticmq above) — MINIO_ROOT_PASSWORD must be 8+
+  # chars, which is the whole reason every AWS_SECRET_ACCESS_KEY in this file
+  # says `localsecret` instead of the shorter `local` used before MinIO was
+  # added — one shared local credential pair across the whole profile is
+  # simpler to document than a special case just for this service.
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    profiles: [dynamodb, full]
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: local
+      MINIO_ROOT_PASSWORD: localsecret
+    ports:
+      - 9000:9000
+
+  # One-shot: creates the `agon-assets` bucket (matches AGON_ASSETS_BUCKET's
+  # default — see .env.example).
+  minio-init:
+    image: public.ecr.aws/aws-cli/aws-cli:latest
+    profiles: [dynamodb, full]
+    depends_on:
+      - minio
+    environment:
+      AWS_ENDPOINT_URL_S3: http://minio:9000
+      AWS_REGION: eu-west-1
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: localsecret
+    entrypoint: ["/bin/sh", "/create-bucket.sh"]
+    volumes:
+      - ./local/dynamodb/create-bucket.sh:/create-bucket.sh:ro
 
 volumes:
   meili_data:

@@ -103,16 +103,39 @@ running, `agon_worker` starts and idles correctly, just never receives
 anything — search indexing and feed fan-out won't happen, and the
 `agon_tests` cases asserting on those will time out.
 
-**Known gap (not this stack's job to fix):** asset upload (`agon_tests`'
-`upload_*`/`attach_*` cases) needs a real S3-compatible endpoint —
-`agon_service` issues presigned S3 PUT URLs and there's no local S3
-substitute here (unlike DynamoDB/SQS, `AWS_ENDPOINT_URL` doesn't help: the
-presigned URL bakes in a real S3 virtual-hosted-style hostname the test's
-own HTTP client then tries to resolve). Would need something like MinIO
-plus virtual-hosted-style DNS routing to close; out of scope for what this
-`local/` setup is about (unblocking `agon_service`/`agon_worker`/`agon_tests`
-without AWS credentials — asset upload was never blocked by *missing*
-credentials, it just doesn't have a local target to run against).
+### S3 (asset uploads)
+
+`minio`/`minio-init` (see `create-bucket.sh`) is the local stand-in for S3,
+serving presigned PUTs the way `agon_service` issues them
+(`agon_service/src/assets.rs`). This needed one real code change, not just
+infra: a real S3 presigned URL is virtual-hosted-style
+(`<bucket>.<endpoint>/<key>`), which MinIO has no wildcard DNS for — a PUT
+against one just DNS-fails. `AGON_ASSETS_S3_FORCE_PATH_STYLE` (see
+`.env.example`) switches `agon_service`'s S3 client to path-style
+(`<endpoint>/<bucket>/<key>`) instead, gated behind that env var so real
+deployments (which always use virtual-hosted-style) are untouched. Verified
+this concretely — a real presigned PUT against MinIO, replayed exactly the
+way `agon_tests` does it — before making the change.
+
+MinIO requires *validated* credentials (unlike `dynamodb-local`/`elasticmq`
+above, which accept anything) — `MINIO_ROOT_PASSWORD` must be 8+ characters,
+which is why every `AWS_SECRET_ACCESS_KEY` in this profile is `localsecret`
+rather than the shorter `local` used before MinIO was added. One shared
+credential pair across the whole `dynamodb` profile is simpler to document
+than a special case just for this service.
+
+**Known gap:** the presigned PUT itself works, but `agon_tests`'
+`upload_*_end_to_end`/`attach_*` cases still fail — they wait for
+`agon_worker` to mark the asset `uploaded`, which only happens once
+`agon_worker`'s asset consumer receives an S3-object-created notification
+over `agon-asset-events` (see `agon_worker/src/asset_consumer.rs`). That's
+S3 → EventBridge → SQS in production, and nothing here stands in for that
+leg — MinIO *can* be configured to POST bucket-event webhooks
+(`MINIO_NOTIFY_WEBHOOK_*`), but its payload shape (`Records[].s3.object.key`)
+doesn't match what `asset_consumer.rs` expects (EventBridge's
+`detail.object.key` wrapper), so closing this needs a second small
+translator tool, the same shape as `dynamodb-stream-bridge` below — not yet
+built.
 
 ## `local/dynamodb-stream-bridge/`
 

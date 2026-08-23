@@ -65,9 +65,19 @@ impl Assets {
     ///   - `AGON_CLOUDFRONT_KEY_PAIR_ID` + `AGON_CLOUDFRONT_PRIVATE_KEY` (PEM) —
     ///     enable signed match-header URLs. Both must be present to sign;
     ///     otherwise serving falls back to the plain CDN URL (dev).
+    ///   - `AGON_ASSETS_S3_FORCE_PATH_STYLE` — local dev only, unset in every
+    ///     real deployment. Real S3 presigned URLs are virtual-hosted-style
+    ///     (`<bucket>.<endpoint>/<key>`); a local S3-compatible target (MinIO
+    ///     — see local/README.md) has no wildcard DNS for that, so the
+    ///     client's own presigned PUT would 404/DNS-fail on replay unless
+    ///     path-style (`<endpoint>/<bucket>/<key>`) is forced instead.
     pub async fn from_env() -> Self {
         let config = aws_config::load_from_env().await;
-        let s3 = aws_sdk_s3::Client::new(&config);
+        let force_path_style = std::env::var("AGON_ASSETS_S3_FORCE_PATH_STYLE").is_ok();
+        let s3_config = aws_sdk_s3::config::Builder::from(&config)
+            .force_path_style(force_path_style)
+            .build();
+        let s3 = aws_sdk_s3::Client::from_conf(s3_config);
         let bucket = std::env::var("AGON_ASSETS_BUCKET").unwrap_or_else(|_| "agon-assets".into());
         let cdn_base = std::env::var("AGON_ASSETS_CDN_URL")
             .unwrap_or_default()

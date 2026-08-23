@@ -554,12 +554,24 @@ async fn patch_match_renames_sides() {
         .id
         .clone();
     assert_eq!(
-        created.sides.iter().find(|s| s.id == side_a).unwrap().name.as_deref(),
+        created
+            .sides
+            .iter()
+            .find(|s| s.id == side_a)
+            .unwrap()
+            .name
+            .as_deref(),
         Some("Side A"),
         "a custom name wins over the sole player's name"
     );
     assert_eq!(
-        created.sides.iter().find(|s| s.id == side_b).unwrap().name.as_deref(),
+        created
+            .sides
+            .iter()
+            .find(|s| s.id == side_b)
+            .unwrap()
+            .name
+            .as_deref(),
         Some("Side B")
     );
 
@@ -1403,6 +1415,419 @@ async fn accepting_a_link_invite_updates_feed_and_stats() {
         "token-accepter",
     )
     .await;
+}
+
+// ---------------------------------------------------------------------------
+// Sport-specific lifetime stats (cricket/football box-score counters, best
+// figures, draws)
+// ---------------------------------------------------------------------------
+//
+// `accepting_a_normal_invite_updates_feed_and_stats`/
+// `accepting_a_link_invite_updates_feed_and_stats` above already cover the
+// core matches_played/win_percentage path for a simple (tennis) score. These
+// cover what's specific to this feature: cricket/football's per-player box
+// score counters, derived rates, personal-best figures (including that they
+// only ever ratchet up), and draws.
+
+/// A cricket match's confirmed score credits every batting/bowling/fielding
+/// counter, the derived rates, and both best-figures — all from one
+/// scorecard, so a single reconcile is enough to exercise the full
+/// `CricketPlayerStats` shape.
+#[tokio::test]
+async fn cricket_stats_track_batting_bowling_fielding_and_derived_rates() {
+    let (owner_config, owner) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+
+    let mut input = match_between(
+        "Cricket Match",
+        &[&owner.profile.id],
+        &[&opponent.profile.id],
+    );
+    input.match_type = models::MatchType::Cricket;
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("create match");
+    accept_match_invitation(&opponent_config, &created.id).await;
+
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+    let side_b = side_id_for_user(&created, &opponent.profile.id);
+    let owner_pid = player_id_for_user(&created, &owner.profile.id);
+    let opponent_pid = player_id_for_user(&created, &opponent.profile.id);
+
+    // Innings 1: owner's side bats. Owner scores a half-century (4 fours, 2
+    // sixes, 40 balls) and is bowled out.
+    let mut innings1 = models::CricketScoreInnings::new(
+        side_a.clone(),
+        side_b.clone(),
+        140,
+        4,
+        models::Overs::new(20, 0),
+        false,
+    );
+    let mut owner_batting = models::CricketBattingEntry::new(owner_pid.clone(), 50, 40, 4, 2);
+    owner_batting.dismissal = Some(Box::new(models::CricketDismissal::new(
+        models::CricketDismissalKind::Bowled,
+    )));
+    innings1.batting = Some(vec![owner_batting]);
+
+    // Innings 2: opponent's side bats, owner bowls and fields. Owner takes 3
+    // wickets for 25 off 8.4 overs, plus a catch off a wicket bowled by
+    // someone else (a catch credits the fielder regardless of who bowled it).
+    let mut innings2 = models::CricketScoreInnings::new(
+        side_b.clone(),
+        side_a.clone(),
+        100,
+        5,
+        models::Overs::new(20, 0),
+        false,
+    );
+    innings2.bowling = Some(vec![models::CricketBowlingEntry::new(
+        owner_pid.clone(),
+        models::Overs::new(8, 4),
+        0,
+        25,
+        3,
+        0,
+        0,
+    )]);
+    let mut opponent_batting = models::CricketBattingEntry::new(opponent_pid.clone(), 10, 15, 1, 0);
+    let mut caught_by_owner = models::CricketDismissal::new(models::CricketDismissalKind::Caught);
+    caught_by_owner.fielder_player_id = Some(owner_pid.clone());
+    opponent_batting.dismissal = Some(Box::new(caught_by_owner));
+    innings2.batting = Some(vec![opponent_batting]);
+
+    let cricket_score = models::Score::Cricket(Box::new(models::ScoreCricketScore::new(
+        vec![innings1, innings2],
+        std::collections::HashMap::new(),
+        Default::default(),
+    )));
+
+    let updated = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(cricket_score)),
+            winner_side_id: Some(side_a.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("patch cricket score");
+    let submission_id = updated
+        .pending_score
+        .expect("pending score after patch")
+        .submission_id;
+    matches_match_id_score_submissions_submission_id_respond_post(
+        &opponent_config,
+        &created.id,
+        &submission_id,
+        models::RespondToScoreInput {
+            response: models::ScoreResponseKind::Confirm,
+        },
+    )
+    .await
+    .expect("confirm cricket score");
+
+    assert_matches_played_reaches(&owner_config, models::MatchType::Cricket, 1, "owner").await;
+    let profile = users_me_get(&owner_config).await.expect("get me").profile;
+    let cricket = profile.stats.cricket.expect("cricket stats");
+
+    assert_eq!(cricket.matches_played, 1);
+    assert_eq!(cricket.wins, 1);
+    assert_eq!(cricket.draws, 0);
+    assert_eq!(cricket.losses, 0);
+
+    assert_eq!(cricket.runs, 50, "batting runs");
+    assert_eq!(cricket.fours, 4);
+    assert_eq!(cricket.sixes, 2);
+    assert_eq!(cricket.balls_faced, 40);
+    assert_eq!(cricket.dismissals, 1, "out once, in innings 1");
+    assert_eq!(cricket.catches, 1, "the catch taken in innings 2");
+
+    assert_eq!(cricket.wickets, 3, "bowling wickets");
+    assert_eq!(cricket.runs_conceded, 25);
+    assert_eq!(cricket.overs_bowled.overs, 8);
+    assert_eq!(cricket.overs_bowled.balls, 4);
+
+    assert_eq!(cricket.strike_rate, Some(125.0), "50 runs off 40 balls");
+    assert_eq!(cricket.batting_average, Some(50.0), "50 runs, 1 dismissal");
+    let economy = cricket
+        .economy
+        .expect("economy computed with balls bowled > 0");
+    assert!(
+        (economy - 2.884_615).abs() < 0.01,
+        "25 runs off 52 balls (8.667 overs) ~= 2.88 economy, got {economy}"
+    );
+
+    let best_runs = cricket.best_runs.expect("best runs recorded");
+    assert_eq!(best_runs.value, 50);
+    assert_eq!(best_runs.match_id, created.id);
+
+    let best_bowling = cricket.best_bowling.expect("best bowling recorded");
+    assert_eq!(best_bowling.wickets, 3);
+    assert_eq!(best_bowling.runs_conceded, 25);
+    assert_eq!(best_bowling.overs.overs, 8);
+    assert_eq!(best_bowling.overs.balls, 4);
+    assert_eq!(best_bowling.match_id, created.id);
+}
+
+/// `best_bowling` only ever ratchets up: a worse spell in a later match must
+/// not overwrite an existing record, and a better one must — while the
+/// career `wickets` total keeps accumulating regardless either way. This is
+/// the behavior `Dao::update_best_bowling_figures` exists for, so it's worth
+/// covering across more than one match rather than just a single snapshot.
+#[tokio::test]
+async fn best_bowling_figures_only_ratchet_up_across_matches() {
+    let (bowler_config, bowler) = new_user().await;
+
+    // Match 1: 3/25 off 8.4 overs — the first record.
+    play_cricket_bowling_match(
+        &bowler_config,
+        &bowler.profile.id,
+        3,
+        25,
+        models::Overs::new(8, 4),
+    )
+    .await;
+    assert_matches_played_reaches(&bowler_config, models::MatchType::Cricket, 1, "bowler").await;
+    let cricket = users_me_get(&bowler_config)
+        .await
+        .expect("get me")
+        .profile
+        .stats
+        .cricket
+        .expect("cricket stats after match 1");
+    let best = cricket.best_bowling.expect("best bowling after match 1");
+    assert_eq!(
+        (
+            best.wickets,
+            best.runs_conceded,
+            best.overs.overs,
+            best.overs.balls
+        ),
+        (3, 25, 8, 4)
+    );
+
+    // Match 2: a WORSE spell (1/40) must not overwrite the record, even
+    // though the career wickets total still accumulates.
+    play_cricket_bowling_match(
+        &bowler_config,
+        &bowler.profile.id,
+        1,
+        40,
+        models::Overs::new(10, 0),
+    )
+    .await;
+    assert_matches_played_reaches(&bowler_config, models::MatchType::Cricket, 2, "bowler").await;
+    let cricket = users_me_get(&bowler_config)
+        .await
+        .expect("get me")
+        .profile
+        .stats
+        .cricket
+        .expect("cricket stats after match 2");
+    let best = cricket.best_bowling.expect("best bowling still set");
+    assert_eq!(
+        (
+            best.wickets,
+            best.runs_conceded,
+            best.overs.overs,
+            best.overs.balls
+        ),
+        (3, 25, 8, 4),
+        "a worse spell must not overwrite the existing record"
+    );
+    assert_eq!(
+        cricket.wickets, 4,
+        "career wickets keep accumulating: 3 + 1"
+    );
+
+    // Match 3: a BETTER spell (5/10) must overwrite the record.
+    play_cricket_bowling_match(
+        &bowler_config,
+        &bowler.profile.id,
+        5,
+        10,
+        models::Overs::new(6, 0),
+    )
+    .await;
+    assert_matches_played_reaches(&bowler_config, models::MatchType::Cricket, 3, "bowler").await;
+    let cricket = users_me_get(&bowler_config)
+        .await
+        .expect("get me")
+        .profile
+        .stats
+        .cricket
+        .expect("cricket stats after match 3");
+    let best = cricket.best_bowling.expect("best bowling after match 3");
+    assert_eq!(
+        (
+            best.wickets,
+            best.runs_conceded,
+            best.overs.overs,
+            best.overs.balls
+        ),
+        (5, 10, 6, 0),
+        "a better spell must overwrite the existing record"
+    );
+    assert_eq!(cricket.wickets, 9, "career wickets: 3 + 1 + 5");
+}
+
+/// A football match's goal log credits goals and assists separately, excludes
+/// own goals from the scorer's own tally, and tracks both `best_goals` and
+/// `best_goal_contributions` (goals + assists in the same match).
+#[tokio::test]
+async fn football_stats_track_goals_assists_and_best_goal_contributions() {
+    let (owner_config, owner) = new_user().await;
+    let (teammate_config, teammate) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+
+    let mut input = match_between(
+        "Football Match",
+        &[&owner.profile.id, &teammate.profile.id],
+        &[&opponent.profile.id],
+    );
+    input.match_type = models::MatchType::Football;
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("create match");
+    accept_match_invitation(&teammate_config, &created.id).await;
+    accept_match_invitation(&opponent_config, &created.id).await;
+
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+    let side_b = side_id_for_user(&created, &opponent.profile.id);
+    let owner_pid = player_id_for_user(&created, &owner.profile.id);
+    let teammate_pid = player_id_for_user(&created, &teammate.profile.id);
+    let opponent_pid = player_id_for_user(&created, &opponent.profile.id);
+
+    // Owner scores twice, assists the teammate's goal, and the opponent puts
+    // one in their own net (which must NOT count toward the opponent's own
+    // "goals").
+    let mut goal1 = models::FootballGoalEvent::new(side_a.clone(), false, false);
+    goal1.scorer_player_id = Some(owner_pid.clone());
+    let mut goal2 = models::FootballGoalEvent::new(side_a.clone(), false, false);
+    goal2.scorer_player_id = Some(owner_pid.clone());
+    let mut goal3 = models::FootballGoalEvent::new(side_a.clone(), false, false);
+    goal3.scorer_player_id = Some(teammate_pid.clone());
+    goal3.assist_player_id = Some(owner_pid.clone());
+    let mut own_goal = models::FootballGoalEvent::new(side_a.clone(), true, false);
+    own_goal.scorer_player_id = Some(opponent_pid.clone());
+
+    let score_tally = std::collections::HashMap::from([(side_a.clone(), 4), (side_b.clone(), 0)]);
+    let mut football_score = models::ScoreFootballScore::new(
+        score_tally,
+        std::collections::HashMap::new(),
+        Default::default(),
+    );
+    football_score.goals = Some(vec![goal1, goal2, goal3, own_goal]);
+
+    let updated = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(models::Score::Football(Box::new(football_score)))),
+            winner_side_id: Some(side_a.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("patch football score");
+    let submission_id = updated
+        .pending_score
+        .expect("pending score after patch")
+        .submission_id;
+    matches_match_id_score_submissions_submission_id_respond_post(
+        &opponent_config,
+        &created.id,
+        &submission_id,
+        models::RespondToScoreInput {
+            response: models::ScoreResponseKind::Confirm,
+        },
+    )
+    .await
+    .expect("confirm football score");
+
+    assert_matches_played_reaches(&owner_config, models::MatchType::Football, 1, "owner").await;
+    let profile = users_me_get(&owner_config).await.expect("get me").profile;
+    let football = profile.stats.football.expect("football stats");
+    assert_eq!(football.wins, 1);
+    assert_eq!(football.goals, 2);
+    assert_eq!(football.assists, 1);
+
+    let best_goals = football.best_goals.expect("best goals recorded");
+    assert_eq!(best_goals.value, 2);
+    let best_contributions = football
+        .best_goal_contributions
+        .expect("best goal contributions recorded");
+    assert_eq!(best_contributions.value, 3, "2 goals + 1 assist");
+
+    assert_matches_played_reaches(&opponent_config, models::MatchType::Football, 1, "opponent")
+        .await;
+    let opponent_profile = users_me_get(&opponent_config)
+        .await
+        .expect("get me")
+        .profile;
+    let opponent_football = opponent_profile.stats.football.expect("football stats");
+    assert_eq!(opponent_football.losses, 1);
+    assert_eq!(
+        opponent_football.goals, 0,
+        "an own goal must not credit the scoring-against player's own goals tally"
+    );
+}
+
+/// A match confirmed with no winner is a draw for every participant: neither
+/// side's win nor loss is credited, only `draws`.
+#[tokio::test]
+async fn a_drawn_match_credits_draws_not_wins_or_losses() {
+    let (owner_config, owner) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+
+    let created = matches_post(
+        &owner_config,
+        match_between("Drawn Match", &[&owner.profile.id], &[&opponent.profile.id]),
+    )
+    .await
+    .expect("create match");
+    accept_match_invitation(&opponent_config, &created.id).await;
+
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+    let side_b = side_id_for_user(&created, &opponent.profile.id);
+
+    let updated = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(simple_score(&side_a, &side_b, 2, 2))),
+            winner_side_id: None,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("patch drawn score");
+    let submission_id = updated
+        .pending_score
+        .expect("pending score after patch")
+        .submission_id;
+    matches_match_id_score_submissions_submission_id_respond_post(
+        &opponent_config,
+        &created.id,
+        &submission_id,
+        models::RespondToScoreInput {
+            response: models::ScoreResponseKind::Confirm,
+        },
+    )
+    .await
+    .expect("confirm drawn score");
+
+    for (config, whose) in [(&owner_config, "owner"), (&opponent_config, "opponent")] {
+        assert_matches_played_reaches(config, models::MatchType::Tennis, 1, whose).await;
+        let profile = users_me_get(config).await.expect("get me").profile;
+        let tennis = profile.stats.tennis.expect("tennis stats");
+        assert_eq!(tennis.matches_played, 1, "{whose}");
+        assert_eq!(tennis.wins, 0, "{whose} drew, so no win");
+        assert_eq!(tennis.draws, 1, "{whose} drew");
+        assert_eq!(tennis.losses, 0, "{whose} drew, so no loss");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2457,7 +2882,12 @@ async fn creating_a_match_with_a_named_empty_side_succeeds() {
     let side_b = created
         .sides
         .iter()
-        .find(|s| !created.players.iter().any(|p| p.side_id.as_deref() == Some(s.id.as_str())))
+        .find(|s| {
+            !created
+                .players
+                .iter()
+                .any(|p| p.side_id.as_deref() == Some(s.id.as_str()))
+        })
         .expect("one side has no players");
     assert_eq!(side_b.name.as_deref(), Some("Side B"));
 }
@@ -3182,6 +3612,123 @@ fn side_id_for_user(match_: &models::Match, user_id: &str) -> String {
         .find(|p| matches!(&*p.member, models::Member::User(u) if u.user_id == user_id))
         .and_then(|p| p.side_id.clone())
         .expect("player with a side assigned")
+}
+
+/// The stable, match-scoped player id a linked Agon user is assigned —
+/// what score events (batting/bowling entries, goal scorers/assists) key by,
+/// as opposed to their (stable, cross-match) Agon user id.
+fn player_id_for_user(match_: &models::Match, user_id: &str) -> String {
+    match_
+        .players
+        .iter()
+        .find_map(|p| match &*p.member {
+            models::Member::User(u) if u.user_id == user_id => Some(u.id.clone()),
+            _ => None,
+        })
+        .expect("player with that user id")
+}
+
+/// Accept `config`'s own pending invitation to `match_id`, found in their
+/// inbox. A genuinely invited (non-creator) participant's contribution only
+/// counts toward their stats once accepted — the creator/self-added case has
+/// no invitation to accept in the first place.
+async fn accept_match_invitation(config: &Configuration, match_id: &str) {
+    let inbox = users_me_invitations_get(config, None, None, None)
+        .await
+        .expect("inbox");
+    let detail = inbox
+        .items
+        .iter()
+        .find(|i| {
+            matches!(&*i.context, models::InvitationContext::Match(ctx) if ctx.match_id == match_id)
+        })
+        .expect("match invitation in inbox");
+    invitations_invitation_id_respond_post(
+        config,
+        &detail.invitation.id,
+        models::RespondToInvitationInput {
+            response: models::InvitationResponse::Accepted,
+            side_id: None,
+        },
+    )
+    .await
+    .expect("accept invitation");
+}
+
+/// Create, score, and confirm a completed cricket match where `bowler_id`
+/// (on side "a", against a fresh opponent on side "b") takes `wickets` for
+/// `runs_conceded` off `overs` — the minimal shape needed to drive
+/// `best_bowling_figures_only_ratchet_up_across_matches` across several
+/// matches without repeating the full scorecard setup each time.
+async fn play_cricket_bowling_match(
+    bowler_config: &Configuration,
+    bowler_id: &str,
+    wickets: i32,
+    runs_conceded: i32,
+    overs: models::Overs,
+) {
+    let (batter_config, batter) = new_user().await;
+
+    let mut input = match_between("Cricket Match", &[bowler_id], &[&batter.profile.id]);
+    input.match_type = models::MatchType::Cricket;
+    let created = matches_post(bowler_config, input)
+        .await
+        .expect("create match");
+    accept_match_invitation(&batter_config, &created.id).await;
+
+    let side_a = side_id_for_user(&created, bowler_id);
+    let side_b = side_id_for_user(&created, &batter.profile.id);
+    let bowler_pid = player_id_for_user(&created, bowler_id);
+
+    let mut innings = models::CricketScoreInnings::new(
+        side_b,
+        side_a.clone(),
+        runs_conceded + 20,
+        wickets,
+        models::Overs::new(20, 0),
+        false,
+    );
+    innings.bowling = Some(vec![models::CricketBowlingEntry::new(
+        bowler_pid,
+        overs,
+        0,
+        runs_conceded,
+        wickets,
+        0,
+        0,
+    )]);
+
+    let score = models::Score::Cricket(Box::new(models::ScoreCricketScore::new(
+        vec![innings],
+        std::collections::HashMap::new(),
+        Default::default(),
+    )));
+
+    let updated = matches_match_id_patch(
+        bowler_config,
+        &created.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(score)),
+            winner_side_id: Some(side_a),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("patch cricket score");
+    let submission_id = updated
+        .pending_score
+        .expect("pending score after patch")
+        .submission_id;
+    matches_match_id_score_submissions_submission_id_respond_post(
+        &batter_config,
+        &created.id,
+        &submission_id,
+        models::RespondToScoreInput {
+            response: models::ScoreResponseKind::Confirm,
+        },
+    )
+    .await
+    .expect("confirm cricket score");
 }
 
 /// The (linked user id, stable membership id) of each team member that is a

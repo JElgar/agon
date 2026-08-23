@@ -38,6 +38,20 @@ export function phaseLabel(page: Page): Locator {
 }
 
 /**
+ * Whether `sideName` is the side shown first (left digit of the score box,
+ * first name in the "{nameA} vs {nameB}" heading) on the live-scoring page.
+ * The API returns a match's sides in a stable-but-otherwise-arbitrary order
+ * (sorted by internal side id, not creation order — see
+ * `agon_core/src/dao/match_ops.rs`'s `sorted_sides` doc comment), so a test
+ * can't assume "the side logged first" ends up first here; it has to read
+ * the actual order off the page.
+ */
+export async function isFirstSide(page: Page, sideName: string): Promise<boolean> {
+  const heading = (await page.getByRole('heading', { level: 1 }).innerText()).trim()
+  return heading.startsWith(sideName)
+}
+
+/**
  * Opens the goal dialog from a quick-action tap, fills side/scorer/(assist),
  * and submits — the same steps a scorer taps through live. `scorer` and
  * `assist` are matched by the exact name shown in the roster picker (see

@@ -1,9 +1,10 @@
 #!/bin/sh
 # Creates the `agon` table against DynamoDB Local, mirroring the real table's
 # schema in agon_infra/index.ts (`dynamoTable`) — single table, PK/SK keys,
-# three overloaded GSIs, TTL on `ttl`. Runs as a one-shot compose service
-# (see docker-compose.yml's `dynamodb-local-init`); idempotent, so safe to
-# re-run against an already-bootstrapped instance.
+# three overloaded GSIs, TTL on `ttl`, streaming enabled (NEW_AND_OLD_IMAGES,
+# same as real). Runs as a one-shot compose service (see docker-compose.yml's
+# `dynamodb-local-init`); idempotent, so safe to re-run against an
+# already-bootstrapped instance.
 #
 # If the real table's schema ever changes, mirror the change here too — this
 # has no way to detect drift from the Pulumi definition automatically.
@@ -39,6 +40,7 @@ aws dynamodb create-table \
     'IndexName=GSI1,KeySchema=[{AttributeName=GSI1PK,KeyType=HASH},{AttributeName=GSI1SK,KeyType=RANGE}],Projection={ProjectionType=ALL}' \
     'IndexName=GSI2,KeySchema=[{AttributeName=GSI2PK,KeyType=HASH},{AttributeName=GSI2SK,KeyType=RANGE}],Projection={ProjectionType=ALL}' \
     'IndexName=GSI3,KeySchema=[{AttributeName=GSI3PK,KeyType=HASH},{AttributeName=GSI3SK,KeyType=RANGE}],Projection={ProjectionType=ALL}' \
+  --stream-specification StreamEnabled=true,StreamViewType=NEW_AND_OLD_IMAGES \
   >/dev/null 2>&1 && echo "Created table 'agon'" || echo "Table 'agon' already exists"
 
 # TTL isn't part of CreateTable (real AWS or Local) — a separate call, same as

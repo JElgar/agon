@@ -80,9 +80,19 @@ run:
 # agon_worker: consumes the DynamoDB stream + runs the Temporal workflows
 # (feed fan-out, accept-invitation). Needs the `full` docker-compose profile
 # up (Temporal) — see local/README.md. Requires protobuf-compiler (`protoc`)
-# to build, unlike agon_service.
+# to build, unlike agon_service. Locally, also needs run-stream-bridge
+# running alongside it (a separate terminal) or it'll just idle — see that
+# target's comment.
 run-worker:
 	cargo run -p agon_worker
+
+# Local stand-in for the EventBridge Pipe in front of agon_worker's queue —
+# see local/dynamodb-stream-bridge/src/main.rs's doc comment for what it does
+# and why it's a separate tool rather than a compose service. Needs the
+# `dynamodb` (or `full`) docker-compose profile up. A separate, non-workspace
+# crate (see its Cargo.toml) — first run compiles its own dependency tree.
+run-stream-bridge:
+	cargo run --manifest-path local/dynamodb-stream-bridge/Cargo.toml --release
 
 # Full browser UI end-to-end tests (Playwright) — see agon_ui/e2e/README.md
 # for what's covered and how the test account works. Reads E2E_TEST_EMAIL /

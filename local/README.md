@@ -2,9 +2,9 @@
 
 Config for the backing services `docker-compose.yml`'s `full`/`dynamodb`
 profiles stand up — everything beyond Meilisearch: local Supabase Auth,
-local Temporal, and DynamoDB Local. See `agon_ui/e2e/README.md`'s "Running
-fully local" section for how the Supabase/Temporal pieces fit together and
-how to actually run something against that stack.
+local Temporal, and DynamoDB Local + SQS (ElasticMQ). See `agon_ui/e2e/
+README.md`'s "Running fully local" section for how the Supabase/Temporal
+pieces fit together and how to actually run something against that stack.
 
 ## `local/supabase/`
 
@@ -89,16 +89,61 @@ right above it) in `.env` — see `.env.example`. No code changes needed on
 the Rust side: `aws_config::load_from_env()` already honors
 `AWS_ENDPOINT_URL` out of the box.
 
-**Known gap:** DynamoDB Streams aren't enabled on the local table, so
-anything that depends on `agon_worker`'s async pipeline (search indexing,
-feed fan-out) won't happen against this stack — `agon_worker` reads off an
-SQS queue fed by a real EventBridge Pipe in production/staging, and there's
-no local equivalent of that pipe. In practice this means ~20 of
-`agon_tests`' 82 tests (anything asserting something becomes searchable or
-lands in a feed) will time out and fail even with DynamoDB Local up — that's
-expected, not a sign anything here is broken. Standing up a local
-stream-to-queue bridge would close this gap but is a separate, bigger piece
-of work than DynamoDB Local itself.
+`elasticmq` (the `elasticmq`/`elasticmq-init` services — see
+`create-queues.sh`) is the local stand-in for SQS, giving `agon_worker`
+somewhere to long-poll (`AGON_EVENTS_QUEUE_URL`/`AGON_ASSET_EVENTS_QUEUE_URL`
+— see `.env.example`'s `agon_worker` section). Streaming is enabled on the
+table (`create-table.sh`), but by itself that only means the stream *exists*
+— something still has to read it and forward records to `elasticmq`, the way
+a real EventBridge Pipe does in production (`agon_infra/index.ts`). That's
+`local/dynamodb-stream-bridge` — see its own section below, and
+`agon_ui/e2e/README.md`'s "Running fully local" section for `make
+run-stream-bridge`'s place in the overall local run sequence. Without it
+running, `agon_worker` starts and idles correctly, just never receives
+anything — search indexing and feed fan-out won't happen, and the
+`agon_tests` cases asserting on those will time out.
+
+**Known gap (not this stack's job to fix):** asset upload (`agon_tests`'
+`upload_*`/`attach_*` cases) needs a real S3-compatible endpoint —
+`agon_service` issues presigned S3 PUT URLs and there's no local S3
+substitute here (unlike DynamoDB/SQS, `AWS_ENDPOINT_URL` doesn't help: the
+presigned URL bakes in a real S3 virtual-hosted-style hostname the test's
+own HTTP client then tries to resolve). Would need something like MinIO
+plus virtual-hosted-style DNS routing to close; out of scope for what this
+`local/` setup is about (unblocking `agon_service`/`agon_worker`/`agon_tests`
+without AWS credentials — asset upload was never blocked by *missing*
+credentials, it just doesn't have a local target to run against).
+
+## `local/dynamodb-stream-bridge/`
+
+A separate, standalone Cargo project (its own `[workspace]`, excluded from
+the root one the same way `agon_tests` is — see the root `Cargo.toml`) that
+tails DynamoDB Local's stream for the `agon` table and forwards each record
+to `elasticmq`, in the shape `agon_worker/src/event.rs` expects. The local
+stand-in for the EventBridge Pipe in `agon_infra/index.ts` — see its own
+`src/main.rs` doc comment for the full design, and `agon_ui/e2e/README.md`'s
+"Running fully local" section / `make run-stream-bridge` for how to actually
+run it (a separate long-lived process, same as `agon_service`/`agon_worker`
+— not a compose service, deliberately: it's Rust dev tooling, and running it
+the same way you run the real binaries keeps one consistent local-dev
+pattern instead of two).
+
+Worth knowing if you ever touch this tool: it does **not** use the generated
+`aws-sdk-dynamodbstreams` client for the actual `GetRecords` call (stream
+discovery — `ListStreams`/`DescribeStream`/`GetShardIterator` — still does).
+DynamoDB Local has a real interop bug where it renders an empty Map
+attribute in a stream record as bare `{}` instead of the tagged `{"M": {}}`
+real DynamoDB uses, which the generated client's strict typed deserializer
+rejects outright — failing the *entire* batch, not just that one attribute.
+Since `agon_core`'s records commonly carry an empty map early on (e.g. a
+fresh user's `stats: {}`), this hit nearly every record, not some rare edge
+case. The fix: a raw HTTP call for `GetRecords` specifically, parsed as
+untyped JSON and patched (`patch_image`/`patch_empty_maps`) before
+forwarding. DynamoDB Local doesn't validate SigV4 signature *content*
+(confirmed empirically), so the "signed" request is real-shaped but not
+cryptographically real — fine against DynamoDB Local, would need actual
+signing to work against real AWS (out of scope; this tool only ever exists
+to bridge a local table).
 
 ### The test-signing key
 

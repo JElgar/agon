@@ -132,12 +132,12 @@ through a run.
 
 Everything above targets staging: staging Supabase for auth, staging
 `agon_service` for the API. To run the whole thing — UI, auth, API, worker —
-against your own machine instead, with nothing external but AWS DynamoDB
-(still real/cloud either way, see the root `CLAUDE.md`):
+against your own machine instead:
 
-1. **Bring up the backing services** — Meilisearch plus a local Supabase Auth
-   (Postgres + GoTrue + Kong) and a local Temporal, via the `full`
-   docker-compose profile (see `local/README.md` for what's actually in it):
+1. **Bring up the backing services** — Meilisearch, a local Supabase Auth
+   (Postgres + GoTrue + Kong), a local Temporal, and DynamoDB Local + SQS
+   (ElasticMQ), via the `full` docker-compose profile (see `local/README.md`
+   for what's actually in it):
 
    ```bash
    docker compose --profile full up -d
@@ -151,30 +151,46 @@ against your own machine instead, with nothing external but AWS DynamoDB
    node agon_ui/e2e/local-seed-user.mjs
    ```
 
-3. **Run `agon_service`** pointed at the local JWKS instead of a real
-   Supabase project — add to the root `.env` (see `.env.example`):
+3. **Run `agon_service`** pointed at the local stack instead of staging — add
+   to the root `.env` (see `.env.example`, and `local/README.md` for the
+   DynamoDB/SQS pieces specifically):
 
    ```
    SUPABASE_JWKS_URL=http://localhost:8000/auth/v1/.well-known/jwks.json
+   AWS_ACCESS_KEY_ID=local
+   AWS_SECRET_ACCESS_KEY=local
+   AWS_ENDPOINT_URL=http://localhost:8002
    ```
 
-   then `make run` as usual. DynamoDB/AWS creds are still required — that
-   part isn't local (see `CLAUDE.md`).
+   then `make run` as usual.
 
 4. **Run `agon_worker`** too — `tests/match-feed.spec.ts` depends on it: a
    logged match only shows up in the feed after the fan-out workflow
-   (`agon_worker/src/temporal`) runs. Point it at the local Temporal (add
-   `TEMPORAL_ADDRESS=localhost:7233` to `.env`, already in `.env.example`),
-   then:
+   (`agon_worker/src/temporal`) runs, which only starts once agon_worker
+   actually receives the DynamoDB change event over SQS. That needs three
+   things uncommented in `.env` (all in `.env.example`'s `agon_worker`
+   section): `TEMPORAL_ADDRESS`, the two queue URLs, and
+   `AWS_ENDPOINT_URL_SQS` — then:
 
    ```bash
-   cargo run -p agon_worker
+   make run-worker
    ```
 
    (Needs `protobuf-compiler` installed — `agon_worker`'s Temporal
    dependencies need `protoc` to build, unlike `agon_service`.)
 
-5. **Point the UI at the local stack** — add to `agon_ui/.env` (see
+5. **Run the local stream bridge** — DynamoDB Streams are enabled on the
+   local table, but nothing forwards those records to SQS by itself (that's
+   an EventBridge Pipe in production, with no compose equivalent — see
+   `local/README.md`'s `local/dynamodb-stream-bridge/` section). Without
+   this running, step 4's `agon_worker` starts fine but never actually
+   receives anything, so a logged match never reaches the feed:
+
+   ```bash
+   make run-stream-bridge
+   ```
+
+6. **Point the UI at the local stack** — add to `agon_ui/.env` (see
    `agon_ui/.env.example`):
 
    ```
@@ -183,7 +199,7 @@ against your own machine instead, with nothing external but AWS DynamoDB
    AGON_API_PROXY_TARGET=http://localhost:7000
    ```
 
-6. **Run the tests**, same as always — the local Supabase Auth stack has no
+7. **Run the tests**, same as always — the local Supabase Auth stack has no
    Pulumi-stored secret, so the test account's email/password are whatever
    you passed `local-seed-user.mjs` (or its defaults, `e2e@example.com` /
    `local-e2e-test-password`, if you ran it with none):
@@ -195,12 +211,13 @@ against your own machine instead, with nothing external but AWS DynamoDB
 
 `docker compose --profile full up -d` (no flags at all) only starts
 Meilisearch, same as always — the `full` profile is additional weight (two
-Postgres instances, GoTrue, Kong, Temporal) most day-to-day work doesn't
-need, so it's opt-in.
+Postgres instances, GoTrue, Kong, Temporal, DynamoDB Local, ElasticMQ) most
+day-to-day work doesn't need, so it's opt-in.
 
-`make test-ui-e2e-local` wraps steps 2 and 6 (seed + run, with matching
-defaults) — steps 1, 3–5 (the backing services and the three app processes)
-still need to be up first.
+`make test-ui-e2e-local` wraps steps 2 and 7 (seed + run, with matching
+defaults) — steps 1, 3–6 (the backing services and the four app processes:
+agon_service, agon_worker, the stream bridge, the UI dev server) still need
+to be up first.
 
 ## What's covered
 

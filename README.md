@@ -22,9 +22,11 @@ make test
 Needs a running `agon_service` (`make run`) and, since `agon_tests` talks to
 real DynamoDB by default, either real AWS credentials or a local table:
 `docker compose --profile dynamodb up -d` + uncomment `AWS_ENDPOINT_URL` in
-`.env` — see `local/README.md`'s `local/dynamodb/` section (including a
-known gap: worker-dependent tests still fail without a local async
-pipeline).
+`.env` — see `local/README.md`'s `local/dynamodb/` section. Worker-dependent
+tests (search indexing, feed fan-out) additionally need `agon_worker` and
+`local/dynamodb-stream-bridge` (`make run-worker` / `make run-stream-bridge`)
+running — without those, only asset-upload tests should still fail (no local
+S3, a separate known gap — see `local/README.md`).
 
 ## TODO
 

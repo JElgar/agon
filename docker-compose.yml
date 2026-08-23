@@ -193,17 +193,27 @@ services:
     ports:
       - 8080:8080
 
-  # ── `dynamodb` profile (also included by `full`): DynamoDB Local ──────────
+  # ── `dynamodb` profile (also included by `full`): DynamoDB Local + SQS ─────
   #
-  # Real DynamoDB is deliberately kept out of the default local setup (see
-  # the note on `meilisearch`, top of this file) — most day-to-day work
-  # doesn't need a local table, and a real/cloud table is one less thing to
-  # keep in sync with what staging actually runs on. This is for the cases
-  # that do: `make test` (agon_tests) without AWS credentials, or working on
-  # `agon_worker` end-to-end without touching a real table. A separate
-  # profile (not folded into `full`) since agon_tests needs only this and
-  # Meilisearch — not Supabase/Temporal — so `docker compose --profile
-  # dynamodb up -d` alone is enough for it.
+  # Real DynamoDB (and SQS) are deliberately kept out of the default local
+  # setup (see the note on `meilisearch`, top of this file) — most day-to-day
+  # work doesn't need a local table, and a real/cloud table is one less thing
+  # to keep in sync with what staging actually runs on. This is for the cases
+  # that do: `make test` (agon_tests) without AWS credentials, or running
+  # agon_worker locally end-to-end. A separate profile (not folded into
+  # `full`) since agon_tests needs only this and Meilisearch — not
+  # Supabase/Temporal — so `docker compose --profile dynamodb up -d` alone is
+  # enough for it.
+  #
+  # Streaming is enabled on the table (see create-table.sh), but nothing here
+  # feeds those stream records to the `elasticmq` queues below — that's
+  # DynamoDB Streams -> EventBridge Pipe -> SQS in production
+  # (agon_infra/index.ts), with no compose service standing in for the Pipe.
+  # `local/dynamodb-stream-bridge` is that stand-in — a separate, standalone
+  # tool (not a compose service; run it the same way you'd run agon_worker
+  # itself, see its own README/Makefile target) that tails the stream and
+  # forwards to `elasticmq`. Without it running, agon_worker starts and idles
+  # correctly, just never receives anything.
   #
   # `-inMemory`: state resets on every restart. Fine for tests (they create
   # their own users/teams/matches per run); if that ever stops being true,
@@ -234,6 +244,33 @@ services:
     entrypoint: ["/bin/sh", "/create-table.sh"]
     volumes:
       - ./local/dynamodb/create-table.sh:/create-table.sh:ro
+
+  # SQS stand-in for agon_worker (see agon_worker/src/config.rs —
+  # AGON_EVENTS_QUEUE_URL / AGON_ASSET_EVENTS_QUEUE_URL). In-memory, resets on
+  # restart, same as dynamodb-local — agon_worker doesn't care, it just reads
+  # whatever's currently on the queue.
+  elasticmq:
+    image: softwaremill/elasticmq-native:latest
+    restart: unless-stopped
+    profiles: [dynamodb, full]
+    ports:
+      - 9324:9324
+
+  # One-shot: creates the two queues agon_worker needs — see
+  # local/dynamodb/create-queues.sh.
+  elasticmq-init:
+    image: public.ecr.aws/aws-cli/aws-cli:latest
+    profiles: [dynamodb, full]
+    depends_on:
+      - elasticmq
+    environment:
+      AWS_ENDPOINT_URL_SQS: http://elasticmq:9324
+      AWS_REGION: eu-west-1
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: local
+    entrypoint: ["/bin/sh", "/create-queues.sh"]
+    volumes:
+      - ./local/dynamodb/create-queues.sh:/create-queues.sh:ro
 
 volumes:
   meili_data:

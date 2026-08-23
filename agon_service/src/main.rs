@@ -4615,10 +4615,19 @@ impl Api {
             .iter()
             .map(|rec| notification_actor_id(&rec.kind).to_string())
             .collect();
-        let actor_records = dao.batch_get_users(&actor_ids).await.map_err(dao_internal)?;
+        let actor_records = dao
+            .batch_get_users(&actor_ids)
+            .await
+            .map_err(dao_internal)?;
 
         let mut items = Vec::with_capacity(page.items.len());
         for rec in page.items {
+            // There's no user-deletion path today, so every actor id should
+            // resolve — this branch is unreachable in practice. Degrade to a
+            // blank profile rather than fail the whole page over one
+            // notification, the same call `hydrate_comments` makes for a
+            // missing comment author: a page fails closed for real errors
+            // (the `dao_internal` above), not for one orphaned reference.
             let actor_id = notification_actor_id(&rec.kind);
             let actor = match actor_records.get(actor_id) {
                 Some(record) => user_profile_from_record(record, false),

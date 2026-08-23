@@ -61,7 +61,12 @@ export function Avatar({
           loading="lazy"
         />
       ) : (
-        toInitials(name)
+        // Decorative shorthand for `name`, not additional information — every
+        // call site pairs this with the full name as visible text right next
+        // to it. Hidden from the accessible-name computation so a screen
+        // reader (or an exact-text query in a test) sees just that one name,
+        // not "GT Guest Teammate".
+        <span aria-hidden="true">{toInitials(name)}</span>
       )}
     </span>
   )

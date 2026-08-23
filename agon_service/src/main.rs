@@ -1752,7 +1752,7 @@ impl Api {
             follower_count: 0,
             following_count: 0,
             unread_count: 0,
-            stats: std::collections::HashMap::new(),
+            stats: dao::records::UserStatsRecord::default(),
             created_at: now_iso(),
         };
         match dao.create_user(&jwt_data.sub, &record).await {
@@ -4336,7 +4336,7 @@ impl Api {
                             follower_count: 0,
                             following_count: 0,
                             unread_count: 0,
-                            stats: std::collections::HashMap::new(),
+                            stats: dao::records::UserStatsRecord::default(),
                             created_at: String::new(),
                         },
                         false,

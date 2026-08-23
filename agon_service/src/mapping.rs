@@ -4,8 +4,6 @@
 //! module is the single place that translates between the two, so handlers stay
 //! thin and the coupling lives in one file.
 
-use std::collections::HashMap;
-
 use poem::error::InternalServerError;
 use tracing::error;
 
@@ -48,21 +46,22 @@ use crate::{
 use agon_core::dao::error::DaoError;
 use agon_core::dao::live_score_ops::NewLiveEvent;
 use agon_core::dao::records::{
-    CommentRecord, ConfirmedScoreRecord, CricketBattingEntryRecord, CricketBowlingEntryRecord,
-    CricketDeliveryExtraRecord, CricketDeliveryRecord, CricketDeliveryWicketRecord,
-    CricketDismissalKindRecord, CricketDismissalRecord, CricketExtraKindRecord,
-    CricketExtrasRecord, CricketFallOfWicketRecord, CricketFormatRecord,
+    BestFigureRecord, CommentRecord, ConfirmedScoreRecord, CricketBattingEntryRecord,
+    CricketBowlingEntryRecord, CricketDeliveryExtraRecord, CricketDeliveryRecord,
+    CricketDeliveryWicketRecord, CricketDismissalKindRecord, CricketDismissalRecord,
+    CricketExtraKindRecord, CricketExtrasRecord, CricketFallOfWicketRecord, CricketFormatRecord,
     CricketInningsEndEventRecord, CricketInningsStartEventRecord, CricketLiveEventRecord,
-    CricketRetireEventRecord, CricketScoreInningsRecord, EmbeddedInvitationRecord,
-    FootballCardColorRecord, FootballCardEventRecord, FootballFormatRecord,
-    FootballGoalEventRecord, FootballLiveEventRecord, FootballPenaltyShootoutKickRecord,
-    FootballPeriodEventRecord, FootballPeriodRecord, FootballSubstitutionEventRecord,
+    CricketRetireEventRecord, CricketScoreInningsRecord, CricketStatsRecord,
+    EmbeddedInvitationRecord, FootballCardColorRecord, FootballCardEventRecord,
+    FootballFormatRecord, FootballGoalEventRecord, FootballLiveEventRecord,
+    FootballPenaltyShootoutKickRecord, FootballPeriodEventRecord, FootballPeriodRecord,
+    FootballStatsRecord, FootballSubstitutionEventRecord, GenericSportStatsRecord,
     InningsEndReasonRecord, InvitationContextRecord, InvitationKindRecord, InvitationRecord,
     LiveEventPayloadRecord, LiveEventRecord, MatchFormatRecord, MatchLikeRecord, MatchPlayerRecord,
     MatchRecord, MatchScoreRecord, MatchSideRecord, NextBallContextRecord, NotificationKindRecord,
     NotificationRecord, OversRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord,
     ScoreResponseRecord, ScoreSubmissionRecord, TeamMemberRecord, TeamRecord, UserRecord,
-    UserSportStatsRecord,
+    UserStatsRecord,
 };
 
 /// Parse an RFC-3339 timestamp string stored by the DAO into a UTC datetime,
@@ -131,23 +130,24 @@ pub fn user_profile_from_record(user: &UserRecord, is_followed_by_me: bool) -> U
     }
 }
 
-/// Map the stored per-sport `stats` map to the public, one-field-per-sport
-/// `UserStats` — `None` for any sport tag with no stored entry.
-pub fn user_stats_from_record(stats: &HashMap<String, UserSportStatsRecord>) -> UserStats {
+/// Map the stored, one-field-per-sport `UserStatsRecord` to the public
+/// `UserStats` — `None` for any sport with no stored entry, same as the DAO
+/// side.
+pub fn user_stats_from_record(stats: &UserStatsRecord) -> UserStats {
     UserStats {
-        cricket: stats.get("cricket").map(cricket_stats_from_record),
-        football: stats.get("football").map(football_stats_from_record),
-        tennis: stats.get("tennis").map(generic_stats_from_record),
-        badminton: stats.get("badminton").map(generic_stats_from_record),
-        squash: stats.get("squash").map(generic_stats_from_record),
-        table_tennis: stats.get("table_tennis").map(generic_stats_from_record),
-        other: stats.get("other").map(generic_stats_from_record),
+        cricket: stats.cricket.as_ref().map(cricket_stats_from_record),
+        football: stats.football.as_ref().map(football_stats_from_record),
+        tennis: stats.tennis.as_ref().map(generic_stats_from_record),
+        badminton: stats.badminton.as_ref().map(generic_stats_from_record),
+        squash: stats.squash.as_ref().map(generic_stats_from_record),
+        table_tennis: stats.table_tennis.as_ref().map(generic_stats_from_record),
+        other: stats.other.as_ref().map(generic_stats_from_record),
     }
 }
 
 /// Map the counters common to every sport, deriving win % from matches
 /// played. Shared by every per-sport mapping function below.
-fn generic_stats_from_record(rec: &UserSportStatsRecord) -> GenericPlayerStats {
+fn generic_stats_from_record(rec: &GenericSportStatsRecord) -> GenericPlayerStats {
     let win_percentage = if rec.matches_played == 0 {
         None
     } else {
@@ -162,34 +162,34 @@ fn generic_stats_from_record(rec: &UserSportStatsRecord) -> GenericPlayerStats {
     }
 }
 
-fn cricket_stats_from_record(rec: &UserSportStatsRecord) -> CricketPlayerStats {
+fn cricket_stats_from_record(rec: &CricketStatsRecord) -> CricketPlayerStats {
     CricketPlayerStats {
-        common: generic_stats_from_record(rec),
-        runs: *rec.extra.get("runs").unwrap_or(&0) as i32,
-        wickets: *rec.extra.get("wickets").unwrap_or(&0) as i32,
-        fours: *rec.extra.get("fours").unwrap_or(&0) as i32,
-        sixes: *rec.extra.get("sixes").unwrap_or(&0) as i32,
-        best_runs: best_figure_from_record(rec, "runs"),
-        best_wickets: best_figure_from_record(rec, "wickets"),
+        common: generic_stats_from_record(&rec.common),
+        runs: rec.runs as i32,
+        wickets: rec.wickets as i32,
+        fours: rec.fours as i32,
+        sixes: rec.sixes as i32,
+        best_runs: rec.best_runs.as_ref().map(best_figure_from_record),
+        best_wickets: rec.best_wickets.as_ref().map(best_figure_from_record),
     }
 }
 
-fn football_stats_from_record(rec: &UserSportStatsRecord) -> FootballPlayerStats {
+fn football_stats_from_record(rec: &FootballStatsRecord) -> FootballPlayerStats {
     FootballPlayerStats {
-        common: generic_stats_from_record(rec),
-        goals: *rec.extra.get("goals").unwrap_or(&0) as i32,
-        assists: *rec.extra.get("assists").unwrap_or(&0) as i32,
-        best_goals: best_figure_from_record(rec, "goals"),
-        best_assists: best_figure_from_record(rec, "assists"),
+        common: generic_stats_from_record(&rec.common),
+        goals: rec.goals as i32,
+        assists: rec.assists as i32,
+        best_goals: rec.best_goals.as_ref().map(best_figure_from_record),
+        best_assists: rec.best_assists.as_ref().map(best_figure_from_record),
     }
 }
 
-/// Map a stored personal-best entry to the API model, if one's been set.
-fn best_figure_from_record(rec: &UserSportStatsRecord, counter: &str) -> Option<BestFigure> {
-    rec.best.get(counter).map(|b| BestFigure {
+/// Map a stored personal-best entry to the API model.
+fn best_figure_from_record(b: &BestFigureRecord) -> BestFigure {
+    BestFigure {
         value: b.value as i32,
         match_id: b.match_id.clone(),
-    })
+    }
 }
 
 // ===========================================================================

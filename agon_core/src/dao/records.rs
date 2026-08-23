@@ -273,8 +273,7 @@ pub struct AuthGuardRecord {
 /// `email` is duplicated here for reads; uniqueness is enforced by a separate
 /// `EMAIL#<email>` guard item. `stats` holds per-sport aggregates inline, so a
 /// profile read/batch-read returns everything in one point read — always
-/// present (an empty map for a brand new user) so the stats reconciler's
-/// nested-attribute updates always have a map to write into.
+/// present (all `None` for a brand new user).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UserRecord {
     pub id: String,
@@ -289,7 +288,7 @@ pub struct UserRecord {
     #[serde(default)]
     pub unread_count: u64,
     #[serde(default)]
-    pub stats: HashMap<String, UserSportStatsRecord>,
+    pub stats: UserStatsRecord,
     pub created_at: String,
 }
 
@@ -999,36 +998,95 @@ pub struct FeedItemRecord {
     pub viewer_side_id: Option<String>,
 }
 
-/// Aggregate stats for one sport, stored inline on `UserRecord::stats` keyed
-/// by sport tag (e.g. "tennis") — the key carries the sport, so it isn't
-/// duplicated in the value.
+/// A user's lifetime stats, one field per sport — `None` for a sport they've
+/// never played a confirmed match in. Stored inline on `UserRecord::stats`.
+///
+/// Explicit named fields rather than a `HashMap<String, _>` keyed by sport
+/// tag: the set of sports is closed (mirrors the API's `MatchType`), so
+/// there's no need to pay for a stringly-keyed map to get "only entries for
+/// sports actually played" — an `Option` field serializes absent the same
+/// way a missing map key would, at the same DynamoDB storage shape
+/// (`stats.cricket`, `stats.football`, ... as nested map attributes either
+/// way). What a named field buys over the map: `CricketStatsRecord`'s
+/// `runs`/`wickets` and football's `goals`/`assists` are real, distinctly
+/// named, compiler-checked fields instead of stringly-keyed lookups into a
+/// generic counters bag.
+///
+/// The DAO's *write* path (`agon_core::dao::stats::Dao::stats_delta` /
+/// `update_best_figures`) doesn't construct or read this type at all — it
+/// addresses `stats.<sport>.<counter>` via raw `UpdateItem` expressions built
+/// from a runtime `sport: &str` and counter-name strings, so it stays fully
+/// sport-agnostic regardless of how strongly-typed the read side is.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct UserSportStatsRecord {
+pub struct UserStatsRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cricket: Option<CricketStatsRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub football: Option<FootballStatsRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tennis: Option<GenericSportStatsRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub badminton: Option<GenericSportStatsRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub squash: Option<GenericSportStatsRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table_tennis: Option<GenericSportStatsRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other: Option<GenericSportStatsRecord>,
+}
+
+/// Lifetime counters common to every sport. Also the full shape for a sport
+/// with no richer per-player box score to derive extras from (tennis,
+/// badminton, squash, table tennis, "other") — `CricketStatsRecord`/
+/// `FootballStatsRecord` flatten this in and add their own fields on top, the
+/// DAO-side mirror of the API's `GenericPlayerStats`/`#[oai(flatten)]`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct GenericSportStatsRecord {
     pub matches_played: u64,
     pub wins: u64,
     pub draws: u64,
     pub losses: u64,
     // Win percentage is derived (wins / matches_played) at the API layer.
-    /// Sport-specific counters — e.g. "runs"/"wickets"/"fours"/"sixes" for
-    /// cricket, "goals"/"assists" for football — stored flat alongside the
-    /// four counters above rather than nested, so a single family of
-    /// `ADD stats.#sport.#counter :d` update expressions
-    /// (`agon_core::dao::stats`) can address any counter of any sport the
-    /// same way, without the DAO needing to know per-sport field names.
-    /// Empty for a sport with no per-player box score to derive extras from
-    /// (tennis, badminton, squash, table tennis, "other").
-    #[serde(flatten, default)]
-    pub extra: HashMap<String, u64>,
-    /// Personal-best single-match value per sport-specific counter (e.g.
-    /// most wickets in a game, highest score, most goals/assists in a game),
-    /// keyed by the same counter names as `extra`. See
-    /// `Dao::update_best_figures` for why this only ever ratchets up.
-    #[serde(default)]
-    pub best: HashMap<String, BestFigureRecord>,
+}
+
+/// Lifetime cricket stats: the common counters plus a batting/bowling summary
+/// derived from every confirmed match's box score, and each counter's
+/// personal-best single-match figure.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct CricketStatsRecord {
+    #[serde(flatten)]
+    pub common: GenericSportStatsRecord,
+    pub runs: u64,
+    pub wickets: u64,
+    pub fours: u64,
+    pub sixes: u64,
+    /// Highest score in a single match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_runs: Option<BestFigureRecord>,
+    /// Most wickets taken in a single match ("best bowling figures").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_wickets: Option<BestFigureRecord>,
+}
+
+/// Lifetime football stats: the common counters plus goals/assists derived
+/// from every confirmed match's goal log, and each counter's personal-best
+/// single-match figure.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct FootballStatsRecord {
+    #[serde(flatten)]
+    pub common: GenericSportStatsRecord,
+    pub goals: u64,
+    pub assists: u64,
+    /// Most goals scored in a single match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_goals: Option<BestFigureRecord>,
+    /// Most assists in a single match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_assists: Option<BestFigureRecord>,
 }
 
 /// A personal-best single-match value for one counter, plus the match it was
-/// set in. Stored at `UserSportStatsRecord::best[<counter>]`.
+/// set in. See `Dao::update_best_figures` for why this only ever ratchets up.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BestFigureRecord {
     pub value: u64,

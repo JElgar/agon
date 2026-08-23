@@ -13,6 +13,7 @@ import { PushNotificationsProvider } from '@/hooks/usePushNotifications'
 import { LoginForm } from '@/components/auth/LoginForm'
 import { CreateProfileForm } from '@/components/auth/CreateProfileForm'
 import { InvitePreviewBanner } from '@/components/auth/InvitePreviewBanner'
+import { IosInstallBanner } from '@/components/IosInstallBanner'
 import { AppSidebar } from '@/components/AppSidebar'
 import { MobileBottomNav } from '@/components/MobileBottomNav'
 import { Logo } from '@/components/agon/Logo'
@@ -91,6 +92,7 @@ function AppShell({ email, onSignOut }: { email: string; onSignOut: () => void }
         </header>
 
         <main className="container mx-auto px-4 py-8 pb-28 md:pb-8">
+          <IosInstallBanner />
           <Routes>
           <Route path="/" element={<HomeRedirect />} />
           <Route path="/feed" element={<FeedPage />} />

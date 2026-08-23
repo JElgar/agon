@@ -1,0 +1,50 @@
+on:
+  workflow_call:
+    outputs:
+      service:
+        description: 'agon_service (or a shared agon_core/workspace-manifest) changed'
+        value: ${{ jobs.changes.outputs.service }}
+      worker:
+        description: 'agon_worker (or a shared agon_core/workspace-manifest) changed'
+        value: ${{ jobs.changes.outputs.worker }}
+      ui:
+        description: 'agon_ui changed'
+        value: ${{ jobs.changes.outputs.ui }}
+      infra:
+        description: 'agon_infra (pulumi stack config/program) changed'
+        value: ${{ jobs.changes.outputs.infra }}
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      service: ${{ steps.filter.outputs.service }}
+      worker: ${{ steps.filter.outputs.worker }}
+      ui: ${{ steps.filter.outputs.ui }}
+      infra: ${{ steps.filter.outputs.infra }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # agon_core is a path-dependency of both binaries, and Cargo.lock /
+          # root Cargo.toml changes (a bumped shared dep, a new workspace
+          # member) can affect either build — so both `service` and `worker`
+          # list those paths too. (YAML anchors don't flatten list items, so
+          # this is spelled out per-filter rather than shared via `&core`.)
+          filters: |
+            service:
+              - 'agon_core/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'agon_service/**'
+            worker:
+              - 'agon_core/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'agon_worker/**'
+            ui:
+              - 'agon_ui/**'
+            infra:
+              - 'agon_infra/**'

@@ -20,13 +20,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ./.github/actions/setup
-
-      # Maybe this should be part of docker build but then we need to always have the schema anyway?
-      - run: npm install
-        working-directory: ./agon_ui
-      - run: npm run generate
-        working-directory: ./agon_ui
+      # The generated OpenAPI client types just need to be present in the
+      # build context before `docker build` below — pull the copy build-ui.yml
+      # already generated (which itself required a full `./.github/actions/setup`
+      # Rust workspace build to produce schema.json) rather than paying for
+      # that same Rust build again on this job's own runner. This job needs no
+      # Rust/npm toolchain at all now; `npm ci` runs inside the Docker build.
+      - uses: actions/download-artifact@v4
+        with:
+          name: agon-ui-openapi-types
+          path: agon_ui/src/types
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

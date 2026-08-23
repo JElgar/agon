@@ -25,3 +25,12 @@ jobs:
       - run: npm install
       - run: npm run generate
       - run: npm run build
+      # Shared with docker-ui.yml's publish job so it doesn't have to redo
+      # `./.github/actions/setup` (a full Rust workspace build, just to
+      # regenerate the same schema.json) a second time on its own runner —
+      # see the download step there for why.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agon-ui-openapi-types
+          path: agon_ui/src/types/api.ts
+          retention-days: 1

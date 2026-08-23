@@ -3,6 +3,7 @@ import type { components } from '@/types/api'
 export type MatchFormat = components['schemas']['MatchFormat']
 export type FootballFormat = components['schemas']['FootballFormat']
 export type CricketFormat = components['schemas']['CricketFormat']
+export type NetballFormat = components['schemas']['NetballFormat']
 
 /**
  * App-side defaults for an unconfigured match — the backend stores `format`
@@ -30,6 +31,14 @@ export const DEFAULT_CRICKET_FORMAT: CricketFormat = {
   free_hit_after_no_ball: true,
 }
 
+/** Standard 4×15-minute-quarters defaults — the most common club format. */
+export const DEFAULT_NETBALL_FORMAT: NetballFormat = {
+  num_quarters: 4,
+  quarter_length_minutes: 15,
+  two_point_zone: false,
+  extra_time: false,
+}
+
 // `Match.format`'s generated type erases the union discriminant (same quirk
 // as `Invitation.kind` in `lib/members.ts` — openapi-typescript widens a
 // union nested inside an object to `Omit<Union, "sport"> & unknown`, so
@@ -55,4 +64,12 @@ export function cricketFormat(format: unknown): CricketFormat {
 /** "20 overs" / "Unlimited overs" for a cricket format summary. */
 export function oversLimitLabel(fmt: CricketFormat): string {
   return fmt.overs_per_innings ? `${fmt.overs_per_innings} overs` : 'Unlimited overs'
+}
+
+/** The netball format to use — the match's own if set for netball, else the
+ *  app default. */
+export function netballFormat(format: unknown): NetballFormat {
+  const fmt = format as MatchFormat | null | undefined
+  if (fmt && fmt.sport === 'Netball') return fmt
+  return DEFAULT_NETBALL_FORMAT
 }

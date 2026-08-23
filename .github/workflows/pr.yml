@@ -4,10 +4,19 @@ on:
   pull_request:
 
 jobs:
+  changes:
+    # Same-repo relative path so this resolves against the PR branch itself
+    # (see the note in release.yml).
+    uses: ./.github/workflows/changes.yml
+
   build-service:
+    needs: changes
+    if: needs.changes.outputs.service == 'true' || needs.changes.outputs.worker == 'true'
     uses: JElgar/agon/.github/workflows/build-service.yml@main
     secrets: inherit
 
   build-ui:
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
     uses: JElgar/agon/.github/workflows/build-ui.yml@main
     secrets: inherit

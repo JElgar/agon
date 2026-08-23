@@ -10,11 +10,14 @@ use tracing::error;
 use crate::detailed_score::cricket::{
     CricketBattingEntry, CricketBowlingEntry, CricketDelivery, CricketDeliveryExtra,
     CricketDeliveryWicket, CricketDismissal, CricketDismissalKind, CricketExtraKind, CricketExtras,
-    CricketFallOfWicket, NextBallContext, Overs,
+    CricketFallOfWicket, NextBallContext, Overs, balls_to_overs,
 };
 use crate::detailed_score::football::{
     FootballCardColor, FootballCardEvent, FootballGoalEvent, FootballPenaltyShootoutKick,
     FootballPeriod, FootballSubstitutionEvent,
+};
+use crate::detailed_score::netball::{
+    NetballFoulEvent, NetballFoulKind, NetballGoalEvent, NetballPeriod, NetballPosition,
 };
 use crate::live_score::{
     LiveEvent, LiveEventInput, NewLiveEventInput,
@@ -23,8 +26,9 @@ use crate::live_score::{
         InningsEndReason,
     },
     football::{FootballLiveEvent, FootballPeriodEvent},
+    netball::{NetballLiveEvent, NetballPeriodEvent},
 };
-use crate::match_format::{CricketFormat, FootballFormat, MatchFormat};
+use crate::match_format::{CricketFormat, FootballFormat, MatchFormat, NetballFormat};
 use crate::membership::{
     ExternalMember, Invitation, InvitationContext, InvitationKind, InvitationMatchContext,
     InvitationStatus, InvitationTeamContext, Member, TokenInvitation, UserInvitation, UserMember,
@@ -36,32 +40,35 @@ use crate::notification::{
 };
 use crate::team::{Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
-    BestFigure, Comment, ConfirmedScore, CricketPlayerStats, CricketScore, CricketScoreInnings,
-    FeedMatch, FootballPlayerStats, FootballScore, GenericPlayerStats, Location, Match,
-    MatchOutcome, MatchPlayer, MatchSide, MatchSocial, MatchStatus, MatchType, PendingScore, Photo,
-    RosterPreviewPlayer, Score, ScoreConfirmation, ScoreResponseKind, ScoreSubmission,
-    ScoreSubmissionResponse, ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore,
-    UserProfile, UserStats,
+    BestBowlingFigures, BestFigure, Comment, ConfirmedScore, CricketPlayerStats, CricketScore,
+    CricketScoreInnings, DevicePlatform, FeedMatch, FootballPlayerStats, FootballScore,
+    GenericPlayerStats, Location, Match, MatchOutcome, MatchPlayer, MatchSide, MatchSocial,
+    MatchStatus, MatchType, NetballScore, PendingScore, Photo, RosterPreviewPlayer, Score,
+    ScoreConfirmation, ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse,
+    ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
 };
 use agon_core::dao::error::DaoError;
 use agon_core::dao::live_score_ops::NewLiveEvent;
 use agon_core::dao::records::{
-    BestFigureRecord, CommentRecord, ConfirmedScoreRecord, CricketBattingEntryRecord,
-    CricketBowlingEntryRecord, CricketDeliveryExtraRecord, CricketDeliveryRecord,
-    CricketDeliveryWicketRecord, CricketDismissalKindRecord, CricketDismissalRecord,
-    CricketExtraKindRecord, CricketExtrasRecord, CricketFallOfWicketRecord, CricketFormatRecord,
-    CricketInningsEndEventRecord, CricketInningsStartEventRecord, CricketLiveEventRecord,
-    CricketRetireEventRecord, CricketScoreInningsRecord, CricketStatsRecord,
-    EmbeddedInvitationRecord, FootballCardColorRecord, FootballCardEventRecord,
-    FootballFormatRecord, FootballGoalEventRecord, FootballLiveEventRecord,
-    FootballPenaltyShootoutKickRecord, FootballPeriodEventRecord, FootballPeriodRecord,
-    FootballStatsRecord, FootballSubstitutionEventRecord, GenericSportStatsRecord,
-    InningsEndReasonRecord, InvitationContextRecord, InvitationKindRecord, InvitationRecord,
-    LiveEventPayloadRecord, LiveEventRecord, MatchFormatRecord, MatchLikeRecord, MatchPlayerRecord,
-    MatchRecord, MatchScoreRecord, MatchSideRecord, NextBallContextRecord, NotificationKindRecord,
-    NotificationRecord, OversRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord,
-    ScoreResponseRecord, ScoreSubmissionRecord, TeamMemberRecord, TeamRecord, UserRecord,
-    UserStatsRecord,
+    BestBowlingFiguresRecord, BestFigureRecord, CommentRecord, ConfirmedScoreRecord,
+    CricketBattingEntryRecord, CricketBowlingEntryRecord, CricketDeliveryExtraRecord,
+    CricketDeliveryRecord, CricketDeliveryWicketRecord, CricketDismissalKindRecord,
+    CricketDismissalRecord, CricketExtraKindRecord, CricketExtrasRecord, CricketFallOfWicketRecord,
+    CricketFormatRecord, CricketInningsEndEventRecord, CricketInningsStartEventRecord,
+    CricketLiveEventRecord, CricketRetireEventRecord, CricketScoreInningsRecord,
+    CricketStatsRecord, DevicePlatform as DevicePlatformRecord, EmbeddedInvitationRecord,
+    FootballCardColorRecord, FootballCardEventRecord, FootballFormatRecord,
+    FootballGoalEventRecord, FootballLiveEventRecord, FootballPenaltyShootoutKickRecord,
+    FootballPeriodEventRecord, FootballPeriodRecord, FootballStatsRecord,
+    FootballSubstitutionEventRecord, GenericSportStatsRecord, InningsEndReasonRecord,
+    InvitationContextRecord, InvitationKindRecord, InvitationRecord, LiveEventPayloadRecord,
+    LiveEventRecord, MatchFormatRecord, MatchLikeRecord, MatchPlayerRecord, MatchRecord,
+    MatchScoreRecord, MatchSideRecord, NetballFormatRecord, NetballFoulEventRecord,
+    NetballFoulKindRecord, NetballGoalEventRecord, NetballLiveEventRecord,
+    NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord, NextBallContextRecord,
+    NotificationKindRecord, NotificationRecord, OversRecord, PendingScoreRecord,
+    ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord, ScoreSubmissionRecord,
+    TeamMemberRecord, TeamRecord, UserRecord, UserStatsRecord,
 };
 
 /// Parse an RFC-3339 timestamp string stored by the DAO into a UTC datetime,
@@ -96,6 +103,7 @@ pub fn match_type_from_tag(tag: &str) -> MatchType {
         "table_tennis" => MatchType::TableTennis,
         "football" => MatchType::Football,
         "cricket" => MatchType::Cricket,
+        "netball" => MatchType::Netball,
         _ => MatchType::Other,
     }
 }
@@ -109,7 +117,17 @@ pub fn match_type_tag(mt: &MatchType) -> &'static str {
         MatchType::TableTennis => "table_tennis",
         MatchType::Football => "football",
         MatchType::Cricket => "cricket",
+        MatchType::Netball => "netball",
         MatchType::Other => "other",
+    }
+}
+
+/// Map the API's device-platform enum to the DAO-owned one.
+pub fn device_platform_to_record(p: &DevicePlatform) -> DevicePlatformRecord {
+    match p {
+        DevicePlatform::Web => DevicePlatformRecord::Web,
+        DevicePlatform::Android => DevicePlatformRecord::Android,
+        DevicePlatform::Ios => DevicePlatformRecord::Ios,
     }
 }
 
@@ -141,6 +159,7 @@ pub fn user_stats_from_record(stats: &UserStatsRecord) -> UserStats {
         badminton: stats.badminton.as_ref().map(generic_stats_from_record),
         squash: stats.squash.as_ref().map(generic_stats_from_record),
         table_tennis: stats.table_tennis.as_ref().map(generic_stats_from_record),
+        netball: stats.netball.as_ref().map(generic_stats_from_record),
         other: stats.other.as_ref().map(generic_stats_from_record),
     }
 }
@@ -163,14 +182,27 @@ fn generic_stats_from_record(rec: &GenericSportStatsRecord) -> GenericPlayerStat
 }
 
 fn cricket_stats_from_record(rec: &CricketStatsRecord) -> CricketPlayerStats {
+    let strike_rate =
+        (rec.balls_faced > 0).then(|| (rec.runs as f32 / rec.balls_faced as f32) * 100.0);
+    let batting_average = (rec.dismissals > 0).then(|| rec.runs as f32 / rec.dismissals as f32);
+    let economy =
+        (rec.balls_bowled > 0).then(|| rec.runs_conceded as f32 / (rec.balls_bowled as f32 / 6.0));
     CricketPlayerStats {
         common: generic_stats_from_record(&rec.common),
         runs: rec.runs as i32,
         wickets: rec.wickets as i32,
         fours: rec.fours as i32,
         sixes: rec.sixes as i32,
+        balls_faced: rec.balls_faced as i32,
+        dismissals: rec.dismissals as i32,
+        catches: rec.catches as i32,
+        runs_conceded: rec.runs_conceded as i32,
+        overs_bowled: balls_to_overs(rec.balls_bowled as u32, 6),
+        strike_rate,
+        batting_average,
+        economy,
         best_runs: rec.best_runs.as_ref().map(best_figure_from_record),
-        best_wickets: rec.best_wickets.as_ref().map(best_figure_from_record),
+        best_bowling: rec.best_bowling.as_ref().map(best_bowling_from_record),
     }
 }
 
@@ -180,7 +212,10 @@ fn football_stats_from_record(rec: &FootballStatsRecord) -> FootballPlayerStats 
         goals: rec.goals as i32,
         assists: rec.assists as i32,
         best_goals: rec.best_goals.as_ref().map(best_figure_from_record),
-        best_assists: rec.best_assists.as_ref().map(best_figure_from_record),
+        best_goal_contributions: rec
+            .best_goal_contributions
+            .as_ref()
+            .map(best_figure_from_record),
     }
 }
 
@@ -188,6 +223,16 @@ fn football_stats_from_record(rec: &FootballStatsRecord) -> FootballPlayerStats 
 fn best_figure_from_record(b: &BestFigureRecord) -> BestFigure {
     BestFigure {
         value: b.value as i32,
+        match_id: b.match_id.clone(),
+    }
+}
+
+/// Map a stored best-bowling-spell entry to the API model.
+fn best_bowling_from_record(b: &BestBowlingFiguresRecord) -> BestBowlingFigures {
+    BestBowlingFigures {
+        wickets: b.wickets as i32,
+        runs_conceded: b.runs_conceded as i32,
+        overs: balls_to_overs(b.balls_bowled as u32, 6),
         match_id: b.match_id.clone(),
     }
 }
@@ -285,6 +330,35 @@ pub fn score_from_record(rec: &ScoreRecord) -> Score {
                     .collect()
             }),
             penalty_shootout_score: penalty_shootout_score.clone(),
+            // Not stored — `Api::hydrate_score_players` fills this afterward.
+            players: std::collections::HashMap::new(),
+        }),
+        ScoreRecord::Netball {
+            score,
+            goals,
+            fouls,
+            period,
+            period_times,
+            period_scores,
+        } => Score::Netball(NetballScore {
+            score: score.clone(),
+            goals: goals
+                .as_ref()
+                .map(|gs| gs.iter().map(netball_goal_event_from_record).collect()),
+            fouls: fouls
+                .as_ref()
+                .map(|fs| fs.iter().map(netball_foul_event_from_record).collect()),
+            period: period.as_ref().map(netball_period_from_record),
+            period_times: period_times.as_ref().map(|pts| {
+                pts.iter()
+                    .map(|(p, t)| (netball_period_from_record(p), parse_ts(t)))
+                    .collect()
+            }),
+            period_scores: period_scores.as_ref().map(|pss| {
+                pss.iter()
+                    .map(|(p, entries)| (netball_period_from_record(p), entries.clone()))
+                    .collect()
+            }),
             // Not stored — `Api::hydrate_score_players` fills this afterward.
             players: std::collections::HashMap::new(),
         }),
@@ -514,6 +588,33 @@ pub fn score_to_record(score: &Score) -> ScoreRecord {
                     .collect()
             }),
             penalty_shootout_score: s.penalty_shootout_score.clone(),
+        },
+        Score::Netball(s) => ScoreRecord::Netball {
+            score: s.score.clone(),
+            goals: s
+                .goals
+                .as_ref()
+                .map(|gs| gs.iter().map(netball_goal_event_to_record).collect()),
+            fouls: s
+                .fouls
+                .as_ref()
+                .map(|fs| fs.iter().map(netball_foul_event_to_record).collect()),
+            period: s.period.as_ref().map(netball_period_to_record),
+            period_times: s.period_times.as_ref().map(|pts| {
+                pts.iter()
+                    .map(|(p, t)| {
+                        (
+                            netball_period_to_record(p),
+                            t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                        )
+                    })
+                    .collect()
+            }),
+            period_scores: s.period_scores.as_ref().map(|pss| {
+                pss.iter()
+                    .map(|(p, entries)| (netball_period_to_record(p), entries.clone()))
+                    .collect()
+            }),
         },
     }
 }
@@ -1068,6 +1169,7 @@ pub fn match_score_to_record(score: &Score, last_seq: Option<u32>) -> MatchScore
     let sport = match score {
         Score::Football(_) => "football",
         Score::Cricket(_) => "cricket",
+        Score::Netball(_) => "netball",
         Score::Simple(_) => "simple",
         Score::Sets(_) => "sets",
     }
@@ -1110,6 +1212,12 @@ pub fn match_format_to_record(fmt: &MatchFormat) -> MatchFormatRecord {
             no_ball_is_extra_ball: f.no_ball_is_extra_ball,
             free_hit_after_no_ball: f.free_hit_after_no_ball,
         }),
+        MatchFormat::Netball(f) => MatchFormatRecord::Netball(NetballFormatRecord {
+            num_quarters: f.num_quarters,
+            quarter_length_minutes: f.quarter_length_minutes,
+            two_point_zone: f.two_point_zone,
+            extra_time: f.extra_time,
+        }),
     }
 }
 
@@ -1134,6 +1242,12 @@ pub fn match_format_from_record(rec: &MatchFormatRecord) -> MatchFormat {
             no_ball_is_extra_ball: f.no_ball_is_extra_ball,
             free_hit_after_no_ball: f.free_hit_after_no_ball,
         }),
+        MatchFormatRecord::Netball(f) => MatchFormat::Netball(NetballFormat {
+            num_quarters: f.num_quarters,
+            quarter_length_minutes: f.quarter_length_minutes,
+            two_point_zone: f.two_point_zone,
+            extra_time: f.extra_time,
+        }),
     }
 }
 
@@ -1144,6 +1258,7 @@ pub fn match_format_sport_tag(fmt: &MatchFormat) -> &'static str {
     match fmt {
         MatchFormat::Football(_) => "football",
         MatchFormat::Cricket(_) => "cricket",
+        MatchFormat::Netball(_) => "netball",
     }
 }
 
@@ -1162,6 +1277,7 @@ pub fn live_event_sport_tag(event: &LiveEventInput) -> &'static str {
     match event {
         LiveEventInput::Football(_) => "football",
         LiveEventInput::Cricket(_) => "cricket",
+        LiveEventInput::Netball(_) => "netball",
     }
 }
 
@@ -1173,6 +1289,9 @@ pub fn live_event_input_to_record(event: &LiveEventInput) -> LiveEventPayloadRec
         LiveEventInput::Cricket(c) => {
             LiveEventPayloadRecord::Cricket(cricket_live_event_to_record(c))
         }
+        LiveEventInput::Netball(n) => {
+            LiveEventPayloadRecord::Netball(netball_live_event_to_record(n))
+        }
     }
 }
 
@@ -1183,6 +1302,9 @@ pub fn live_event_payload_from_record(rec: &LiveEventPayloadRecord) -> LiveEvent
         }
         LiveEventPayloadRecord::Cricket(c) => {
             LiveEventInput::Cricket(cricket_live_event_from_record(c))
+        }
+        LiveEventPayloadRecord::Netball(n) => {
+            LiveEventInput::Netball(netball_live_event_from_record(n))
         }
     }
 }
@@ -1200,6 +1322,9 @@ fn football_goal_event_to_record(g: &FootballGoalEvent) -> FootballGoalEventReco
         own_goal: g.own_goal,
         penalty: g.penalty,
         minute: g.minute,
+        occurred_at: g
+            .occurred_at
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
     }
 }
 
@@ -1211,6 +1336,7 @@ fn football_goal_event_from_record(rec: &FootballGoalEventRecord) -> FootballGoa
         own_goal: rec.own_goal,
         penalty: rec.penalty,
         minute: rec.minute,
+        occurred_at: parse_ts_opt(&rec.occurred_at),
     }
 }
 
@@ -1225,6 +1351,9 @@ fn football_card_event_to_record(c: &FootballCardEvent) -> FootballCardEventReco
             FootballCardColor::Red => FootballCardColorRecord::Red,
         },
         minute: c.minute,
+        occurred_at: c
+            .occurred_at
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
     }
 }
 
@@ -1237,6 +1366,7 @@ fn football_card_event_from_record(rec: &FootballCardEventRecord) -> FootballCar
             FootballCardColorRecord::Red => FootballCardColor::Red,
         },
         minute: rec.minute,
+        occurred_at: parse_ts_opt(&rec.occurred_at),
     }
 }
 
@@ -1248,6 +1378,9 @@ fn football_substitution_event_to_record(
         player_in_id: s.player_in_id.clone(),
         player_out_id: s.player_out_id.clone(),
         minute: s.minute,
+        occurred_at: s
+            .occurred_at
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
     }
 }
 
@@ -1259,6 +1392,7 @@ fn football_substitution_event_from_record(
         player_in_id: rec.player_in_id.clone(),
         player_out_id: rec.player_out_id.clone(),
         minute: rec.minute,
+        occurred_at: parse_ts_opt(&rec.occurred_at),
     }
 }
 
@@ -1342,6 +1476,161 @@ fn football_live_event_from_record(rec: &FootballLiveEventRecord) -> FootballLiv
                 scored: k.scored,
             })
         }
+    }
+}
+
+// ---- Netball --------------------------------------------------------------
+
+/// Shared by the live-event mapping below and `score_to_record`'s `Netball`
+/// arm — both carry the same `NetballGoalEvent`/`NetballGoalEventRecord`
+/// shape.
+fn netball_goal_event_to_record(g: &NetballGoalEvent) -> NetballGoalEventRecord {
+    NetballGoalEventRecord {
+        side_id: g.side_id.clone(),
+        scorer_player_id: g.scorer_player_id.clone(),
+        scorer_position: g.scorer_position.as_ref().map(netball_position_to_record),
+        two_points: g.two_points,
+        minute: g.minute,
+        occurred_at: g
+            .occurred_at
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+    }
+}
+
+fn netball_goal_event_from_record(rec: &NetballGoalEventRecord) -> NetballGoalEvent {
+    NetballGoalEvent {
+        side_id: rec.side_id.clone(),
+        scorer_player_id: rec.scorer_player_id.clone(),
+        scorer_position: rec
+            .scorer_position
+            .as_ref()
+            .map(netball_position_from_record),
+        two_points: rec.two_points,
+        minute: rec.minute,
+        occurred_at: parse_ts_opt(&rec.occurred_at),
+    }
+}
+
+fn netball_position_to_record(p: &NetballPosition) -> NetballPositionRecord {
+    match p {
+        NetballPosition::GoalShooter => NetballPositionRecord::GoalShooter,
+        NetballPosition::GoalAttack => NetballPositionRecord::GoalAttack,
+        NetballPosition::WingAttack => NetballPositionRecord::WingAttack,
+        NetballPosition::Centre => NetballPositionRecord::Centre,
+        NetballPosition::WingDefence => NetballPositionRecord::WingDefence,
+        NetballPosition::GoalDefence => NetballPositionRecord::GoalDefence,
+        NetballPosition::GoalKeeper => NetballPositionRecord::GoalKeeper,
+    }
+}
+
+fn netball_position_from_record(rec: &NetballPositionRecord) -> NetballPosition {
+    match rec {
+        NetballPositionRecord::GoalShooter => NetballPosition::GoalShooter,
+        NetballPositionRecord::GoalAttack => NetballPosition::GoalAttack,
+        NetballPositionRecord::WingAttack => NetballPosition::WingAttack,
+        NetballPositionRecord::Centre => NetballPosition::Centre,
+        NetballPositionRecord::WingDefence => NetballPosition::WingDefence,
+        NetballPositionRecord::GoalDefence => NetballPosition::GoalDefence,
+        NetballPositionRecord::GoalKeeper => NetballPosition::GoalKeeper,
+    }
+}
+
+/// Shared by the live-event mapping below and `score_to_record`'s `Netball`
+/// arm, same reasoning as `netball_goal_event_to_record`.
+fn netball_foul_event_to_record(fo: &NetballFoulEvent) -> NetballFoulEventRecord {
+    NetballFoulEventRecord {
+        side_id: fo.side_id.clone(),
+        player_id: fo.player_id.clone(),
+        foul_kind: match fo.foul_kind {
+            NetballFoulKind::Contact => NetballFoulKindRecord::Contact,
+            NetballFoulKind::Obstruction => NetballFoulKindRecord::Obstruction,
+            NetballFoulKind::Footwork => NetballFoulKindRecord::Footwork,
+            NetballFoulKind::Offside => NetballFoulKindRecord::Offside,
+            NetballFoulKind::HeldBall => NetballFoulKindRecord::HeldBall,
+            NetballFoulKind::Other => NetballFoulKindRecord::Other,
+        },
+        minute: fo.minute,
+        occurred_at: fo
+            .occurred_at
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+    }
+}
+
+fn netball_foul_event_from_record(rec: &NetballFoulEventRecord) -> NetballFoulEvent {
+    NetballFoulEvent {
+        side_id: rec.side_id.clone(),
+        player_id: rec.player_id.clone(),
+        foul_kind: match rec.foul_kind {
+            NetballFoulKindRecord::Contact => NetballFoulKind::Contact,
+            NetballFoulKindRecord::Obstruction => NetballFoulKind::Obstruction,
+            NetballFoulKindRecord::Footwork => NetballFoulKind::Footwork,
+            NetballFoulKindRecord::Offside => NetballFoulKind::Offside,
+            NetballFoulKindRecord::HeldBall => NetballFoulKind::HeldBall,
+            NetballFoulKindRecord::Other => NetballFoulKind::Other,
+        },
+        minute: rec.minute,
+        occurred_at: parse_ts_opt(&rec.occurred_at),
+    }
+}
+
+/// Shared by the live-event mapping below and `score_to_record`'s `Netball`
+/// arm (`period`/`period_times`/`period_scores`' map keys) — both need the
+/// same `NetballPeriod`/`NetballPeriodRecord` correspondence.
+fn netball_period_to_record(period: &NetballPeriod) -> NetballPeriodRecord {
+    match period {
+        NetballPeriod::Start => NetballPeriodRecord::Start,
+        NetballPeriod::QuarterOneEnd => NetballPeriodRecord::QuarterOneEnd,
+        NetballPeriod::QuarterTwoStart => NetballPeriodRecord::QuarterTwoStart,
+        NetballPeriod::QuarterTwoEnd => NetballPeriodRecord::QuarterTwoEnd,
+        NetballPeriod::QuarterThreeStart => NetballPeriodRecord::QuarterThreeStart,
+        NetballPeriod::QuarterThreeEnd => NetballPeriodRecord::QuarterThreeEnd,
+        NetballPeriod::QuarterFourStart => NetballPeriodRecord::QuarterFourStart,
+        NetballPeriod::FullTime => NetballPeriodRecord::FullTime,
+        NetballPeriod::ExtraTimeStart => NetballPeriodRecord::ExtraTimeStart,
+        NetballPeriod::ExtraTimeEnd => NetballPeriodRecord::ExtraTimeEnd,
+    }
+}
+
+fn netball_period_from_record(rec: &NetballPeriodRecord) -> NetballPeriod {
+    match rec {
+        NetballPeriodRecord::Start => NetballPeriod::Start,
+        NetballPeriodRecord::QuarterOneEnd => NetballPeriod::QuarterOneEnd,
+        NetballPeriodRecord::QuarterTwoStart => NetballPeriod::QuarterTwoStart,
+        NetballPeriodRecord::QuarterTwoEnd => NetballPeriod::QuarterTwoEnd,
+        NetballPeriodRecord::QuarterThreeStart => NetballPeriod::QuarterThreeStart,
+        NetballPeriodRecord::QuarterThreeEnd => NetballPeriod::QuarterThreeEnd,
+        NetballPeriodRecord::QuarterFourStart => NetballPeriod::QuarterFourStart,
+        NetballPeriodRecord::FullTime => NetballPeriod::FullTime,
+        NetballPeriodRecord::ExtraTimeStart => NetballPeriod::ExtraTimeStart,
+        NetballPeriodRecord::ExtraTimeEnd => NetballPeriod::ExtraTimeEnd,
+    }
+}
+
+fn netball_live_event_to_record(event: &NetballLiveEvent) -> NetballLiveEventRecord {
+    match event {
+        NetballLiveEvent::Goal(g) => NetballLiveEventRecord::Goal(netball_goal_event_to_record(g)),
+        NetballLiveEvent::Foul(fo) => {
+            NetballLiveEventRecord::Foul(netball_foul_event_to_record(fo))
+        }
+        NetballLiveEvent::Period(p) => NetballLiveEventRecord::Period(NetballPeriodEventRecord {
+            period: netball_period_to_record(&p.period),
+            score: p.score.clone(),
+        }),
+    }
+}
+
+fn netball_live_event_from_record(rec: &NetballLiveEventRecord) -> NetballLiveEvent {
+    match rec {
+        NetballLiveEventRecord::Goal(g) => {
+            NetballLiveEvent::Goal(netball_goal_event_from_record(g))
+        }
+        NetballLiveEventRecord::Foul(fo) => {
+            NetballLiveEvent::Foul(netball_foul_event_from_record(fo))
+        }
+        NetballLiveEventRecord::Period(p) => NetballLiveEvent::Period(NetballPeriodEvent {
+            period: netball_period_from_record(&p.period),
+            score: p.score.clone(),
+        }),
     }
 }
 
@@ -1445,6 +1734,9 @@ fn cricket_delivery_to_record(d: &CricketDelivery) -> CricketDeliveryRecord {
         runs_off_bat: d.runs_off_bat,
         extra: d.extra.as_ref().map(cricket_delivery_extra_to_record),
         wicket: d.wicket.as_ref().map(cricket_delivery_wicket_to_record),
+        occurred_at: d
+            .occurred_at
+            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
     }
 }
 
@@ -1458,6 +1750,7 @@ fn cricket_delivery_from_record(rec: &CricketDeliveryRecord) -> CricketDelivery 
         runs_off_bat: rec.runs_off_bat,
         extra: rec.extra.as_ref().map(cricket_delivery_extra_from_record),
         wicket: rec.wicket.as_ref().map(cricket_delivery_wicket_from_record),
+        occurred_at: parse_ts_opt(&rec.occurred_at),
     }
 }
 
@@ -1592,17 +1885,21 @@ pub fn derive_live_score(
                     LiveEventPayloadRecord::Football(f) => {
                         Some((parse_ts(&r.occurred_at), football_live_event_from_record(f)))
                     }
-                    LiveEventPayloadRecord::Cricket(_) => None,
+                    LiveEventPayloadRecord::Cricket(_) | LiveEventPayloadRecord::Netball(_) => None,
                 })
                 .collect();
             Some(Score::Football(FootballScore::from_events(&events)))
         }
         "cricket" => {
-            let events: Vec<CricketLiveEvent> = records
+            let events: Vec<(chrono::DateTime<chrono::Utc>, CricketLiveEvent)> = records
                 .iter()
                 .filter_map(|r| match &r.payload {
-                    LiveEventPayloadRecord::Cricket(c) => Some(cricket_live_event_from_record(c)),
-                    LiveEventPayloadRecord::Football(_) => None,
+                    LiveEventPayloadRecord::Cricket(c) => {
+                        Some((parse_ts(&r.occurred_at), cricket_live_event_from_record(c)))
+                    }
+                    LiveEventPayloadRecord::Football(_) | LiveEventPayloadRecord::Netball(_) => {
+                        None
+                    }
                 })
                 .collect();
             let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) =
@@ -1613,6 +1910,20 @@ pub fn derive_live_score(
                 wide_is_extra_ball,
                 no_ball_is_extra_ball,
             )))
+        }
+        "netball" => {
+            let events: Vec<(chrono::DateTime<chrono::Utc>, NetballLiveEvent)> = records
+                .iter()
+                .filter_map(|r| match &r.payload {
+                    LiveEventPayloadRecord::Netball(n) => {
+                        Some((parse_ts(&r.occurred_at), netball_live_event_from_record(n)))
+                    }
+                    LiveEventPayloadRecord::Football(_) | LiveEventPayloadRecord::Cricket(_) => {
+                        None
+                    }
+                })
+                .collect();
+            Some(Score::Netball(NetballScore::from_events(&events)))
         }
         _ => None,
     }
@@ -1781,18 +2092,21 @@ mod tests {
                 own_goal: true,
                 penalty: false,
                 minute: Some(63),
+                occurred_at: Some(parse_ts("2024-05-01T20:03:00.000Z")),
             }),
             FootballLiveEvent::Card(FootballCardEvent {
                 side_id: "oak_park".into(),
                 player_id: "khan".into(),
                 color: FootballCardColor::Red,
                 minute: None,
+                occurred_at: None,
             }),
             FootballLiveEvent::Substitution(FootballSubstitutionEvent {
                 side_id: "oak_park".into(),
                 player_in_id: "moreno".into(),
                 player_out_id: "khan".into(),
                 minute: Some(70),
+                occurred_at: Some(parse_ts("2024-05-01T20:10:00.000Z")),
             }),
             FootballLiveEvent::Period(FootballPeriodEvent {
                 period: FootballPeriod::ExtraTimeKickOff,
@@ -1837,6 +2151,7 @@ mod tests {
                     bowler_player_id: Some("patel".into()),
                     fielder_player_id: Some("cole".into()),
                 }),
+                occurred_at: Some(parse_ts("2024-05-01T20:04:03.000Z")),
             }),
             CricketLiveEvent::Retire(CricketRetireEvent {
                 batter_player_id: "sharma".into(),
@@ -1853,6 +2168,38 @@ mod tests {
 
         for event in events {
             let input = LiveEventInput::Cricket(event);
+            let original_json = input.to_json();
+            let round_tripped = live_event_payload_from_record(&live_event_input_to_record(&input));
+            assert_eq!(original_json, round_tripped.to_json());
+        }
+    }
+
+    #[test]
+    fn netball_live_event_round_trips_through_dao_mirror() {
+        let events = vec![
+            NetballLiveEvent::Goal(NetballGoalEvent {
+                side_id: "kestrels".into(),
+                scorer_player_id: Some("shooter_1".into()),
+                scorer_position: Some(NetballPosition::GoalShooter),
+                two_points: false,
+                minute: Some(4),
+                occurred_at: Some(parse_ts("2024-05-01T20:04:00.000Z")),
+            }),
+            NetballLiveEvent::Foul(NetballFoulEvent {
+                side_id: "harriers".into(),
+                player_id: Some("defender_1".into()),
+                foul_kind: NetballFoulKind::Contact,
+                minute: Some(6),
+                occurred_at: Some(parse_ts("2024-05-01T20:06:00.000Z")),
+            }),
+            NetballLiveEvent::Period(NetballPeriodEvent {
+                period: NetballPeriod::QuarterOneEnd,
+                score: HashMap::from([("kestrels".to_string(), 12), ("harriers".to_string(), 9)]),
+            }),
+        ];
+
+        for event in events {
+            let input = LiveEventInput::Netball(event);
             let original_json = input.to_json();
             let round_tripped = live_event_payload_from_record(&live_event_input_to_record(&input));
             assert_eq!(original_json, round_tripped.to_json());
@@ -1878,6 +2225,12 @@ mod tests {
                 wide_is_extra_ball: true,
                 no_ball_is_extra_ball: false,
                 free_hit_after_no_ball: false,
+            }),
+            MatchFormat::Netball(NetballFormat {
+                num_quarters: 4,
+                quarter_length_minutes: 15,
+                two_point_zone: false,
+                extra_time: true,
             }),
         ];
 
@@ -1993,6 +2346,7 @@ mod tests {
                     runs_off_bat: 1,
                     extra: None,
                     wicket: None,
+                    occurred_at: Some(parse_ts("2024-05-01T20:08:03.000Z")),
                 }]),
                 next_ball_context: Some(NextBallContext {
                     striker_player_id: Some("player_2".into()),
@@ -2029,6 +2383,7 @@ mod tests {
                         own_goal: false,
                         penalty: false,
                         minute: Some(23),
+                        occurred_at: Some(parse_ts("2024-05-01T20:23:00.000Z")),
                     },
                     FootballGoalEvent {
                         side_id: "side_blue".into(),
@@ -2037,6 +2392,7 @@ mod tests {
                         own_goal: true,
                         penalty: false,
                         minute: None,
+                        occurred_at: None,
                     },
                 ]),
                 cards: Some(vec![FootballCardEvent {
@@ -2044,12 +2400,14 @@ mod tests {
                     player_id: "player_3".into(),
                     color: FootballCardColor::Yellow,
                     minute: Some(60),
+                    occurred_at: Some(parse_ts("2024-05-01T21:00:00.000Z")),
                 }]),
                 substitutions: Some(vec![FootballSubstitutionEvent {
                     side_id: "side_red".into(),
                     player_in_id: "player_4".into(),
                     player_out_id: "player_1".into(),
                     minute: Some(75),
+                    occurred_at: Some(parse_ts("2024-05-01T21:15:00.000Z")),
                 }]),
                 period: Some(FootballPeriod::FullTime),
                 period_times: Some(HashMap::from([
@@ -2067,6 +2425,66 @@ mod tests {
                     scored: true,
                 }]),
                 penalty_shootout_score: Some(HashMap::from([("side_red".to_string(), 1)])),
+                players: HashMap::new(),
+            }),
+            // A manually-entered / quarter-only-scored netball result: goal
+            // tally only, no goal-by-goal detail.
+            Score::Netball(NetballScore {
+                score: HashMap::from([("kestrels".to_string(), 45), ("harriers".to_string(), 38)]),
+                goals: None,
+                fouls: None,
+                period: Some(NetballPeriod::FullTime),
+                period_times: None,
+                period_scores: Some(HashMap::from([
+                    (
+                        NetballPeriod::QuarterOneEnd,
+                        HashMap::from([("kestrels".to_string(), 12), ("harriers".to_string(), 9)]),
+                    ),
+                    (
+                        NetballPeriod::FullTime,
+                        HashMap::from([("kestrels".to_string(), 45), ("harriers".to_string(), 38)]),
+                    ),
+                ])),
+                players: HashMap::new(),
+            }),
+            // A live-scored (event-by-event) netball result: full goal/foul
+            // detail.
+            Score::Netball(NetballScore {
+                score: HashMap::from([("kestrels".to_string(), 2), ("harriers".to_string(), 1)]),
+                goals: Some(vec![
+                    NetballGoalEvent {
+                        side_id: "kestrels".into(),
+                        scorer_player_id: Some("player_1".into()),
+                        scorer_position: Some(NetballPosition::GoalShooter),
+                        two_points: false,
+                        minute: Some(3),
+                        occurred_at: Some(parse_ts("2024-05-01T20:03:00.000Z")),
+                    },
+                    NetballGoalEvent {
+                        side_id: "kestrels".into(),
+                        scorer_player_id: Some("player_2".into()),
+                        scorer_position: Some(NetballPosition::GoalAttack),
+                        two_points: true,
+                        minute: Some(7),
+                        occurred_at: Some(parse_ts("2024-05-01T20:07:00.000Z")),
+                    },
+                ]),
+                fouls: Some(vec![NetballFoulEvent {
+                    side_id: "harriers".into(),
+                    player_id: Some("player_3".into()),
+                    foul_kind: NetballFoulKind::Obstruction,
+                    minute: Some(5),
+                    occurred_at: Some(parse_ts("2024-05-01T20:05:00.000Z")),
+                }]),
+                period: Some(NetballPeriod::QuarterOneEnd),
+                period_times: Some(HashMap::from([(
+                    NetballPeriod::QuarterOneEnd,
+                    parse_ts("2024-05-01T20:15:00.000Z"),
+                )])),
+                period_scores: Some(HashMap::from([(
+                    NetballPeriod::QuarterOneEnd,
+                    HashMap::from([("kestrels".to_string(), 2), ("harriers".to_string(), 1)]),
+                )])),
                 players: HashMap::new(),
             }),
         ];

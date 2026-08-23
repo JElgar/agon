@@ -429,17 +429,23 @@ impl Dao {
     }
 
     /// Hard-delete a reply-less top-level comment (addressed by id); decrements
-    /// `comment_count`.
+    /// `comment_count`. Delete-by-id, not a toggle, so errors with
+    /// `DaoError::NotFound` if the comment doesn't exist — previously this had
+    /// no existence guard at all, so a bogus id would have decremented the
+    /// counter regardless.
     #[tracing::instrument(skip(self))]
     pub async fn delete_comment_hard(&self, match_id: &str, comment_id: &str) -> DaoResult<()> {
         let delete = Delete::builder()
             .table_name(self.table())
             .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
             .key("SK", s(Sk::Comment(comment_id.into()).to_string()))
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
             .build()
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
 
-        self.client
+        let result = self
+            .client
             .transact_write_items()
             .transact_items(TransactWriteItem::builder().delete(delete).build())
             .transact_items(
@@ -448,9 +454,15 @@ impl Dao {
                     .build(),
             )
             .send()
-            .await
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-        Ok(())
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if super::is_transaction_conditional_failure(&e) => Err(DaoError::NotFound(
+                format!("comment {comment_id} on match {match_id}"),
+            )),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
     }
 
     // ---- Score submissions -----------------------------------------------

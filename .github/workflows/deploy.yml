@@ -1,15 +1,22 @@
 on:
   workflow_call:
     inputs:
+      # Optional: the release workflow only publishes (and passes) the images
+      # whose source actually changed. An empty string means "unchanged, keep
+      # whatever is already in the pulumi stack config" — see the "Update
+      # agon image in pulumi stack config" step below.
       agon-service-image:
-        required: true
+        required: false
         type: string
+        default: ''
       agon-worker-image:
-        required: true
+        required: false
         type: string
+        default: ''
       agon-ui-image:
-        required: true
+        required: false
         type: string
+        default: ''
       stack-name:
         required: true
         type: string
@@ -46,13 +53,21 @@ jobs:
 
       - run: pnpm install
 
-      # TODO Maybe only build a new image if there is a change to the code?
+      # release.yml only builds and passes an image for the service(s) whose
+      # source actually changed; an empty input here means "unchanged", so
+      # leave that image's pulumi config as-is rather than clobbering it.
       - name: Update agon image in pulumi stack config
-        run: >
+        run: |
           pulumi stack select ${{ inputs.stack-name }}
-          && pulumi config set agonServiceImage ${{ inputs.agon-service-image }}
-          && pulumi config set agonWorkerImage ${{ inputs.agon-worker-image }}
-          && pulumi config set agonUiImage ${{ inputs.agon-ui-image }}
+          if [ -n "${{ inputs.agon-service-image }}" ]; then
+            pulumi config set agonServiceImage ${{ inputs.agon-service-image }}
+          fi
+          if [ -n "${{ inputs.agon-worker-image }}" ]; then
+            pulumi config set agonWorkerImage ${{ inputs.agon-worker-image }}
+          fi
+          if [ -n "${{ inputs.agon-ui-image }}" ]; then
+            pulumi config set agonUiImage ${{ inputs.agon-ui-image }}
+          fi
         env:
           PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
 

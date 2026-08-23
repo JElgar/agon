@@ -6,7 +6,9 @@ use std::collections::HashMap;
 
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
-use aws_sdk_dynamodb::types::{AttributeValue, Put, TransactWriteItem};
+use aws_sdk_dynamodb::types::{
+    AttributeValue, DeleteRequest, Put, TransactWriteItem, WriteRequest,
+};
 
 use super::audience::AudienceMember;
 use super::client::Dao;
@@ -417,6 +419,16 @@ impl Dao {
     /// `description`, `status`, `starts_at`, `location` (Some(None) clears it),
     /// and the resolved `confirmed_score`/`pending_score` blobs. `NotFound` if
     /// the match is absent.
+    ///
+    /// `side_names` renames one or more sides in the same `UpdateItem` call as
+    /// everything else here — both target the same item, so folding it in
+    /// (rather than a second call) makes a request that edits, say, the
+    /// match's `name` and a side's `name` together atomic: either both land
+    /// or neither does, instead of one succeeding and the other failing
+    /// independently. `(side_id, Some(name))` sets that side's custom name;
+    /// `(side_id, None)` removes it, falling back at read time to the
+    /// priority chain `Api::resolve_side_names` implements (sole player, then
+    /// team, then a neutral default). An empty slice touches no sides.
     #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(skip(self))]
     pub async fn update_match_meta(
@@ -436,6 +448,7 @@ impl Dao {
         // overwrites. No "clear" case yet (Phase 1 doesn't need one — a
         // match's sport, and so its format shape, doesn't change).
         format: Option<MatchFormatRecord>,
+        side_names: &[(String, Option<String>)],
     ) -> DaoResult<()> {
         let mut set: Vec<String> = Vec::new();
         let mut remove: Vec<String> = Vec::new();
@@ -501,6 +514,26 @@ impl Dao {
             names.insert("#fmt".into(), "format".into());
             values.insert(":fmt".into(), to_attr(&fmt)?);
         }
+        if !side_names.is_empty() {
+            // Same literal attribute name ("name") as the top-level `#name`
+            // alias above — reinserting it with the same value is harmless,
+            // and lets a top-level rename and a side rename share one alias.
+            names.insert("#name".into(), "name".into());
+            for (i, (side_id, side_name)) in side_names.iter().enumerate() {
+                let side_alias = format!("#s{i}");
+                names.insert(side_alias.clone(), side_id.clone());
+                match side_name {
+                    Some(n) => {
+                        let value_alias = format!(":n{i}");
+                        set.push(format!("sides.{side_alias}.#name = {value_alias}"));
+                        values.insert(value_alias, s(n));
+                    }
+                    None => {
+                        remove.push(format!("sides.{side_alias}.#name"));
+                    }
+                }
+            }
+        }
 
         if set.is_empty() && remove.is_empty() {
             return Ok(());
@@ -560,6 +593,42 @@ impl Dao {
             .send()
             .await
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Remove players from a match's roster entirely (not just unassign their
+    /// side — see `put_match_player` with `side_id: None` for that), in one
+    /// batch delete (`BatchWriteItem`, `BATCH_WRITE_MAX` items/request — see
+    /// `dao::batch`) rather than a `DeleteItem` per player. Idempotent
+    /// (deleting a missing player is a no-op); a no-op itself for an empty
+    /// `player_ids`.
+    #[tracing::instrument(skip(self))]
+    pub async fn remove_match_players(
+        &self,
+        match_id: &str,
+        player_ids: &[String],
+    ) -> DaoResult<()> {
+        for chunk in player_ids.chunks(super::batch::BATCH_WRITE_MAX) {
+            let mut requests = Vec::with_capacity(chunk.len());
+            for player_id in chunk {
+                let key = HashMap::from([
+                    (
+                        ATTR_PK.to_string(),
+                        s(Pk::Match(match_id.into()).to_string()),
+                    ),
+                    (
+                        ATTR_SK.to_string(),
+                        s(Sk::Player(player_id.clone()).to_string()),
+                    ),
+                ]);
+                let delete = DeleteRequest::builder()
+                    .set_key(Some(key))
+                    .build()
+                    .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+                requests.push(WriteRequest::builder().delete_request(delete).build());
+            }
+            self.flush_batch_write(requests).await?;
+        }
         Ok(())
     }
 

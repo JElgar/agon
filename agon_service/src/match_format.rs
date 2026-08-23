@@ -23,6 +23,7 @@ use poem_openapi::{Object, Union};
 pub enum MatchFormat {
     Football(FootballFormat),
     Cricket(CricketFormat),
+    Netball(NetballFormat),
 }
 
 #[derive(Object, Clone)]
@@ -69,4 +70,20 @@ pub struct CricketFormat {
     pub no_ball_is_extra_ball: bool,
     /// Whether the delivery after a no-ball is a free hit.
     pub free_hit_after_no_ball: bool,
+}
+
+#[derive(Object, Clone)]
+pub struct NetballFormat {
+    /// Quarters per match — normally 4; some social leagues play 2 longer
+    /// halves instead, so this isn't hardcoded to 4.
+    pub num_quarters: u32,
+    /// Minutes per quarter, e.g. 15 for a standard game or 12 for Fast5.
+    pub quarter_length_minutes: u32,
+    /// Whether a goal from the two-point zone counts double (Fast5/Netball
+    /// Superleague Power Play rules). `false` for standard scoring, where
+    /// every goal is worth one regardless of where it's shot from.
+    pub two_point_zone: bool,
+    /// Whether an extra period is played (typically "first to score" /
+    /// golden goal) if the match is level after full time.
+    pub extra_time: bool,
 }

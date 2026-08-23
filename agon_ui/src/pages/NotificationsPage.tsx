@@ -19,6 +19,7 @@ import { FollowButton } from '@/components/agon/FollowButton'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
+import { PushNotificationsBanner } from '@/components/agon/PushNotificationsBanner'
 
 type NotificationPage = components['schemas']['NotificationPage']
 type Notification = components['schemas']['Notification']
@@ -118,18 +119,22 @@ export function NotificationsPage() {
 
   if (items.length === 0) {
     return (
-      <div className="py-16 text-center">
-        <Bell className="mx-auto mb-3 size-8 text-muted-foreground" />
-        <h2 className="mb-1 text-lg font-medium">No notifications yet</h2>
-        <p className="text-sm text-muted-foreground">
-          Match invites, follows, likes and comments show up here.
-        </p>
+      <div className="mx-auto max-w-xl">
+        <PushNotificationsBanner />
+        <div className="py-16 text-center">
+          <Bell className="mx-auto mb-3 size-8 text-muted-foreground" />
+          <h2 className="mb-1 text-lg font-medium">No notifications yet</h2>
+          <p className="text-sm text-muted-foreground">
+            Match invites, follows, likes and comments show up here.
+          </p>
+        </div>
       </div>
     )
   }
 
   return (
     <div className="mx-auto flex max-w-xl flex-col">
+      <PushNotificationsBanner />
       <div className="mb-2 flex items-center justify-between">
         <h1 className="text-xl font-semibold">Notifications</h1>
         {hasUnread && (

@@ -7,6 +7,18 @@
     <link rel="mask-icon" href="/masked-icon.svg" color="#2563EB" />
     <meta name="theme-color" content="#ffffff" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      iOS Safari has no `beforeinstallprompt`/install-banner API (unlike
+      Chrome/Android) and ignores the web manifest's `display: standalone`.
+      Without this tag, a page added via Share -> Add to Home Screen still
+      opens inside Safari's browser chrome instead of as a standalone app.
+      `mobile-web-app-capable` is the non-prefixed standard other engines
+      (and iOS 17.4+) read; keep the `apple-` one too for older iOS.
+    -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Agon" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

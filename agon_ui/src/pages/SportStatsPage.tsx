@@ -11,8 +11,11 @@ import {
 } from '@/components/agon/MatchActivityChart'
 import { sportIcon, sportLabel, type MatchType } from '@/lib/sports'
 import { formatWinRate, type BestFigure } from '@/lib/stats'
+import { formatOvers } from '@/lib/cricketScore'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { cn } from '@/lib/utils'
+
+type BestBowlingFigures = components['schemas']['BestBowlingFigures']
 
 type UserProfile = components['schemas']['UserProfile']
 type SearchMatch = components['schemas']['SearchMatch']
@@ -142,11 +145,23 @@ export function SportStatsPage() {
           {'runs' in stats && (
             <section className="flex flex-col gap-2">
               <SectionHeading>Batting &amp; bowling</SectionHeading>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <div className="grid grid-cols-3 gap-2 sm:grid-cols-5">
                 <StatTile value={stats.runs} label="Runs" />
                 <StatTile value={stats.wickets} label="Wickets" />
                 <StatTile value={stats.fours} label="Fours" />
                 <StatTile value={stats.sixes} label="Sixes" />
+                <StatTile value={stats.catches} label="Catches" />
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <StatTile
+                  value={stats.batting_average?.toFixed(1) ?? '-'}
+                  label="Average"
+                />
+                <StatTile
+                  value={stats.strike_rate?.toFixed(0) ?? '-'}
+                  label="Strike rate"
+                />
+                <StatTile value={stats.economy?.toFixed(1) ?? '-'} label="Economy" />
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <BestFigureCard
@@ -154,10 +169,8 @@ export function SportStatsPage() {
                   figure={stats.best_runs}
                   onOpen={(id) => navigate(`/matches/${id}`)}
                 />
-                <BestFigureCard
-                  label="Best bowling"
-                  figure={stats.best_wickets}
-                  unit="wickets"
+                <BestBowlingCard
+                  figure={stats.best_bowling}
                   onOpen={(id) => navigate(`/matches/${id}`)}
                 />
               </div>
@@ -179,9 +192,8 @@ export function SportStatsPage() {
                   onOpen={(id) => navigate(`/matches/${id}`)}
                 />
                 <BestFigureCard
-                  label="Best game (assists)"
-                  figure={stats.best_assists}
-                  unit="assists"
+                  label="Best game (goal involvements)"
+                  figure={stats.best_goal_contributions}
                   onOpen={(id) => navigate(`/matches/${id}`)}
                 />
               </div>
@@ -249,6 +261,42 @@ function BestFigureCard({
           <span className="text-lg font-medium">
             {figure.value}
             {unit && <span className="ml-1 text-xs font-normal text-muted-foreground">{unit}</span>}
+          </span>
+          <button
+            type="button"
+            onClick={() => onOpen(figure.match_id)}
+            className="text-left text-xs text-primary hover:underline"
+          >
+            View match
+          </button>
+        </>
+      ) : (
+        <span className="text-sm text-muted-foreground">-</span>
+      )}
+    </div>
+  )
+}
+
+/** Best single-match bowling spell — a richer card than `BestFigureCard`
+ *  since a bowling figure needs runs conceded and overs alongside the
+ *  wicket count to mean anything ("5/32 (8.4 overs)", not just "5"). */
+function BestBowlingCard({
+  figure,
+  onOpen,
+}: {
+  figure: BestBowlingFigures | undefined
+  onOpen: (matchId: string) => void
+}) {
+  return (
+    <div className="flex flex-col gap-1 rounded-xl border bg-card p-3">
+      <span className="text-[10px] text-muted-foreground">Best bowling</span>
+      {figure ? (
+        <>
+          <span className="text-lg font-medium">
+            {figure.wickets}/{figure.runs_conceded}
+            <span className="ml-1 text-xs font-normal text-muted-foreground">
+              ({formatOvers(figure.overs)} overs)
+            </span>
           </span>
           <button
             type="button"

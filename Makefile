@@ -12,13 +12,45 @@ generate-schema:
 	cargo run -p agon_service -- generate-schema
 	openapi-generator-cli generate -i schema.json -g rust -o openapi_client
 	echo "disable_all_formatting = true" > openapi_client/.rustfmt.toml
-	# Post-process: for discriminated unions the enum is `#[serde(tag = "type")]`
-	# (serde consumes `type` to pick the variant), but the generator ALSO emits a
-	# required `type` field on each variant struct — so deserializing fails with
-	# "missing field `type`". Add `#[serde(default)]` so the (single-valued,
-	# already-correct) field defaults when absent. See docs/openapi-client.md.
+	# Post-process: for a discriminated union whose variants are flat objects
+	# (not another nested union — see the `LiveEventInput` fix below for
+	# that case), the enum is `#[serde(tag = "<name>")]` (serde consumes
+	# `<name>` to pick the variant), but the generator ALSO emits a required
+	# `<name>` field on each variant struct — so deserializing can fail
+	# (`missing field`, or — once the variant has enough other fields that
+	# the same broken reconstruction misaligns a *different*, non-optional
+	# one instead — a spurious type-mismatch on that field, e.g. "invalid
+	# type: null, expected a string" on a plain required `side_id: String`
+	# that was never actually null on the wire). Add `#[serde(default)]` so
+	# the (single-valued, already-correct) discriminator field defaults
+	# when the reconstruction doesn't see it. This API uses three such
+	# discriminator names: `type` (e.g. `Score`), `sport` (`MatchFormat`),
+	# and `kind` (the football/cricket/netball live-event unions nested
+	# inside `LiveEventInput`) — all three need the same fix, not just
+	# `type`. See docs/openapi-client.md.
 	find openapi_client/src/models -name '*.rs' -exec \
 		perl -0pi -e 's/#\[serde\(rename = "type"\)\]\n(\s*)pub r#type: Type,/#[serde(rename = "type", default)]\n$1pub r#type: Type,/g' {} +
+	find openapi_client/src/models -name '*.rs' -exec \
+		perl -0pi -e 's/#\[serde\(rename = "sport"\)\]\n(\s*)pub sport: Sport,/#[serde(rename = "sport", default)]\n$1pub sport: Sport,/g' {} +
+	find openapi_client/src/models -name '*.rs' -exec \
+		perl -0pi -e 's/#\[serde\(rename = "kind"\)\]\n(\s*)pub kind: Kind,/#[serde(rename = "kind", default)]\n$1pub kind: Kind,/g' {} +
+	# Post-process: `LiveEventInput` nests a second discriminated union (each
+	# sport's own `kind`-tagged event union) inside its own `sport`-tagged
+	# variants. The generator handles that inner `oneOf` correctly wherever
+	# it's referenced directly (`FootballLiveEvent`/`CricketLiveEvent`/
+	# `NetballLiveEvent` each come out as a proper enum with every kind), but
+	# for the *outer* variant it instead flattens `allOf[{sport}, {$ref to
+	# the inner oneOf}]` into one struct that merges every kind's fields
+	# together and collapses the inner discriminator down to a single-value
+	# enum (whichever kind happened to be generated last) — so deserializing
+	# any other kind fails with "unknown variant". Point the outer variants
+	# at the correctly-generated standalone enums instead of the broken
+	# merged structs; serde's internally-tagged (`tag = "..."`) enums nest
+	# fine (both discriminators live on the same flat JSON object), so this
+	# is a pure type-reference swap, no behavior change beyond fixing the
+	# bug. See docs/openapi-client.md.
+	perl -pi -e 's/models::LiveEventInput(Football|Cricket|Netball)LiveEvent/models::$1LiveEvent/g' \
+		openapi_client/src/models/live_event_input.rs
 
 generate:
 	make generate-schema
@@ -46,3 +78,21 @@ test-staging:
 
 run:
 	cargo run -p agon_service -- run-server abc.com
+
+# Full browser UI end-to-end tests (Playwright) — see agon_ui/e2e/README.md
+# for what's covered and how the test account works. Reads E2E_TEST_EMAIL /
+# E2E_TEST_PASSWORD / E2E_BASE_URL from the environment (or .env); use
+# test-ui-e2e-staging below to pull the test account from Pulumi instead.
+test-ui-e2e:
+	npm --prefix agon_ui run test:e2e
+
+# Same, against the deployed staging UI, fetching the fixed test account from
+# Pulumi config (single source of truth — see e2eTestEmail/e2eTestPassword in
+# agon_infra/index.ts, same pattern as test-staging's signing key above).
+UI_STAGING_URL ?= https://agon.staging.get-agon.com
+
+test-ui-e2e-staging:
+	E2E_BASE_URL=$(UI_STAGING_URL) \
+	E2E_TEST_EMAIL="$$(cd agon_infra && pulumi config get e2eTestEmail --stack $(STACK))" \
+	E2E_TEST_PASSWORD="$$(cd agon_infra && pulumi config get e2eTestPassword --stack $(STACK))" \
+	npm --prefix agon_ui run test:e2e

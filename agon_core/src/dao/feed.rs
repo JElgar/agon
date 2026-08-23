@@ -14,6 +14,7 @@
 use aws_sdk_dynamodb::types::{PutRequest, WriteRequest};
 
 use super::audience::AudienceMember;
+use super::batch::BATCH_WRITE_MAX;
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::item::{ItemBuilder, to_item};
@@ -22,9 +23,6 @@ use super::page::Page;
 use super::records::FeedItemRecord;
 
 pub const TYPE_FEED_ITEM: &str = "feed_item";
-
-/// DynamoDB's hard cap on items per `BatchWriteItem` request.
-const BATCH_WRITE_MAX: usize = 25;
 
 /// One viewer's feed entry to write for a match — the viewer id plus their
 /// [`AudienceMember`] data (known-players list / own side, see
@@ -133,41 +131,5 @@ impl Dao {
             limit,
         )
         .await
-    }
-
-    /// Submit a batch of write requests, retrying `UnprocessedItems` (which
-    /// DynamoDB returns under throttling) with backoff until the batch fully
-    /// drains. Shares the attempt cap + backoff schedule with the batch-get side
-    /// (see `dao::batch`).
-    async fn flush_batch_write(&self, requests: Vec<WriteRequest>) -> DaoResult<()> {
-        let mut pending = requests;
-        for attempt in 0..super::batch::MAX_BATCH_ATTEMPTS {
-            if pending.is_empty() {
-                return Ok(());
-            }
-            super::batch::backoff(attempt).await;
-
-            let out = self
-                .client
-                .batch_write_item()
-                .request_items(self.table(), std::mem::take(&mut pending))
-                .send()
-                .await
-                .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-
-            if let Some(unprocessed) = out.unprocessed_items
-                && let Some(items) = unprocessed.get(self.table())
-                && !items.is_empty()
-            {
-                pending = items.clone();
-            }
-        }
-        if pending.is_empty() {
-            Ok(())
-        } else {
-            Err(DaoError::Dynamo(
-                "batch write did not drain unprocessed items".into(),
-            ))
-        }
     }
 }

@@ -77,6 +77,19 @@ impl Drop for Telemetry {
 /// installed and the returned guard is inert — so local runs and tests behave
 /// exactly as before this module existed.
 pub fn init(service_name: &'static str) -> Telemetry {
+    // rustls 0.23 no longer auto-selects a crypto backend when a process's
+    // dependency graph pulls in more than one (here: `ring`, via the Temporal
+    // SDK / reqwest's `rustls-tls`, and `aws-lc-rs`, via the AWS SDK crates) —
+    // without an explicit process-wide default, the *first* real TLS client
+    // construction anywhere (OTLP export, Meilisearch, FCM push, Temporal's
+    // gRPC client, ...) panics with "no process-level CryptoProvider
+    // available". `init` is the first thing both binaries' `main` calls, so
+    // install it here, once, before anything else can race to construct a
+    // TLS client. `install_default` errors if a provider is already
+    // installed (e.g. a second `init()` call within one process, such as in
+    // tests) — that's fine, the first installation already won.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     let filter = || EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     // Always emit JSON logs to stdout. In the cluster these are still captured

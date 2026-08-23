@@ -21,6 +21,7 @@ use aws_sdk_sqs::Client as SqsClient;
 
 use crate::config::Config;
 use crate::consumer::Consumer;
+use agon_core::push::PushClient;
 use agon_core::search::SearchClient;
 
 #[tokio::main]
@@ -51,6 +52,23 @@ async fn main() {
         std::process::exit(1);
     }
 
+    // Push is opt-in: absent config means "not configured" (e.g. local dev),
+    // not a failure. Present-but-invalid is a real misconfiguration, so that
+    // still exits.
+    let push = match &config.fcm_service_account_json {
+        None => {
+            tracing::info!("AGON_FCM_SERVICE_ACCOUNT_JSON unset; push notifications disabled");
+            None
+        }
+        Some(json) => match PushClient::new(json).await {
+            Ok(p) => Some(p),
+            Err(e) => {
+                tracing::error!(error = %e, "failed to build FCM push client; exiting");
+                std::process::exit(1);
+            }
+        },
+    };
+
     // The asset consumer shares the SQS client, DAO and config; build it before
     // moving `config` into the main consumer.
     let asset_consumer = asset_consumer::AssetConsumer::new(
@@ -59,7 +77,7 @@ async fn main() {
         std::sync::Arc::new(config.clone()),
     );
 
-    let consumer = Consumer::new(sqs, dao.clone(), search.clone(), config);
+    let consumer = Consumer::new(sqs, dao.clone(), search.clone(), push, config);
 
     // Attach a client so multi-step stream events start workflows. A connection
     // failure here is fatal — Temporal is a required dependency of the worker.

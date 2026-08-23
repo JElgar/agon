@@ -19,6 +19,17 @@ aws-sdk-dynamodb = "1"
 tokio = { version = "1", features = ["time"] }
 serde_dynamo = { version = "4", features = ["aws-sdk-dynamodb+1"] }
 meilisearch-sdk = { version = "0.33", default-features = false, features = ["reqwest", "tls"] }
+# FCM HTTP v1 client (`push`) — auto-generated from Google's own fcm:v1 API
+# schema, so it tracks the API surface (platform-specific payload options)
+# without us hand-maintaining request/response types. Re-exports the
+# `hyper_rustls`/`hyper_util`/`yup_oauth2` versions it was built against, so
+# only `yup-oauth2` needs its own explicit entry (for its service-account
+# auth types used directly in `push`).
+google-fcm1 = "7.0.0"
+# Service-account OAuth2 (JWT bearer) flow for the FCM client: signs the
+# assertion, exchanges it for an access token, and caches/refreshes it —
+# handled internally, not something `push` reimplements.
+yup-oauth2 = "12.1.2"
 
 # Observability: OTLP export of logs, traces and metrics. `telemetry::init`
 # wires the `tracing` ecosystem to an OTLP collector (Grafana Alloy in prod);
@@ -30,3 +41,7 @@ opentelemetry = "0.32"
 opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
 opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic", "trace", "metrics", "logs"] }
 opentelemetry-appender-tracing = "0.32"
+# Only for `crypto::ring::default_provider().install_default()` in
+# `telemetry::init` — see its doc comment. `ring` (not `aws-lc-rs`) to match
+# what the Temporal SDK / reqwest's `rustls-tls` already pull in.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }

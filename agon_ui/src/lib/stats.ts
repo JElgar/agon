@@ -15,6 +15,7 @@ const SPORT_ORDER: MatchType[] = [
   'badminton',
   'squash',
   'table_tennis',
+  'netball',
   'other',
 ]
 

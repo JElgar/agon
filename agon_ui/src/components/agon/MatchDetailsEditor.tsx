@@ -9,21 +9,32 @@ import { isoToDateTimeLocal } from '@/lib/datetime'
 import { MultiImageUploadField } from '@/components/agon/MultiImageUploadField'
 
 type Match = components['schemas']['Match']
+type MatchSide = components['schemas']['MatchSide']
+type UpdateMatchSideNameInput = components['schemas']['UpdateMatchSideNameInput']
+
+/** Whether a side can be given its own custom name: an ad-hoc side (no team)
+ *  always can; a team-linked side only when another side shares that same
+ *  team (otherwise the team's own name is the source of truth) — mirrors the
+ *  server's create/update validation. */
+function isRenameable(side: MatchSide, sides: MatchSide[]): boolean {
+  if (!side.team_id) return true
+  return sides.some((other) => other.id !== side.id && other.team_id === side.team_id)
+}
 
 /**
- * Inline editor for a match's metadata — name, description, start time, and
- * header photos — shown in place of the details card when a participant taps
- * "Edit". Saves via `PATCH /matches/{id}` (only the changed fields are sent)
- * and, on success, refreshes the match and feed then closes back to the
- * read-only card.
+ * Inline editor for a match's metadata — name, description, start time,
+ * header photos, and side names — shown in place of the details card when a
+ * participant taps "Edit". Saves via `PATCH /matches/{id}` (only the changed
+ * fields are sent) and, on success, refreshes the match and feed then closes
+ * back to the read-only card.
  *
  * Roster and result are edited elsewhere (invite control, result editor), so
- * this deliberately covers just the descriptive fields plus photos — useful
- * once a match is complete and there are photos from the game to add. The
- * server has no id-level append/reorder, only "replace with this full list",
- * so the photo field is seeded with the match's *current* photos (by asset
- * id) and the user's edits — reorder, remove, add — are applied on top of
- * that seed before being sent back as the complete list on save.
+ * this deliberately covers just the descriptive fields, photos, and side
+ * names. The server has no id-level append/reorder for photos, only "replace
+ * with this full list", so the photo field is seeded with the match's
+ * *current* photos (by asset id) and the user's edits — reorder, remove, add
+ * — are applied on top of that seed before being sent back as the complete
+ * list on save.
  */
 export function MatchDetailsEditor({
   match,
@@ -40,6 +51,14 @@ export function MatchDetailsEditor({
 
   const existingHeaderAssetIds = match.header_photos.map((p) => p.asset_id!)
   const [headerAssetIds, setHeaderAssetIds] = useState<string[]>(existingHeaderAssetIds)
+
+  // Seeded from each side's currently-*displayed* name (server-resolved —
+  // could be a custom name, a team's name, or a computed fallback). Editing
+  // and saving sets that side's custom name explicitly; clearing the field
+  // back to empty reverts to whatever the server would otherwise resolve.
+  const [sideNames, setSideNames] = useState<Record<string, string>>(
+    Object.fromEntries(match.sides.map((s) => [s.id, s.name ?? ''])),
+  )
 
   const nameError = name.trim().length === 0 ? 'A match needs a name' : null
   const timeError = Number.isNaN(new Date(startsAt).getTime())
@@ -59,6 +78,19 @@ export function MatchDetailsEditor({
       if (JSON.stringify(headerAssetIds) !== JSON.stringify(existingHeaderAssetIds)) {
         body.header_photo_asset_ids = headerAssetIds
       }
+
+      const sideNameUpdates: UpdateMatchSideNameInput[] = []
+      for (const side of match.sides) {
+        if (!isRenameable(side, match.sides)) continue
+        const original = (side.name ?? '').trim()
+        const next = (sideNames[side.id] ?? '').trim()
+        if (next === original) continue
+        // An empty field clears the custom name (omitting `name` — the
+        // server treats a missing key the same as `null`), falling back to
+        // the server-resolved default rather than sending an empty string.
+        sideNameUpdates.push(next ? { side_id: side.id, name: next } : { side_id: side.id })
+      }
+      if (sideNameUpdates.length > 0) body.side_names = sideNameUpdates
 
       if (Object.keys(body).length === 0) return // nothing changed
 
@@ -123,6 +155,37 @@ export function MatchDetailsEditor({
         {timeError && (
           <p className="mt-1 text-xs text-destructive">{timeError}</p>
         )}
+      </div>
+
+      <div className="flex flex-col gap-2">
+        {match.sides.map((side, i) => {
+          const renameable = isRenameable(side, match.sides)
+          return (
+            <div key={side.id}>
+              <Label
+                htmlFor={`side-name-${side.id}`}
+                className="text-xs text-muted-foreground"
+              >
+                {i === 0 ? 'Side A name' : i === 1 ? 'Side B name' : `Side ${i + 1} name`}
+              </Label>
+              <Input
+                id={`side-name-${side.id}`}
+                value={sideNames[side.id] ?? ''}
+                onChange={(e) =>
+                  setSideNames((prev) => ({ ...prev, [side.id]: e.target.value }))
+                }
+                placeholder={renameable ? 'Optional' : undefined}
+                disabled={!renameable}
+                className="mt-1"
+              />
+              {!renameable && (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Linked to a team — rename the team instead.
+                </p>
+              )}
+            </div>
+          )
+        })}
       </div>
 
       <div>

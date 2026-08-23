@@ -9,7 +9,7 @@ use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, ATTR_SK, from_item, item_sk, s, to_item};
 use super::keys::{Pk, Sk};
-use super::records::StatContributionRecord;
+use super::records::{BestBowlingFiguresRecord, StatContributionRecord};
 
 /// Type tag for the per-match stat-contribution item.
 pub const TYPE_STAT_CONTRIBUTION: &str = "stat_contribution";
@@ -32,9 +32,33 @@ pub struct MatchContribution {
     /// `None` if the user didn't play this match (or it doesn't currently
     /// count — not completed, no confirmed score, dropped from the roster).
     pub outcome: Option<MatchOutcome>,
-    /// Sport-specific counters earned in this match. Only meaningful (and
-    /// only ever populated by callers) when `outcome` is `Some`.
+    /// Every sport-specific counter earned in this match, summed into the
+    /// player's lifetime totals. Only meaningful (and only ever populated by
+    /// callers) when `outcome` is `Some`.
     pub counters: HashMap<String, u64>,
+    /// The subset of `counters` worth keeping a personal-best single-match
+    /// record for (e.g. "runs" and "goals", not every raw counter — see
+    /// `Dao::update_best_figures`). A separate, usually-smaller map rather
+    /// than best-tracking everything in `counters`, so a counter nobody
+    /// cares to rank (like `balls_faced`) doesn't cost a conditional write
+    /// on every reconcile.
+    pub best_candidates: HashMap<String, u64>,
+    /// Cricket-specific: this player's bowling figures in this match, if
+    /// they bowled. Carried separately from `counters`/`best_candidates`
+    /// because "best bowling" needs to remember runs-conceded/balls-bowled
+    /// alongside wickets, not just a bare scalar — see
+    /// `Dao::update_best_bowling_figures`. `None` for every non-cricket
+    /// sport, and for a cricket player who didn't bowl.
+    pub bowling_spell: Option<BowlingSpell>,
+}
+
+/// One player's bowling figures in a single match (possibly summed across
+/// more than one innings) — the raw material for `best_bowling`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BowlingSpell {
+    pub wickets: u64,
+    pub runs_conceded: u64,
+    pub balls_bowled: u64,
 }
 
 impl StatContributionRecord {
@@ -225,13 +249,17 @@ impl Dao {
             .await
         {
             Ok(_) => {
-                // Best-effort personal-best update — deliberately outside the
-                // transaction above (see `update_best_figures`), and only
-                // when the user actually played: a contribution being
+                // Best-effort personal-best updates — deliberately outside
+                // the transaction above (see `update_best_figures`), and
+                // only when the user actually played: a contribution being
                 // withdrawn (outcome -> None) can't set a new best.
                 if desired.outcome.is_some() {
-                    self.update_best_figures(user_id, sport, match_id, &desired.counters)
+                    self.update_best_figures(user_id, sport, match_id, &desired.best_candidates)
                         .await?;
+                    if let Some(spell) = desired.bowling_spell {
+                        self.update_best_bowling_figures(user_id, match_id, spell)
+                            .await?;
+                    }
                 }
                 Ok(())
             }
@@ -245,11 +273,11 @@ impl Dao {
         }
     }
 
-    /// Ratchet up `stats.<sport>.best.<counter>` for every counter in
+    /// Ratchet up `stats.<sport>.best_<counter>` for every counter in
     /// `counters` whose value in *this* match exceeds any previously
-    /// recorded best — a personal-best single-match figure ("most wickets in
-    /// a game", "most goals in a game") alongside the match it happened in.
-    /// Counters at `0` are skipped (nothing to record).
+    /// recorded best — a personal-best single-match figure ("most goals in a
+    /// game") alongside the match it happened in. Counters at `0` are
+    /// skipped (nothing to record).
     ///
     /// Deliberately one-directional: if the match that set a record is later
     /// rescored downward, cancelled, or the player is removed from its
@@ -282,22 +310,13 @@ impl Dao {
 
         // `stats.#sport` is guaranteed to already exist by this point (the
         // transaction just above always touches at least `matches_played`
-        // for a played contribution), but `stats.#sport.best` might not —
-        // ensure it's a map before setting counters within it, same
-        // two-step reasoning as `ensure_stats_sport`.
-        self.client
-            .update_item()
-            .table_name(self.table())
-            .key(ATTR_PK, pk.clone())
-            .key(ATTR_SK, sk.clone())
-            .update_expression("SET stats.#sport.best = if_not_exists(stats.#sport.best, :empty)")
-            .expression_attribute_names("#sport", sport)
-            .expression_attribute_values(":empty", AttributeValue::M(HashMap::new()))
-            .send()
-            .await
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-
+        // for a played contribution), so each `best_<counter>` field can be
+        // set directly on it — no intermediate map to ensure first. The
+        // field name is `best_<counter>` (e.g. `best_runs`), matching
+        // `CricketStatsRecord`/`FootballPlayerStats`'s flat `best_*` fields
+        // exactly — not nested under a `best` sub-map.
         for (counter, value) in candidates {
+            let field = format!("best_{counter}");
             let new_best = AttributeValue::M(HashMap::from([
                 ("value".to_string(), AttributeValue::N(value.to_string())),
                 ("match_id".to_string(), s(match_id)),
@@ -308,12 +327,12 @@ impl Dao {
                 .table_name(self.table())
                 .key(ATTR_PK, pk.clone())
                 .key(ATTR_SK, sk.clone())
-                .update_expression("SET stats.#sport.best.#counter = :new")
+                .update_expression("SET stats.#sport.#field = :new")
                 .condition_expression(
-                    "attribute_not_exists(stats.#sport.best.#counter) OR stats.#sport.best.#counter.#val < :val",
+                    "attribute_not_exists(stats.#sport.#field) OR stats.#sport.#field.#val < :val",
                 )
                 .expression_attribute_names("#sport", sport)
-                .expression_attribute_names("#counter", counter.as_str())
+                .expression_attribute_names("#field", field.as_str())
                 .expression_attribute_names("#val", "value")
                 .expression_attribute_values(":new", new_best)
                 .expression_attribute_values(":val", AttributeValue::N(value.to_string()))
@@ -326,6 +345,69 @@ impl Dao {
             }
         }
         Ok(())
+    }
+
+    /// Ratchet up `stats.cricket.best_bowling` — the single-match bowling
+    /// spell with the most wickets, alongside the runs conceded and balls
+    /// bowled in that same spell, so "most wickets" doesn't lose the context
+    /// needed to read it as e.g. "5 wickets for 32 runs off 34 balls".
+    /// Cricket-specific (hardcodes the "cricket" sport) rather than routed
+    /// through the generic per-counter `update_best_figures`, because a
+    /// bowling figure is a 3-field record ranked by one of those fields, not
+    /// a bare scalar. Same one-directional/best-effort/outside-the-
+    /// transaction characteristics as `update_best_figures` — see its doc
+    /// comment.
+    async fn update_best_bowling_figures(
+        &self,
+        user_id: &str,
+        match_id: &str,
+        spell: BowlingSpell,
+    ) -> DaoResult<()> {
+        if spell.wickets == 0 {
+            return Ok(());
+        }
+        let pk = s(Pk::User(user_id.into()).to_string());
+        let sk = s(Sk::Profile.to_string());
+        let new_best = BestBowlingFiguresRecord {
+            wickets: spell.wickets,
+            runs_conceded: spell.runs_conceded,
+            balls_bowled: spell.balls_bowled,
+            match_id: match_id.to_string(),
+        };
+        let new_best_av = AttributeValue::M(HashMap::from([
+            (
+                "wickets".to_string(),
+                AttributeValue::N(spell.wickets.to_string()),
+            ),
+            (
+                "runs_conceded".to_string(),
+                AttributeValue::N(spell.runs_conceded.to_string()),
+            ),
+            (
+                "balls_bowled".to_string(),
+                AttributeValue::N(spell.balls_bowled.to_string()),
+            ),
+            ("match_id".to_string(), s(&new_best.match_id)),
+        ]));
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, pk)
+            .key(ATTR_SK, sk)
+            .update_expression("SET stats.cricket.best_bowling = :new")
+            .condition_expression(
+                "attribute_not_exists(stats.cricket.best_bowling) OR stats.cricket.best_bowling.wickets < :wickets",
+            )
+            .expression_attribute_values(":new", new_best_av)
+            .expression_attribute_values(":wickets", AttributeValue::N(spell.wickets.to_string()))
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => Ok(()),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
     }
 
     /// One `ADD stats.#sport.#counter :d, ...` update on the user's profile

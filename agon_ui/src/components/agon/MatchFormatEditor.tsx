@@ -6,9 +6,11 @@ import type { MatchType } from '@/lib/sports'
 import {
   DEFAULT_CRICKET_FORMAT,
   DEFAULT_FOOTBALL_FORMAT,
+  DEFAULT_NETBALL_FORMAT,
   type CricketFormat,
   type FootballFormat,
   type MatchFormat,
+  type NetballFormat,
 } from '@/lib/matchFormat'
 
 /**
@@ -185,19 +187,57 @@ export function CricketFields({
   )
 }
 
+export function NetballFields({
+  value,
+  onChange,
+}: {
+  value: NetballFormat
+  onChange: (value: NetballFormat) => void
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="grid grid-cols-2 gap-2">
+        <NumberField
+          label="Quarters"
+          value={value.num_quarters}
+          min={1}
+          onChange={(v) => onChange({ ...value, num_quarters: v ?? 4 })}
+        />
+        <NumberField
+          label="Quarter length (min)"
+          value={value.quarter_length_minutes}
+          min={1}
+          onChange={(v) => onChange({ ...value, quarter_length_minutes: v ?? 15 })}
+        />
+      </div>
+      <ToggleRow
+        label="Two-point zone (Fast5/Power Play)"
+        checked={value.two_point_zone}
+        onChange={(two_point_zone) => onChange({ ...value, two_point_zone })}
+      />
+      <ToggleRow
+        label="Extra time if level"
+        checked={value.extra_time}
+        onChange={(extra_time) => onChange({ ...value, extra_time })}
+      />
+    </div>
+  )
+}
+
 /**
  * Sport-specific match format settings (half length, overs limit, penalty
  * runs, ...) — `null` while unset, in which case the app just falls back to
  * its own defaults everywhere (see `lib/matchFormat`) without the match
  * having pinned specific values. Renders nothing for a sport with no format
- * modelled yet (only football and cricket, matching the backend union).
+ * modelled yet (only football, cricket, and netball, matching the backend
+ * union).
  *
  * The on/off toggle here is for *creating* a match, where "unset" is a real,
  * meaningful choice. There's no way to clear a format back to unset once
  * one exists (the update API only supports leaving it unchanged or setting
  * it, not clearing it) — editing an existing match's format uses
- * `FootballFields`/`CricketFields` directly instead, always against a
- * concrete value.
+ * `FootballFields`/`CricketFields`/`NetballFields` directly instead, always
+ * against a concrete value.
  */
 export function MatchFormatEditor({
   sport,
@@ -208,7 +248,7 @@ export function MatchFormatEditor({
   value: MatchFormat | null
   onChange: (value: MatchFormat | null) => void
 }) {
-  if (sport !== 'football' && sport !== 'cricket') return null
+  if (sport !== 'football' && sport !== 'cricket' && sport !== 'netball') return null
 
   const enabled = value !== null
 
@@ -225,7 +265,9 @@ export function MatchFormatEditor({
           onChange(
             sport === 'cricket'
               ? { sport: 'Cricket', ...DEFAULT_CRICKET_FORMAT }
-              : { sport: 'Football', ...DEFAULT_FOOTBALL_FORMAT },
+              : sport === 'netball'
+                ? { sport: 'Netball', ...DEFAULT_NETBALL_FORMAT }
+                : { sport: 'Football', ...DEFAULT_FOOTBALL_FORMAT },
           )
         }}
       />
@@ -235,6 +277,11 @@ export function MatchFormatEditor({
             <CricketFields
               value={value}
               onChange={(v) => onChange({ sport: 'Cricket', ...v })}
+            />
+          ) : value.sport === 'Netball' ? (
+            <NetballFields
+              value={value}
+              onChange={(v) => onChange({ sport: 'Netball', ...v })}
             />
           ) : (
             <FootballFields

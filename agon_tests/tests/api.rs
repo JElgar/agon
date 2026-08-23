@@ -434,6 +434,42 @@ async fn add_and_remove_team_member() {
     assert!(!member_ids(&after_remove).contains(&member.profile.id));
 }
 
+/// Removing a member that's already gone (or never existed) returns 404 on a
+/// real team, rather than silently succeeding with the roster unchanged —
+/// membership removal is delete-by-id, not a toggle.
+#[tokio::test]
+async fn removing_an_already_removed_team_member_returns_not_found() {
+    let (config, _owner) = new_user().await;
+    let (_other_config, member) = new_user().await;
+
+    let team = teams_post(
+        &config,
+        models::CreateTeamInput {
+            name: "Roster Test".to_string(),
+        },
+    )
+    .await
+    .expect("create team");
+
+    let with_member = teams_team_id_members_post(
+        &config,
+        &team.id,
+        models::AddTeamMembersInput {
+            user_ids: vec![member.profile.id.clone()],
+        },
+    )
+    .await
+    .expect("add member");
+    let member_id = membership_id_for(&with_member, &member.profile.id).expect("membership id");
+
+    teams_team_id_members_member_id_delete(&config, &team.id, &member_id)
+        .await
+        .expect("first remove");
+
+    let response = teams_team_id_members_member_id_delete(&config, &team.id, &member_id).await;
+    assert_not_found(response);
+}
+
 // ---------------------------------------------------------------------------
 // Matches
 // ---------------------------------------------------------------------------
@@ -484,6 +520,219 @@ async fn patch_match_updates_name() {
     .await
     .expect("patch match");
     assert_eq!(updated.name, "Renamed Match");
+}
+
+/// A match's ad-hoc side names (given at create time) can be edited afterwards
+/// via `side_names`, and clearing one (`name: None`) falls back to the next
+/// entry in the priority chain rather than staying stuck on the old custom
+/// name.
+///
+/// Side "a" carries both a custom name *and* the sole invited player: an
+/// explicit name always wins over the sole player's name (see
+/// `Api::resolve_side_names`'s priority chain), so it resolves to "Side A"
+/// throughout, and clearing that name falls through to reveal the player's
+/// name underneath. Side "b" has no players, so its resolved name is its
+/// custom name; clearing *that* one is exercised separately (see
+/// `clearing_the_name_of_an_empty_side_is_rejected`) since an empty,
+/// teamless side can't be left without a name at all.
+#[tokio::test]
+async fn patch_match_renames_sides() {
+    let (config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    // Response side order isn't creation order (sides sort by their
+    // generated id), so resolve "a"/"b" by roster rather than by index.
+    let side_a = side_id_for_user(&created, &invitee.profile.id);
+    let side_b = created
+        .sides
+        .iter()
+        .find(|s| s.id != side_a)
+        .expect("a second side")
+        .id
+        .clone();
+    assert_eq!(
+        created.sides.iter().find(|s| s.id == side_a).unwrap().name.as_deref(),
+        Some("Side A"),
+        "a custom name wins over the sole player's name"
+    );
+    assert_eq!(
+        created.sides.iter().find(|s| s.id == side_b).unwrap().name.as_deref(),
+        Some("Side B")
+    );
+
+    let renamed = matches_match_id_patch(
+        &config,
+        &created.id,
+        models::UpdateMatchInput {
+            side_names: Some(vec![models::UpdateMatchSideNameInput {
+                side_id: side_b.clone(),
+                name: Some("The Champions".to_string()),
+            }]),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("patch side name");
+    let renamed_b = renamed.sides.iter().find(|s| s.id == side_b).unwrap();
+    let untouched_a = renamed.sides.iter().find(|s| s.id == side_a).unwrap();
+    assert_eq!(renamed_b.name.as_deref(), Some("The Champions"));
+    assert_eq!(
+        untouched_a.name.as_deref(),
+        Some("Side A"),
+        "a side not named in the request is left alone"
+    );
+
+    // Clearing side "a"'s custom name is safe (it still has a player to fall
+    // back on) and reveals the priority chain's next entry: the sole
+    // player's name.
+    let cleared = matches_match_id_patch(
+        &config,
+        &created.id,
+        models::UpdateMatchInput {
+            side_names: Some(vec![models::UpdateMatchSideNameInput {
+                side_id: side_a.clone(),
+                name: None,
+            }]),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("clear side name");
+    let cleared_a = cleared.sides.iter().find(|s| s.id == side_a).unwrap();
+    assert_eq!(
+        cleared_a.name.as_deref(),
+        Some("Test User"),
+        "clearing the custom name falls back to the sole player's name"
+    );
+}
+
+/// The counterpart to `patch_match_renames_sides`'s side "a" case: side "b"
+/// has no players and no team, so its custom name is the only thing keeping
+/// it identifiable — clearing it (rather than replacing it) is rejected,
+/// same as at create time.
+#[tokio::test]
+async fn clearing_the_name_of_an_empty_side_is_rejected() {
+    let (config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = side_id_for_user(&created, &invitee.profile.id);
+    let side_b = created
+        .sides
+        .iter()
+        .find(|s| s.id != side_a)
+        .expect("a second side")
+        .id
+        .clone();
+
+    let response = matches_match_id_patch(
+        &config,
+        &created.id,
+        models::UpdateMatchInput {
+            side_names: Some(vec![models::UpdateMatchSideNameInput {
+                side_id: side_b,
+                name: None,
+            }]),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::BAD_REQUEST,
+        "would have no players",
+    );
+}
+
+/// Renaming a side that isn't part of the match is rejected.
+#[tokio::test]
+async fn patch_match_rename_unknown_side_is_rejected() {
+    let (config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    let response = matches_match_id_patch(
+        &config,
+        &created.id,
+        models::UpdateMatchInput {
+            side_names: Some(vec![models::UpdateMatchSideNameInput {
+                side_id: "not-a-real-side".to_string(),
+                name: Some("Ghost Team".to_string()),
+            }]),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::BAD_REQUEST,
+        "not part of this match",
+    );
+}
+
+/// The same team/name exclusivity rule enforced at create time
+/// (`match_with_a_team_side_fans_out_to_team_followers`'s sibling case) also
+/// applies to a post-creation rename: a side linked to a team can't be given
+/// a custom name unless another side shares that team.
+#[tokio::test]
+async fn patch_match_rename_team_side_without_shared_team_is_rejected() {
+    let (owner_config, owner) = new_user().await;
+    let (_opponent_config, opponent) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Rename FC".to_string(),
+        },
+    )
+    .await
+    .expect("create team");
+
+    let mut input = match_between(
+        "Team Rename Match",
+        &[&owner.profile.id],
+        &[&opponent.profile.id],
+    );
+    input.sides[0].team_id = Some(team.id.clone());
+    input.sides[0].name = None;
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("create match");
+    // Sides come back sorted by their server-assigned id, not input order, so
+    // find the team-linked side by its `team_id` rather than assuming index 0.
+    let team_side = created
+        .sides
+        .iter()
+        .find(|s| s.team_id.as_deref() == Some(team.id.as_str()))
+        .expect("team side present")
+        .id
+        .clone();
+
+    let response = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            side_names: Some(vec![models::UpdateMatchSideNameInput {
+                side_id: team_side,
+                name: Some("Not Allowed".to_string()),
+            }]),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::BAD_REQUEST,
+        "can't have both a name and a team",
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -759,6 +1008,37 @@ async fn deleting_a_reply_less_comment_removes_it_and_decrements_count() {
             .comment_count,
         0
     );
+}
+
+/// Deleting an already-deleted comment returns 404 rather than silently
+/// succeeding — comments are delete-by-id (creating one always mints a new
+/// id, never idempotent), unlike a follow/like toggle.
+#[tokio::test]
+async fn deleting_an_already_deleted_comment_returns_not_found() {
+    let (config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let match_ = matches_post(&config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    let comment = matches_match_id_comments_post(
+        &config,
+        &match_.id,
+        models::CreateCommentInput {
+            text: "Delete me".to_string(),
+            parent_id: None,
+        },
+    )
+    .await
+    .expect("create comment");
+
+    matches_match_id_comments_comment_id_delete(&config, &match_.id, &comment.id)
+        .await
+        .expect("first delete");
+
+    let response =
+        matches_match_id_comments_comment_id_delete(&config, &match_.id, &comment.id).await;
+    assert_not_found(response);
 }
 
 /// Deleting a comment that HAS replies tombstones it: the row is kept (so its
@@ -1530,6 +1810,7 @@ fn simple_score_points(score: &models::Score) -> Vec<(String, i32)> {
         models::Score::Sets(_) => panic!("expected a simple score"),
         models::Score::Cricket(_) => panic!("expected a simple score"),
         models::Score::Football(_) => panic!("expected a simple score"),
+        models::Score::Netball(_) => panic!("expected a simple score"),
     };
     points.sort_by(|a, b| a.0.cmp(&b.0));
     points
@@ -2144,6 +2425,91 @@ async fn creating_a_match_with_one_side_is_rejected() {
     );
 }
 
+/// A side with no players is fine (recording a result against an opposition
+/// whose roster you don't know) as long as it's identifiable some other way —
+/// here, an explicit name. `create_match_input`'s side "b" already carries no
+/// invites, so this only has to strip its name.
+#[tokio::test]
+async fn creating_a_match_with_an_unnamed_empty_side_is_rejected() {
+    let (config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let mut input = create_match_input(&invitee.profile.id);
+    input.sides[1].name = None; // side "b": no players, no team, now no name either
+    let response = matches_post(&config, input).await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::BAD_REQUEST,
+        "needs a name or a team",
+    );
+}
+
+/// The counterpart to the rejection above: an empty side with an explicit
+/// name is accepted, and that name is what the side resolves to (no players
+/// to fall back on, no team, so the custom name is the only source left).
+#[tokio::test]
+async fn creating_a_match_with_a_named_empty_side_succeeds() {
+    let (config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let input = create_match_input(&invitee.profile.id); // side "b" is empty, named "Side B"
+    let created = matches_post(&config, input).await.expect("create match");
+    // Response side order isn't creation order (sides sort by their generated
+    // id), so find the empty one by roster rather than assuming an index.
+    let side_b = created
+        .sides
+        .iter()
+        .find(|s| !created.players.iter().any(|p| p.side_id.as_deref() == Some(s.id.as_str())))
+        .expect("one side has no players");
+    assert_eq!(side_b.name.as_deref(), Some("Side B"));
+}
+
+/// Same rule, projected forward at edit time: a request that would both clear
+/// a side's name *and* move its only player off it (leaving it with no
+/// players and no name) is rejected, mirroring `create_match`'s check.
+#[tokio::test]
+async fn emptying_an_unnamed_side_via_side_assignments_is_rejected() {
+    let (owner_config, owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let created = matches_post(
+        &owner_config,
+        match_between("Test Match", &[&owner.profile.id], &[&invitee.profile.id]),
+    )
+    .await
+    .expect("create match");
+
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+    let side_b = side_id_for_user(&created, &invitee.profile.id);
+    let player_b_id = created
+        .players
+        .iter()
+        .find_map(|p| match &*p.member {
+            models::Member::User(u) if u.user_id == invitee.profile.id => Some(u.id.clone()),
+            _ => None,
+        })
+        .expect("invitee player");
+
+    let response = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            side_names: Some(vec![models::UpdateMatchSideNameInput {
+                side_id: side_b.clone(),
+                name: None,
+            }]),
+            side_assignments: Some(vec![models::SetPlayerSideInput {
+                player_id: player_b_id,
+                side_id: Some(side_a),
+            }]),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::BAD_REQUEST,
+        "would have no players",
+    );
+}
+
 #[tokio::test]
 async fn scoring_an_unknown_side_is_rejected() {
     let (config, _owner) = new_user().await;
@@ -2505,6 +2871,38 @@ async fn inviter_can_revoke_an_invitation() {
     assert_not_found(response);
 }
 
+/// Revoking an already-revoked invitation is not idempotent, unlike
+/// follow/like: an invitation has no idempotent-create counterpart to stay
+/// symmetric with, so a second revoke is a genuine 404, not a silent no-op.
+#[tokio::test]
+async fn revoking_an_already_revoked_invitation_returns_not_found() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let match_ = matches_post(&owner_config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    let created = matches_match_id_invitations_post(
+        &owner_config,
+        &match_.id,
+        models::AddInvitationsInput {
+            invited_user_ids: vec![invitee.profile.id.clone()],
+            invited_external_names: vec![],
+            side_id: None,
+        },
+    )
+    .await
+    .expect("add invitation");
+    let inv_id = created.first().expect("one invitation").id.clone();
+
+    invitations_invitation_id_delete(&owner_config, &inv_id)
+        .await
+        .expect("first revoke");
+
+    let response = invitations_invitation_id_delete(&owner_config, &inv_id).await;
+    assert_not_found(response);
+}
+
 // ---------------------------------------------------------------------------
 // Notifications: single mark-read
 // ---------------------------------------------------------------------------
@@ -2726,6 +3124,7 @@ async fn my_matches_played(config: &Configuration, sport: models::MatchType) -> 
         models::MatchType::Badminton => stats.badminton.as_ref().map(|s| s.matches_played),
         models::MatchType::Squash => stats.squash.as_ref().map(|s| s.matches_played),
         models::MatchType::TableTennis => stats.table_tennis.as_ref().map(|s| s.matches_played),
+        models::MatchType::Netball => stats.netball.as_ref().map(|s| s.matches_played),
         models::MatchType::Other => stats.other.as_ref().map(|s| s.matches_played),
     };
     matches_played.unwrap_or(0)
@@ -3110,4 +3509,714 @@ async fn attach_rejects_wrong_purpose_asset() {
     )
     .await;
     assert_bad_request(response);
+}
+
+// ---------------------------------------------------------------------------
+// Netball live scoring — both of netball's two live-scoring methods
+// (event-by-event, quarter-only) fold through the same `NetballLiveEvent`
+// vocabulary, so both are exercised here against the real service.
+//
+// The append call is made with raw JSON over `reqwest` rather than the
+// generated client: the generated Rust model for a *sport* union nested
+// around a *kind* union (`LiveEventInput` -> `NetballLiveEvent`/
+// `FootballLiveEvent`/...) flattens incorrectly (a pre-existing
+// openapi-generator limitation that predates netball and affects football's
+// Goal/Card/Substitution/Period kinds too — see `docs/openapi-client.md`),
+// so its `kind` enum only ever contains one variant instead of all of them.
+// Reading the result back is unaffected — `GET /matches/:id/score` returns
+// `Score`, which embeds goals/fouls as plain (non-nested-union) structs — so
+// that leg of each test still goes through the typed client.
+// ---------------------------------------------------------------------------
+
+/// A netball match between two invited users, scheduled in the future (no
+/// create-time score) so live events can be appended afterward. The owner is
+/// assigned to side "a" so they're a participant and can record events.
+fn netball_match_input(invited_user_id: &str) -> models::CreateMatchInput {
+    let mut input = create_match_input(invited_user_id);
+    input.match_type = models::MatchType::Netball;
+    input.creator_side_client_id = Some("a".to_string());
+    input
+}
+
+fn netball_goal_event_json(side_id: &str, two_points: bool) -> serde_json::Value {
+    serde_json::json!({
+        "sport": "Netball",
+        "kind": "Goal",
+        "side_id": side_id,
+        "two_points": two_points,
+    })
+}
+
+fn netball_foul_event_json(side_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "sport": "Netball",
+        "kind": "Foul",
+        "side_id": side_id,
+        "foul_kind": "contact",
+    })
+}
+
+fn netball_period_event_json(period: &str, scores: &[(&str, i32)]) -> serde_json::Value {
+    serde_json::json!({
+        "sport": "Netball",
+        "kind": "Period",
+        "period": period,
+        "score": scores.iter().copied().collect::<std::collections::HashMap<_, _>>(),
+    })
+}
+
+/// POST `/matches/:id/live/events` with raw JSON events (see this section's
+/// doc comment for why), returning the parsed `LiveScoreSnapshot`.
+async fn append_live_events_raw(
+    config: &Configuration,
+    match_id: &str,
+    expected_last_seq: i32,
+    events: Vec<serde_json::Value>,
+) -> models::LiveScoreSnapshot {
+    let body = serde_json::json!({
+        "expected_last_seq": expected_last_seq,
+        "events": events
+            .into_iter()
+            .map(|event| serde_json::json!({ "occurred_at": iso_offset_hours(0), "event": event }))
+            .collect::<Vec<_>>(),
+    });
+    let res = reqwest::Client::new()
+        .post(format!(
+            "{}/matches/{match_id}/live/events",
+            config.base_path
+        ))
+        .bearer_auth(
+            config
+                .bearer_access_token
+                .as_ref()
+                .expect("config has a bearer token"),
+        )
+        .json(&body)
+        .send()
+        .await
+        .expect("send append request");
+    assert!(
+        res.status().is_success(),
+        "append live events failed: {} {}",
+        res.status(),
+        res.text().await.unwrap_or_default()
+    );
+    res.json().await.expect("parse LiveScoreSnapshot")
+}
+
+/// Appending `Goal`/`Foul` events (plus a `Period` marker for time-tracking)
+/// derives the running score from the goals themselves — the event-by-event
+/// method.
+#[tokio::test]
+async fn netball_event_by_event_scoring_derives_score_from_goals() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+
+    let snapshot = append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![
+            netball_goal_event_json(&side_a, false),
+            netball_goal_event_json(&side_a, true),
+            netball_goal_event_json(&side_b, false),
+            netball_foul_event_json(&side_b),
+            netball_period_event_json("quarter_one_end", &[(&side_a, 3), (&side_b, 1)]),
+        ],
+    )
+    .await;
+    assert_eq!(snapshot.last_seq, 5);
+
+    let score = matches_match_id_score_get(&owner_config, &created.id)
+        .await
+        .expect("get score");
+    match score {
+        models::Score::Netball(s) => {
+            assert_eq!(s.score.get(&side_a), Some(&3));
+            assert_eq!(s.score.get(&side_b), Some(&1));
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(3));
+            assert_eq!(s.fouls.as_ref().map(Vec::len), Some(1));
+            assert!(matches!(
+                s.period,
+                Some(models::NetballPeriod::QuarterOneEnd)
+            ));
+            let quarter_one_score = s
+                .period_scores
+                .as_ref()
+                .expect("period_scores present")
+                .get("quarter_one_end")
+                .expect("quarter one entry present");
+            assert_eq!(quarter_one_score.get(&side_a), Some(&3));
+            assert_eq!(quarter_one_score.get(&side_b), Some(&1));
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+}
+
+/// Appending only `Period` markers (no `Goal`/`Foul` events at all) derives
+/// the score purely from each marker's own `score` field — the quarter-only
+/// method.
+#[tokio::test]
+async fn netball_quarter_only_scoring_uses_period_marker_score_directly() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+
+    append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![
+            netball_period_event_json("quarter_one_end", &[(&side_a, 12), (&side_b, 9)]),
+            netball_period_event_json("quarter_two_end", &[(&side_a, 22), (&side_b, 18)]),
+        ],
+    )
+    .await;
+
+    let score = matches_match_id_score_get(&owner_config, &created.id)
+        .await
+        .expect("get score");
+    match score {
+        models::Score::Netball(s) => {
+            assert_eq!(s.score.get(&side_a), Some(&22));
+            assert_eq!(s.score.get(&side_b), Some(&18));
+            // No Goal events at all — no goal-by-goal detail to hand over.
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(0));
+            assert!(matches!(
+                s.period,
+                Some(models::NetballPeriod::QuarterTwoEnd)
+            ));
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Undo (`DELETE /matches/:id/live/events/:seq`) — restricted to the log's
+// current tip. Exercised against netball's event vocabulary since the
+// underlying append/delete/seq machinery under test is shared by every sport
+// (see `Dao::append_live_events`/`delete_live_event`); nothing here is
+// netball-specific.
+// ---------------------------------------------------------------------------
+
+/// Regression test for the bug where a UI client seeded its append token
+/// (`expected_last_seq`) from the physical event log's own max seq — fine
+/// before any undo, but permanently wrong after one, since undoing bumps the
+/// real `live_seq` counter past the deleted event without leaving a matching
+/// physical item behind (see `Dao::delete_live_event`'s doc comment). In the
+/// app this showed up as: undo an event, refresh the page (throwing away the
+/// in-session cache that had been seeded correctly from the undo's own
+/// response), and every append from then on 409s forever. `GET
+/// /matches/:id/live/seq` exists precisely so a fresh client has a correct
+/// value to seed from instead of falling back to the event log.
+#[tokio::test]
+async fn live_seq_endpoint_reflects_the_real_counter_not_the_physical_log_max() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+
+    // No events yet — the counter is 0.
+    let seq = matches_match_id_live_seq_get(&owner_config, &created.id)
+        .await
+        .expect("get live seq");
+    assert_eq!(seq.last_seq, 0);
+
+    append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![
+            netball_goal_event_json(&side_a, false),
+            netball_goal_event_json(&side_a, false),
+        ],
+    )
+    .await;
+
+    let seq = matches_match_id_live_seq_get(&owner_config, &created.id)
+        .await
+        .expect("get live seq");
+    assert_eq!(seq.last_seq, 2);
+
+    // Undo the tip — the physical log's own max seq drops to 1, but the real
+    // counter is 3 (bumped past the deleted event). This endpoint must
+    // report the counter, not the physical max.
+    matches_match_id_live_events_seq_delete(&owner_config, &created.id, 2)
+        .await
+        .expect("undo the second goal");
+
+    let page = matches_match_id_live_events_get(&owner_config, &created.id, None, None)
+        .await
+        .expect("list live events");
+    let physical_max = page.items.iter().map(|e| e.seq).max().unwrap_or(0);
+    assert_eq!(physical_max, 1, "physical log's own max seq after the undo");
+
+    let seq = matches_match_id_live_seq_get(&owner_config, &created.id)
+        .await
+        .expect("get live seq");
+    assert_eq!(
+        seq.last_seq, 3,
+        "the real counter, not the physical log's max seq (1)"
+    );
+
+    // And it's exactly the value the very next append needs as
+    // expected_last_seq — the point of the whole endpoint.
+    let after_append = append_live_events_raw(
+        &owner_config,
+        &created.id,
+        seq.last_seq,
+        vec![netball_goal_event_json(&side_a, false)],
+    )
+    .await;
+    assert_eq!(after_append.last_seq, 4);
+}
+
+/// Regression test for the bug where undoing the tip event left the client
+/// unable to record anything else afterward.
+///
+/// `delete_live_event` bumps the match's `live_seq` counter by one on every
+/// undo (see that DAO method's doc comment) — so the snapshot handed back
+/// from delete must report `seq + 1` as `last_seq`, the value the caller
+/// then sends back as `expected_last_seq` on its very next append. Before
+/// this, the endpoint instead reported one *less* than that (the deleted
+/// tip's seq no longer physically present among the remaining events), so
+/// every append after an undo sent a stale `expected_last_seq` that could
+/// never satisfy the server's optimistic-concurrency check, and 409'd
+/// forever — exactly what was reported: undo appears to succeed, then every
+/// subsequent event fails to record.
+#[tokio::test]
+async fn undoing_the_tip_lets_scoring_continue_without_reusing_its_seq() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+
+    // Three events: two goals for A (seq 1, 2), then a foul on B (seq 3) that
+    // we'll undo.
+    let snapshot = append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![
+            netball_goal_event_json(&side_a, false),
+            netball_goal_event_json(&side_a, true),
+            netball_foul_event_json(&side_b),
+        ],
+    )
+    .await;
+    assert_eq!(snapshot.last_seq, 3);
+
+    // Undo the tip (the foul, seq 3).
+    let after_undo = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 3)
+        .await
+        .expect("undo tip event");
+
+    // The counter advances *past* the deleted seq (3 -> 4) rather than
+    // staying put — this is the value the client caches as its next
+    // `expected_last_seq`.
+    assert_eq!(
+        after_undo.last_seq, 4,
+        "last_seq after undoing seq 3 must be the bumped counter (4)"
+    );
+    match *after_undo.score {
+        models::Score::Netball(s) => {
+            // The foul is gone from the derived score...
+            assert_eq!(s.fouls.as_ref().map(Vec::len), Some(0));
+            // ...but the two goals that preceded it are untouched.
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(2));
+            assert_eq!(s.score.get(&side_a), Some(&3));
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+
+    // The very next append — this is the call that used to 409 forever after
+    // an undo — using the `last_seq` the delete just handed back.
+    let after_append = append_live_events_raw(
+        &owner_config,
+        &created.id,
+        after_undo.last_seq,
+        vec![netball_goal_event_json(&side_b, false)],
+    )
+    .await;
+    // The new event lands at seq 5, not the freed-up seq 3 or the burned
+    // seq 4 — seq numbers are never reused once assigned, even across an
+    // undo.
+    assert_eq!(after_append.last_seq, 5);
+
+    // The physical log confirms the (two-number) gap: 1, 2, 5 — seq 3
+    // (deleted) and seq 4 (burned by the undo's counter bump) both stay
+    // permanently absent, never reused by the new event.
+    let page = matches_match_id_live_events_get(&owner_config, &created.id, None, None)
+        .await
+        .expect("list live events");
+    let seqs: Vec<i32> = page.items.iter().map(|e| e.seq).collect();
+    assert_eq!(seqs, vec![1, 2, 5]);
+
+    let score = matches_match_id_score_get(&owner_config, &created.id)
+        .await
+        .expect("get score");
+    match score {
+        models::Score::Netball(s) => {
+            assert_eq!(s.score.get(&side_a), Some(&3));
+            assert_eq!(s.score.get(&side_b), Some(&1));
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(3));
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+}
+
+/// Only the current tip can be undone — a mid-log seq is rejected with a 400
+/// rather than silently reordering the log. This check is now enforced
+/// atomically inside `Dao::delete_live_event`'s transaction (against the
+/// live counter at commit time) rather than as a separate read-then-check in
+/// the handler, but the outward behavior is unchanged: the tip itself stays
+/// intact after the rejection.
+#[tokio::test]
+async fn undoing_a_non_tip_event_is_rejected() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+
+    let snapshot = append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![
+            netball_goal_event_json(&side_a, false),
+            netball_goal_event_json(&side_a, false),
+        ],
+    )
+    .await;
+    assert_eq!(snapshot.last_seq, 2);
+
+    // seq 1 is no longer the tip (seq 2 is) — rejected.
+    let response = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 1).await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::BAD_REQUEST,
+        "only the most recently recorded event can be undone",
+    );
+
+    // Confirmed untouched: both goals are still there, and the tip is still 2.
+    let score = matches_match_id_score_get(&owner_config, &created.id)
+        .await
+        .expect("get score");
+    match score {
+        models::Score::Netball(s) => assert_eq!(s.goals.as_ref().map(Vec::len), Some(2)),
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+}
+
+/// Retrying an undo with the *same, now-stale* seq 400s just like any other
+/// non-tip delete: the counter has already moved past it (see the previous
+/// test's sibling scenario), so a second call with that same number no
+/// longer matches the current tip.
+#[tokio::test]
+async fn retrying_an_undo_with_the_same_seq_is_rejected_as_non_tip() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+
+    append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![netball_goal_event_json(&side_a, false)],
+    )
+    .await;
+
+    matches_match_id_live_events_seq_delete(&owner_config, &created.id, 1)
+        .await
+        .expect("undo the only event");
+
+    // seq 1 was the tip a moment ago, but the counter has since bumped to 2
+    // (see `undoing_the_tip_lets_scoring_continue_without_reusing_its_seq`)
+    // — a repeat call with the same stale seq is exactly the "not the tip
+    // anymore" case, same as a genuinely non-tip seq.
+    let response = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 1).await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::BAD_REQUEST,
+        "only the most recently recorded event can be undone",
+    );
+}
+
+/// Undoing *the counter's current value* when nothing physically lives
+/// there — the realistic "hit undo twice in a row" case, since a client
+/// caches the server's returned (bumped) `last_seq` as its next tip and
+/// would retry against that, not the original seq. The tip check passes
+/// (it genuinely is the current counter value), but there's nothing left to
+/// delete: `live_seq` having advanced past the log's last real event
+/// doesn't mean a real event lives at that new number.
+#[tokio::test]
+async fn undoing_the_bumped_tip_with_nothing_left_to_delete_is_not_found() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+
+    append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![netball_goal_event_json(&side_a, false)],
+    )
+    .await;
+
+    let after_undo = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 1)
+        .await
+        .expect("undo the only event");
+    assert_eq!(after_undo.last_seq, 2);
+
+    // A client would cache `2` (the response above) as its next tip and
+    // retry undo against that, exactly like this.
+    let response =
+        matches_match_id_live_events_seq_delete(&owner_config, &created.id, after_undo.last_seq)
+            .await;
+    assert_not_found(response);
+}
+
+/// Two, then three, successful undos in a row — each one targeting the log's
+/// *real* physical tip at that point (2, then 1), not the previous undo's
+/// bumped `last_seq`. This is the scenario the UI's `useUndoTargetSeq` split
+/// exists for (see that hook's doc comment): every undo advances `live_seq`
+/// by one past the deleted event, so consecutive undos land on a strictly
+/// increasing sequence of `last_seq` values (4, then 5, then 6) even while
+/// the *targets* count down (3, then 2, then 1). Confirms the derived score
+/// and physical log both end up completely empty once every event has been
+/// undone, not just "missing the most recent one" — and, the actual point
+/// of the original bug report this whole chain of fixes started from,
+/// confirms scoring can still continue afterward: one final append,
+/// `expected_last_seq` all the way down at the fully-undone counter value.
+#[tokio::test]
+async fn undoing_multiple_times_in_a_row_removes_each_real_tip_in_turn() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+
+    // Three events: two goals for A (seq 1, 2), then a foul on B (seq 3).
+    let snapshot = append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![
+            netball_goal_event_json(&side_a, false),
+            netball_goal_event_json(&side_a, false),
+            netball_foul_event_json(&side_b),
+        ],
+    )
+    .await;
+    assert_eq!(snapshot.last_seq, 3);
+
+    // Undo #1: the foul (seq 3, the real tip). Counter bumps 3 -> 4.
+    let after_first = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 3)
+        .await
+        .expect("undo the foul");
+    assert_eq!(after_first.last_seq, 4);
+    match *after_first.score {
+        models::Score::Netball(s) => {
+            assert_eq!(s.fouls.as_ref().map(Vec::len), Some(0));
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(2));
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+
+    // Undo #2: the real tip is now seq 2 (the second goal) — NOT
+    // `after_first.last_seq` (4), which is the bumped, phantom counter. A
+    // client sending 4 here would 404 (see the previous test); the real
+    // target is 2.
+    let after_second = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 2)
+        .await
+        .expect("undo the second goal");
+    // The counter keeps climbing (3 -> 4 was undo #1's bump; this one bumps
+    // 4 -> 5)... but note the *target* seq (2) is nowhere near the counter
+    // (5): `live_seq` tracks "how many mutations have ever happened", not
+    // "how many events currently exist".
+    assert_eq!(after_second.last_seq, 5);
+    match *after_second.score {
+        models::Score::Netball(s) => {
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(1));
+            assert_eq!(s.score.get(&side_a), Some(&1));
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+
+    // Undo #3: the real tip is now seq 1 (the first, and last remaining,
+    // goal) — the log goes fully empty. The counter keeps climbing the same
+    // way it did for undo #2 (5 -> 6), even though there's nothing left to
+    // undo afterward — `live_seq` never resets just because the log is
+    // momentarily empty.
+    let after_third = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 1)
+        .await
+        .expect("undo the first goal");
+    assert_eq!(after_third.last_seq, 6);
+    match *after_third.score {
+        models::Score::Netball(s) => {
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(0));
+            assert_eq!(
+                s.score.get(&side_a),
+                None,
+                "absence means zero, same as never scored"
+            );
+            assert_eq!(s.score.get(&side_b), None);
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+
+    // Nothing physically left in the log at all.
+    let page = matches_match_id_live_events_get(&owner_config, &created.id, None, None)
+        .await
+        .expect("list live events");
+    assert!(page.items.is_empty());
+
+    // ...and the fully-recomputed score agrees.
+    let score = matches_match_id_score_get(&owner_config, &created.id)
+        .await
+        .expect("get score");
+    match score {
+        models::Score::Netball(s) => {
+            assert!(s.score.is_empty());
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(0));
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+
+    // The actual point of all this: scoring can still continue afterward.
+    // `expected_last_seq` must be `after_third.last_seq` (6) — the climbed
+    // counter, not 0 — even though every event ever recorded has now been
+    // undone.
+    let after_append = append_live_events_raw(
+        &owner_config,
+        &created.id,
+        after_third.last_seq,
+        vec![netball_goal_event_json(&side_a, false)],
+    )
+    .await;
+    // Lands at seq 7, continuing on from the counter — not seq 1, which
+    // would silently collide with the (deleted) first goal's old identity.
+    assert_eq!(after_append.last_seq, 7);
+    match *after_append.score {
+        models::Score::Netball(s) => {
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(1));
+            assert_eq!(s.score.get(&side_a), Some(&1));
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+}
+
+/// Undo, then append (log not empty — covered by
+/// `undoing_the_tip_lets_scoring_continue_without_reusing_its_seq`), then
+/// undo *again* — this time undoing the event that append just added. Checks
+/// that a freshly-appended event becomes a correctly-deletable tip in its
+/// own right, i.e. that appending after an undo doesn't leave the counter
+/// and the physical log in some inconsistent state that only tolerates
+/// further appends, not a subsequent real undo too.
+#[tokio::test]
+async fn undoing_then_appending_then_undoing_the_new_event_stays_consistent() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+
+    // Two goals for A (seq 1, 2).
+    let snapshot = append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![
+            netball_goal_event_json(&side_a, false),
+            netball_goal_event_json(&side_a, false),
+        ],
+    )
+    .await;
+    assert_eq!(snapshot.last_seq, 2);
+
+    // Undo the tip (seq 2) — one goal remains (seq 1), log not empty.
+    let after_undo = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 2)
+        .await
+        .expect("undo the second goal");
+    assert_eq!(after_undo.last_seq, 3);
+
+    // Append a goal for B — lands at seq 4 (the bumped counter + 1), not
+    // seq 2 (the deleted goal's old, never-reused identity).
+    let after_append = append_live_events_raw(
+        &owner_config,
+        &created.id,
+        after_undo.last_seq,
+        vec![netball_goal_event_json(&side_b, false)],
+    )
+    .await;
+    assert_eq!(after_append.last_seq, 4);
+    match *after_append.score {
+        models::Score::Netball(s) => {
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(2));
+            assert_eq!(s.score.get(&side_a), Some(&1));
+            assert_eq!(s.score.get(&side_b), Some(&1));
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+
+    // Now undo the *newly appended* event (seq 4) — the real question this
+    // test asks: does the append above leave seq 4 undoable, same as any
+    // other tip?
+    let after_second_undo = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 4)
+        .await
+        .expect("undo the newly appended goal");
+    assert_eq!(after_second_undo.last_seq, 5);
+    match *after_second_undo.score {
+        models::Score::Netball(s) => {
+            // Back to just the one surviving original goal.
+            assert_eq!(s.goals.as_ref().map(Vec::len), Some(1));
+            assert_eq!(s.score.get(&side_a), Some(&1));
+            assert_eq!(s.score.get(&side_b), None);
+        }
+        other => panic!("expected a netball score, got {other:?}"),
+    }
+
+    // The physical log agrees: only seq 1 (the first goal) survives all of
+    // this — 2 and 4 were both undone, 3 was never a real event (just a
+    // burned counter value).
+    let page = matches_match_id_live_events_get(&owner_config, &created.id, None, None)
+        .await
+        .expect("list live events");
+    let seqs: Vec<i32> = page.items.iter().map(|e| e.seq).collect();
+    assert_eq!(seqs, vec![1]);
 }

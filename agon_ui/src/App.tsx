@@ -9,9 +9,11 @@ import {
 } from 'react-router-dom'
 import { Bell, Search } from 'lucide-react'
 import { AuthProvider, useAuth } from '@/hooks/useAuth'
+import { PushNotificationsProvider } from '@/hooks/usePushNotifications'
 import { LoginForm } from '@/components/auth/LoginForm'
 import { CreateProfileForm } from '@/components/auth/CreateProfileForm'
 import { InvitePreviewBanner } from '@/components/auth/InvitePreviewBanner'
+import { IosInstallBanner } from '@/components/IosInstallBanner'
 import { AppSidebar } from '@/components/AppSidebar'
 import { MobileBottomNav } from '@/components/MobileBottomNav'
 import { Logo } from '@/components/agon/Logo'
@@ -91,6 +93,7 @@ function AppShell({ email, onSignOut }: { email: string; onSignOut: () => void }
         </header>
 
         <main className="container mx-auto px-4 py-8 pb-28 md:pb-8">
+          <IosInstallBanner />
           <Routes>
           <Route path="/" element={<HomeRedirect />} />
           <Route path="/feed" element={<FeedPage />} />
@@ -241,7 +244,11 @@ function AuthenticatedApp() {
     )
   }
 
-  return <AppShell email={user.email || ''} onSignOut={signOut} />
+  return (
+    <PushNotificationsProvider>
+      <AppShell email={user.email || ''} onSignOut={signOut} />
+    </PushNotificationsProvider>
+  )
 }
 
 function App() {

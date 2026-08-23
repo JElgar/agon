@@ -46,17 +46,20 @@ jobs:
     uses: JElgar/agon/.github/workflows/docker-ui.yml@main
     secrets: inherit
 
-  # Runs whenever any image was (re)published. Skipped images pass an empty
-  # string through, and deploy.yml leaves that image's pulumi config alone —
-  # so e.g. a UI-only change updates agonUiImage and redeploys, without
-  # touching (or rebuilding) the service/worker images at all.
+  # Runs whenever any image was (re)published, OR agon_infra itself changed
+  # (a pulumi program/config edit with no image to rebuild still needs a
+  # `pulumi up` to take effect). Skipped images pass an empty string through,
+  # and deploy.yml leaves that image's pulumi config alone — so e.g. a
+  # UI-only change updates agonUiImage and redeploys, without touching (or
+  # rebuilding) the service/worker images at all.
   deploy:
     needs: [changes, publish-service, publish-worker, publish-ui]
     if: |
       always() &&
       (needs.publish-service.result == 'success' ||
        needs.publish-worker.result == 'success' ||
-       needs.publish-ui.result == 'success')
+       needs.publish-ui.result == 'success' ||
+       needs.changes.outputs.infra == 'true')
     uses: JElgar/agon/.github/workflows/deploy.yml@main
     secrets: inherit
     with:

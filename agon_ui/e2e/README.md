@@ -158,7 +158,7 @@ against your own machine instead:
    ```
    SUPABASE_JWKS_URL=http://localhost:8000/auth/v1/.well-known/jwks.json
    AWS_ACCESS_KEY_ID=local
-   AWS_SECRET_ACCESS_KEY=local
+   AWS_SECRET_ACCESS_KEY=localsecret
    AWS_ENDPOINT_URL=http://localhost:8002
    ```
 
@@ -218,6 +218,19 @@ day-to-day work doesn't need, so it's opt-in.
 defaults) — steps 1, 3–6 (the backing services and the four app processes:
 agon_service, agon_worker, the stream bridge, the UI dev server) still need
 to be up first.
+
+Verified end-to-end (`npm run test:e2e`, all 3 tests green, twice in a row):
+login, profile creation, logging a match, and full-match live scoring all
+work against this fully-local stack with nothing external involved — a
+headless browser reaching only `localhost` sidesteps this environment's
+usual "browser can't reach the internet" sandbox limits entirely. Getting
+there took a few real fixes along the way, in case any look familiar if you
+hit them again: local Kong's CORS config didn't allowlist the
+`X-Supabase-Api-Version` header supabase-js sends (surfaces as a generic
+"Failed to fetch" on login — see `local/supabase/kong.yml`), and
+`vite.config.ts`'s dev proxy needs to strip `/api` itself when pointed
+straight at a local `agon_service` (a real ingress does that in every other
+environment — see that file's proxy comment).
 
 ## What's covered
 

@@ -39,12 +39,12 @@ use auth::{JwtClaims, JwtVerifier};
 // Boundary mapping between API models and DAO records.
 mod mapping;
 use mapping::{
-    comment_from_record, dao_internal, derive_live_score, device_platform_to_record,
-    feed_match_from_records, invitation_detail_from_record, invitation_from_record,
-    invitation_status_from_str, invitation_status_str, live_event_from_record,
-    match_format_sport_tag, match_format_to_record, match_from_records, match_score_from_record,
-    match_score_to_record, match_status_str, match_type_tag, new_live_event_to_dao,
-    notification_actor_id, notification_from_record, roster_preview_player,
+    comment_from_record, dao_internal, deleted_user_profile, derive_live_score,
+    device_platform_to_record, feed_match_from_records, invitation_detail_from_record,
+    invitation_from_record, invitation_status_from_str, invitation_status_str,
+    live_event_from_record, match_format_sport_tag, match_format_to_record, match_from_records,
+    match_score_from_record, match_score_to_record, match_status_str, match_type_tag,
+    new_live_event_to_dao, notification_actor_id, notification_from_record, roster_preview_player,
     score_submission_from_record, score_to_record, search_match_from_records, team_from_records,
     team_list_item_from_record, user_profile_from_record,
 };
@@ -4622,23 +4622,15 @@ impl Api {
 
         let mut items = Vec::with_capacity(page.items.len());
         for rec in page.items {
-            // There's no user-deletion path today, so every actor id must
-            // resolve — a miss here means a notification record is pointing
-            // at a user id `batch_get_users` couldn't find, which is a data
-            // bug (or, in the future, an unhandled account-deletion case),
-            // not something the caller can do anything about. Fail loudly:
-            // a blank-profile row that silently swallowed a broken
-            // reference would look like a UI bug and could go unnoticed
-            // indefinitely.
+            // A notification outlives its actor by design (see
+            // `Notification`'s doc comment): the actor's account may since
+            // have been deleted, so an id here with no matching profile is an
+            // expected case to render, not an error to fail the page over.
             let actor_id = notification_actor_id(&rec.kind);
-            let actor_record = actor_records.get(actor_id).ok_or_else(|| {
-                error!(
-                    "notification {} references unknown actor {actor_id}",
-                    rec.id
-                );
-                Error::from_status(StatusCode::INTERNAL_SERVER_ERROR)
-            })?;
-            let actor = user_profile_from_record(actor_record, false);
+            let actor = match actor_records.get(actor_id) {
+                Some(record) => user_profile_from_record(record, false),
+                None => deleted_user_profile(actor_id),
+            };
             items.push(notification_from_record(&rec, actor));
         }
 

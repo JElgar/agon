@@ -9,6 +9,7 @@ import {
 } from 'react-router-dom'
 import { Bell, Search } from 'lucide-react'
 import { AuthProvider, useAuth } from '@/hooks/useAuth'
+import { PushNotificationsProvider } from '@/hooks/usePushNotifications'
 import { LoginForm } from '@/components/auth/LoginForm'
 import { CreateProfileForm } from '@/components/auth/CreateProfileForm'
 import { InvitePreviewBanner } from '@/components/auth/InvitePreviewBanner'
@@ -238,7 +239,11 @@ function AuthenticatedApp() {
     )
   }
 
-  return <AppShell email={user.email || ''} onSignOut={signOut} />
+  return (
+    <PushNotificationsProvider>
+      <AppShell email={user.email || ''} onSignOut={signOut} />
+    </PushNotificationsProvider>
+  )
 }
 
 function App() {

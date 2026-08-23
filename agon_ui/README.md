@@ -109,6 +109,13 @@ cd agon_ui
 npx openapi-typescript-codegen --input ../schema.json --output ./src/api --client axios
 ```
 
+## Testing
+
+Full browser end-to-end tests live in `e2e/` (Playwright) — see
+`e2e/README.md` for what they cover and how to run them. They're separate
+from `agon_tests` at the repo root, which tests the API directly and doesn't
+touch the browser.
+
 ## Adding shadcn/ui Components
 
 To add more shadcn/ui components:

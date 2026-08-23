@@ -5,7 +5,7 @@ import { ChevronLeft } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
-import { useAppendCricketEvent, useLiveSeq } from '@/hooks/useLiveScore'
+import { useAppendCricketEvent, useLiveSeq, useUndoTargetSeq } from '@/hooks/useLiveScore'
 import { matchScoreQueryKey, useMatchScore } from '@/hooks/useMatchScore'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { UndoLastEventButton } from '@/components/agon/live/UndoLastEventButton'
@@ -59,6 +59,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
 
   const scoreQuery = useMatchScore(match.id, { refetchInterval: 8000 })
   const seq = useLiveSeq(match.id)
+  const undoSeq = useUndoTargetSeq(match.id)
   const appendEvent = useAppendCricketEvent(match.id)
   const state = cricketScoreFrom(scoreQuery.data)
   const innings = state ? currentInnings(state) : null
@@ -249,7 +250,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
         <ChevronLeft className="size-4" /> Back
       </Button>
       <div className="flex items-center gap-1">
-        <UndoLastEventButton matchId={match.id} seq={seq.data} />
+        <UndoLastEventButton matchId={match.id} seq={undoSeq.data} />
         <LiveIndicator />
       </div>
     </div>

@@ -348,24 +348,28 @@ export function MatchCard({
           the usual confirmed/pending result; a finished cricket match with
           per-innings detail gets its own tile too. */}
       {footballState ? (
-        <div className="mx-3.5 mb-3">
+        <button type="button" onClick={onOpen} className="mx-3.5 mb-3 block w-full text-left">
           <LiveMatchBlock match={orderedMatch} state={footballState} />
-        </div>
+        </button>
       ) : netballState ? (
-        <div className="mx-3.5 mb-3">
+        <button type="button" onClick={onOpen} className="mx-3.5 mb-3 block w-full text-left">
           <NetballMatchBlock match={orderedMatch} state={netballState} />
-        </div>
+        </button>
       ) : cricketState ? (
-        <div className="mx-3.5 mb-3">
+        <button type="button" onClick={onOpen} className="mx-3.5 mb-3 block w-full text-left">
           <CricketMatchBlock match={orderedMatch} state={cricketState} showDescription={false} />
-        </div>
+        </button>
       ) : cricketScore ? (
-        <div className="mx-3.5 mb-3">
+        <button type="button" onClick={onOpen} className="mx-3.5 mb-3 block w-full text-left">
           <CricketScoreBlock match={orderedMatch} score={cricketScore} showDescription={false} />
-        </div>
+        </button>
       ) : (
         scoreInfo && (
-          <div className="mx-3.5 mb-3 rounded-lg bg-muted/50 px-3.5 py-3">
+          <button
+            type="button"
+            onClick={onOpen}
+            className="mx-3.5 mb-3 block w-full rounded-lg bg-muted/50 px-3.5 py-3 text-left"
+          >
             <div className="flex items-center justify-between">
               <div className="flex min-w-0 flex-1 items-center gap-2">
                 <Avatar name={nameA} size="md" ring={aWon ? 'winner' : 'none'} />
@@ -418,7 +422,7 @@ export function MatchCard({
                 className="mt-2.5 text-[11px]"
               />
             )}
-          </div>
+          </button>
         )
       )}
 
@@ -473,7 +477,7 @@ export function MatchCard({
           )}
         >
           <Flame className={cn('size-3.5', i_liked && 'fill-current')} />{' '}
-          {like_count} kudos
+          {like_count}
         </button>
         <button
           type="button"

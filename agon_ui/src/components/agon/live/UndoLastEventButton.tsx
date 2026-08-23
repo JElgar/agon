@@ -22,8 +22,10 @@ export function UndoLastEventButton({
   seq,
 }: {
   matchId: string
-  /** The log's current tip, e.g. from `useLiveSeq` — `undefined` while
-   *  still loading, `0` before anything's been recorded. */
+  /** The log's real physical tip, from `useUndoTargetSeq` — NOT
+   *  `useLiveSeq` (that one's the append concurrency token, which points
+   *  past a real event once an undo has happened — see its doc comment).
+   *  `undefined` while still loading, `0` before anything's been recorded. */
   seq: number | undefined
 }) {
   const [confirmOpen, setConfirmOpen] = useState(false)

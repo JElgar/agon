@@ -39,14 +39,14 @@ use auth::{JwtClaims, JwtVerifier};
 // Boundary mapping between API models and DAO records.
 mod mapping;
 use mapping::{
-    comment_from_record, dao_internal, derive_live_score, feed_match_from_records,
-    invitation_detail_from_record, invitation_from_record, invitation_status_from_str,
-    invitation_status_str, live_event_from_record, match_format_sport_tag, match_format_to_record,
-    match_from_records, match_score_from_record, match_score_to_record, match_status_str,
-    match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
-    roster_preview_player, score_submission_from_record, score_to_record,
-    search_match_from_records, team_from_records, team_list_item_from_record,
-    user_profile_from_record,
+    comment_from_record, dao_internal, derive_live_score, device_platform_to_record,
+    feed_match_from_records, invitation_detail_from_record, invitation_from_record,
+    invitation_status_from_str, invitation_status_str, live_event_from_record,
+    match_format_sport_tag, match_format_to_record, match_from_records, match_score_from_record,
+    match_score_to_record, match_status_str, match_type_tag, new_live_event_to_dao,
+    notification_actor_id, notification_from_record, roster_preview_player,
+    score_submission_from_record, score_to_record, search_match_from_records, team_from_records,
+    team_list_item_from_record, user_profile_from_record,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -1331,6 +1331,46 @@ enum MarkNotificationReadResponse {
     NotFound(PlainText<String>),
 }
 
+/// The client platform a registered push token belongs to.
+#[derive(Enum)]
+#[oai(rename_all = "snake_case")]
+enum DevicePlatform {
+    Web,
+    Android,
+    Ios,
+}
+
+#[derive(Object)]
+struct RegisterDeviceInput {
+    /// The FCM registration token issued to this device/browser.
+    push_token: String,
+    platform: DevicePlatform,
+}
+
+#[derive(Object)]
+struct UnregisterDeviceInput {
+    push_token: String,
+}
+
+#[derive(ApiResponse)]
+enum RegisterDeviceResponse {
+    #[oai(status = 204)]
+    Ok,
+
+    /// The user already has the maximum number of registered devices.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum UnregisterDeviceResponse {
+    #[oai(status = 204)]
+    Ok,
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
 #[derive(ApiResponse)]
 enum GetMatchScoreResponse {
     #[oai(status = 200)]
@@ -1369,6 +1409,27 @@ enum AppendLiveEventsResponse {
 struct LiveEventPage {
     items: Vec<LiveEvent>,
     next_cursor: Option<String>,
+}
+
+/// The match's current live-scoring counter — `GET
+/// /matches/:match_id/live/seq`. A client with no cached mutation response
+/// to seed `expected_last_seq` from (a fresh page load, a different device)
+/// needs this: the physical event log's own max seq (`GET
+/// /matches/:match_id/live/events`) is *not* a safe substitute once any
+/// event has ever been undone — it permanently understates the true
+/// counter from that point on (see `Dao::delete_live_event`'s doc comment).
+#[derive(Object)]
+struct LiveSeq {
+    last_seq: u32,
+}
+
+#[derive(ApiResponse)]
+enum GetLiveSeqResponse {
+    #[oai(status = 200)]
+    Ok(Json<LiveSeq>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -2423,6 +2484,7 @@ impl Api {
             like_count: 0,
             comment_count: 0,
             live_seq: 0,
+            live_tip_seq: None,
             format: input.format.as_ref().map(match_format_to_record),
             created_at: now.clone(),
         };
@@ -3006,14 +3068,16 @@ impl Api {
                         "match has no score".into(),
                     )));
                 }
-                let last_seq = records.iter().map(|r| r.seq).max().unwrap_or(0);
                 let Some(score) = derive_live_score(sport, &records, agg.match_.format.as_ref())
                 else {
                     return Ok(GetMatchScoreResponse::NotFound(PlainText(
                         "match has no score".into(),
                     )));
                 };
-                self.persist_score(dao, &match_id, &score, Some(last_seq))
+                // `agg.match_.live_seq`, not `max(records.seq)` — see
+                // `derive_live_snapshot`'s doc comment for why the latter can
+                // undercount once an undo has removed the log's former tip.
+                self.persist_score(dao, &match_id, &score, Some(agg.match_.live_seq))
                     .await;
                 score
             }
@@ -3255,8 +3319,14 @@ impl Api {
         {
             Some(snapshot) => Some(snapshot),
             None => {
-                self.derive_live_snapshot(dao, &match_id, &sport, agg.match_.format.as_ref())
-                    .await?
+                self.derive_live_snapshot(
+                    dao,
+                    &match_id,
+                    &sport,
+                    agg.match_.format.as_ref(),
+                    new_last_seq,
+                )
+                .await?
             }
         };
 
@@ -3346,6 +3416,38 @@ impl Api {
         }))
     }
 
+    /// The match's current live-scoring counter — what a client with no
+    /// cached mutation response should seed `expected_last_seq` from (a
+    /// fresh page load, or a device that's never scored this match before).
+    /// Reads `MatchRecord.live_seq` directly off the same `get_match` call
+    /// every other match read already makes — no extra table read beyond
+    /// that. Deliberately *not* derived from the physical event log's max
+    /// seq the way `GET /matches/:match_id/live/events` would suggest:
+    /// once any event has ever been undone, `live_seq` permanently outruns
+    /// that log's own max (see `Dao::delete_live_event`'s doc comment), so
+    /// a client that seeded its append token from the log instead would
+    /// send a stale `expected_last_seq` on every append from then on and
+    /// get rejected with `Conflict` forever.
+    #[oai(path = "/matches/:match_id/live/seq", method = "get")]
+    async fn get_live_seq(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(_jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+    ) -> Result<GetLiveSeqResponse> {
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(GetLiveSeqResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        Ok(GetLiveSeqResponse::Ok(Json(LiveSeq {
+            last_seq: agg.match_.live_seq,
+        })))
+    }
+
     /// The raw live event log, oldest first — for reconstructing the full
     /// scorecard client-side (see `inningsDeliveriesFromEvents`, used by a
     /// completed match's run-progression graph) or for the scorer's own
@@ -3393,6 +3495,12 @@ impl Api {
     /// been built on the thing being removed. History is genuinely removed,
     /// not marked; the returned detail reflects the log as if the event had
     /// never been recorded.
+    ///
+    /// The tip check itself now lives entirely in `Dao::delete_live_event`
+    /// (atomic against the live `live_seq` counter, not a value read a
+    /// moment earlier here) — a `Conflict` back from it means `seq` wasn't
+    /// the tip at commit time, surfaced the same way as any other "the log
+    /// moved on" case.
     #[oai(path = "/matches/:match_id/live/events/:seq", method = "delete")]
     async fn delete_live_event(
         &self,
@@ -3413,21 +3521,20 @@ impl Api {
             }
         };
 
-        if seq != agg.match_.live_seq {
-            return Ok(DeleteLiveEventResponse::ValidationError(PlainText(
-                "only the most recently recorded event can be undone".into(),
-            )));
-        }
-
-        match dao.delete_live_event(&match_id, seq).await {
-            Ok(()) => {}
+        let new_tip = match dao.delete_live_event(&match_id, seq).await {
+            Ok(new_tip) => new_tip,
             Err(dao::DaoError::NotFound(_)) => {
                 return Ok(DeleteLiveEventResponse::NotFound(PlainText(
                     "live event not found".into(),
                 )));
             }
+            Err(dao::DaoError::Conflict(_)) => {
+                return Ok(DeleteLiveEventResponse::ValidationError(PlainText(
+                    "only the most recently recorded event can be undone".into(),
+                )));
+            }
             Err(e) => return Err(dao_internal(e)),
-        }
+        };
 
         match self
             .derive_live_snapshot(
@@ -3435,6 +3542,10 @@ impl Api {
                 &match_id,
                 &agg.match_.match_type,
                 agg.match_.format.as_ref(),
+                // The DAO's freshly-bumped counter, not `agg.match_.live_seq`
+                // (fetched before the delete — now stale, since the delete
+                // itself advances the counter).
+                new_tip,
             )
             .await?
         {
@@ -3479,24 +3590,40 @@ impl Api {
     /// Persists the result so subsequent reads and the next incremental
     /// append have a fresh checkpoint to build on. Returns `None` if `sport`
     /// doesn't support live scoring.
+    ///
+    /// `live_seq` is the authoritative tip — the match's `live_seq` counter —
+    /// and must come from the caller rather than be recomputed as
+    /// `max(records.seq)` here. An append and a delete (see
+    /// `Dao::delete_live_event`) both advance the real counter without
+    /// necessarily leaving a matching physical event at every number (a
+    /// delete's own seq, and the number it bumps past, are both permanently
+    /// skipped), so the physical log's max can lag behind it. Persisting
+    /// that lower, recomputed value as the checkpoint's `last_seq` — the
+    /// same value the client then caches as its next `expected_last_seq` —
+    /// would desync it from the real counter, so every subsequent append's
+    /// conditional update would fail with a `Conflict` (see
+    /// `append_live_events`'s `live_seq = :expected` check).
     async fn derive_live_snapshot(
         &self,
         dao: &dao::Dao,
         match_id: &str,
         sport: &str,
         format: Option<&dao::records::MatchFormatRecord>,
+        live_seq: u32,
     ) -> Result<Option<LiveScoreSnapshot>> {
         let records = dao.list_live_events(match_id).await.map_err(dao_internal)?;
-        let last_seq = records.iter().map(|r| r.seq).max().unwrap_or(0);
 
         let Some(score) = derive_live_score(sport, &records, format) else {
             return Ok(None);
         };
 
-        self.persist_score(dao, match_id, &score, Some(last_seq))
+        self.persist_score(dao, match_id, &score, Some(live_seq))
             .await;
 
-        Ok(Some(LiveScoreSnapshot { last_seq, score }))
+        Ok(Some(LiveScoreSnapshot {
+            last_seq: live_seq,
+            score,
+        }))
     }
 
     /// Best-effort persisted-record write, shared by the incremental append
@@ -3975,9 +4102,17 @@ impl Api {
                 .await
                 .map_err(dao_internal)?;
         } else {
-            dao.delete_comment_hard(&match_id, &comment_id)
-                .await
-                .map_err(dao_internal)?;
+            match dao.delete_comment_hard(&match_id, &comment_id).await {
+                Ok(()) => {}
+                // Deleted by a concurrent request between the check above and
+                // here.
+                Err(dao::DaoError::NotFound(_)) => {
+                    return Ok(DeleteCommentResponse::NotFound(PlainText(
+                        "comment not found".into(),
+                    )));
+                }
+                Err(e) => return Err(dao_internal(e)),
+            }
         }
         Ok(DeleteCommentResponse::Ok)
     }
@@ -4237,9 +4372,15 @@ impl Api {
                 "team not found".into(),
             )));
         }
-        dao.remove_team_member(&team_id, &member_id)
-            .await
-            .map_err(dao_internal)?;
+        match dao.remove_team_member(&team_id, &member_id).await {
+            Ok(()) => {}
+            Err(dao::DaoError::NotFound(_)) => {
+                return Ok(RemoveTeamMemberResponse::NotFound(PlainText(
+                    "member not found".into(),
+                )));
+            }
+            Err(e) => return Err(dao_internal(e)),
+        }
         match dao.get_team(&team_id).await.map_err(dao_internal)? {
             Some(agg) => Ok(RemoveTeamMemberResponse::Team(Json(team_from_records(
                 &agg.team,
@@ -4564,6 +4705,51 @@ impl Api {
         Ok(MarkNotificationReadResponse::Ok)
     }
 
+    #[oai(path = "/devices", method = "post")]
+    async fn register_device(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        input: Json<RegisterDeviceInput>,
+    ) -> Result<RegisterDeviceResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        info!("Registering device for {uid}");
+        let now = chrono::Utc::now().to_rfc3339();
+        match dao
+            .register_device(
+                &uid,
+                &input.push_token,
+                device_platform_to_record(&input.platform),
+                &now,
+            )
+            .await
+        {
+            Ok(()) => Ok(RegisterDeviceResponse::Ok),
+            Err(dao::DaoError::Conflict(msg)) => {
+                Ok(RegisterDeviceResponse::ValidationError(PlainText(msg)))
+            }
+            Err(e) => Err(dao_internal(e)),
+        }
+    }
+
+    #[oai(path = "/devices/unregister", method = "post")]
+    async fn unregister_device(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        input: Json<UnregisterDeviceInput>,
+    ) -> Result<UnregisterDeviceResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        info!("Unregistering device for {uid}");
+        match dao.delete_device(&uid, &input.push_token).await {
+            Ok(()) => Ok(UnregisterDeviceResponse::Ok),
+            Err(dao::DaoError::NotFound(_)) => Ok(UnregisterDeviceResponse::NotFound(PlainText(
+                "device not registered".into(),
+            ))),
+            Err(e) => Err(dao_internal(e)),
+        }
+    }
+
     #[oai(path = "/invitations/:invitation_id", method = "get")]
     async fn get_invitation(
         &self,
@@ -4637,10 +4823,14 @@ impl Api {
             }
             Some(_) => {}
         }
-        dao.delete_invitation(&invitation_id)
-            .await
-            .map_err(dao_internal)?;
-        Ok(RevokeInvitationResponse::Ok)
+        match dao.delete_invitation(&invitation_id).await {
+            Ok(()) => Ok(RevokeInvitationResponse::Ok),
+            // Revoked by a concurrent request between the check above and here.
+            Err(dao::DaoError::NotFound(_)) => Ok(RevokeInvitationResponse::NotFound(PlainText(
+                "invitation not found".into(),
+            ))),
+            Err(e) => Err(dao_internal(e)),
+        }
     }
 
     #[oai(path = "/invitations/:invitation_id/respond", method = "post")]

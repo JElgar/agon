@@ -5,7 +5,7 @@ import { ChevronLeft, CircleDot, Flag, Repeat2, TimerReset } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
-import { useAppendFootballEvent, useLiveSeq } from '@/hooks/useLiveScore'
+import { useAppendFootballEvent, useLiveSeq, useUndoTargetSeq } from '@/hooks/useLiveScore'
 import { matchScoreQueryKey, useMatchScore } from '@/hooks/useMatchScore'
 import { RecordEventDialog, type EventKind } from '@/components/agon/live/RecordEventDialog'
 import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
@@ -106,6 +106,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
 
   const scoreQuery = useMatchScore(match.id, { refetchInterval: 8000 })
   const seq = useLiveSeq(match.id)
+  const undoSeq = useUndoTargetSeq(match.id)
   const append = useAppendFootballEvent(match.id)
 
   const [now, setNow] = useState(() => new Date())
@@ -275,7 +276,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
           <ChevronLeft className="size-4" /> Back
         </Button>
         <div className="flex items-center gap-1">
-          <UndoLastEventButton matchId={match.id} seq={seq.data} />
+          <UndoLastEventButton matchId={match.id} seq={undoSeq.data} />
           <LiveIndicator />
         </div>
       </div>
@@ -291,12 +292,15 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
         <div className="flex items-center justify-between">
           <p className="flex-1 truncate text-sm font-medium">{nameA}</p>
           <div className="px-3 text-center">
-            <div className="text-3xl font-medium tracking-tight">
+            {/* data-testid: the score/phase here is just digits and a status
+                word with no other accessible name to hang a locator off —
+                see agon_ui/e2e/README.md's locator guidance. */}
+            <div className="text-3xl font-medium tracking-tight" data-testid="live-score">
               {goalsFor(aId)}
               <span className="text-muted-foreground">–</span>
               {goalsFor(bId)}
             </div>
-            <div className="mt-0.5 text-xs text-primary">
+            <div className="mt-0.5 text-xs text-primary" data-testid="live-phase">
               {minute !== null && `${minute}' · `}
               {phaseLabel(phase)}
             </div>

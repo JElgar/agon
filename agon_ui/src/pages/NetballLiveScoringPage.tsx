@@ -7,7 +7,7 @@ import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
-import { useAppendNetballEvent, useLiveSeq } from '@/hooks/useLiveScore'
+import { useAppendNetballEvent, useLiveSeq, useUndoTargetSeq } from '@/hooks/useLiveScore'
 import { matchScoreQueryKey, useMatchScore } from '@/hooks/useMatchScore'
 import {
   RecordNetballEventDialog,
@@ -221,7 +221,11 @@ function NetballEventByEventScoringPage({
 }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const seq = useLiveSeq(match.id)
+  // Not read directly here (only `undoSeq` feeds `UndoLastEventButton`) —
+  // called for its side effect of seeding the append-token cache
+  // `useAppendNetballEvent`'s mutation reads `expected_last_seq` from.
+  useLiveSeq(match.id)
+  const undoSeq = useUndoTargetSeq(match.id)
   const append = useAppendNetballEvent(match.id)
   const finishMatch = useFinishNetballMatch(match)
 
@@ -309,7 +313,7 @@ function NetballEventByEventScoringPage({
           Back
         </Button>
         <div className="flex items-center gap-1">
-          <UndoLastEventButton matchId={match.id} seq={seq.data} />
+          <UndoLastEventButton matchId={match.id} seq={undoSeq.data} />
           <LiveIndicator />
         </div>
       </div>
@@ -454,7 +458,11 @@ function NetballQuarterOnlyScoringPage({
 }) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const seq = useLiveSeq(match.id)
+  // Not read directly here (only `undoSeq` feeds `UndoLastEventButton`) —
+  // called for its side effect of seeding the append-token cache
+  // `useAppendNetballEvent`'s mutation reads `expected_last_seq` from.
+  useLiveSeq(match.id)
+  const undoSeq = useUndoTargetSeq(match.id)
   const append = useAppendNetballEvent(match.id)
   const finishMatch = useFinishNetballMatch(match)
 
@@ -517,7 +525,7 @@ function NetballQuarterOnlyScoringPage({
           Back
         </Button>
         <div className="flex items-center gap-1">
-          <UndoLastEventButton matchId={match.id} seq={seq.data} />
+          <UndoLastEventButton matchId={match.id} seq={undoSeq.data} />
           <LiveIndicator />
         </div>
       </div>

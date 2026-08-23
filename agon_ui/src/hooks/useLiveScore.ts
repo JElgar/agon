@@ -45,28 +45,94 @@ export function useLiveEvents(matchId: string | undefined, options?: { enabled?:
   })
 }
 
+/** The log's real physical tip — the highest `seq` an event actually exists
+ *  at, 0 if none yet — by draining the raw event log and taking the max.
+ *  Used by `useUndoTargetSeq` only. NOT safe for seeding `useLiveSeq`'s
+ *  append token — see that hook's doc comment for why the two are not
+ *  interchangeable once any event has ever been undone. */
+async function fetchLivePhysicalTip(matchId: string): Promise<number> {
+  const events = await drainLiveEvents(matchId)
+  return events.reduce((max, e) => Math.max(max, e.seq), 0)
+}
+
+/** The match's real `live_seq` counter, straight from the server —
+ *  `GET /matches/:id/live/seq`. Shared queryFn for `useLiveSeq`'s seed. */
+async function fetchLiveSeq(matchId: string): Promise<number> {
+  const { data, response } = await fetchClient.GET('/matches/{match_id}/live/seq', {
+    params: { path: { match_id: matchId } },
+  })
+  if (response.status === 404) return 0
+  if (!data) throw new Error('Failed to load live seq')
+  return data.last_seq
+}
+
 export function liveSeqQueryKey(matchId: string | undefined) {
   return ['live-seq', matchId] as const
 }
 
 /**
- * The event log's current tip (`seq` of the most recently recorded event, 0
- * if none yet) — needed only for the optimistic-concurrency
- * `expected_last_seq` on the next append, not a read of the score itself
- * (see `useMatchScore` for that; there's no separate "live state" endpoint
- * anymore). Seeded once by draining the raw event log, the same
- * one-shot-fetch pattern as `useLiveEvents`; every append after that updates
- * the cached value directly from its own response instead of refetching.
+ * The optimistic-concurrency token for the *next append* — `expected_last_seq`
+ * — not a read of the score itself (see `useMatchScore` for that; there's no
+ * separate "live state" endpoint for scores). Seeded from `GET
+ * /matches/:id/live/seq`, the server's actual `live_seq` counter; every
+ * append or undo after that updates the cached value directly from its own
+ * response's `last_seq` instead of refetching.
+ *
+ * This must NOT be seeded from the physical event log's max seq the way
+ * `useUndoTargetSeq` is (regression: an earlier version of this hook did
+ * exactly that via the same `fetchLivePhysicalTip` helper). The two start
+ * out equal, but permanently diverge the moment an event is ever undone —
+ * `live_seq` counts every mutation ever made (including deletes), while the
+ * physical log's max seq only ever reflects what's still there (see
+ * `Dao::delete_live_event`'s doc comment on the backend). A device that
+ * seeds its append token from the log instead of the real counter sends a
+ * stale `expected_last_seq` on its very next append and gets rejected with
+ * `Conflict` forever after that — exactly what a page refresh right after an
+ * undo used to do, since the refresh throws away the in-session cache
+ * (populated correctly by the undo's own response) and reseeds from scratch.
+ *
+ * That response `last_seq` is always the match's `live_seq` counter, not
+ * necessarily a seq any event still physically exists at (see
+ * `Dao::delete_live_event`'s doc comment on the backend: undoing bumps the
+ * counter past the deleted event) — correct for gating the next append, but
+ * NOT the value to hand `UndoLastEventButton` for undo; use
+ * `useUndoTargetSeq` for that instead.
  */
 export function useLiveSeq(matchId: string | undefined, options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: liveSeqQueryKey(matchId),
     enabled: !!matchId && (options?.enabled ?? true),
     staleTime: Infinity,
-    queryFn: async (): Promise<number> => {
-      const events = await drainLiveEvents(matchId!)
-      return events.reduce((max, e) => Math.max(max, e.seq), 0)
-    },
+    queryFn: () => fetchLiveSeq(matchId!),
+  })
+}
+
+export function undoTargetSeqQueryKey(matchId: string | undefined) {
+  return ['live-undo-target-seq', matchId] as const
+}
+
+/**
+ * The seq to send `UndoLastEventButton`'s next `DELETE
+ * .../live/events/:seq` at — the log's real physical tip, deliberately
+ * tracked apart from `useLiveSeq`'s append token even though the two start
+ * out equal and an append keeps them in lockstep (neither ever creates a
+ * gap). They diverge the moment an undo happens: the append token jumps to
+ * the bumped `live_seq` counter (see that hook's doc comment), which no
+ * longer points at a real event — sending *that* to a second consecutive
+ * undo 404s ("nothing there"), it isn't the next thing to delete.
+ *
+ * So unlike `useLiveSeq`, an undo's response is never trusted here directly
+ * — `useUndoLastLiveEvent`'s `onSuccess` invalidates this instead, forcing a
+ * real re-derivation from the event log rather than guessing. An append's
+ * response *is* trusted directly here too, same as `useLiveSeq`, since it
+ * never creates a gap.
+ */
+export function useUndoTargetSeq(matchId: string | undefined, options?: { enabled?: boolean }) {
+  return useQuery({
+    queryKey: undoTargetSeqQueryKey(matchId),
+    enabled: !!matchId && (options?.enabled ?? true),
+    staleTime: Infinity,
+    queryFn: () => fetchLivePhysicalTip(matchId!),
   })
 }
 
@@ -109,6 +175,11 @@ function useAppendLiveEvent<T extends { kind: string }>(
     },
     onSuccess: (data) => {
       queryClient.setQueryData(liveSeqQueryKey(matchId), data.last_seq)
+      // An append never creates a gap — its own new event is always the
+      // fresh physical tip too, same value as the append token above. Safe
+      // to write directly, sparing `useUndoTargetSeq` an extra refetch on
+      // the common (append) path.
+      queryClient.setQueryData(undoTargetSeqQueryKey(matchId), data.last_seq)
       queryClient.setQueryData(matchScoreQueryKey(matchId), data.score)
       queryClient.invalidateQueries({ queryKey: ['match', matchId] })
       queryClient.invalidateQueries({ queryKey: ['feed'] })
@@ -133,14 +204,19 @@ export function useAppendNetballEvent(matchId: string) {
  * /matches/:match_id/live/events/:seq`, which the server restricts to the
  * current log tip (see `delete_live_event` on the backend): pass anything
  * else and it 400s rather than deleting mid-log. Callers pass the `seq`
- * they believe is the tip (typically straight off `useLiveSeq`) rather than
- * this hook reading the cache itself, so a stale button — rendered before an
- * in-flight append's response lands — surfaces that mismatch as an error
- * instead of silently undoing the wrong thing.
+ * they believe is the tip (from `useUndoTargetSeq`, NOT `useLiveSeq` — see
+ * that hook's doc comment for why the two aren't interchangeable) rather
+ * than this hook reading the cache itself, so a stale button — rendered
+ * before an in-flight append's response lands — surfaces that mismatch as
+ * an error instead of silently undoing the wrong thing.
  *
- * On success, updates the tip/score caches the same way `useAppendLiveEvent`
+ * On success, updates the score cache the same way `useAppendLiveEvent`
  * does, from the response's already-recomputed snapshot rather than an
- * extra refetch.
+ * extra refetch. The two tip caches split here: the append token
+ * (`liveSeqQueryKey`) trusts the response's `last_seq` directly, same as an
+ * append; the undo target (`undoTargetSeqQueryKey`) does not, since an undo
+ * always leaves that response value pointing past a real event — it's
+ * invalidated instead, forcing a real re-derivation from the event log.
  */
 export function useUndoLastLiveEvent(matchId: string) {
   const queryClient = useQueryClient()
@@ -159,6 +235,7 @@ export function useUndoLastLiveEvent(matchId: string) {
     },
     onSuccess: (data) => {
       queryClient.setQueryData(liveSeqQueryKey(matchId), data.last_seq)
+      queryClient.invalidateQueries({ queryKey: undoTargetSeqQueryKey(matchId) })
       queryClient.setQueryData(matchScoreQueryKey(matchId), data.score)
       queryClient.invalidateQueries({ queryKey: ['match', matchId] })
       queryClient.invalidateQueries({ queryKey: ['feed'] })

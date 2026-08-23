@@ -9,31 +9,57 @@ permissions:
   packages: write
 
 jobs:
+  changes:
+    # Same-repo relative path (not `JElgar/agon/...@main`): this file must
+    # resolve to the version on the ref that triggered the run, not whatever
+    # is on main, otherwise a change to changes.yml itself only takes effect
+    # one release after it merges.
+    uses: ./.github/workflows/changes.yml
+
   build-service:
+    needs: changes
+    if: needs.changes.outputs.service == 'true' || needs.changes.outputs.worker == 'true'
     uses: JElgar/agon/.github/workflows/build-service.yml@main
     secrets: inherit
 
   build-ui:
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
     uses: JElgar/agon/.github/workflows/build-ui.yml@main
     secrets: inherit
 
   publish-service:
-    needs: build-service
+    needs: [changes, build-service]
+    if: needs.changes.outputs.service == 'true'
     uses: JElgar/agon/.github/workflows/docker-service.yml@main
     secrets: inherit
 
   publish-worker:
-    needs: build-service
+    needs: [changes, build-service]
+    if: needs.changes.outputs.worker == 'true'
     uses: JElgar/agon/.github/workflows/docker-worker.yml@main
     secrets: inherit
 
   publish-ui:
-    needs: build-ui
+    needs: [changes, build-ui]
+    if: needs.changes.outputs.ui == 'true'
     uses: JElgar/agon/.github/workflows/docker-ui.yml@main
     secrets: inherit
 
+  # Runs whenever any image was (re)published, OR agon_infra itself changed
+  # (a pulumi program/config edit with no image to rebuild still needs a
+  # `pulumi up` to take effect). Skipped images pass an empty string through,
+  # and deploy.yml leaves that image's pulumi config alone — so e.g. a
+  # UI-only change updates agonUiImage and redeploys, without touching (or
+  # rebuilding) the service/worker images at all.
   deploy:
-    needs: [publish-service, publish-worker, publish-ui]
+    needs: [changes, publish-service, publish-worker, publish-ui]
+    if: |
+      always() &&
+      (needs.publish-service.result == 'success' ||
+       needs.publish-worker.result == 'success' ||
+       needs.publish-ui.result == 'success' ||
+       needs.changes.outputs.infra == 'true')
     uses: JElgar/agon/.github/workflows/deploy.yml@main
     secrets: inherit
     with:
@@ -44,9 +70,20 @@ jobs:
 
   test:
     needs: deploy
+    if: needs.deploy.result == 'success'
     uses: JElgar/agon/.github/workflows/test.yml@main
     with:
       agon-service-url: ${{ needs.deploy.outputs.agon-url }}/api
+      stack-name: staging
+    secrets:
+      pulumi-access-token: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+
+  test-ui-e2e:
+    needs: deploy
+    if: needs.deploy.result == 'success'
+    uses: JElgar/agon/.github/workflows/test-ui-e2e.yml@main
+    with:
+      base-url: ${{ needs.deploy.outputs.agon-url }}
       stack-name: staging
     secrets:
       pulumi-access-token: ${{ secrets.PULUMI_ACCESS_TOKEN }}

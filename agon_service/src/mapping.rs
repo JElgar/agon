@@ -40,11 +40,11 @@ use crate::notification::{
 };
 use crate::team::{Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
-    Comment, ConfirmedScore, CricketScore, CricketScoreInnings, FeedMatch, FootballScore, Location,
-    Match, MatchOutcome, MatchPlayer, MatchSide, MatchSocial, MatchStatus, MatchType, NetballScore,
-    PendingScore, Photo, RosterPreviewPlayer, Score, ScoreConfirmation, ScoreResponseKind,
-    ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus, SearchMatch, SetsScore,
-    SimpleScore, UserProfile, UserSportStats,
+    Comment, ConfirmedScore, CricketScore, CricketScoreInnings, DevicePlatform, FeedMatch,
+    FootballScore, Location, Match, MatchOutcome, MatchPlayer, MatchSide, MatchSocial, MatchStatus,
+    MatchType, NetballScore, PendingScore, Photo, RosterPreviewPlayer, Score, ScoreConfirmation,
+    ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus,
+    SearchMatch, SetsScore, SimpleScore, UserProfile, UserSportStats,
 };
 use agon_core::dao::error::DaoError;
 use agon_core::dao::live_score_ops::NewLiveEvent;
@@ -54,18 +54,18 @@ use agon_core::dao::records::{
     CricketDismissalKindRecord, CricketDismissalRecord, CricketExtraKindRecord,
     CricketExtrasRecord, CricketFallOfWicketRecord, CricketFormatRecord,
     CricketInningsEndEventRecord, CricketInningsStartEventRecord, CricketLiveEventRecord,
-    CricketRetireEventRecord, CricketScoreInningsRecord, EmbeddedInvitationRecord,
-    FootballCardColorRecord, FootballCardEventRecord, FootballFormatRecord,
-    FootballGoalEventRecord, FootballLiveEventRecord, FootballPenaltyShootoutKickRecord,
-    FootballPeriodEventRecord, FootballPeriodRecord, FootballSubstitutionEventRecord,
-    InningsEndReasonRecord, InvitationContextRecord, InvitationKindRecord, InvitationRecord,
-    LiveEventPayloadRecord, LiveEventRecord, MatchFormatRecord, MatchLikeRecord, MatchPlayerRecord,
-    MatchRecord, MatchScoreRecord, MatchSideRecord, NetballFormatRecord, NetballFoulEventRecord,
-    NetballFoulKindRecord, NetballGoalEventRecord, NetballLiveEventRecord,
-    NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord, NextBallContextRecord,
-    NotificationKindRecord, NotificationRecord, OversRecord, PendingScoreRecord,
-    ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord, ScoreSubmissionRecord,
-    TeamMemberRecord, TeamRecord, UserRecord, UserSportStatsRecord,
+    CricketRetireEventRecord, CricketScoreInningsRecord, DevicePlatform as DevicePlatformRecord,
+    EmbeddedInvitationRecord, FootballCardColorRecord, FootballCardEventRecord,
+    FootballFormatRecord, FootballGoalEventRecord, FootballLiveEventRecord,
+    FootballPenaltyShootoutKickRecord, FootballPeriodEventRecord, FootballPeriodRecord,
+    FootballSubstitutionEventRecord, InningsEndReasonRecord, InvitationContextRecord,
+    InvitationKindRecord, InvitationRecord, LiveEventPayloadRecord, LiveEventRecord,
+    MatchFormatRecord, MatchLikeRecord, MatchPlayerRecord, MatchRecord, MatchScoreRecord,
+    MatchSideRecord, NetballFormatRecord, NetballFoulEventRecord, NetballFoulKindRecord,
+    NetballGoalEventRecord, NetballLiveEventRecord, NetballPeriodEventRecord, NetballPeriodRecord,
+    NetballPositionRecord, NextBallContextRecord, NotificationKindRecord, NotificationRecord,
+    OversRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord,
+    ScoreSubmissionRecord, TeamMemberRecord, TeamRecord, UserRecord, UserSportStatsRecord,
 };
 
 /// Parse an RFC-3339 timestamp string stored by the DAO into a UTC datetime,
@@ -116,6 +116,15 @@ pub fn match_type_tag(mt: &MatchType) -> &'static str {
         MatchType::Cricket => "cricket",
         MatchType::Netball => "netball",
         MatchType::Other => "other",
+    }
+}
+
+/// Map the API's device-platform enum to the DAO-owned one.
+pub fn device_platform_to_record(p: &DevicePlatform) -> DevicePlatformRecord {
+    match p {
+        DevicePlatform::Web => DevicePlatformRecord::Web,
+        DevicePlatform::Android => DevicePlatformRecord::Android,
+        DevicePlatform::Ios => DevicePlatformRecord::Ios,
     }
 }
 

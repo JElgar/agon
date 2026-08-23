@@ -3,6 +3,7 @@
 //! GSI2 (token lookup).
 
 use aws_sdk_dynamodb::error::SdkError;
+use aws_sdk_dynamodb::operation::delete_item::DeleteItemError;
 use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 
 use super::client::Dao;
@@ -190,18 +191,30 @@ impl Dao {
         }
     }
 
-    /// Delete (revoke) an invitation. Idempotent.
+    /// Delete (revoke) an invitation. Delete-by-id, not a toggle (there's no
+    /// idempotent-create counterpart the way `follow_user` has for
+    /// `unfollow_user`), so errors with `DaoError::NotFound` if the
+    /// invitation doesn't exist rather than silently succeeding.
     #[tracing::instrument(skip(self))]
     pub async fn delete_invitation(&self, invitation_id: &str) -> DaoResult<()> {
-        self.client
+        let result = self
+            .client
             .delete_item()
             .table_name(self.table())
             .key(ATTR_PK, s(Pk::Invitation(invitation_id.into()).to_string()))
             .key("SK", s(Sk::Meta.to_string()))
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
             .send()
-            .await
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-        Ok(())
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_delete_conditional_failure(&e) => {
+                Err(DaoError::NotFound(format!("invitation {invitation_id}")))
+            }
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
     }
 }
 
@@ -223,5 +236,13 @@ fn is_update_conditional_failure(err: &SdkError<UpdateItemError>) -> bool {
         err,
         SdkError::ServiceError(se)
             if matches!(se.err(), UpdateItemError::ConditionalCheckFailedException(_))
+    )
+}
+
+fn is_delete_conditional_failure(err: &SdkError<DeleteItemError>) -> bool {
+    matches!(
+        err,
+        SdkError::ServiceError(se)
+            if matches!(se.err(), DeleteItemError::ConditionalCheckFailedException(_))
     )
 }

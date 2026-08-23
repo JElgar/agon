@@ -11,7 +11,7 @@ config:
   hcloud:token:
     secure: AAABAGj7oe9pnKlRP9flfZMIkQFRhh1AeaURflQNPIWwMEHebPAQtMykOcDvy3E9NEdoh0XeOnOwqHelr6jiNHwHaf1jN397UJGDdLvc4wF5Pyz4ccCXXdMzWm4Htu15
   agon_infra:agonServiceImage: ghcr.io/jelgar/agon_service:sha-5bb0e3a
-  agon_infra:agonUiImage: ghcr.io/jelgar/agon_ui:sha-5bb0e3a
+  agon_infra:agonUiImage: ghcr.io/jelgar/agon_ui:sha-1dc6539
   agon_infra:supabaseAnonKey: sb_publishable_snWJggcOaut2Cce4srqJ2w_CqJhHTRx
   agon_infra:supabaseUrl: https://gkebmzhvdbsktamfdsil.supabase.co
   agon_infra:firebaseVapidKey: BONN6WrqpQJwhM8QwzMcCnia4an9KBsQmH1EWndMSdYvqlWCV6OW0PfPlD70L80rHl9W-vx4h8oe9FETSbeT-fo

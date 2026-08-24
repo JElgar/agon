@@ -39,12 +39,12 @@ use auth::{JwtClaims, JwtVerifier};
 // Boundary mapping between API models and DAO records.
 mod mapping;
 use mapping::{
-    comment_from_record, dao_internal, derive_live_score, device_platform_to_record,
-    feed_match_from_records, invitation_detail_from_record, invitation_from_record,
-    invitation_status_from_str, invitation_status_str, live_event_from_record,
-    match_format_sport_tag, match_format_to_record, match_from_records, match_score_from_record,
-    match_score_to_record, match_status_str, match_type_tag, new_live_event_to_dao,
-    notification_actor_id, notification_from_record, roster_preview_player,
+    comment_from_record, dao_internal, deleted_user_profile, derive_live_score,
+    device_platform_to_record, feed_match_from_records, invitation_detail_from_record,
+    invitation_from_record, invitation_status_from_str, invitation_status_str,
+    live_event_from_record, match_format_sport_tag, match_format_to_record, match_from_records,
+    match_score_from_record, match_score_to_record, match_status_str, match_type_tag,
+    new_live_event_to_dao, notification_actor_id, notification_from_record, roster_preview_player,
     score_submission_from_record, score_to_record, search_match_from_records, team_from_records,
     team_list_item_from_record, user_profile_from_record,
 };
@@ -4714,28 +4714,30 @@ impl Api {
             .await
             .map_err(dao_internal)?;
 
+        // Hydrate every actor profile (every current kind has one) with a
+        // single batched lookup across the page, rather than one `get_user`
+        // per notification.
+        let actor_ids: Vec<String> = page
+            .items
+            .iter()
+            .map(|rec| notification_actor_id(&rec.kind).to_string())
+            .collect();
+        let actor_records = dao
+            .batch_get_users(&actor_ids)
+            .await
+            .map_err(dao_internal)?;
+
         let mut items = Vec::with_capacity(page.items.len());
         for rec in page.items {
-            // Hydrate the actor profile (every current kind has one).
-            let actor = self
-                .try_user_profile(dao, notification_actor_id(&rec.kind))
-                .await?
-                .unwrap_or_else(|| {
-                    user_profile_from_record(
-                        &dao::records::UserRecord {
-                            id: notification_actor_id(&rec.kind).to_string(),
-                            email: String::new(),
-                            name: String::new(),
-                            profile_image_url: None,
-                            follower_count: 0,
-                            following_count: 0,
-                            unread_count: 0,
-                            stats: dao::records::UserStatsRecord::default(),
-                            created_at: String::new(),
-                        },
-                        false,
-                    )
-                });
+            // A notification outlives its actor by design (see
+            // `Notification`'s doc comment): the actor's account may since
+            // have been deleted, so an id here with no matching profile is an
+            // expected case to render, not an error to fail the page over.
+            let actor_id = notification_actor_id(&rec.kind);
+            let actor = match actor_records.get(actor_id) {
+                Some(record) => user_profile_from_record(record, false),
+                None => deleted_user_profile(actor_id),
+            };
             items.push(notification_from_record(&rec, actor));
         }
 

@@ -1971,6 +1971,37 @@ pub fn notification_actor_id(kind: &NotificationKindRecord) -> &str {
     }
 }
 
+/// Placeholder profile for a notification whose actor id no longer resolves to
+/// a live user record — the account was deleted after the notification was
+/// created. (There's no account-deletion feature yet, so this can't happen
+/// today, but a notification's actor reference outlives the account by
+/// design — see `Notification`'s doc comment — so a read-time fallback here
+/// is the whole fix; deleting an account never needs to touch or clean up any
+/// notification.) The id is preserved rather than scrubbed, so a client that
+/// links through to it (Follow's "View profile"/follow-back button) hits the
+/// same "user not found" it already handles for any other stale profile
+/// link, rather than a broken/empty route.
+pub fn deleted_user_profile(actor_id: &str) -> UserProfile {
+    UserProfile {
+        id: actor_id.to_string(),
+        name: "Deleted user".to_string(),
+        profile_image: None,
+        stats: UserStats {
+            cricket: None,
+            football: None,
+            tennis: None,
+            badminton: None,
+            squash: None,
+            table_tennis: None,
+            netball: None,
+            other: None,
+        },
+        follower_count: 0,
+        following_count: 0,
+        is_followed_by_me: false,
+    }
+}
+
 /// Build the API `Notification` from a record, given the resolved actor profile
 /// (already hydrated by the caller).
 pub fn notification_from_record(rec: &NotificationRecord, actor: UserProfile) -> Notification {

@@ -12,6 +12,7 @@ import {
 import { sportIcon, sportLabel, type MatchType } from '@/lib/sports'
 import { formatWinRate, type BestFigure } from '@/lib/stats'
 import { formatOvers } from '@/lib/cricketScore'
+import { StatInfo } from '@/components/agon/StatInfo'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { cn } from '@/lib/utils'
 
@@ -156,12 +157,18 @@ export function SportStatsPage() {
                 <StatTile
                   value={stats.batting_average?.toFixed(1) ?? '-'}
                   label="Average"
+                  info="Runs scored per dismissal — the traditional batting average. Shows “-” until you've been out at least once."
                 />
                 <StatTile
                   value={stats.strike_rate?.toFixed(0) ?? '-'}
                   label="Strike rate"
+                  info="Runs scored per 100 balls faced."
                 />
-                <StatTile value={stats.economy?.toFixed(1) ?? '-'} label="Economy" />
+                <StatTile
+                  value={stats.economy?.toFixed(1) ?? '-'}
+                  label="Economy"
+                  info="Runs conceded per over bowled — lower is better."
+                />
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <BestFigureCard
@@ -193,6 +200,7 @@ export function SportStatsPage() {
                 />
                 <BestFigureCard
                   label="Best game (goal involvements)"
+                  info="Goals scored plus assists, added together, in the same match."
                   figure={stats.best_goal_contributions}
                   onOpen={(id) => navigate(`/matches/${id}`)}
                 />
@@ -232,22 +240,39 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
   )
 }
 
-function StatTile({ value, label }: { value: string | number; label: string }) {
+function StatTile({
+  value,
+  label,
+  info,
+}: {
+  value: string | number
+  label: string
+  /** Explanation shown behind a "?" next to the label, for a stat whose
+   *  name alone doesn't say how it's computed (e.g. "Runs conceded per
+   *  over bowled" for Economy). Omitted for self-explanatory stats. */
+  info?: React.ReactNode
+}) {
   return (
     <div className="flex flex-col items-center justify-center gap-0.5 rounded-xl border bg-card px-2 py-3 text-center">
       <div className="text-lg font-medium">{value}</div>
-      <div className="text-[10px] text-muted-foreground">{label}</div>
+      <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+        {label}
+        {info && <StatInfo>{info}</StatInfo>}
+      </div>
     </div>
   )
 }
 
 function BestFigureCard({
   label,
+  info,
   figure,
   unit,
   onOpen,
 }: {
   label: string
+  /** Explanation shown behind a "?" next to the label — see `StatTile`. */
+  info?: React.ReactNode
   figure: BestFigure | undefined
   /** Value suffix, e.g. "wickets". Omitted for a bare number (runs/goals). */
   unit?: string
@@ -255,7 +280,10 @@ function BestFigureCard({
 }) {
   return (
     <div className="flex flex-col gap-1 rounded-xl border bg-card p-3">
-      <span className="text-[10px] text-muted-foreground">{label}</span>
+      <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
+        {label}
+        {info && <StatInfo>{info}</StatInfo>}
+      </span>
       {figure ? (
         <>
           <span className="text-lg font-medium">

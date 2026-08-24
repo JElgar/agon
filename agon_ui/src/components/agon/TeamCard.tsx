@@ -22,7 +22,7 @@ export function TeamCard({ team }: TeamCardProps) {
       onClick={() => navigate(`/teams/${team.id}`)}
       className="flex w-full items-center gap-3 px-4 py-3 text-left"
     >
-      <Avatar name={team.name} size="lg" />
+      <Avatar name={team.name} imageUrl={team.profile_image?.image_url} size="lg" />
       <div className="min-w-0">
         <div className="truncate text-sm font-medium">{team.name}</div>
         <div className="truncate text-xs text-muted-foreground">

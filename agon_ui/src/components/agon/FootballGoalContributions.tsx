@@ -83,7 +83,13 @@ export function FootballGoalContributions({
   className?: string
 }) {
   const [sortBy, setSortBy] = useState<GoalContributionSort>('goals')
-  const entries = sortGoalContributions(goalContributions(goals, match, players), sortBy)
+  // Memoized: `useReactTable` keys its internal state off referential
+  // equality of `data` (and `columns` below) — a fresh array every render
+  // sends it into a re-render loop that hangs the tab.
+  const entries = useMemo(
+    () => sortGoalContributions(goalContributions(goals, match, players), sortBy),
+    [goals, match, players, sortBy],
+  )
 
   const columns = useMemo<ColumnDef<GoalContributionEntry>[]>(
     () => [

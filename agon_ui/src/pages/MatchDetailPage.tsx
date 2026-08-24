@@ -17,6 +17,7 @@ import { NetballMatchBlock } from '@/components/agon/live/NetballMatchBlock'
 import { CricketScoreBlock } from '@/components/agon/CricketScoreBlock'
 import { CricketScorecard } from '@/components/agon/CricketScorecard'
 import { FootballScorecard } from '@/components/agon/FootballScorecard'
+import { FootballGoalContributions } from '@/components/agon/FootballGoalContributions'
 import { FootballScorersBySide } from '@/components/agon/FootballScorersBySide'
 import { NetballScorecard } from '@/components/agon/NetballScorecard'
 import { NetballScorersBySide } from '@/components/agon/NetballScorersBySide'
@@ -444,6 +445,18 @@ function MatchDetail({
           recorded (live-scored or entered directly) — stays visible after
           the match finishes, unlike the live score header above. */}
       {footballEventSource && <FootballScorecard match={orderedMatch} detail={footballEventSource} />}
+
+      {/* Goal contributions table — every scorer/assister, sortable by most
+          goals (default) or most assists, each breaking ties on the other.
+          Same goal log as the event timeline above, so it tracks a live
+          match too. */}
+      {footballEventSource && (
+        <FootballGoalContributions
+          goals={footballEventSource.goals}
+          match={orderedMatch}
+          players={footballEventSource.players}
+        />
+      )}
 
       {/* Netball quarter breakdown — reads the same regardless of which
           live-scoring method produced the score (see

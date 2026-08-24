@@ -83,7 +83,8 @@ use membership::{
 
 mod team;
 use team::{
-    AddTeamMembersInput, CreateTeamInput, Team, TeamListItem, TeamMember, TeamRole, UpdateTeamInput,
+    AddTeamMembersInput, CreateTeamInput, Team, TeamListItem, TeamMatchMode, TeamMember, TeamRole,
+    UpdateTeamInput,
 };
 
 mod notification;
@@ -2015,10 +2016,17 @@ impl Api {
         Query(query): Query<Option<String>>,
         /// Only matches this user played in (member id or user id).
         Query(participant): Query<Option<String>>,
-        /// Only matches this team was involved in (a side's `team_id`). Powers
-        /// a team profile's matches tab, the same way `participant` powers a
-        /// user profile's.
-        Query(team): Query<Option<String>>,
+        /// Only matches these teams were involved in (a side's `team_id`).
+        /// One id powers a team profile's matches tab, the same way
+        /// `participant` powers a user profile's; two or more, combined via
+        /// `team_match`, power team-vs-team lookups (e.g. head-to-head).
+        #[oai(name = "team_id")]
+        Query(team_ids): Query<Vec<String>>,
+        /// How multiple `team_id` values combine: `any` (default) matches a
+        /// game involving at least one of them, `all` matches a game
+        /// involving every one of them (head-to-head between exactly two
+        /// teams is the `all` case). Ignored with fewer than two `team_id`s.
+        Query(team_match): Query<Option<TeamMatchMode>>,
         /// Only matches of this sport.
         Query(match_type): Query<Option<MatchType>>,
         /// Only matches at or after this time (inclusive).
@@ -2038,7 +2046,8 @@ impl Api {
         // team / sport / date-range with date sorting. This is distinct from
         // GET /feed (the caller's social feed). Powers the profile "recent
         // activity" view (participant = the profile's user), a team profile's
-        // matches tab (team = the team's id), and general match search.
+        // matches tab (one team_id), team-vs-team / head-to-head lookups (two+
+        // team_ids with team_match=all), and general match search.
         if let (Some(from), Some(to)) = (from, to)
             && from > to
         {
@@ -2068,8 +2077,25 @@ impl Api {
         if let Some(p) = &participant {
             clauses.push(format!("participant_ids = \"{p}\""));
         }
-        if let Some(t) = &team {
-            clauses.push(format!("team_ids = \"{t}\""));
+        if !team_ids.is_empty() {
+            // `team_ids` is a filterable array attribute, so each `team_ids =
+            // "<id>"` clause independently asks "does this match's team_ids
+            // array contain <id>". ANDing several such clauses together
+            // therefore requires the array to contain *every* id — exactly
+            // head-to-head ("both these teams played in this match") — while
+            // ORing requires just one — "either of these teams played".
+            let op = match team_match {
+                Some(TeamMatchMode::All) => "AND",
+                Some(TeamMatchMode::Any) | None => "OR",
+            };
+            let team_clause = team_ids
+                .iter()
+                .map(|t| format!("team_ids = \"{t}\""))
+                .collect::<Vec<_>>()
+                .join(&format!(" {op} "));
+            // Parenthesize so this doesn't interact with the top-level `AND`
+            // joining it to the other facets below.
+            clauses.push(format!("({team_clause})"));
         }
         if let Some(from) = from {
             clauses.push(format!("starts_at_ts >= {}", from.timestamp()));

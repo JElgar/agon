@@ -43,12 +43,18 @@ impl Index {
 
     /// Attributes that must be declared *filterable* before they can be used in
     /// a search `filter` expression. Only the matches index is filtered (by
-    /// sport / participant / date range in `GET /matches`).
+    /// sport / participant / team / date range in `GET /matches`).
     fn filterable_attributes(self) -> &'static [&'static str] {
         match self {
             // `starts_at_ts` (numeric epoch) — not `starts_at` (ISO string) —
             // because Meilisearch range filters are numeric-only.
-            Index::Matches => &["sport", "participant_ids", "starts_at_ts", "status"],
+            Index::Matches => &[
+                "sport",
+                "participant_ids",
+                "team_ids",
+                "starts_at_ts",
+                "status",
+            ],
             Index::Users | Index::Teams => &[],
         }
     }

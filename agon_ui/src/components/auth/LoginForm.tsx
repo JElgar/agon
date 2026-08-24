@@ -75,7 +75,13 @@ export function LoginForm() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: `${window.location.origin}`,
+          // Preserve the exact page (e.g. `/invite/:token`) rather than just
+          // the origin, so Google sign-up/sign-in lands the visitor back
+          // where they started instead of the home page — same fix as the
+          // email confirmation flow above, and for the same reason: the
+          // pending-invite localStorage fallback only recovers this when the
+          // OAuth round trip lands back in the same browser/origin.
+          redirectTo: window.location.href,
         },
       })
 

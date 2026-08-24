@@ -275,6 +275,78 @@ export function scorersBySide(
   return out
 }
 
+/** One player's tally for the goal-contributions table: how many goals they
+ *  scored plus how many they assisted, across the whole match (both sides
+ *  merged into one list — `side_id` is kept per row for a caller that wants
+ *  to badge/group it, but the table itself doesn't split by side the way
+ *  `scorersBySide` does). */
+export interface GoalContributionEntry {
+  /** A scorer/assister player id — stable for React lists. */
+  key: string
+  name: string
+  side_id: string
+  goals: number
+  assists: number
+}
+
+/** Every player who scored or assisted at least one goal, tallied across the
+ *  whole match. Mirrors the backend's own "goal contributions" accounting
+ *  (`agon_worker`'s per-match stat contribution, and
+ *  `FootballStatsRecord::best_goal_contributions`): an own goal counts for
+ *  the scoring side on the board but is never credited to the player who
+ *  put it in their own net, so it's excluded here too — only
+ *  `assist_player_id`, which an own goal never carries anyway, would still
+ *  count. Unsorted; pass through `sortGoalContributions` for a stable
+ *  goals-first or assists-first ordering. */
+export function goalContributions(
+  goals: FootballGoalEvent[],
+  match: MatchLike,
+  scorePlayers?: ScorePlayers,
+): GoalContributionEntry[] {
+  const byPlayer = new Map<string, GoalContributionEntry>()
+  const entryFor = (playerId: string, sideId: string) => {
+    let entry = byPlayer.get(playerId)
+    if (!entry) {
+      entry = {
+        key: playerId,
+        name: playerNameFor(match, playerId, scorePlayers) ?? 'Unknown',
+        side_id: sideId,
+        goals: 0,
+        assists: 0,
+      }
+      byPlayer.set(playerId, entry)
+    }
+    return entry
+  }
+
+  for (const g of goals) {
+    if (!g.own_goal && g.scorer_player_id) {
+      entryFor(g.scorer_player_id, g.side_id).goals += 1
+    }
+    if (g.assist_player_id) {
+      entryFor(g.assist_player_id, g.side_id).assists += 1
+    }
+  }
+  return [...byPlayer.values()]
+}
+
+/** Which column leads the goal-contributions table's sort. */
+export type GoalContributionSort = 'goals' | 'assists'
+
+/** Sorts goal-contribution rows by the chosen column descending, using the
+ *  other column as the tie-breaker (also descending) — sorting by goals
+ *  breaks ties on assists and vice versa, per the table's brief — then name
+ *  for a fully stable order once both counts match. */
+export function sortGoalContributions(
+  entries: GoalContributionEntry[],
+  sortBy: GoalContributionSort,
+): GoalContributionEntry[] {
+  const other: GoalContributionSort = sortBy === 'goals' ? 'assists' : 'goals'
+  return [...entries].sort(
+    (a, b) => b[sortBy] - a[sortBy] || b[other] - a[other] || a.name.localeCompare(b.name),
+  )
+}
+
 /** Player display name for a match-scoped player id. Checks `scorePlayers`
  *  first — `FootballScore.players`, resolved server-side for exactly the
  *  ids a score references (see its backend doc comment) — since that's the
@@ -282,7 +354,7 @@ export function scorersBySide(
  *  carries a `players` list). Falls back to scanning the match's own roster,
  *  always present on the full `Match` type a detail view uses. Same
  *  contract as cricket's `playerNameFor` in `lib/cricketScore.ts`. */
-function playerNameFor(
+export function playerNameFor(
   match: MatchLike,
   playerId: string | undefined,
   scorePlayers?: ScorePlayers,

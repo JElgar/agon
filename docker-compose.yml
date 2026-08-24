@@ -1,15 +1,6 @@
 services:
-  # Local Meilisearch for the discovery/search endpoints. Data (DynamoDB) lives
-  # in AWS; only search is run locally. Master key matches .env.example.
-  #
-  # No profile: this is the "default" service set, unchanged by everything
-  # below it — `docker compose up -d` with no flags starts only this, same as
-  # before. Everything under the `full` profile is extra weight (2 Postgres
-  # instances, GoTrue, Kong, Temporal) most day-to-day work doesn't need; opt
-  # in with `docker compose --profile full up -d` when you actually do (full
-  # local UI e2e run, or working on the Temporal workflows in agon_worker).
-  # See agon_ui/e2e/README.md for what the `full` profile is for and how to
-  # point agon_service/agon_ui/agon_worker at it.
+  # Discovery/search endpoints. Data (DynamoDB) lives in AWS by default;
+  # only search is run locally. Master key matches .env.example.
   meilisearch:
     image: getmeili/meilisearch:v1.11
     restart: always
@@ -21,14 +12,13 @@ services:
     volumes:
       - meili_data:/meili_data
 
-  # ── `full` profile: local Supabase Auth (Postgres + GoTrue + Kong) ────────
+  # ── Local Supabase Auth (Postgres + GoTrue + Kong) ─────────────────────────
   #
   # Real Supabase, self-hosted, minus everything agon_ui/agon_service never
   # touch (Storage, Realtime, PostgREST, Studio, Analytics, ...) — the
   # browser-side Supabase surface this app uses is auth-only (see
-  # `agon_ui/src/lib/supabase.ts` and `agon_ui/e2e/README.md`), so that's all
-  # this stands up. Config lives in `local/supabase/`, trimmed from
-  # Supabase's own reference self-hosting setup
+  # `agon_ui/src/lib/supabase.ts`). Config lives in `local/supabase/`,
+  # trimmed from Supabase's own reference self-hosting setup
   # (github.com/supabase/supabase/tree/master/docker) down to just Auth.
   #
   # `supabase-db` bakes in the `auth` schema, extensions and service roles
@@ -38,7 +28,6 @@ services:
   supabase-db:
     image: supabase/postgres:17.6.1.136
     restart: unless-stopped
-    profiles: [full]
     environment:
       POSTGRES_PASSWORD: localDevOnlyPassword
       POSTGRES_DB: postgres
@@ -70,7 +59,6 @@ services:
   supabase-auth:
     image: supabase/gotrue:v2.189.0
     restart: unless-stopped
-    profiles: [full]
     depends_on:
       supabase-db:
         condition: service_healthy
@@ -122,7 +110,6 @@ services:
   supabase-kong:
     image: kong:3.6
     restart: unless-stopped
-    profiles: [full]
     depends_on:
       supabase-auth:
         condition: service_healthy
@@ -136,15 +123,14 @@ services:
     ports:
       - 8000:8000
 
-  # ── `full` profile: local Temporal (agon_worker's fan-out / accept-invite
-  # sagas — see agon_worker/src/temporal). Own Postgres, separate from
-  # supabase-db above: Temporal's schema migrations and Supabase's init
-  # scripts have no reason to share an instance, and keeping them apart means
-  # neither can break the other's init.
+  # ── Local Temporal (agon_worker's fan-out / accept-invite sagas — see
+  # agon_worker/src/temporal). Own Postgres, separate from supabase-db above:
+  # Temporal's schema migrations and Supabase's init scripts have no reason
+  # to share an instance, and keeping them apart means neither can break the
+  # other's init.
   temporal-db:
     image: postgres:15
     restart: unless-stopped
-    profiles: [full]
     environment:
       POSTGRES_USER: temporal
       POSTGRES_PASSWORD: temporal
@@ -164,7 +150,6 @@ services:
   temporal:
     image: temporalio/auto-setup:1.24.2
     restart: unless-stopped
-    profiles: [full]
     depends_on:
       temporal-db:
         condition: service_healthy
@@ -179,12 +164,11 @@ services:
       - 7233:7233
 
   # Optional but handy while debugging workflow runs. Not required for
-  # agon_worker to work — safe to `docker compose --profile full up -d
-  # --scale temporal-ui=0` if you don't want it.
+  # agon_worker to work — safe to `docker compose up -d --scale
+  # temporal-ui=0` if you don't want it.
   temporal-ui:
     image: temporalio/ui:2.31.2
     restart: unless-stopped
-    profiles: [full]
     depends_on:
       - temporal
     environment:
@@ -193,19 +177,11 @@ services:
     ports:
       - 8080:8080
 
-  # ── `dynamodb` profile (also included by `full`): DynamoDB Local + SQS + S3 ─
+  # ── DynamoDB Local + SQS + S3 ───────────────────────────────────────────────
   #
-  # Real DynamoDB/SQS/S3 are deliberately kept out of the default local setup
-  # (see the note on `meilisearch`, top of this file) — most day-to-day work
-  # doesn't need any of this, and real/cloud resources are one less thing to
-  # keep in sync with what staging actually runs on. This is for the cases
-  # that do: `make test` (agon_tests) without AWS credentials, or running
-  # agon_worker locally end-to-end. A separate profile (not folded into
-  # `full`) since agon_tests needs only this and Meilisearch — not
-  # Supabase/Temporal — so `docker compose --profile dynamodb up -d` alone is
-  # enough for it. (The name predates S3 joining the profile — kept as
-  # `dynamodb` rather than renamed, since it's already the documented,
-  # muscle-memory command by the time S3 was added.)
+  # Real DynamoDB/SQS/S3 stay the default for `agon_service`/`agon_worker`
+  # (see CLAUDE.md) — these are for `make test` (agon_tests) without AWS
+  # credentials, or running agon_worker locally end-to-end.
   #
   # Streaming is enabled on the table (see create-table.sh), but nothing here
   # feeds those stream records to the `elasticmq` queues below — that's
@@ -223,7 +199,6 @@ services:
   dynamodb-local:
     image: amazon/dynamodb-local:latest
     restart: unless-stopped
-    profiles: [dynamodb, full]
     command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
     ports:
       - 8002:8000
@@ -235,7 +210,6 @@ services:
   # restarts this alongside it every time regardless of the table's state.
   dynamodb-local-init:
     image: public.ecr.aws/aws-cli/aws-cli:latest
-    profiles: [dynamodb, full]
     depends_on:
       - dynamodb-local
     environment:
@@ -254,7 +228,6 @@ services:
   elasticmq:
     image: softwaremill/elasticmq-native:latest
     restart: unless-stopped
-    profiles: [dynamodb, full]
     ports:
       - 9324:9324
 
@@ -262,7 +235,6 @@ services:
   # local/dynamodb/create-queues.sh.
   elasticmq-init:
     image: public.ecr.aws/aws-cli/aws-cli:latest
-    profiles: [dynamodb, full]
     depends_on:
       - elasticmq
     environment:
@@ -277,14 +249,11 @@ services:
   # S3 stand-in for asset uploads (agon_service's presigned PUT flow — see
   # agon_service/src/assets.rs). Requires real, validated credentials
   # (unlike dynamodb-local/elasticmq above) — MINIO_ROOT_PASSWORD must be 8+
-  # chars, which is the whole reason every AWS_SECRET_ACCESS_KEY in this file
-  # says `localsecret` instead of the shorter `local` used before MinIO was
-  # added — one shared local credential pair across the whole profile is
-  # simpler to document than a special case just for this service.
+  # chars, which is why every AWS_SECRET_ACCESS_KEY in this file says
+  # `localsecret` rather than the shorter `local`.
   minio:
     image: minio/minio:latest
     restart: unless-stopped
-    profiles: [dynamodb, full]
     command: ["server", "/data"]
     environment:
       MINIO_ROOT_USER: local
@@ -296,7 +265,6 @@ services:
   # default — see .env.example).
   minio-init:
     image: public.ecr.aws/aws-cli/aws-cli:latest
-    profiles: [dynamodb, full]
     depends_on:
       - minio
     environment:

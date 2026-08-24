@@ -332,9 +332,7 @@ export function MatchCard({
         </div>
       </button>
 
-      {/* Title + description — clickable like the header/score blocks above,
-          not just decorative text (this was previously missing its onOpen,
-          the one region of the card a click did nothing). */}
+      {/* Title + description — clickable, same as the header/score blocks above. */}
       {(match.name || match.description) && (
         <button type="button" onClick={onOpen} className="block w-full px-3.5 pb-3 text-left">
           {match.name && <p className="font-medium leading-snug">{match.name}</p>}

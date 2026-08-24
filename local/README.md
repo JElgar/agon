@@ -1,10 +1,9 @@
 # `local/`
 
-Config for the backing services `docker-compose.yml`'s `full`/`dynamodb`
-profiles stand up — everything beyond Meilisearch: local Supabase Auth,
-local Temporal, and DynamoDB Local + SQS (ElasticMQ). See `agon_ui/e2e/
-README.md`'s "Running fully local" section for how the Supabase/Temporal
-pieces fit together and how to actually run something against that stack.
+Config for the backing services `docker-compose.yml` stands up: local
+Supabase Auth, local Temporal, and DynamoDB Local + SQS (ElasticMQ) + S3
+(MinIO). See `agon_ui/e2e/README.md`'s "Running fully local" section for how
+these pieces fit together and how to actually run something against them.
 
 ## `local/supabase/`
 
@@ -74,14 +73,13 @@ staging actually runs on. This is for `make test` (`agon_tests`) without AWS
 credentials, or working on `agon_worker`'s DynamoDB-facing code without
 touching a real table.
 
-`docker compose --profile dynamodb up -d` (also included in `--profile
-full`) starts `amazon/dynamodb-local` (`-inMemory` — state resets on every
-restart) plus a one-shot `dynamodb-local-init` container that creates the
-`agon` table via `create-table.sh`. That script's schema (`PK`/`SK`, GSI1-3,
-TTL on `ttl`) is hand-mirrored from the real table's Pulumi definition in
-`agon_infra/index.ts` (`dynamoTable`) — there's no way to detect drift
-between them automatically, so if the real schema ever changes, mirror the
-change here too.
+`docker compose up -d` starts `amazon/dynamodb-local` (`-inMemory` — state
+resets on every restart) plus a one-shot `dynamodb-local-init` container
+that creates the `agon` table via `create-table.sh`. That script's schema
+(`PK`/`SK`, GSI1-3, TTL on `ttl`) is hand-mirrored from the real table's
+Pulumi definition in `agon_infra/index.ts` (`dynamoTable`) — there's no way
+to detect drift between them automatically, so if the real schema ever
+changes, mirror the change here too.
 
 Point `agon_service`/`agon_tests`/`agon_worker` at it by uncommenting
 `AWS_ENDPOINT_URL` (and the local `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`
@@ -107,22 +105,18 @@ anything — search indexing and feed fan-out won't happen, and the
 
 `minio`/`minio-init` (see `create-bucket.sh`) is the local stand-in for S3,
 serving presigned PUTs the way `agon_service` issues them
-(`agon_service/src/assets.rs`). This needed one real code change, not just
-infra: a real S3 presigned URL is virtual-hosted-style
+(`agon_service/src/assets.rs`). A real S3 presigned URL is virtual-hosted-style
 (`<bucket>.<endpoint>/<key>`), which MinIO has no wildcard DNS for — a PUT
 against one just DNS-fails. `AGON_ASSETS_S3_FORCE_PATH_STYLE` (see
 `.env.example`) switches `agon_service`'s S3 client to path-style
 (`<endpoint>/<bucket>/<key>`) instead, gated behind that env var so real
-deployments (which always use virtual-hosted-style) are untouched. Verified
-this concretely — a real presigned PUT against MinIO, replayed exactly the
-way `agon_tests` does it — before making the change.
+deployments (which always use virtual-hosted-style) are untouched.
 
 MinIO requires *validated* credentials (unlike `dynamodb-local`/`elasticmq`
 above, which accept anything) — `MINIO_ROOT_PASSWORD` must be 8+ characters,
-which is why every `AWS_SECRET_ACCESS_KEY` in this profile is `localsecret`
-rather than the shorter `local` used before MinIO was added. One shared
-credential pair across the whole `dynamodb` profile is simpler to document
-than a special case just for this service.
+which is why every `AWS_SECRET_ACCESS_KEY` here is `localsecret` rather than
+a shorter placeholder. One shared credential pair across all the local AWS
+services is simpler to document than a special case just for MinIO.
 
 **Known gap:** the presigned PUT itself works, but `agon_tests`'
 `upload_*_end_to_end`/`attach_*` cases still fail — they wait for
@@ -157,16 +151,15 @@ discovery — `ListStreams`/`DescribeStream`/`GetShardIterator` — still does).
 DynamoDB Local has a real interop bug where it renders an empty Map
 attribute in a stream record as bare `{}` instead of the tagged `{"M": {}}`
 real DynamoDB uses, which the generated client's strict typed deserializer
-rejects outright — failing the *entire* batch, not just that one attribute.
-Since `agon_core`'s records commonly carry an empty map early on (e.g. a
-fresh user's `stats: {}`), this hit nearly every record, not some rare edge
-case. The fix: a raw HTTP call for `GetRecords` specifically, parsed as
-untyped JSON and patched (`patch_image`/`patch_empty_maps`) before
-forwarding. DynamoDB Local doesn't validate SigV4 signature *content*
-(confirmed empirically), so the "signed" request is real-shaped but not
-cryptographically real — fine against DynamoDB Local, would need actual
-signing to work against real AWS (out of scope; this tool only ever exists
-to bridge a local table).
+rejects outright — failing the *entire* batch, not just that one attribute
+(`agon_core`'s records commonly carry an empty map early on, e.g. a fresh
+user's `stats: {}`, so this hits nearly every record). The fix: a raw HTTP
+call for `GetRecords` specifically, parsed as untyped JSON and patched
+(`patch_image`/`patch_empty_maps`) before forwarding. DynamoDB Local doesn't
+validate SigV4 signature *content*, so the "signed" request is real-shaped
+but not cryptographically real — fine against DynamoDB Local, would need
+actual signing to work against real AWS (out of scope; this tool only ever
+exists to bridge a local table).
 
 ### The test-signing key
 

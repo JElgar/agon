@@ -39,12 +39,10 @@ export function phaseLabel(page: Page): Locator {
 
 /**
  * Whether `sideName` is the side shown first (left digit of the score box,
- * first name in the "{nameA} vs {nameB}" heading) on the live-scoring page.
- * The API returns a match's sides in a stable-but-otherwise-arbitrary order
- * (sorted by internal side id, not creation order — see
- * `agon_core/src/dao/match_ops.rs`'s `sorted_sides` doc comment), so a test
- * can't assume "the side logged first" ends up first here; it has to read
- * the actual order off the page.
+ * first name in the "{nameA} vs {nameB}" heading). The API's side order is
+ * stable but arbitrary — sorted by internal id, not creation order (see
+ * `agon_core/src/dao/match_ops.rs`'s `sorted_sides`) — so this has to be
+ * read off the page rather than assumed.
  */
 export async function isFirstSide(page: Page, sideName: string): Promise<boolean> {
   const heading = (await page.getByRole('heading', { level: 1 }).innerText()).trim()
@@ -68,12 +66,9 @@ export async function recordGoal(
   await dialog.getByRole('button', { name: side, exact: true }).click()
   await dialog.getByRole('button', { name: scorer, exact: true }).click()
   if (assist) {
-    // Once a scorer is picked, the dialog shows the (still unfiltered)
-    // Scorer picker *and* the Assist picker at once — if the assist happens
-    // to still be an option in the Scorer list too (i.e. isn't the player
-    // just picked as scorer), the same name matches a button in both
-    // sections. The Assist section always renders after Scorer, so its
-    // match is the last one.
+    // The Scorer picker (unfiltered) and Assist picker are both visible at
+    // once, so the same name can match a button in either — Assist always
+    // renders second, so its match is the last one.
     await dialog.getByRole('button', { name: assist, exact: true }).last().click()
   }
   await dialog.getByRole('button', { name: 'Add goal', exact: true }).click()

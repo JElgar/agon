@@ -135,12 +135,11 @@ Everything above targets staging: staging Supabase for auth, staging
 against your own machine instead:
 
 1. **Bring up the backing services** — Meilisearch, a local Supabase Auth
-   (Postgres + GoTrue + Kong), a local Temporal, and DynamoDB Local + SQS
-   (ElasticMQ), via the `full` docker-compose profile (see `local/README.md`
-   for what's actually in it):
+   (Postgres + GoTrue + Kong), a local Temporal, and DynamoDB Local + SQS +
+   S3 (see `local/README.md` for what's actually in it):
 
    ```bash
-   docker compose --profile full up -d
+   docker compose up -d
    ```
 
 2. **Seed the test account** against the local Supabase Auth stack (the local
@@ -209,28 +208,10 @@ against your own machine instead:
    npm run test:e2e
    ```
 
-`docker compose --profile full up -d` (no flags at all) only starts
-Meilisearch, same as always — the `full` profile is additional weight (two
-Postgres instances, GoTrue, Kong, Temporal, DynamoDB Local, ElasticMQ) most
-day-to-day work doesn't need, so it's opt-in.
-
 `make test-ui-e2e-local` wraps steps 2 and 7 (seed + run, with matching
 defaults) — steps 1, 3–6 (the backing services and the four app processes:
 agon_service, agon_worker, the stream bridge, the UI dev server) still need
 to be up first.
-
-Verified end-to-end (`npm run test:e2e`, all 3 tests green, twice in a row):
-login, profile creation, logging a match, and full-match live scoring all
-work against this fully-local stack with nothing external involved — a
-headless browser reaching only `localhost` sidesteps this environment's
-usual "browser can't reach the internet" sandbox limits entirely. Getting
-there took a few real fixes along the way, in case any look familiar if you
-hit them again: local Kong's CORS config didn't allowlist the
-`X-Supabase-Api-Version` header supabase-js sends (surfaces as a generic
-"Failed to fetch" on login — see `local/supabase/kong.yml`), and
-`vite.config.ts`'s dev proxy needs to strip `/api` itself when pointed
-straight at a local `agon_service` (a real ingress does that in every other
-environment — see that file's proxy comment).
 
 ## What's covered
 

@@ -98,22 +98,16 @@ export default defineConfig(({ mode }) => {
     strictPort: true,
     proxy: {
       // Local dev proxies /api to the staging backend by default, so the UI
-      // can run without a local agon_service (which needs
-      // DynamoDB/Meilisearch/AWS creds) — auth tokens validate against the
-      // same staging Supabase project the UI uses by default. Set
+      // can run without a local agon_service. Set
       // AGON_API_PROXY_TARGET=http://localhost:7000 (agon_ui/.env) to point
       // at a local agon_service instead — see agon_ui/e2e/README.md's
       // "Running fully local" section.
       //
-      // Staging keeps the /api prefix on the wire: this proxy forwards it
-      // straight to the ingress (agon-api-ingress in agon_infra/index.ts),
-      // which is what actually strips it (`rewrite-target: /$2` on
-      // `path: "/api(/|$)(.*)"`) before the request reaches agon_service —
-      // agon_service itself only ever mounts routes at `/` (see
-      // `agon_service/src/main.rs`'s `.nest("/", api_service)`), it never
-      // serves anything under /api. A local agon_service has no ingress in
-      // front of it to do that stripping, so this proxy has to do it
-      // instead whenever it's pointed directly at one.
+      // agon_service itself mounts routes at `/`, not `/api` — in every
+      // other environment an ingress strips that prefix before the request
+      // reaches it (see agon-api-ingress in agon_infra/index.ts). A local
+      // agon_service has no ingress in front of it, so this proxy strips it
+      // instead whenever pointed directly at one.
       '/api': {
         target: apiProxyTarget,
         changeOrigin: true,

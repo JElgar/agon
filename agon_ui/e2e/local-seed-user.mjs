@@ -76,7 +76,7 @@ async function main() {
   }
 
   console.error(`Failed to create local e2e test account (HTTP ${res.status}): ${body}`)
-  console.error(`Is the \`full\` compose profile up? docker compose --profile full up -d`)
+  console.error(`Is docker compose up? docker compose up -d`)
   process.exit(1)
 }
 

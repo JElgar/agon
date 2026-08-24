@@ -1,5 +1,5 @@
 # Minimal Kong declarative config for the local Supabase Auth stack (see
-# docker-compose.yml's `full` profile). Purposefully NOT a copy of Supabase's
+# docker-compose.yml). Purposefully NOT a copy of Supabase's
 # production kong.yml: this exists only to give `agon_ui`/`agon_service` the
 # same `<url>/auth/v1/...` path shape a real Supabase project serves, so the
 # browser-side `supabase-js` auth calls and `SUPABASE_JWKS_URL` work
@@ -46,12 +46,8 @@ services:
             - Content-Type
             - apikey
             - X-Client-Info
-            # supabase-js v2 sends this on every request (its own client
-            # version, not the GoTrue API version despite the name) — without
-            # it explicitly allowed, the browser's CORS preflight rejects the
-            # real request before it's ever sent, surfacing as a generic
-            # "Failed to fetch" in the UI with no other clue. Real Supabase
-            # projects don't need this listed because their Kong config
-            # allows it by default; this stack's minimal config doesn't.
+            # supabase-js v2's own client-version header (not the GoTrue API
+            # version, despite the name), sent on every request — must be
+            # allowlisted or the CORS preflight rejects the real request.
             - X-Supabase-Api-Version
           credentials: false

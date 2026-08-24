@@ -2797,8 +2797,8 @@ async fn list_matches_accepts_filters() {
     // returns a well-formed page.
     let page = matches_get(
         &config,
-        Vec::new(),
         Some("test"),
+        None,
         None,
         None,
         Some(models::MatchType::Tennis),
@@ -2818,7 +2818,7 @@ async fn list_matches_rejects_inverted_date_range() {
     // `from` after `to` is a 400 with a specific message.
     let response = matches_get(
         &config,
-        Vec::new(),
+        None,
         None,
         None,
         None,
@@ -2898,9 +2898,9 @@ async fn list_matches_filters_by_team() {
         async move {
             let page = matches_get(
                 config,
-                vec![team_id],
                 None,
                 None,
+                Some(vec![team_id]),
                 None,
                 None,
                 None,
@@ -2919,9 +2919,9 @@ async fn list_matches_filters_by_team() {
     // array contains both.
     let h2h = matches_get(
         &owner_config,
-        vec![team_a.id.clone(), team_b.id.clone()],
         None,
         None,
+        Some(vec![team_a.id.clone(), team_b.id.clone()]),
         Some(models::TeamMatchMode::All),
         None,
         None,
@@ -2940,9 +2940,9 @@ async fn list_matches_filters_by_team() {
     // match's team_ids array contains all three.
     let all_with_unrelated = matches_get(
         &owner_config,
-        vec![team_a.id.clone(), unrelated_team.id.clone()],
         None,
         None,
+        Some(vec![team_a.id.clone(), unrelated_team.id.clone()]),
         Some(models::TeamMatchMode::All),
         None,
         None,
@@ -2960,9 +2960,9 @@ async fn list_matches_filters_by_team() {
     // Same two ids, default `any` mode: team_a alone is enough.
     let any_with_unrelated = matches_get(
         &owner_config,
-        vec![team_a.id.clone(), unrelated_team.id.clone()],
         None,
         None,
+        Some(vec![team_a.id.clone(), unrelated_team.id.clone()]),
         None,
         None,
         None,
@@ -2980,9 +2980,9 @@ async fn list_matches_filters_by_team() {
     // The unrelated team alone finds nothing.
     let unrelated_only = matches_get(
         &owner_config,
-        vec![unrelated_team.id.clone()],
         None,
         None,
+        Some(vec![unrelated_team.id.clone()]),
         None,
         None,
         None,

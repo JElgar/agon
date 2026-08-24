@@ -2152,7 +2152,13 @@ impl Api {
         /// One id powers a team profile's matches tab, the same way
         /// `participant` powers a user profile's; two or more, combined via
         /// `team_match`, power team-vs-team lookups (e.g. head-to-head).
-        #[oai(name = "team_id")]
+        // `Vec<T>` query params are `required` by default in the generated
+        // schema even though an absent one just parses as empty — `default`
+        // marks it optional there too (falling back to `Vec::default()`,
+        // the same empty-vec behavior), so existing callers that don't pass
+        // `team_id` at all (e.g. a plain `participant` search) still
+        // typecheck against the generated client.
+        #[oai(name = "team_id", default)]
         Query(team_ids): Query<Vec<String>>,
         /// How multiple `team_id` values combine: `any` (default) matches a
         /// game involving at least one of them, `all` matches a game

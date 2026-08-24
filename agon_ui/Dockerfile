@@ -3,11 +3,14 @@ FROM node:24-alpine AS build
 # Set up working directory
 WORKDIR /app
 
-# Copy package.json and package-lock.json (or yarn.lock) first for better cache performance
-COPY package*.json ./
+# Copy package.json and package-lock.json first for better cache performance —
+# this layer (and the install below) only invalidates when the lockfile
+# changes, not on every source edit.
+COPY package.json package-lock.json ./
 
-# Install dependencies
-RUN npm install
+# `ci` installs exactly what's in package-lock.json (no resolution/lockfile
+# rewrite), which is both faster and more reproducible than `install` here.
+RUN npm ci
 
 # Add the rest of the application files
 COPY . /app/

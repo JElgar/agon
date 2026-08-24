@@ -52,6 +52,7 @@ import { MatchResultEditor } from '@/components/agon/MatchResultEditor'
 import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
 import { MatchComments } from '@/components/agon/MatchComments'
+import { LikedByLine } from '@/components/agon/MatchLikes'
 import { useToggleLike } from '@/hooks/useToggleLike'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
 
@@ -474,9 +475,10 @@ function MatchDetail({
 }
 
 /**
- * The match's like control + count. Anyone signed in can like a match (not just
- * participants). Optimistic via `useToggleLike`, so the flame fills and the
- * count moves the instant it's pressed.
+ * The match's like control + count, plus who liked it. Anyone signed in can
+ * like a match (not just participants). Optimistic via `useToggleLike`, so the
+ * flame fills and the count moves the instant it's pressed. `LikedByLine`
+ * renders "Liked by A, B +N" alongside it and opens the full list on click.
  */
 function LikeBar({ match }: { match: Match }) {
   const { like_count, i_liked } = match.social
@@ -497,6 +499,8 @@ function LikeBar({ match }: { match: Match }) {
         <Flame className={cn('size-4', i_liked && 'fill-current')} /> {like_count}{' '}
         {like_count === 1 ? 'like' : 'likes'}
       </button>
+
+      <LikedByLine matchId={match.id} likeCount={like_count} />
     </div>
   )
 }

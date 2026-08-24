@@ -9,31 +9,56 @@ permissions:
   packages: write
 
 jobs:
+  changes:
+    # Same-repo relative path (not `JElgar/agon/...@main`): this file must
+    # resolve to the version on the ref that triggered the run, not whatever
+    # is on main, otherwise a change to changes.yml itself only takes effect
+    # one release after it merges.
+    uses: ./.github/workflows/changes.yml
+
   build-service:
+    needs: changes
+    if: needs.changes.outputs.service == 'true' || needs.changes.outputs.worker == 'true'
     uses: JElgar/agon/.github/workflows/build-service.yml@main
     secrets: inherit
 
   build-ui:
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
     uses: JElgar/agon/.github/workflows/build-ui.yml@main
     secrets: inherit
 
   publish-service:
-    needs: build-service
+    needs: [changes, build-service]
+    if: needs.changes.outputs.service == 'true'
     uses: JElgar/agon/.github/workflows/docker-service.yml@main
     secrets: inherit
 
   publish-worker:
-    needs: build-service
+    needs: [changes, build-service]
+    if: needs.changes.outputs.worker == 'true'
     uses: JElgar/agon/.github/workflows/docker-worker.yml@main
     secrets: inherit
 
   publish-ui:
-    needs: build-ui
+    needs: [changes, build-ui]
+    if: needs.changes.outputs.ui == 'true'
     uses: JElgar/agon/.github/workflows/docker-ui.yml@main
     secrets: inherit
 
+  # Always runs, regardless of what (if anything) changed: `pulumi up` is
+  # idempotent/cheap when there's no diff, and deploy/test/test-ui-e2e also
+  # serve as a continuous check of the live staging environment, not just of
+  # this push. `always()` is required because some of the needs above are
+  # routinely skipped (see the note on `build-service`/`build-ui`) — without
+  # it, GitHub's default "all needs must succeed" gate would skip this job
+  # too. publish-service/worker/ui pass an empty image string through when
+  # skipped, and deploy.yml leaves that image's pulumi config alone — so
+  # e.g. a UI-only change updates agonUiImage, without touching (or
+  # rebuilding) the service/worker images at all.
   deploy:
-    needs: [publish-service, publish-worker, publish-ui]
+    needs: [changes, publish-service, publish-worker, publish-ui]
+    if: always()
     uses: JElgar/agon/.github/workflows/deploy.yml@main
     secrets: inherit
     with:

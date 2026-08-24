@@ -47,12 +47,23 @@ export function useLiveEvents(matchId: string | undefined, options?: { enabled?:
 
 /** The log's real physical tip — the highest `seq` an event actually exists
  *  at, 0 if none yet — by draining the raw event log and taking the max.
- *  Shared queryFn logic for `useLiveSeq` and `useUndoTargetSeq`, which start
- *  out reading the same value but diverge from there (see
- *  `useUndoTargetSeq`'s doc comment). */
+ *  Used by `useUndoTargetSeq` only. NOT safe for seeding `useLiveSeq`'s
+ *  append token — see that hook's doc comment for why the two are not
+ *  interchangeable once any event has ever been undone. */
 async function fetchLivePhysicalTip(matchId: string): Promise<number> {
   const events = await drainLiveEvents(matchId)
   return events.reduce((max, e) => Math.max(max, e.seq), 0)
+}
+
+/** The match's real `live_seq` counter, straight from the server —
+ *  `GET /matches/:id/live/seq`. Shared queryFn for `useLiveSeq`'s seed. */
+async function fetchLiveSeq(matchId: string): Promise<number> {
+  const { data, response } = await fetchClient.GET('/matches/{match_id}/live/seq', {
+    params: { path: { match_id: matchId } },
+  })
+  if (response.status === 404) return 0
+  if (!data) throw new Error('Failed to load live seq')
+  return data.last_seq
 }
 
 export function liveSeqQueryKey(matchId: string | undefined) {
@@ -62,10 +73,23 @@ export function liveSeqQueryKey(matchId: string | undefined) {
 /**
  * The optimistic-concurrency token for the *next append* — `expected_last_seq`
  * — not a read of the score itself (see `useMatchScore` for that; there's no
- * separate "live state" endpoint anymore). Seeded once by draining the raw
- * event log (the real physical tip, same as `useUndoTargetSeq`); every
+ * separate "live state" endpoint for scores). Seeded from `GET
+ * /matches/:id/live/seq`, the server's actual `live_seq` counter; every
  * append or undo after that updates the cached value directly from its own
  * response's `last_seq` instead of refetching.
+ *
+ * This must NOT be seeded from the physical event log's max seq the way
+ * `useUndoTargetSeq` is (regression: an earlier version of this hook did
+ * exactly that via the same `fetchLivePhysicalTip` helper). The two start
+ * out equal, but permanently diverge the moment an event is ever undone —
+ * `live_seq` counts every mutation ever made (including deletes), while the
+ * physical log's max seq only ever reflects what's still there (see
+ * `Dao::delete_live_event`'s doc comment on the backend). A device that
+ * seeds its append token from the log instead of the real counter sends a
+ * stale `expected_last_seq` on its very next append and gets rejected with
+ * `Conflict` forever after that — exactly what a page refresh right after an
+ * undo used to do, since the refresh throws away the in-session cache
+ * (populated correctly by the undo's own response) and reseeds from scratch.
  *
  * That response `last_seq` is always the match's `live_seq` counter, not
  * necessarily a seq any event still physically exists at (see
@@ -79,7 +103,7 @@ export function useLiveSeq(matchId: string | undefined, options?: { enabled?: bo
     queryKey: liveSeqQueryKey(matchId),
     enabled: !!matchId && (options?.enabled ?? true),
     staleTime: Infinity,
-    queryFn: () => fetchLivePhysicalTip(matchId!),
+    queryFn: () => fetchLiveSeq(matchId!),
   })
 }
 

@@ -434,6 +434,42 @@ async fn add_and_remove_team_member() {
     assert!(!member_ids(&after_remove).contains(&member.profile.id));
 }
 
+/// Removing a member that's already gone (or never existed) returns 404 on a
+/// real team, rather than silently succeeding with the roster unchanged —
+/// membership removal is delete-by-id, not a toggle.
+#[tokio::test]
+async fn removing_an_already_removed_team_member_returns_not_found() {
+    let (config, _owner) = new_user().await;
+    let (_other_config, member) = new_user().await;
+
+    let team = teams_post(
+        &config,
+        models::CreateTeamInput {
+            name: "Roster Test".to_string(),
+        },
+    )
+    .await
+    .expect("create team");
+
+    let with_member = teams_team_id_members_post(
+        &config,
+        &team.id,
+        models::AddTeamMembersInput {
+            user_ids: vec![member.profile.id.clone()],
+        },
+    )
+    .await
+    .expect("add member");
+    let member_id = membership_id_for(&with_member, &member.profile.id).expect("membership id");
+
+    teams_team_id_members_member_id_delete(&config, &team.id, &member_id)
+        .await
+        .expect("first remove");
+
+    let response = teams_team_id_members_member_id_delete(&config, &team.id, &member_id).await;
+    assert_not_found(response);
+}
+
 // ---------------------------------------------------------------------------
 // Matches
 // ---------------------------------------------------------------------------
@@ -972,6 +1008,37 @@ async fn deleting_a_reply_less_comment_removes_it_and_decrements_count() {
             .comment_count,
         0
     );
+}
+
+/// Deleting an already-deleted comment returns 404 rather than silently
+/// succeeding — comments are delete-by-id (creating one always mints a new
+/// id, never idempotent), unlike a follow/like toggle.
+#[tokio::test]
+async fn deleting_an_already_deleted_comment_returns_not_found() {
+    let (config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let match_ = matches_post(&config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    let comment = matches_match_id_comments_post(
+        &config,
+        &match_.id,
+        models::CreateCommentInput {
+            text: "Delete me".to_string(),
+            parent_id: None,
+        },
+    )
+    .await
+    .expect("create comment");
+
+    matches_match_id_comments_comment_id_delete(&config, &match_.id, &comment.id)
+        .await
+        .expect("first delete");
+
+    let response =
+        matches_match_id_comments_comment_id_delete(&config, &match_.id, &comment.id).await;
+    assert_not_found(response);
 }
 
 /// Deleting a comment that HAS replies tombstones it: the row is kept (so its
@@ -2803,6 +2870,38 @@ async fn inviter_can_revoke_an_invitation() {
     assert_not_found(response);
 }
 
+/// Revoking an already-revoked invitation is not idempotent, unlike
+/// follow/like: an invitation has no idempotent-create counterpart to stay
+/// symmetric with, so a second revoke is a genuine 404, not a silent no-op.
+#[tokio::test]
+async fn revoking_an_already_revoked_invitation_returns_not_found() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let match_ = matches_post(&owner_config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    let created = matches_match_id_invitations_post(
+        &owner_config,
+        &match_.id,
+        models::AddInvitationsInput {
+            invited_user_ids: vec![invitee.profile.id.clone()],
+            invited_external_names: vec![],
+            side_id: None,
+        },
+    )
+    .await
+    .expect("add invitation");
+    let inv_id = created.first().expect("one invitation").id.clone();
+
+    invitations_invitation_id_delete(&owner_config, &inv_id)
+        .await
+        .expect("first revoke");
+
+    let response = invitations_invitation_id_delete(&owner_config, &inv_id).await;
+    assert_not_found(response);
+}
+
 // ---------------------------------------------------------------------------
 // Notifications: single mark-read
 // ---------------------------------------------------------------------------
@@ -3593,6 +3692,81 @@ async fn netball_quarter_only_scoring_uses_period_marker_score_directly() {
 // netball-specific.
 // ---------------------------------------------------------------------------
 
+/// Regression test for the bug where a UI client seeded its append token
+/// (`expected_last_seq`) from the physical event log's own max seq — fine
+/// before any undo, but permanently wrong after one, since undoing bumps the
+/// real `live_seq` counter past the deleted event without leaving a matching
+/// physical item behind (see `Dao::delete_live_event`'s doc comment). In the
+/// app this showed up as: undo an event, refresh the page (throwing away the
+/// in-session cache that had been seeded correctly from the undo's own
+/// response), and every append from then on 409s forever. `GET
+/// /matches/:id/live/seq` exists precisely so a fresh client has a correct
+/// value to seed from instead of falling back to the event log.
+#[tokio::test]
+async fn live_seq_endpoint_reflects_the_real_counter_not_the_physical_log_max() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+
+    // No events yet — the counter is 0.
+    let seq = matches_match_id_live_seq_get(&owner_config, &created.id)
+        .await
+        .expect("get live seq");
+    assert_eq!(seq.last_seq, 0);
+
+    append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![
+            netball_goal_event_json(&side_a, false),
+            netball_goal_event_json(&side_a, false),
+        ],
+    )
+    .await;
+
+    let seq = matches_match_id_live_seq_get(&owner_config, &created.id)
+        .await
+        .expect("get live seq");
+    assert_eq!(seq.last_seq, 2);
+
+    // Undo the tip — the physical log's own max seq drops to 1, but the real
+    // counter is 3 (bumped past the deleted event). This endpoint must
+    // report the counter, not the physical max.
+    matches_match_id_live_events_seq_delete(&owner_config, &created.id, 2)
+        .await
+        .expect("undo the second goal");
+
+    let page = matches_match_id_live_events_get(&owner_config, &created.id, None, None)
+        .await
+        .expect("list live events");
+    let physical_max = page.items.iter().map(|e| e.seq).max().unwrap_or(0);
+    assert_eq!(physical_max, 1, "physical log's own max seq after the undo");
+
+    let seq = matches_match_id_live_seq_get(&owner_config, &created.id)
+        .await
+        .expect("get live seq");
+    assert_eq!(
+        seq.last_seq, 3,
+        "the real counter, not the physical log's max seq (1)"
+    );
+
+    // And it's exactly the value the very next append needs as
+    // expected_last_seq — the point of the whole endpoint.
+    let after_append = append_live_events_raw(
+        &owner_config,
+        &created.id,
+        seq.last_seq,
+        vec![netball_goal_event_json(&side_a, false)],
+    )
+    .await;
+    assert_eq!(after_append.last_seq, 4);
+}
+
 /// Regression test for the bug where undoing the tip event left the client
 /// unable to record anything else afterward.
 ///
@@ -3818,7 +3992,7 @@ async fn undoing_the_bumped_tip_with_nothing_left_to_delete_is_not_found() {
 /// bumped `last_seq`. This is the scenario the UI's `useUndoTargetSeq` split
 /// exists for (see that hook's doc comment): every undo advances `live_seq`
 /// by one past the deleted event, so consecutive undos land on a strictly
-/// increasing sequence of `last_seq` values (4, then 3, then 2) even while
+/// increasing sequence of `last_seq` values (4, then 5, then 6) even while
 /// the *targets* count down (3, then 2, then 1). Confirms the derived score
 /// and physical log both end up completely empty once every event has been
 /// undone, not just "missing the most recent one" — and, the actual point
@@ -3884,11 +4058,14 @@ async fn undoing_multiple_times_in_a_row_removes_each_real_tip_in_turn() {
     }
 
     // Undo #3: the real tip is now seq 1 (the first, and last remaining,
-    // goal) — the log goes fully empty.
+    // goal) — the log goes fully empty. The counter keeps climbing the same
+    // way it did for undo #2 (5 -> 6), even though there's nothing left to
+    // undo afterward — `live_seq` never resets just because the log is
+    // momentarily empty.
     let after_third = matches_match_id_live_events_seq_delete(&owner_config, &created.id, 1)
         .await
         .expect("undo the first goal");
-    assert_eq!(after_third.last_seq, 2);
+    assert_eq!(after_third.last_seq, 6);
     match *after_third.score {
         models::Score::Netball(s) => {
             assert_eq!(s.goals.as_ref().map(Vec::len), Some(0));
@@ -3921,7 +4098,7 @@ async fn undoing_multiple_times_in_a_row_removes_each_real_tip_in_turn() {
     }
 
     // The actual point of all this: scoring can still continue afterward.
-    // `expected_last_seq` must be `after_third.last_seq` (2) — the climbed
+    // `expected_last_seq` must be `after_third.last_seq` (6) — the climbed
     // counter, not 0 — even though every event ever recorded has now been
     // undone.
     let after_append = append_live_events_raw(
@@ -3931,9 +4108,9 @@ async fn undoing_multiple_times_in_a_row_removes_each_real_tip_in_turn() {
         vec![netball_goal_event_json(&side_a, false)],
     )
     .await;
-    // Lands at seq 3, continuing on from the counter — not seq 1, which
+    // Lands at seq 7, continuing on from the counter — not seq 1, which
     // would silently collide with the (deleted) first goal's old identity.
-    assert_eq!(after_append.last_seq, 3);
+    assert_eq!(after_append.last_seq, 7);
     match *after_append.score {
         models::Score::Netball(s) => {
             assert_eq!(s.goals.as_ref().map(Vec::len), Some(1));

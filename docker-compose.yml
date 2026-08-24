@@ -1,6 +1,6 @@
 services:
-  # Local Meilisearch for the discovery/search endpoints. Data (DynamoDB) lives
-  # in AWS; only search is run locally. Master key matches .env.example.
+  # Discovery/search endpoints. Data (DynamoDB) lives in AWS by default;
+  # only search is run locally. Master key matches .env.example.
   meilisearch:
     image: getmeili/meilisearch:v1.11
     restart: always
@@ -12,5 +12,271 @@ services:
     volumes:
       - meili_data:/meili_data
 
+  # ── Local Supabase Auth (Postgres + GoTrue + Kong) ─────────────────────────
+  #
+  # Real Supabase, self-hosted, minus everything agon_ui/agon_service never
+  # touch (Storage, Realtime, PostgREST, Studio, Analytics, ...) — the
+  # browser-side Supabase surface this app uses is auth-only (see
+  # `agon_ui/src/lib/supabase.ts`). Config lives in `local/supabase/`,
+  # trimmed from Supabase's own reference self-hosting setup
+  # (github.com/supabase/supabase/tree/master/docker) down to just Auth.
+  #
+  # `supabase-db` bakes in the `auth` schema, extensions and service roles
+  # already (that's what the `supabase/postgres` image is for); the two
+  # mounted .sql files just point the pre-created roles and DB-level JWT
+  # settings at the (dev-only, committed) secrets below.
+  supabase-db:
+    image: supabase/postgres:17.6.1.136
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: localDevOnlyPassword
+      POSTGRES_DB: postgres
+      POSTGRES_HOST: /var/run/postgresql
+      POSTGRES_PORT: 5432
+      # Legacy HS256 secret GoTrue also gets below — DB-level `app.settings.*`
+      # some auth.* Postgres functions read. Unused by the ES256 signing path
+      # (GOTRUE_JWT_KEYS, see supabase-auth), but GoTrue's init still wants it.
+      JWT_SECRET: localDevOnlyJwtSecretNotUsedForSigningSeeGotrueJwtKeys
+      JWT_EXP: "3600"
+    volumes:
+      - ./local/supabase/roles.sql:/docker-entrypoint-initdb.d/init-scripts/99-roles.sql:ro
+      - ./local/supabase/jwt.sql:/docker-entrypoint-initdb.d/init-scripts/99-jwt.sql:ro
+      # Runs after roles.sql (alphabetically) — see the file's own header.
+      - ./local/supabase/auth-ownership.sql:/docker-entrypoint-initdb.d/init-scripts/99-zz-auth-ownership.sql:ro
+      - supabase_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Signs real session JWTs with the ES256 keypair below (kid `gotrue-local-dev`)
+  # — dev-only, generated for this repo, not used anywhere else. Its public
+  # half is what `SUPABASE_JWKS_URL` (via Kong, below) resolves to, so
+  # `agon_service`'s JWT verifier (agon_service/src/auth.rs — ES256/RS256
+  # only, never a shared secret) trusts it exactly like it would trust a real
+  # Supabase project's JWKS.
+  supabase-auth:
+    image: supabase/gotrue:v2.189.0
+    restart: unless-stopped
+    depends_on:
+      supabase-db:
+        condition: service_healthy
+    environment:
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: http://localhost:8000/auth/v1
+      GOTRUE_SITE_URL: http://localhost:5173
+      GOTRUE_URI_ALLOW_LIST: http://localhost:5173/*
+
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:localDevOnlyPassword@supabase-db:5432/postgres
+
+      GOTRUE_JWT_ADMIN_ROLES: service_role
+      GOTRUE_JWT_AUD: authenticated
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: authenticated
+      GOTRUE_JWT_EXP: "3600"
+      GOTRUE_JWT_ISSUER: http://localhost:8000/auth/v1
+      # Legacy shared-secret half, matching supabase-db's JWT_SECRET — GoTrue
+      # wants this set even though real session tokens are signed asymmetric
+      # (below), never with this secret.
+      GOTRUE_JWT_SECRET: localDevOnlyJwtSecretNotUsedForSigningSeeGotrueJwtKeys
+      # The actual signing key: one ES256 keypair, private half here. Public
+      # half is served at /auth/v1/.well-known/jwks.json — see
+      # local/README.md for how this was generated (dev-only, not a secret
+      # worth rotating, but don't reuse it for anything real).
+      GOTRUE_JWT_KEYS: '[{"kty":"EC","crv":"P-256","alg":"ES256","use":"sig","key_ops":["sign"],"kid":"gotrue-local-dev","x":"yXLf-oIMpfA9yLIyoh6lEuF9uFhasekCcNea3KjOIu8","y":"7JGtvFl-v5zyS5h2bdbunQA_zL6IL4E_Yjfx-fEZ94I","d":"YbMOJAc9O2VsvKUXN3MRz78R-B_1Z8f0P4i8KPhsl6E"}]'
+
+      # Email/password only (what the app and e2e suite use) — no SMTP in
+      # this stack, so new signups must be autoconfirmed rather than mailed a
+      # confirmation link. The fixed e2e test account is created directly via
+      # the admin API instead (agon_ui/e2e/local-seed-user.mjs), which sets
+      # email_confirm itself regardless of this setting.
+      GOTRUE_EXTERNAL_EMAIL_ENABLED: "true"
+      GOTRUE_MAILER_AUTOCONFIRM: "true"
+      GOTRUE_DISABLE_SIGNUP: "false"
+      GOTRUE_EXTERNAL_ANONYMOUS_USERS_ENABLED: "false"
+      GOTRUE_EXTERNAL_PHONE_ENABLED: "false"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Gateway: gives `agon_ui`/`agon_service` the same `<url>/auth/v1/...` path
+  # shape a real Supabase project serves. DB-less, declarative config —
+  # local/supabase/kong.yml — deliberately a single passthrough route, not a
+  # copy of Supabase's production kong.yml; see that file's header for why.
+  supabase-kong:
+    image: kong:3.6
+    restart: unless-stopped
+    depends_on:
+      supabase-auth:
+        condition: service_healthy
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /kong.yml
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+    volumes:
+      - ./local/supabase/kong.yml:/kong.yml:ro
+    ports:
+      - 8000:8000
+
+  # ── Local Temporal (agon_worker's fan-out / accept-invite sagas — see
+  # agon_worker/src/temporal). Own Postgres, separate from supabase-db above:
+  # Temporal's schema migrations and Supabase's init scripts have no reason
+  # to share an instance, and keeping them apart means neither can break the
+  # other's init.
+  temporal-db:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+    volumes:
+      - temporal_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "temporal", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # `auto-setup` runs the schema migrations and registers the `default`
+  # namespace itself on first boot — nothing to provision by hand. Standard
+  # SQL visibility (no Elasticsearch): agon_worker only starts/queries
+  # workflows by their deterministic id, never Temporal's advanced visibility
+  # search, so there's nothing Elasticsearch would buy here.
+  temporal:
+    image: temporalio/auto-setup:1.24.2
+    restart: unless-stopped
+    depends_on:
+      temporal-db:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: temporal
+      POSTGRES_PWD: temporal
+      POSTGRES_SEEDS: temporal-db
+      ENABLE_ES: "false"
+    ports:
+      - 7233:7233
+
+  # Optional but handy while debugging workflow runs. Not required for
+  # agon_worker to work — safe to `docker compose up -d --scale
+  # temporal-ui=0` if you don't want it.
+  temporal-ui:
+    image: temporalio/ui:2.31.2
+    restart: unless-stopped
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:8080
+    ports:
+      - 8080:8080
+
+  # ── DynamoDB Local + SQS + S3 ───────────────────────────────────────────────
+  #
+  # Real DynamoDB/SQS/S3 stay the default for `agon_service`/`agon_worker`
+  # (see CLAUDE.md) — these are for `make test` (agon_tests) without AWS
+  # credentials, or running agon_worker locally end-to-end.
+  #
+  # Streaming is enabled on the table (see create-table.sh), but nothing here
+  # feeds those stream records to the `elasticmq` queues below — that's
+  # DynamoDB Streams -> EventBridge Pipe -> SQS in production
+  # (agon_infra/index.ts), with no compose service standing in for the Pipe.
+  # `local/dynamodb-stream-bridge` is that stand-in — a separate, standalone
+  # tool (not a compose service; run it the same way you'd run agon_worker
+  # itself, see its own README/Makefile target) that tails the stream and
+  # forwards to `elasticmq`. Without it running, agon_worker starts and idles
+  # correctly, just never receives anything.
+  #
+  # `-inMemory`: state resets on every restart. Fine for tests (they create
+  # their own users/teams/matches per run); if that ever stops being true,
+  # switch to a mounted `-dbPath` volume instead.
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    restart: unless-stopped
+    command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
+    ports:
+      - 8002:8000
+
+  # One-shot: creates the `agon` table (schema mirrored from
+  # agon_infra/index.ts — see local/dynamodb/create-table.sh) and exits.
+  # Re-run safe (idempotent) — matters because `-inMemory` above means the
+  # table needs recreating on every `dynamodb-local` restart, and compose
+  # restarts this alongside it every time regardless of the table's state.
+  dynamodb-local-init:
+    image: public.ecr.aws/aws-cli/aws-cli:latest
+    depends_on:
+      - dynamodb-local
+    environment:
+      AWS_ENDPOINT_URL: http://dynamodb-local:8000
+      AWS_REGION: eu-west-1
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: localsecret
+    entrypoint: ["/bin/sh", "/create-table.sh"]
+    volumes:
+      - ./local/dynamodb/create-table.sh:/create-table.sh:ro
+
+  # SQS stand-in for agon_worker (see agon_worker/src/config.rs —
+  # AGON_EVENTS_QUEUE_URL / AGON_ASSET_EVENTS_QUEUE_URL). In-memory, resets on
+  # restart, same as dynamodb-local — agon_worker doesn't care, it just reads
+  # whatever's currently on the queue.
+  elasticmq:
+    image: softwaremill/elasticmq-native:latest
+    restart: unless-stopped
+    ports:
+      - 9324:9324
+
+  # One-shot: creates the two queues agon_worker needs — see
+  # local/dynamodb/create-queues.sh.
+  elasticmq-init:
+    image: public.ecr.aws/aws-cli/aws-cli:latest
+    depends_on:
+      - elasticmq
+    environment:
+      AWS_ENDPOINT_URL_SQS: http://elasticmq:9324
+      AWS_REGION: eu-west-1
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: localsecret
+    entrypoint: ["/bin/sh", "/create-queues.sh"]
+    volumes:
+      - ./local/dynamodb/create-queues.sh:/create-queues.sh:ro
+
+  # S3 stand-in for asset uploads (agon_service's presigned PUT flow — see
+  # agon_service/src/assets.rs). Requires real, validated credentials
+  # (unlike dynamodb-local/elasticmq above) — MINIO_ROOT_PASSWORD must be 8+
+  # chars, which is why every AWS_SECRET_ACCESS_KEY in this file says
+  # `localsecret` rather than the shorter `local`.
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER: local
+      MINIO_ROOT_PASSWORD: localsecret
+    ports:
+      - 9000:9000
+
+  # One-shot: creates the `agon-assets` bucket (matches AGON_ASSETS_BUCKET's
+  # default — see .env.example).
+  minio-init:
+    image: public.ecr.aws/aws-cli/aws-cli:latest
+    depends_on:
+      - minio
+    environment:
+      AWS_ENDPOINT_URL_S3: http://minio:9000
+      AWS_REGION: eu-west-1
+      AWS_ACCESS_KEY_ID: local
+      AWS_SECRET_ACCESS_KEY: localsecret
+    entrypoint: ["/bin/sh", "/create-bucket.sh"]
+    volumes:
+      - ./local/dynamodb/create-bucket.sh:/create-bucket.sh:ro
+
 volumes:
   meili_data:
+  supabase_db_data:
+  temporal_db_data:

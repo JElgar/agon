@@ -55,7 +55,10 @@ setup('log in as the fixed e2e test user', async ({ page }) => {
   await expect(profileHeading.or(feedLink)).toBeVisible({ timeout: 20_000 })
 
   if (await profileHeading.isVisible()) {
-    await page.getByLabel('Display name').fill('Agon E2E Bot')
+    // CreateProfileForm collects first/last name separately (both required
+    // to enable the submit button) — there is no single "Display name" field.
+    await page.getByLabel('First name').fill('Agon')
+    await page.getByLabel('Last name').fill('E2E Bot')
     await page.getByRole('button', { name: 'Create profile' }).click()
     await expect(feedLink).toBeVisible({ timeout: 20_000 })
   }

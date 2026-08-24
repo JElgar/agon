@@ -1,0 +1,22 @@
+[package]
+name = "dynamodb-stream-bridge"
+version = "0.1.0"
+edition = "2024"
+
+# Standalone, NOT a member of the root workspace (see the root Cargo.toml's
+# comment — same reasoning as agon_tests being its own workspace): this is
+# local-dev-only tooling, and keeping it out of the root workspace means it
+# never touches agon_worker's real build graph (cargo build -p agon_worker,
+# including its Dockerfile, only ever sees agon_worker's own dependencies).
+# Run it directly: `cargo run --manifest-path local/dynamodb-stream-bridge/Cargo.toml`.
+[workspace]
+
+[dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal"] }
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-dynamodbstreams = "1"
+aws-sdk-sqs = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"

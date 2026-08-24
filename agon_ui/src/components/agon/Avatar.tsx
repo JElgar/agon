@@ -61,7 +61,9 @@ export function Avatar({
           loading="lazy"
         />
       ) : (
-        toInitials(name)
+        // Decorative shorthand for `name`, not additional information —
+        // hidden from the accessible-name computation.
+        <span aria-hidden="true">{toInitials(name)}</span>
       )}
     </span>
   )

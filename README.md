@@ -8,11 +8,26 @@ docker compose up -d
 make run
 ```
 
+`docker compose up -d` starts everything: Meilisearch, local Supabase Auth,
+Temporal, DynamoDB Local, SQS (ElasticMQ), S3 (MinIO). DynamoDB/SQS/S3 stay
+real/cloud for `agon_service`/`agon_worker` unless you point them at the
+local stack — see `local/README.md`. For a fully local UI e2e run, see
+`agon_ui/e2e/README.md`'s "Running fully local" section.
+
 ## Test
 
 ```
 make test
 ```
+
+Needs a running `agon_service` (`make run`) and, since `agon_tests` talks to
+real DynamoDB by default, either real AWS credentials or a local table:
+uncomment `AWS_ENDPOINT_URL` in `.env` — see `local/README.md`'s
+`local/dynamodb/` section. Worker-dependent tests (search indexing, feed
+fan-out) additionally need `agon_worker` and `local/dynamodb-stream-bridge`
+(`make run-worker` / `make run-stream-bridge`) running. That leaves only the
+asset-upload tests (`upload_*_end_to_end`, `attach_*`) still failing — a
+separate known gap, see `local/README.md`'s "S3 (asset uploads)" section.
 
 ## TODO
 

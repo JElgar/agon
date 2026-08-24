@@ -3,6 +3,7 @@ import { logFootballMatch, uniqueSuffix } from '../support/logMatch'
 import {
   advanceClock,
   goalButton,
+  isFirstSide,
   liveScoreBox,
   openMatchFromFeed,
   phaseLabel,
@@ -21,9 +22,15 @@ test.describe('football live scoring', () => {
     await openMatchFromFeed(page, name)
     await startFootballScoring(page)
 
+    // The API's side order isn't tied to which side was logged first (see
+    // `isFirstSide`'s doc comment) — read it off the page once, up front,
+    // rather than assuming "Home" is always the left-hand score digit.
+    const homeScoresFirst = await isFirstSide(page, homeName)
+    const oneNil = homeScoresFirst ? /1\s*–\s*0/ : /0\s*–\s*1/
+
     // --- First half: a goal with an assist, then undo it ---------------------
     await recordGoal(page, { side: homeName, scorer: teammateName, assist: selfName })
-    await expect(liveScoreBox(page)).toHaveText(/1\s*–\s*0/)
+    await expect(liveScoreBox(page)).toHaveText(oneNil)
     await expect(page.getByText(`Goal — ${teammateName} (${selfName})`)).toBeVisible()
 
     await undoLastEvent(page)
@@ -33,7 +40,7 @@ test.describe('football live scoring', () => {
     // Record it again so the rest of the match has something on the board —
     // also exercises that a goal can be re-recorded cleanly after an undo.
     await recordGoal(page, { side: homeName, scorer: teammateName, assist: selfName })
-    await expect(liveScoreBox(page)).toHaveText(/1\s*–\s*0/)
+    await expect(liveScoreBox(page)).toHaveText(oneNil)
 
     // --- Half-time: the clock stops and scoring is unavailable ---------------
     await advanceClock(page, 'End 1st half')

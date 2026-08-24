@@ -38,6 +38,18 @@ export function phaseLabel(page: Page): Locator {
 }
 
 /**
+ * Whether `sideName` is the side shown first (left digit of the score box,
+ * first name in the "{nameA} vs {nameB}" heading). The API's side order is
+ * stable but arbitrary — sorted by internal id, not creation order (see
+ * `agon_core/src/dao/match_ops.rs`'s `sorted_sides`) — so this has to be
+ * read off the page rather than assumed.
+ */
+export async function isFirstSide(page: Page, sideName: string): Promise<boolean> {
+  const heading = (await page.getByRole('heading', { level: 1 }).innerText()).trim()
+  return heading.startsWith(sideName)
+}
+
+/**
  * Opens the goal dialog from a quick-action tap, fills side/scorer/(assist),
  * and submits — the same steps a scorer taps through live. `scorer` and
  * `assist` are matched by the exact name shown in the roster picker (see
@@ -54,7 +66,10 @@ export async function recordGoal(
   await dialog.getByRole('button', { name: side, exact: true }).click()
   await dialog.getByRole('button', { name: scorer, exact: true }).click()
   if (assist) {
-    await dialog.getByRole('button', { name: assist, exact: true }).click()
+    // The Scorer picker (unfiltered) and Assist picker are both visible at
+    // once, so the same name can match a button in either — Assist always
+    // renders second, so its match is the last one.
+    await dialog.getByRole('button', { name: assist, exact: true }).last().click()
   }
   await dialog.getByRole('button', { name: 'Add goal', exact: true }).click()
   await expect(dialog).toBeHidden()

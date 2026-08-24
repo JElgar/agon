@@ -39,8 +39,12 @@ provider can change without rewriting user-keyed data.
 ### Setup
 ```bash
 cp .env.example .env
-docker compose up -d  # Starts local Meilisearch (DynamoDB is a real/cloud table)
+docker compose up -d  # Meilisearch, local Supabase Auth, Temporal, DynamoDB Local, SQS, S3
 ```
+`agon_service`/`agon_worker` still talk to real/cloud DynamoDB unless you
+point them at the local stack — see `local/README.md`. For a fully local UI
+e2e run (Playwright, `agon_ui`), see `agon_ui/e2e/README.md`'s "Running
+fully local" section.
 
 ### Building
 ```bash
@@ -56,6 +60,9 @@ make run  # Starts Docker services and runs the API server on port 7000
 ```bash
 make test  # Runs integration tests in agon_tests package
 ```
+Needs `agon_service` running and a DynamoDB table reachable — real AWS
+creds, or uncomment `AWS_ENDPOINT_URL` in `.env` for DynamoDB Local (see
+`local/README.md`).
 
 ### OpenAPI Schema Generation
 ```bash

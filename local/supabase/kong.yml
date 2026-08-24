@@ -1,0 +1,53 @@
+# Minimal Kong declarative config for the local Supabase Auth stack (see
+# docker-compose.yml). Purposefully NOT a copy of Supabase's
+# production kong.yml: this exists only to give `agon_ui`/`agon_service` the
+# same `<url>/auth/v1/...` path shape a real Supabase project serves, so the
+# browser-side `supabase-js` auth calls and `SUPABASE_JWKS_URL` work
+# unmodified against a local target.
+#
+# Real Supabase's kong.yml splits "open" routes (verify/callback/jwks) from a
+# key-auth-gated catch-all, enforcing the anon/service_role API keys at the
+# gateway. There's no equivalent security boundary to enforce for a
+# local-only, non-production auth stack nobody else can reach, so this is
+# just one passthrough route for everything under /auth/v1/ — the `apikey`
+# header supabase-js still sends is accepted but never checked. If this stack
+# ever needs to proxy more than Auth (Storage, PostgREST, ...), add routes
+# the same way rather than reaching for the full production config.
+_format_version: '2.1'
+_transform: true
+
+services:
+  - name: auth-v1
+    _comment: 'Auth: /auth/v1/* -> http://supabase-auth:9999/*'
+    url: http://supabase-auth:9999/
+    routes:
+      - name: auth-v1-all
+        strip_path: true
+        paths:
+          - /auth/v1/
+    plugins:
+      # The browser (localhost:5173) calls this gateway (localhost:8000)
+      # directly — a different origin — unlike /api, which the Vite dev
+      # server proxies server-side. Needs CORS, unlike a same-origin call.
+      - name: cors
+        config:
+          origins:
+            - '*'
+          methods:
+            - GET
+            - POST
+            - PUT
+            - PATCH
+            - DELETE
+            - OPTIONS
+          headers:
+            - Accept
+            - Authorization
+            - Content-Type
+            - apikey
+            - X-Client-Info
+            # supabase-js v2's own client-version header (not the GoTrue API
+            # version, despite the name), sent on every request — must be
+            # allowlisted or the CORS preflight rejects the real request.
+            - X-Supabase-Api-Version
+          credentials: false

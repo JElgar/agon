@@ -128,6 +128,91 @@ npm run test:e2e
 `npm run test:e2e:ui` opens Playwright's UI mode for interactively stepping
 through a run.
 
+## Running fully local
+
+Everything above targets staging: staging Supabase for auth, staging
+`agon_service` for the API. To run the whole thing — UI, auth, API, worker —
+against your own machine instead:
+
+1. **Bring up the backing services** — Meilisearch, a local Supabase Auth
+   (Postgres + GoTrue + Kong), a local Temporal, and DynamoDB Local + SQS +
+   S3 (see `local/README.md` for what's actually in it):
+
+   ```bash
+   docker compose up -d
+   ```
+
+2. **Seed the test account** against the local Supabase Auth stack (the local
+   counterpart to "Provisioning the test user" above — no Pulumi, no real
+   Supabase project involved):
+
+   ```bash
+   node agon_ui/e2e/local-seed-user.mjs
+   ```
+
+3. **Run `agon_service`** pointed at the local stack instead of staging — add
+   to the root `.env` (see `.env.example`, and `local/README.md` for the
+   DynamoDB/SQS pieces specifically):
+
+   ```
+   SUPABASE_JWKS_URL=http://localhost:8000/auth/v1/.well-known/jwks.json
+   AWS_ACCESS_KEY_ID=local
+   AWS_SECRET_ACCESS_KEY=localsecret
+   AWS_ENDPOINT_URL=http://localhost:8002
+   ```
+
+   then `make run` as usual.
+
+4. **Run `agon_worker`** too — `tests/match-feed.spec.ts` depends on it: a
+   logged match only shows up in the feed after the fan-out workflow
+   (`agon_worker/src/temporal`) runs, which only starts once agon_worker
+   actually receives the DynamoDB change event over SQS. That needs three
+   things uncommented in `.env` (all in `.env.example`'s `agon_worker`
+   section): `TEMPORAL_ADDRESS`, the two queue URLs, and
+   `AWS_ENDPOINT_URL_SQS` — then:
+
+   ```bash
+   make run-worker
+   ```
+
+   (Needs `protobuf-compiler` installed — `agon_worker`'s Temporal
+   dependencies need `protoc` to build, unlike `agon_service`.)
+
+5. **Run the local stream bridge** — DynamoDB Streams are enabled on the
+   local table, but nothing forwards those records to SQS by itself (that's
+   an EventBridge Pipe in production, with no compose equivalent — see
+   `local/README.md`'s `local/dynamodb-stream-bridge/` section). Without
+   this running, step 4's `agon_worker` starts fine but never actually
+   receives anything, so a logged match never reaches the feed:
+
+   ```bash
+   make run-stream-bridge
+   ```
+
+6. **Point the UI at the local stack** — add to `agon_ui/.env` (see
+   `agon_ui/.env.example`):
+
+   ```
+   VITE_SUPABASE_URL=http://localhost:8000
+   VITE_SUPABASE_ANON_KEY=local-dev-anon-key
+   AGON_API_PROXY_TARGET=http://localhost:7000
+   ```
+
+7. **Run the tests**, same as always — the local Supabase Auth stack has no
+   Pulumi-stored secret, so the test account's email/password are whatever
+   you passed `local-seed-user.mjs` (or its defaults, `e2e@example.com` /
+   `local-e2e-test-password`, if you ran it with none):
+
+   ```bash
+   E2E_TEST_EMAIL=e2e@example.com E2E_TEST_PASSWORD=local-e2e-test-password \
+   npm run test:e2e
+   ```
+
+`make test-ui-e2e-local` wraps steps 2 and 7 (seed + run, with matching
+defaults) — steps 1, 3–6 (the backing services and the four app processes:
+agon_service, agon_worker, the stream bridge, the UI dev server) still need
+to be up first.
+
 ## What's covered
 
 - `tests/match-feed.spec.ts` — logging a match through the real "Log a

@@ -332,16 +332,16 @@ export function MatchCard({
         </div>
       </button>
 
-      {/* Title + description */}
+      {/* Title + description — clickable, same as the header/score blocks above. */}
       {(match.name || match.description) && (
-        <div className="px-3.5 pb-3">
+        <button type="button" onClick={onOpen} className="block w-full px-3.5 pb-3 text-left">
           {match.name && <p className="font-medium leading-snug">{match.name}</p>}
           {match.description && (
             <p className="mt-0.5 text-sm text-muted-foreground">
               {match.description}
             </p>
           )}
-        </div>
+        </button>
       )}
 
       {/* Score block — a live-scored match shows the mini-ticker instead of

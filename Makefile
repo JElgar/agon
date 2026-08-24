@@ -4,6 +4,19 @@ ifneq (,$(wildcard ./.env))
 	export
 endif
 
+# The dev-only test-signing private key, for agon_tests / `generate-token`.
+# Deliberately NOT in .env: .env is also read directly by `docker compose`
+# (auto-loaded for variable substitution) whose parser rejects a `define`/
+# `endef` block outright ("key cannot contain a space") — and without that,
+# Make's own simple `VAR=value` line-based parsing has no way to hold a real
+# multi-line PEM (a `"...\n...\n..."`-escaped single line looks appealing but
+# doesn't work either: neither Make's `include` nor the Rust code that reads
+# this var unescape `\n`, so it fails to parse as PEM — this used to be
+# .env.example's documented format, and it was always broken for local use).
+# A plain file has none of these problems. `?=` so `test-staging`'s own
+# recipe-level override (a real key from Pulumi) still wins.
+AGON_TEST_JWT_PRIVATE_KEY ?= $(shell cat local/agon-test-key.pem 2>/dev/null)
+
 init:
 	[[ -d openapi_client ]] || cargo new --lib --name openapi openapi_client
 
@@ -79,6 +92,23 @@ test-staging:
 run:
 	cargo run -p agon_service -- run-server abc.com
 
+# agon_worker: consumes the DynamoDB stream + runs the Temporal workflows
+# (feed fan-out, accept-invitation). Needs the `full` docker-compose profile
+# up (Temporal) — see local/README.md. Requires protobuf-compiler (`protoc`)
+# to build, unlike agon_service. Locally, also needs run-stream-bridge
+# running alongside it (a separate terminal) or it'll just idle — see that
+# target's comment.
+run-worker:
+	cargo run -p agon_worker
+
+# Local stand-in for the EventBridge Pipe in front of agon_worker's queue —
+# see local/dynamodb-stream-bridge/src/main.rs's doc comment for what it does
+# and why it's a separate tool rather than a compose service. Needs the
+# `dynamodb` (or `full`) docker-compose profile up. A separate, non-workspace
+# crate (see its Cargo.toml) — first run compiles its own dependency tree.
+run-stream-bridge:
+	cargo run --manifest-path local/dynamodb-stream-bridge/Cargo.toml --release
+
 # Full browser UI end-to-end tests (Playwright) — see agon_ui/e2e/README.md
 # for what's covered and how the test account works. Reads E2E_TEST_EMAIL /
 # E2E_TEST_PASSWORD / E2E_BASE_URL from the environment (or .env); use
@@ -95,4 +125,18 @@ test-ui-e2e-staging:
 	E2E_BASE_URL=$(UI_STAGING_URL) \
 	E2E_TEST_EMAIL="$$(cd agon_infra && pulumi config get e2eTestEmail --stack $(STACK))" \
 	E2E_TEST_PASSWORD="$$(cd agon_infra && pulumi config get e2eTestPassword --stack $(STACK))" \
+	npm --prefix agon_ui run test:e2e
+
+# Same, against a fully local stack instead — see agon_ui/e2e/README.md's
+# "Running fully local" section for the full setup (docker-compose `full`
+# profile, agon_service + agon_worker running locally, agon_ui/.env pointed
+# at it). This only seeds the local Supabase test account and runs the
+# suite; it doesn't bring up the rest of the stack for you.
+E2E_LOCAL_EMAIL ?= e2e@example.com
+E2E_LOCAL_PASSWORD ?= local-e2e-test-password
+
+test-ui-e2e-local:
+	E2E_TEST_EMAIL=$(E2E_LOCAL_EMAIL) E2E_TEST_PASSWORD=$(E2E_LOCAL_PASSWORD) \
+	node agon_ui/e2e/local-seed-user.mjs
+	E2E_TEST_EMAIL=$(E2E_LOCAL_EMAIL) E2E_TEST_PASSWORD=$(E2E_LOCAL_PASSWORD) \
 	npm --prefix agon_ui run test:e2e

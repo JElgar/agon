@@ -163,11 +163,8 @@ fn match_doc(agg: &MatchAggregate) -> MatchDoc {
     // Both linked user ids and stable player ids identify a participant, so the
     // discovery `participant` filter matches whichever the caller supplies.
     let mut participant_ids = std::collections::BTreeSet::new();
-    let team_ids: std::collections::BTreeSet<String> = agg
-        .sides
-        .iter()
-        .filter_map(|s| s.team_id.clone())
-        .collect();
+    let team_ids: std::collections::BTreeSet<String> =
+        agg.sides.iter().filter_map(|s| s.team_id.clone()).collect();
     let mut winning_participant_ids = std::collections::BTreeSet::new();
     let mut losing_participant_ids = std::collections::BTreeSet::new();
     let mut drawing_participant_ids = std::collections::BTreeSet::new();

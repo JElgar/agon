@@ -32,6 +32,7 @@ import { LiveScoringPage } from '@/pages/LiveScoringPage'
 import { NotificationsPage } from '@/pages/NotificationsPage'
 import { UserSearchPage } from '@/pages/UserSearchPage'
 import { FollowListPage } from '@/pages/FollowListPage'
+import { SportStatsPage } from '@/pages/SportStatsPage'
 import { AcceptInvitePage } from '@/pages/AcceptInvitePage'
 import {
   getPendingInvite,
@@ -107,7 +108,9 @@ function AppShell({ email, onSignOut }: { email: string; onSignOut: () => void }
           <Route path="/invite/:token" element={<AcceptInvitePage />} />
           <Route path="/search" element={<UserSearchPage />} />
           <Route path="/profile" element={<ProfilePage />} />
+          <Route path="/profile/stats/:sport" element={<SportStatsPage />} />
           <Route path="/users/:userId" element={<ProfilePage />} />
+          <Route path="/users/:userId/stats/:sport" element={<SportStatsPage />} />
           <Route
             path="/users/:userId/followers"
             element={<FollowListPage mode="followers" />}

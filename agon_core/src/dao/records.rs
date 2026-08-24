@@ -187,7 +187,7 @@ pub struct CricketFallOfWicketRecord {
 /// over — mirrors the API's `detailed_score::cricket::Overs`. Two integer
 /// fields rather than a single float, which can't safely represent a ball
 /// count that doesn't fit in one decimal digit.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OversRecord {
     pub overs: u32,
     pub balls: u32,
@@ -294,8 +294,7 @@ pub struct AuthGuardRecord {
 /// `email` is duplicated here for reads; uniqueness is enforced by a separate
 /// `EMAIL#<email>` guard item. `stats` holds per-sport aggregates inline, so a
 /// profile read/batch-read returns everything in one point read — always
-/// present (an empty map for a brand new user) so the stats reconciler's
-/// nested-attribute updates always have a map to write into.
+/// present (all `None` for a brand new user).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UserRecord {
     pub id: String,
@@ -310,7 +309,7 @@ pub struct UserRecord {
     #[serde(default)]
     pub unread_count: u64,
     #[serde(default)]
-    pub stats: HashMap<String, UserSportStatsRecord>,
+    pub stats: UserStatsRecord,
     pub created_at: String,
 }
 
@@ -1184,14 +1183,153 @@ pub struct FeedItemRecord {
     pub viewer_side_id: Option<String>,
 }
 
-/// Aggregate stats for one sport, stored inline on `UserRecord::stats` keyed
-/// by sport tag (e.g. "tennis") — the key carries the sport, so it isn't
-/// duplicated in the value.
+/// A user's lifetime stats, one field per sport — `None` for a sport they've
+/// never played a confirmed match in. Stored inline on `UserRecord::stats`.
+///
+/// Explicit named fields rather than a `HashMap<String, _>` keyed by sport
+/// tag: the set of sports is closed (mirrors the API's `MatchType`), so
+/// there's no need to pay for a stringly-keyed map to get "only entries for
+/// sports actually played" — an `Option` field serializes absent the same
+/// way a missing map key would, at the same DynamoDB storage shape
+/// (`stats.cricket`, `stats.football`, ... as nested map attributes either
+/// way). What a named field buys over the map: `CricketStatsRecord`'s
+/// `runs`/`wickets` and football's `goals`/`assists` are real, distinctly
+/// named, compiler-checked fields instead of stringly-keyed lookups into a
+/// generic counters bag.
+///
+/// The DAO's *write* path (`agon_core::dao::stats::Dao::stats_delta` /
+/// `update_best_figures`) doesn't construct or read this type at all — it
+/// addresses `stats.<sport>.<counter>` via raw `UpdateItem` expressions built
+/// from a runtime `sport: &str` and counter-name strings, so it stays fully
+/// sport-agnostic regardless of how strongly-typed the read side is.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct UserSportStatsRecord {
+pub struct UserStatsRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cricket: Option<CricketStatsRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub football: Option<FootballStatsRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tennis: Option<GenericSportStatsRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub badminton: Option<GenericSportStatsRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub squash: Option<GenericSportStatsRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table_tennis: Option<GenericSportStatsRecord>,
+    /// Netball has no dedicated stats record yet — a per-player goal/foul
+    /// log exists on `ScoreRecord::Netball` (see `NetballGoalEventRecord`)
+    /// that a future `NetballStatsRecord` (mirroring `CricketStatsRecord`/
+    /// `FootballStatsRecord`) could derive best-figures from, same as
+    /// cricket/football — just not built out yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub netball: Option<GenericSportStatsRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other: Option<GenericSportStatsRecord>,
+}
+
+/// Lifetime counters common to every sport. Also the full shape for a sport
+/// with no richer per-player box score to derive extras from (tennis,
+/// badminton, squash, table tennis, "other") — `CricketStatsRecord`/
+/// `FootballStatsRecord` flatten this in and add their own fields on top, the
+/// DAO-side mirror of the API's `GenericPlayerStats`/`#[oai(flatten)]`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct GenericSportStatsRecord {
     pub matches_played: u64,
     pub wins: u64,
+    pub draws: u64,
+    pub losses: u64,
     // Win percentage is derived (wins / matches_played) at the API layer.
+}
+
+/// Lifetime cricket stats: the common counters plus a batting/bowling summary
+/// derived from every confirmed match's box score, and each counter's
+/// personal-best single-match figure.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct CricketStatsRecord {
+    #[serde(flatten)]
+    pub common: GenericSportStatsRecord,
+    pub runs: u64,
+    pub wickets: u64,
+    pub fours: u64,
+    pub sixes: u64,
+    /// Legal balls faced while batting (career total).
+    pub balls_faced: u64,
+    /// Times out as a batter — divisor for batting average. Not-out innings
+    /// aren't counted, same convention as the sport's own "average".
+    pub dismissals: u64,
+    /// Catches taken (as the credited fielder on any dismissal, batting side
+    /// or bowling side — a catch isn't tied to which side this player was
+    /// fielding for in that innings).
+    pub catches: u64,
+    /// Runs conceded while bowling (career total) — divisor for economy.
+    pub runs_conceded: u64,
+    /// Legal balls bowled (career total) — divisor for economy, and the
+    /// source for the displayed "overs bowled". Summed as a raw ball count
+    /// rather than `Overs`, and — critically — each contributing match's
+    /// legal-ball count is computed from *that match's own*
+    /// `CricketFormatRecord::balls_per_over` (5-ball, 6-ball, whatever it
+    /// was), not a fixed assumption, so the accumulation itself is exact
+    /// regardless of how many different formats a career spans. The only
+    /// approximation left is display: turning a cross-format total back into
+    /// an "X overs Y balls" figure has to pick *some* over length, since a
+    /// blended career total isn't really in any one format — this uses the
+    /// standard 6-ball over, the same convention real-world career bowling
+    /// figures are always reported in regardless of which tournaments
+    /// contributed to them.
+    pub balls_bowled: u64,
+    /// Highest score in a single match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_runs: Option<BestFigureRecord>,
+    /// Best single-match bowling spell — most wickets, with the runs
+    /// conceded and overs bowled in that same spell so it isn't just a bare
+    /// wicket count. See `Dao::update_best_bowling_figures`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_bowling: Option<BestBowlingFiguresRecord>,
+}
+
+/// A personal-best single-match bowling spell: most wickets taken, plus the
+/// runs conceded and overs bowled in that same spell — e.g. "5 wickets for
+/// 32 runs off 5.4 overs", not just "5 wickets". Ranked by `wickets` alone
+/// (ties aren't broken by economy). See `Dao::update_best_bowling_figures`
+/// for why this only ever ratchets up, same as `BestFigureRecord`.
+///
+/// `overs` is the exact figure from that one match (in that match's own
+/// `balls_per_over`), not re-derived from a raw ball count under some
+/// assumed over length — unlike the career `balls_bowled` total above, a
+/// single match's own bowling figures have no cross-format ambiguity to
+/// approximate away.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BestBowlingFiguresRecord {
+    pub wickets: u64,
+    pub runs_conceded: u64,
+    pub overs: OversRecord,
+    pub match_id: String,
+}
+
+/// Lifetime football stats: the common counters plus goals/assists derived
+/// from every confirmed match's goal log, and personal-best single-match
+/// figures.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct FootballStatsRecord {
+    #[serde(flatten)]
+    pub common: GenericSportStatsRecord,
+    pub goals: u64,
+    pub assists: u64,
+    /// Most goals scored in a single match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_goals: Option<BestFigureRecord>,
+    /// Most goals + assists combined in a single match — a more complete
+    /// "best game" than assists alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_goal_contributions: Option<BestFigureRecord>,
+}
+
+/// A personal-best single-match value for one counter, plus the match it was
+/// set in. See `Dao::update_best_figures` for why this only ever ratchets up.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BestFigureRecord {
+    pub value: u64,
+    pub match_id: String,
 }
 
 /// `MATCH#<mid>` / `STATCONTRIB#<uid>` — what a single match currently
@@ -1209,6 +1347,17 @@ pub struct StatContributionRecord {
     pub played: u64,
     /// 1 while the user's side is the confirmed winner; 0 otherwise.
     pub won: u64,
+    /// 1 while the match completed with no winner (both sides tied); 0
+    /// otherwise. Mutually exclusive with `won`/`lost`.
+    pub drawn: u64,
+    /// 1 while the match completed and the user's side was not the winner
+    /// and it wasn't a draw; 0 otherwise.
+    pub lost: u64,
+    /// Sport-specific counters this match contributed for this user (e.g.
+    /// cricket runs/wickets, football goals/assists) — empty when `played`
+    /// is 0 or the sport has no per-player box score to derive them from.
+    #[serde(default)]
+    pub counters: HashMap<String, u64>,
 }
 
 #[cfg(test)]

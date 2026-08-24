@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { useAuth } from '@/hooks/useAuth'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
+import { sportEntries } from '@/lib/stats'
 
 type UserProfile = components['schemas']['UserProfile']
 type SearchMatch = components['schemas']['SearchMatch']
@@ -85,6 +86,7 @@ export function ProfilePage() {
   }
 
   const profile = profileQuery.data
+  const statsBasePath = userId ? `/users/${userId}` : '/profile'
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-8">
@@ -113,9 +115,10 @@ export function ProfilePage() {
         </h2>
         <SportStatsTable
           stats={profile.stats}
+          statsBasePath={statsBasePath}
           limit={showAllSports ? undefined : SPORT_SUMMARY_LIMIT}
         />
-        {profile.stats.length > SPORT_SUMMARY_LIMIT && (
+        {sportEntries(profile.stats).length > SPORT_SUMMARY_LIMIT && (
           <Button
             variant="outline"
             className="mt-1"

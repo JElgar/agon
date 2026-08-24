@@ -10,7 +10,7 @@ use tracing::error;
 use crate::detailed_score::cricket::{
     CricketBattingEntry, CricketBowlingEntry, CricketDelivery, CricketDeliveryExtra,
     CricketDeliveryWicket, CricketDismissal, CricketDismissalKind, CricketExtraKind, CricketExtras,
-    CricketFallOfWicket, NextBallContext, Overs,
+    CricketFallOfWicket, NextBallContext, Overs, balls_to_overs,
 };
 use crate::detailed_score::football::{
     FootballCardColor, FootballCardEvent, FootballGoalEvent, FootballPenaltyShootoutKick,
@@ -40,32 +40,35 @@ use crate::notification::{
 };
 use crate::team::{Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
-    Comment, ConfirmedScore, CricketScore, CricketScoreInnings, DevicePlatform, FeedMatch,
-    FootballScore, Location, Match, MatchOutcome, MatchPlayer, MatchSide, MatchSocial, MatchStatus,
-    MatchType, NetballScore, PendingScore, Photo, RosterPreviewPlayer, Score, ScoreConfirmation,
-    ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus,
-    SearchMatch, SetsScore, SimpleScore, UserProfile, UserSportStats,
+    BestBowlingFigures, BestFigure, Comment, ConfirmedScore, CricketPlayerStats, CricketScore,
+    CricketScoreInnings, DevicePlatform, FeedMatch, FootballPlayerStats, FootballScore,
+    GenericPlayerStats, Location, Match, MatchOutcome, MatchPlayer, MatchSide, MatchSocial,
+    MatchStatus, MatchType, NetballScore, PendingScore, Photo, RosterPreviewPlayer, Score,
+    ScoreConfirmation, ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse,
+    ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
 };
 use agon_core::dao::error::DaoError;
 use agon_core::dao::live_score_ops::NewLiveEvent;
 use agon_core::dao::records::{
-    CommentRecord, ConfirmedScoreRecord, CricketBattingEntryRecord, CricketBowlingEntryRecord,
-    CricketDeliveryExtraRecord, CricketDeliveryRecord, CricketDeliveryWicketRecord,
-    CricketDismissalKindRecord, CricketDismissalRecord, CricketExtraKindRecord,
-    CricketExtrasRecord, CricketFallOfWicketRecord, CricketFormatRecord,
-    CricketInningsEndEventRecord, CricketInningsStartEventRecord, CricketLiveEventRecord,
-    CricketRetireEventRecord, CricketScoreInningsRecord, DevicePlatform as DevicePlatformRecord,
-    EmbeddedInvitationRecord, FootballCardColorRecord, FootballCardEventRecord,
-    FootballFormatRecord, FootballGoalEventRecord, FootballLiveEventRecord,
-    FootballPenaltyShootoutKickRecord, FootballPeriodEventRecord, FootballPeriodRecord,
-    FootballSubstitutionEventRecord, InningsEndReasonRecord, InvitationContextRecord,
-    InvitationKindRecord, InvitationRecord, LiveEventPayloadRecord, LiveEventRecord,
-    MatchFormatRecord, MatchLikeRecord, MatchPlayerRecord, MatchRecord, MatchScoreRecord,
-    MatchSideRecord, NetballFormatRecord, NetballFoulEventRecord, NetballFoulKindRecord,
-    NetballGoalEventRecord, NetballLiveEventRecord, NetballPeriodEventRecord, NetballPeriodRecord,
-    NetballPositionRecord, NextBallContextRecord, NotificationKindRecord, NotificationRecord,
-    OversRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord,
-    ScoreSubmissionRecord, TeamMemberRecord, TeamRecord, UserRecord, UserSportStatsRecord,
+    BestBowlingFiguresRecord, BestFigureRecord, CommentRecord, ConfirmedScoreRecord,
+    CricketBattingEntryRecord, CricketBowlingEntryRecord, CricketDeliveryExtraRecord,
+    CricketDeliveryRecord, CricketDeliveryWicketRecord, CricketDismissalKindRecord,
+    CricketDismissalRecord, CricketExtraKindRecord, CricketExtrasRecord, CricketFallOfWicketRecord,
+    CricketFormatRecord, CricketInningsEndEventRecord, CricketInningsStartEventRecord,
+    CricketLiveEventRecord, CricketRetireEventRecord, CricketScoreInningsRecord,
+    CricketStatsRecord, DevicePlatform as DevicePlatformRecord, EmbeddedInvitationRecord,
+    FootballCardColorRecord, FootballCardEventRecord, FootballFormatRecord,
+    FootballGoalEventRecord, FootballLiveEventRecord, FootballPenaltyShootoutKickRecord,
+    FootballPeriodEventRecord, FootballPeriodRecord, FootballStatsRecord,
+    FootballSubstitutionEventRecord, GenericSportStatsRecord, InningsEndReasonRecord,
+    InvitationContextRecord, InvitationKindRecord, InvitationRecord, LiveEventPayloadRecord,
+    LiveEventRecord, MatchFormatRecord, MatchLikeRecord, MatchPlayerRecord, MatchRecord,
+    MatchScoreRecord, MatchSideRecord, NetballFormatRecord, NetballFoulEventRecord,
+    NetballFoulKindRecord, NetballGoalEventRecord, NetballLiveEventRecord,
+    NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord, NextBallContextRecord,
+    NotificationKindRecord, NotificationRecord, OversRecord, PendingScoreRecord,
+    ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord, ScoreSubmissionRecord,
+    TeamMemberRecord, TeamRecord, UserRecord, UserStatsRecord,
 };
 
 /// Parse an RFC-3339 timestamp string stored by the DAO into a UTC datetime,
@@ -131,11 +134,6 @@ pub fn device_platform_to_record(p: &DevicePlatform) -> DevicePlatformRecord {
 /// Build the public `UserProfile` from a stored user record (its inline
 /// per-sport `stats` map) and the viewer-relative follow flag.
 pub fn user_profile_from_record(user: &UserRecord, is_followed_by_me: bool) -> UserProfile {
-    // Sort by sport tag for a deterministic response order (a `HashMap`'s
-    // iteration order isn't).
-    let mut entries: Vec<(&String, &UserSportStatsRecord)> = user.stats.iter().collect();
-    entries.sort_by(|a, b| a.0.cmp(b.0));
-
     UserProfile {
         id: user.id.clone(),
         name: user.name.clone(),
@@ -143,27 +141,104 @@ pub fn user_profile_from_record(user: &UserRecord, is_followed_by_me: bool) -> U
             image_url: url.clone(),
             asset_id: None,
         }),
-        stats: entries
-            .into_iter()
-            .map(|(sport, rec)| sport_stats_from_record(sport, rec))
-            .collect(),
+        stats: user_stats_from_record(&user.stats),
         follower_count: user.follower_count as u32,
         following_count: user.following_count as u32,
         is_followed_by_me,
     }
 }
 
-/// Map a stored per-sport stats record to the API model, deriving win %.
-pub fn sport_stats_from_record(sport: &str, rec: &UserSportStatsRecord) -> UserSportStats {
+/// Map the stored, one-field-per-sport `UserStatsRecord` to the public
+/// `UserStats` — `None` for any sport with no stored entry, same as the DAO
+/// side.
+pub fn user_stats_from_record(stats: &UserStatsRecord) -> UserStats {
+    UserStats {
+        cricket: stats.cricket.as_ref().map(cricket_stats_from_record),
+        football: stats.football.as_ref().map(football_stats_from_record),
+        tennis: stats.tennis.as_ref().map(generic_stats_from_record),
+        badminton: stats.badminton.as_ref().map(generic_stats_from_record),
+        squash: stats.squash.as_ref().map(generic_stats_from_record),
+        table_tennis: stats.table_tennis.as_ref().map(generic_stats_from_record),
+        netball: stats.netball.as_ref().map(generic_stats_from_record),
+        other: stats.other.as_ref().map(generic_stats_from_record),
+    }
+}
+
+/// Map the counters common to every sport, deriving win % from matches
+/// played. Shared by every per-sport mapping function below.
+fn generic_stats_from_record(rec: &GenericSportStatsRecord) -> GenericPlayerStats {
     let win_percentage = if rec.matches_played == 0 {
         None
     } else {
         Some((rec.wins as f32 / rec.matches_played as f32) * 100.0)
     };
-    UserSportStats {
-        match_type: match_type_from_tag(sport),
+    GenericPlayerStats {
         matches_played: rec.matches_played as i32,
+        wins: rec.wins as i32,
+        draws: rec.draws as i32,
+        losses: rec.losses as i32,
         win_percentage,
+    }
+}
+
+fn cricket_stats_from_record(rec: &CricketStatsRecord) -> CricketPlayerStats {
+    let strike_rate =
+        (rec.balls_faced > 0).then(|| (rec.runs as f32 / rec.balls_faced as f32) * 100.0);
+    let batting_average = (rec.dismissals > 0).then(|| rec.runs as f32 / rec.dismissals as f32);
+    let economy =
+        (rec.balls_bowled > 0).then(|| rec.runs_conceded as f32 / (rec.balls_bowled as f32 / 6.0));
+    CricketPlayerStats {
+        common: generic_stats_from_record(&rec.common),
+        runs: rec.runs as i32,
+        wickets: rec.wickets as i32,
+        fours: rec.fours as i32,
+        sixes: rec.sixes as i32,
+        balls_faced: rec.balls_faced as i32,
+        dismissals: rec.dismissals as i32,
+        catches: rec.catches as i32,
+        runs_conceded: rec.runs_conceded as i32,
+        overs_bowled: balls_to_overs(rec.balls_bowled as u32, 6),
+        strike_rate,
+        batting_average,
+        economy,
+        best_runs: rec.best_runs.as_ref().map(best_figure_from_record),
+        best_bowling: rec.best_bowling.as_ref().map(best_bowling_from_record),
+    }
+}
+
+fn football_stats_from_record(rec: &FootballStatsRecord) -> FootballPlayerStats {
+    FootballPlayerStats {
+        common: generic_stats_from_record(&rec.common),
+        goals: rec.goals as i32,
+        assists: rec.assists as i32,
+        best_goals: rec.best_goals.as_ref().map(best_figure_from_record),
+        best_goal_contributions: rec
+            .best_goal_contributions
+            .as_ref()
+            .map(best_figure_from_record),
+    }
+}
+
+/// Map a stored personal-best entry to the API model.
+fn best_figure_from_record(b: &BestFigureRecord) -> BestFigure {
+    BestFigure {
+        value: b.value as i32,
+        match_id: b.match_id.clone(),
+    }
+}
+
+/// Map a stored best-bowling-spell entry to the API model.
+fn best_bowling_from_record(b: &BestBowlingFiguresRecord) -> BestBowlingFigures {
+    BestBowlingFigures {
+        wickets: b.wickets as i32,
+        runs_conceded: b.runs_conceded as i32,
+        // The exact figure from that one match — no conversion/assumption
+        // needed, unlike `overs_bowled` below (a cross-match total).
+        overs: Overs {
+            overs: b.overs.overs,
+            balls: b.overs.balls,
+        },
+        match_id: b.match_id.clone(),
     }
 }
 

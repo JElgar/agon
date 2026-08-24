@@ -117,14 +117,121 @@ async fn jwt_checker(req: &Request, bearer: Bearer) -> Result<JwtClaims, poem::e
 
 struct Api;
 
+/// Lifetime stats common to every sport: matches played and the outcome
+/// breakdown (win/draw/loss), plus a derived win percentage. Also the full
+/// shape for a sport with no richer per-player detail to add (tennis,
+/// badminton, squash, table tennis, "other") — `CricketPlayerStats`/
+/// `FootballPlayerStats` flatten this in and add their own fields on top.
 #[derive(Object)]
-pub struct UserSportStats {
-    pub match_type: MatchType,
+pub struct GenericPlayerStats {
     pub matches_played: i32,
+    pub wins: i32,
+    pub draws: i32,
+    pub losses: i32,
     /// `None` when no confirmed matches have been played yet — display as
     /// "-", not 0%.
     pub win_percentage: Option<f32>,
     // TODO Elo
+}
+
+/// A personal-best single-match value for one counter, plus the match it
+/// happened in — e.g. "5 wickets" and the match id of that bowling
+/// performance. `None` on the containing stats until the counter's ever
+/// been above zero in a single match. Only ever increases — see
+/// `agon_core::dao::stats::Dao::update_best_figures` for why a downward
+/// re-score or a cancelled match doesn't retroactively revise it.
+#[derive(Object)]
+pub struct BestFigure {
+    pub value: i32,
+    pub match_id: String,
+}
+
+/// A personal-best single-match bowling spell: most wickets taken, plus the
+/// runs conceded and overs bowled in that same spell — e.g. "5 wickets for
+/// 32 runs off 5.4 overs", not just "5 wickets". Ranked by wickets alone
+/// (ties aren't broken by economy). Only ever increases — same reasoning as
+/// `BestFigure`.
+#[derive(Object)]
+pub struct BestBowlingFigures {
+    pub wickets: i32,
+    pub runs_conceded: i32,
+    pub overs: Overs,
+    pub match_id: String,
+}
+
+/// Lifetime cricket stats: the common counters plus a batting/bowling summary
+/// derived from every confirmed match's box score. `strike_rate`/
+/// `batting_average`/`economy` are derived server-side (`None` when their
+/// divisor is zero), the same convention as `GenericPlayerStats::
+/// win_percentage`.
+#[derive(Object)]
+pub struct CricketPlayerStats {
+    #[oai(flatten)]
+    pub common: GenericPlayerStats,
+    pub runs: i32,
+    pub wickets: i32,
+    pub fours: i32,
+    pub sixes: i32,
+    /// Legal balls faced while batting (career total).
+    pub balls_faced: i32,
+    /// Times out as a batter — divisor for `batting_average`.
+    pub dismissals: i32,
+    /// Catches taken.
+    pub catches: i32,
+    /// Runs conceded while bowling (career total) — divisor for `economy`.
+    pub runs_conceded: i32,
+    /// Overs bowled (career total). Each contributing match's legal-ball
+    /// count is exact (computed from that match's own `balls_per_over`, 5 or
+    /// 6 or otherwise, not assumed) — only turning the resulting cross-match
+    /// ball total back into an "X overs Y balls" figure uses a fixed
+    /// standard 6-ball over, the same convention real-world career bowling
+    /// figures are always reported in regardless of which formats
+    /// contributed to them.
+    pub overs_bowled: Overs,
+    /// Runs scored per 100 balls faced. `None` with zero balls faced.
+    pub strike_rate: Option<f32>,
+    /// Runs scored per dismissal — an undismissed batter has no average to
+    /// show. `None` with zero dismissals.
+    pub batting_average: Option<f32>,
+    /// Runs conceded per over bowled. `None` with zero overs bowled.
+    pub economy: Option<f32>,
+    /// Highest score in a single match.
+    pub best_runs: Option<BestFigure>,
+    /// Best single-match bowling spell — `overs` is the exact figure from
+    /// that one match (no cross-format approximation needed, unlike
+    /// `overs_bowled` above).
+    pub best_bowling: Option<BestBowlingFigures>,
+}
+
+/// Lifetime football stats: the common counters plus goals/assists derived
+/// from every confirmed match's goal log.
+#[derive(Object)]
+pub struct FootballPlayerStats {
+    #[oai(flatten)]
+    pub common: GenericPlayerStats,
+    pub goals: i32,
+    pub assists: i32,
+    /// Most goals scored in a single match.
+    pub best_goals: Option<BestFigure>,
+    /// Most goals + assists combined in a single match — a more complete
+    /// "best game" than assists alone.
+    pub best_goal_contributions: Option<BestFigure>,
+}
+
+/// A user's lifetime stats, one field per sport — `None` for a sport they've
+/// never played a confirmed match in. Explicit per-sport fields rather than a
+/// list/map so each sport's shape is self-describing: cricket and football
+/// carry their own typed detail, everything else is the common shape as-is.
+#[derive(Object)]
+pub struct UserStats {
+    pub cricket: Option<CricketPlayerStats>,
+    pub football: Option<FootballPlayerStats>,
+    pub tennis: Option<GenericPlayerStats>,
+    pub badminton: Option<GenericPlayerStats>,
+    pub squash: Option<GenericPlayerStats>,
+    pub table_tennis: Option<GenericPlayerStats>,
+    pub netball: Option<GenericPlayerStats>,
+    pub other: Option<GenericPlayerStats>,
 }
 
 #[derive(Object)]
@@ -134,7 +241,7 @@ pub struct UserProfile {
     /// Profile image. Uploaded by the client directly to object storage
     /// (Supabase Storage); the API only stores/returns the resulting URL.
     pub profile_image: Option<Photo>,
-    pub stats: Vec<UserSportStats>,
+    pub stats: UserStats,
     pub follower_count: u32,
     pub following_count: u32,
     /// Whether the requesting user follows this profile. False for your own.
@@ -1812,7 +1919,7 @@ impl Api {
             follower_count: 0,
             following_count: 0,
             unread_count: 0,
-            stats: std::collections::HashMap::new(),
+            stats: dao::records::UserStatsRecord::default(),
             created_at: now_iso(),
         };
         match dao.create_user(&jwt_data.sub, &record).await {
@@ -4623,7 +4730,7 @@ impl Api {
                             follower_count: 0,
                             following_count: 0,
                             unread_count: 0,
-                            stats: std::collections::HashMap::new(),
+                            stats: dao::records::UserStatsRecord::default(),
                             created_at: String::new(),
                         },
                         false,
@@ -6151,11 +6258,22 @@ fn mock_user_profile(id: String, name: String) -> UserProfile {
             image_url: String::from("https://cdn.example.com/users/avatar.jpg"),
             asset_id: None,
         }),
-        stats: vec![UserSportStats {
-            match_type: MatchType::Tennis,
-            matches_played: 12,
-            win_percentage: Some(58.3),
-        }],
+        stats: UserStats {
+            cricket: None,
+            football: None,
+            tennis: Some(GenericPlayerStats {
+                matches_played: 12,
+                wins: 7,
+                draws: 0,
+                losses: 5,
+                win_percentage: Some(58.3),
+            }),
+            badminton: None,
+            squash: None,
+            table_tennis: None,
+            netball: None,
+            other: None,
+        },
         follower_count: 42,
         following_count: 17,
         is_followed_by_me: false,

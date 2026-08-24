@@ -41,6 +41,17 @@ export function LoginForm() {
       const { error } = await supabase.auth.signUp({
         email,
         password,
+        options: {
+          // Without this, Supabase sends the confirmation link to the
+          // project's default Site URL (effectively "/"), so anyone who
+          // signed up from an invite link (e.g. `/invite/:token`) lands on
+          // the home page instead of back on the invite once they confirm —
+          // the pending-invite localStorage fallback (see pendingInvite.ts)
+          // only recovers this if the confirmation is opened in the same
+          // browser/origin. Preserving the exact URL here fixes the common
+          // case directly, same as the Google OAuth button's `redirectTo`.
+          emailRedirectTo: window.location.href,
+        },
       })
 
       if (error) {

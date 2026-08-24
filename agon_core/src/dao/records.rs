@@ -187,7 +187,7 @@ pub struct CricketFallOfWicketRecord {
 /// over — mirrors the API's `detailed_score::cricket::Overs`. Two integer
 /// fields rather than a single float, which can't safely represent a ball
 /// count that doesn't fit in one decimal digit.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OversRecord {
     pub overs: u32,
     pub balls: u32,
@@ -1265,33 +1265,44 @@ pub struct CricketStatsRecord {
     pub runs_conceded: u64,
     /// Legal balls bowled (career total) — divisor for economy, and the
     /// source for the displayed "overs bowled". Summed as a raw ball count
-    /// (not `Overs`) because economy needs ball precision and a per-innings
-    /// `Overs` isn't additively meaningful across matches on its own; derived
-    /// back to `Overs` at the API layer assuming a standard 6-ball over,
-    /// which slightly under/overstates a lifetime total that includes a
-    /// 5-ball-over format (e.g. The Hundred) — a small, accepted
-    /// approximation for a cross-format career aggregate.
+    /// rather than `Overs`, and — critically — each contributing match's
+    /// legal-ball count is computed from *that match's own*
+    /// `CricketFormatRecord::balls_per_over` (5-ball, 6-ball, whatever it
+    /// was), not a fixed assumption, so the accumulation itself is exact
+    /// regardless of how many different formats a career spans. The only
+    /// approximation left is display: turning a cross-format total back into
+    /// an "X overs Y balls" figure has to pick *some* over length, since a
+    /// blended career total isn't really in any one format — this uses the
+    /// standard 6-ball over, the same convention real-world career bowling
+    /// figures are always reported in regardless of which tournaments
+    /// contributed to them.
     pub balls_bowled: u64,
     /// Highest score in a single match.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub best_runs: Option<BestFigureRecord>,
     /// Best single-match bowling spell — most wickets, with the runs
-    /// conceded and balls bowled in that same spell so it isn't just a bare
+    /// conceded and overs bowled in that same spell so it isn't just a bare
     /// wicket count. See `Dao::update_best_bowling_figures`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub best_bowling: Option<BestBowlingFiguresRecord>,
 }
 
 /// A personal-best single-match bowling spell: most wickets taken, plus the
-/// runs conceded and balls bowled in that same spell — e.g. "5 wickets for
-/// 32 runs off 34 balls", not just "5 wickets". Ranked by `wickets` alone
+/// runs conceded and overs bowled in that same spell — e.g. "5 wickets for
+/// 32 runs off 5.4 overs", not just "5 wickets". Ranked by `wickets` alone
 /// (ties aren't broken by economy). See `Dao::update_best_bowling_figures`
 /// for why this only ever ratchets up, same as `BestFigureRecord`.
+///
+/// `overs` is the exact figure from that one match (in that match's own
+/// `balls_per_over`), not re-derived from a raw ball count under some
+/// assumed over length — unlike the career `balls_bowled` total above, a
+/// single match's own bowling figures have no cross-format ambiguity to
+/// approximate away.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BestBowlingFiguresRecord {
     pub wickets: u64,
     pub runs_conceded: u64,
-    pub balls_bowled: u64,
+    pub overs: OversRecord,
     pub match_id: String,
 }
 

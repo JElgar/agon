@@ -232,7 +232,12 @@ fn best_bowling_from_record(b: &BestBowlingFiguresRecord) -> BestBowlingFigures 
     BestBowlingFigures {
         wickets: b.wickets as i32,
         runs_conceded: b.runs_conceded as i32,
-        overs: balls_to_overs(b.balls_bowled as u32, 6),
+        // The exact figure from that one match — no conversion/assumption
+        // needed, unlike `overs_bowled` below (a cross-match total).
+        overs: Overs {
+            overs: b.overs.overs,
+            balls: b.overs.balls,
+        },
         match_id: b.match_id.clone(),
     }
 }

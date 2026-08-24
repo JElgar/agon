@@ -9,7 +9,7 @@ use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, ATTR_SK, from_item, item_sk, s, to_item};
 use super::keys::{Pk, Sk};
-use super::records::{BestBowlingFiguresRecord, StatContributionRecord};
+use super::records::{OversRecord, StatContributionRecord};
 
 /// Type tag for the per-match stat-contribution item.
 pub const TYPE_STAT_CONTRIBUTION: &str = "stat_contribution";
@@ -53,12 +53,21 @@ pub struct MatchContribution {
 }
 
 /// One player's bowling figures in a single match (possibly summed across
-/// more than one innings) — the raw material for `best_bowling`.
+/// more than one innings) — the raw material for `best_bowling`. `overs` is
+/// the exact figure in that match's own `balls_per_over` (the caller — the
+/// worker, which knows the match's format — computes it that way), not a
+/// value this sport-agnostic DAO layer derives from `balls_bowled` under some
+/// assumed over length.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct BowlingSpell {
     pub wickets: u64,
     pub runs_conceded: u64,
+    /// Legal balls bowled — folded into the cumulative `balls_bowled`
+    /// counter (see `CricketStatsRecord::balls_bowled`).
     pub balls_bowled: u64,
+    /// Same ball count as whole overs + balls, in this match's own format —
+    /// what `best_bowling` actually stores/displays.
+    pub overs: OversRecord,
 }
 
 impl StatContributionRecord {
@@ -348,15 +357,16 @@ impl Dao {
     }
 
     /// Ratchet up `stats.cricket.best_bowling` — the single-match bowling
-    /// spell with the most wickets, alongside the runs conceded and balls
-    /// bowled in that same spell, so "most wickets" doesn't lose the context
-    /// needed to read it as e.g. "5 wickets for 32 runs off 34 balls".
-    /// Cricket-specific (hardcodes the "cricket" sport) rather than routed
-    /// through the generic per-counter `update_best_figures`, because a
-    /// bowling figure is a 3-field record ranked by one of those fields, not
-    /// a bare scalar. Same one-directional/best-effort/outside-the-
-    /// transaction characteristics as `update_best_figures` — see its doc
-    /// comment.
+    /// spell with the most wickets, alongside the runs conceded and overs
+    /// bowled (in that match's own format — see `BowlingSpell`'s doc
+    /// comment) in that same spell, so "most wickets" doesn't lose the
+    /// context needed to read it as e.g. "5 wickets for 32 runs off 5.4
+    /// overs". Cricket-specific (hardcodes the "cricket" sport) rather than
+    /// routed through the generic per-counter `update_best_figures`, because
+    /// a bowling figure is a multi-field record ranked by one of those
+    /// fields, not a bare scalar. Same one-directional/best-effort/outside-
+    /// the-transaction characteristics as `update_best_figures` — see its
+    /// doc comment.
     async fn update_best_bowling_figures(
         &self,
         user_id: &str,
@@ -368,12 +378,16 @@ impl Dao {
         }
         let pk = s(Pk::User(user_id.into()).to_string());
         let sk = s(Sk::Profile.to_string());
-        let new_best = BestBowlingFiguresRecord {
-            wickets: spell.wickets,
-            runs_conceded: spell.runs_conceded,
-            balls_bowled: spell.balls_bowled,
-            match_id: match_id.to_string(),
-        };
+        let overs_av = AttributeValue::M(HashMap::from([
+            (
+                "overs".to_string(),
+                AttributeValue::N(spell.overs.overs.to_string()),
+            ),
+            (
+                "balls".to_string(),
+                AttributeValue::N(spell.overs.balls.to_string()),
+            ),
+        ]));
         let new_best_av = AttributeValue::M(HashMap::from([
             (
                 "wickets".to_string(),
@@ -383,11 +397,8 @@ impl Dao {
                 "runs_conceded".to_string(),
                 AttributeValue::N(spell.runs_conceded.to_string()),
             ),
-            (
-                "balls_bowled".to_string(),
-                AttributeValue::N(spell.balls_bowled.to_string()),
-            ),
-            ("match_id".to_string(), s(&new_best.match_id)),
+            ("overs".to_string(), overs_av),
+            ("match_id".to_string(), s(match_id)),
         ]));
         let result = self
             .client

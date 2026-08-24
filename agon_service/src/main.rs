@@ -180,9 +180,13 @@ pub struct CricketPlayerStats {
     pub catches: i32,
     /// Runs conceded while bowling (career total) — divisor for `economy`.
     pub runs_conceded: i32,
-    /// Overs bowled (career total), derived from a raw ball count assuming a
-    /// standard 6-ball over — slightly approximate for a career that
-    /// includes a 5-ball-over format (e.g. The Hundred).
+    /// Overs bowled (career total). Each contributing match's legal-ball
+    /// count is exact (computed from that match's own `balls_per_over`, 5 or
+    /// 6 or otherwise, not assumed) — only turning the resulting cross-match
+    /// ball total back into an "X overs Y balls" figure uses a fixed
+    /// standard 6-ball over, the same convention real-world career bowling
+    /// figures are always reported in regardless of which formats
+    /// contributed to them.
     pub overs_bowled: Overs,
     /// Runs scored per 100 balls faced. `None` with zero balls faced.
     pub strike_rate: Option<f32>,
@@ -193,7 +197,9 @@ pub struct CricketPlayerStats {
     pub economy: Option<f32>,
     /// Highest score in a single match.
     pub best_runs: Option<BestFigure>,
-    /// Best single-match bowling spell.
+    /// Best single-match bowling spell — `overs` is the exact figure from
+    /// that one match (no cross-format approximation needed, unlike
+    /// `overs_bowled` above).
     pub best_bowling: Option<BestBowlingFigures>,
 }
 

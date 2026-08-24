@@ -22,8 +22,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use agon_core::dao::Dao;
 use agon_core::dao::keys::{Pk, Sk};
-use agon_core::dao::records::{CricketDismissalKindRecord, ScoreRecord};
+use agon_core::dao::records::{
+    CricketDismissalKindRecord, MatchFormatRecord, OversRecord, ScoreRecord,
+};
 use agon_core::dao::stats::{BowlingSpell, MatchContribution, MatchOutcome};
+
+/// Legal deliveries per over when a match hasn't configured a format (or
+/// configured a non-cricket one) — the standard rule.
+const DEFAULT_BALLS_PER_OVER: u32 = 6;
 
 use crate::error::WorkerResult;
 use crate::event::ChangeEvent;
@@ -64,6 +70,14 @@ pub async fn reconcile_match_stats(dao: &Dao, match_id: &str) -> WorkerResult<()
     let sport = agg.match_.match_type.clone();
     let winner_side_id = confirmed_score.and_then(|cs| cs.winner_side_id.clone());
 
+    // Cricket-only: this match's actual legal-ball-per-over count, so a
+    // bowling entry's `Overs` converts to a raw ball count exactly (not by
+    // assuming the standard 6) regardless of which format the match used.
+    let balls_per_over = match &agg.match_.format {
+        Some(MatchFormatRecord::Cricket(f)) => f.balls_per_over,
+        _ => DEFAULT_BALLS_PER_OVER,
+    };
+
     // Desired contribution per participant who actually played, keyed by user
     // id. "Played" = a match with a confirmed score where the player is the
     // creator/self-added (no embedded invitation) or an accepted invitee.
@@ -93,7 +107,8 @@ pub async fn reconcile_match_stats(dao: &Dao, match_id: &str) -> WorkerResult<()
             } else {
                 MatchOutcome::Lost
             };
-            let contribution = sport_contribution(&sport, &cs.score, &player.player_id);
+            let contribution =
+                sport_contribution(&sport, &cs.score, &player.player_id, balls_per_over);
 
             // If a user somehow appears twice, take the best outcome
             // (won > drawn > lost) and sum counters/bowling figures across
@@ -115,7 +130,18 @@ pub async fn reconcile_match_stats(dao: &Dao, match_id: &str) -> WorkerResult<()
                 acc.wickets += spell.wickets;
                 acc.runs_conceded += spell.runs_conceded;
                 acc.balls_bowled += spell.balls_bowled;
+                // `overs` is derived once below, from the fully-accumulated
+                // `balls_bowled` — two `Overs` values don't sum field-wise
+                // (balls can roll over into a whole extra over), so summing
+                // the raw ball count first and converting once is what's
+                // actually correct for the rare case of one user appearing
+                // as more than one player in the same match.
             }
+        }
+    }
+    for contribution in desired.values_mut() {
+        if let Some(spell) = &mut contribution.bowling_spell {
+            spell.overs = balls_to_overs(spell.balls_bowled, balls_per_over);
         }
     }
 
@@ -148,9 +174,14 @@ struct SportContribution {
     bowling_spell: Option<BowlingSpell>,
 }
 
-fn sport_contribution(sport: &str, score: &ScoreRecord, player_id: &str) -> SportContribution {
+fn sport_contribution(
+    sport: &str,
+    score: &ScoreRecord,
+    player_id: &str,
+    balls_per_over: u32,
+) -> SportContribution {
     match sport {
-        "cricket" => cricket_contribution(score, player_id),
+        "cricket" => cricket_contribution(score, player_id, balls_per_over),
         "football" => football_contribution(score, player_id),
         _ => SportContribution {
             counters: HashMap::new(),
@@ -173,7 +204,11 @@ fn sport_contribution(sport: &str, score: &ScoreRecord, player_id: &str) -> Spor
 /// faced, dismissals, catches, runs conceded, balls bowled) are lifetime
 /// totals only — nobody's asked to see "most balls faced in a game" as a
 /// record, so there's no reason to pay for tracking it.
-fn cricket_contribution(score: &ScoreRecord, player_id: &str) -> SportContribution {
+fn cricket_contribution(
+    score: &ScoreRecord,
+    player_id: &str,
+    balls_per_over: u32,
+) -> SportContribution {
     let mut counters = HashMap::new();
     let mut best_candidates = HashMap::new();
     let mut bowling_spell = BowlingSpell::default();
@@ -211,7 +246,7 @@ fn cricket_contribution(score: &ScoreRecord, player_id: &str) -> SportContributi
         }
         for entry in inning.bowling.iter().flatten() {
             if entry.player_id == player_id {
-                let balls = overs_to_balls(entry.overs.overs, entry.overs.balls);
+                let balls = overs_to_balls(entry.overs.overs, entry.overs.balls, balls_per_over);
                 *counters.entry("wickets".to_string()).or_insert(0) += entry.wickets as u64;
                 *counters.entry("runs_conceded".to_string()).or_insert(0) +=
                     entry.runs_conceded as u64;
@@ -235,12 +270,21 @@ fn cricket_contribution(score: &ScoreRecord, player_id: &str) -> SportContributi
     }
 }
 
-/// Legal balls bowled, approximated as a standard 6-ball over regardless of
-/// the match's actual `balls_per_over` — see `CricketStatsRecord::
-/// balls_bowled`'s doc comment for why that's an accepted approximation for
-/// a cross-format career total.
-fn overs_to_balls(overs: u32, balls: u32) -> u64 {
-    overs as u64 * 6 + balls as u64
+/// Legal balls bowled, exact — uses this match's own `balls_per_over` (from
+/// its `CricketFormatRecord`, or the standard 6 if unconfigured), not an
+/// assumed one, so a 5-ball-over match (e.g. The Hundred) contributes its
+/// true ball count rather than a slightly-off one.
+fn overs_to_balls(overs: u32, balls: u32, balls_per_over: u32) -> u64 {
+    overs as u64 * balls_per_over as u64 + balls as u64
+}
+
+/// The inverse of `overs_to_balls` — a raw ball count back to whole overs +
+/// balls, in the same `balls_per_over`.
+fn balls_to_overs(balls: u64, balls_per_over: u32) -> OversRecord {
+    OversRecord {
+        overs: (balls / balls_per_over as u64) as u32,
+        balls: (balls % balls_per_over as u64) as u32,
+    }
 }
 
 /// Counts this player's goals scored (own goals excluded) and assists across
@@ -279,5 +323,53 @@ fn football_contribution(score: &ScoreRecord, player_id: &str) -> SportContribut
         counters,
         best_candidates,
         bowling_spell: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The whole point of threading a match's real `balls_per_over` through
+    /// instead of assuming 6: a 5-ball-over spell (The Hundred) must convert
+    /// to its true ball count, not one that's off by however many overs it
+    /// ran.
+    #[test]
+    fn overs_to_balls_respects_a_non_standard_balls_per_over() {
+        // 3 overs + 4 balls at 5 balls/over = 19 balls, not 3*6+4 = 22.
+        assert_eq!(overs_to_balls(3, 4, 5), 19);
+        // The standard case still works as before.
+        assert_eq!(overs_to_balls(8, 4, 6), 52);
+    }
+
+    /// `balls_to_overs` is the exact inverse of `overs_to_balls` for any
+    /// `balls_per_over`, including a partial (not-yet-complete) over.
+    #[test]
+    fn balls_to_overs_round_trips_overs_to_balls() {
+        for balls_per_over in [5, 6] {
+            for overs in 0..10u32 {
+                for balls in 0..balls_per_over {
+                    let total = overs_to_balls(overs, balls, balls_per_over);
+                    let round_tripped = balls_to_overs(total, balls_per_over);
+                    assert_eq!(
+                        round_tripped,
+                        OversRecord { overs, balls },
+                        "{overs}.{balls} at {balls_per_over}/over -> {total} balls -> {round_tripped:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A rolled-over accumulation (more balls than fit in the format's
+    /// notion of "one over") still reduces correctly — this is exactly the
+    /// case the fully-accumulated `bowling_spell.balls_bowled` hits when a
+    /// player bowls in two innings of the same match.
+    #[test]
+    fn balls_to_overs_reduces_a_ball_count_bigger_than_one_over() {
+        // 19 balls at 5/over = 3 overs, 4 balls (not the same shape you'd
+        // get summing two innings' `Overs` field-by-field, which is exactly
+        // why the reconciler sums raw balls first and converts once).
+        assert_eq!(balls_to_overs(19, 5), OversRecord { overs: 3, balls: 4 });
     }
 }

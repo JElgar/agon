@@ -341,6 +341,8 @@ pub struct TeamRecord {
     pub id: String,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_image_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invite_token: Option<String>,
     #[serde(default)]
     pub follower_count: u64,

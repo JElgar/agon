@@ -4357,11 +4357,30 @@ impl Api {
         input: Json<CreateTeamInput>,
     ) -> Result<CreateTeamResponse> {
         info!("Creating team {}", input.name);
+        let input = input.0;
         let uid = self.require_uid(dao, &jwt_data).await?;
+
+        // Resolve the attached asset (must be Uploaded, owned by the caller, and
+        // of `team_image` purpose) to its stored URL — same check `PATCH
+        // /users/me` runs for a profile picture.
+        let profile_image_url = match &input.profile_image_asset_id {
+            Some(asset_id) => {
+                let ids = std::slice::from_ref(asset_id);
+                match resolve_asset_urls(dao, &uid, "team_image", ids).await? {
+                    Ok(resolved) => resolved.into_iter().next().map(|(_, url)| url),
+                    Err(msg) => {
+                        return Ok(CreateTeamResponse::ValidationError(PlainText(msg)));
+                    }
+                }
+            }
+            None => None,
+        };
+
         let now = now_iso();
         let team = dao::records::TeamRecord {
             id: new_id(),
-            name: input.0.name,
+            name: input.name,
+            profile_image_url,
             invite_token: Some(new_id()),
             follower_count: 0,
             created_at: now.clone(),
@@ -4384,10 +4403,38 @@ impl Api {
             }
             Err(e) => return Err(dao_internal(e)),
         }
+
+        // Bundle initial invites into creation — each invitee gets a pending
+        // roster slot + standalone invitation, exactly like a later `POST
+        // /teams/:team_id/invitations` call (see `invite_to_team`).
+        let has_invites =
+            !input.invited_user_ids.is_empty() || !input.invited_external_names.is_empty();
+        if has_invites {
+            self.invite_to_team(
+                dao,
+                &team.id,
+                &team.name,
+                &uid,
+                &input.invited_user_ids,
+                &input.invited_external_names,
+            )
+            .await?;
+        }
+
+        // Re-fetch when invites were sent so the response includes them
+        // (`invite_to_team` writes members directly via the DAO, not via the
+        // `creator`-only slice below) — skip the extra read otherwise.
+        let members = if has_invites {
+            dao.get_team(&team.id)
+                .await
+                .map_err(dao_internal)?
+                .map(|agg| agg.members)
+                .unwrap_or_else(|| vec![creator.clone()])
+        } else {
+            vec![creator]
+        };
         Ok(CreateTeamResponse::Team(Json(team_from_records(
-            &team,
-            &[creator],
-            false,
+            &team, &members, false,
         ))))
     }
 
@@ -4474,12 +4521,38 @@ impl Api {
     async fn update_team(
         &self,
         Data(dao): Data<&dao::Dao>,
-        AuthSchema(_jwt_data): AuthSchema,
+        AuthSchema(jwt_data): AuthSchema,
         Path(team_id): Path<String>,
         input: Json<UpdateTeamInput>,
     ) -> Result<UpdateTeamResponse> {
         info!("Updating team {team_id}");
-        match dao.update_team(&team_id, input.0.name.as_deref()).await {
+        let input = input.0;
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        // Some(Some(url)) = set a new image; Some(None) is never produced here
+        // (there's no "clear image" input yet — a fresh asset is the only way
+        // to change it); None = leave the image unchanged.
+        let resolved_image: Option<Option<String>> = match &input.profile_image_asset_id {
+            Some(asset_id) => {
+                let ids = std::slice::from_ref(asset_id);
+                match resolve_asset_urls(dao, &uid, "team_image", ids).await? {
+                    Ok(resolved) => Some(resolved.into_iter().next().map(|(_, url)| url)),
+                    Err(msg) => {
+                        return Ok(UpdateTeamResponse::ValidationError(PlainText(msg)));
+                    }
+                }
+            }
+            None => None,
+        };
+
+        match dao
+            .update_team(
+                &team_id,
+                input.name.as_deref(),
+                resolved_image.as_ref().map(|o| o.as_deref()),
+            )
+            .await
+        {
             Ok(()) => {}
             Err(dao::DaoError::NotFound(_)) => {
                 return Ok(UpdateTeamResponse::NotFound(PlainText(
@@ -4664,65 +4737,62 @@ impl Api {
                 )));
             }
         };
-        let ctx = dao::records::InvitationContextRecord::Team {
-            team_id: team_id.clone(),
-            team_name: team.name,
-        };
-        let created = self.create_invitations(dao, &uid, ctx, &input.0).await?;
-        // TODO: also create the TeamMember slot per invitee — deferred.
+        let created = self
+            .invite_to_team(
+                dao,
+                &team_id,
+                &team.name,
+                &uid,
+                &input.invited_user_ids,
+                &input.invited_external_names,
+            )
+            .await?;
         Ok(AddInvitationsResponse::Invitations(Json(created)))
     }
 
-    /// Create one invitation per invitee (users by id → user-kind; external
-    /// names → token-kind), persist them, and return the API models. Shared by
-    /// the match and team invite endpoints.
-    async fn create_invitations(
+    /// Invite people to a team: each invitee gets both a pending roster slot
+    /// (with an embedded invitation, via `build_invited_team_member`) and a
+    /// standalone invitation — exactly like a match invite, so they show up
+    /// on the team's member list immediately and `Dao::accept_invitation_tx`
+    /// has a roster entry to link on acceptance. Shared by
+    /// `add_team_invitations` and `create_team`'s bundled initial invites.
+    async fn invite_to_team(
         &self,
         dao: &dao::Dao,
+        team_id: &str,
+        team_name: &str,
         inviter_id: &str,
-        context: dao::records::InvitationContextRecord,
-        input: &AddInvitationsInput,
+        invited_user_ids: &[String],
+        invited_external_names: &[String],
     ) -> Result<Vec<Invitation>> {
         let now = now_iso();
+        let invitees = invited_user_ids
+            .iter()
+            .map(|u| (Some(u.clone()), None))
+            .chain(
+                invited_external_names
+                    .iter()
+                    .map(|n| (None, Some(n.clone()))),
+            );
+
         let mut created = Vec::new();
-
-        for user_id in &input.invited_user_ids {
-            let rec = dao::records::InvitationRecord {
-                id: new_id(),
-                status: String::from("pending"),
-                invited_by_user_id: inviter_id.to_string(),
-                invited_user_id: Some(user_id.clone()),
-                invite_token: None,
-                kind: dao::records::InvitationKindRecord::User {
-                    invited_user_id: user_id.clone(),
-                },
-                context: context.clone(),
-                invited_at: now.clone(),
-                responded_at: None,
-            };
-            dao.create_invitation(&rec).await.map_err(dao_internal)?;
-            created.push(invitation_from_record(&rec));
+        for (user_id, display_name) in invitees {
+            let (member, invitation) = build_invited_team_member(
+                team_id,
+                team_name,
+                inviter_id,
+                user_id,
+                display_name,
+                &now,
+            );
+            dao.put_team_member(team_id, &member)
+                .await
+                .map_err(dao_internal)?;
+            dao.create_invitation(&invitation)
+                .await
+                .map_err(dao_internal)?;
+            created.push(invitation_from_record(&invitation));
         }
-
-        for _name in &input.invited_external_names {
-            let token = new_id();
-            let rec = dao::records::InvitationRecord {
-                id: new_id(),
-                status: String::from("pending"),
-                invited_by_user_id: inviter_id.to_string(),
-                invited_user_id: None,
-                invite_token: Some(token.clone()),
-                kind: dao::records::InvitationKindRecord::Token {
-                    invite_token: token,
-                },
-                context: context.clone(),
-                invited_at: now.clone(),
-                responded_at: None,
-            };
-            dao.create_invitation(&rec).await.map_err(dao_internal)?;
-            created.push(invitation_from_record(&rec));
-        }
-
         Ok(created)
     }
 
@@ -6138,6 +6208,84 @@ fn build_invited_player(
     (player, invitation)
 }
 
+/// Build a pending team-member roster slot together with its standalone
+/// invitation, exactly the team-side counterpart of `build_invited_player`:
+/// the member carries the invitation embedded (so it shows up on the team's
+/// member list immediately, pre-accepted-looking as pending) while the
+/// standalone `InvitationRecord` drives the inbox/notification and is what
+/// `Dao::accept_invitation_tx` looks up by id to link the two. Shared by
+/// `add_team_invitations` and `create_team`'s bundled initial invites.
+fn build_invited_team_member(
+    team_id: &str,
+    team_name: &str,
+    invited_by_user_id: &str,
+    user_id: Option<String>,
+    display_name: Option<String>,
+    now: &str,
+) -> (
+    dao::records::TeamMemberRecord,
+    dao::records::InvitationRecord,
+) {
+    let invitation_id = new_id();
+    let membership_id = new_id();
+
+    let (kind, invited_user_id, invite_token) = match &user_id {
+        Some(uid) => (
+            dao::records::InvitationKindRecord::User {
+                invited_user_id: uid.clone(),
+            },
+            Some(uid.clone()),
+            None,
+        ),
+        None => {
+            let token = new_id();
+            (
+                dao::records::InvitationKindRecord::Token {
+                    invite_token: token.clone(),
+                },
+                None,
+                Some(token),
+            )
+        }
+    };
+
+    let embedded = dao::records::EmbeddedInvitationRecord {
+        id: invitation_id.clone(),
+        status: String::from("pending"),
+        invited_by_user_id: invited_by_user_id.to_string(),
+        invited_at: now.to_string(),
+        responded_at: None,
+        kind: kind.clone(),
+    };
+
+    let member = dao::records::TeamMemberRecord {
+        team_id: team_id.to_string(),
+        membership_id,
+        user_id: user_id.clone(),
+        display_name: display_name.clone(),
+        role: String::from("member"),
+        invitation: Some(embedded),
+        created_at: now.to_string(),
+    };
+
+    let invitation = dao::records::InvitationRecord {
+        id: invitation_id,
+        status: String::from("pending"),
+        invited_by_user_id: invited_by_user_id.to_string(),
+        invited_user_id,
+        invite_token,
+        kind,
+        context: dao::records::InvitationContextRecord::Team {
+            team_id: team_id.to_string(),
+            team_name: team_name.to_string(),
+        },
+        invited_at: now.to_string(),
+        responded_at: None,
+    };
+
+    (member, invitation)
+}
+
 /// The stored string tag for an upload purpose.
 fn upload_purpose_str(p: &UploadPurpose) -> &'static str {
     match p {
@@ -6646,6 +6794,7 @@ fn mock_team_list_item(id: String, name: String) -> TeamListItem {
     TeamListItem {
         id,
         name,
+        profile_image: None,
         follower_count: 128,
         is_followed_by_me: false,
     }
@@ -6658,6 +6807,7 @@ fn mock_team(id: String, name: String) -> Team {
     Team {
         id,
         name,
+        profile_image: None,
         members: vec![
             // An accepted Agon user (the team admin).
             TeamMember {

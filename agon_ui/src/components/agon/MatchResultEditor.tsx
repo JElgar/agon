@@ -73,21 +73,28 @@ function seedPoints(match: Match, aId: string, bId: string): [string, string] {
 
 /**
  * Inline editor for a match's result, opened from the detail card. Renders a
- * sets grid for racket sports, the football/cricket editors (goal-by-goal /
- * innings detail, optional) for those sports, and a single points pair
- * otherwise (mirroring the create flow), seeded from the match's current
- * result — confirmed if there is one, else a still-pending submission (see
- * `displayScore`). On save it PATCHes the score against the match's real side ids; a
- * changed score re-enters the confirmation flow server-side (the other side
- * is asked to confirm), so we also refresh so the pending-score prompt
- * appears.
+ * sets grid for racket sports, the football/cricket/netball editors
+ * (goal-by-goal / innings detail, optional) for those sports, and a single
+ * points pair otherwise (mirroring the create flow), seeded from the match's
+ * current result — confirmed if there is one, else a still-pending
+ * submission (see `displayScore`). On save it PATCHes the score against the
+ * match's real side ids; a changed score re-enters the confirmation flow
+ * server-side (the other side is asked to confirm), so we also refresh so
+ * the pending-score prompt appears.
  *
- * For a live-scored football/cricket match, a save that disagrees with the
- * server's own live-derived score comes back as a 409 rather than being
- * silently accepted — unlike `finishMatch` (which just asks the user to
- * refresh and try again), this editor is specifically a correction tool, so
- * it offers a way through: fetch and show what the live/recorded score
- * actually is, then let a second tap resubmit with `override_live_score` set.
+ * `MatchDetailPage` doesn't offer this editor at all while live scoring is
+ * actually under way (`hasLiveState`) — finishing the live-scored game from
+ * its own screen (`LiveScoringPage`'s `finishMatch`) is the only way to
+ * complete it, so this stays a *correction* tool for a match that's already
+ * done (or was never live-scored): entering here mid-live-scoring used to
+ * let a separately-built, usually less complete score quietly replace the
+ * live-scored one instead of finishing it. That's why a save here that
+ * disagrees with the server's own live-derived score still comes back as a
+ * 409 rather than being silently accepted (the same guard `finishMatch` is
+ * subject to, just with a different recovery — `finishMatch` asks the user
+ * to refresh and try again, while this editor offers a way through: fetch
+ * and show what the live/recorded score actually is, then let a second tap
+ * resubmit with `override_live_score` set).
  */
 export function MatchResultEditor({
   match,

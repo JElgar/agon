@@ -4767,3 +4767,122 @@ async fn undoing_then_appending_then_undoing_the_new_event_stays_consistent() {
     let seqs: Vec<i32> = page.items.iter().map(|e| e.seq).collect();
     assert_eq!(seqs, vec![1]);
 }
+
+// ---------------------------------------------------------------------------
+// Result editor / live scoring integration — a manually submitted `score`
+// (the general "add/edit result" editor, `MatchResultEditor`) is held to the
+// same live-derived cross-check as finishing the live-scored game from its
+// own screen (`LiveScoringPage`'s `finishMatch`), whether or not the
+// submission is the one that completes the match. Regression coverage for a
+// bug where a score submitted while live scoring was still under way
+// (`in_progress`, no `status` in the request) slipped past the check
+// entirely — because it only fired when the request explicitly completed the
+// match — and silently displaced the live-scored detail instead of finishing
+// it (see `update_match`'s doc comment on the check, and `override_live_score`
+// on `UpdateMatchInput`).
+// ---------------------------------------------------------------------------
+
+/// A football match between two invited users, scheduled in the future (no
+/// create-time score) so live events can be appended afterward. The owner is
+/// assigned to side "a" so they're a participant and can record events.
+fn football_match_input(invited_user_id: &str) -> models::CreateMatchInput {
+    let mut input = create_match_input(invited_user_id);
+    input.match_type = models::MatchType::Football;
+    input.creator_side_client_id = Some("a".to_string());
+    input
+}
+
+fn football_kick_off_event_json() -> serde_json::Value {
+    serde_json::json!({
+        "sport": "Football",
+        "kind": "Period",
+        "period": "kick_off",
+    })
+}
+
+fn football_goal_event_json(side_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "sport": "Football",
+        "kind": "Goal",
+        "side_id": side_id,
+        "own_goal": false,
+        "penalty": false,
+    })
+}
+
+#[tokio::test]
+async fn manual_score_conflicting_with_live_football_detail_is_rejected_even_mid_live_scoring() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, football_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+
+    // Live-score a single goal for side A — recording the first event
+    // auto-flips a still-`scheduled` match to `in_progress`.
+    append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![
+            football_kick_off_event_json(),
+            football_goal_event_json(&side_a),
+        ],
+    )
+    .await;
+
+    let mid_scoring = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match");
+    assert!(matches!(
+        mid_scoring.status,
+        models::MatchStatus::InProgress
+    ));
+
+    // A manually-entered score that disagrees with the live 1-0 — sent with
+    // no `status`, the way the general result editor submits it. This used
+    // to be accepted outright (the cross-check only fired when the request
+    // explicitly completed the match), silently displacing the live-scored
+    // detail while the match was still `in_progress`.
+    let response = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(simple_score(&side_a, &side_b, 4, 4))),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::CONFLICT,
+        "doesn't match the match's live result",
+    );
+
+    // The rejected attempt left the live-scored detail untouched.
+    let score = matches_match_id_score_get(&owner_config, &created.id)
+        .await
+        .expect("get score");
+    match score {
+        models::Score::Football(s) => assert_eq!(s.score.get(&side_a), Some(&1)),
+        other => panic!("expected a football score, got {other:?}"),
+    }
+
+    // `override_live_score` submits it anyway — the explicit escape hatch —
+    // and, like any genuinely new score, completes the match.
+    let overridden = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(simple_score(&side_a, &side_b, 4, 4))),
+            override_live_score: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("override the live score");
+    assert!(matches!(overridden.status, models::MatchStatus::Completed));
+}

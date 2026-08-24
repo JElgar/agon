@@ -1,9 +1,8 @@
-import type { components } from '@/types/api'
+import { Link } from 'react-router-dom'
+import { ChevronRight } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { sportIcon, sportLabel } from '@/lib/sports'
-import { formatWinRate, sortedByActivity } from '@/lib/stats'
-
-type UserSportStats = components['schemas']['UserSportStats']
+import { formatWinRate, sortedByActivity, type SportStatsEntry, type UserStats } from '@/lib/stats'
 
 function StatCell({ value, label }: { value: string; label: string }) {
   return (
@@ -14,35 +13,53 @@ function StatCell({ value, label }: { value: string; label: string }) {
   )
 }
 
-function SportRow({ stat }: { stat: UserSportStats }) {
-  const Icon = sportIcon(stat.match_type)
+interface SportRowProps {
+  entry: SportStatsEntry
+  /** Base profile path this table is rendered under (`/profile` or
+   *  `/users/:userId`) — the row links to `${statsBasePath}/stats/:sport`. */
+  statsBasePath: string
+}
+
+function SportRow({ entry, statsBasePath }: SportRowProps) {
+  const { sport, stats } = entry
+  const Icon = sportIcon(sport)
   return (
-    <div className="flex items-stretch border-b last:border-b-0">
+    <Link
+      to={`${statsBasePath}/stats/${sport}`}
+      className="flex items-stretch border-b transition-colors last:border-b-0 hover:bg-accent/50"
+    >
       <div className="flex flex-[1.4] items-center gap-2 border-r px-3.5 py-3">
         <span className="flex size-7 items-center justify-center rounded-lg bg-accent">
           <Icon className="size-4 text-accent-foreground" />
         </span>
-        <span className="text-sm font-medium">{sportLabel(stat.match_type)}</span>
+        <span className="text-sm font-medium">{sportLabel(sport)}</span>
       </div>
-      <StatCell value={String(stat.matches_played)} label="Matches" />
-      <StatCell value={formatWinRate(stat.win_percentage)} label="Win rate" />
-    </div>
+      <StatCell value={String(stats.matches_played)} label="Matches" />
+      <StatCell value={formatWinRate(stats.win_percentage)} label="Win rate" />
+      <div className="flex items-center justify-center px-2 text-muted-foreground">
+        <ChevronRight className="size-4" />
+      </div>
+    </Link>
   )
 }
 
 export interface SportStatsTableProps
-  extends React.HTMLAttributes<HTMLDivElement> {
-  stats: UserSportStats[]
+  extends Omit<React.HTMLAttributes<HTMLDivElement>, 'onOpen'> {
+  stats: UserStats
+  /** Base profile path this table is rendered under — see `SportRowProps`. */
+  statsBasePath: string
   /** Cap the number of sports shown (e.g. top 3 on the profile summary). */
   limit?: number
 }
 
 /**
  * Per-sport stats table (icon, sport, matches played, win rate), one row per
- * sport, most-active first. Renders nothing when there are no stats.
+ * sport, most-active first. Each row opens that sport's full stats page.
+ * Renders nothing when there are no stats.
  */
 export function SportStatsTable({
   stats,
+  statsBasePath,
   limit,
   className,
   ...props
@@ -69,8 +86,8 @@ export function SportStatsTable({
       className={cn('overflow-hidden rounded-xl border bg-card', className)}
       {...props}
     >
-      {shown.map((stat) => (
-        <SportRow key={stat.match_type} stat={stat} />
+      {shown.map((entry) => (
+        <SportRow key={entry.sport} entry={entry} statsBasePath={statsBasePath} />
       ))}
     </div>
   )

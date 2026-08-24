@@ -9,10 +9,82 @@ use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, ATTR_SK, from_item, item_sk, s, to_item};
 use super::keys::{Pk, Sk};
-use super::records::StatContributionRecord;
+use super::records::{OversRecord, StatContributionRecord};
 
 /// Type tag for the per-match stat-contribution item.
 pub const TYPE_STAT_CONTRIBUTION: &str = "stat_contribution";
+
+/// A single participant's result in a match, for stats purposes. Sport-
+/// agnostic: every sport derives this the same way, from `side_id` vs the
+/// match's `winner_side_id`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchOutcome {
+    Won,
+    Drawn,
+    Lost,
+}
+
+/// What a match currently contributes to one participant's stats: whether —
+/// and how — they played, plus any sport-specific counters (e.g. cricket
+/// runs/wickets, football goals/assists) they racked up in it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MatchContribution {
+    /// `None` if the user didn't play this match (or it doesn't currently
+    /// count — not completed, no confirmed score, dropped from the roster).
+    pub outcome: Option<MatchOutcome>,
+    /// Every sport-specific counter earned in this match, summed into the
+    /// player's lifetime totals. Only meaningful (and only ever populated by
+    /// callers) when `outcome` is `Some`.
+    pub counters: HashMap<String, u64>,
+    /// The subset of `counters` worth keeping a personal-best single-match
+    /// record for (e.g. "runs" and "goals", not every raw counter — see
+    /// `Dao::update_best_figures`). A separate, usually-smaller map rather
+    /// than best-tracking everything in `counters`, so a counter nobody
+    /// cares to rank (like `balls_faced`) doesn't cost a conditional write
+    /// on every reconcile.
+    pub best_candidates: HashMap<String, u64>,
+    /// Cricket-specific: this player's bowling figures in this match, if
+    /// they bowled. Carried separately from `counters`/`best_candidates`
+    /// because "best bowling" needs to remember runs-conceded/balls-bowled
+    /// alongside wickets, not just a bare scalar — see
+    /// `Dao::update_best_bowling_figures`. `None` for every non-cricket
+    /// sport, and for a cricket player who didn't bowl.
+    pub bowling_spell: Option<BowlingSpell>,
+}
+
+/// One player's bowling figures in a single match (possibly summed across
+/// more than one innings) — the raw material for `best_bowling`. `overs` is
+/// the exact figure in that match's own `balls_per_over` (the caller — the
+/// worker, which knows the match's format — computes it that way), not a
+/// value this sport-agnostic DAO layer derives from `balls_bowled` under some
+/// assumed over length.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BowlingSpell {
+    pub wickets: u64,
+    pub runs_conceded: u64,
+    /// Legal balls bowled — folded into the cumulative `balls_bowled`
+    /// counter (see `CricketStatsRecord::balls_bowled`).
+    pub balls_bowled: u64,
+    /// Same ball count as whole overs + balls, in this match's own format —
+    /// what `best_bowling` actually stores/displays.
+    pub overs: OversRecord,
+}
+
+impl StatContributionRecord {
+    /// This contribution's fields flattened to a `{name: value}` map — the
+    /// typed played/won/drawn/lost counters alongside whatever sport-specific
+    /// counters it carries — so the reconciler can diff and apply an
+    /// arbitrary set of named counters uniformly instead of hand-listing each
+    /// one.
+    fn as_counter_map(&self) -> HashMap<String, u64> {
+        let mut m = self.counters.clone();
+        m.insert("matches_played".to_string(), self.played);
+        m.insert("wins".to_string(), self.won);
+        m.insert("draws".to_string(), self.drawn);
+        m.insert("losses".to_string(), self.lost);
+        m
+    }
+}
 
 impl Dao {
     /// User ids that currently have a stored stat contribution for this match.
@@ -43,31 +115,29 @@ impl Dao {
 
     /// Reconcile one participant's stats with a match's **current** state.
     ///
-    /// `sport`/`played`/`won` describe what the match *should* contribute right
-    /// now (`played` = completed && the user played; `won` = their side is the
-    /// confirmed winner). This is diffed against the contribution we last stored
-    /// for `(match, user)` and only the delta is applied to the user's
+    /// `sport`/`desired` describe what the match *should* contribute right
+    /// now. This is diffed against the contribution we last stored for
+    /// `(match, user)` and only the delta is applied to the user's
     /// `stats.<sport>` counters on their profile item — so the same call is:
     ///
     /// - **idempotent**: unchanged state → zero delta → no write (safe under
     ///   at-least-once delivery and the match-meta events fired by every
     ///   like/comment);
-    /// - **self-correcting**: a re-score moves `wins`, a late roster add counts
-    ///   the new player, and cancelling a completed match (`played=false`) backs
-    ///   the counts out — including moving counts between sports if the match's
-    ///   sport changed.
+    /// - **self-correcting**: a re-score moves `wins`/`draws`/`losses` and any
+    ///   sport-specific counters, a late roster add counts the new player, and
+    ///   cancelling a completed match (`outcome=None`) backs the counts out —
+    ///   including moving counts between sports if the match's sport changed.
     ///
     /// Concurrency: the contribution write is conditional on the value we read,
     /// so two racing reconciles can't both apply a delta — the loser's
     /// transaction fails (`Conflict`) and redelivery re-reads and converges.
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self, desired))]
     pub async fn reconcile_match_contribution(
         &self,
         match_id: &str,
         user_id: &str,
         sport: &str,
-        played: bool,
-        won: bool,
+        desired: &MatchContribution,
     ) -> DaoResult<()> {
         let contrib_pk = Pk::Match(match_id.into()).to_string();
         let contrib_sk = Sk::StatContribution(user_id.into()).to_string();
@@ -86,18 +156,33 @@ impl Dao {
             out.item.map(from_item).transpose()?
         };
 
-        let desired_played: u64 = played.into();
-        let desired_won: u64 = won.into();
+        let desired_record = StatContributionRecord {
+            match_type: sport.to_string(),
+            played: desired.outcome.is_some() as u64,
+            won: matches!(desired.outcome, Some(MatchOutcome::Won)) as u64,
+            drawn: matches!(desired.outcome, Some(MatchOutcome::Drawn)) as u64,
+            lost: matches!(desired.outcome, Some(MatchOutcome::Lost)) as u64,
+            counters: desired.counters.clone(),
+        };
 
         // A missing contribution is effectively zero in the desired sport, so a
         // no-op event (e.g. a like on a scheduled match) matches and writes
-        // nothing.
-        let (old_sport, old_played, old_won) = match &stored {
-            Some(c) => (c.match_type.clone(), c.played, c.won),
-            None => (sport.to_string(), 0, 0),
-        };
+        // nothing. `old_counters` defaults to empty (every key implicitly 0)
+        // rather than being absent, so it compares equal to an explicit
+        // all-zero `new_counters` map below instead of spuriously looking
+        // "changed" just because no counter was ever stored.
+        let old_sport = stored
+            .as_ref()
+            .map(|c| c.match_type.clone())
+            .unwrap_or_else(|| sport.to_string());
+        let old_counters = stored
+            .as_ref()
+            .map(StatContributionRecord::as_counter_map)
+            .unwrap_or_default();
+        let new_counters = desired_record.as_counter_map();
+        let same_sport_deltas = counter_deltas(&old_counters, &new_counters);
 
-        if old_sport == sport && old_played == desired_played && old_won == desired_won {
+        if old_sport == sport && same_sport_deltas.values().all(|d| *d == 0) {
             return Ok(());
         }
 
@@ -105,7 +190,7 @@ impl Dao {
 
         // 1. Update the contribution item to the desired value (or delete it when
         //    the match no longer contributes), guarded on the value we read.
-        if desired_played == 0 && desired_won == 0 {
+        if desired_record.played == 0 {
             let mut b = Delete::builder()
                 .table_name(self.table())
                 .key(ATTR_PK, s(&contrib_pk))
@@ -114,7 +199,7 @@ impl Dao {
                 None => b
                     .condition_expression("attribute_not_exists(#pk)")
                     .expression_attribute_names("#pk", ATTR_PK),
-                Some(c) => guard_delete(b, c),
+                Some(c) => guard(b, c),
             };
             tx.push(
                 TransactWriteItem::builder()
@@ -122,23 +207,18 @@ impl Dao {
                     .build(),
             );
         } else {
-            let record = StatContributionRecord {
-                match_type: sport.to_string(),
-                played: desired_played,
-                won: desired_won,
-            };
             let item = to_item(
                 &Pk::Match(match_id.into()),
                 &Sk::StatContribution(user_id.into()),
                 TYPE_STAT_CONTRIBUTION,
-                &record,
+                &desired_record,
             )?;
             let mut b = Put::builder().table_name(self.table()).set_item(Some(item));
             b = match &stored {
                 None => b
                     .condition_expression("attribute_not_exists(#pk)")
                     .expression_attribute_names("#pk", ATTR_PK),
-                Some(c) => guard_put(b, c),
+                Some(c) => guard(b, c),
             };
             tx.push(
                 TransactWriteItem::builder()
@@ -148,30 +228,25 @@ impl Dao {
         }
 
         // 2. Apply the counter delta(s). If the sport changed, back the old
-        //    contribution out of the old sport and add the new one; otherwise
-        //    apply the net delta on the single sport.
+        //    contribution out of the old sport (a no-op if there was none —
+        //    `old_counters` is empty) and add the new one; otherwise apply the
+        //    net per-counter delta already computed above on the single sport.
         if old_sport != sport {
-            if let Some(u) = self
-                .stats_delta(user_id, &old_sport, -(old_played as i64), -(old_won as i64))
-                .await?
-            {
+            let backout: HashMap<String, i64> = old_counters
+                .iter()
+                .map(|(k, v)| (k.clone(), -(*v as i64)))
+                .collect();
+            if let Some(u) = self.stats_delta(user_id, &old_sport, &backout).await? {
                 tx.push(TransactWriteItem::builder().update(u).build());
             }
-            if let Some(u) = self
-                .stats_delta(user_id, sport, desired_played as i64, desired_won as i64)
-                .await?
-            {
+            let apply: HashMap<String, i64> = new_counters
+                .iter()
+                .map(|(k, v)| (k.clone(), *v as i64))
+                .collect();
+            if let Some(u) = self.stats_delta(user_id, sport, &apply).await? {
                 tx.push(TransactWriteItem::builder().update(u).build());
             }
-        } else if let Some(u) = self
-            .stats_delta(
-                user_id,
-                sport,
-                desired_played as i64 - old_played as i64,
-                desired_won as i64 - old_won as i64,
-            )
-            .await?
-        {
+        } else if let Some(u) = self.stats_delta(user_id, sport, &same_sport_deltas).await? {
             tx.push(TransactWriteItem::builder().update(u).build());
         }
 
@@ -182,7 +257,21 @@ impl Dao {
             .send()
             .await
         {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                // Best-effort personal-best updates — deliberately outside
+                // the transaction above (see `update_best_figures`), and
+                // only when the user actually played: a contribution being
+                // withdrawn (outcome -> None) can't set a new best.
+                if desired.outcome.is_some() {
+                    self.update_best_figures(user_id, sport, match_id, &desired.best_candidates)
+                        .await?;
+                    if let Some(spell) = desired.bowling_spell {
+                        self.update_best_bowling_figures(user_id, match_id, spell)
+                            .await?;
+                    }
+                }
+                Ok(())
+            }
             // Lost an optimistic-lock race: another reconcile moved the stored
             // contribution between our read and write. Surface it so the message
             // is retried and re-reads the fresh state.
@@ -193,10 +282,150 @@ impl Dao {
         }
     }
 
-    /// An `ADD stats.<sport>.matches_played/wins` update on the user's profile
-    /// item, or `None` when both deltas are zero. `stats.<sport>` must already
-    /// be a map for a nested `ADD` to resolve, so this first ensures it exists
-    /// (a separate, unconditionally idempotent call — `TransactWriteItems`
+    /// Ratchet up `stats.<sport>.best_<counter>` for every counter in
+    /// `counters` whose value in *this* match exceeds any previously
+    /// recorded best — a personal-best single-match figure ("most goals in a
+    /// game") alongside the match it happened in. Counters at `0` are
+    /// skipped (nothing to record).
+    ///
+    /// Deliberately one-directional: if the match that set a record is later
+    /// rescored downward, cancelled, or the player is removed from its
+    /// roster, the recorded best is NOT revisited — reproducing the true max
+    /// would mean scanning every match the user has ever played, which no
+    /// existing access pattern supports. An *upward* re-score IS picked up
+    /// correctly, since this recomputes fresh from the match's current
+    /// contribution on every reconcile.
+    ///
+    /// Independent of the guarded transaction in
+    /// `reconcile_match_contribution`: each counter's update is conditioned
+    /// on its own current best, so bundling it into that all-or-nothing
+    /// transaction would let one counter with "no improvement here" (an
+    /// expected, common case) cancel the legitimate counter-delta update
+    /// alongside it. A `ConditionalCheckFailedException` here just means
+    /// this match didn't beat the record — not an error.
+    async fn update_best_figures(
+        &self,
+        user_id: &str,
+        sport: &str,
+        match_id: &str,
+        counters: &HashMap<String, u64>,
+    ) -> DaoResult<()> {
+        let candidates: Vec<(&String, &u64)> = counters.iter().filter(|(_, v)| **v > 0).collect();
+        if candidates.is_empty() {
+            return Ok(());
+        }
+        let pk = s(Pk::User(user_id.into()).to_string());
+        let sk = s(Sk::Profile.to_string());
+
+        // `stats.#sport` is guaranteed to already exist by this point (the
+        // transaction just above always touches at least `matches_played`
+        // for a played contribution), so each `best_<counter>` field can be
+        // set directly on it — no intermediate map to ensure first. The
+        // field name is `best_<counter>` (e.g. `best_runs`), matching
+        // `CricketStatsRecord`/`FootballPlayerStats`'s flat `best_*` fields
+        // exactly — not nested under a `best` sub-map.
+        for (counter, value) in candidates {
+            let field = format!("best_{counter}");
+            let new_best = AttributeValue::M(HashMap::from([
+                ("value".to_string(), AttributeValue::N(value.to_string())),
+                ("match_id".to_string(), s(match_id)),
+            ]));
+            let result = self
+                .client
+                .update_item()
+                .table_name(self.table())
+                .key(ATTR_PK, pk.clone())
+                .key(ATTR_SK, sk.clone())
+                .update_expression("SET stats.#sport.#field = :new")
+                .condition_expression(
+                    "attribute_not_exists(stats.#sport.#field) OR stats.#sport.#field.#val < :val",
+                )
+                .expression_attribute_names("#sport", sport)
+                .expression_attribute_names("#field", field.as_str())
+                .expression_attribute_names("#val", "value")
+                .expression_attribute_values(":new", new_best)
+                .expression_attribute_values(":val", AttributeValue::N(value.to_string()))
+                .send()
+                .await;
+            match result {
+                Ok(_) => {}
+                Err(e) if is_update_conditional_failure(&e) => {}
+                Err(e) => return Err(DaoError::Dynamo(e.to_string())),
+            }
+        }
+        Ok(())
+    }
+
+    /// Ratchet up `stats.cricket.best_bowling` — the single-match bowling
+    /// spell with the most wickets, alongside the runs conceded and overs
+    /// bowled (in that match's own format — see `BowlingSpell`'s doc
+    /// comment) in that same spell, so "most wickets" doesn't lose the
+    /// context needed to read it as e.g. "5 wickets for 32 runs off 5.4
+    /// overs". Cricket-specific (hardcodes the "cricket" sport) rather than
+    /// routed through the generic per-counter `update_best_figures`, because
+    /// a bowling figure is a multi-field record ranked by one of those
+    /// fields, not a bare scalar. Same one-directional/best-effort/outside-
+    /// the-transaction characteristics as `update_best_figures` — see its
+    /// doc comment.
+    async fn update_best_bowling_figures(
+        &self,
+        user_id: &str,
+        match_id: &str,
+        spell: BowlingSpell,
+    ) -> DaoResult<()> {
+        if spell.wickets == 0 {
+            return Ok(());
+        }
+        let pk = s(Pk::User(user_id.into()).to_string());
+        let sk = s(Sk::Profile.to_string());
+        let overs_av = AttributeValue::M(HashMap::from([
+            (
+                "overs".to_string(),
+                AttributeValue::N(spell.overs.overs.to_string()),
+            ),
+            (
+                "balls".to_string(),
+                AttributeValue::N(spell.overs.balls.to_string()),
+            ),
+        ]));
+        let new_best_av = AttributeValue::M(HashMap::from([
+            (
+                "wickets".to_string(),
+                AttributeValue::N(spell.wickets.to_string()),
+            ),
+            (
+                "runs_conceded".to_string(),
+                AttributeValue::N(spell.runs_conceded.to_string()),
+            ),
+            ("overs".to_string(), overs_av),
+            ("match_id".to_string(), s(match_id)),
+        ]));
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, pk)
+            .key(ATTR_SK, sk)
+            .update_expression("SET stats.cricket.best_bowling = :new")
+            .condition_expression(
+                "attribute_not_exists(stats.cricket.best_bowling) OR stats.cricket.best_bowling.wickets < :wickets",
+            )
+            .expression_attribute_values(":new", new_best_av)
+            .expression_attribute_values(":wickets", AttributeValue::N(spell.wickets.to_string()))
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => Ok(()),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// One `ADD stats.#sport.#counter :d, ...` update on the user's profile
+    /// item — one clause per nonzero entry in `deltas` — or `None` if every
+    /// delta is zero. `stats.<sport>` and every counter named in `deltas` must
+    /// already exist for a nested `ADD` to resolve, so this first ensures they
+    /// do (a separate, unconditionally idempotent call — `TransactWriteItems`
     /// can't touch the profile item twice in the one transaction below it
     /// joins). That extra round trip only happens on a real stats change
     /// (a completed match, a re-score, ...), which is rare per user.
@@ -204,46 +433,86 @@ impl Dao {
         &self,
         user_id: &str,
         sport: &str,
-        played_delta: i64,
-        won_delta: i64,
+        deltas: &HashMap<String, i64>,
     ) -> DaoResult<Option<Update>> {
-        if played_delta == 0 && won_delta == 0 {
+        let nonzero: Vec<(&String, &i64)> = deltas.iter().filter(|(_, d)| **d != 0).collect();
+        if nonzero.is_empty() {
             return Ok(None);
         }
-        self.ensure_stats_sport(user_id, sport).await?;
-        let u = Update::builder()
+        self.ensure_stats_sport(user_id, sport, nonzero.iter().map(|(k, _)| k.as_str()))
+            .await?;
+
+        let mut update_clauses = Vec::with_capacity(nonzero.len());
+        let mut b = Update::builder()
             .table_name(self.table())
             .key(ATTR_PK, s(Pk::User(user_id.into()).to_string()))
             .key(ATTR_SK, s(Sk::Profile.to_string()))
-            .update_expression("ADD stats.#sport.matches_played :p, stats.#sport.wins :w")
-            .expression_attribute_names("#sport", sport)
-            .expression_attribute_values(":p", AttributeValue::N(played_delta.to_string()))
-            .expression_attribute_values(":w", AttributeValue::N(won_delta.to_string()))
+            .expression_attribute_names("#sport", sport);
+        for (i, (counter, delta)) in nonzero.iter().enumerate() {
+            let name_ph = format!("#c{i}");
+            let val_ph = format!(":d{i}");
+            update_clauses.push(format!("stats.#sport.{name_ph} {val_ph}"));
+            b = b
+                .expression_attribute_names(name_ph, counter.as_str())
+                .expression_attribute_values(val_ph, AttributeValue::N(delta.to_string()));
+        }
+        let u = b
+            .update_expression(format!("ADD {}", update_clauses.join(", ")))
             .build()
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
         Ok(Some(u))
     }
 
-    /// Make sure `stats.<sport>` exists as a `{matches_played, wins}` map on
-    /// the user's profile item, so the nested `ADD` in [`Self::stats_delta`]
-    /// always has a map to resolve into. A no-op if it's already there
-    /// (`if_not_exists`), so safe to call unconditionally on every real delta.
-    async fn ensure_stats_sport(&self, user_id: &str, sport: &str) -> DaoResult<()> {
-        let empty_sport_stats = AttributeValue::M(HashMap::from([
-            (
-                "matches_played".to_string(),
-                AttributeValue::N("0".to_string()),
-            ),
-            ("wins".to_string(), AttributeValue::N("0".to_string())),
-        ]));
+    /// Make sure `stats.<sport>` exists as a map, and that each counter named
+    /// in `counters` exists within it as `0`, so the nested `ADD` clauses in
+    /// [`Self::stats_delta`] always have a numeric attribute to resolve into.
+    /// Two sequential updates rather than one: `SET stats.#sport.#c =
+    /// if_not_exists(...)` needs `stats.#sport` to already exist as a map in
+    /// the *pre-update* item, which a same-expression `SET stats.#sport =
+    /// if_not_exists(...)` earlier in the same clause list doesn't guarantee —
+    /// DynamoDB evaluates every clause in an expression against the original
+    /// item, not against each other's effects.
+    async fn ensure_stats_sport<'a>(
+        &self,
+        user_id: &str,
+        sport: &str,
+        counters: impl Iterator<Item = &'a str>,
+    ) -> DaoResult<()> {
+        let pk = s(Pk::User(user_id.into()).to_string());
+        let sk = s(Sk::Profile.to_string());
+
         self.client
             .update_item()
             .table_name(self.table())
-            .key(ATTR_PK, s(Pk::User(user_id.into()).to_string()))
-            .key(ATTR_SK, s(Sk::Profile.to_string()))
+            .key(ATTR_PK, pk.clone())
+            .key(ATTR_SK, sk.clone())
             .update_expression("SET stats.#sport = if_not_exists(stats.#sport, :empty)")
             .expression_attribute_names("#sport", sport)
-            .expression_attribute_values(":empty", empty_sport_stats)
+            .expression_attribute_values(":empty", AttributeValue::M(HashMap::new()))
+            .send()
+            .await
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        let mut set_clauses = Vec::new();
+        let mut b = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, pk)
+            .key(ATTR_SK, sk)
+            .expression_attribute_names("#sport", sport)
+            .expression_attribute_values(":zero", AttributeValue::N("0".to_string()));
+        for (i, counter) in counters.enumerate() {
+            let name_ph = format!("#c{i}");
+            set_clauses.push(format!(
+                "stats.#sport.{name_ph} = if_not_exists(stats.#sport.{name_ph}, :zero)"
+            ));
+            b = b.expression_attribute_names(name_ph, counter);
+        }
+        if set_clauses.is_empty() {
+            return Ok(());
+        }
+        b.update_expression(format!("SET {}", set_clauses.join(", ")))
             .send()
             .await
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
@@ -251,24 +520,78 @@ impl Dao {
     }
 }
 
-/// Constrain a contribution `Put` to the value we read (optimistic lock).
-fn guard_put(
-    b: aws_sdk_dynamodb::types::builders::PutBuilder,
-    c: &StatContributionRecord,
-) -> aws_sdk_dynamodb::types::builders::PutBuilder {
-    b.condition_expression("played = :op AND won = :ow AND match_type = :omt")
-        .expression_attribute_values(":op", AttributeValue::N(c.played.to_string()))
-        .expression_attribute_values(":ow", AttributeValue::N(c.won.to_string()))
-        .expression_attribute_values(":omt", s(&c.match_type))
+/// True if a plain (non-transactional) `UpdateItem` failed its
+/// `ConditionExpression` — the expected outcome of a losing "is this a new
+/// best?" check in [`Dao::update_best_figures`], not a real error.
+fn is_update_conditional_failure(
+    err: &aws_sdk_dynamodb::error::SdkError<
+        aws_sdk_dynamodb::operation::update_item::UpdateItemError,
+    >,
+) -> bool {
+    use aws_sdk_dynamodb::error::SdkError;
+    use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
+    matches!(
+        err,
+        SdkError::ServiceError(se) if matches!(se.err(), UpdateItemError::ConditionalCheckFailedException(_))
+    )
 }
 
-/// Constrain a contribution `Delete` to the value we read (optimistic lock).
-fn guard_delete(
-    b: aws_sdk_dynamodb::types::builders::DeleteBuilder,
-    c: &StatContributionRecord,
-) -> aws_sdk_dynamodb::types::builders::DeleteBuilder {
-    b.condition_expression("played = :op AND won = :ow AND match_type = :omt")
-        .expression_attribute_values(":op", AttributeValue::N(c.played.to_string()))
-        .expression_attribute_values(":ow", AttributeValue::N(c.won.to_string()))
-        .expression_attribute_values(":omt", s(&c.match_type))
+/// Per-key delta (`new - old`) over the union of both maps' keys, treating a
+/// key absent from either side as `0` — so a counter that's never been
+/// touched compares equal to one explicitly stored as `0`.
+fn counter_deltas(old: &HashMap<String, u64>, new: &HashMap<String, u64>) -> HashMap<String, i64> {
+    old.keys()
+        .chain(new.keys())
+        .map(|k| {
+            let o = *old.get(k).unwrap_or(&0) as i64;
+            let n = *new.get(k).unwrap_or(&0) as i64;
+            (k.clone(), n - o)
+        })
+        .collect()
+}
+
+/// Constrain a contribution `Put`/`Delete` to the value we read (optimistic
+/// lock) — every field, including the sport-specific `counters` map compared
+/// as a whole (DynamoDB supports equality on map-typed attributes directly).
+fn guard<B: GuardBuilder>(b: B, c: &StatContributionRecord) -> B {
+    let counters = AttributeValue::M(
+        c.counters
+            .iter()
+            .map(|(k, v)| (k.clone(), AttributeValue::N(v.to_string())))
+            .collect(),
+    );
+    b.condition_expression(
+        "played = :op AND won = :ow AND drawn = :od AND lost = :ol AND match_type = :omt AND counters = :oc",
+    )
+    .expression_attribute_values(":op", AttributeValue::N(c.played.to_string()))
+    .expression_attribute_values(":ow", AttributeValue::N(c.won.to_string()))
+    .expression_attribute_values(":od", AttributeValue::N(c.drawn.to_string()))
+    .expression_attribute_values(":ol", AttributeValue::N(c.lost.to_string()))
+    .expression_attribute_values(":omt", s(&c.match_type))
+    .expression_attribute_values(":oc", counters)
+}
+
+/// The subset of `Put`/`Delete` builder methods `guard` needs — lets one
+/// function guard either builder instead of duplicating it per-variant.
+trait GuardBuilder {
+    fn condition_expression(self, expr: impl Into<String>) -> Self;
+    fn expression_attribute_values(self, key: impl Into<String>, value: AttributeValue) -> Self;
+}
+
+impl GuardBuilder for aws_sdk_dynamodb::types::builders::PutBuilder {
+    fn condition_expression(self, expr: impl Into<String>) -> Self {
+        self.condition_expression(expr)
+    }
+    fn expression_attribute_values(self, key: impl Into<String>, value: AttributeValue) -> Self {
+        self.expression_attribute_values(key, value)
+    }
+}
+
+impl GuardBuilder for aws_sdk_dynamodb::types::builders::DeleteBuilder {
+    fn condition_expression(self, expr: impl Into<String>) -> Self {
+        self.condition_expression(expr)
+    }
+    fn expression_attribute_values(self, key: impl Into<String>, value: AttributeValue) -> Self {
+        self.expression_attribute_values(key, value)
+    }
 }

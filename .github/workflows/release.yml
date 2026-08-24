@@ -46,20 +46,19 @@ jobs:
     uses: JElgar/agon/.github/workflows/docker-ui.yml@main
     secrets: inherit
 
-  # Runs whenever any image was (re)published, OR agon_infra itself changed
-  # (a pulumi program/config edit with no image to rebuild still needs a
-  # `pulumi up` to take effect). Skipped images pass an empty string through,
-  # and deploy.yml leaves that image's pulumi config alone — so e.g. a
-  # UI-only change updates agonUiImage and redeploys, without touching (or
+  # Always runs, regardless of what (if anything) changed: `pulumi up` is
+  # idempotent/cheap when there's no diff, and deploy/test/test-ui-e2e also
+  # serve as a continuous check of the live staging environment, not just of
+  # this push. `always()` is required because some of the needs above are
+  # routinely skipped (see the note on `build-service`/`build-ui`) — without
+  # it, GitHub's default "all needs must succeed" gate would skip this job
+  # too. publish-service/worker/ui pass an empty image string through when
+  # skipped, and deploy.yml leaves that image's pulumi config alone — so
+  # e.g. a UI-only change updates agonUiImage, without touching (or
   # rebuilding) the service/worker images at all.
   deploy:
     needs: [changes, publish-service, publish-worker, publish-ui]
-    if: |
-      always() &&
-      (needs.publish-service.result == 'success' ||
-       needs.publish-worker.result == 'success' ||
-       needs.publish-ui.result == 'success' ||
-       needs.changes.outputs.infra == 'true')
+    if: always()
     uses: JElgar/agon/.github/workflows/deploy.yml@main
     secrets: inherit
     with:
@@ -70,7 +69,6 @@ jobs:
 
   test:
     needs: deploy
-    if: needs.deploy.result == 'success'
     uses: JElgar/agon/.github/workflows/test.yml@main
     with:
       agon-service-url: ${{ needs.deploy.outputs.agon-url }}/api
@@ -80,7 +78,6 @@ jobs:
 
   test-ui-e2e:
     needs: deploy
-    if: needs.deploy.result == 'success'
     uses: JElgar/agon/.github/workflows/test-ui-e2e.yml@main
     with:
       base-url: ${{ needs.deploy.outputs.agon-url }}

@@ -10,9 +10,6 @@ on:
       ui:
         description: 'agon_ui changed'
         value: ${{ jobs.changes.outputs.ui }}
-      infra:
-        description: 'agon_infra (pulumi stack config/program) changed'
-        value: ${{ jobs.changes.outputs.infra }}
 
 jobs:
   changes:
@@ -21,7 +18,6 @@ jobs:
       service: ${{ steps.filter.outputs.service }}
       worker: ${{ steps.filter.outputs.worker }}
       ui: ${{ steps.filter.outputs.ui }}
-      infra: ${{ steps.filter.outputs.infra }}
     steps:
       - uses: actions/checkout@v4
 
@@ -46,5 +42,3 @@ jobs:
               - 'agon_worker/**'
             ui:
               - 'agon_ui/**'
-            infra:
-              - 'agon_infra/**'

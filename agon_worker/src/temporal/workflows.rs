@@ -178,10 +178,21 @@ impl AcceptInvitation {
                 //    even when the side's composition doesn't change.
                 ctx.start_activity(
                     AgonActivities::refresh_side_roster_previews,
-                    match_id,
+                    match_id.clone(),
                     activity_opts(),
                 )
                 .await?;
+
+                // 5. Reindex the match — the roster link (a `PLAYER#` write)
+                //    doesn't touch `#META`, so the inline indexing stream
+                //    handler never fires for it either. Without this, the
+                //    accepter's newly-linked user id never lands in the search
+                //    doc's `participant_ids`, so the match stays invisible to
+                //    their `GET /matches?participant=<id>` activity queries
+                //    (profile "recent activity", the sport stats chart/list)
+                //    even though their lifetime stats were just reconciled.
+                ctx.start_activity(AgonActivities::index_match, match_id, activity_opts())
+                    .await?;
             }
         }
 

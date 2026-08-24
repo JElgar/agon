@@ -60,3 +60,15 @@ pub struct UpdateTeamInput {
 pub struct AddTeamMembersInput {
     pub user_ids: Vec<String>,
 }
+
+/// How multiple `team_id` values combine in `GET /matches`'s team filter.
+/// Meaningless with fewer than two ids.
+#[derive(Enum)]
+#[oai(rename_all = "snake_case")]
+pub enum TeamMatchMode {
+    /// A match involving at least one of the given teams (union). The default.
+    Any,
+    /// A match involving every one of the given teams — e.g. head-to-head
+    /// history between two teams.
+    All,
+}

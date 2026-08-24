@@ -2797,7 +2797,9 @@ async fn list_matches_accepts_filters() {
     // returns a well-formed page.
     let page = matches_get(
         &config,
+        Vec::new(),
         Some("test"),
+        None,
         None,
         Some(models::MatchType::Tennis),
         Some("2026-01-01T00:00:00Z".to_string()),
@@ -2816,6 +2818,8 @@ async fn list_matches_rejects_inverted_date_range() {
     // `from` after `to` is a 400 with a specific message.
     let response = matches_get(
         &config,
+        Vec::new(),
+        None,
         None,
         None,
         None,
@@ -2829,6 +2833,168 @@ async fn list_matches_rejects_inverted_date_range() {
         response,
         reqwest::StatusCode::BAD_REQUEST,
         "`from` must be before `to`",
+    );
+}
+
+/// The `team_id` filter on `GET /matches` finds a match via its team-linked
+/// sides, in all three combinations: a single id, several ids with the
+/// default `any` (union) mode, and several ids with `all` — head-to-head,
+/// since a match's `team_ids` array must contain every listed id to match.
+/// Exercises the indexed `team_ids` facet end to end (worker indexing +
+/// Meilisearch filter), not just that the endpoint accepts the params.
+#[tokio::test]
+async fn list_matches_filters_by_team() {
+    let (owner_config, owner) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+
+    let team_a = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Discovery FC".to_string(),
+        },
+    )
+    .await
+    .expect("create team");
+    let team_b = teams_post(
+        &opponent_config,
+        models::CreateTeamInput {
+            name: "Discovery United".to_string(),
+        },
+    )
+    .await
+    .expect("create team");
+    let unrelated_team = teams_post(
+        &opponent_config,
+        models::CreateTeamInput {
+            name: "Unrelated FC".to_string(),
+        },
+    )
+    .await
+    .expect("create team");
+
+    // Both teams play each other: side "a" is team_a, side "b" is team_b.
+    let mut input = match_between(
+        "Team Discovery Match",
+        &[&owner.profile.id],
+        &[&opponent.profile.id],
+    );
+    // Two distinct teams, so neither side needs (or is allowed) a custom name
+    // — drop the placeholders `match_between` sets.
+    input.sides[0].team_id = Some(team_a.id.clone());
+    input.sides[0].name = None;
+    input.sides[1].team_id = Some(team_b.id.clone());
+    input.sides[1].name = None;
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("create match");
+
+    // Indexing is async (stream -> SQS -> worker -> Meilisearch), so poll a
+    // single-team lookup until the doc lands before asserting on the
+    // multi-team combinators below (which would otherwise just look flaky).
+    eventually("match to be searchable by team", || {
+        let config = &owner_config;
+        let team_id = team_a.id.clone();
+        let match_id = created.id.clone();
+        async move {
+            let page = matches_get(
+                config,
+                vec![team_id],
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await
+            .ok()?;
+            page.items.into_iter().find(|m| m.id == match_id)
+        }
+    })
+    .await;
+
+    // Head-to-head: both teams with `all` finds it — the match's team_ids
+    // array contains both.
+    let h2h = matches_get(
+        &owner_config,
+        vec![team_a.id.clone(), team_b.id.clone()],
+        None,
+        None,
+        Some(models::TeamMatchMode::All),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("list matches (head-to-head)");
+    assert!(
+        h2h.items.iter().any(|m| m.id == created.id),
+        "head-to-head (all) should find the match"
+    );
+
+    // team_a plus an uninvolved third team with `all` finds nothing — no
+    // match's team_ids array contains all three.
+    let all_with_unrelated = matches_get(
+        &owner_config,
+        vec![team_a.id.clone(), unrelated_team.id.clone()],
+        None,
+        None,
+        Some(models::TeamMatchMode::All),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("list matches (all, with an unrelated team)");
+    assert!(
+        !all_with_unrelated.items.iter().any(|m| m.id == created.id),
+        "`all` with an uninvolved team should not match"
+    );
+
+    // Same two ids, default `any` mode: team_a alone is enough.
+    let any_with_unrelated = matches_get(
+        &owner_config,
+        vec![team_a.id.clone(), unrelated_team.id.clone()],
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("list matches (any, with an unrelated team)");
+    assert!(
+        any_with_unrelated.items.iter().any(|m| m.id == created.id),
+        "`any` should find it via team_a alone"
+    );
+
+    // The unrelated team alone finds nothing.
+    let unrelated_only = matches_get(
+        &owner_config,
+        vec![unrelated_team.id.clone()],
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("list matches (unrelated team only)");
+    assert!(
+        !unrelated_only.items.iter().any(|m| m.id == created.id),
+        "unrelated team should not match"
     );
 }
 

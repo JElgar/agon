@@ -2152,7 +2152,7 @@ impl Api {
         /// One id powers a team profile's matches tab, the same way
         /// `participant` powers a user profile's; two or more, combined via
         /// `team_match`, power team-vs-team lookups (e.g. head-to-head).
-        #[oai(name = "team_id")]
+        #[oai(name = "team_id", default)]
         Query(team_ids): Query<Vec<String>>,
         /// How multiple `team_id` values combine: `any` (default) matches a
         /// game involving at least one of them, `all` matches a game

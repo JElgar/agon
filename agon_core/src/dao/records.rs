@@ -1234,9 +1234,19 @@ pub struct UserStatsRecord {
 /// DAO-side mirror of the API's `GenericPlayerStats`/`#[oai(flatten)]`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct GenericSportStatsRecord {
+    // Every counter below is `#[serde(default)]`: `stats_delta` only ever
+    // `ADD`s a counter that's actually nonzero for a given match (see
+    // `Dao::ensure_stats_sport`), so e.g. a player who has only ever won
+    // never gets a `draws`/`losses` attribute written at all — the map in
+    // DynamoDB is sparse by design, not just possibly stale data from before
+    // a field was added.
+    #[serde(default)]
     pub matches_played: u64,
+    #[serde(default)]
     pub wins: u64,
+    #[serde(default)]
     pub draws: u64,
+    #[serde(default)]
     pub losses: u64,
     // Win percentage is derived (wins / matches_played) at the API layer.
 }
@@ -1248,20 +1258,32 @@ pub struct GenericSportStatsRecord {
 pub struct CricketStatsRecord {
     #[serde(flatten)]
     pub common: GenericSportStatsRecord,
+    // As with `GenericSportStatsRecord`, every counter here is
+    // `#[serde(default)]`: only counters that were ever actually
+    // incremented get written to `stats.cricket` (see `Dao::stats_delta`),
+    // so e.g. a bowler who never batted has no `runs` attribute at all.
+    #[serde(default)]
     pub runs: u64,
+    #[serde(default)]
     pub wickets: u64,
+    #[serde(default)]
     pub fours: u64,
+    #[serde(default)]
     pub sixes: u64,
     /// Legal balls faced while batting (career total).
+    #[serde(default)]
     pub balls_faced: u64,
     /// Times out as a batter — divisor for batting average. Not-out innings
     /// aren't counted, same convention as the sport's own "average".
+    #[serde(default)]
     pub dismissals: u64,
     /// Catches taken (as the credited fielder on any dismissal, batting side
     /// or bowling side — a catch isn't tied to which side this player was
     /// fielding for in that innings).
+    #[serde(default)]
     pub catches: u64,
     /// Runs conceded while bowling (career total) — divisor for economy.
+    #[serde(default)]
     pub runs_conceded: u64,
     /// Legal balls bowled (career total) — divisor for economy, and the
     /// source for the displayed "overs bowled". Summed as a raw ball count
@@ -1276,6 +1298,7 @@ pub struct CricketStatsRecord {
     /// standard 6-ball over, the same convention real-world career bowling
     /// figures are always reported in regardless of which tournaments
     /// contributed to them.
+    #[serde(default)]
     pub balls_bowled: u64,
     /// Highest score in a single match.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1313,7 +1336,11 @@ pub struct BestBowlingFiguresRecord {
 pub struct FootballStatsRecord {
     #[serde(flatten)]
     pub common: GenericSportStatsRecord,
+    // Sparse for the same reason as `CricketStatsRecord`'s counters — only
+    // ever written once actually incremented.
+    #[serde(default)]
     pub goals: u64,
+    #[serde(default)]
     pub assists: u64,
     /// Most goals scored in a single match.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1426,5 +1453,34 @@ mod tests {
             ScoreRecord::Football { score, .. } => assert!(score.is_empty()),
             _ => panic!("expected football"),
         }
+    }
+
+    /// `stats.<sport>` is only ever populated with the counters that have
+    /// actually been incremented (see `Dao::stats_delta`/`ensure_stats_sport`),
+    /// so a player who has only ever bowled (no `runs`, `fours`, `sixes`,
+    /// `balls_faced`, `dismissals`, `wins`/`draws`/`losses` beyond whichever
+    /// outcome actually happened, ...) has a sparse `stats.cricket` map, not
+    /// one with every counter present at `0`. This must deserialize rather
+    /// than 500 with "missing field" (the bug behind this test).
+    #[test]
+    fn sparse_cricket_stats_deserializes() {
+        let stats_av = AttributeValue::M(HashMap::from([(
+            "cricket".to_string(),
+            AttributeValue::M(HashMap::from([
+                ("matches_played".to_string(), AttributeValue::N("3".into())),
+                ("wins".to_string(), AttributeValue::N("3".into())),
+                ("wickets".to_string(), AttributeValue::N("5".into())),
+            ])),
+        )]));
+        let rec: UserStatsRecord = serde_dynamo::from_attribute_value(stats_av).unwrap();
+        let cricket = rec.cricket.expect("cricket stats present");
+        assert_eq!(cricket.common.matches_played, 3);
+        assert_eq!(cricket.common.wins, 3);
+        assert_eq!(cricket.common.draws, 0);
+        assert_eq!(cricket.common.losses, 0);
+        assert_eq!(cricket.wickets, 5);
+        assert_eq!(cricket.runs, 0);
+        assert_eq!(cricket.balls_faced, 0);
+        assert_eq!(cricket.balls_bowled, 0);
     }
 }

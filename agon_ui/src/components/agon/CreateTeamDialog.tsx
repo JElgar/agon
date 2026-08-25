@@ -13,6 +13,9 @@ import {
   DialogFooter,
   DialogTrigger,
 } from '@/components/ui/dialog'
+import { ImageUploadField } from './ImageUploadField'
+import { PlayerSideEditor, type TaggedPlayer } from './PlayerSideEditor'
+import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 
 type Team = components['schemas']['Team']
 
@@ -23,21 +26,36 @@ export interface CreateTeamDialogProps {
 }
 
 /**
- * Create-a-team dialog: a name, `POST /teams`. The creator becomes the team's
- * first (admin) member server-side — nothing to set up here. On success,
- * invalidates `['my-teams']` so the caller's list refreshes with the new team,
- * then closes.
+ * Create-a-team dialog: name, an optional logo, and optional initial
+ * invites — all sent in one `POST /teams`. The creator becomes the team's
+ * first (admin) member server-side; anyone tagged here gets a real invite
+ * (pending roster slot + a standalone invitation they can accept), the same
+ * as inviting them after the fact via `POST /teams/{id}/invitations`. On
+ * success, invalidates `['my-teams']` so the caller's list refreshes with the
+ * new team, then closes.
  */
 export function CreateTeamDialog({ children, onCreated }: CreateTeamDialogProps) {
   const queryClient = useQueryClient()
+  const currentUserId = useCurrentUserId()
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
+  const [assetId, setAssetId] = useState<string | null>(null)
+  const [invitees, setInvitees] = useState<TaggedPlayer[]>([])
 
   const canSave = name.trim() !== ''
 
   const mutation = useMutation({
     mutationFn: async (): Promise<Team> => {
-      const body: components['schemas']['CreateTeamInput'] = { name: name.trim() }
+      const body: components['schemas']['CreateTeamInput'] = {
+        name: name.trim(),
+        logo_asset_id: assetId ?? undefined,
+        invited_user_ids: invitees
+          .filter((p) => p.kind === 'user')
+          .map((p) => p.id),
+        invited_external_names: invitees
+          .filter((p) => p.kind === 'external')
+          .map((p) => p.name),
+      }
       const { data, error } = await fetchClient.POST('/teams', { body })
       if (error || !data) throw new Error('Could not create team')
       return data
@@ -54,6 +72,8 @@ export function CreateTeamDialog({ children, onCreated }: CreateTeamDialogProps)
     if (next) {
       // Reset for a fresh dialog each time it opens.
       setName('')
+      setAssetId(null)
+      setInvitees([])
       mutation.reset()
     }
   }
@@ -68,6 +88,16 @@ export function CreateTeamDialog({ children, onCreated }: CreateTeamDialogProps)
 
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
+            <Label>Team logo</Label>
+            <ImageUploadField
+              purpose="team_logo"
+              shape="circle"
+              label="Add a team logo"
+              onUploaded={setAssetId}
+            />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
             <Label htmlFor="create-team-name">Team name</Label>
             <Input
               id="create-team-name"
@@ -78,6 +108,17 @@ export function CreateTeamDialog({ children, onCreated }: CreateTeamDialogProps)
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && canSave) mutation.mutate()
               }}
+            />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label>Invite teammates (optional)</Label>
+            <PlayerSideEditor
+              title="Members"
+              searchPlaceholder="Add a teammate…"
+              players={invitees}
+              onChange={setInvitees}
+              currentUserId={currentUserId}
             />
           </div>
 

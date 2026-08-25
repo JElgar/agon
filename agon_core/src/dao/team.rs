@@ -152,24 +152,78 @@ impl Dao {
         Ok(team.map(|team| TeamAggregate { team, members }))
     }
 
-    /// Update a team's mutable fields (currently just `name`). `NotFound` if the
+    /// Update a team's mutable fields — `name` and/or `logo_url`.
+    /// Both optional and independent, like `Dao::update_user_profile`:
+    /// `logo_url` is a double `Option` — outer `None` leaves the logo
+    /// untouched, `Some(None)` clears it, `Some(Some(url))` sets it.
+    /// A no-op call (both `None`) skips the write entirely. `NotFound` if the
     /// team doesn't exist.
     #[tracing::instrument(skip(self))]
-    pub async fn update_team(&self, team_id: &str, name: Option<&str>) -> DaoResult<()> {
-        let Some(name) = name else {
-            return Ok(());
-        };
+    pub async fn update_team(
+        &self,
+        team_id: &str,
+        name: Option<&str>,
+        logo_url: Option<Option<&str>>,
+    ) -> DaoResult<()> {
+        let mut set_parts: Vec<String> = Vec::new();
+        let mut remove_parts: Vec<String> = Vec::new();
+        let mut names: std::collections::HashMap<String, String> = Default::default();
+        let mut values: std::collections::HashMap<String, AttributeValue> = Default::default();
+
+        if let Some(name) = name {
+            set_parts.push("#name = :name".into());
+            names.insert("#name".into(), "name".into());
+            values.insert(":name".into(), s(name));
+        }
+        if let Some(logo) = logo_url {
+            match logo {
+                Some(url) => {
+                    set_parts.push("#logo = :logo".into());
+                    names.insert("#logo".into(), "logo_url".into());
+                    values.insert(":logo".into(), s(url));
+                }
+                // Explicit clear.
+                None => {
+                    remove_parts.push("#logo".into());
+                    names.insert("#logo".into(), "logo_url".into());
+                }
+            }
+        }
+
+        if set_parts.is_empty() && remove_parts.is_empty() {
+            return Ok(()); // nothing to change
+        }
+
+        let mut expr = String::new();
+        if !set_parts.is_empty() {
+            expr.push_str("SET ");
+            expr.push_str(&set_parts.join(", "));
+        }
+        if !remove_parts.is_empty() {
+            if !expr.is_empty() {
+                expr.push(' ');
+            }
+            expr.push_str("REMOVE ");
+            expr.push_str(&remove_parts.join(", "));
+        }
+
+        // Guard existence via the PK, which every team meta item has.
+        names.insert("#pk".into(), ATTR_PK.into());
+
         let result = self
             .client
             .update_item()
             .table_name(self.table())
             .key(ATTR_PK, s(Pk::Team(team_id.into()).to_string()))
             .key("SK", s(Sk::Meta.to_string()))
-            .update_expression("SET #name = :name")
+            .update_expression(expr)
             .condition_expression("attribute_exists(#pk)")
-            .expression_attribute_names("#name", "name")
-            .expression_attribute_names("#pk", ATTR_PK)
-            .expression_attribute_values(":name", s(name))
+            .set_expression_attribute_names(Some(names))
+            .set_expression_attribute_values(if values.is_empty() {
+                None
+            } else {
+                Some(values)
+            })
             .send()
             .await;
         match result {

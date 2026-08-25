@@ -1,5 +1,6 @@
 use poem_openapi::{Enum, Object};
 
+use crate::Photo;
 use crate::membership::Member;
 
 /// A persistent team/squad. The pool of people a match side can be drawn from;
@@ -9,6 +10,9 @@ use crate::membership::Member;
 pub struct Team {
     pub id: String,
     pub name: String,
+    /// Team logo. Uploaded via the Asset API (`team_logo` purpose), same flow
+    /// as a user's profile picture.
+    pub logo: Option<Photo>,
     pub members: Vec<TeamMember>,
     /// Shareable token for inviting people to join the team. None if no active
     /// invite link.
@@ -40,6 +44,7 @@ pub enum TeamRole {
 pub struct TeamListItem {
     pub id: String,
     pub name: String,
+    pub logo: Option<Photo>,
     pub follower_count: u32,
     /// Whether the requesting user follows this team.
     pub is_followed_by_me: bool,
@@ -48,12 +53,25 @@ pub struct TeamListItem {
 #[derive(Object)]
 pub struct CreateTeamInput {
     pub name: String,
+    /// References an `Asset` (of `team_logo` purpose) the client uploaded via
+    /// the Asset API — same flow as a user's profile picture. None = no logo.
+    pub logo_asset_id: Option<String>,
+    /// Agon users to invite to the new team, alongside the creator (who joins
+    /// automatically as admin). Each gets a pending membership + invitation,
+    /// exactly like `POST /teams/{team_id}/invitations` — just bundled into
+    /// team creation instead of a separate call.
+    pub invited_user_ids: Vec<String>,
+    /// People with no Agon account to invite by name (token-based invites).
+    pub invited_external_names: Vec<String>,
 }
 
 /// Editable fields on a team. All optional — only supplied fields change.
 #[derive(Object)]
 pub struct UpdateTeamInput {
     pub name: Option<String>,
+    /// Same as `CreateTeamInput::logo_asset_id`. None leaves the current logo
+    /// unchanged.
+    pub logo_asset_id: Option<String>,
 }
 
 #[derive(Object)]

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   flexRender,
   getCoreRowModel,
@@ -16,6 +17,7 @@ import {
 } from '@/lib/liveScore'
 import type { ScorePlayers } from '@/lib/members'
 import { cn } from '@/lib/utils'
+import { Avatar } from '@/components/agon/Avatar'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 
@@ -31,9 +33,12 @@ declare module '@tanstack/react-table' {
   }
 }
 
-/** A clickable column header for the sortable columns (goals/assists) — an
- *  `ArrowDown` marks whichever one is currently the table's primary sort key,
- *  matching the always-descending contract of `sortGoalContributions`. */
+/** A clickable column header for the sortable columns (goals/assists).
+ *  `sortGoalContributions` always sorts its active column descending — there's
+ *  no ascending toggle to flip to — so instead of rotating an arrow, the
+ *  active column is the only one showing an `ArrowDown` at all, and its
+ *  label is bolded; the inactive column is a plain, arrow-less button.
+ *  Clicking either one always just makes it the active (descending) sort. */
 function SortableHeader({
   label,
   sortKey,
@@ -45,16 +50,17 @@ function SortableHeader({
   activeSort: GoalContributionSort
   onSort: (key: GoalContributionSort) => void
 }) {
+  const active = activeSort === sortKey
   return (
     <Button
       variant="ghost"
       size="sm"
       className="-mr-2 h-7 gap-1 px-2 text-xs"
-      aria-pressed={activeSort === sortKey}
+      aria-pressed={active}
       onClick={() => onSort(sortKey)}
     >
-      {label}
-      <ArrowDown className={cn('size-3 text-muted-foreground', activeSort === sortKey && 'text-foreground')} />
+      <span className={cn(active && 'font-semibold text-foreground')}>{label}</span>
+      {active && <ArrowDown className="size-3" />}
     </Button>
   )
 }
@@ -63,13 +69,16 @@ function SortableHeader({
  * A football match's goal-contributions table — every scorer and assister,
  * one row per player, goals and assists side by side. A shadcn/tanstack
  * data table: defaults to most goals first (assists breaking ties);
- * clicking the Goals/Assists column header flips the primary sort key
- * (see `sortGoalContributions` — always descending, no ascending toggle,
- * so the header's arrow just marks which column currently leads).
- * Fed by the same goal log as `FootballScorecard`'s event timeline
- * (live or finished, `own_goal` excluded from the scorer's own tally, same
- * as the backend's own accounting), so it stays in sync with it. Renders
- * nothing if nobody has scored or assisted yet.
+ * clicking the Goals/Assists column header makes it the primary sort key
+ * (see `sortGoalContributions` and `SortableHeader`'s doc comments — always
+ * descending, no ascending toggle, so only the active column shows an
+ * arrow at all). Each row's player name is an avatar + link to their
+ * profile, same as the match's own player-list rows (`SideRoster`) — plain
+ * text for an external player with no linked account. Fed by the same goal
+ * log as `FootballScorecard`'s event timeline (live or finished, `own_goal`
+ * excluded from the scorer's own tally, same as the backend's own
+ * accounting), so it stays in sync with it. Renders nothing if nobody has
+ * scored or assisted yet.
  */
 export function FootballGoalContributions({
   goals,
@@ -96,7 +105,25 @@ export function FootballGoalContributions({
       {
         accessorKey: 'name',
         header: 'Player',
-        cell: ({ getValue }) => <span className="font-medium">{getValue<string>()}</span>,
+        cell: ({ row }) => {
+          const { name, userId, avatarUrl } = row.original
+          const content = (
+            <>
+              <Avatar name={name} imageUrl={avatarUrl} size="sm" />
+              <span className="truncate font-medium">{name}</span>
+            </>
+          )
+          // Only a linked Agon user has a profile to open — an external
+          // player (or an id we couldn't resolve to one) stays plain text,
+          // same as the match's own player-list rows (`SideRoster`).
+          return userId ? (
+            <Link to={`/users/${userId}`} className="flex min-w-0 items-center gap-2">
+              {content}
+            </Link>
+          ) : (
+            <div className="flex min-w-0 items-center gap-2">{content}</div>
+          )
+        },
       },
       {
         accessorKey: 'goals',

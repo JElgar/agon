@@ -27,7 +27,8 @@ export interface InviteToTeamDialogProps {
  * `CreateTeamDialog`'s bundled initial invites, same `PlayerSideEditor` tagging
  * UI over `POST /teams/{id}/invitations`. Admin-only; the team page only
  * renders the trigger for an admin viewer. On success, invalidates the team's
- * own query so the new (pending) members show up immediately.
+ * members list (`['team-members', teamId]`) so the new (pending) members show
+ * up immediately.
  */
 export function InviteToTeamDialog({
   teamId,
@@ -56,7 +57,7 @@ export function InviteToTeamDialog({
       if (error) throw new Error('Could not send invites')
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['team', teamId] })
+      queryClient.invalidateQueries({ queryKey: ['team-members', teamId] })
       setOpen(false)
     },
   })

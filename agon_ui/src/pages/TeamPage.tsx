@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ChevronLeft, Pencil, UserPlus } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
@@ -14,10 +14,13 @@ import { memberName, memberAvatarUrl } from '@/lib/members'
 
 type Team = components['schemas']['Team']
 type TeamMember = components['schemas']['TeamMember']
+type TeamMemberPage = components['schemas']['TeamMemberPage']
 type SearchMatch = components['schemas']['SearchMatch']
 
 /** Recent-activity matches to fetch/show, same limit as the profile page's. */
 const RECENT_LIMIT = 5
+/** Member page size. The API caps at 50; 20 matches its default. */
+const MEMBER_PAGE_SIZE = 20
 
 /**
  * A team's page: logo/name/follower count and a follow toggle (for a
@@ -43,6 +46,29 @@ export function TeamPage() {
       if (error || !data) throw new Error('Failed to load team')
       return data
     },
+  })
+
+  // Paginated — see GET /teams/{team_id}/members. A team's page fetches one
+  // page up front (like a user's followers list); "isAdmin"/"already on the
+  // team" below only see pages actually fetched so far, which is exactly the
+  // first page until "Load more" is used. Fine for a squad-sized team; a
+  // (currently hypothetical) team past the first page where the viewer's own
+  // row lands later would under-detect admin status until they load more.
+  const membersQuery = useInfiniteQuery({
+    queryKey: ['team-members', teamId],
+    enabled: !!teamId,
+    initialPageParam: undefined as string | undefined,
+    queryFn: async ({ pageParam }): Promise<TeamMemberPage> => {
+      const { data, error } = await fetchClient.GET('/teams/{team_id}/members', {
+        params: {
+          path: { team_id: teamId! },
+          query: { cursor: pageParam, limit: MEMBER_PAGE_SIZE },
+        },
+      })
+      if (error || !data) throw new Error('Failed to load members')
+      return data
+    },
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
   })
 
   const activityQuery = useQuery({
@@ -73,13 +99,14 @@ export function TeamPage() {
   }
 
   const team = teamQuery.data
-  const isAdmin = team.members.some(
+  const members = (membersQuery.data?.pages ?? []).flatMap((page) => page.items)
+  const isAdmin = members.some(
     (m) =>
       m.member.type === 'User' &&
       m.member.user_id === currentUserId &&
       m.role === 'admin',
   )
-  const existingUserIds = team.members
+  const existingUserIds = members
     .map((m) => (m.member.type === 'User' ? m.member.user_id : null))
     .filter((id): id is string => id !== null)
 
@@ -133,13 +160,7 @@ export function TeamPage() {
         <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
           Members
         </h2>
-        <ul className="flex flex-col divide-y overflow-hidden rounded-xl border bg-card">
-          {team.members.map((member) => (
-            <li key={member.member.id}>
-              <MemberRow member={member} currentUserId={currentUserId} />
-            </li>
-          ))}
-        </ul>
+        <Members query={membersQuery} members={members} currentUserId={currentUserId} />
       </section>
 
       <section className="flex flex-col gap-2">
@@ -149,6 +170,65 @@ export function TeamPage() {
         <RecentMatches query={activityQuery} currentUserId={currentUserId} />
       </section>
     </div>
+  )
+}
+
+interface MembersProps {
+  query: ReturnType<typeof useInfiniteQuery<TeamMemberPage>>
+  members: TeamMember[]
+  currentUserId?: string
+}
+
+/** The member list: loading / error / empty states, else the rows plus a
+ *  "Load more" button — same pagination pattern as `FollowListPage`. */
+function Members({ query, members, currentUserId }: MembersProps) {
+  if (query.isLoading) {
+    return (
+      <ul className="flex flex-col overflow-hidden rounded-xl border bg-card">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <li key={i} className="flex items-center gap-3 border-b px-4 py-3 last:border-b-0">
+            <div className="size-9 shrink-0 animate-pulse rounded-full bg-muted" />
+            <div className="flex-1 space-y-2">
+              <div className="h-3 w-1/3 animate-pulse rounded bg-muted" />
+              <div className="h-2.5 w-1/4 animate-pulse rounded bg-muted" />
+            </div>
+          </li>
+        ))}
+      </ul>
+    )
+  }
+
+  if (query.isError) {
+    return (
+      <div className="rounded-xl border bg-card p-6 text-center">
+        <p className="mb-3 text-sm text-muted-foreground">Couldn't load members.</p>
+        <Button variant="outline" size="sm" onClick={() => query.refetch()}>
+          Retry
+        </Button>
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <ul className="flex flex-col divide-y overflow-hidden rounded-xl border bg-card">
+        {members.map((member) => (
+          <li key={member.member.id}>
+            <MemberRow member={member} currentUserId={currentUserId} />
+          </li>
+        ))}
+      </ul>
+
+      {query.hasNextPage && (
+        <Button
+          variant="outline"
+          disabled={query.isFetchingNextPage}
+          onClick={() => query.fetchNextPage()}
+        >
+          {query.isFetchingNextPage ? 'Loading…' : 'Load more'}
+        </Button>
+      )}
+    </>
   )
 }
 

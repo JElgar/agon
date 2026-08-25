@@ -367,7 +367,7 @@ async fn create_and_get_team() {
         &config,
         models::CreateTeamInput {
             name: "Surrey".to_string(),
-            profile_image_asset_id: None,
+            logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
         },
@@ -393,7 +393,7 @@ async fn team_appears_in_my_teams() {
         &config,
         models::CreateTeamInput {
             name: "My Team".to_string(),
-            profile_image_asset_id: None,
+            logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
         },
@@ -416,7 +416,7 @@ async fn add_and_remove_team_member() {
         &config,
         models::CreateTeamInput {
             name: "Roster Test".to_string(),
-            profile_image_asset_id: None,
+            logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
         },
@@ -455,7 +455,7 @@ async fn removing_an_already_removed_team_member_returns_not_found() {
         &config,
         models::CreateTeamInput {
             name: "Roster Test".to_string(),
-            profile_image_asset_id: None,
+            logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
         },
@@ -715,7 +715,7 @@ async fn patch_match_rename_team_side_without_shared_team_is_rejected() {
         &owner_config,
         models::CreateTeamInput {
             name: "Rename FC".to_string(),
-            profile_image_asset_id: None,
+            logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
         },
@@ -1193,7 +1193,7 @@ async fn follow_and_unfollow_team() {
         &owner_config,
         models::CreateTeamInput {
             name: "Followable".to_string(),
-            profile_image_asset_id: None,
+            logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
         },
@@ -2090,7 +2090,7 @@ async fn match_with_a_team_side_fans_out_to_team_followers() {
         &owner_config,
         models::CreateTeamInput {
             name: "Fanout FC".to_string(),
-            profile_image_asset_id: None,
+            logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
         },
@@ -2872,7 +2872,7 @@ async fn list_matches_filters_by_team() {
         &owner_config,
         models::CreateTeamInput {
             name: "Discovery FC".to_string(),
-            profile_image_asset_id: None,
+            logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
         },
@@ -2883,7 +2883,7 @@ async fn list_matches_filters_by_team() {
         &opponent_config,
         models::CreateTeamInput {
             name: "Discovery United".to_string(),
-            profile_image_asset_id: None,
+            logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
         },
@@ -2894,7 +2894,7 @@ async fn list_matches_filters_by_team() {
         &opponent_config,
         models::CreateTeamInput {
             name: "Unrelated FC".to_string(),
-            profile_image_asset_id: None,
+            logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
         },
@@ -3377,7 +3377,7 @@ async fn team_followers_list_includes_the_follower() {
         &owner_config,
         models::CreateTeamInput {
             name: "Followed Team".to_string(),
-            profile_image_asset_id: None,
+            logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
         },
@@ -3407,7 +3407,7 @@ async fn patch_team_updates_name() {
         &config,
         models::CreateTeamInput {
             name: "Before".to_string(),
-            profile_image_asset_id: None,
+            logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
         },
@@ -3420,7 +3420,7 @@ async fn patch_team_updates_name() {
         &team.id,
         models::UpdateTeamInput {
             name: Some("After".to_string()),
-            profile_image_asset_id: None,
+            logo_asset_id: None,
         },
     )
     .await
@@ -4149,30 +4149,28 @@ async fn upload_profile_image_end_to_end() {
     assert!(!photo.image_url.is_empty());
 }
 
-/// `POST /teams` accepts a `team_image`-purpose asset the same way `PATCH
+/// `POST /teams` accepts a `team_logo`-purpose asset the same way `PATCH
 /// /users/me` accepts a `profile_image` one.
 #[tokio::test]
-async fn create_team_with_profile_image() {
+async fn create_team_with_logo() {
     let (config, _user) = new_user().await;
 
-    let asset = create_png_asset(&config, models::UploadPurpose::TeamImage).await;
+    let asset = create_png_asset(&config, models::UploadPurpose::TeamLogo).await;
     upload_and_confirm(&config, &asset).await;
 
     let team = teams_post(
         &config,
         models::CreateTeamInput {
             name: "Pictured FC".to_string(),
-            profile_image_asset_id: Some(asset.id.clone()),
+            logo_asset_id: Some(asset.id.clone()),
             invited_user_ids: vec![],
             invited_external_names: vec![],
         },
     )
     .await
-    .expect("create team with image");
-    let photo = team
-        .profile_image
-        .expect("profile image is set from creation");
-    assert!(!photo.image_url.is_empty());
+    .expect("create team with logo");
+    let logo = team.logo.expect("logo is set from creation");
+    assert!(!logo.image_url.is_empty());
 }
 
 /// `PATCH /teams/:id` rejects a profile-image asset uploaded for a different
@@ -4188,7 +4186,7 @@ async fn create_team_rejects_wrong_purpose_asset() {
         &config,
         models::CreateTeamInput {
             name: "Wrong Purpose FC".to_string(),
-            profile_image_asset_id: Some(asset.id.clone()),
+            logo_asset_id: Some(asset.id.clone()),
             invited_user_ids: vec![],
             invited_external_names: vec![],
         },
@@ -4212,7 +4210,7 @@ async fn team_created_with_initial_invite_can_be_accepted() {
         &owner_config,
         models::CreateTeamInput {
             name: "Founders FC".to_string(),
-            profile_image_asset_id: None,
+            logo_asset_id: None,
             invited_user_ids: vec![invitee.profile.id.clone()],
             invited_external_names: vec![],
         },

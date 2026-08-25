@@ -341,7 +341,7 @@ pub struct TeamRecord {
     pub id: String,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile_image_url: Option<String>,
+    pub logo_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invite_token: Option<String>,
     #[serde(default)]
@@ -1119,7 +1119,7 @@ pub struct AssetRecord {
     pub id: String,
     /// The user who created the asset (for authorising attachment).
     pub owner_user_id: String,
-    /// "profile_image" | "team_image" | "match_header".
+    /// "profile_image" | "team_logo" | "match_header".
     pub purpose: String,
     pub content_type: String,
     /// Exact byte length the client declared at creation. Baked into the

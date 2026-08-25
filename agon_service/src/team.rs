@@ -10,9 +10,9 @@ use crate::membership::Member;
 pub struct Team {
     pub id: String,
     pub name: String,
-    /// Team picture. Uploaded via the Asset API (`team_image` purpose), same
-    /// flow as a user's profile picture.
-    pub profile_image: Option<Photo>,
+    /// Team logo. Uploaded via the Asset API (`team_logo` purpose), same flow
+    /// as a user's profile picture.
+    pub logo: Option<Photo>,
     pub members: Vec<TeamMember>,
     /// Shareable token for inviting people to join the team. None if no active
     /// invite link.
@@ -44,7 +44,7 @@ pub enum TeamRole {
 pub struct TeamListItem {
     pub id: String,
     pub name: String,
-    pub profile_image: Option<Photo>,
+    pub logo: Option<Photo>,
     pub follower_count: u32,
     /// Whether the requesting user follows this team.
     pub is_followed_by_me: bool,
@@ -53,9 +53,9 @@ pub struct TeamListItem {
 #[derive(Object)]
 pub struct CreateTeamInput {
     pub name: String,
-    /// References an `Asset` (of `team_image` purpose) the client uploaded via
-    /// the Asset API — same flow as a user's profile picture. None = no image.
-    pub profile_image_asset_id: Option<String>,
+    /// References an `Asset` (of `team_logo` purpose) the client uploaded via
+    /// the Asset API — same flow as a user's profile picture. None = no logo.
+    pub logo_asset_id: Option<String>,
     /// Agon users to invite to the new team, alongside the creator (who joins
     /// automatically as admin). Each gets a pending membership + invitation,
     /// exactly like `POST /teams/{team_id}/invitations` — just bundled into
@@ -69,9 +69,9 @@ pub struct CreateTeamInput {
 #[derive(Object)]
 pub struct UpdateTeamInput {
     pub name: Option<String>,
-    /// Same as `CreateTeamInput::profile_image_asset_id`. None leaves the
-    /// current image unchanged.
-    pub profile_image_asset_id: Option<String>,
+    /// Same as `CreateTeamInput::logo_asset_id`. None leaves the current logo
+    /// unchanged.
+    pub logo_asset_id: Option<String>,
 }
 
 #[derive(Object)]

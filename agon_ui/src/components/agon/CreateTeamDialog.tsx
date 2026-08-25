@@ -26,7 +26,7 @@ export interface CreateTeamDialogProps {
 }
 
 /**
- * Create-a-team dialog: name, an optional team picture, and optional initial
+ * Create-a-team dialog: name, an optional logo, and optional initial
  * invites — all sent in one `POST /teams`. The creator becomes the team's
  * first (admin) member server-side; anyone tagged here gets a real invite
  * (pending roster slot + a standalone invitation they can accept), the same
@@ -48,7 +48,7 @@ export function CreateTeamDialog({ children, onCreated }: CreateTeamDialogProps)
     mutationFn: async (): Promise<Team> => {
       const body: components['schemas']['CreateTeamInput'] = {
         name: name.trim(),
-        profile_image_asset_id: assetId ?? undefined,
+        logo_asset_id: assetId ?? undefined,
         invited_user_ids: invitees
           .filter((p) => p.kind === 'user')
           .map((p) => p.id),
@@ -88,11 +88,11 @@ export function CreateTeamDialog({ children, onCreated }: CreateTeamDialogProps)
 
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
-            <Label>Team picture</Label>
+            <Label>Team logo</Label>
             <ImageUploadField
-              purpose="team_image"
+              purpose="team_logo"
               shape="circle"
-              label="Add a team photo"
+              label="Add a team logo"
               onUploaded={setAssetId}
             />
           </div>

@@ -152,10 +152,10 @@ impl Dao {
         Ok(team.map(|team| TeamAggregate { team, members }))
     }
 
-    /// Update a team's mutable fields — `name` and/or `profile_image_url`.
+    /// Update a team's mutable fields — `name` and/or `logo_url`.
     /// Both optional and independent, like `Dao::update_user_profile`:
-    /// `profile_image_url` is a double `Option` — outer `None` leaves the
-    /// image untouched, `Some(None)` clears it, `Some(Some(url))` sets it.
+    /// `logo_url` is a double `Option` — outer `None` leaves the logo
+    /// untouched, `Some(None)` clears it, `Some(Some(url))` sets it.
     /// A no-op call (both `None`) skips the write entirely. `NotFound` if the
     /// team doesn't exist.
     #[tracing::instrument(skip(self))]
@@ -163,7 +163,7 @@ impl Dao {
         &self,
         team_id: &str,
         name: Option<&str>,
-        profile_image_url: Option<Option<&str>>,
+        logo_url: Option<Option<&str>>,
     ) -> DaoResult<()> {
         let mut set_parts: Vec<String> = Vec::new();
         let mut remove_parts: Vec<String> = Vec::new();
@@ -175,17 +175,17 @@ impl Dao {
             names.insert("#name".into(), "name".into());
             values.insert(":name".into(), s(name));
         }
-        if let Some(image) = profile_image_url {
-            match image {
+        if let Some(logo) = logo_url {
+            match logo {
                 Some(url) => {
-                    set_parts.push("#img = :img".into());
-                    names.insert("#img".into(), "profile_image_url".into());
-                    values.insert(":img".into(), s(url));
+                    set_parts.push("#logo = :logo".into());
+                    names.insert("#logo".into(), "logo_url".into());
+                    values.insert(":logo".into(), s(url));
                 }
                 // Explicit clear.
                 None => {
-                    remove_parts.push("#img".into());
-                    names.insert("#img".into(), "profile_image_url".into());
+                    remove_parts.push("#logo".into());
+                    names.insert("#logo".into(), "logo_url".into());
                 }
             }
         }

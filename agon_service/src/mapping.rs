@@ -864,7 +864,7 @@ pub fn team_from_records(
     Team {
         id: team.id.clone(),
         name: team.name.clone(),
-        profile_image: team.profile_image_url.as_ref().map(|url| Photo {
+        logo: team.logo_url.as_ref().map(|url| Photo {
             image_url: url.clone(),
             asset_id: None,
         }),
@@ -879,7 +879,7 @@ pub fn team_list_item_from_record(team: &TeamRecord, is_followed_by_me: bool) ->
     TeamListItem {
         id: team.id.clone(),
         name: team.name.clone(),
-        profile_image: team.profile_image_url.as_ref().map(|url| Photo {
+        logo: team.logo_url.as_ref().map(|url| Photo {
             image_url: url.clone(),
             asset_id: None,
         }),

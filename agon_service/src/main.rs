@@ -299,7 +299,7 @@ pub struct Photo {
 #[oai(rename_all = "snake_case")]
 enum UploadPurpose {
     ProfileImage,
-    TeamImage,
+    TeamLogo,
     MatchHeader,
 }
 
@@ -4361,12 +4361,12 @@ impl Api {
         let uid = self.require_uid(dao, &jwt_data).await?;
 
         // Resolve the attached asset (must be Uploaded, owned by the caller, and
-        // of `team_image` purpose) to its stored URL — same check `PATCH
+        // of `team_logo` purpose) to its stored URL — same check `PATCH
         // /users/me` runs for a profile picture.
-        let profile_image_url = match &input.profile_image_asset_id {
+        let logo_url = match &input.logo_asset_id {
             Some(asset_id) => {
                 let ids = std::slice::from_ref(asset_id);
-                match resolve_asset_urls(dao, &uid, "team_image", ids).await? {
+                match resolve_asset_urls(dao, &uid, "team_logo", ids).await? {
                     Ok(resolved) => resolved.into_iter().next().map(|(_, url)| url),
                     Err(msg) => {
                         return Ok(CreateTeamResponse::ValidationError(PlainText(msg)));
@@ -4380,7 +4380,7 @@ impl Api {
         let team = dao::records::TeamRecord {
             id: new_id(),
             name: input.name,
-            profile_image_url,
+            logo_url,
             invite_token: Some(new_id()),
             follower_count: 0,
             created_at: now.clone(),
@@ -4529,13 +4529,13 @@ impl Api {
         let input = input.0;
         let uid = self.require_uid(dao, &jwt_data).await?;
 
-        // Some(Some(url)) = set a new image; Some(None) is never produced here
-        // (there's no "clear image" input yet — a fresh asset is the only way
-        // to change it); None = leave the image unchanged.
-        let resolved_image: Option<Option<String>> = match &input.profile_image_asset_id {
+        // Some(Some(url)) = set a new logo; Some(None) is never produced here
+        // (there's no "clear logo" input yet — a fresh asset is the only way
+        // to change it); None = leave the logo unchanged.
+        let resolved_logo: Option<Option<String>> = match &input.logo_asset_id {
             Some(asset_id) => {
                 let ids = std::slice::from_ref(asset_id);
-                match resolve_asset_urls(dao, &uid, "team_image", ids).await? {
+                match resolve_asset_urls(dao, &uid, "team_logo", ids).await? {
                     Ok(resolved) => Some(resolved.into_iter().next().map(|(_, url)| url)),
                     Err(msg) => {
                         return Ok(UpdateTeamResponse::ValidationError(PlainText(msg)));
@@ -4549,7 +4549,7 @@ impl Api {
             .update_team(
                 &team_id,
                 input.name.as_deref(),
-                resolved_image.as_ref().map(|o| o.as_deref()),
+                resolved_logo.as_ref().map(|o| o.as_deref()),
             )
             .await
         {
@@ -6290,7 +6290,7 @@ fn build_invited_team_member(
 fn upload_purpose_str(p: &UploadPurpose) -> &'static str {
     match p {
         UploadPurpose::ProfileImage => "profile_image",
-        UploadPurpose::TeamImage => "team_image",
+        UploadPurpose::TeamLogo => "team_logo",
         UploadPurpose::MatchHeader => "match_header",
     }
 }
@@ -6794,7 +6794,7 @@ fn mock_team_list_item(id: String, name: String) -> TeamListItem {
     TeamListItem {
         id,
         name,
-        profile_image: None,
+        logo: None,
         follower_count: 128,
         is_followed_by_me: false,
     }
@@ -6807,7 +6807,7 @@ fn mock_team(id: String, name: String) -> Team {
     Team {
         id,
         name,
-        profile_image: None,
+        logo: None,
         members: vec![
             // An accepted Agon user (the team admin).
             TeamMember {

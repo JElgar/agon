@@ -35,6 +35,7 @@ import { FollowListPage } from '@/pages/FollowListPage'
 import { SportStatsPage } from '@/pages/SportStatsPage'
 import { AcceptInvitePage } from '@/pages/AcceptInvitePage'
 import { TeamsPage } from '@/pages/TeamsPage'
+import { TeamPage } from '@/pages/TeamPage'
 import {
   getPendingInvite,
   setPendingInvite,
@@ -103,7 +104,7 @@ function AppShell({ email, onSignOut }: { email: string; onSignOut: () => void }
           <Route path="/matches/:matchId/live/setup" element={<LiveScoringSetupPage />} />
           <Route path="/matches/:matchId/live" element={<LiveScoringPage />} />
           <Route path="/teams" element={<TeamsPage />} />
-          <Route path="/teams/:teamId" element={<ComingSoon title="Team" />} />
+          <Route path="/teams/:teamId" element={<TeamPage />} />
           <Route path="/notifications" element={<NotificationsPage />} />
           <Route path="/invitations" element={<ComingSoon title="Invitations" />} />
           <Route path="/invite/:token" element={<AcceptInvitePage />} />

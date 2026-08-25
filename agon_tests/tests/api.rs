@@ -381,8 +381,12 @@ async fn create_and_get_team() {
         .expect("get team");
     assert_eq!(fetched.id, team.id);
     assert_eq!(fetched.name, "Surrey");
-    // The creator is a member.
-    assert!(!fetched.members.is_empty());
+    // The creator is a member — members are listed separately (paginated),
+    // not embedded on the team itself.
+    let members = teams_team_id_members_get(&config, &team.id, None, None)
+        .await
+        .expect("list members");
+    assert!(!members.items.is_empty());
 }
 
 #[tokio::test]
@@ -424,7 +428,7 @@ async fn add_and_remove_team_member() {
     .await
     .expect("create team");
 
-    let with_member = teams_team_id_members_post(
+    teams_team_id_members_post(
         &config,
         &team.id,
         models::AddTeamMembersInput {
@@ -433,14 +437,132 @@ async fn add_and_remove_team_member() {
     )
     .await
     .expect("add member");
+    let with_member = all_team_members(&config, &team.id).await;
     assert!(member_ids(&with_member).contains(&member.profile.id));
 
     // Find the membership id for the added user to remove them.
     let member_id = membership_id_for(&with_member, &member.profile.id).expect("membership id");
-    let after_remove = teams_team_id_members_member_id_delete(&config, &team.id, &member_id)
+    teams_team_id_members_member_id_delete(&config, &team.id, &member_id)
         .await
         .expect("remove member");
+    let after_remove = all_team_members(&config, &team.id).await;
     assert!(!member_ids(&after_remove).contains(&member.profile.id));
+}
+
+/// A `User`-kind team member's `name` (and `avatar_url`, when set) is
+/// hydrated from their account — `team_member_from_record` is a pure DAO->API
+/// mapping with no DB access, so this only holds if the handler routes its
+/// result through `hydrate_team_members` first. Covers both the member added
+/// at creation (the admin) and one added afterward, so a regression in either
+/// path shows up here.
+#[tokio::test]
+async fn team_members_have_hydrated_names() {
+    let (config, owner) = new_user().await;
+    let (_member_config, member) = new_user().await;
+
+    let team = teams_post(
+        &config,
+        models::CreateTeamInput {
+            name: "Hydration FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![],
+            invited_external_names: vec![],
+        },
+    )
+    .await
+    .expect("create team");
+    teams_team_id_members_post(
+        &config,
+        &team.id,
+        models::AddTeamMembersInput {
+            user_ids: vec![member.profile.id.clone()],
+        },
+    )
+    .await
+    .expect("add member");
+    let members = all_team_members(&config, &team.id).await;
+
+    for (user_id, expected_name) in [
+        (&owner.profile.id, &owner.profile.name),
+        (&member.profile.id, &member.profile.name),
+    ] {
+        let found = members
+            .iter()
+            .find_map(|m| match &*m.member {
+                models::Member::User(u) if &u.user_id == user_id => Some(u),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("membership row for {user_id}"));
+        assert_eq!(
+            &found.name, expected_name,
+            "member's name should be hydrated from their account, not left blank"
+        );
+    }
+}
+
+/// `GET /teams/:id/members` actually paginates (not just accepts the params)
+/// — the whole point of splitting members out of the embedded `Team.members`
+/// this endpoint replaced — and 404s for a team that doesn't exist, same as
+/// every other team-scoped endpoint.
+#[tokio::test]
+async fn list_team_members_paginates() {
+    let (config, owner) = new_user().await;
+    let (_a_config, member_a) = new_user().await;
+    let (_b_config, member_b) = new_user().await;
+
+    let team = teams_post(
+        &config,
+        models::CreateTeamInput {
+            name: "Paginated FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![],
+            invited_external_names: vec![],
+        },
+    )
+    .await
+    .expect("create team");
+    teams_team_id_members_post(
+        &config,
+        &team.id,
+        models::AddTeamMembersInput {
+            user_ids: vec![member_a.profile.id.clone(), member_b.profile.id.clone()],
+        },
+    )
+    .await
+    .expect("add members");
+    // Creator + 2 added = 3 members total.
+
+    let first_page = teams_team_id_members_get(&config, &team.id, None, Some(2))
+        .await
+        .expect("first page");
+    assert_eq!(first_page.items.len(), 2);
+    let cursor = first_page
+        .next_cursor
+        .expect("a 3rd member remains, so there should be a next page");
+
+    let second_page = teams_team_id_members_get(&config, &team.id, Some(&cursor), Some(2))
+        .await
+        .expect("second page");
+    assert_eq!(second_page.items.len(), 1, "the remaining member");
+    assert!(
+        second_page.next_cursor.is_none(),
+        "no more pages after the 3rd member"
+    );
+
+    // Together, both pages cover every member exactly once.
+    let all_ids: Vec<String> = member_ids(&first_page.items)
+        .into_iter()
+        .chain(member_ids(&second_page.items))
+        .collect();
+    for expected in [owner.profile.id, member_a.profile.id, member_b.profile.id] {
+        assert!(
+            all_ids.contains(&expected),
+            "{expected} should appear exactly once across both pages"
+        );
+    }
+
+    let missing = teams_team_id_members_get(&config, "no-such-team", None, None).await;
+    assert_not_found(missing);
 }
 
 /// Removing a member that's already gone (or never existed) returns 404 on a
@@ -463,7 +585,7 @@ async fn removing_an_already_removed_team_member_returns_not_found() {
     .await
     .expect("create team");
 
-    let with_member = teams_team_id_members_post(
+    teams_team_id_members_post(
         &config,
         &team.id,
         models::AddTeamMembersInput {
@@ -472,6 +594,7 @@ async fn removing_an_already_removed_team_member_returns_not_found() {
     )
     .await
     .expect("add member");
+    let with_member = all_team_members(&config, &team.id).await;
     let member_id = membership_id_for(&with_member, &member.profile.id).expect("membership id");
 
     teams_team_id_members_member_id_delete(&config, &team.id, &member_id)
@@ -3934,11 +4057,29 @@ async fn play_cricket_bowling_match(
     .expect("confirm cricket score");
 }
 
+/// Every member of a team, across all pages of `GET /teams/:id/members` — a
+/// squad in these tests never comes close to one page, but walking pages
+/// rather than assuming one keeps this honest as the paginated endpoint it is.
+async fn all_team_members(config: &Configuration, team_id: &str) -> Vec<models::TeamMember> {
+    let mut items = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = teams_team_id_members_get(config, team_id, cursor.as_deref(), None)
+            .await
+            .expect("list team members");
+        items.extend(page.items);
+        match page.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => return items,
+        }
+    }
+}
+
 /// The (linked user id, stable membership id) of each team member that is a
 /// linked Agon user. External (unlinked) members have no user id, so they're
 /// omitted.
-fn member_user_and_membership_ids(team: &models::Team) -> Vec<(String, String)> {
-    team.members
+fn member_user_and_membership_ids(members: &[models::TeamMember]) -> Vec<(String, String)> {
+    members
         .iter()
         .filter_map(|m| match &*m.member {
             models::Member::User(u) => Some((u.user_id.clone(), u.id.clone())),
@@ -3948,16 +4089,16 @@ fn member_user_and_membership_ids(team: &models::Team) -> Vec<(String, String)> 
 }
 
 /// The linked user ids of a team's members.
-fn member_ids(team: &models::Team) -> Vec<String> {
-    member_user_and_membership_ids(team)
+fn member_ids(members: &[models::TeamMember]) -> Vec<String> {
+    member_user_and_membership_ids(members)
         .into_iter()
         .map(|(user_id, _)| user_id)
         .collect()
 }
 
 /// The stable membership id for a member with the given linked user id.
-fn membership_id_for(team: &models::Team, user_id: &str) -> Option<String> {
-    member_user_and_membership_ids(team)
+fn membership_id_for(members: &[models::TeamMember], user_id: &str) -> Option<String> {
+    member_user_and_membership_ids(members)
         .into_iter()
         .find(|(uid, _)| uid == user_id)
         .map(|(_, membership_id)| membership_id)
@@ -4218,13 +4359,15 @@ async fn team_created_with_initial_invite_can_be_accepted() {
     .await
     .expect("create team with initial invite");
 
-    // The invitee already has a roster slot, pending.
+    // The invitee already has a roster slot, pending — members are listed
+    // separately (paginated), not embedded on the team itself.
+    let initial_members = all_team_members(&owner_config, &team.id).await;
     assert!(
-        member_ids(&team).contains(&invitee.profile.id),
+        member_ids(&initial_members).contains(&invitee.profile.id),
         "invitee should appear on the team roster immediately, pending acceptance"
     );
     // The creator is the only accepted (non-invited) member so far.
-    assert!(member_ids(&team).contains(&owner.profile.id));
+    assert!(member_ids(&initial_members).contains(&owner.profile.id));
 
     // ...and a standalone invitation in their inbox.
     let inbox = users_me_invitations_get(&invitee_config, None, None, None)
@@ -4256,13 +4399,10 @@ async fn team_created_with_initial_invite_can_be_accepted() {
     ));
 
     // The team now shows the invitee as a full (accepted) member.
-    let updated = teams_team_id_get(&owner_config, &team.id)
-        .await
-        .expect("get team");
+    let updated_members = all_team_members(&owner_config, &team.id).await;
     let membership_id =
-        membership_id_for(&updated, &invitee.profile.id).expect("invitee still on roster");
-    let member = updated
-        .members
+        membership_id_for(&updated_members, &invitee.profile.id).expect("invitee still on roster");
+    let member = updated_members
         .iter()
         .find(|m| match &*m.member {
             models::Member::User(u) => u.id == membership_id,

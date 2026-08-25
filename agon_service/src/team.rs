@@ -3,9 +3,13 @@ use poem_openapi::{Enum, Object};
 use crate::Photo;
 use crate::membership::Member;
 
-/// A persistent team/squad. The pool of people a match side can be drawn from;
-/// a match never derives its roster live from this (see MatchSide), it snapshots
-/// the selected players at match-creation time.
+/// A persistent team/squad's metadata. The pool of people a match side can be
+/// drawn from; a match never derives its roster live from this (see
+/// MatchSide), it snapshots the selected players at match-creation time.
+///
+/// Members are *not* embedded here — a team's roster is fetched separately
+/// via the paginated `GET /teams/{team_id}/members`, the same shape as a
+/// user's followers, rather than growing this response unboundedly.
 #[derive(Object)]
 pub struct Team {
     pub id: String,
@@ -13,7 +17,6 @@ pub struct Team {
     /// Team logo. Uploaded via the Asset API (`team_logo` purpose), same flow
     /// as a user's profile picture.
     pub logo: Option<Photo>,
-    pub members: Vec<TeamMember>,
     /// Shareable token for inviting people to join the team. None if no active
     /// invite link.
     pub invite_token: Option<String>,

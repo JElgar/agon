@@ -443,6 +443,57 @@ async fn add_and_remove_team_member() {
     assert!(!member_ids(&after_remove).contains(&member.profile.id));
 }
 
+/// A `User`-kind team member's `name` (and `avatar_url`, when set) is
+/// hydrated from their account — `team_from_records` is a pure DAO->API
+/// mapping with no DB access, so this only holds if the handler routes its
+/// result through `hydrate_team` first. Covers both the member added at
+/// creation (the admin) and one added afterward, so a regression in either
+/// path shows up here.
+#[tokio::test]
+async fn team_members_have_hydrated_names() {
+    let (config, owner) = new_user().await;
+    let (_member_config, member) = new_user().await;
+
+    let team = teams_post(
+        &config,
+        models::CreateTeamInput {
+            name: "Hydration FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![],
+            invited_external_names: vec![],
+        },
+    )
+    .await
+    .expect("create team");
+    let with_member = teams_team_id_members_post(
+        &config,
+        &team.id,
+        models::AddTeamMembersInput {
+            user_ids: vec![member.profile.id.clone()],
+        },
+    )
+    .await
+    .expect("add member");
+
+    for (user_id, expected_name) in [
+        (&owner.profile.id, &owner.profile.name),
+        (&member.profile.id, &member.profile.name),
+    ] {
+        let found = with_member
+            .members
+            .iter()
+            .find_map(|m| match &*m.member {
+                models::Member::User(u) if &u.user_id == user_id => Some(u),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("membership row for {user_id}"));
+        assert_eq!(
+            &found.name, expected_name,
+            "member's name should be hydrated from their account, not left blank"
+        );
+    }
+}
+
 /// Removing a member that's already gone (or never existed) returns 404 on a
 /// real team, rather than silently succeeding with the roster unchanged —
 /// membership removal is delete-by-id, not a toggle.

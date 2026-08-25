@@ -4433,9 +4433,10 @@ impl Api {
         } else {
             vec![creator]
         };
-        Ok(CreateTeamResponse::Team(Json(team_from_records(
-            &team, &members, false,
-        ))))
+        let team = self
+            .hydrate_team(dao, team_from_records(&team, &members, false))
+            .await?;
+        Ok(CreateTeamResponse::Team(Json(team)))
     }
 
     #[oai(path = "/teams/:team_id", method = "get")]
@@ -4453,11 +4454,13 @@ impl Api {
                     .is_following_team(&uid, &team_id)
                     .await
                     .map_err(dao_internal)?;
-                Ok(GetTeamResponse::Team(Json(team_from_records(
-                    &agg.team,
-                    &agg.members,
-                    is_followed_by_me,
-                ))))
+                let team = self
+                    .hydrate_team(
+                        dao,
+                        team_from_records(&agg.team, &agg.members, is_followed_by_me),
+                    )
+                    .await?;
+                Ok(GetTeamResponse::Team(Json(team)))
             }
             None => Ok(GetTeamResponse::NotFound(PlainText(
                 "team not found".into(),
@@ -4506,11 +4509,12 @@ impl Api {
 
         // Return the updated team aggregate.
         match dao.get_team(&team_id).await.map_err(dao_internal)? {
-            Some(agg) => Ok(AddTeamMembersResponse::Team(Json(team_from_records(
-                &agg.team,
-                &agg.members,
-                false,
-            )))),
+            Some(agg) => {
+                let team = self
+                    .hydrate_team(dao, team_from_records(&agg.team, &agg.members, false))
+                    .await?;
+                Ok(AddTeamMembersResponse::Team(Json(team)))
+            }
             None => Ok(AddTeamMembersResponse::NotFound(PlainText(
                 "team not found".into(),
             ))),
@@ -4562,11 +4566,12 @@ impl Api {
             Err(e) => return Err(dao_internal(e)),
         }
         match dao.get_team(&team_id).await.map_err(dao_internal)? {
-            Some(agg) => Ok(UpdateTeamResponse::Team(Json(team_from_records(
-                &agg.team,
-                &agg.members,
-                false,
-            )))),
+            Some(agg) => {
+                let team = self
+                    .hydrate_team(dao, team_from_records(&agg.team, &agg.members, false))
+                    .await?;
+                Ok(UpdateTeamResponse::Team(Json(team)))
+            }
             None => Ok(UpdateTeamResponse::NotFound(PlainText(
                 "team not found".into(),
             ))),
@@ -4602,11 +4607,12 @@ impl Api {
             Err(e) => return Err(dao_internal(e)),
         }
         match dao.get_team(&team_id).await.map_err(dao_internal)? {
-            Some(agg) => Ok(RemoveTeamMemberResponse::Team(Json(team_from_records(
-                &agg.team,
-                &agg.members,
-                false,
-            )))),
+            Some(agg) => {
+                let team = self
+                    .hydrate_team(dao, team_from_records(&agg.team, &agg.members, false))
+                    .await?;
+                Ok(RemoveTeamMemberResponse::Team(Json(team)))
+            }
             None => Ok(RemoveTeamMemberResponse::NotFound(PlainText(
                 "team not found".into(),
             ))),
@@ -5418,6 +5424,32 @@ impl Api {
                 Member::External(_) => None,
             })
             .collect()
+    }
+
+    /// Fill in each `User` team member's `name`/`avatar_url` from their
+    /// account — the team-side counterpart of `hydrate_matches`/
+    /// `apply_player_profiles`. `team_from_records` (a pure DAO->API mapping,
+    /// no DB access) can't do this itself, so every handler that returns a
+    /// `Team` routes it through here first.
+    async fn hydrate_team(&self, dao: &dao::Dao, mut team: Team) -> Result<Team> {
+        let user_ids: Vec<String> = team
+            .members
+            .iter()
+            .filter_map(|m| match &m.member {
+                Member::User(u) => Some(u.user_id.clone()),
+                Member::External(_) => None,
+            })
+            .collect();
+        let records = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
+        for member in &mut team.members {
+            if let Member::User(u) = &mut member.member
+                && let Some(record) = records.get(&u.user_id)
+            {
+                u.name = record.name.clone();
+                u.avatar_url = record.profile_image_url.clone();
+            }
+        }
+        Ok(team)
     }
 
     /// Fill in each `User` match player's `name`/`avatar_url` from `records`

@@ -856,11 +856,7 @@ pub fn team_member_from_record(rec: &TeamMemberRecord) -> TeamMember {
     }
 }
 
-pub fn team_from_records(
-    team: &TeamRecord,
-    members: &[TeamMemberRecord],
-    is_followed_by_me: bool,
-) -> Team {
+pub fn team_from_records(team: &TeamRecord, is_followed_by_me: bool) -> Team {
     Team {
         id: team.id.clone(),
         name: team.name.clone(),
@@ -868,7 +864,6 @@ pub fn team_from_records(
             image_url: url.clone(),
             asset_id: None,
         }),
-        members: members.iter().map(team_member_from_record).collect(),
         invite_token: team.invite_token.clone(),
         follower_count: team.follower_count as u32,
         is_followed_by_me,

@@ -297,6 +297,32 @@ impl Dao {
         .await
     }
 
+    /// List a team's members, paginated, via `begins_with(SK, "MEMBER#")` on
+    /// its own partition — the `GET /teams/:team_id/members` endpoint. Order
+    /// is whatever DynamoDB returns for the `MEMBER#<membershipId>` range
+    /// (membership id, not join order or role) — good enough for a squad-sized
+    /// list; nothing here promises a particular order.
+    #[tracing::instrument(skip(self))]
+    pub async fn list_team_members(
+        &self,
+        team_id: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> DaoResult<Page<TeamMemberRecord>> {
+        self.query_page(
+            self.client
+                .query()
+                .table_name(self.table())
+                .key_condition_expression("#pk = :pk AND begins_with(SK, :sk)")
+                .expression_attribute_names("#pk", ATTR_PK)
+                .expression_attribute_values(":pk", s(Pk::Team(team_id.into()).to_string()))
+                .expression_attribute_values(":sk", s(Sk::member_prefix())),
+            cursor,
+            limit,
+        )
+        .await
+    }
+
     /// Build a team-member item, projecting members with a linked user into GSI1
     /// (`UTEAMS#<userId>`) so the user can list their teams. External-only
     /// members (no `user_id`) are not projected — they don't have a "my teams".

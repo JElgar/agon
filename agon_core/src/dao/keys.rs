@@ -255,6 +255,11 @@ impl Sk {
         format!("{}{DELIMITER}", Sk::Device(String::new()).prefix())
     }
 
+    /// Lists a team's members: `MEMBER#`.
+    pub fn member_prefix() -> String {
+        format!("{}{DELIMITER}", Sk::Member(String::new()).prefix())
+    }
+
     /// Lists a match's sides: `SIDE#`.
     pub fn side_prefix() -> String {
         format!("{}{DELIMITER}", Sk::Side(String::new()).prefix())
@@ -500,6 +505,7 @@ mod tests {
         // query actually needs, unlike the bare `prefix()` a `Display` impl
         // builds off (see `no_range_query_prefix_is_a_prefix_of_another`).
         assert_eq!(Sk::follower_prefix(), "FOLLOWER#");
+        assert_eq!(Sk::member_prefix(), "MEMBER#");
         assert_eq!(Sk::side_prefix(), "SIDE#");
         assert_eq!(Sk::player_prefix(), "PLAYER#");
         assert_eq!(Sk::like_prefix(), "LIKE#");
@@ -521,6 +527,7 @@ mod tests {
         // additions, not just the ones that already have a function.
         let prefixes = [
             Sk::follower_prefix(),
+            Sk::member_prefix(),
             Sk::side_prefix(),
             Sk::player_prefix(),
             Sk::like_prefix(),

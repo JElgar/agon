@@ -46,7 +46,7 @@ use mapping::{
     match_score_from_record, match_score_to_record, match_status_str, match_type_tag,
     new_live_event_to_dao, notification_actor_id, notification_from_record, roster_preview_player,
     score_submission_from_record, score_to_record, search_match_from_records, team_from_records,
-    team_list_item_from_record, user_profile_from_record,
+    team_list_item_from_record, team_member_from_record, user_profile_from_record,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -1154,6 +1154,14 @@ struct TeamPage {
     next_cursor: Option<String>,
 }
 
+/// One page of a team's members (`GET /teams/{team_id}/members`).
+/// `next_cursor` absent => end.
+#[derive(Object)]
+struct TeamMemberPage {
+    items: Vec<TeamMember>,
+    next_cursor: Option<String>,
+}
+
 #[derive(ApiResponse)]
 enum GetUserResponse {
     #[oai(status = 200)]
@@ -1597,6 +1605,15 @@ enum ListTeamsResponse {
 enum GetTeamResponse {
     #[oai(status = 200)]
     Team(Json<Team>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum ListTeamMembersResponse {
+    #[oai(status = 200)]
+    Members(Json<TeamMemberPage>),
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
@@ -4406,10 +4423,11 @@ impl Api {
 
         // Bundle initial invites into creation — each invitee gets a pending
         // roster slot + standalone invitation, exactly like a later `POST
-        // /teams/:team_id/invitations` call (see `invite_to_team`).
-        let has_invites =
-            !input.invited_user_ids.is_empty() || !input.invited_external_names.is_empty();
-        if has_invites {
+        // /teams/:team_id/invitations` call (see `invite_to_team`). The
+        // response is team meta only (see `Team`'s doc comment), so — unlike
+        // before members moved to their own paginated endpoint — nothing
+        // here needs to re-fetch the roster just to build it.
+        if !input.invited_user_ids.is_empty() || !input.invited_external_names.is_empty() {
             self.invite_to_team(
                 dao,
                 &team.id,
@@ -4421,22 +4439,9 @@ impl Api {
             .await?;
         }
 
-        // Re-fetch when invites were sent so the response includes them
-        // (`invite_to_team` writes members directly via the DAO, not via the
-        // `creator`-only slice below) — skip the extra read otherwise.
-        let members = if has_invites {
-            dao.get_team(&team.id)
-                .await
-                .map_err(dao_internal)?
-                .map(|agg| agg.members)
-                .unwrap_or_else(|| vec![creator.clone()])
-        } else {
-            vec![creator]
-        };
-        let team = self
-            .hydrate_team(dao, team_from_records(&team, &members, false))
-            .await?;
-        Ok(CreateTeamResponse::Team(Json(team)))
+        Ok(CreateTeamResponse::Team(Json(team_from_records(
+            &team, false,
+        ))))
     }
 
     #[oai(path = "/teams/:team_id", method = "get")]
@@ -4448,24 +4453,64 @@ impl Api {
     ) -> Result<GetTeamResponse> {
         info!("Getting team {team_id}");
         let uid = self.require_uid(dao, &jwt_data).await?;
-        match dao.get_team(&team_id).await.map_err(dao_internal)? {
-            Some(agg) => {
+        match dao.get_team_meta(&team_id).await.map_err(dao_internal)? {
+            Some(meta) => {
                 let is_followed_by_me = dao
                     .is_following_team(&uid, &team_id)
                     .await
                     .map_err(dao_internal)?;
-                let team = self
-                    .hydrate_team(
-                        dao,
-                        team_from_records(&agg.team, &agg.members, is_followed_by_me),
-                    )
-                    .await?;
-                Ok(GetTeamResponse::Team(Json(team)))
+                Ok(GetTeamResponse::Team(Json(team_from_records(
+                    &meta,
+                    is_followed_by_me,
+                ))))
             }
             None => Ok(GetTeamResponse::NotFound(PlainText(
                 "team not found".into(),
             ))),
         }
+    }
+
+    /// A team's members, paginated (`Dao::list_team_members`, a
+    /// `begins_with(SK, "MEMBER#")` range query on the team's own partition).
+    /// Split out from `Team` itself (see its doc comment) so a large roster
+    /// doesn't grow the team response unboundedly, and so a client can page
+    /// through it the same way it already does a user's followers.
+    #[oai(path = "/teams/:team_id/members", method = "get")]
+    async fn list_team_members(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(_jwt_data): AuthSchema,
+        Path(team_id): Path<String>,
+        /// Opaque cursor from the previous page's `next_cursor`.
+        Query(cursor): Query<Option<String>>,
+        /// Maximum number of items to return (defaults to 20, capped at 50).
+        Query(limit): Query<Option<u32>>,
+    ) -> Result<ListTeamMembersResponse> {
+        info!("Listing members of team {team_id}");
+        if dao
+            .get_team_meta(&team_id)
+            .await
+            .map_err(dao_internal)?
+            .is_none()
+        {
+            return Ok(ListTeamMembersResponse::NotFound(PlainText(
+                "team not found".into(),
+            )));
+        }
+        let page = dao
+            .list_team_members(&team_id, cursor.as_deref(), page_limit(limit))
+            .await
+            .map_err(dao_internal)?;
+        let items = self
+            .hydrate_team_members(
+                dao,
+                page.items.iter().map(team_member_from_record).collect(),
+            )
+            .await?;
+        Ok(ListTeamMembersResponse::Members(Json(TeamMemberPage {
+            items,
+            next_cursor: page.next_cursor,
+        })))
     }
 
     #[oai(path = "/teams/:team_id/members", method = "post")]
@@ -4478,17 +4523,15 @@ impl Api {
     ) -> Result<AddTeamMembersResponse> {
         info!("Adding {} members to team {team_id}", input.user_ids.len());
 
-        // Team must exist.
-        if dao
-            .get_team_meta(&team_id)
-            .await
-            .map_err(dao_internal)?
-            .is_none()
-        {
+        // Team must exist. Keep the meta — adding members doesn't change it,
+        // so the same read serves the response too (members are no longer
+        // embedded, see `Team`'s doc comment, so there's nothing else to
+        // re-fetch).
+        let Some(meta) = dao.get_team_meta(&team_id).await.map_err(dao_internal)? else {
             return Ok(AddTeamMembersResponse::NotFound(PlainText(
                 "team not found".into(),
             )));
-        }
+        };
 
         // Add each user as a Member (no invitation — ad-hoc add).
         let now = now_iso();
@@ -4507,18 +4550,9 @@ impl Api {
                 .map_err(dao_internal)?;
         }
 
-        // Return the updated team aggregate.
-        match dao.get_team(&team_id).await.map_err(dao_internal)? {
-            Some(agg) => {
-                let team = self
-                    .hydrate_team(dao, team_from_records(&agg.team, &agg.members, false))
-                    .await?;
-                Ok(AddTeamMembersResponse::Team(Json(team)))
-            }
-            None => Ok(AddTeamMembersResponse::NotFound(PlainText(
-                "team not found".into(),
-            ))),
-        }
+        Ok(AddTeamMembersResponse::Team(Json(team_from_records(
+            &meta, false,
+        ))))
     }
 
     #[oai(path = "/teams/:team_id", method = "patch")]
@@ -4565,13 +4599,10 @@ impl Api {
             }
             Err(e) => return Err(dao_internal(e)),
         }
-        match dao.get_team(&team_id).await.map_err(dao_internal)? {
-            Some(agg) => {
-                let team = self
-                    .hydrate_team(dao, team_from_records(&agg.team, &agg.members, false))
-                    .await?;
-                Ok(UpdateTeamResponse::Team(Json(team)))
-            }
+        match dao.get_team_meta(&team_id).await.map_err(dao_internal)? {
+            Some(meta) => Ok(UpdateTeamResponse::Team(Json(team_from_records(
+                &meta, false,
+            )))),
             None => Ok(UpdateTeamResponse::NotFound(PlainText(
                 "team not found".into(),
             ))),
@@ -4587,16 +4618,13 @@ impl Api {
         Path(member_id): Path<String>,
     ) -> Result<RemoveTeamMemberResponse> {
         info!("Removing member {member_id} from team {team_id}");
-        if dao
-            .get_team_meta(&team_id)
-            .await
-            .map_err(dao_internal)?
-            .is_none()
-        {
+        // Team must exist. Keep the meta — removing a member doesn't change
+        // it, so this same read serves the response too.
+        let Some(meta) = dao.get_team_meta(&team_id).await.map_err(dao_internal)? else {
             return Ok(RemoveTeamMemberResponse::NotFound(PlainText(
                 "team not found".into(),
             )));
-        }
+        };
         match dao.remove_team_member(&team_id, &member_id).await {
             Ok(()) => {}
             Err(dao::DaoError::NotFound(_)) => {
@@ -4606,17 +4634,9 @@ impl Api {
             }
             Err(e) => return Err(dao_internal(e)),
         }
-        match dao.get_team(&team_id).await.map_err(dao_internal)? {
-            Some(agg) => {
-                let team = self
-                    .hydrate_team(dao, team_from_records(&agg.team, &agg.members, false))
-                    .await?;
-                Ok(RemoveTeamMemberResponse::Team(Json(team)))
-            }
-            None => Ok(RemoveTeamMemberResponse::NotFound(PlainText(
-                "team not found".into(),
-            ))),
-        }
+        Ok(RemoveTeamMemberResponse::Team(Json(team_from_records(
+            &meta, false,
+        ))))
     }
 
     #[oai(path = "/matches/:match_id/invitations", method = "post")]
@@ -5428,12 +5448,15 @@ impl Api {
 
     /// Fill in each `User` team member's `name`/`avatar_url` from their
     /// account — the team-side counterpart of `hydrate_matches`/
-    /// `apply_player_profiles`. `team_from_records` (a pure DAO->API mapping,
-    /// no DB access) can't do this itself, so every handler that returns a
-    /// `Team` routes it through here first.
-    async fn hydrate_team(&self, dao: &dao::Dao, mut team: Team) -> Result<Team> {
-        let user_ids: Vec<String> = team
-            .members
+    /// `apply_player_profiles`. `team_member_from_record` (a pure DAO->API
+    /// mapping, no DB access) can't do this itself, so `list_team_members`
+    /// routes its page through here first.
+    async fn hydrate_team_members(
+        &self,
+        dao: &dao::Dao,
+        mut members: Vec<TeamMember>,
+    ) -> Result<Vec<TeamMember>> {
+        let user_ids: Vec<String> = members
             .iter()
             .filter_map(|m| match &m.member {
                 Member::User(u) => Some(u.user_id.clone()),
@@ -5441,7 +5464,7 @@ impl Api {
             })
             .collect();
         let records = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
-        for member in &mut team.members {
+        for member in &mut members {
             if let Member::User(u) = &mut member.member
                 && let Some(record) = records.get(&u.user_id)
             {
@@ -5449,7 +5472,7 @@ impl Api {
                 u.avatar_url = record.profile_image_url.clone();
             }
         }
-        Ok(team)
+        Ok(members)
     }
 
     /// Fill in each `User` match player's `name`/`avatar_url` from `records`
@@ -6834,13 +6857,23 @@ fn mock_team_list_item(id: String, name: String) -> TeamListItem {
 
 /// Builds a mock team. Shared by the team endpoints until a real DAO is wired in.
 fn mock_team(id: String, name: String) -> Team {
-    let invited_at = mock_timestamp();
-
     Team {
         id,
         name,
         logo: None,
-        members: vec![
+        invite_token: Some(String::from("team_invite_abc123")),
+        follower_count: 128,
+        is_followed_by_me: false,
+    }
+}
+
+/// Builds a mock page of team members. Shared by the team endpoints until a
+/// real DAO is wired in.
+fn mock_team_member_page() -> TeamMemberPage {
+    let invited_at = mock_timestamp();
+
+    TeamMemberPage {
+        items: vec![
             // An accepted Agon user (the team admin).
             TeamMember {
                 member: Member::User(UserMember {
@@ -6880,9 +6913,7 @@ fn mock_team(id: String, name: String) -> Team {
                 role: TeamRole::Member,
             },
         ],
-        invite_token: Some(String::from("team_invite_abc123")),
-        follower_count: 128,
-        is_followed_by_me: false,
+        next_cursor: None,
     }
 }
 

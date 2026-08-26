@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Search, UserPlus, X } from 'lucide-react'
+import { UserPlus, X } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
-import { cn } from '@/lib/utils'
 import { Avatar } from './Avatar'
+import { TeamPicker } from './TeamPicker'
+import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
+import { Command, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 
 type UserProfile = components['schemas']['UserProfile']
+type TeamListItem = components['schemas']['TeamListItem']
 
 /** A person tagged onto a side: either a registered Agon user or a typed-in guest.
  *  Both carry a stable `id` — the user's own account id for a registered user
@@ -36,13 +39,20 @@ export interface PlayerSideEditorProps {
   currentUserId?: string
   /** Ids already tagged on the *other* side, so we don't offer them twice. */
   excludeUserIds?: string[]
-  /** Optional custom name for this side (e.g. "The Wanderers"). Only offered
-   *  here because this flow has no way to assign a persistent team to a
-   *  side yet — once it does, this input should only show for a teamless
-   *  side, since the server rejects a name alongside a team (unless another
-   *  side shares that team). Omit both props to hide the field entirely. */
+  /** Optional custom name for this side (e.g. "The Wanderers"). Omit both
+   *  props to hide the field entirely. Rendered only when `nameFieldVisible`
+   *  isn't explicitly false — the parent hides it once this side is linked
+   *  to a team the other side doesn't share (the server rejects a name
+   *  alongside a team unless another side shares that team). */
   name?: string
   onNameChange?: (name: string) => void
+  /** Whether the name field should render at all. Defaults to true; pass
+   *  false once a `team` is linked here and no other side shares it. */
+  nameFieldVisible?: boolean
+  /** The team (if any) this side is linked to, replacing manually-tagged
+   *  players/a typed name as its identity. */
+  team?: TeamListItem | null
+  onTeamChange?: (team: TeamListItem | null) => void
 }
 
 /** How long to wait after typing stops before hitting `/users/search`. */
@@ -63,9 +73,13 @@ export function PlayerSideEditor({
   excludeUserIds = [],
   name,
   onNameChange,
+  nameFieldVisible = true,
+  team = null,
+  onTeamChange,
 }: PlayerSideEditorProps) {
   const [term, setTerm] = useState('')
   const [debounced, setDebounced] = useState('')
+  const [open, setOpen] = useState(false)
 
   useEffect(() => {
     const t = setTimeout(() => setDebounced(term.trim()), SEARCH_DEBOUNCE_MS)
@@ -89,12 +103,15 @@ export function PlayerSideEditor({
     [players],
   )
 
-  const results = (search.data ?? []).filter(
-    (u) =>
-      u.id !== currentUserId &&
-      !excludeUserIds.includes(u.id) &&
-      !taggedKeys.has(`user:${u.id}`),
-  )
+  const searching = debounced.length >= 2
+  const results = searching
+    ? (search.data ?? []).filter(
+        (u) =>
+          u.id !== currentUserId &&
+          !excludeUserIds.includes(u.id) &&
+          !taggedKeys.has(`user:${u.id}`),
+      )
+    : []
 
   const addUser = (u: UserProfile) => {
     onChange([
@@ -103,6 +120,7 @@ export function PlayerSideEditor({
     ])
     setTerm('')
     setDebounced('')
+    setOpen(false)
   }
 
   const addExternal = (name: string) => {
@@ -113,6 +131,7 @@ export function PlayerSideEditor({
     onChange([...players, { kind: 'external', id: crypto.randomUUID(), name: trimmed }])
     setTerm('')
     setDebounced('')
+    setOpen(false)
   }
 
   const removeAt = (index: number) => {
@@ -120,7 +139,6 @@ export function PlayerSideEditor({
   }
 
   const trimmed = term.trim()
-  const showDropdown = trimmed.length >= 2
   const canAddGuest =
     trimmed.length >= 1 && !taggedKeys.has(`ext:${trimmed.toLowerCase()}`)
 
@@ -130,7 +148,9 @@ export function PlayerSideEditor({
         {title}
       </p>
 
-      {onNameChange && (
+      {onTeamChange && <TeamPicker team={team} onChange={onTeamChange} />}
+
+      {onNameChange && nameFieldVisible && (
         <input
           type="text"
           value={name ?? ''}
@@ -139,6 +159,12 @@ export function PlayerSideEditor({
           maxLength={60}
           className="mb-2 w-full rounded-md border bg-card px-2.5 py-1.5 text-sm outline-none placeholder:text-muted-foreground"
         />
+      )}
+      {onNameChange && !nameFieldVisible && team && (
+        <p className="mb-2 text-xs text-muted-foreground">
+          Linked to {team.name} — link the other side to the same team to give
+          each a custom name.
+        </p>
       )}
 
       <div className="flex flex-col gap-1.5">
@@ -194,64 +220,66 @@ export function PlayerSideEditor({
       </div>
 
       {/* Search / add */}
-      <div className="relative mt-2">
-        <div className="flex items-center gap-2 rounded-md border bg-card px-2.5 py-1.5">
-          <Search className="size-4 shrink-0 text-muted-foreground" />
-          <input
-            type="text"
-            value={term}
-            onChange={(e) => setTerm(e.target.value)}
-            placeholder={searchPlaceholder}
-            className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && canAddGuest) {
-                e.preventDefault()
-                addExternal(term)
-              }
-            }}
-          />
-        </div>
-
-        {showDropdown && (
-          <div className="absolute z-10 mt-1 w-full overflow-hidden rounded-md border bg-card shadow-md">
-            {search.isLoading && (
-              <p className="px-3 py-2 text-xs text-muted-foreground">Searching…</p>
-            )}
-            {!search.isLoading &&
-              results.map((u) => (
-                <button
-                  key={u.id}
-                  type="button"
-                  onClick={() => addUser(u)}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-muted"
-                >
-                  <Avatar name={u.name} imageUrl={u.profile_image?.image_url} size="md" />
-                  <span className="flex-1 truncate text-sm">{u.name}</span>
-                </button>
-              ))}
-            {canAddGuest && (
-              <button
-                type="button"
-                onClick={() => addExternal(term)}
-                className={cn(
-                  'flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-muted',
-                  results.length > 0 && 'border-t',
-                )}
-              >
-                <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
-                  <UserPlus className="size-3.5" />
-                </span>
-                <span className="flex-1 truncate text-sm">
-                  Add "<span className="font-medium">{trimmed}</span>" as guest
-                </span>
-              </button>
-            )}
-            {!search.isLoading && results.length === 0 && !canAddGuest && (
-              <p className="px-3 py-2 text-xs text-muted-foreground">No matches.</p>
-            )}
-          </div>
-        )}
-      </div>
+      <Popover open={open && trimmed.length > 0} onOpenChange={setOpen}>
+        <Command shouldFilter={false} className="mt-2 overflow-visible bg-transparent p-0">
+          <PopoverAnchor asChild>
+            <CommandInput
+              value={term}
+              onValueChange={(v) => {
+                setTerm(v)
+                setOpen(true)
+              }}
+              onFocus={() => setOpen(true)}
+              placeholder={searchPlaceholder}
+              wrapperClassName="rounded-md border bg-card px-2.5"
+              className="h-auto py-1.5 text-sm"
+              // A typed name that isn't a real Agon user can be tagged as a
+              // guest straight from the keyboard — this always wins Enter
+              // over cmdk's own highlighted-item selection (arrow-navigating
+              // to a specific search result and hitting Enter there isn't
+              // supported; click it instead).
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && canAddGuest) {
+                  e.preventDefault()
+                  addExternal(term)
+                }
+              }}
+            />
+          </PopoverAnchor>
+          <PopoverContent
+            align="start"
+            onOpenAutoFocus={(e) => e.preventDefault()}
+            className="w-[--radix-popover-trigger-width] max-h-72 overflow-y-auto p-0"
+          >
+            <CommandList>
+              {searching && search.isLoading && (
+                <p className="px-3 py-2 text-xs text-muted-foreground">Searching…</p>
+              )}
+              {searching &&
+                !search.isLoading &&
+                results.map((u) => (
+                  <CommandItem key={u.id} value={u.id} onSelect={() => addUser(u)}>
+                    <Avatar name={u.name} imageUrl={u.profile_image?.image_url} size="md" />
+                    <span className="flex-1 truncate">{u.name}</span>
+                  </CommandItem>
+                ))}
+              {canAddGuest && (
+                <CommandItem value={`guest:${trimmed}`} onSelect={() => addExternal(term)}>
+                  <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                    <UserPlus className="size-3.5" />
+                  </span>
+                  <span className="flex-1 truncate">
+                    Add "<span className="font-medium">{trimmed}</span>" as guest
+                  </span>
+                </CommandItem>
+              )}
+              {searching && !search.isLoading && results.length === 0 && !canAddGuest && (
+                <p className="px-3 py-2 text-xs text-muted-foreground">No matches.</p>
+              )}
+            </CommandList>
+          </PopoverContent>
+        </Command>
+      </Popover>
     </div>
   )
 }

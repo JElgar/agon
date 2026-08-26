@@ -5,8 +5,10 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { Avatar } from './Avatar'
+import { TeamPicker } from './TeamPicker'
 
 type UserProfile = components['schemas']['UserProfile']
+type TeamListItem = components['schemas']['TeamListItem']
 
 /** A person tagged onto a side: either a registered Agon user or a typed-in guest.
  *  Both carry a stable `id` — the user's own account id for a registered user
@@ -36,13 +38,20 @@ export interface PlayerSideEditorProps {
   currentUserId?: string
   /** Ids already tagged on the *other* side, so we don't offer them twice. */
   excludeUserIds?: string[]
-  /** Optional custom name for this side (e.g. "The Wanderers"). Only offered
-   *  here because this flow has no way to assign a persistent team to a
-   *  side yet — once it does, this input should only show for a teamless
-   *  side, since the server rejects a name alongside a team (unless another
-   *  side shares that team). Omit both props to hide the field entirely. */
+  /** Optional custom name for this side (e.g. "The Wanderers"). Omit both
+   *  props to hide the field entirely. Rendered only when `nameFieldVisible`
+   *  isn't explicitly false — the parent hides it once this side is linked
+   *  to a team the other side doesn't share (the server rejects a name
+   *  alongside a team unless another side shares that team). */
   name?: string
   onNameChange?: (name: string) => void
+  /** Whether the name field should render at all. Defaults to true; pass
+   *  false once a `team` is linked here and no other side shares it. */
+  nameFieldVisible?: boolean
+  /** The team (if any) this side is linked to, replacing manually-tagged
+   *  players/a typed name as its identity. */
+  team?: TeamListItem | null
+  onTeamChange?: (team: TeamListItem | null) => void
 }
 
 /** How long to wait after typing stops before hitting `/users/search`. */
@@ -63,6 +72,9 @@ export function PlayerSideEditor({
   excludeUserIds = [],
   name,
   onNameChange,
+  nameFieldVisible = true,
+  team = null,
+  onTeamChange,
 }: PlayerSideEditorProps) {
   const [term, setTerm] = useState('')
   const [debounced, setDebounced] = useState('')
@@ -130,7 +142,9 @@ export function PlayerSideEditor({
         {title}
       </p>
 
-      {onNameChange && (
+      {onTeamChange && <TeamPicker team={team} onChange={onTeamChange} />}
+
+      {onNameChange && nameFieldVisible && (
         <input
           type="text"
           value={name ?? ''}
@@ -139,6 +153,12 @@ export function PlayerSideEditor({
           maxLength={60}
           className="mb-2 w-full rounded-md border bg-card px-2.5 py-1.5 text-sm outline-none placeholder:text-muted-foreground"
         />
+      )}
+      {onNameChange && !nameFieldVisible && team && (
+        <p className="mb-2 text-xs text-muted-foreground">
+          Linked to {team.name} — link the other side to the same team to give
+          each a custom name.
+        </p>
       )}
 
       <div className="flex flex-col gap-1.5">

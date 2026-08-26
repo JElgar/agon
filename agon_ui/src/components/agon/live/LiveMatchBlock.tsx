@@ -62,7 +62,7 @@ export function LiveMatchBlock({
     <div className="rounded-lg bg-muted/50 px-3.5 py-3">
       <div className="flex items-center justify-between">
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          <Avatar name={nameA} size="md" />
+          <Avatar name={nameA} imageUrl={sideA?.team_logo?.image_url} size="md" />
           <span className="truncate text-xs font-medium">{nameA}</span>
         </div>
         <div className="px-3 text-center">
@@ -79,7 +79,7 @@ export function LiveMatchBlock({
           </div>
         </div>
         <div className="flex min-w-0 flex-1 flex-row-reverse items-center gap-2 text-right">
-          <Avatar name={nameB} size="md" />
+          <Avatar name={nameB} imageUrl={sideB?.team_logo?.image_url} size="md" />
           <span className="truncate text-xs font-medium">{nameB}</span>
         </div>
       </div>

@@ -372,7 +372,7 @@ export function MatchCard({
           >
             <div className="flex items-center justify-between">
               <div className="flex min-w-0 flex-1 items-center gap-2">
-                <Avatar name={nameA} size="md" ring={aWon ? 'winner' : 'none'} />
+                <Avatar name={nameA} imageUrl={sideA?.team_logo?.image_url} size="md" ring={aWon ? 'winner' : 'none'} />
                 <span className="truncate text-xs font-medium">{nameA}</span>
               </div>
               <div className="px-3 text-center">
@@ -386,7 +386,7 @@ export function MatchCard({
                 </div>
               </div>
               <div className="flex min-w-0 flex-1 flex-row-reverse items-center gap-2 text-right">
-                <Avatar name={nameB} size="md" ring={bWon ? 'winner' : 'none'} />
+                <Avatar name={nameB} imageUrl={sideB?.team_logo?.image_url} size="md" ring={bWon ? 'winner' : 'none'} />
                 <span className="truncate text-xs font-medium">{nameB}</span>
               </div>
             </div>

@@ -4509,6 +4509,10 @@ impl Api {
         // before members moved to their own paginated endpoint — nothing
         // here needs to re-fetch the roster just to build it.
         if !input.invited_user_ids.is_empty() || !input.invited_external_names.is_empty() {
+            let role = input
+                .invited_role
+                .as_ref()
+                .map_or("member", assignable_team_role_str);
             self.invite_to_team(
                 dao,
                 &team.id,
@@ -4516,6 +4520,7 @@ impl Api {
                 &uid,
                 &input.invited_user_ids,
                 &input.invited_external_names,
+                role,
             )
             .await?;
         }
@@ -5058,6 +5063,10 @@ impl Api {
                 "only the team's owner or an admin can invite people".into(),
             )));
         }
+        let role = input
+            .role
+            .as_ref()
+            .map_or("member", assignable_team_role_str);
         let created = self
             .invite_to_team(
                 dao,
@@ -5066,6 +5075,7 @@ impl Api {
                 &uid,
                 &input.invited_user_ids,
                 &input.invited_external_names,
+                role,
             )
             .await?;
         Ok(AddInvitationsResponse::Invitations(Json(created)))
@@ -5085,6 +5095,7 @@ impl Api {
         inviter_id: &str,
         invited_user_ids: &[String],
         invited_external_names: &[String],
+        role: &str,
     ) -> Result<Vec<Invitation>> {
         let now = now_iso();
         let invitees = invited_user_ids
@@ -5104,6 +5115,7 @@ impl Api {
                 inviter_id,
                 user_id,
                 display_name,
+                role,
                 &now,
             );
             dao.put_team_member(team_id, &member)
@@ -6610,6 +6622,7 @@ fn build_invited_team_member(
     invited_by_user_id: &str,
     user_id: Option<String>,
     display_name: Option<String>,
+    role: &str,
     now: &str,
 ) -> (
     dao::records::TeamMemberRecord,
@@ -6652,7 +6665,7 @@ fn build_invited_team_member(
         membership_id,
         user_id: user_id.clone(),
         display_name: display_name.clone(),
-        role: String::from("member"),
+        role: role.to_string(),
         invitation: Some(embedded),
         created_at: now.to_string(),
     };

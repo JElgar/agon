@@ -80,12 +80,16 @@ pub struct CreateTeamInput {
     /// the Asset API — same flow as a user's profile picture. None = no logo.
     pub logo_asset_id: Option<String>,
     /// Agon users to invite to the new team, alongside the creator (who joins
-    /// automatically as admin). Each gets a pending membership + invitation,
+    /// automatically as owner). Each gets a pending membership + invitation,
     /// exactly like `POST /teams/{team_id}/invitations` — just bundled into
     /// team creation instead of a separate call.
     pub invited_user_ids: Vec<String>,
     /// People with no Agon account to invite by name (token-based invites).
     pub invited_external_names: Vec<String>,
+    /// The role every invitee above gets once accepted. None defaults to
+    /// `Member`. Same rule as `AddInvitationsInput::role`: applies uniformly
+    /// to this whole batch, never `Owner` (see `AssignableTeamRole`).
+    pub invited_role: Option<AssignableTeamRole>,
 }
 
 /// Editable fields on a team. All optional — only supplied fields change.

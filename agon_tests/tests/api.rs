@@ -370,6 +370,7 @@ async fn create_and_get_team() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -400,6 +401,7 @@ async fn team_appears_in_my_teams() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -423,6 +425,7 @@ async fn add_and_remove_team_member() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -467,6 +470,7 @@ async fn team_members_have_hydrated_names() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -517,6 +521,7 @@ async fn list_team_members_paginates() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -580,6 +585,7 @@ async fn removing_an_already_removed_team_member_returns_not_found() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -841,6 +847,7 @@ async fn patch_match_rename_team_side_without_shared_team_is_rejected() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -1319,6 +1326,7 @@ async fn follow_and_unfollow_team() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -2216,6 +2224,7 @@ async fn match_with_a_team_side_fans_out_to_team_followers() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -2998,6 +3007,7 @@ async fn list_matches_filters_by_team() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -3009,6 +3019,7 @@ async fn list_matches_filters_by_team() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -3020,6 +3031,7 @@ async fn list_matches_filters_by_team() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -3503,6 +3515,7 @@ async fn team_followers_list_includes_the_follower() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -3533,6 +3546,7 @@ async fn patch_team_updates_name() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -3574,6 +3588,7 @@ async fn team_admin_can_manage_but_member_cannot() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -3615,6 +3630,7 @@ async fn team_admin_can_manage_but_member_cannot() {
         invited_user_ids: vec![],
         invited_external_names: vec![],
         side_id: None,
+        role: None,
     };
 
     // A plain member can't manage the team...
@@ -3677,6 +3693,7 @@ async fn team_admin_can_manage_but_member_cannot() {
             invited_user_ids: vec![],
             invited_external_names: vec!["Guest".to_string()],
             side_id: None,
+            role: None,
         },
     )
     .await
@@ -3721,6 +3738,7 @@ async fn team_owner_cannot_be_removed_or_have_their_role_changed() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -3806,6 +3824,7 @@ async fn only_owner_can_delete_team() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -3859,6 +3878,7 @@ async fn member_and_admin_can_leave_but_owner_must_transfer_first() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -3957,6 +3977,7 @@ async fn transfer_ownership_rejects_non_owner_self_and_pending_targets() {
             logo_asset_id: None,
             invited_user_ids: vec![invitee.profile.id.clone()],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -4049,6 +4070,7 @@ async fn leaving_a_team_youre_not_a_member_of_returns_not_found() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -4119,6 +4141,7 @@ async fn inviter_can_revoke_an_invitation() {
             invited_user_ids: vec![invitee.profile.id.clone()],
             invited_external_names: vec![],
             side_id: None,
+            role: None,
         },
     )
     .await
@@ -4152,6 +4175,7 @@ async fn revoking_an_already_revoked_invitation_returns_not_found() {
             invited_user_ids: vec![invitee.profile.id.clone()],
             invited_external_names: vec![],
             side_id: None,
+            role: None,
         },
     )
     .await
@@ -4817,6 +4841,7 @@ async fn create_team_with_logo() {
             logo_asset_id: Some(asset.id.clone()),
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -4841,6 +4866,7 @@ async fn create_team_rejects_wrong_purpose_asset() {
             logo_asset_id: Some(asset.id.clone()),
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await;
@@ -4865,6 +4891,7 @@ async fn team_created_with_initial_invite_can_be_accepted() {
             logo_asset_id: None,
             invited_user_ids: vec![invitee.profile.id.clone()],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -4933,6 +4960,93 @@ async fn team_created_with_initial_invite_can_be_accepted() {
         }
         models::Member::External(_) => panic!("expected a linked user member"),
     }
+}
+
+/// `CreateTeamInput.invited_role` sets the role every bundled invitee lands
+/// with — checked before acceptance, since `build_invited_team_member`
+/// stamps it onto the pending roster slot immediately, not just onto the
+/// membership once accepted. Covers both a user invitee and an external
+/// (token) one, since only one of those is ever linked to a real account.
+#[tokio::test]
+async fn initial_invitees_land_with_the_requested_role() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Admins FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![invitee.profile.id.clone()],
+            invited_external_names: vec!["Guest Coach".to_string()],
+            invited_role: Some(models::AssignableTeamRole::Admin),
+        },
+    )
+    .await
+    .expect("create team with admin invites");
+
+    let members = all_team_members(&owner_config, &team.id).await;
+    let invitee_role = members
+        .iter()
+        .find_map(|m| match &*m.member {
+            models::Member::User(u) if u.user_id == invitee.profile.id => Some(m.role),
+            _ => None,
+        })
+        .expect("user invitee on roster");
+    assert_eq!(invitee_role, models::TeamRole::Admin);
+    let external_role = members
+        .iter()
+        .find_map(|m| match &*m.member {
+            models::Member::External(e) if e.display_name == "Guest Coach" => Some(m.role),
+            _ => None,
+        })
+        .expect("external invitee on roster");
+    assert_eq!(external_role, models::TeamRole::Admin);
+}
+
+/// Same as above but via the standalone `POST /teams/:id/invitations`
+/// endpoint — `AddInvitationsInput.role`, the shared invite input's
+/// team-only field (mirroring `side_id`'s match-only one).
+#[tokio::test]
+async fn invitations_endpoint_honors_requested_role() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Later Admins FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![],
+            invited_external_names: vec![],
+            invited_role: None,
+        },
+    )
+    .await
+    .expect("create team");
+
+    teams_team_id_invitations_post(
+        &owner_config,
+        &team.id,
+        models::AddInvitationsInput {
+            invited_user_ids: vec![invitee.profile.id.clone()],
+            invited_external_names: vec![],
+            side_id: None,
+            role: Some(models::AssignableTeamRole::Admin),
+        },
+    )
+    .await
+    .expect("invite as admin");
+
+    let members = all_team_members(&owner_config, &team.id).await;
+    let role = members
+        .iter()
+        .find_map(|m| match &*m.member {
+            models::Member::User(u) if u.user_id == invitee.profile.id => Some(m.role),
+            _ => None,
+        })
+        .expect("invitee on roster");
+    assert_eq!(role, models::TeamRole::Admin);
 }
 
 #[tokio::test]

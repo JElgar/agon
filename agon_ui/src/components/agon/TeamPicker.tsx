@@ -4,8 +4,16 @@ import { X } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Avatar } from './Avatar'
-import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
-import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
+import {
+  Combobox,
+  ComboboxCollection,
+  ComboboxContent,
+  ComboboxGroup,
+  ComboboxInput,
+  ComboboxItem,
+  ComboboxLabel,
+  ComboboxList,
+} from '@/components/ui/combobox'
 
 type TeamListItem = components['schemas']['TeamListItem']
 
@@ -18,6 +26,13 @@ const SEARCH_DEBOUNCE_MS = 300
 const MY_TEAMS_LIMIT = 100
 const MY_TEAMS_PAGE_LIMIT = 50
 
+/** One section of the combobox's grouped `items` — see `Combobox.Group`'s doc:
+ *  an array of `{ value, items }` objects, `value` doubling as the heading text. */
+interface TeamGroup {
+  value: string
+  items: TeamListItem[]
+}
+
 export interface TeamPickerProps {
   /** The team currently linked to this side, or `null` for an ad-hoc side. */
   team: TeamListItem | null
@@ -27,9 +42,8 @@ export interface TeamPickerProps {
 
 /**
  * Link a match side to a persistent Team, instead of (or as well as) tagging
- * players onto it directly. A shadcn `Command` combobox (Popover-anchored to
- * the input, so the results float below it like `PlayerSideEditor`'s search)
- * that always searches both, in two sections:
+ * players onto it directly. Built on shadcn's `Combobox` (Base UI) — always
+ * searches both, in two sections:
  *   - "Your teams" — the signed-in user's own teams (`GET /users/me/teams`,
  *     fetched once up to `MY_TEAMS_LIMIT` and filtered client-side as you
  *     type), the common case of playing as your own team.
@@ -45,7 +59,6 @@ export interface TeamPickerProps {
 export function TeamPicker({ team, onChange, placeholder = 'Link a team…' }: TeamPickerProps) {
   const [term, setTerm] = useState('')
   const [debounced, setDebounced] = useState('')
-  const [open, setOpen] = useState(false)
 
   useEffect(() => {
     const t = setTimeout(() => setDebounced(term.trim()), SEARCH_DEBOUNCE_MS)
@@ -94,12 +107,26 @@ export function TeamPicker({ team, onChange, placeholder = 'Link a team…' }: T
   // "Your teams" filters the already-fetched full list in-memory against the
   // raw (undebounced) term, for instant feedback on every keystroke.
   const termLower = term.trim().toLowerCase()
-  const myMatches = (myTeams.data ?? []).filter((t) =>
-    termLower ? t.name.toLowerCase().includes(termLower) : true,
+  const myMatches = useMemo(
+    () =>
+      (myTeams.data ?? []).filter((t) =>
+        termLower ? t.name.toLowerCase().includes(termLower) : true,
+      ),
+    [myTeams.data, termLower],
   )
   // "Other teams" only ever adds teams not already offered above, so a team
   // you're on doesn't get listed twice just because search finds it too.
-  const otherMatches = searching ? (search.data ?? []).filter((t) => !myTeamIds.has(t.id)) : []
+  const otherMatches = useMemo(
+    () => (searching ? (search.data ?? []).filter((t) => !myTeamIds.has(t.id)) : []),
+    [searching, search.data, myTeamIds],
+  )
+
+  // Built fresh each render (cheap — at most MY_TEAMS_LIMIT + a search page)
+  // so the combobox always reflects the latest filter; `filter={null}` below
+  // tells it not to re-filter these itself.
+  const groups: TeamGroup[] = []
+  if (myMatches.length > 0) groups.push({ value: 'Your teams', items: myMatches })
+  if (searching) groups.push({ value: 'Other teams', items: otherMatches })
 
   if (team) {
     return (
@@ -118,79 +145,47 @@ export function TeamPicker({ team, onChange, placeholder = 'Link a team…' }: T
     )
   }
 
-  const pick = (t: TeamListItem) => {
-    onChange(t)
-    setTerm('')
-    setDebounced('')
-    setOpen(false)
-  }
-
-  const nothingFound =
-    !myTeams.isLoading && !search.isLoading && myMatches.length === 0 && otherMatches.length === 0
+  const isLoading = myTeams.isLoading || (searching && search.isLoading)
+  const nothingFound = !isLoading && groups.every((g) => g.items.length === 0)
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <Command shouldFilter={false} className="mb-2 overflow-visible bg-transparent p-0">
-        <PopoverAnchor asChild>
-          <CommandInput
-            value={term}
-            onValueChange={(v) => {
-              setTerm(v)
-              setOpen(true)
-            }}
-            onFocus={() => setOpen(true)}
-            placeholder={placeholder}
-            wrapperClassName="rounded-md border bg-card px-2.5"
-            className="h-auto py-1.5 text-sm"
-          />
-        </PopoverAnchor>
-        <PopoverContent
-          align="start"
-          onOpenAutoFocus={(e) => e.preventDefault()}
-          className="w-[--radix-popover-trigger-width] max-h-72 overflow-y-auto p-0"
-        >
-          <CommandList>
-            {myTeams.isLoading && (
-              <p className="px-3 py-2 text-xs text-muted-foreground">Loading your teams…</p>
-            )}
-
-            {!myTeams.isLoading && myMatches.length > 0 && (
-              <CommandGroup heading="Your teams">
-                {myMatches.map((t) => (
-                  <CommandItem key={t.id} value={t.id} onSelect={() => pick(t)}>
+    <Combobox
+      items={groups}
+      filter={null}
+      inputValue={term}
+      onInputValueChange={setTerm}
+      onValueChange={(next) => {
+        if (next) onChange(next as TeamListItem)
+      }}
+    >
+      <ComboboxInput placeholder={placeholder} showTrigger={false} className="mb-2" />
+      <ComboboxContent>
+        {isLoading && (
+          <p className="px-3 py-2 text-xs text-muted-foreground">
+            {searching ? 'Searching…' : 'Loading your teams…'}
+          </p>
+        )}
+        {nothingFound && (
+          <p className="px-3 py-2 text-xs text-muted-foreground">
+            {term.trim() ? 'No teams found.' : "You're not on any teams yet."}
+          </p>
+        )}
+        <ComboboxList>
+          {(group: TeamGroup) => (
+            <ComboboxGroup key={group.value} items={group.items}>
+              <ComboboxLabel>{group.value}</ComboboxLabel>
+              <ComboboxCollection>
+                {(t: TeamListItem) => (
+                  <ComboboxItem key={t.id} value={t}>
                     <Avatar name={t.name} imageUrl={t.logo?.image_url} size="md" />
                     <span className="flex-1 truncate">{t.name}</span>
-                  </CommandItem>
-                ))}
-              </CommandGroup>
-            )}
-
-            {searching && (
-              <CommandGroup heading="Other teams">
-                {search.isLoading && (
-                  <p className="px-3 py-2 text-xs text-muted-foreground">Searching…</p>
+                  </ComboboxItem>
                 )}
-                {!search.isLoading &&
-                  otherMatches.map((t) => (
-                    <CommandItem key={t.id} value={t.id} onSelect={() => pick(t)}>
-                      <Avatar name={t.name} imageUrl={t.logo?.image_url} size="md" />
-                      <span className="flex-1 truncate">{t.name}</span>
-                    </CommandItem>
-                  ))}
-                {!search.isLoading && otherMatches.length === 0 && (
-                  <p className="px-3 py-2 text-xs text-muted-foreground">No other teams found.</p>
-                )}
-              </CommandGroup>
-            )}
-
-            {nothingFound && (
-              <p className="px-3 py-2 text-xs text-muted-foreground">
-                {term.trim() ? 'No teams found.' : "You're not on any teams yet."}
-              </p>
-            )}
-          </CommandList>
-        </PopoverContent>
-      </Command>
-    </Popover>
+              </ComboboxCollection>
+            </ComboboxGroup>
+          )}
+        </ComboboxList>
+      </ComboboxContent>
+    </Combobox>
   )
 }

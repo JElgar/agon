@@ -5,11 +5,14 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Avatar } from './Avatar'
 import { TeamPicker } from './TeamPicker'
-import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
-import { Command, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
+import { Combobox, ComboboxContent, ComboboxInput, ComboboxItem, ComboboxList } from '@/components/ui/combobox'
 
 type UserProfile = components['schemas']['UserProfile']
 type TeamListItem = components['schemas']['TeamListItem']
+
+/** One row offered by the add-a-player combobox: a real Agon user (from
+ *  `/users/search`) or the option to tag the typed name as a guest instead. */
+type SearchItem = { kind: 'user'; user: UserProfile } | { kind: 'guest'; name: string }
 
 /** A person tagged onto a side: either a registered Agon user or a typed-in guest.
  *  Both carry a stable `id` — the user's own account id for a registered user
@@ -79,7 +82,6 @@ export function PlayerSideEditor({
 }: PlayerSideEditorProps) {
   const [term, setTerm] = useState('')
   const [debounced, setDebounced] = useState('')
-  const [open, setOpen] = useState(false)
 
   useEffect(() => {
     const t = setTimeout(() => setDebounced(term.trim()), SEARCH_DEBOUNCE_MS)
@@ -120,7 +122,6 @@ export function PlayerSideEditor({
     ])
     setTerm('')
     setDebounced('')
-    setOpen(false)
   }
 
   const addExternal = (name: string) => {
@@ -131,7 +132,6 @@ export function PlayerSideEditor({
     onChange([...players, { kind: 'external', id: crypto.randomUUID(), name: trimmed }])
     setTerm('')
     setDebounced('')
-    setOpen(false)
   }
 
   const removeAt = (index: number) => {
@@ -141,6 +141,19 @@ export function PlayerSideEditor({
   const trimmed = term.trim()
   const canAddGuest =
     trimmed.length >= 1 && !taggedKeys.has(`ext:${trimmed.toLowerCase()}`)
+
+  // Real matches first, the "add as guest" fallback last — standard
+  // create-new-item-last combobox convention. Enter/autoHighlight then
+  // defaults to the top real match when there is one, guest otherwise;
+  // arrow keys reach any other entry. (Previously — before real keyboard
+  // nav existed here — Enter always added a guest, ignoring matches;
+  // selecting a real match required a click either way.)
+  const items: SearchItem[] = [
+    ...(searching ? results.map((u): SearchItem => ({ kind: 'user', user: u })) : []),
+    ...(canAddGuest ? [{ kind: 'guest', name: trimmed } as const] : []),
+  ]
+  const isLoading = searching && search.isLoading
+  const nothingFound = !isLoading && items.length === 0 && trimmed.length > 0
 
   return (
     <div className="rounded-lg border bg-muted/40 p-3">
@@ -220,66 +233,44 @@ export function PlayerSideEditor({
       </div>
 
       {/* Search / add */}
-      <Popover open={open && trimmed.length > 0} onOpenChange={setOpen}>
-        <Command shouldFilter={false} className="mt-2 overflow-visible bg-transparent p-0">
-          <PopoverAnchor asChild>
-            <CommandInput
-              value={term}
-              onValueChange={(v) => {
-                setTerm(v)
-                setOpen(true)
-              }}
-              onFocus={() => setOpen(true)}
-              placeholder={searchPlaceholder}
-              wrapperClassName="rounded-md border bg-card px-2.5"
-              className="h-auto py-1.5 text-sm"
-              // A typed name that isn't a real Agon user can be tagged as a
-              // guest straight from the keyboard — this always wins Enter
-              // over cmdk's own highlighted-item selection (arrow-navigating
-              // to a specific search result and hitting Enter there isn't
-              // supported; click it instead).
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && canAddGuest) {
-                  e.preventDefault()
-                  addExternal(term)
-                }
-              }}
-            />
-          </PopoverAnchor>
-          <PopoverContent
-            align="start"
-            onOpenAutoFocus={(e) => e.preventDefault()}
-            className="w-[--radix-popover-trigger-width] max-h-72 overflow-y-auto p-0"
-          >
-            <CommandList>
-              {searching && search.isLoading && (
-                <p className="px-3 py-2 text-xs text-muted-foreground">Searching…</p>
-              )}
-              {searching &&
-                !search.isLoading &&
-                results.map((u) => (
-                  <CommandItem key={u.id} value={u.id} onSelect={() => addUser(u)}>
-                    <Avatar name={u.name} imageUrl={u.profile_image?.image_url} size="md" />
-                    <span className="flex-1 truncate">{u.name}</span>
-                  </CommandItem>
-                ))}
-              {canAddGuest && (
-                <CommandItem value={`guest:${trimmed}`} onSelect={() => addExternal(term)}>
+      <Combobox
+        items={items}
+        filter={null}
+        autoHighlight
+        inputValue={term}
+        onInputValueChange={setTerm}
+        onValueChange={(next) => {
+          const item = next as SearchItem | null
+          if (!item) return
+          if (item.kind === 'user') addUser(item.user)
+          else addExternal(item.name)
+        }}
+      >
+        <ComboboxInput placeholder={searchPlaceholder} showTrigger={false} className="mt-2" />
+        <ComboboxContent>
+          {isLoading && <p className="px-3 py-2 text-xs text-muted-foreground">Searching…</p>}
+          {nothingFound && <p className="px-3 py-2 text-xs text-muted-foreground">No matches.</p>}
+          <ComboboxList>
+            {(item: SearchItem) =>
+              item.kind === 'user' ? (
+                <ComboboxItem key={item.user.id} value={item}>
+                  <Avatar name={item.user.name} imageUrl={item.user.profile_image?.image_url} size="md" />
+                  <span className="flex-1 truncate">{item.user.name}</span>
+                </ComboboxItem>
+              ) : (
+                <ComboboxItem key="guest" value={item}>
                   <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
                     <UserPlus className="size-3.5" />
                   </span>
                   <span className="flex-1 truncate">
-                    Add "<span className="font-medium">{trimmed}</span>" as guest
+                    Add "<span className="font-medium">{item.name}</span>" as guest
                   </span>
-                </CommandItem>
-              )}
-              {searching && !search.isLoading && results.length === 0 && !canAddGuest && (
-                <p className="px-3 py-2 text-xs text-muted-foreground">No matches.</p>
-              )}
-            </CommandList>
-          </PopoverContent>
-        </Command>
-      </Popover>
+                </ComboboxItem>
+              )
+            }
+          </ComboboxList>
+        </ComboboxContent>
+      </Combobox>
     </div>
   )
 }

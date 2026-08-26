@@ -56,6 +56,8 @@ import { MatchComments } from '@/components/agon/MatchComments'
 import { LikedByLine } from '@/components/agon/MatchLikes'
 import { useToggleLike } from '@/hooks/useToggleLike'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
+import { InvitePromptDialog } from '@/components/agon/InvitePromptDialog'
+import { useInvitePrompt } from '@/hooks/useInvitePrompt'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -542,7 +544,9 @@ function LikeBar({ match }: { match: Match }) {
 
 /**
  * Shown when the signed-in viewer has a pending invitation to this match: a
- * prominent Accept/Decline banner. Both actions open the shared response
+ * prominent Accept/Decline banner, plus (the first time this match page is
+ * opened while the invite is pending — see `useInvitePrompt`) a popup
+ * fronting the same choice immediately. Both open the shared response
  * dialog, wired to `POST /invitations/:id/respond`; accepting also offers to
  * confirm the match's score in the same step when one is already pending on
  * the viewer's side. On success it refreshes the match (so the roster/badge/
@@ -560,6 +564,7 @@ function InviteBanner({
   const invitation = myPendingInvitation(match, currentUserId)
   const matchKey = ['match', match.id]
   const [action, setAction] = useState<'accept' | 'decline' | null>(null)
+  const [promptOpen, setPromptOpen] = useInvitePrompt(invitation?.id ?? null)
 
   const respond = useMutation({
     mutationFn: async (
@@ -611,6 +616,15 @@ function InviteBanner({
 
   if (!invitation) return null
 
+  // Shared by both the banner's confirm dialog and the first-open popup —
+  // covers the score-confirm sub-step, which the mutation above doesn't know
+  // about (it only reconciles the invitation response itself).
+  const handleResponded = () => {
+    setAction(null)
+    queryClient.invalidateQueries({ queryKey: matchKey })
+    queryClient.invalidateQueries({ queryKey: ['profile-activity'] })
+  }
+
   return (
     <>
       <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
@@ -646,13 +660,15 @@ function InviteBanner({
         name={match.name}
         matchId={match.id}
         respond={(response) => respond.mutateAsync(response)}
-        onSuccess={() => {
-          setAction(null)
-          // Cover the score-confirm sub-step, which the mutation above doesn't
-          // know about (it only reconciles the invitation response itself).
-          queryClient.invalidateQueries({ queryKey: matchKey })
-          queryClient.invalidateQueries({ queryKey: ['profile-activity'] })
-        }}
+        onSuccess={handleResponded}
+      />
+
+      <InvitePromptDialog
+        open={promptOpen}
+        onOpenChange={setPromptOpen}
+        name={match.name}
+        respond={(response) => respond.mutateAsync(response)}
+        onSuccess={handleResponded}
       />
     </>
   )

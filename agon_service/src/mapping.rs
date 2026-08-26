@@ -901,6 +901,11 @@ pub fn match_side_from_record(rec: &MatchSideRecord) -> MatchSide {
         id: rec.side_id.clone(),
         team_id: rec.team_id.clone(),
         name: rec.name.clone(),
+        // Filled in afterward, alongside `name`: live team-meta lookup for
+        // `Match` (`Api::resolve_side_names`), or the same batch for a feed's
+        // `FeedMatch`/a search hit's `SearchMatch`
+        // (`Api::resolve_side_names_from_cache`).
+        team_logo: None,
         // Filled in afterward: live from `players` for `Match`
         // (`Api::resolve_side_names`), or from the denormalized cache for a
         // feed's `FeedMatch` (`feed_roster_preview`, below).

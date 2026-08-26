@@ -295,8 +295,9 @@ function MatchDetail({
             </div>
           ) : scoreInfo ? (
             <div className="mt-3 flex items-center justify-between">
-              <div className="flex-1">
-                <p className={cn('text-sm', aWon && 'font-medium')}>{nameA}</p>
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <Avatar name={nameA} imageUrl={sideA?.team_logo?.image_url} size="md" ring={aWon ? 'winner' : 'none'} />
+                <p className={cn('truncate text-sm', aWon && 'font-medium')}>{nameA}</p>
               </div>
               <div className="px-3 text-center">
                 <div className="text-3xl font-medium tracking-tight">
@@ -308,8 +309,9 @@ function MatchDetail({
                   {headlineLabel(scoreInfo.score)}
                 </div>
               </div>
-              <div className="flex-1 text-right">
-                <p className={cn('text-sm', bWon && 'font-medium')}>{nameB}</p>
+              <div className="flex min-w-0 flex-1 flex-row-reverse items-center gap-2 text-right">
+                <Avatar name={nameB} imageUrl={sideB?.team_logo?.image_url} size="md" ring={bWon ? 'winner' : 'none'} />
+                <p className={cn('truncate text-sm', bWon && 'font-medium')}>{nameB}</p>
               </div>
             </div>
           ) : (

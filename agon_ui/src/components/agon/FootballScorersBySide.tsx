@@ -46,7 +46,7 @@ export function FootballScorersBySide({
   if (scorersA.length === 0 && scorersB.length === 0) return null
 
   return (
-    <div className={cn('flex justify-between gap-3 border-t pt-2 text-muted-foreground', className)}>
+    <div className={cn('grid grid-cols-2 gap-3 border-t pt-2 text-muted-foreground', className)}>
       <ScorerColumn scorers={scorersA} />
       <ScorerColumn scorers={scorersB} align="right" />
     </div>
@@ -61,7 +61,7 @@ function ScorerColumn({
   align?: 'right'
 }) {
   return (
-    <div className={cn('min-w-0 flex-1 space-y-1', align === 'right' && 'text-right')}>
+    <div className={cn('min-w-0 space-y-1', align === 'right' && 'text-right')}>
       {scorers.map((s) => (
         <p key={s.key} className="truncate">
           {s.name}

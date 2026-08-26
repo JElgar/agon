@@ -1,16 +1,31 @@
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type InfiniteData,
+} from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ChevronLeft, Pencil, UserPlus } from 'lucide-react'
+import { ChevronLeft, MailOpen, Pencil, UserPlus } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Avatar } from '@/components/agon/Avatar'
 import { TeamFollowButton } from '@/components/agon/TeamFollowButton'
 import { EditTeamDialog } from '@/components/agon/EditTeamDialog'
 import { InviteToTeamDialog } from '@/components/agon/InviteToTeamDialog'
+import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
+import { InvitePromptDialog } from '@/components/agon/InvitePromptDialog'
 import { MatchCard } from '@/components/agon/MatchCard'
 import { Button } from '@/components/ui/button'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
-import { memberName, memberAvatarUrl } from '@/lib/members'
+import { useInvitePrompt } from '@/hooks/useInvitePrompt'
+import {
+  memberName,
+  memberAvatarUrl,
+  myPendingTeamInvitation,
+  withTeamMemberInvitationStatus,
+} from '@/lib/members'
 
 type Team = components['schemas']['Team']
 type TeamMember = components['schemas']['TeamMember']
@@ -156,6 +171,10 @@ export function TeamPage() {
         </div>
       </div>
 
+      {/* Respond to a pending invite, if the viewer has one — same
+          accept/decline pattern as a match page's `InviteBanner`. */}
+      <TeamInviteBanner teamId={team.id} name={team.name} members={members} currentUserId={currentUserId} />
+
       <section className="flex flex-col gap-2">
         <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
           Members
@@ -170,6 +189,141 @@ export function TeamPage() {
         <RecentMatches query={activityQuery} currentUserId={currentUserId} />
       </section>
     </div>
+  )
+}
+
+/**
+ * Shown when the signed-in viewer has a pending invitation to this team: a
+ * prominent Accept/Decline banner, plus (the first time this team page is
+ * opened while the invite is pending — see `useInvitePrompt`) a popup
+ * fronting the same choice immediately. Both open the shared response
+ * dialog, wired to `POST /invitations/:id/respond`. On success it refreshes
+ * the member list (so the roster/badge update) and the notification badge
+ * (the matching invite notification is now handled). Mirrors
+ * `MatchDetailPage`'s `InviteBanner`.
+ */
+function TeamInviteBanner({
+  teamId,
+  name,
+  members,
+  currentUserId,
+}: {
+  teamId: string
+  name: string
+  members: TeamMember[]
+  currentUserId?: string
+}) {
+  const queryClient = useQueryClient()
+  const invitation = myPendingTeamInvitation(members, currentUserId)
+  const membersKey = ['team-members', teamId]
+  const [action, setAction] = useState<'accept' | 'decline' | null>(null)
+  const [promptOpen, setPromptOpen] = useInvitePrompt(invitation?.id ?? null)
+
+  const respond = useMutation({
+    mutationFn: async (
+      response: components['schemas']['InvitationResponse'],
+    ) => {
+      if (!invitation) return
+      const { error } = await fetchClient.POST(
+        '/invitations/{invitation_id}/respond',
+        {
+          params: { path: { invitation_id: invitation.id } },
+          body: { response },
+        },
+      )
+      if (error) throw new Error('Failed to respond to invitation')
+    },
+    // Optimistically flip the viewer's invitation status across every fetched
+    // page of the member list, so the banner/badge disappear immediately.
+    onMutate: async (response) => {
+      if (!currentUserId) return
+      await queryClient.cancelQueries({ queryKey: membersKey })
+      const previous =
+        queryClient.getQueryData<InfiniteData<TeamMemberPage>>(membersKey)
+      const status = response === 'accepted' ? 'accepted' : 'declined'
+      if (previous) {
+        queryClient.setQueryData<InfiniteData<TeamMemberPage>>(membersKey, {
+          ...previous,
+          pages: previous.pages.map((page) => ({
+            ...page,
+            items: withTeamMemberInvitationStatus(page.items, currentUserId, status),
+          })),
+        })
+      }
+      return { previous }
+    },
+    // Roll back the optimistic patch if the request fails.
+    onError: (_err, _response, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(membersKey, context.previous)
+      }
+    },
+    // Reconcile with the server regardless of outcome, and refresh notifications
+    // (the invite notification is now handled) and the feed (roster changed).
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: membersKey })
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
+      queryClient.invalidateQueries({ queryKey: ['notifications'] })
+      queryClient.invalidateQueries({
+        queryKey: ['notifications-unread-count'],
+      })
+    },
+  })
+
+  if (!invitation) return null
+
+  const handleResponded = () => {
+    setAction(null)
+    queryClient.invalidateQueries({ queryKey: membersKey })
+  }
+
+  return (
+    <>
+      <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
+        <div className="flex items-start gap-3">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+            <MailOpen className="size-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">You've been invited to join this team</p>
+            <p className="text-xs text-muted-foreground">
+              Accept to join the roster, or decline if it's not for you.
+            </p>
+            <div className="mt-3 flex gap-2">
+              <Button size="sm" onClick={() => setAction('accept')}>
+                Accept
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setAction('decline')}
+              >
+                Decline
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <InvitationResponseDialog
+        open={action !== null}
+        onOpenChange={(open) => !open && setAction(null)}
+        action={action}
+        name={name}
+        suffix=" as a member"
+        respond={(response) => respond.mutateAsync(response)}
+        onSuccess={handleResponded}
+      />
+
+      <InvitePromptDialog
+        open={promptOpen}
+        onOpenChange={setPromptOpen}
+        name={name}
+        suffix=" as a member"
+        respond={(response) => respond.mutateAsync(response)}
+        onSuccess={handleResponded}
+      />
+    </>
   )
 }
 

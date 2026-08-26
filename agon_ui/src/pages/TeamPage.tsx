@@ -1,6 +1,15 @@
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ChevronLeft, Pencil, ShieldMinus, ShieldPlus, Trash2, UserPlus, X } from 'lucide-react'
+import {
+  ChevronLeft,
+  LogOut,
+  Pencil,
+  ShieldMinus,
+  ShieldPlus,
+  Trash2,
+  UserPlus,
+  X,
+} from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Avatar } from '@/components/agon/Avatar'
@@ -8,6 +17,7 @@ import { TeamFollowButton } from '@/components/agon/TeamFollowButton'
 import { EditTeamDialog } from '@/components/agon/EditTeamDialog'
 import { InviteToTeamDialog } from '@/components/agon/InviteToTeamDialog'
 import { DeleteTeamDialog } from '@/components/agon/DeleteTeamDialog'
+import { LeaveTeamDialog } from '@/components/agon/LeaveTeamDialog'
 import { MatchCard } from '@/components/agon/MatchCard'
 import { Button } from '@/components/ui/button'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
@@ -25,13 +35,14 @@ const RECENT_LIMIT = 5
 const MEMBER_PAGE_SIZE = 20
 
 /**
- * A team's page: logo/name/follower count and a follow toggle (for a viewer
- * who isn't an owner/admin), its member list, and its recent matches (`GET
- * /matches?team_id=`, the same discovery endpoint the profile page's
- * activity section uses with `participant` instead). What else the viewer
- * sees depends on their role — owner gets edit/invite/delete plus per-member
- * remove and promote/demote controls, admin gets the same minus delete, a
- * plain member or non-member sees the team read-only (just follow). Mirrors
+ * A team's page: logo/name/follower count, its member list, and its recent
+ * matches (`GET /matches?team_id=`, the same discovery endpoint the profile
+ * page's activity section uses with `participant` instead). What else the
+ * viewer sees depends on their role — owner gets edit/invite/delete plus
+ * per-member remove and promote/demote controls, admin gets the same minus
+ * delete, a plain member sees the team read-only. Any accepted member can
+ * leave (the owner is routed through transferring ownership first — see
+ * `LeaveTeamDialog`); a non-member sees a follow toggle instead. Mirrors
  * `ProfilePage`'s structure — header, then stacked sections.
  */
 export function TeamPage() {
@@ -137,7 +148,7 @@ export function TeamPage() {
         </div>
 
         <div className="flex gap-2">
-          {canManage ? (
+          {canManage && (
             <>
               <EditTeamDialog team={team}>
                 <Button variant="outline" className="gap-2">
@@ -164,6 +175,23 @@ export function TeamPage() {
                 </DeleteTeamDialog>
               )}
             </>
+          )}
+          {/* A member (owner/admin/plain) leaves; a non-member follows —
+              mutually exclusive, so exactly one of these always renders. */}
+          {myRole ? (
+            <LeaveTeamDialog
+              teamId={team.id}
+              teamName={team.name}
+              myRole={myRole}
+              members={members}
+              currentUserId={currentUserId}
+              onLeft={() => navigate('/teams')}
+            >
+              <Button variant="outline" className="gap-2">
+                <LogOut className="size-4" />
+                Leave
+              </Button>
+            </LeaveTeamDialog>
           ) : (
             <TeamFollowButton teamId={team.id} isFollowing={team.is_followed_by_me} />
           )}

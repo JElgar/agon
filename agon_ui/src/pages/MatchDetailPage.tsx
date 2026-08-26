@@ -67,6 +67,13 @@ function sideName(side: MatchSide | undefined, fallback: string): string {
   return side?.name?.trim() || fallback
 }
 
+// Roster tab ids for the mobile tablist — side A/B use these fixed ids
+// rather than the sides' own (possibly absent) `id`s so the tablist always
+// has something stable to key off; unassigned players get a third tab.
+const ROSTER_TAB_A = '__side_a__'
+const ROSTER_TAB_B = '__side_b__'
+const ROSTER_TAB_UNASSIGNED = '__unassigned__'
+
 /** Full match view: score (with confirm/dispute when pending), sides + rosters.
  *  Participants get inline editing of details/result, plus invite and cancel. */
 export function MatchDetailPage() {
@@ -129,6 +136,11 @@ function MatchDetail({
   const [editingResult, setEditingResult] = useState(false)
   const [editingRoster, setEditingRoster] = useState(false)
   const [inviting, setInviting] = useState(false)
+  // Which roster tab is open on mobile — side-by-side columns (`sm:` and up)
+  // ignore this entirely. Defaults to the first side; reset below if it ever
+  // points at a tab that's no longer showing (e.g. the last unassigned
+  // player was placed on a side).
+  const [rosterTab, setRosterTab] = useState<string>(ROSTER_TAB_A)
 
   const canEdit = isParticipant(match, currentUserId)
   const cancelled = match.status === 'cancelled'
@@ -433,16 +445,17 @@ function MatchDetail({
               </Button>
             </div>
           )}
-          <div className="grid grid-cols-2 gap-3">
-            <SideRoster
-              title={nameA}
-              players={match.players.filter((p) => p.side_id === sideA?.id)}
-            />
-            <SideRoster
-              title={nameB}
-              players={match.players.filter((p) => p.side_id === sideB?.id)}
-            />
-          </div>
+          <RosterTabs
+            nameA={nameA}
+            nameB={nameB}
+            playersA={match.players.filter((p) => p.side_id === sideA?.id)}
+            playersB={match.players.filter((p) => p.side_id === sideB?.id)}
+            unassigned={match.players.filter(
+              (p) => p.side_id !== sideA?.id && p.side_id !== sideB?.id,
+            )}
+            activeTab={rosterTab}
+            onTabChange={setRosterTab}
+          />
         </div>
       )}
 
@@ -710,6 +723,83 @@ function CancelMatch({ match }: { match: Match }) {
         </Button>
       </div>
     </div>
+  )
+}
+
+/**
+ * Rosters, side by side on a screen wide enough for it (`sm:` and up) — a
+ * phone-width column pair squeezes both names down too far to read, so
+ * below that breakpoint this switches to one roster at a time behind a
+ * tablist: a tab per side, plus "Unassigned" whenever anyone hasn't been
+ * placed on a side yet (the side-by-side layout has no room to show them
+ * at all, so the tab is the only place they're visible).
+ */
+function RosterTabs({
+  nameA,
+  nameB,
+  playersA,
+  playersB,
+  unassigned,
+  activeTab,
+  onTabChange,
+}: {
+  nameA: string
+  nameB: string
+  playersA: MatchPlayer[]
+  playersB: MatchPlayer[]
+  unassigned: MatchPlayer[]
+  activeTab: string
+  onTabChange: (tab: string) => void
+}) {
+  const tabs = [
+    { id: ROSTER_TAB_A, title: nameA, players: playersA },
+    { id: ROSTER_TAB_B, title: nameB, players: playersB },
+    ...(unassigned.length > 0
+      ? [{ id: ROSTER_TAB_UNASSIGNED, title: 'Unassigned', players: unassigned }]
+      : []),
+  ]
+  // The unassigned tab can disappear out from under an active selection
+  // (last unassigned player got placed on a side) — fall back to side A
+  // rather than rendering nothing.
+  const active = tabs.find((t) => t.id === activeTab) ?? tabs[0]
+
+  return (
+    <>
+      <div
+        role="tablist"
+        aria-label="Roster"
+        className={cn(
+          'mb-2 grid gap-1 rounded-lg bg-muted p-1 sm:hidden',
+          tabs.length === 3 ? 'grid-cols-3' : 'grid-cols-2',
+        )}
+      >
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={active.id === t.id}
+            onClick={() => onTabChange(t.id)}
+            className={cn(
+              'truncate rounded-md px-2 py-1.5 text-sm font-medium transition-colors',
+              active.id === t.id
+                ? 'bg-card text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {t.title}
+          </button>
+        ))}
+      </div>
+      <div className="sm:hidden">
+        <SideRoster title={active.title} players={active.players} />
+      </div>
+
+      <div className="hidden gap-3 sm:grid sm:grid-cols-2">
+        <SideRoster title={nameA} players={playersA} />
+        <SideRoster title={nameB} players={playersB} />
+      </div>
+    </>
   )
 }
 

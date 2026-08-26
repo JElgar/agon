@@ -5,6 +5,7 @@ import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import {
   Dialog,
   DialogContent,
@@ -28,11 +29,14 @@ export interface CreateTeamDialogProps {
 /**
  * Create-a-team dialog: name, an optional logo, and optional initial
  * invites — all sent in one `POST /teams`. The creator becomes the team's
- * first (admin) member server-side; anyone tagged here gets a real invite
- * (pending roster slot + a standalone invitation they can accept), the same
- * as inviting them after the fact via `POST /teams/{id}/invitations`. On
- * success, invalidates `['my-teams']` so the caller's list refreshes with the
- * new team, then closes.
+ * owner server-side; anyone tagged here gets a real invite (pending roster
+ * slot + a standalone invitation they can accept), the same as inviting them
+ * after the fact via `POST /teams/{id}/invitations` — including the same
+ * "invite as admin" choice, which applies to everyone tagged in this one
+ * dialog (invite some as admin and others as plain members by creating the
+ * team, then using `InviteToTeamDialog` for the second batch). On success,
+ * invalidates `['my-teams']` so the caller's list refreshes with the new
+ * team, then closes.
  */
 export function CreateTeamDialog({ children, onCreated }: CreateTeamDialogProps) {
   const queryClient = useQueryClient()
@@ -41,6 +45,7 @@ export function CreateTeamDialog({ children, onCreated }: CreateTeamDialogProps)
   const [name, setName] = useState('')
   const [assetId, setAssetId] = useState<string | null>(null)
   const [invitees, setInvitees] = useState<TaggedPlayer[]>([])
+  const [inviteAsAdmin, setInviteAsAdmin] = useState(false)
 
   const canSave = name.trim() !== ''
 
@@ -55,6 +60,7 @@ export function CreateTeamDialog({ children, onCreated }: CreateTeamDialogProps)
         invited_external_names: invitees
           .filter((p) => p.kind === 'external')
           .map((p) => p.name),
+        invited_role: inviteAsAdmin ? 'admin' : undefined,
       }
       const { data, error } = await fetchClient.POST('/teams', { body })
       if (error || !data) throw new Error('Could not create team')
@@ -74,6 +80,7 @@ export function CreateTeamDialog({ children, onCreated }: CreateTeamDialogProps)
       setName('')
       setAssetId(null)
       setInvitees([])
+      setInviteAsAdmin(false)
       mutation.reset()
     }
   }
@@ -120,6 +127,23 @@ export function CreateTeamDialog({ children, onCreated }: CreateTeamDialogProps)
               onChange={setInvitees}
               currentUserId={currentUserId}
             />
+            {invitees.length > 0 && (
+              <div className="flex items-center justify-between rounded-lg border px-3 py-2">
+                <div>
+                  <Label htmlFor="invite-as-admin" className="text-sm">
+                    Invite as admin
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    Everyone tagged above can manage the team, not just view it.
+                  </p>
+                </div>
+                <Switch
+                  id="invite-as-admin"
+                  checked={inviteAsAdmin}
+                  onCheckedChange={setInviteAsAdmin}
+                />
+              </div>
+            )}
           </div>
 
           {mutation.isError && (

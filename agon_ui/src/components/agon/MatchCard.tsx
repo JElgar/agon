@@ -348,19 +348,19 @@ export function MatchCard({
           the usual confirmed/pending result; a finished cricket match with
           per-innings detail gets its own tile too. */}
       {footballState ? (
-        <button type="button" onClick={onOpen} className="mx-3.5 mb-3 block w-full text-left">
+        <button type="button" onClick={onOpen} className="mx-3.5 mb-3 block text-left">
           <LiveMatchBlock match={orderedMatch} state={footballState} />
         </button>
       ) : netballState ? (
-        <button type="button" onClick={onOpen} className="mx-3.5 mb-3 block w-full text-left">
+        <button type="button" onClick={onOpen} className="mx-3.5 mb-3 block text-left">
           <NetballMatchBlock match={orderedMatch} state={netballState} />
         </button>
       ) : cricketState ? (
-        <button type="button" onClick={onOpen} className="mx-3.5 mb-3 block w-full text-left">
+        <button type="button" onClick={onOpen} className="mx-3.5 mb-3 block text-left">
           <CricketMatchBlock match={orderedMatch} state={cricketState} showDescription={false} />
         </button>
       ) : cricketScore ? (
-        <button type="button" onClick={onOpen} className="mx-3.5 mb-3 block w-full text-left">
+        <button type="button" onClick={onOpen} className="mx-3.5 mb-3 block text-left">
           <CricketScoreBlock match={orderedMatch} score={cricketScore} showDescription={false} />
         </button>
       ) : (
@@ -368,7 +368,7 @@ export function MatchCard({
           <button
             type="button"
             onClick={onOpen}
-            className="mx-3.5 mb-3 block w-full rounded-lg bg-muted/50 px-3.5 py-3 text-left"
+            className="mx-3.5 mb-3 block rounded-lg bg-muted/50 px-3.5 py-3 text-left"
           >
             <div className="flex items-center justify-between">
               <div className="flex min-w-0 flex-1 items-center gap-2">

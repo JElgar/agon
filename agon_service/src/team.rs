@@ -37,7 +37,27 @@ pub struct TeamMember {
 #[derive(Enum)]
 #[oai(rename_all = "snake_case")]
 pub enum TeamRole {
-    /// Can manage the team and accept fixtures on its behalf.
+    /// The team's creator, permanently — there's no ownership-transfer flow
+    /// yet. The only role that can delete the team; every other management
+    /// action an admin can also do. The owner's own role can never be
+    /// changed, and the owner can never be removed as a member.
+    Owner,
+    /// Can manage the team — edit its name/logo, add/remove/invite members,
+    /// change another (non-owner) member's role — and accept fixtures on its
+    /// behalf. Everything but delete the team.
+    Admin,
+    /// View-only: sees the team like anyone else, no management actions.
+    Member,
+}
+
+/// A role assignable via `PATCH /teams/{team_id}/members/{member_id}`.
+/// Deliberately a separate, smaller type from `TeamRole` rather than reusing
+/// it with runtime validation: `Owner` is permanent (no ownership-transfer
+/// flow), so excluding it here makes "you can't set someone to owner" a type
+/// error for API consumers instead of a 400 they have to hit first.
+#[derive(Enum)]
+#[oai(rename_all = "snake_case")]
+pub enum AssignableTeamRole {
     Admin,
     Member,
 }
@@ -80,6 +100,11 @@ pub struct UpdateTeamInput {
 #[derive(Object)]
 pub struct AddTeamMembersInput {
     pub user_ids: Vec<String>,
+}
+
+#[derive(Object)]
+pub struct UpdateTeamMemberRoleInput {
+    pub role: AssignableTeamRole,
 }
 
 /// How multiple `team_id` values combine in `GET /matches`'s team filter.

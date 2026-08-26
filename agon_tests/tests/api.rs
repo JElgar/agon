@@ -3552,6 +3552,298 @@ async fn patch_team_updates_name() {
 }
 
 // ---------------------------------------------------------------------------
+// Team roles & permissions
+// ---------------------------------------------------------------------------
+
+/// The full permission matrix in one pass: a plain member (and a total
+/// stranger) is rejected from every management action; an admin — promoted
+/// via `PATCH /teams/:id/members/:id`'s role endpoint — can do everything a
+/// member can't (rename, add members, invite, remove a member, promote
+/// someone else), except delete the team, which stays owner-only.
+#[tokio::test]
+async fn team_admin_can_manage_but_member_cannot() {
+    let (owner_config, _owner) = new_user().await;
+    let (admin_config, admin) = new_user().await;
+    let (member_config, member) = new_user().await;
+    let (stranger_config, _stranger) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Roles FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![],
+            invited_external_names: vec![],
+        },
+    )
+    .await
+    .expect("create team");
+
+    teams_team_id_members_post(
+        &owner_config,
+        &team.id,
+        models::AddTeamMembersInput {
+            user_ids: vec![admin.profile.id.clone(), member.profile.id.clone()],
+        },
+    )
+    .await
+    .expect("add members");
+    let members = all_team_members(&owner_config, &team.id).await;
+    let admin_membership_id =
+        membership_id_for(&members, &admin.profile.id).expect("admin membership");
+    let member_membership_id =
+        membership_id_for(&members, &member.profile.id).expect("member membership");
+
+    // The owner promotes the future admin — still just a member so far, so
+    // this also covers "owner can change roles".
+    teams_team_id_members_member_id_patch(
+        &owner_config,
+        &team.id,
+        &admin_membership_id,
+        models::UpdateTeamMemberRoleInput {
+            role: models::AssignableTeamRole::Admin,
+        },
+    )
+    .await
+    .expect("promote to admin");
+
+    let rename_input = || models::UpdateTeamInput {
+        name: Some("Hijacked".to_string()),
+        logo_asset_id: None,
+    };
+    let no_invitees = || models::AddInvitationsInput {
+        invited_user_ids: vec![],
+        invited_external_names: vec![],
+        side_id: None,
+    };
+
+    // A plain member can't manage the team...
+    assert_forbidden(teams_team_id_patch(&member_config, &team.id, rename_input()).await);
+    assert_forbidden(
+        teams_team_id_members_post(
+            &member_config,
+            &team.id,
+            models::AddTeamMembersInput { user_ids: vec![] },
+        )
+        .await,
+    );
+    assert_forbidden(teams_team_id_invitations_post(&member_config, &team.id, no_invitees()).await);
+    assert_forbidden(
+        teams_team_id_members_member_id_delete(&member_config, &team.id, &member_membership_id)
+            .await,
+    );
+    assert_forbidden(
+        teams_team_id_members_member_id_patch(
+            &member_config,
+            &team.id,
+            &member_membership_id,
+            models::UpdateTeamMemberRoleInput {
+                role: models::AssignableTeamRole::Admin,
+            },
+        )
+        .await,
+    );
+    // ...and neither can a total stranger, not even on the team at all.
+    assert_forbidden(teams_team_id_patch(&stranger_config, &team.id, rename_input()).await);
+
+    // The admin, though, can do everything the owner can except delete.
+    let renamed = teams_team_id_patch(
+        &admin_config,
+        &team.id,
+        models::UpdateTeamInput {
+            name: Some("Renamed by admin".to_string()),
+            logo_asset_id: None,
+        },
+    )
+    .await
+    .expect("admin can rename");
+    assert_eq!(renamed.name, "Renamed by admin");
+
+    let (_extra_config, extra) = new_user().await;
+    teams_team_id_members_post(
+        &admin_config,
+        &team.id,
+        models::AddTeamMembersInput {
+            user_ids: vec![extra.profile.id.clone()],
+        },
+    )
+    .await
+    .expect("admin can add members");
+
+    let invited = teams_team_id_invitations_post(
+        &admin_config,
+        &team.id,
+        models::AddInvitationsInput {
+            invited_user_ids: vec![],
+            invited_external_names: vec!["Guest".to_string()],
+            side_id: None,
+        },
+    )
+    .await
+    .expect("admin can invite");
+    assert_eq!(invited.len(), 1);
+
+    let members_now = all_team_members(&admin_config, &team.id).await;
+    let extra_membership_id =
+        membership_id_for(&members_now, &extra.profile.id).expect("extra's membership");
+    teams_team_id_members_member_id_patch(
+        &admin_config,
+        &team.id,
+        &extra_membership_id,
+        models::UpdateTeamMemberRoleInput {
+            role: models::AssignableTeamRole::Admin,
+        },
+    )
+    .await
+    .expect("admin can promote someone else");
+
+    teams_team_id_members_member_id_delete(&admin_config, &team.id, &member_membership_id)
+        .await
+        .expect("admin can remove a member");
+
+    // But only the owner may delete the team itself.
+    assert_forbidden(teams_team_id_delete(&admin_config, &team.id).await);
+}
+
+/// The team's owner can't be removed, nor have their role changed, by
+/// anyone — not an admin, and not even themselves. Deleting the whole team
+/// is the only way the owner relationship ever ends (see
+/// `only_owner_can_delete_team`); there's no ownership-transfer flow.
+#[tokio::test]
+async fn team_owner_cannot_be_removed_or_have_their_role_changed() {
+    let (owner_config, owner) = new_user().await;
+    let (admin_config, admin) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Protected FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![],
+            invited_external_names: vec![],
+        },
+    )
+    .await
+    .expect("create team");
+    teams_team_id_members_post(
+        &owner_config,
+        &team.id,
+        models::AddTeamMembersInput {
+            user_ids: vec![admin.profile.id.clone()],
+        },
+    )
+    .await
+    .expect("add admin candidate");
+    let members = all_team_members(&owner_config, &team.id).await;
+    let admin_membership_id = membership_id_for(&members, &admin.profile.id).expect("admin id");
+    let owner_membership_id = membership_id_for(&members, &owner.profile.id).expect("owner id");
+    teams_team_id_members_member_id_patch(
+        &owner_config,
+        &team.id,
+        &admin_membership_id,
+        models::UpdateTeamMemberRoleInput {
+            role: models::AssignableTeamRole::Admin,
+        },
+    )
+    .await
+    .expect("promote");
+
+    // Neither the owner themselves nor an admin can remove the owner.
+    assert_forbidden(
+        teams_team_id_members_member_id_delete(&owner_config, &team.id, &owner_membership_id).await,
+    );
+    assert_forbidden(
+        teams_team_id_members_member_id_delete(&admin_config, &team.id, &owner_membership_id).await,
+    );
+
+    // Nor change the owner's role, from either side.
+    let demote = || models::UpdateTeamMemberRoleInput {
+        role: models::AssignableTeamRole::Member,
+    };
+    assert_forbidden(
+        teams_team_id_members_member_id_patch(
+            &owner_config,
+            &team.id,
+            &owner_membership_id,
+            demote(),
+        )
+        .await,
+    );
+    assert_forbidden(
+        teams_team_id_members_member_id_patch(
+            &admin_config,
+            &team.id,
+            &owner_membership_id,
+            demote(),
+        )
+        .await,
+    );
+
+    // The owner is still there, still the owner.
+    let members_after = all_team_members(&owner_config, &team.id).await;
+    let owner_role = members_after
+        .iter()
+        .find_map(|m| match &*m.member {
+            models::Member::User(u) if u.id == owner_membership_id => Some(m.role),
+            _ => None,
+        })
+        .expect("owner still on the roster");
+    assert_eq!(owner_role, models::TeamRole::Owner);
+}
+
+/// Delete-team is owner-only, and actually removes the team — a 404 on a
+/// subsequent `GET` (both the team itself and its member list), not just a
+/// 204 that leaves stale data behind.
+#[tokio::test]
+async fn only_owner_can_delete_team() {
+    let (owner_config, _owner) = new_user().await;
+    let (admin_config, admin) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Deletable FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![],
+            invited_external_names: vec![],
+        },
+    )
+    .await
+    .expect("create team");
+    teams_team_id_members_post(
+        &owner_config,
+        &team.id,
+        models::AddTeamMembersInput {
+            user_ids: vec![admin.profile.id.clone()],
+        },
+    )
+    .await
+    .expect("add admin candidate");
+    let members = all_team_members(&owner_config, &team.id).await;
+    let admin_membership_id = membership_id_for(&members, &admin.profile.id).expect("admin id");
+    teams_team_id_members_member_id_patch(
+        &owner_config,
+        &team.id,
+        &admin_membership_id,
+        models::UpdateTeamMemberRoleInput {
+            role: models::AssignableTeamRole::Admin,
+        },
+    )
+    .await
+    .expect("promote");
+
+    // An admin — who can do everything else — still can't delete the team.
+    assert_forbidden(teams_team_id_delete(&admin_config, &team.id).await);
+
+    // The owner can, and it's actually gone afterward.
+    teams_team_id_delete(&owner_config, &team.id)
+        .await
+        .expect("owner deletes team");
+    assert_not_found(teams_team_id_get(&owner_config, &team.id).await);
+    assert_not_found(teams_team_id_members_get(&owner_config, &team.id, None, None).await);
+}
+
+// ---------------------------------------------------------------------------
 // Invitations: fetch, decline, revoke
 // ---------------------------------------------------------------------------
 
@@ -3794,6 +4086,10 @@ fn assert_status_with_content<T, E: std::fmt::Debug>(
 
 fn assert_not_found<T, E: std::fmt::Debug>(response: Result<T, openapi::apis::Error<E>>) {
     assert_status(response, reqwest::StatusCode::NOT_FOUND);
+}
+
+fn assert_forbidden<T, E: std::fmt::Debug>(response: Result<T, openapi::apis::Error<E>>) {
+    assert_status(response, reqwest::StatusCode::FORBIDDEN);
 }
 
 fn assert_bad_request<T, E: std::fmt::Debug>(response: Result<T, openapi::apis::Error<E>>) {

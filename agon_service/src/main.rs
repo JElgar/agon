@@ -39,14 +39,15 @@ use auth::{JwtClaims, JwtVerifier};
 // Boundary mapping between API models and DAO records.
 mod mapping;
 use mapping::{
-    comment_from_record, dao_internal, deleted_user_profile, derive_live_score,
-    device_platform_to_record, feed_match_from_records, invitation_detail_from_record,
-    invitation_from_record, invitation_status_from_str, invitation_status_str,
-    live_event_from_record, match_format_sport_tag, match_format_to_record, match_from_records,
-    match_score_from_record, match_score_to_record, match_status_str, match_type_tag,
-    new_live_event_to_dao, notification_actor_id, notification_from_record, roster_preview_player,
-    score_submission_from_record, score_to_record, search_match_from_records, team_from_records,
-    team_list_item_from_record, team_member_from_record, user_profile_from_record,
+    assignable_team_role_str, comment_from_record, dao_internal, deleted_user_profile,
+    derive_live_score, device_platform_to_record, feed_match_from_records,
+    invitation_detail_from_record, invitation_from_record, invitation_status_from_str,
+    invitation_status_str, live_event_from_record, match_format_sport_tag, match_format_to_record,
+    match_from_records, match_score_from_record, match_score_to_record, match_status_str,
+    match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
+    roster_preview_player, score_submission_from_record, score_to_record,
+    search_match_from_records, team_from_records, team_list_item_from_record,
+    team_member_from_record, user_profile_from_record,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -84,7 +85,7 @@ use membership::{
 mod team;
 use team::{
     AddTeamMembersInput, CreateTeamInput, Team, TeamListItem, TeamMatchMode, TeamMember, TeamRole,
-    UpdateTeamInput,
+    UpdateTeamInput, UpdateTeamMemberRoleInput,
 };
 
 mod notification;
@@ -1225,6 +1226,10 @@ enum UpdateTeamResponse {
     #[oai(status = 400)]
     ValidationError(PlainText<String>),
 
+    /// The caller is neither the team's owner nor an admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
     #[oai(status = 404)]
     NotFound(PlainText<String>),
 }
@@ -1234,6 +1239,40 @@ enum RemoveTeamMemberResponse {
     #[oai(status = 200)]
     Team(Json<Team>),
 
+    /// The caller is neither the team's owner nor an admin, or the target is
+    /// the team's owner (never removable — see the endpoint's doc comment).
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum DeleteTeamResponse {
+    /// The team (and everything in its partition) is gone.
+    #[oai(status = 204)]
+    Ok,
+
+    /// The caller is not the team's owner.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum UpdateTeamMemberRoleResponse {
+    #[oai(status = 204)]
+    Ok,
+
+    /// The caller is neither the team's owner nor an admin, or the target is
+    /// the team's owner (role is permanent — see the endpoint's doc comment).
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    /// The team, or the membership within it, doesn't exist.
     #[oai(status = 404)]
     NotFound(PlainText<String>),
 }
@@ -1623,6 +1662,10 @@ enum ListTeamMembersResponse {
 enum AddTeamMembersResponse {
     #[oai(status = 200)]
     Team(Json<Team>),
+
+    /// The caller is neither the team's owner nor an admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
@@ -4402,14 +4445,15 @@ impl Api {
             follower_count: 0,
             created_at: now.clone(),
         };
-        // The creator becomes the first member with the Admin role (already an
-        // Agon user, so no invitation to accept).
+        // The creator becomes the first member with the Owner role (already
+        // an Agon user, so no invitation to accept) — permanent, since
+        // there's no ownership-transfer flow yet.
         let creator = dao::records::TeamMemberRecord {
             team_id: team.id.clone(),
             membership_id: new_id(),
             user_id: Some(uid.clone()),
             display_name: None,
-            role: String::from("admin"),
+            role: String::from("owner"),
             invitation: None,
             created_at: now,
         };
@@ -4517,21 +4561,27 @@ impl Api {
     async fn add_team_members(
         &self,
         Data(dao): Data<&dao::Dao>,
-        AuthSchema(_jwt_data): AuthSchema,
+        AuthSchema(jwt_data): AuthSchema,
         Path(team_id): Path<String>,
         input: Json<AddTeamMembersInput>,
     ) -> Result<AddTeamMembersResponse> {
         info!("Adding {} members to team {team_id}", input.user_ids.len());
+        let uid = self.require_uid(dao, &jwt_data).await?;
 
-        // Team must exist. Keep the meta — adding members doesn't change it,
-        // so the same read serves the response too (members are no longer
-        // embedded, see `Team`'s doc comment, so there's nothing else to
-        // re-fetch).
-        let Some(meta) = dao.get_team_meta(&team_id).await.map_err(dao_internal)? else {
+        // Team must exist, and the caller must be its owner or an admin.
+        // Keep the meta — adding members doesn't change it, so the same read
+        // serves the response too (members are no longer embedded, see
+        // `Team`'s doc comment, so there's nothing else to re-fetch).
+        let Some(agg) = dao.get_team(&team_id).await.map_err(dao_internal)? else {
             return Ok(AddTeamMembersResponse::NotFound(PlainText(
                 "team not found".into(),
             )));
         };
+        if !caller_can_manage_team(&agg, &uid) {
+            return Ok(AddTeamMembersResponse::Forbidden(PlainText(
+                "only the team's owner or an admin can add members".into(),
+            )));
+        }
 
         // Add each user as a Member (no invitation — ad-hoc add).
         let now = now_iso();
@@ -4551,7 +4601,7 @@ impl Api {
         }
 
         Ok(AddTeamMembersResponse::Team(Json(team_from_records(
-            &meta, false,
+            &agg.team, false,
         ))))
     }
 
@@ -4566,6 +4616,17 @@ impl Api {
         info!("Updating team {team_id}");
         let input = input.0;
         let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let Some(agg) = dao.get_team(&team_id).await.map_err(dao_internal)? else {
+            return Ok(UpdateTeamResponse::NotFound(PlainText(
+                "team not found".into(),
+            )));
+        };
+        if !caller_can_manage_team(&agg, &uid) {
+            return Ok(UpdateTeamResponse::Forbidden(PlainText(
+                "only the team's owner or an admin can update it".into(),
+            )));
+        }
 
         // Some(Some(url)) = set a new logo; Some(None) is never produced here
         // (there's no "clear logo" input yet — a fresh asset is the only way
@@ -4613,18 +4674,41 @@ impl Api {
     async fn remove_team_member(
         &self,
         Data(dao): Data<&dao::Dao>,
-        AuthSchema(_jwt_data): AuthSchema,
+        AuthSchema(jwt_data): AuthSchema,
         Path(team_id): Path<String>,
         Path(member_id): Path<String>,
     ) -> Result<RemoveTeamMemberResponse> {
         info!("Removing member {member_id} from team {team_id}");
-        // Team must exist. Keep the meta — removing a member doesn't change
-        // it, so this same read serves the response too.
-        let Some(meta) = dao.get_team_meta(&team_id).await.map_err(dao_internal)? else {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        // Team must exist, and the caller must be its owner or an admin.
+        // Keep the aggregate — removing a member doesn't change the meta, so
+        // `agg.team` serves the response too.
+        let Some(agg) = dao.get_team(&team_id).await.map_err(dao_internal)? else {
             return Ok(RemoveTeamMemberResponse::NotFound(PlainText(
                 "team not found".into(),
             )));
         };
+        if !caller_can_manage_team(&agg, &uid) {
+            return Ok(RemoveTeamMemberResponse::Forbidden(PlainText(
+                "only the team's owner or an admin can remove members".into(),
+            )));
+        }
+        // The owner can never be removed via this endpoint — an admin
+        // kicking the owner (or the owner kicking themselves) would leave
+        // the team permanently adminless-of-owners, since there's no
+        // ownership-transfer flow to recover with. Deleting the whole team
+        // is the owner's only way out.
+        if agg
+            .members
+            .iter()
+            .any(|m| m.membership_id == member_id && m.role == "owner")
+        {
+            return Ok(RemoveTeamMemberResponse::Forbidden(PlainText(
+                "the team's owner can't be removed".into(),
+            )));
+        }
+
         match dao.remove_team_member(&team_id, &member_id).await {
             Ok(()) => {}
             Err(dao::DaoError::NotFound(_)) => {
@@ -4635,8 +4719,79 @@ impl Api {
             Err(e) => return Err(dao_internal(e)),
         }
         Ok(RemoveTeamMemberResponse::Team(Json(team_from_records(
-            &meta, false,
+            &agg.team, false,
         ))))
+    }
+
+    /// Change a member's role between `admin` and `member` — never `owner`,
+    /// which is permanent (see `AssignableTeamRole`'s doc comment). Owner or
+    /// admin may call this; the target can't be the team's owner (their role
+    /// can't be changed by anyone, including themselves).
+    #[oai(path = "/teams/:team_id/members/:member_id", method = "patch")]
+    async fn update_team_member_role(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(team_id): Path<String>,
+        Path(member_id): Path<String>,
+        input: Json<UpdateTeamMemberRoleInput>,
+    ) -> Result<UpdateTeamMemberRoleResponse> {
+        info!("Setting role of member {member_id} on team {team_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let Some(agg) = dao.get_team(&team_id).await.map_err(dao_internal)? else {
+            return Ok(UpdateTeamMemberRoleResponse::NotFound(PlainText(
+                "team not found".into(),
+            )));
+        };
+        if !caller_can_manage_team(&agg, &uid) {
+            return Ok(UpdateTeamMemberRoleResponse::Forbidden(PlainText(
+                "only the team's owner or an admin can change a member's role".into(),
+            )));
+        }
+        let Some(target) = agg.members.iter().find(|m| m.membership_id == member_id) else {
+            return Ok(UpdateTeamMemberRoleResponse::NotFound(PlainText(
+                "member not found".into(),
+            )));
+        };
+        if target.role == "owner" {
+            return Ok(UpdateTeamMemberRoleResponse::Forbidden(PlainText(
+                "the team's owner's role can't be changed".into(),
+            )));
+        }
+
+        dao.update_team_member_role(&team_id, &member_id, assignable_team_role_str(&input.role))
+            .await
+            .map_err(dao_internal)?;
+        Ok(UpdateTeamMemberRoleResponse::Ok)
+    }
+
+    /// Permanently delete a team — owner-only. Cascades: every membership and
+    /// follow edge in the team's partition is deleted along with it
+    /// (`Dao::delete_team`), not just the team's own meta item.
+    #[oai(path = "/teams/:team_id", method = "delete")]
+    async fn delete_team(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(team_id): Path<String>,
+    ) -> Result<DeleteTeamResponse> {
+        info!("Deleting team {team_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let Some(agg) = dao.get_team(&team_id).await.map_err(dao_internal)? else {
+            return Ok(DeleteTeamResponse::NotFound(PlainText(
+                "team not found".into(),
+            )));
+        };
+        if !caller_is_team_owner(&agg, &uid) {
+            return Ok(DeleteTeamResponse::Forbidden(PlainText(
+                "only the team's owner can delete it".into(),
+            )));
+        }
+
+        dao.delete_team(&team_id).await.map_err(dao_internal)?;
+        Ok(DeleteTeamResponse::Ok)
     }
 
     #[oai(path = "/matches/:match_id/invitations", method = "post")]
@@ -4755,19 +4910,24 @@ impl Api {
     ) -> Result<AddInvitationsResponse> {
         info!("Inviting to team {team_id}");
         let uid = self.require_uid(dao, &jwt_data).await?;
-        let team = match dao.get_team_meta(&team_id).await.map_err(dao_internal)? {
-            Some(t) => t,
+        let agg = match dao.get_team(&team_id).await.map_err(dao_internal)? {
+            Some(agg) => agg,
             None => {
                 return Ok(AddInvitationsResponse::NotFound(PlainText(
                     "team not found".into(),
                 )));
             }
         };
+        if !caller_can_manage_team(&agg, &uid) {
+            return Ok(AddInvitationsResponse::Forbidden(PlainText(
+                "only the team's owner or an admin can invite people".into(),
+            )));
+        }
         let created = self
             .invite_to_team(
                 dao,
                 &team_id,
-                &team.name,
+                &agg.team.name,
                 &uid,
                 &input.invited_user_ids,
                 &input.invited_external_names,
@@ -6190,6 +6350,39 @@ fn caller_is_participant(players: &[dao::records::MatchPlayerRecord], uid: &str)
 /// match they set up between other people without playing in it themselves.
 fn caller_can_manage_match(agg: &dao::match_ops::MatchAggregate, uid: &str) -> bool {
     agg.match_.created_by_user_id == uid || caller_is_participant(&agg.players, uid)
+}
+
+/// The caller's role on a team, if they're an accepted member — `None` for a
+/// non-member or a pending (not yet accepted) invitee. Pending invitees are
+/// deliberately excluded, mirroring `caller_is_participant`'s match-side
+/// exclusion: their `role` is set (always `"member"` today) ahead of
+/// acceptance, but that shouldn't grant any permission before they've
+/// actually joined.
+fn caller_team_role<'a>(agg: &'a dao::team::TeamAggregate, uid: &str) -> Option<&'a str> {
+    agg.members
+        .iter()
+        .find(|m| {
+            m.user_id.as_deref() == Some(uid)
+                && match &m.invitation {
+                    None => true,
+                    Some(inv) => inv.status == "accepted",
+                }
+        })
+        .map(|m| m.role.as_str())
+}
+
+/// Whether the caller is the team's owner — the only role that can delete
+/// the team or change another member's role.
+fn caller_is_team_owner(agg: &dao::team::TeamAggregate, uid: &str) -> bool {
+    caller_team_role(agg, uid) == Some("owner")
+}
+
+/// Whether the caller can manage the team — edit its name/logo, add/remove/
+/// invite members, and change another (non-owner) member's role: owner or
+/// admin. Not delete-the-team, which is owner-only (see
+/// `caller_is_team_owner`) — the one action admins can't also do.
+fn caller_can_manage_team(agg: &dao::team::TeamAggregate, uid: &str) -> bool {
+    matches!(caller_team_role(agg, uid), Some("owner") | Some("admin"))
 }
 
 fn build_invited_player(

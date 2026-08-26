@@ -235,6 +235,60 @@ impl Dao {
         }
     }
 
+    /// Permanently delete a team: its meta item and every item in its
+    /// partition — every member, every follower. The only full-partition
+    /// cascade delete in the DAO (contrast `remove_match_players`, which
+    /// batch-deletes a known set of keys, not a whole queried partition).
+    /// Authorization (owner-only) is the caller's responsibility, same as
+    /// every other team mutation here. Idempotent: deleting an already-gone
+    /// (or never existed) team is a no-op, not an error — the caller has
+    /// already done its own existence check to authorize the delete, so
+    /// there's nothing useful a `NotFound` here would add.
+    #[tracing::instrument(skip(self))]
+    pub async fn delete_team(&self, team_id: &str) -> DaoResult<()> {
+        let pk = Pk::Team(team_id.into()).to_string();
+        let mut start_key = None;
+        let mut requests = Vec::new();
+
+        loop {
+            let out = self
+                .client
+                .query()
+                .table_name(self.table())
+                .key_condition_expression("#pk = :pk")
+                .expression_attribute_names("#pk", ATTR_PK)
+                .expression_attribute_names("#sk", ATTR_SK)
+                .expression_attribute_values(":pk", s(pk.clone()))
+                .projection_expression("#pk, #sk")
+                .set_exclusive_start_key(start_key)
+                .send()
+                .await
+                .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+            for key in out.items.unwrap_or_default() {
+                let delete = aws_sdk_dynamodb::types::DeleteRequest::builder()
+                    .set_key(Some(key))
+                    .build()
+                    .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+                requests.push(
+                    aws_sdk_dynamodb::types::WriteRequest::builder()
+                        .delete_request(delete)
+                        .build(),
+                );
+            }
+
+            match out.last_evaluated_key {
+                Some(k) => start_key = Some(k),
+                None => break,
+            }
+        }
+
+        for chunk in requests.chunks(super::batch::BATCH_WRITE_MAX) {
+            self.flush_batch_write(chunk.to_vec()).await?;
+        }
+        Ok(())
+    }
+
     /// Add (or overwrite) a single team member. Used for both single adds and
     /// the fan-out of a bulk invite (call per member).
     #[tracing::instrument(skip(self, member), fields(membership_id = %member.membership_id))]
@@ -269,6 +323,38 @@ impl Dao {
         match result {
             Ok(_) => Ok(()),
             Err(e) if is_delete_conditional_failure(&e) => Err(DaoError::NotFound(format!(
+                "membership {membership_id} on team {team_id}"
+            ))),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// Change a member's `role` (`"admin"` / `"member"` — never `"owner"`,
+    /// there being no ownership-transfer flow yet; the caller validates that
+    /// before calling this). `NotFound` if the membership doesn't exist.
+    #[tracing::instrument(skip(self))]
+    pub async fn update_team_member_role(
+        &self,
+        team_id: &str,
+        membership_id: &str,
+        role: &str,
+    ) -> DaoResult<()> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Team(team_id.into()).to_string()))
+            .key("SK", s(Sk::Member(membership_id.into()).to_string()))
+            .update_expression("SET #role = :role")
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#role", "role")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_values(":role", s(role))
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => Err(DaoError::NotFound(format!(
                 "membership {membership_id} on team {team_id}"
             ))),
             Err(e) => Err(DaoError::Dynamo(e.to_string())),

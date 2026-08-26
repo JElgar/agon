@@ -11,7 +11,11 @@ function InputGroup({ className, ...props }: React.ComponentProps<"div">) {
       data-slot="input-group"
       role="group"
       className={cn(
-        "group/input-group relative flex w-full items-center rounded-md border border-input shadow-xs transition-[color,box-shadow] outline-none dark:bg-input/30",
+        // bg-card (not the upstream dark:bg-input/30) to match every other
+        // box in this component — tagged-player rows, the picked-team chip,
+        // the "Name this side" input — all sit on bg-card inside this
+        // section's bg-muted/40 card, in both themes.
+        "group/input-group relative flex w-full items-center rounded-md border border-input bg-card shadow-xs transition-[color,box-shadow] outline-none",
         "h-9 min-w-0",
 
         // Variants based on alignment.

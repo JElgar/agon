@@ -5511,7 +5511,9 @@ impl Api {
         if team_ids.is_empty() {
             return Ok(Default::default());
         }
-        dao.batch_get_team_metas(team_ids).await.map_err(dao_internal)
+        dao.batch_get_team_metas(team_ids)
+            .await
+            .map_err(dao_internal)
     }
 
     /// Resolve one match's side names (and, wherever the resolved name is

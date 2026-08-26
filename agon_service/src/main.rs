@@ -85,7 +85,7 @@ use membership::{
 mod team;
 use team::{
     AddTeamMembersInput, CreateTeamInput, Team, TeamListItem, TeamMatchMode, TeamMember, TeamRole,
-    UpdateTeamInput, UpdateTeamMemberRoleInput,
+    TransferTeamOwnershipInput, UpdateTeamInput, UpdateTeamMemberRoleInput,
 };
 
 mod notification;
@@ -1273,6 +1273,43 @@ enum UpdateTeamMemberRoleResponse {
     Forbidden(PlainText<String>),
 
     /// The team, or the membership within it, doesn't exist.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum LeaveTeamResponse {
+    /// The caller is no longer a member.
+    #[oai(status = 204)]
+    Ok,
+
+    /// The caller is the team's owner — they must transfer ownership (`POST
+    /// /teams/:team_id/transfer-ownership`) before they can leave.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The team doesn't exist, or the caller isn't a member of it.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum TransferTeamOwnershipResponse {
+    /// Ownership moved; the caller is now an admin instead.
+    #[oai(status = 204)]
+    Ok,
+
+    /// The target is already the owner, or isn't an accepted member (a
+    /// pending invitee, say — ownership can only go to someone who's
+    /// actually joined).
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller is not the team's owner.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    /// The team, or the target membership, doesn't exist.
     #[oai(status = 404)]
     NotFound(PlainText<String>),
 }
@@ -4794,6 +4831,104 @@ impl Api {
         Ok(DeleteTeamResponse::Ok)
     }
 
+    /// Leave a team the caller is an accepted member of. The owner can't
+    /// leave this way — `POST /teams/:team_id/transfer-ownership` first,
+    /// which hands the role to someone else and demotes the caller to admin,
+    /// at which point this works. Without that block a leaving owner would
+    /// take the role with them, leaving the team permanently ownerless (no
+    /// transfer flow to recover with once nobody holds it).
+    #[oai(path = "/teams/:team_id/leave", method = "post")]
+    async fn leave_team(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(team_id): Path<String>,
+    ) -> Result<LeaveTeamResponse> {
+        info!("Leaving team {team_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let Some(agg) = dao.get_team(&team_id).await.map_err(dao_internal)? else {
+            return Ok(LeaveTeamResponse::NotFound(PlainText(
+                "team not found".into(),
+            )));
+        };
+        let Some(membership) = caller_team_membership(&agg, &uid) else {
+            return Ok(LeaveTeamResponse::NotFound(PlainText(
+                "you're not a member of this team".into(),
+            )));
+        };
+        if membership.role == "owner" {
+            return Ok(LeaveTeamResponse::ValidationError(PlainText(
+                "transfer ownership to someone else before leaving".into(),
+            )));
+        }
+
+        dao.remove_team_member(&team_id, &membership.membership_id)
+            .await
+            .map_err(dao_internal)?;
+        Ok(LeaveTeamResponse::Ok)
+    }
+
+    /// Hand the `owner` role to another accepted member; the caller (the
+    /// current owner) becomes an admin. Owner-only — including the fact that
+    /// there's no other way to become the target of this: an admin can't
+    /// promote themselves to owner via `PATCH .../members/:member_id` either
+    /// (`AssignableTeamRole` excludes `Owner` entirely), so this endpoint is
+    /// the only path ownership ever moves through.
+    #[oai(path = "/teams/:team_id/transfer-ownership", method = "post")]
+    async fn transfer_team_ownership(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(team_id): Path<String>,
+        input: Json<TransferTeamOwnershipInput>,
+    ) -> Result<TransferTeamOwnershipResponse> {
+        info!("Transferring ownership of team {team_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let Some(agg) = dao.get_team(&team_id).await.map_err(dao_internal)? else {
+            return Ok(TransferTeamOwnershipResponse::NotFound(PlainText(
+                "team not found".into(),
+            )));
+        };
+        if !caller_is_team_owner(&agg, &uid) {
+            return Ok(TransferTeamOwnershipResponse::Forbidden(PlainText(
+                "only the team's owner can transfer ownership".into(),
+            )));
+        }
+        // Always `Some` here — `caller_is_team_owner` already confirmed it.
+        let from = caller_team_membership(&agg, &uid).expect("caller is the owner, just checked");
+        let Some(to) = agg
+            .members
+            .iter()
+            .find(|m| m.membership_id == input.member_id)
+        else {
+            return Ok(TransferTeamOwnershipResponse::NotFound(PlainText(
+                "member not found".into(),
+            )));
+        };
+        if to.membership_id == from.membership_id {
+            return Ok(TransferTeamOwnershipResponse::ValidationError(PlainText(
+                "already the owner".into(),
+            )));
+        }
+        let to_is_accepted = to.user_id.is_some()
+            && to
+                .invitation
+                .as_ref()
+                .is_none_or(|inv| inv.status == "accepted");
+        if !to_is_accepted {
+            return Ok(TransferTeamOwnershipResponse::ValidationError(PlainText(
+                "ownership can only go to an accepted member".into(),
+            )));
+        }
+
+        dao.transfer_team_ownership(&team_id, &from.membership_id, &to.membership_id)
+            .await
+            .map_err(dao_internal)?;
+        Ok(TransferTeamOwnershipResponse::Ok)
+    }
+
     #[oai(path = "/matches/:match_id/invitations", method = "post")]
     async fn add_match_invitations(
         &self,
@@ -6352,27 +6487,33 @@ fn caller_can_manage_match(agg: &dao::match_ops::MatchAggregate, uid: &str) -> b
     agg.match_.created_by_user_id == uid || caller_is_participant(&agg.players, uid)
 }
 
-/// The caller's role on a team, if they're an accepted member — `None` for a
-/// non-member or a pending (not yet accepted) invitee. Pending invitees are
-/// deliberately excluded, mirroring `caller_is_participant`'s match-side
-/// exclusion: their `role` is set (always `"member"` today) ahead of
-/// acceptance, but that shouldn't grant any permission before they've
+/// The caller's own membership on a team, if they're an accepted member —
+/// `None` for a non-member or a pending (not yet accepted) invitee. Pending
+/// invitees are deliberately excluded, mirroring `caller_is_participant`'s
+/// match-side exclusion: their `role` is set (always `"member"` today) ahead
+/// of acceptance, but that shouldn't grant any permission before they've
 /// actually joined.
+fn caller_team_membership<'a>(
+    agg: &'a dao::team::TeamAggregate,
+    uid: &str,
+) -> Option<&'a dao::records::TeamMemberRecord> {
+    agg.members.iter().find(|m| {
+        m.user_id.as_deref() == Some(uid)
+            && match &m.invitation {
+                None => true,
+                Some(inv) => inv.status == "accepted",
+            }
+    })
+}
+
+/// The caller's role on a team, if they're an accepted member — see
+/// `caller_team_membership`.
 fn caller_team_role<'a>(agg: &'a dao::team::TeamAggregate, uid: &str) -> Option<&'a str> {
-    agg.members
-        .iter()
-        .find(|m| {
-            m.user_id.as_deref() == Some(uid)
-                && match &m.invitation {
-                    None => true,
-                    Some(inv) => inv.status == "accepted",
-                }
-        })
-        .map(|m| m.role.as_str())
+    caller_team_membership(agg, uid).map(|m| m.role.as_str())
 }
 
 /// Whether the caller is the team's owner — the only role that can delete
-/// the team or change another member's role.
+/// the team or transfer ownership away from itself.
 fn caller_is_team_owner(agg: &dao::team::TeamAggregate, uid: &str) -> bool {
     caller_team_role(agg, uid) == Some("owner")
 }

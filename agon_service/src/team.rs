@@ -107,6 +107,17 @@ pub struct UpdateTeamMemberRoleInput {
     pub role: AssignableTeamRole,
 }
 
+/// The membership (by stable membership id, as seen on `TeamMember.member.id`)
+/// to hand the `owner` role to. A dedicated endpoint/input rather than folding
+/// this into `UpdateTeamMemberRoleInput` — `AssignableTeamRole` deliberately
+/// excludes `Owner` (see its doc comment), and ownership transfer has its own
+/// rule (caller must already be the owner) distinct from a role change
+/// (owner or admin).
+#[derive(Object)]
+pub struct TransferTeamOwnershipInput {
+    pub member_id: String,
+}
+
 /// How multiple `team_id` values combine in `GET /matches`'s team filter.
 /// Meaningless with fewer than two ids.
 #[derive(Enum)]

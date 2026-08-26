@@ -3843,6 +3843,221 @@ async fn only_owner_can_delete_team() {
     assert_not_found(teams_team_id_members_get(&owner_config, &team.id, None, None).await);
 }
 
+/// A plain member and an admin can both leave a team on their own; the
+/// owner can't — until they transfer ownership away (to an accepted member),
+/// at which point they're just an admin and leaving works the same way.
+#[tokio::test]
+async fn member_and_admin_can_leave_but_owner_must_transfer_first() {
+    let (owner_config, owner) = new_user().await;
+    let (member_config, member) = new_user().await;
+    let (admin_config, admin) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Leavable FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![],
+            invited_external_names: vec![],
+        },
+    )
+    .await
+    .expect("create team");
+    teams_team_id_members_post(
+        &owner_config,
+        &team.id,
+        models::AddTeamMembersInput {
+            user_ids: vec![member.profile.id.clone(), admin.profile.id.clone()],
+        },
+    )
+    .await
+    .expect("add members");
+    let members = all_team_members(&owner_config, &team.id).await;
+    let admin_membership_id = membership_id_for(&members, &admin.profile.id).expect("admin id");
+    let owner_membership_id = membership_id_for(&members, &owner.profile.id).expect("owner id");
+    teams_team_id_members_member_id_patch(
+        &owner_config,
+        &team.id,
+        &admin_membership_id,
+        models::UpdateTeamMemberRoleInput {
+            role: models::AssignableTeamRole::Admin,
+        },
+    )
+    .await
+    .expect("promote");
+
+    // The plain member leaves on their own — no owner/admin action needed.
+    teams_team_id_leave_post(&member_config, &team.id)
+        .await
+        .expect("member leaves");
+    let after_member_leaves = all_team_members(&owner_config, &team.id).await;
+    assert!(!member_ids(&after_member_leaves).contains(&member.profile.id));
+
+    // The owner can't — the server rejects it with a specific reason, and
+    // they're still on the roster afterward.
+    assert_status_with_content(
+        teams_team_id_leave_post(&owner_config, &team.id).await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "transfer ownership",
+    );
+    let still_owner = all_team_members(&owner_config, &team.id).await;
+    assert!(member_ids(&still_owner).contains(&owner.profile.id));
+
+    // Transfer ownership to the admin — roles swap...
+    teams_team_id_transfer_ownership_post(
+        &owner_config,
+        &team.id,
+        models::TransferTeamOwnershipInput {
+            member_id: admin_membership_id.clone(),
+        },
+    )
+    .await
+    .expect("transfer ownership");
+    let after_transfer = all_team_members(&owner_config, &team.id).await;
+    let new_owner_role = after_transfer
+        .iter()
+        .find_map(|m| match &*m.member {
+            models::Member::User(u) if u.id == admin_membership_id => Some(m.role),
+            _ => None,
+        })
+        .expect("former admin still on roster");
+    assert_eq!(new_owner_role, models::TeamRole::Owner);
+    let former_owner_role = after_transfer
+        .iter()
+        .find_map(|m| match &*m.member {
+            models::Member::User(u) if u.id == owner_membership_id => Some(m.role),
+            _ => None,
+        })
+        .expect("former owner still on roster");
+    assert_eq!(former_owner_role, models::TeamRole::Admin);
+
+    // ...and now the former owner (just an admin) can leave like anyone else.
+    teams_team_id_leave_post(&owner_config, &team.id)
+        .await
+        .expect("former owner leaves");
+    let final_members = all_team_members(&admin_config, &team.id).await;
+    assert!(!member_ids(&final_members).contains(&owner.profile.id));
+    assert!(member_ids(&final_members).contains(&admin.profile.id));
+}
+
+/// Only the owner may transfer ownership, and only to someone who's actually
+/// an accepted member — not themselves (a no-op that would just be
+/// confusing to allow), and not a still-pending invitee.
+#[tokio::test]
+async fn transfer_ownership_rejects_non_owner_self_and_pending_targets() {
+    let (owner_config, owner) = new_user().await;
+    let (admin_config, admin) = new_user().await;
+    let (invitee_config, invitee) = new_user().await;
+    let _ = invitee_config; // only need their id, never signs in for this test
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Transferable FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![invitee.profile.id.clone()],
+            invited_external_names: vec![],
+        },
+    )
+    .await
+    .expect("create team with a pending invite");
+    teams_team_id_members_post(
+        &owner_config,
+        &team.id,
+        models::AddTeamMembersInput {
+            user_ids: vec![admin.profile.id.clone()],
+        },
+    )
+    .await
+    .expect("add admin candidate");
+    let members = all_team_members(&owner_config, &team.id).await;
+    let admin_membership_id = membership_id_for(&members, &admin.profile.id).expect("admin id");
+    let owner_membership_id = membership_id_for(&members, &owner.profile.id).expect("owner id");
+    let invitee_membership_id =
+        membership_id_for(&members, &invitee.profile.id).expect("invitee still pending");
+    teams_team_id_members_member_id_patch(
+        &owner_config,
+        &team.id,
+        &admin_membership_id,
+        models::UpdateTeamMemberRoleInput {
+            role: models::AssignableTeamRole::Admin,
+        },
+    )
+    .await
+    .expect("promote");
+
+    // A non-owner (even an admin, who can do almost everything else) can't
+    // transfer ownership.
+    assert_forbidden(
+        teams_team_id_transfer_ownership_post(
+            &admin_config,
+            &team.id,
+            models::TransferTeamOwnershipInput {
+                member_id: admin_membership_id.clone(),
+            },
+        )
+        .await,
+    );
+
+    // The owner can't "transfer" to themselves.
+    assert_bad_request(
+        teams_team_id_transfer_ownership_post(
+            &owner_config,
+            &team.id,
+            models::TransferTeamOwnershipInput {
+                member_id: owner_membership_id.clone(),
+            },
+        )
+        .await,
+    );
+
+    // Nor to the still-pending invitee — they haven't actually joined yet.
+    assert_bad_request(
+        teams_team_id_transfer_ownership_post(
+            &owner_config,
+            &team.id,
+            models::TransferTeamOwnershipInput {
+                member_id: invitee_membership_id,
+            },
+        )
+        .await,
+    );
+
+    // Ownership never moved through any of that.
+    let members_after = all_team_members(&owner_config, &team.id).await;
+    let owner_role = members_after
+        .iter()
+        .find_map(|m| match &*m.member {
+            models::Member::User(u) if u.id == owner_membership_id => Some(m.role),
+            _ => None,
+        })
+        .expect("owner still on roster");
+    assert_eq!(owner_role, models::TeamRole::Owner);
+}
+
+/// Leaving a team you're not a member of (or that doesn't exist) is a 404,
+/// not a silent success.
+#[tokio::test]
+async fn leaving_a_team_youre_not_a_member_of_returns_not_found() {
+    let (owner_config, _owner) = new_user().await;
+    let (stranger_config, _stranger) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Not Yours FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![],
+            invited_external_names: vec![],
+        },
+    )
+    .await
+    .expect("create team");
+
+    assert_not_found(teams_team_id_leave_post(&stranger_config, &team.id).await);
+    assert_not_found(teams_team_id_leave_post(&stranger_config, "no-such-team").await);
+}
+
 // ---------------------------------------------------------------------------
 // Invitations: fetch, decline, revoke
 // ---------------------------------------------------------------------------

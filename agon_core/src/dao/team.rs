@@ -27,7 +27,7 @@ pub struct TeamAggregate {
 
 impl Dao {
     /// Create a team and its creator's membership in one transaction. The
-    /// creator becomes an `admin` member. `Conflict` if the team id already
+    /// creator becomes the `owner` member. `Conflict` if the team id already
     /// exists.
     #[tracing::instrument(skip(self, team, creator), fields(team_id = %team.id))]
     pub async fn create_team(
@@ -357,6 +357,66 @@ impl Dao {
             Err(e) if is_update_conditional_failure(&e) => Err(DaoError::NotFound(format!(
                 "membership {membership_id} on team {team_id}"
             ))),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// Move the `owner` role from one membership to another, in one
+    /// transaction — the new owner's `role` and the old owner's `role` both
+    /// change, or neither does, so the team is never briefly ownerless or
+    /// briefly double-owned if this fails partway. `NotFound` if either
+    /// membership doesn't exist. The caller is responsible for every
+    /// business-rule check (caller is the current owner, `to` is an accepted
+    /// member, `to` isn't already the owner) — this just moves the role.
+    #[tracing::instrument(skip(self))]
+    pub async fn transfer_team_ownership(
+        &self,
+        team_id: &str,
+        from_membership_id: &str,
+        to_membership_id: &str,
+    ) -> DaoResult<()> {
+        use aws_sdk_dynamodb::types::{TransactWriteItem, Update};
+
+        let promote = Update::builder()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Team(team_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Member(to_membership_id.into()).to_string()))
+            .update_expression("SET #role = :owner")
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#role", "role")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_values(":owner", s("owner"))
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        let demote = Update::builder()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Team(team_id.into()).to_string()))
+            .key(
+                ATTR_SK,
+                s(Sk::Member(from_membership_id.into()).to_string()),
+            )
+            .update_expression("SET #role = :admin")
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#role", "role")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_values(":admin", s("admin"))
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        let result = self
+            .client
+            .transact_write_items()
+            .transact_items(TransactWriteItem::builder().update(promote).build())
+            .transact_items(TransactWriteItem::builder().update(demote).build())
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if super::is_transaction_conditional_failure(&e) => {
+                Err(DaoError::NotFound(format!("membership on team {team_id}")))
+            }
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
     }

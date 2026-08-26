@@ -66,11 +66,13 @@ export async function logFootballMatch(
   await sideNameInputs.nth(0).fill(homeName)
   await sideNameInputs.nth(1).fill(opponentName)
 
+  // The search dropdown is a shadcn `Command` (cmdk) combobox — its rows are
+  // `role="option"`, not buttons.
   await page.getByPlaceholder('Add a teammate…').fill(teammateName)
-  await page.getByRole('button', { name: `Add "${teammateName}" as guest` }).click()
+  await page.getByRole('option', { name: `Add "${teammateName}" as guest` }).click()
 
   await page.getByPlaceholder('Add an opponent…').fill(awayPlayerName)
-  await page.getByRole('button', { name: `Add "${awayPlayerName}" as guest` }).click()
+  await page.getByRole('option', { name: `Add "${awayPlayerName}" as guest` }).click()
 
   await page.getByRole('button', { name: 'Post match', exact: true }).click()
   await expect(page).toHaveURL(/\/feed$/, { timeout: 20_000 })

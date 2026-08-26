@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Search, X } from 'lucide-react'
+import { X } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Avatar } from './Avatar'
+import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
+import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 
 type TeamListItem = components['schemas']['TeamListItem']
 
@@ -25,7 +27,9 @@ export interface TeamPickerProps {
 
 /**
  * Link a match side to a persistent Team, instead of (or as well as) tagging
- * players onto it directly. Always searches both, in two sections:
+ * players onto it directly. A shadcn `Command` combobox (Popover-anchored to
+ * the input, so the results float below it like `PlayerSideEditor`'s search)
+ * that always searches both, in two sections:
  *   - "Your teams" — the signed-in user's own teams (`GET /users/me/teams`,
  *     fetched once up to `MY_TEAMS_LIMIT` and filtered client-side as you
  *     type), the common case of playing as your own team.
@@ -41,7 +45,7 @@ export interface TeamPickerProps {
 export function TeamPicker({ team, onChange, placeholder = 'Link a team…' }: TeamPickerProps) {
   const [term, setTerm] = useState('')
   const [debounced, setDebounced] = useState('')
-  const [focused, setFocused] = useState(false)
+  const [open, setOpen] = useState(false)
 
   useEffect(() => {
     const t = setTimeout(() => setDebounced(term.trim()), SEARCH_DEBOUNCE_MS)
@@ -118,79 +122,75 @@ export function TeamPicker({ team, onChange, placeholder = 'Link a team…' }: T
     onChange(t)
     setTerm('')
     setDebounced('')
+    setOpen(false)
   }
 
   const nothingFound =
     !myTeams.isLoading && !search.isLoading && myMatches.length === 0 && otherMatches.length === 0
 
   return (
-    <div className="relative mb-2">
-      <div className="flex items-center gap-2 rounded-md border bg-card px-2.5 py-1.5">
-        <Search className="size-4 shrink-0 text-muted-foreground" />
-        <input
-          type="text"
-          value={term}
-          onChange={(e) => setTerm(e.target.value)}
-          onFocus={() => setFocused(true)}
-          onBlur={() => setTimeout(() => setFocused(false), 150)}
-          placeholder={placeholder}
-          className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-        />
-      </div>
+    <Popover open={open} onOpenChange={setOpen}>
+      <Command shouldFilter={false} className="mb-2 overflow-visible bg-transparent p-0">
+        <PopoverAnchor asChild>
+          <CommandInput
+            value={term}
+            onValueChange={(v) => {
+              setTerm(v)
+              setOpen(true)
+            }}
+            onFocus={() => setOpen(true)}
+            placeholder={placeholder}
+            wrapperClassName="rounded-md border bg-card px-2.5"
+            className="h-auto py-1.5 text-sm"
+          />
+        </PopoverAnchor>
+        <PopoverContent
+          align="start"
+          onOpenAutoFocus={(e) => e.preventDefault()}
+          className="w-[--radix-popover-trigger-width] max-h-72 overflow-y-auto p-0"
+        >
+          <CommandList>
+            {myTeams.isLoading && (
+              <p className="px-3 py-2 text-xs text-muted-foreground">Loading your teams…</p>
+            )}
 
-      {focused && (
-        <div className="absolute z-10 mt-1 max-h-72 w-full overflow-y-auto rounded-md border bg-card shadow-md">
-          {myTeams.isLoading && (
-            <p className="px-3 py-2 text-xs text-muted-foreground">Loading your teams…</p>
-          )}
+            {!myTeams.isLoading && myMatches.length > 0 && (
+              <CommandGroup heading="Your teams">
+                {myMatches.map((t) => (
+                  <CommandItem key={t.id} value={t.id} onSelect={() => pick(t)}>
+                    <Avatar name={t.name} imageUrl={t.logo?.image_url} size="md" />
+                    <span className="flex-1 truncate">{t.name}</span>
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            )}
 
-          {!myTeams.isLoading && myMatches.length > 0 && (
-            <>
-              <p className="px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                Your teams
+            {searching && (
+              <CommandGroup heading="Other teams">
+                {search.isLoading && (
+                  <p className="px-3 py-2 text-xs text-muted-foreground">Searching…</p>
+                )}
+                {!search.isLoading &&
+                  otherMatches.map((t) => (
+                    <CommandItem key={t.id} value={t.id} onSelect={() => pick(t)}>
+                      <Avatar name={t.name} imageUrl={t.logo?.image_url} size="md" />
+                      <span className="flex-1 truncate">{t.name}</span>
+                    </CommandItem>
+                  ))}
+                {!search.isLoading && otherMatches.length === 0 && (
+                  <p className="px-3 py-2 text-xs text-muted-foreground">No other teams found.</p>
+                )}
+              </CommandGroup>
+            )}
+
+            {nothingFound && (
+              <p className="px-3 py-2 text-xs text-muted-foreground">
+                {term.trim() ? 'No teams found.' : "You're not on any teams yet."}
               </p>
-              {myMatches.map((t) => (
-                <TeamRow key={t.id} team={t} onClick={() => pick(t)} />
-              ))}
-            </>
-          )}
-
-          {searching && (
-            <>
-              <p className="border-t px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-                Other teams
-              </p>
-              {search.isLoading && (
-                <p className="px-3 py-2 text-xs text-muted-foreground">Searching…</p>
-              )}
-              {!search.isLoading &&
-                otherMatches.map((t) => <TeamRow key={t.id} team={t} onClick={() => pick(t)} />)}
-              {!search.isLoading && otherMatches.length === 0 && (
-                <p className="px-3 py-2 text-xs text-muted-foreground">No other teams found.</p>
-              )}
-            </>
-          )}
-
-          {nothingFound && (
-            <p className="px-3 py-2 text-xs text-muted-foreground">
-              {term.trim() ? 'No teams found.' : "You're not on any teams yet."}
-            </p>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function TeamRow({ team, onClick }: { team: TeamListItem; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-muted"
-    >
-      <Avatar name={team.name} imageUrl={team.logo?.image_url} size="md" />
-      <span className="flex-1 truncate text-sm">{team.name}</span>
-    </button>
+            )}
+          </CommandList>
+        </PopoverContent>
+      </Command>
+    </Popover>
   )
 }

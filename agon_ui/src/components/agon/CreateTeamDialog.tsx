@@ -88,7 +88,7 @@ export function CreateTeamDialog({ children, onCreated }: CreateTeamDialogProps)
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>{children}</DialogTrigger>
-      <DialogContent>
+      <DialogContent className="max-h-[80vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Create a team</DialogTitle>
         </DialogHeader>

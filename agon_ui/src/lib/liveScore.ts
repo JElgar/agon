@@ -1,5 +1,5 @@
 import type { components } from '@/types/api'
-import { memberName, type ScorePlayers } from './members'
+import { memberAvatarUrl, memberName, type ScorePlayers } from './members'
 
 export type FootballPeriod = components['schemas']['FootballPeriod']
 export type FootballGoalEvent = components['schemas']['FootballGoalEvent']
@@ -287,6 +287,12 @@ export interface GoalContributionEntry {
   side_id: string
   goals: number
   assists: number
+  /** Linked Agon account id, for a profile avatar/link — same as the match's
+   *  own player-list rows (`SideRoster`). Undefined for an external player,
+   *  or a scorer/assister id that resolves to neither `scorePlayers` nor the
+   *  match's roster. */
+  userId?: string
+  avatarUrl?: string
 }
 
 /** Every player who scored or assisted at least one goal, tallied across the
@@ -307,12 +313,15 @@ export function goalContributions(
   const entryFor = (playerId: string, sideId: string) => {
     let entry = byPlayer.get(playerId)
     if (!entry) {
+      const info = playerInfoFor(match, playerId, scorePlayers)
       entry = {
         key: playerId,
-        name: playerNameFor(match, playerId, scorePlayers) ?? 'Unknown',
+        name: info?.name ?? 'Unknown',
         side_id: sideId,
         goals: 0,
         assists: 0,
+        userId: info?.userId,
+        avatarUrl: info?.avatarUrl,
       }
       byPlayer.set(playerId, entry)
     }
@@ -347,24 +356,49 @@ export function sortGoalContributions(
   )
 }
 
-/** Player display name for a match-scoped player id. Checks `scorePlayers`
- *  first — `FootballScore.players`, resolved server-side for exactly the
- *  ids a score references (see its backend doc comment) — since that's the
- *  only source a feed/search card's trimmed match type has at all (it never
- *  carries a `players` list). Falls back to scanning the match's own roster,
- *  always present on the full `Match` type a detail view uses. Same
- *  contract as cricket's `playerNameFor` in `lib/cricketScore.ts`. */
+/** Player identity for a match-scoped player id: display name plus, when the
+ *  player is a linked Agon account, their `userId`/`avatarUrl` for a profile
+ *  link and avatar — same fields `SideRoster` uses for the match's player
+ *  list. Checks `scorePlayers` first — `FootballScore.players`, resolved
+ *  server-side for exactly the ids a score references (see its backend doc
+ *  comment) — since that's the only source a feed/search card's trimmed
+ *  match type has at all (it never carries a `players` list). Falls back to
+ *  scanning the match's own roster, always present on the full `Match` type
+ *  a detail view uses. An external player (or an id neither source
+ *  resolves) has no `userId`/`avatarUrl`. */
+export function playerInfoFor(
+  match: MatchLike,
+  playerId: string | undefined,
+  scorePlayers?: ScorePlayers,
+): { name: string; userId?: string; avatarUrl?: string } | null {
+  if (!playerId) return null
+  const resolved = scorePlayers?.[playerId]
+  if (resolved) {
+    return {
+      name: resolved.name,
+      userId: resolved.user_id ?? undefined,
+      avatarUrl: resolved.avatar_url ?? undefined,
+    }
+  }
+  const players = ('players' in match && match.players) || []
+  const player = players.find((p) => p.member.id === playerId)
+  if (!player) return null
+  return {
+    name: memberName(player.member),
+    userId: player.member.type === 'User' ? player.member.user_id : undefined,
+    avatarUrl: memberAvatarUrl(player.member),
+  }
+}
+
+/** Player display name for a match-scoped player id. Same resolution order
+ *  as `playerInfoFor` — see its doc comment. Same contract as cricket's
+ *  `playerNameFor` in `lib/cricketScore.ts`. */
 export function playerNameFor(
   match: MatchLike,
   playerId: string | undefined,
   scorePlayers?: ScorePlayers,
 ): string | null {
-  if (!playerId) return null
-  const resolved = scorePlayers?.[playerId]
-  if (resolved) return resolved.name
-  const players = ('players' in match && match.players) || []
-  const player = players.find((p) => p.member.id === playerId)
-  return player ? memberName(player.member) : null
+  return playerInfoFor(match, playerId, scorePlayers)?.name ?? null
 }
 
 /** One-line human description of a football event, e.g. "Goal — J. Alvarez

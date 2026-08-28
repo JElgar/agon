@@ -56,6 +56,8 @@ import { MatchComments } from '@/components/agon/MatchComments'
 import { LikedByLine } from '@/components/agon/MatchLikes'
 import { useToggleLike } from '@/hooks/useToggleLike'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
+import { InvitePromptDialog } from '@/components/agon/InvitePromptDialog'
+import { useInvitePrompt } from '@/hooks/useInvitePrompt'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -66,6 +68,13 @@ type MatchPlayer = components['schemas']['MatchPlayer']
 function sideName(side: MatchSide | undefined, fallback: string): string {
   return side?.name?.trim() || fallback
 }
+
+// Roster tab ids for the mobile tablist — side A/B use these fixed ids
+// rather than the sides' own (possibly absent) `id`s so the tablist always
+// has something stable to key off; unassigned players get a third tab.
+const ROSTER_TAB_A = '__side_a__'
+const ROSTER_TAB_B = '__side_b__'
+const ROSTER_TAB_UNASSIGNED = '__unassigned__'
 
 /** Full match view: score (with confirm/dispute when pending), sides + rosters.
  *  Participants get inline editing of details/result, plus invite and cancel. */
@@ -129,6 +138,11 @@ function MatchDetail({
   const [editingResult, setEditingResult] = useState(false)
   const [editingRoster, setEditingRoster] = useState(false)
   const [inviting, setInviting] = useState(false)
+  // Which roster tab is open on mobile — side-by-side columns (`sm:` and up)
+  // ignore this entirely. Defaults to the first side; reset below if it ever
+  // points at a tab that's no longer showing (e.g. the last unassigned
+  // player was placed on a side).
+  const [rosterTab, setRosterTab] = useState<string>(ROSTER_TAB_A)
 
   const canEdit = isParticipant(match, currentUserId)
   const cancelled = match.status === 'cancelled'
@@ -283,8 +297,9 @@ function MatchDetail({
             </div>
           ) : scoreInfo ? (
             <div className="mt-3 flex items-center justify-between">
-              <div className="flex-1">
-                <p className={cn('text-sm', aWon && 'font-medium')}>{nameA}</p>
+              <div className="flex min-w-0 flex-1 items-center gap-2">
+                <Avatar name={nameA} imageUrl={sideA?.team_logo?.image_url} size="md" ring={aWon ? 'winner' : 'none'} />
+                <p className={cn('truncate text-sm', aWon && 'font-medium')}>{nameA}</p>
               </div>
               <div className="px-3 text-center">
                 <div className="text-3xl font-medium tracking-tight">
@@ -296,8 +311,9 @@ function MatchDetail({
                   {headlineLabel(scoreInfo.score)}
                 </div>
               </div>
-              <div className="flex-1 text-right">
-                <p className={cn('text-sm', bWon && 'font-medium')}>{nameB}</p>
+              <div className="flex min-w-0 flex-1 flex-row-reverse items-center gap-2 text-right">
+                <Avatar name={nameB} imageUrl={sideB?.team_logo?.image_url} size="md" ring={bWon ? 'winner' : 'none'} />
+                <p className={cn('truncate text-sm', bWon && 'font-medium')}>{nameB}</p>
               </div>
             </div>
           ) : (
@@ -433,16 +449,17 @@ function MatchDetail({
               </Button>
             </div>
           )}
-          <div className="grid grid-cols-2 gap-3">
-            <SideRoster
-              title={nameA}
-              players={match.players.filter((p) => p.side_id === sideA?.id)}
-            />
-            <SideRoster
-              title={nameB}
-              players={match.players.filter((p) => p.side_id === sideB?.id)}
-            />
-          </div>
+          <RosterTabs
+            nameA={nameA}
+            nameB={nameB}
+            playersA={match.players.filter((p) => p.side_id === sideA?.id)}
+            playersB={match.players.filter((p) => p.side_id === sideB?.id)}
+            unassigned={match.players.filter(
+              (p) => p.side_id !== sideA?.id && p.side_id !== sideB?.id,
+            )}
+            activeTab={rosterTab}
+            onTabChange={setRosterTab}
+          />
         </div>
       )}
 
@@ -529,7 +546,9 @@ function LikeBar({ match }: { match: Match }) {
 
 /**
  * Shown when the signed-in viewer has a pending invitation to this match: a
- * prominent Accept/Decline banner. Both actions open the shared response
+ * prominent Accept/Decline banner, plus (the first time this match page is
+ * opened while the invite is pending — see `useInvitePrompt`) a popup
+ * fronting the same choice immediately. Both open the shared response
  * dialog, wired to `POST /invitations/:id/respond`; accepting also offers to
  * confirm the match's score in the same step when one is already pending on
  * the viewer's side. On success it refreshes the match (so the roster/badge/
@@ -547,6 +566,7 @@ function InviteBanner({
   const invitation = myPendingInvitation(match, currentUserId)
   const matchKey = ['match', match.id]
   const [action, setAction] = useState<'accept' | 'decline' | null>(null)
+  const [promptOpen, setPromptOpen] = useInvitePrompt(invitation?.id ?? null)
 
   const respond = useMutation({
     mutationFn: async (
@@ -598,6 +618,15 @@ function InviteBanner({
 
   if (!invitation) return null
 
+  // Shared by both the banner's confirm dialog and the first-open popup —
+  // covers the score-confirm sub-step, which the mutation above doesn't know
+  // about (it only reconciles the invitation response itself).
+  const handleResponded = () => {
+    setAction(null)
+    queryClient.invalidateQueries({ queryKey: matchKey })
+    queryClient.invalidateQueries({ queryKey: ['profile-activity'] })
+  }
+
   return (
     <>
       <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
@@ -633,13 +662,15 @@ function InviteBanner({
         name={match.name}
         matchId={match.id}
         respond={(response) => respond.mutateAsync(response)}
-        onSuccess={() => {
-          setAction(null)
-          // Cover the score-confirm sub-step, which the mutation above doesn't
-          // know about (it only reconciles the invitation response itself).
-          queryClient.invalidateQueries({ queryKey: matchKey })
-          queryClient.invalidateQueries({ queryKey: ['profile-activity'] })
-        }}
+        onSuccess={handleResponded}
+      />
+
+      <InvitePromptDialog
+        open={promptOpen}
+        onOpenChange={setPromptOpen}
+        name={match.name}
+        respond={(response) => respond.mutateAsync(response)}
+        onSuccess={handleResponded}
       />
     </>
   )
@@ -710,6 +741,83 @@ function CancelMatch({ match }: { match: Match }) {
         </Button>
       </div>
     </div>
+  )
+}
+
+/**
+ * Rosters, side by side on a screen wide enough for it (`sm:` and up) — a
+ * phone-width column pair squeezes both names down too far to read, so
+ * below that breakpoint this switches to one roster at a time behind a
+ * tablist: a tab per side, plus "Unassigned" whenever anyone hasn't been
+ * placed on a side yet (the side-by-side layout has no room to show them
+ * at all, so the tab is the only place they're visible).
+ */
+function RosterTabs({
+  nameA,
+  nameB,
+  playersA,
+  playersB,
+  unassigned,
+  activeTab,
+  onTabChange,
+}: {
+  nameA: string
+  nameB: string
+  playersA: MatchPlayer[]
+  playersB: MatchPlayer[]
+  unassigned: MatchPlayer[]
+  activeTab: string
+  onTabChange: (tab: string) => void
+}) {
+  const tabs = [
+    { id: ROSTER_TAB_A, title: nameA, players: playersA },
+    { id: ROSTER_TAB_B, title: nameB, players: playersB },
+    ...(unassigned.length > 0
+      ? [{ id: ROSTER_TAB_UNASSIGNED, title: 'Unassigned', players: unassigned }]
+      : []),
+  ]
+  // The unassigned tab can disappear out from under an active selection
+  // (last unassigned player got placed on a side) — fall back to side A
+  // rather than rendering nothing.
+  const active = tabs.find((t) => t.id === activeTab) ?? tabs[0]
+
+  return (
+    <>
+      <div
+        role="tablist"
+        aria-label="Roster"
+        className={cn(
+          'mb-2 grid gap-1 rounded-lg bg-muted p-1 sm:hidden',
+          tabs.length === 3 ? 'grid-cols-3' : 'grid-cols-2',
+        )}
+      >
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={active.id === t.id}
+            onClick={() => onTabChange(t.id)}
+            className={cn(
+              'truncate rounded-md px-2 py-1.5 text-sm font-medium transition-colors',
+              active.id === t.id
+                ? 'bg-card text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {t.title}
+          </button>
+        ))}
+      </div>
+      <div className="sm:hidden">
+        <SideRoster title={active.title} players={active.players} />
+      </div>
+
+      <div className="hidden gap-3 sm:grid sm:grid-cols-2">
+        <SideRoster title={nameA} players={playersA} />
+        <SideRoster title={nameB} players={playersB} />
+      </div>
+    </>
   )
 }
 

@@ -392,6 +392,12 @@ struct MatchSide {
     /// A"/"Team B". Computed per-request rather than stored so it can't go
     /// stale and "your side" always means the caller.
     name: Option<String>,
+    /// The linked team's logo, resolved fresh alongside `name` (see
+    /// `Api::hydrate_match`) whenever `team_id` is set and that team has one.
+    /// `None` for an ad-hoc side, a team with no logo uploaded, or a
+    /// not-yet-resolved side — callers fall back to initials (e.g. `Avatar`'s
+    /// `name`-derived placeholder) when this is absent.
+    team_logo: Option<Photo>,
     /// This side's full roster, when small enough to show directly instead of
     /// just `name`/`team_id`'s logo (1v1, doubles, a small squad). `None`
     /// when the side has more players than that — render `name`/the team's
@@ -2175,15 +2181,15 @@ impl Api {
         }
         let users = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
 
-        // Side names need the same team-name fallback `Match` gets (via
+        // Side names/logos need the same team-meta fallback `Match` gets (via
         // `hydrate_matches`) — without it a team-linked side with no custom
         // name would render blank. `roster_preview` already covers the
-        // "sole player's name" case, so only team names need a batch fetch.
+        // "sole player's name" case, so only team meta needs a batch fetch.
         let team_ids: Vec<String> = summaries
             .values()
             .flat_map(|s| s.sides.iter().filter_map(|s| s.team_id.clone()))
             .collect();
-        let team_names = self.batch_team_names(dao, &team_ids).await?;
+        let team_metas = self.batch_team_metas(dao, &team_ids).await?;
 
         let mut built: Vec<FeedMatch> = Vec::with_capacity(eligible.len());
         for entry in &eligible {
@@ -2207,7 +2213,7 @@ impl Api {
                 Self::resolve_side_names_from_cache(
                     &mut m.sides,
                     entry.viewer_side_id.as_deref(),
-                    &team_names,
+                    &team_metas,
                 );
                 sign_feed_match_headers(assets, &mut m);
                 built.push(m);
@@ -2366,10 +2372,10 @@ impl Api {
         )
         .map_err(dao_internal)?;
 
-        // Side `roster_preview` entries' live name/avatar, and team names for
-        // the side-name fallback chain (same two batch reads the feed makes;
-        // no per-viewer `known_participants` here, so no user-id union from
-        // that source).
+        // Side `roster_preview` entries' live name/avatar, and team meta for
+        // the side-name/side-logo fallback chain (same two batch reads the
+        // feed makes; no per-viewer `known_participants` here, so no user-id
+        // union from that source).
         let mut user_ids: Vec<String> = Vec::new();
         for summary in summaries.values() {
             for side in &summary.sides {
@@ -2380,9 +2386,9 @@ impl Api {
             .values()
             .flat_map(|s| s.sides.iter().filter_map(|s| s.team_id.clone()))
             .collect();
-        let (users, team_names) = tokio::try_join!(
+        let (users, team_metas) = tokio::try_join!(
             async { dao.batch_get_users(&user_ids).await.map_err(dao_internal) },
-            async { self.batch_team_names(dao, &team_ids).await },
+            async { self.batch_team_metas(dao, &team_ids).await },
         )?;
 
         let mut items: Vec<SearchMatch> = Vec::with_capacity(hits.items.len());
@@ -2398,7 +2404,7 @@ impl Api {
                 );
                 // No per-viewer `viewer_side_id` for a search hit, so no
                 // "Your side"/"Opposition" — falls to team name / Team A/B.
-                Self::resolve_side_names_from_cache(&mut m.sides, None, &team_names);
+                Self::resolve_side_names_from_cache(&mut m.sides, None, &team_metas);
                 sign_search_match_headers(assets, &mut m);
                 items.push(m);
             }
@@ -5714,11 +5720,13 @@ impl Api {
     /// player's name if there's exactly one, else the assigned team's name,
     /// else a fallback relative to `viewer_uid` — "Your side"/"Opposition" if
     /// they're actually playing in the match, else a neutral "Team A"/
-    /// "Team B" by side order. Resolved per-request rather than stored, so a
-    /// side's name can't go stale and "your side" always reflects whoever is
-    /// asking. Player and team lookups are each batched exactly once across
-    /// every match passed in, however many that is — a feed/list page hands
-    /// over the whole page at once rather than calling this per match.
+    /// "Team B" by side order — plus, whenever that name is the team's,
+    /// `team_logo` alongside it. Resolved per-request rather than stored, so
+    /// a side's name/logo can't go stale and "your side" always reflects
+    /// whoever is asking. Player and team lookups are each batched exactly
+    /// once across every match passed in, however many that is — a feed/list
+    /// page hands over the whole page at once rather than calling this per
+    /// match.
     async fn hydrate_matches(
         &self,
         dao: &dao::Dao,
@@ -5732,11 +5740,11 @@ impl Api {
             .iter()
             .flat_map(|m| m.sides.iter().filter_map(|s| s.team_id.clone()))
             .collect();
-        let team_names = self.batch_team_names(dao, &team_ids).await?;
+        let team_metas = self.batch_team_metas(dao, &team_ids).await?;
 
         for m in &mut matches {
             Self::apply_player_profiles(m, &user_records);
-            Self::resolve_side_names(m, viewer_uid, &team_names);
+            Self::resolve_side_names(m, viewer_uid, &team_metas);
         }
         Ok(matches)
     }
@@ -5798,30 +5806,32 @@ impl Api {
         }
     }
 
-    /// Batch-fetch team names for the given ids (deduped, missing ids simply
-    /// absent from the result), keyed by team id.
-    async fn batch_team_names(
+    /// Batch-fetch team meta (name + logo) for the given ids (deduped,
+    /// missing ids simply absent from the result), keyed by team id — the
+    /// side-name *and* side-logo fallback chains both read off this one
+    /// batch.
+    async fn batch_team_metas(
         &self,
         dao: &dao::Dao,
         team_ids: &[String],
-    ) -> Result<std::collections::HashMap<String, String>> {
+    ) -> Result<std::collections::HashMap<String, dao::records::TeamRecord>> {
         if team_ids.is_empty() {
             return Ok(Default::default());
         }
-        let records = dao
-            .batch_get_team_metas(team_ids)
+        dao.batch_get_team_metas(team_ids)
             .await
-            .map_err(dao_internal)?;
-        Ok(records.into_iter().map(|(id, t)| (id, t.name)).collect())
+            .map_err(dao_internal)
     }
 
-    /// Resolve one match's side names, given `team_names` already resolved by
-    /// the caller. Pure/sync — no DAO calls — so it's cheap to run per match
-    /// after a shared batch team-name lookup (see `hydrate_matches`).
+    /// Resolve one match's side names (and, wherever the resolved name is
+    /// actually the team's, `team_logo` alongside it), given `team_metas`
+    /// already resolved by the caller. Pure/sync — no DAO calls — so it's
+    /// cheap to run per match after a shared batch team-meta lookup (see
+    /// `hydrate_matches`).
     fn resolve_side_names(
         m: &mut Match,
         viewer_uid: &str,
-        team_names: &std::collections::HashMap<String, String>,
+        team_metas: &std::collections::HashMap<String, dao::records::TeamRecord>,
     ) {
         // The side the viewer is actually on (by an invite they were placed
         // on, accepted or not) — used for the "Your side"/"Opposition"
@@ -5873,6 +5883,13 @@ impl Api {
                 .map(str::trim)
                 .filter(|n| !n.is_empty());
 
+            // Resolves alongside `name` below: `team_logo` is only ever set
+            // when the side falls all the way through to the team-name
+            // branch — a custom name or a sole player's name means the team
+            // isn't actually what's being shown, so its logo shouldn't show
+            // either (see doc comment on `MatchSide::team_logo`).
+            side.team_logo = None;
+
             side.name = Some(match custom_name {
                 // An explicit name always wins, over both the sole player's
                 // name and the team's own name — it's there specifically
@@ -5882,10 +5899,16 @@ impl Api {
                 None => match sole_player_name {
                     Some(name) => name,
                     None => match &side.team_id {
-                        Some(team_id) => team_names
-                            .get(team_id)
-                            .cloned()
-                            .unwrap_or_else(|| "Team".to_string()),
+                        Some(team_id) => match team_metas.get(team_id) {
+                            Some(team) => {
+                                side.team_logo = team.logo_url.as_ref().map(|url| Photo {
+                                    image_url: url.clone(),
+                                    asset_id: None,
+                                });
+                                team.name.clone()
+                            }
+                            None => "Team".to_string(),
+                        },
                         None => match &viewer_side_id {
                             Some(vs) if vs == &side.id => "Your side".to_string(),
                             Some(_) => "Opposition".to_string(),
@@ -5900,8 +5923,9 @@ impl Api {
 
     /// The same side-name priority chain as [`Self::resolve_side_names`]
     /// (custom name → sole player's name → team name → "Your
-    /// side"/"Opposition" → neutral "Team A"/"Team B"), for a `FeedMatch` or
-    /// `SearchMatch` — which never have the full player list to scan.
+    /// side"/"Opposition" → neutral "Team A"/"Team B"), plus the same
+    /// `team_logo` resolution, for a `FeedMatch` or `SearchMatch` — which
+    /// never have the full player list to scan.
     ///
     /// `roster_preview` already gives the *complete* roster whenever a side
     /// has one player, so "the sole player's name" is recovered from it
@@ -5912,7 +5936,7 @@ impl Api {
     fn resolve_side_names_from_cache(
         sides: &mut [MatchSide],
         viewer_side_id: Option<&str>,
-        team_names: &std::collections::HashMap<String, String>,
+        team_metas: &std::collections::HashMap<String, dao::records::TeamRecord>,
     ) {
         for (i, side) in sides.iter_mut().enumerate() {
             let sole_player_name = match side.roster_preview.as_deref() {
@@ -5925,6 +5949,8 @@ impl Api {
                 .map(str::trim)
                 .filter(|n| !n.is_empty());
 
+            side.team_logo = None;
+
             side.name = Some(match custom_name {
                 // Same priority as `resolve_side_names`: an explicit name
                 // always wins over the sole player's name.
@@ -5932,10 +5958,16 @@ impl Api {
                 None => match sole_player_name {
                     Some(name) => name,
                     None => match &side.team_id {
-                        Some(team_id) => team_names
-                            .get(team_id)
-                            .cloned()
-                            .unwrap_or_else(|| "Team".to_string()),
+                        Some(team_id) => match team_metas.get(team_id) {
+                            Some(team) => {
+                                side.team_logo = team.logo_url.as_ref().map(|url| Photo {
+                                    image_url: url.clone(),
+                                    asset_id: None,
+                                });
+                                team.name.clone()
+                            }
+                            None => "Team".to_string(),
+                        },
                         None => match viewer_side_id {
                             Some(vs) if vs == side.id => "Your side".to_string(),
                             Some(_) => "Opposition".to_string(),
@@ -6914,12 +6946,14 @@ fn mock_match(id: String) -> Match {
                 id: String::from("side_red"),
                 team_id: Some(String::from("team_red")),
                 name: Some(String::from("Red Team")),
+                team_logo: None,
                 roster_preview: None,
             },
             MatchSide {
                 id: String::from("side_blue"),
                 team_id: Some(String::from("team_blue")),
                 name: Some(String::from("Blue Team")),
+                team_logo: None,
                 roster_preview: None,
             },
         ],

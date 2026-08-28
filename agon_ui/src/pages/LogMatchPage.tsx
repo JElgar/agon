@@ -28,6 +28,7 @@ type UserProfile = components['schemas']['UserProfile']
 type MatchSide = components['schemas']['MatchSide']
 type MatchPlayer = components['schemas']['MatchPlayer']
 type Score = components['schemas']['Score']
+type TeamListItem = components['schemas']['TeamListItem']
 
 /** A tagged side's players, reshaped into the API's `MatchPlayer` so the
  *  football/cricket detail editors (`FootballScoreFields`/`CricketScoreFields`,
@@ -68,14 +69,32 @@ interface SetRow {
 /** Whether the match is upcoming (no score) or already played (with a score). */
 type MatchMode = 'scheduled' | 'completed'
 
-/** A display name for a side: the custom name typed for it (if any), else the
- *  sole player's name, else a generic fallback — mirrors the server's
- *  resolution order for this compose form's own preview text. */
-function sideName(players: TaggedPlayer[], customName: string, fallback: string): string {
+/** A side's resolved name with no generic fallback applied: the custom name
+ *  typed for it (if any), else the sole player's name, else its linked
+ *  team's name, else `undefined` — mirrors the server's resolution order
+ *  (see `MatchSide::name`'s doc comment), stopping short of the neutral
+ *  "Your side"/"Opposition" default so callers that have their own fallback
+ *  (e.g. the score-detail components) can still apply it. */
+function resolvedSideName(
+  players: TaggedPlayer[],
+  customName: string,
+  team: TeamListItem | null,
+): string | undefined {
   const trimmed = customName.trim()
   if (trimmed) return trimmed
   if (players.length === 1) return players[0].name
-  return fallback
+  return team?.name
+}
+
+/** A display name for a side, with a generic fallback applied — for this
+ *  compose form's own preview text (set/point labels). */
+function sideName(
+  players: TaggedPlayer[],
+  customName: string,
+  team: TeamListItem | null,
+  fallback: string,
+): string {
+  return resolvedSideName(players, customName, team) ?? fallback
 }
 
 /** Default scheduled time: the next whole hour, at least an hour from now. */
@@ -105,12 +124,29 @@ export function LogMatchPage() {
   const [name, setName] = useState('')
   const [sideA, setSideA] = useState<TaggedPlayer[]>([])
   const [sideB, setSideB] = useState<TaggedPlayer[]>([])
-  // Optional custom names for ad-hoc sides. No team-picker exists yet, so
-  // these are always offered — once one does, hide the field for a side with
-  // a team assigned (the server rejects a name alongside a team unless
-  // another side shares it).
+  // Optional custom names for ad-hoc sides, and the persistent Team (if any)
+  // each side is linked to instead. The server rejects a name alongside a
+  // `team_id` unless the *other* side shares that same team (e.g. an
+  // intra-squad practice match) — `sideANameAllowed`/`sideBNameAllowed`
+  // mirror that rule below, and the name is cleared whenever it stops
+  // applying.
   const [sideAName, setSideAName] = useState('')
   const [sideBName, setSideBName] = useState('')
+  const [sideATeam, setSideATeam] = useState<TeamListItem | null>(null)
+  const [sideBTeam, setSideBTeam] = useState<TeamListItem | null>(null)
+  const sharedTeam = sideATeam !== null && sideATeam.id === sideBTeam?.id
+  const sideANameAllowed = sideATeam === null || sharedTeam
+  const sideBNameAllowed = sideBTeam === null || sharedTeam
+
+  // Clear a side's custom name the moment it stops being allowed (a team was
+  // just linked, and the other side isn't the same team) — so a name typed
+  // earlier can't linger into the submitted payload.
+  useEffect(() => {
+    if (!sideANameAllowed) setSideAName('')
+  }, [sideANameAllowed])
+  useEffect(() => {
+    if (!sideBNameAllowed) setSideBName('')
+  }, [sideBNameAllowed])
 
   // Scheduled (upcoming, no score) vs Completed (already played, with a score).
   // The mode drives both whether the score section shows and how `starts_at` is
@@ -230,20 +266,19 @@ export function LogMatchPage() {
 
   // Validation: a sport, a match name, at least one player on your own side
   // (so the match is meaningful), a time valid for the mode, and — for a
-  // completed match — a result. The opposition (side B) may be left empty —
-  // e.g. recording a result against a team you don't know the roster of —
-  // but then needs an explicit name (this flow has no team picker, so a
-  // player-less side has nothing else to show as its name; see the server's
-  // matching check in `create_match`).
+  // completed match — a result. The opposition (side B) may be left
+  // player-less — e.g. recording a result against a team you don't know the
+  // roster of — but then needs a name or a linked team, its only other ways
+  // to be identified (see the server's matching check in `create_match`).
   const valid = useMemo(() => {
     if (!sport) return false
     if (name.trim().length === 0) return false
     if (sideA.length === 0) return false
-    if (sideB.length === 0 && sideBName.trim().length === 0) return false
+    if (sideB.length === 0 && sideBName.trim().length === 0 && !sideBTeam) return false
     if (timeError) return false
     if (scoreError) return false
     return true
-  }, [sport, name, sideA.length, sideB.length, sideBName, timeError, scoreError])
+  }, [sport, name, sideA.length, sideB.length, sideBName, sideBTeam, timeError, scoreError])
 
   const mutation = useMutation({
     mutationFn: async (body: CreateMatchInput) => {
@@ -370,8 +405,16 @@ export function LogMatchPage() {
       // time would be wrong once the roster changes or anyone but the
       // creator views the match.
       sides: [
-        { client_id: SIDE_A, name: sideAName.trim() || undefined },
-        { client_id: SIDE_B, name: sideBName.trim() || undefined },
+        {
+          client_id: SIDE_A,
+          name: sideAName.trim() || undefined,
+          team_id: sideATeam?.id,
+        },
+        {
+          client_id: SIDE_B,
+          name: sideBName.trim() || undefined,
+          team_id: sideBTeam?.id,
+        },
       ],
       invites: buildInvites(),
     }
@@ -456,6 +499,9 @@ export function LogMatchPage() {
             excludeUserIds={sideBUserIds}
             name={sideAName}
             onNameChange={setSideAName}
+            nameFieldVisible={sideANameAllowed}
+            team={sideATeam}
+            onTeamChange={setSideATeam}
           />
           <div className="flex items-center justify-center">
             <span className="rounded-full border border-primary/30 bg-accent px-3 py-0.5 text-[11px] font-medium text-primary">
@@ -471,11 +517,14 @@ export function LogMatchPage() {
             excludeUserIds={sideAUserIds}
             name={sideBName}
             onNameChange={setSideBName}
+            nameFieldVisible={sideBNameAllowed}
+            team={sideBTeam}
+            onTeamChange={setSideBTeam}
           />
-          {sideB.length === 0 && sideBName.trim().length === 0 && (
+          {sideB.length === 0 && sideBName.trim().length === 0 && !sideBTeam && (
             <p className="px-1 text-xs text-muted-foreground">
-              No opponents tagged — give this side a name above (e.g. a team
-              or club name) so the match can show who it was against.
+              No opponents tagged — link a team or give this side a name above
+              so the match can show who it was against.
             </p>
           )}
         </div>
@@ -526,8 +575,16 @@ export function LogMatchPage() {
         (playersSet ? (
           <Section num={5} title="Score">
           {(isFootball || isCricket || isNetball) && (() => {
-            const sideAObj: MatchSide = { id: SIDE_A, name: sideAName.trim() || undefined }
-            const sideBObj: MatchSide = { id: SIDE_B, name: sideBName.trim() || undefined }
+            const sideAObj: MatchSide = {
+              id: SIDE_A,
+              name: resolvedSideName(sideA, sideAName, sideATeam),
+              team_id: sideATeam?.id,
+            }
+            const sideBObj: MatchSide = {
+              id: SIDE_B,
+              name: resolvedSideName(sideB, sideBName, sideBTeam),
+              team_id: sideBTeam?.id,
+            }
             const players = [...toMatchPlayers(sideA, SIDE_A), ...toMatchPlayers(sideB, SIDE_B)]
             return isFootball ? (
               <FootballScoreFields
@@ -556,10 +613,10 @@ export function LogMatchPage() {
           {!isFootball && !isCricket && !isNetball && setsPlayable && (
             <div className="flex flex-col gap-2">
               <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-center text-[11px] uppercase tracking-wider text-muted-foreground">
-                <span className="truncate text-left">{sideName(sideA, sideAName, 'Your side')}</span>
+                <span className="truncate text-left">{sideName(sideA, sideAName, sideATeam, 'Your side')}</span>
                 <span>Set</span>
                 <span className="truncate text-right">
-                  {sideName(sideB, sideBName, 'Opposition')}
+                  {sideName(sideB, sideBName, sideBTeam, 'Opposition')}
                 </span>
               </div>
               {sets.map((row, i) => (
@@ -621,7 +678,7 @@ export function LogMatchPage() {
             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
               <div className="flex flex-col gap-1">
                 <span className="truncate text-center text-xs text-muted-foreground">
-                  {sideName(sideA, sideAName, 'Your side')}
+                  {sideName(sideA, sideAName, sideATeam, 'Your side')}
                 </span>
                 <Input
                   type="number"
@@ -635,7 +692,7 @@ export function LogMatchPage() {
               <span className="pt-5 text-muted-foreground">–</span>
               <div className="flex flex-col gap-1">
                 <span className="truncate text-center text-xs text-muted-foreground">
-                  {sideName(sideB, sideBName, 'Opposition')}
+                  {sideName(sideB, sideBName, sideBTeam, 'Opposition')}
                 </span>
                 <Input
                   type="number"

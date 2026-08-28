@@ -7,6 +7,7 @@ type Match = components['schemas']['Match']
 type FeedMatch = components['schemas']['FeedMatch']
 type SearchMatch = components['schemas']['SearchMatch']
 type Invitation = components['schemas']['Invitation']
+type TeamMember = components['schemas']['TeamMember']
 /** Name/avatar only, not the full `Member` shape — a side's `roster_preview`
  *  entry, or a resolved id in a cricket/football score's `players` map (see
  *  `CricketScore.players`'s backend doc comment). */
@@ -68,12 +69,39 @@ export function myPendingInvitation(
   match: MatchLike,
   currentUserId: string | undefined,
 ): Invitation | null {
-  if (!currentUserId) return null
   const players = ('players' in match && match.players) || []
-  for (const player of players) {
-    if (player.member.type !== 'User') continue
-    if (player.member.user_id !== currentUserId) continue
-    const invitation = player.member.invitation
+  return pendingInvitationFor(players, currentUserId)
+}
+
+/**
+ * The viewer's own pending invitation to a team, if they've been invited (as
+ * a known Agon user) and haven't yet responded — else null. Mirrors
+ * `myPendingInvitation`'s match version, so a team's page can show the same
+ * accept/decline entry point as a match's. Only sees pages of `GET
+ * /teams/{team_id}/members` actually fetched so far (see `TeamPage`'s
+ * `isAdmin` comment for the same caveat).
+ */
+export function myPendingTeamInvitation(
+  members: TeamMember[],
+  currentUserId: string | undefined,
+): Invitation | null {
+  return pendingInvitationFor(members, currentUserId)
+}
+
+/**
+ * Shared scan behind `myPendingInvitation`/`myPendingTeamInvitation`: find the
+ * viewer's own `{ member }` entry (a match player or team member — both wrap
+ * the same `Member` union) and return its pending invitation, if any.
+ */
+function pendingInvitationFor(
+  items: { member: Member }[],
+  currentUserId: string | undefined,
+): Invitation | null {
+  if (!currentUserId) return null
+  for (const item of items) {
+    if (item.member.type !== 'User') continue
+    if (item.member.user_id !== currentUserId) continue
+    const invitation = item.member.invitation
     if (invitation && invitation.status === 'pending') return invitation
   }
   return null
@@ -107,6 +135,31 @@ export function withInvitationStatus(
       }
     }),
   }
+}
+
+/**
+ * `withInvitationStatus`'s team-members counterpart, for one page's worth of
+ * members. `GET /teams/{team_id}/members` is paginated (`useInfiniteQuery`),
+ * so a caller updating the whole cached list maps this over every fetched
+ * page. Leaves a member untouched if it isn't the given user's row.
+ */
+export function withTeamMemberInvitationStatus(
+  members: TeamMember[],
+  userId: string,
+  status: Invitation['status'],
+): TeamMember[] {
+  return members.map((member) => {
+    if (member.member.type !== 'User') return member
+    if (member.member.user_id !== userId) return member
+    if (!member.member.invitation) return member
+    return {
+      ...member,
+      member: {
+        ...member.member,
+        invitation: { ...member.member.invitation, status },
+      },
+    }
+  })
 }
 
 /**

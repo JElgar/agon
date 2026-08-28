@@ -1,5 +1,7 @@
 use poem_openapi::{Enum, Object, Union};
 
+use crate::team::AssignableTeamRole;
+
 /// A person in some context (a team, a match side). Modelled as a union so the
 /// type enforces what data applies: a linked Agon user has a `user_id` (name and
 /// profile resolved from the account), while an external person has only a
@@ -128,6 +130,11 @@ pub struct AddInvitationsInput {
     /// them to the match without a side, to be chosen on acceptance. Ignored for
     /// team invitations.
     pub side_id: Option<String>,
+    /// (Team invitations only) the role every invitee in this batch gets once
+    /// accepted — `Admin` or `Member`, applied uniformly (invite some people as
+    /// admin and others as member in one call by sending two calls). None
+    /// defaults to `Member`. Ignored for match invitations.
+    pub role: Option<AssignableTeamRole>,
 }
 
 #[derive(Object)]

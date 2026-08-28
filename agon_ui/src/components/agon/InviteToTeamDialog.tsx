@@ -3,6 +3,8 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
+import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import {
   Dialog,
   DialogContent,
@@ -25,7 +27,8 @@ export interface InviteToTeamDialogProps {
 /**
  * Invite more people to an existing team — the after-the-fact counterpart of
  * `CreateTeamDialog`'s bundled initial invites, same `PlayerSideEditor` tagging
- * UI over `POST /teams/{id}/invitations`. Admin-only; the team page only
+ * UI over `POST /teams/{id}/invitations` — including the same "invite as
+ * admin" toggle, applied to the whole batch. Admin-only; the team page only
  * renders the trigger for an admin viewer. On success, invalidates the team's
  * members list (`['team-members', teamId]`) so the new (pending) members show
  * up immediately.
@@ -39,6 +42,7 @@ export function InviteToTeamDialog({
   const currentUserId = useCurrentUserId()
   const [open, setOpen] = useState(false)
   const [invitees, setInvitees] = useState<TaggedPlayer[]>([])
+  const [inviteAsAdmin, setInviteAsAdmin] = useState(false)
 
   const canSave = invitees.length > 0
 
@@ -49,6 +53,7 @@ export function InviteToTeamDialog({
         invited_external_names: invitees
           .filter((p) => p.kind === 'external')
           .map((p) => p.name),
+        role: inviteAsAdmin ? 'admin' : undefined,
       }
       const { error } = await fetchClient.POST('/teams/{team_id}/invitations', {
         params: { path: { team_id: teamId } },
@@ -66,6 +71,7 @@ export function InviteToTeamDialog({
     setOpen(next)
     if (next) {
       setInvitees([])
+      setInviteAsAdmin(false)
       mutation.reset()
     }
   }
@@ -86,6 +92,24 @@ export function InviteToTeamDialog({
           currentUserId={currentUserId}
           excludeUserIds={excludeUserIds}
         />
+
+        {invitees.length > 0 && (
+          <div className="flex items-center justify-between rounded-lg border px-3 py-2">
+            <div>
+              <Label htmlFor="invite-as-admin" className="text-sm">
+                Invite as admin
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                Everyone tagged above can manage the team, not just view it.
+              </p>
+            </div>
+            <Switch
+              id="invite-as-admin"
+              checked={inviteAsAdmin}
+              onCheckedChange={setInviteAsAdmin}
+            />
+          </div>
+        )}
 
         {mutation.isError && (
           <p className="text-sm text-destructive">Could not send invites. Try again.</p>

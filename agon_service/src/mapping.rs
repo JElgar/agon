@@ -38,7 +38,7 @@ use crate::notification::{
     MatchInvitationNotification, Notification, NotificationKind, ReplyNotification,
     ScoreConfirmedNotification, ScoreSubmittedNotification, TeamInvitationNotification,
 };
-use crate::team::{Team, TeamListItem, TeamMember, TeamRole};
+use crate::team::{AssignableTeamRole, Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
     BestBowlingFigures, BestFigure, Comment, ConfirmedScore, CricketPlayerStats, CricketScore,
     CricketScoreInnings, DevicePlatform, FeedMatch, FootballPlayerStats, FootballScore,
@@ -832,6 +832,7 @@ pub fn member_from_parts(
 
 pub fn team_role_from_str(s: &str) -> TeamRole {
     match s {
+        "owner" => TeamRole::Owner,
         "admin" => TeamRole::Admin,
         _ => TeamRole::Member,
     }
@@ -839,8 +840,19 @@ pub fn team_role_from_str(s: &str) -> TeamRole {
 
 pub fn team_role_str(r: &TeamRole) -> &'static str {
     match r {
+        TeamRole::Owner => "owner",
         TeamRole::Admin => "admin",
         TeamRole::Member => "member",
+    }
+}
+
+/// The stored string for a role assignable via `PATCH
+/// /teams/{team_id}/members/{member_id}` — never `"owner"`, which
+/// `AssignableTeamRole` excludes at the type level (see its doc comment).
+pub fn assignable_team_role_str(r: &AssignableTeamRole) -> &'static str {
+    match r {
+        AssignableTeamRole::Admin => "admin",
+        AssignableTeamRole::Member => "member",
     }
 }
 

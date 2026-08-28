@@ -370,6 +370,7 @@ async fn create_and_get_team() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -400,6 +401,7 @@ async fn team_appears_in_my_teams() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -423,6 +425,7 @@ async fn add_and_remove_team_member() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -467,6 +470,7 @@ async fn team_members_have_hydrated_names() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -517,6 +521,7 @@ async fn list_team_members_paginates() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -580,6 +585,7 @@ async fn removing_an_already_removed_team_member_returns_not_found() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -841,6 +847,7 @@ async fn patch_match_rename_team_side_without_shared_team_is_rejected() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -1319,6 +1326,7 @@ async fn follow_and_unfollow_team() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -2216,6 +2224,7 @@ async fn match_with_a_team_side_fans_out_to_team_followers() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -2998,6 +3007,7 @@ async fn list_matches_filters_by_team() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -3009,6 +3019,7 @@ async fn list_matches_filters_by_team() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -3020,6 +3031,7 @@ async fn list_matches_filters_by_team() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -3503,6 +3515,7 @@ async fn team_followers_list_includes_the_follower() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -3533,6 +3546,7 @@ async fn patch_team_updates_name() {
             logo_asset_id: None,
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -3549,6 +3563,521 @@ async fn patch_team_updates_name() {
     .await
     .expect("patch team");
     assert_eq!(updated.name, "After");
+}
+
+// ---------------------------------------------------------------------------
+// Team roles & permissions
+// ---------------------------------------------------------------------------
+
+/// The full permission matrix in one pass: a plain member (and a total
+/// stranger) is rejected from every management action; an admin — promoted
+/// via `PATCH /teams/:id/members/:id`'s role endpoint — can do everything a
+/// member can't (rename, add members, invite, remove a member, promote
+/// someone else), except delete the team, which stays owner-only.
+#[tokio::test]
+async fn team_admin_can_manage_but_member_cannot() {
+    let (owner_config, _owner) = new_user().await;
+    let (admin_config, admin) = new_user().await;
+    let (member_config, member) = new_user().await;
+    let (stranger_config, _stranger) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Roles FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![],
+            invited_external_names: vec![],
+            invited_role: None,
+        },
+    )
+    .await
+    .expect("create team");
+
+    teams_team_id_members_post(
+        &owner_config,
+        &team.id,
+        models::AddTeamMembersInput {
+            user_ids: vec![admin.profile.id.clone(), member.profile.id.clone()],
+        },
+    )
+    .await
+    .expect("add members");
+    let members = all_team_members(&owner_config, &team.id).await;
+    let admin_membership_id =
+        membership_id_for(&members, &admin.profile.id).expect("admin membership");
+    let member_membership_id =
+        membership_id_for(&members, &member.profile.id).expect("member membership");
+
+    // The owner promotes the future admin — still just a member so far, so
+    // this also covers "owner can change roles".
+    teams_team_id_members_member_id_patch(
+        &owner_config,
+        &team.id,
+        &admin_membership_id,
+        models::UpdateTeamMemberRoleInput {
+            role: models::AssignableTeamRole::Admin,
+        },
+    )
+    .await
+    .expect("promote to admin");
+
+    let rename_input = || models::UpdateTeamInput {
+        name: Some("Hijacked".to_string()),
+        logo_asset_id: None,
+    };
+    let no_invitees = || models::AddInvitationsInput {
+        invited_user_ids: vec![],
+        invited_external_names: vec![],
+        side_id: None,
+        role: None,
+    };
+
+    // A plain member can't manage the team...
+    assert_forbidden(teams_team_id_patch(&member_config, &team.id, rename_input()).await);
+    assert_forbidden(
+        teams_team_id_members_post(
+            &member_config,
+            &team.id,
+            models::AddTeamMembersInput { user_ids: vec![] },
+        )
+        .await,
+    );
+    assert_forbidden(teams_team_id_invitations_post(&member_config, &team.id, no_invitees()).await);
+    assert_forbidden(
+        teams_team_id_members_member_id_delete(&member_config, &team.id, &member_membership_id)
+            .await,
+    );
+    assert_forbidden(
+        teams_team_id_members_member_id_patch(
+            &member_config,
+            &team.id,
+            &member_membership_id,
+            models::UpdateTeamMemberRoleInput {
+                role: models::AssignableTeamRole::Admin,
+            },
+        )
+        .await,
+    );
+    // ...and neither can a total stranger, not even on the team at all.
+    assert_forbidden(teams_team_id_patch(&stranger_config, &team.id, rename_input()).await);
+
+    // The admin, though, can do everything the owner can except delete.
+    let renamed = teams_team_id_patch(
+        &admin_config,
+        &team.id,
+        models::UpdateTeamInput {
+            name: Some("Renamed by admin".to_string()),
+            logo_asset_id: None,
+        },
+    )
+    .await
+    .expect("admin can rename");
+    assert_eq!(renamed.name, "Renamed by admin");
+
+    let (_extra_config, extra) = new_user().await;
+    teams_team_id_members_post(
+        &admin_config,
+        &team.id,
+        models::AddTeamMembersInput {
+            user_ids: vec![extra.profile.id.clone()],
+        },
+    )
+    .await
+    .expect("admin can add members");
+
+    let invited = teams_team_id_invitations_post(
+        &admin_config,
+        &team.id,
+        models::AddInvitationsInput {
+            invited_user_ids: vec![],
+            invited_external_names: vec!["Guest".to_string()],
+            side_id: None,
+            role: None,
+        },
+    )
+    .await
+    .expect("admin can invite");
+    assert_eq!(invited.len(), 1);
+
+    let members_now = all_team_members(&admin_config, &team.id).await;
+    let extra_membership_id =
+        membership_id_for(&members_now, &extra.profile.id).expect("extra's membership");
+    teams_team_id_members_member_id_patch(
+        &admin_config,
+        &team.id,
+        &extra_membership_id,
+        models::UpdateTeamMemberRoleInput {
+            role: models::AssignableTeamRole::Admin,
+        },
+    )
+    .await
+    .expect("admin can promote someone else");
+
+    teams_team_id_members_member_id_delete(&admin_config, &team.id, &member_membership_id)
+        .await
+        .expect("admin can remove a member");
+
+    // But only the owner may delete the team itself.
+    assert_forbidden(teams_team_id_delete(&admin_config, &team.id).await);
+}
+
+/// The team's owner can't be removed, nor have their role changed, by
+/// anyone — not an admin, and not even themselves. Deleting the whole team
+/// is the only way the owner relationship ever ends (see
+/// `only_owner_can_delete_team`); there's no ownership-transfer flow.
+#[tokio::test]
+async fn team_owner_cannot_be_removed_or_have_their_role_changed() {
+    let (owner_config, owner) = new_user().await;
+    let (admin_config, admin) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Protected FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![],
+            invited_external_names: vec![],
+            invited_role: None,
+        },
+    )
+    .await
+    .expect("create team");
+    teams_team_id_members_post(
+        &owner_config,
+        &team.id,
+        models::AddTeamMembersInput {
+            user_ids: vec![admin.profile.id.clone()],
+        },
+    )
+    .await
+    .expect("add admin candidate");
+    let members = all_team_members(&owner_config, &team.id).await;
+    let admin_membership_id = membership_id_for(&members, &admin.profile.id).expect("admin id");
+    let owner_membership_id = membership_id_for(&members, &owner.profile.id).expect("owner id");
+    teams_team_id_members_member_id_patch(
+        &owner_config,
+        &team.id,
+        &admin_membership_id,
+        models::UpdateTeamMemberRoleInput {
+            role: models::AssignableTeamRole::Admin,
+        },
+    )
+    .await
+    .expect("promote");
+
+    // Neither the owner themselves nor an admin can remove the owner.
+    assert_forbidden(
+        teams_team_id_members_member_id_delete(&owner_config, &team.id, &owner_membership_id).await,
+    );
+    assert_forbidden(
+        teams_team_id_members_member_id_delete(&admin_config, &team.id, &owner_membership_id).await,
+    );
+
+    // Nor change the owner's role, from either side.
+    let demote = || models::UpdateTeamMemberRoleInput {
+        role: models::AssignableTeamRole::Member,
+    };
+    assert_forbidden(
+        teams_team_id_members_member_id_patch(
+            &owner_config,
+            &team.id,
+            &owner_membership_id,
+            demote(),
+        )
+        .await,
+    );
+    assert_forbidden(
+        teams_team_id_members_member_id_patch(
+            &admin_config,
+            &team.id,
+            &owner_membership_id,
+            demote(),
+        )
+        .await,
+    );
+
+    // The owner is still there, still the owner.
+    let members_after = all_team_members(&owner_config, &team.id).await;
+    let owner_role = members_after
+        .iter()
+        .find_map(|m| match &*m.member {
+            models::Member::User(u) if u.id == owner_membership_id => Some(m.role),
+            _ => None,
+        })
+        .expect("owner still on the roster");
+    assert_eq!(owner_role, models::TeamRole::Owner);
+}
+
+/// Delete-team is owner-only, and actually removes the team — a 404 on a
+/// subsequent `GET` (both the team itself and its member list), not just a
+/// 204 that leaves stale data behind.
+#[tokio::test]
+async fn only_owner_can_delete_team() {
+    let (owner_config, _owner) = new_user().await;
+    let (admin_config, admin) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Deletable FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![],
+            invited_external_names: vec![],
+            invited_role: None,
+        },
+    )
+    .await
+    .expect("create team");
+    teams_team_id_members_post(
+        &owner_config,
+        &team.id,
+        models::AddTeamMembersInput {
+            user_ids: vec![admin.profile.id.clone()],
+        },
+    )
+    .await
+    .expect("add admin candidate");
+    let members = all_team_members(&owner_config, &team.id).await;
+    let admin_membership_id = membership_id_for(&members, &admin.profile.id).expect("admin id");
+    teams_team_id_members_member_id_patch(
+        &owner_config,
+        &team.id,
+        &admin_membership_id,
+        models::UpdateTeamMemberRoleInput {
+            role: models::AssignableTeamRole::Admin,
+        },
+    )
+    .await
+    .expect("promote");
+
+    // An admin — who can do everything else — still can't delete the team.
+    assert_forbidden(teams_team_id_delete(&admin_config, &team.id).await);
+
+    // The owner can, and it's actually gone afterward.
+    teams_team_id_delete(&owner_config, &team.id)
+        .await
+        .expect("owner deletes team");
+    assert_not_found(teams_team_id_get(&owner_config, &team.id).await);
+    assert_not_found(teams_team_id_members_get(&owner_config, &team.id, None, None).await);
+}
+
+/// A plain member and an admin can both leave a team on their own; the
+/// owner can't — until they transfer ownership away (to an accepted member),
+/// at which point they're just an admin and leaving works the same way.
+#[tokio::test]
+async fn member_and_admin_can_leave_but_owner_must_transfer_first() {
+    let (owner_config, owner) = new_user().await;
+    let (member_config, member) = new_user().await;
+    let (admin_config, admin) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Leavable FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![],
+            invited_external_names: vec![],
+            invited_role: None,
+        },
+    )
+    .await
+    .expect("create team");
+    teams_team_id_members_post(
+        &owner_config,
+        &team.id,
+        models::AddTeamMembersInput {
+            user_ids: vec![member.profile.id.clone(), admin.profile.id.clone()],
+        },
+    )
+    .await
+    .expect("add members");
+    let members = all_team_members(&owner_config, &team.id).await;
+    let admin_membership_id = membership_id_for(&members, &admin.profile.id).expect("admin id");
+    let owner_membership_id = membership_id_for(&members, &owner.profile.id).expect("owner id");
+    teams_team_id_members_member_id_patch(
+        &owner_config,
+        &team.id,
+        &admin_membership_id,
+        models::UpdateTeamMemberRoleInput {
+            role: models::AssignableTeamRole::Admin,
+        },
+    )
+    .await
+    .expect("promote");
+
+    // The plain member leaves on their own — no owner/admin action needed.
+    teams_team_id_leave_post(&member_config, &team.id)
+        .await
+        .expect("member leaves");
+    let after_member_leaves = all_team_members(&owner_config, &team.id).await;
+    assert!(!member_ids(&after_member_leaves).contains(&member.profile.id));
+
+    // The owner can't — the server rejects it with a specific reason, and
+    // they're still on the roster afterward.
+    assert_status_with_content(
+        teams_team_id_leave_post(&owner_config, &team.id).await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "transfer ownership",
+    );
+    let still_owner = all_team_members(&owner_config, &team.id).await;
+    assert!(member_ids(&still_owner).contains(&owner.profile.id));
+
+    // Transfer ownership to the admin — roles swap...
+    teams_team_id_transfer_ownership_post(
+        &owner_config,
+        &team.id,
+        models::TransferTeamOwnershipInput {
+            member_id: admin_membership_id.clone(),
+        },
+    )
+    .await
+    .expect("transfer ownership");
+    let after_transfer = all_team_members(&owner_config, &team.id).await;
+    let new_owner_role = after_transfer
+        .iter()
+        .find_map(|m| match &*m.member {
+            models::Member::User(u) if u.id == admin_membership_id => Some(m.role),
+            _ => None,
+        })
+        .expect("former admin still on roster");
+    assert_eq!(new_owner_role, models::TeamRole::Owner);
+    let former_owner_role = after_transfer
+        .iter()
+        .find_map(|m| match &*m.member {
+            models::Member::User(u) if u.id == owner_membership_id => Some(m.role),
+            _ => None,
+        })
+        .expect("former owner still on roster");
+    assert_eq!(former_owner_role, models::TeamRole::Admin);
+
+    // ...and now the former owner (just an admin) can leave like anyone else.
+    teams_team_id_leave_post(&owner_config, &team.id)
+        .await
+        .expect("former owner leaves");
+    let final_members = all_team_members(&admin_config, &team.id).await;
+    assert!(!member_ids(&final_members).contains(&owner.profile.id));
+    assert!(member_ids(&final_members).contains(&admin.profile.id));
+}
+
+/// Only the owner may transfer ownership, and only to someone who's actually
+/// an accepted member — not themselves (a no-op that would just be
+/// confusing to allow), and not a still-pending invitee.
+#[tokio::test]
+async fn transfer_ownership_rejects_non_owner_self_and_pending_targets() {
+    let (owner_config, owner) = new_user().await;
+    let (admin_config, admin) = new_user().await;
+    let (invitee_config, invitee) = new_user().await;
+    let _ = invitee_config; // only need their id, never signs in for this test
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Transferable FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![invitee.profile.id.clone()],
+            invited_external_names: vec![],
+            invited_role: None,
+        },
+    )
+    .await
+    .expect("create team with a pending invite");
+    teams_team_id_members_post(
+        &owner_config,
+        &team.id,
+        models::AddTeamMembersInput {
+            user_ids: vec![admin.profile.id.clone()],
+        },
+    )
+    .await
+    .expect("add admin candidate");
+    let members = all_team_members(&owner_config, &team.id).await;
+    let admin_membership_id = membership_id_for(&members, &admin.profile.id).expect("admin id");
+    let owner_membership_id = membership_id_for(&members, &owner.profile.id).expect("owner id");
+    let invitee_membership_id =
+        membership_id_for(&members, &invitee.profile.id).expect("invitee still pending");
+    teams_team_id_members_member_id_patch(
+        &owner_config,
+        &team.id,
+        &admin_membership_id,
+        models::UpdateTeamMemberRoleInput {
+            role: models::AssignableTeamRole::Admin,
+        },
+    )
+    .await
+    .expect("promote");
+
+    // A non-owner (even an admin, who can do almost everything else) can't
+    // transfer ownership.
+    assert_forbidden(
+        teams_team_id_transfer_ownership_post(
+            &admin_config,
+            &team.id,
+            models::TransferTeamOwnershipInput {
+                member_id: admin_membership_id.clone(),
+            },
+        )
+        .await,
+    );
+
+    // The owner can't "transfer" to themselves.
+    assert_bad_request(
+        teams_team_id_transfer_ownership_post(
+            &owner_config,
+            &team.id,
+            models::TransferTeamOwnershipInput {
+                member_id: owner_membership_id.clone(),
+            },
+        )
+        .await,
+    );
+
+    // Nor to the still-pending invitee — they haven't actually joined yet.
+    assert_bad_request(
+        teams_team_id_transfer_ownership_post(
+            &owner_config,
+            &team.id,
+            models::TransferTeamOwnershipInput {
+                member_id: invitee_membership_id,
+            },
+        )
+        .await,
+    );
+
+    // Ownership never moved through any of that.
+    let members_after = all_team_members(&owner_config, &team.id).await;
+    let owner_role = members_after
+        .iter()
+        .find_map(|m| match &*m.member {
+            models::Member::User(u) if u.id == owner_membership_id => Some(m.role),
+            _ => None,
+        })
+        .expect("owner still on roster");
+    assert_eq!(owner_role, models::TeamRole::Owner);
+}
+
+/// Leaving a team you're not a member of (or that doesn't exist) is a 404,
+/// not a silent success.
+#[tokio::test]
+async fn leaving_a_team_youre_not_a_member_of_returns_not_found() {
+    let (owner_config, _owner) = new_user().await;
+    let (stranger_config, _stranger) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Not Yours FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![],
+            invited_external_names: vec![],
+            invited_role: None,
+        },
+    )
+    .await
+    .expect("create team");
+
+    assert_not_found(teams_team_id_leave_post(&stranger_config, &team.id).await);
+    assert_not_found(teams_team_id_leave_post(&stranger_config, "no-such-team").await);
 }
 
 // ---------------------------------------------------------------------------
@@ -3612,6 +4141,7 @@ async fn inviter_can_revoke_an_invitation() {
             invited_user_ids: vec![invitee.profile.id.clone()],
             invited_external_names: vec![],
             side_id: None,
+            role: None,
         },
     )
     .await
@@ -3645,6 +4175,7 @@ async fn revoking_an_already_revoked_invitation_returns_not_found() {
             invited_user_ids: vec![invitee.profile.id.clone()],
             invited_external_names: vec![],
             side_id: None,
+            role: None,
         },
     )
     .await
@@ -3794,6 +4325,10 @@ fn assert_status_with_content<T, E: std::fmt::Debug>(
 
 fn assert_not_found<T, E: std::fmt::Debug>(response: Result<T, openapi::apis::Error<E>>) {
     assert_status(response, reqwest::StatusCode::NOT_FOUND);
+}
+
+fn assert_forbidden<T, E: std::fmt::Debug>(response: Result<T, openapi::apis::Error<E>>) {
+    assert_status(response, reqwest::StatusCode::FORBIDDEN);
 }
 
 fn assert_bad_request<T, E: std::fmt::Debug>(response: Result<T, openapi::apis::Error<E>>) {
@@ -4306,6 +4841,7 @@ async fn create_team_with_logo() {
             logo_asset_id: Some(asset.id.clone()),
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -4330,6 +4866,7 @@ async fn create_team_rejects_wrong_purpose_asset() {
             logo_asset_id: Some(asset.id.clone()),
             invited_user_ids: vec![],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await;
@@ -4354,6 +4891,7 @@ async fn team_created_with_initial_invite_can_be_accepted() {
             logo_asset_id: None,
             invited_user_ids: vec![invitee.profile.id.clone()],
             invited_external_names: vec![],
+            invited_role: None,
         },
     )
     .await
@@ -4422,6 +4960,196 @@ async fn team_created_with_initial_invite_can_be_accepted() {
         }
         models::Member::External(_) => panic!("expected a linked user member"),
     }
+}
+
+/// `CreateTeamInput.invited_role` sets the role every bundled invitee lands
+/// with — checked before acceptance, since `build_invited_team_member`
+/// stamps it onto the pending roster slot immediately, not just onto the
+/// membership once accepted. Covers both a user invitee and an external
+/// (token) one, since only one of those is ever linked to a real account.
+#[tokio::test]
+async fn initial_invitees_land_with_the_requested_role() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Admins FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![invitee.profile.id.clone()],
+            invited_external_names: vec!["Guest Coach".to_string()],
+            invited_role: Some(models::AssignableTeamRole::Admin),
+        },
+    )
+    .await
+    .expect("create team with admin invites");
+
+    let members = all_team_members(&owner_config, &team.id).await;
+    let invitee_role = members
+        .iter()
+        .find_map(|m| match &*m.member {
+            models::Member::User(u) if u.user_id == invitee.profile.id => Some(m.role),
+            _ => None,
+        })
+        .expect("user invitee on roster");
+    assert_eq!(invitee_role, models::TeamRole::Admin);
+    let external_role = members
+        .iter()
+        .find_map(|m| match &*m.member {
+            models::Member::External(e) if e.display_name == "Guest Coach" => Some(m.role),
+            _ => None,
+        })
+        .expect("external invitee on roster");
+    assert_eq!(external_role, models::TeamRole::Admin);
+}
+
+/// Same as above but via the standalone `POST /teams/:id/invitations`
+/// endpoint — `AddInvitationsInput.role`, the shared invite input's
+/// team-only field (mirroring `side_id`'s match-only one).
+#[tokio::test]
+async fn invitations_endpoint_honors_requested_role() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Later Admins FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![],
+            invited_external_names: vec![],
+            invited_role: None,
+        },
+    )
+    .await
+    .expect("create team");
+
+    teams_team_id_invitations_post(
+        &owner_config,
+        &team.id,
+        models::AddInvitationsInput {
+            invited_user_ids: vec![invitee.profile.id.clone()],
+            invited_external_names: vec![],
+            side_id: None,
+            role: Some(models::AssignableTeamRole::Admin),
+        },
+    )
+    .await
+    .expect("invite as admin");
+
+    let members = all_team_members(&owner_config, &team.id).await;
+    let role = members
+        .iter()
+        .find_map(|m| match &*m.member {
+            models::Member::User(u) if u.user_id == invitee.profile.id => Some(m.role),
+            _ => None,
+        })
+        .expect("invitee on roster");
+    assert_eq!(role, models::TeamRole::Admin);
+}
+
+/// A total stranger — not a member, not invited, nothing — can still view a
+/// team and its roster: `GET /teams/:id` and `GET /teams/:id/members` carry
+/// no permission check (see `get_team`/`list_team_members`), unlike every
+/// management endpoint (`team_admin_can_manage_but_member_cannot` covers
+/// those being rejected). Teams are open to view for now, same as a user's
+/// own profile.
+#[tokio::test]
+async fn stranger_can_view_team_and_members_read_only() {
+    let (owner_config, owner) = new_user().await;
+    let (stranger_config, _stranger) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Open View FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![],
+            invited_external_names: vec![],
+            invited_role: None,
+        },
+    )
+    .await
+    .expect("create team");
+
+    let seen = teams_team_id_get(&stranger_config, &team.id)
+        .await
+        .expect("stranger can view the team");
+    assert_eq!(seen.name, "Open View FC");
+
+    let members = teams_team_id_members_get(&stranger_config, &team.id, None, None)
+        .await
+        .expect("stranger can view the roster");
+    assert!(member_ids(&members.items).contains(&owner.profile.id));
+}
+
+/// When a team is deleted, matches it played keep their `team_id` snapshot
+/// (not scrubbed — same "reference outlives the record" shape as
+/// `deleted_user_profile` for a deleted account) but the side's resolved
+/// `name` falls back to "Deleted team" instead of the team's (now gone) real
+/// name, with no logo. Uses a side with no players so the sole-player-name
+/// fallback doesn't win over the team's name and mask what we're testing.
+#[tokio::test]
+async fn deleted_teams_matches_show_deleted_team() {
+    let (owner_config, _owner) = new_user().await;
+    let (_opponent_config, opponent) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Doomed FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![],
+            invited_external_names: vec![],
+            invited_role: None,
+        },
+    )
+    .await
+    .expect("create team");
+
+    // Side "a" carries the team id and no players, so the team's name (not a
+    // sole player's) is what resolves. Side "b" is a normal opponent side.
+    let mut input = match_between("Doomed Match", &[], &[&opponent.profile.id]);
+    input.sides[0].team_id = Some(team.id.clone());
+    input.sides[0].name = None;
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("create match");
+
+    let before = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match before team is deleted");
+    let side_before = before
+        .sides
+        .iter()
+        .find(|s| s.team_id.as_deref() == Some(team.id.as_str()))
+        .expect("team side");
+    assert_eq!(
+        side_before.name.as_deref(),
+        Some(team.name.as_str()),
+        "resolves to the team's real name while it still exists"
+    );
+
+    teams_team_id_delete(&owner_config, &team.id)
+        .await
+        .expect("delete team");
+
+    let after = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match after team is deleted");
+    let side_after = after
+        .sides
+        .iter()
+        .find(|s| s.id == side_before.id)
+        .expect("side is still there");
+    assert_eq!(side_after.name.as_deref(), Some("Deleted team"));
+    assert_eq!(
+        side_after.team_id.as_deref(),
+        Some(team.id.as_str()),
+        "the team_id snapshot is preserved, not scrubbed"
+    );
+    assert!(side_after.team_logo.is_none());
 }
 
 #[tokio::test]

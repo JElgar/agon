@@ -5049,6 +5049,109 @@ async fn invitations_endpoint_honors_requested_role() {
     assert_eq!(role, models::TeamRole::Admin);
 }
 
+/// A total stranger — not a member, not invited, nothing — can still view a
+/// team and its roster: `GET /teams/:id` and `GET /teams/:id/members` carry
+/// no permission check (see `get_team`/`list_team_members`), unlike every
+/// management endpoint (`team_admin_can_manage_but_member_cannot` covers
+/// those being rejected). Teams are open to view for now, same as a user's
+/// own profile.
+#[tokio::test]
+async fn stranger_can_view_team_and_members_read_only() {
+    let (owner_config, owner) = new_user().await;
+    let (stranger_config, _stranger) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Open View FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![],
+            invited_external_names: vec![],
+            invited_role: None,
+        },
+    )
+    .await
+    .expect("create team");
+
+    let seen = teams_team_id_get(&stranger_config, &team.id)
+        .await
+        .expect("stranger can view the team");
+    assert_eq!(seen.name, "Open View FC");
+
+    let members = teams_team_id_members_get(&stranger_config, &team.id, None, None)
+        .await
+        .expect("stranger can view the roster");
+    assert!(member_ids(&members.items).contains(&owner.profile.id));
+}
+
+/// When a team is deleted, matches it played keep their `team_id` snapshot
+/// (not scrubbed — same "reference outlives the record" shape as
+/// `deleted_user_profile` for a deleted account) but the side's resolved
+/// `name` falls back to "Deleted team" instead of the team's (now gone) real
+/// name, with no logo. Uses a side with no players so the sole-player-name
+/// fallback doesn't win over the team's name and mask what we're testing.
+#[tokio::test]
+async fn deleted_teams_matches_show_deleted_team() {
+    let (owner_config, _owner) = new_user().await;
+    let (_opponent_config, opponent) = new_user().await;
+
+    let team = teams_post(
+        &owner_config,
+        models::CreateTeamInput {
+            name: "Doomed FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![],
+            invited_external_names: vec![],
+            invited_role: None,
+        },
+    )
+    .await
+    .expect("create team");
+
+    // Side "a" carries the team id and no players, so the team's name (not a
+    // sole player's) is what resolves. Side "b" is a normal opponent side.
+    let mut input = match_between("Doomed Match", &[], &[&opponent.profile.id]);
+    input.sides[0].team_id = Some(team.id.clone());
+    input.sides[0].name = None;
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("create match");
+
+    let before = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match before team is deleted");
+    let side_before = before
+        .sides
+        .iter()
+        .find(|s| s.team_id.as_deref() == Some(team.id.as_str()))
+        .expect("team side");
+    assert_eq!(
+        side_before.name.as_deref(),
+        Some(team.name.as_str()),
+        "resolves to the team's real name while it still exists"
+    );
+
+    teams_team_id_delete(&owner_config, &team.id)
+        .await
+        .expect("delete team");
+
+    let after = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match after team is deleted");
+    let side_after = after
+        .sides
+        .iter()
+        .find(|s| s.id == side_before.id)
+        .expect("side is still there");
+    assert_eq!(side_after.name.as_deref(), Some("Deleted team"));
+    assert_eq!(
+        side_after.team_id.as_deref(),
+        Some(team.id.as_str()),
+        "the team_id snapshot is preserved, not scrubbed"
+    );
+    assert!(side_after.team_logo.is_none());
+}
+
 #[tokio::test]
 async fn upload_match_header_end_to_end() {
     let (config, _user) = new_user().await;

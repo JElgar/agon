@@ -5907,7 +5907,13 @@ impl Api {
                                 });
                                 team.name.clone()
                             }
-                            None => "Team".to_string(),
+                            // The team was deleted (`DELETE /teams/{team_id}`)
+                            // but the side's `team_id` snapshot outlives it —
+                            // same "outlives the record it points to, resolve
+                            // the gap at read time" shape as
+                            // `deleted_user_profile`. `team_id` itself is left
+                            // as-is (not scrubbed) rather than cleared.
+                            None => "Deleted team".to_string(),
                         },
                         None => match &viewer_side_id {
                             Some(vs) if vs == &side.id => "Your side".to_string(),
@@ -5966,7 +5972,9 @@ impl Api {
                                 });
                                 team.name.clone()
                             }
-                            None => "Team".to_string(),
+                            // Same "team was deleted" fallback as
+                            // `resolve_side_names` above.
+                            None => "Deleted team".to_string(),
                         },
                         None => match viewer_side_id {
                             Some(vs) if vs == side.id => "Your side".to_string(),

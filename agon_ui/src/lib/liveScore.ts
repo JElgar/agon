@@ -702,6 +702,53 @@ export function eventClockLabel(event: FootballEventView, periodTimes?: Football
   return minuteLabel(event.minute)
 }
 
+/** One point on the goal-difference timeline: the running score right after
+ *  this goal, and the goal itself (for the marker's tooltip). `diff` is
+ *  `scoreA - scoreB`, positive meaning `sideAId` is ahead; the crediting
+ *  side_id decides the step regardless of `own_goal` — unlike the
+ *  goal-contributions table, the scoreboard doesn't care who put it in
+ *  whose net. */
+export interface GoalDiffPoint {
+  minute: number
+  diff: number
+  scoreA: number
+  scoreB: number
+  goal: FootballGoalEvent
+}
+
+/** A single goal's match minute, the same way a live-scored event's is
+ *  derived for display (`eventClockLabel`) or a manually-logged one falls
+ *  back to its free-text `minute` — but returning the number itself rather
+ *  than a formatted label, for positioning on a chart axis. `null` if
+ *  neither is set (shouldn't happen per `FootballGoalEvent`'s own doc
+ *  comment, but keeps a caller total rather than guessing). */
+export function goalMinuteValue(goal: FootballGoalEvent, periodTimes: FootballPeriodTimes | undefined): number | null {
+  if (goal.occurred_at) return minuteAt(periodTimes, goal.occurred_at)
+  return goal.minute ?? null
+}
+
+/** Every goal turned into a running goal-difference step function, in
+ *  chronological order — the data backing the goal-difference chart. Goals
+ *  with no derivable minute are dropped rather than guessed at. */
+export function goalDifferenceTimeline(
+  goals: FootballGoalEvent[],
+  sideAId: string,
+  periodTimes: FootballPeriodTimes | undefined,
+): GoalDiffPoint[] {
+  const timed = goals
+    .map((goal) => ({ goal, minute: goalMinuteValue(goal, periodTimes) }))
+    .filter((g): g is { goal: FootballGoalEvent; minute: number } => g.minute !== null)
+    .sort((a, b) => a.minute - b.minute)
+
+  let scoreA = 0
+  let scoreB = 0
+  return timed.map(({ goal, minute }) => {
+    if (goal.side_id === sideAId) scoreA += 1
+    else scoreB += 1
+    return { minute, diff: scoreA - scoreB, scoreA, scoreB, goal }
+  })
+}
+
 /** Whether the ball is actually in play right now — the phases where a goal
  *  (or card/sub) can meaningfully happen. Excludes not just `penalties`
  *  (which has its own dedicated recording UI) but every clock-stopped phase —

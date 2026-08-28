@@ -18,6 +18,7 @@ import { CricketScoreBlock } from '@/components/agon/CricketScoreBlock'
 import { CricketScorecard } from '@/components/agon/CricketScorecard'
 import { FootballScorecard } from '@/components/agon/FootballScorecard'
 import { FootballGoalContributions } from '@/components/agon/FootballGoalContributions'
+import { FootballGoalDifferenceChart } from '@/components/agon/FootballGoalDifferenceChart'
 import { FootballScorersBySide } from '@/components/agon/FootballScorersBySide'
 import { NetballScorecard } from '@/components/agon/NetballScorecard'
 import { NetballScorersBySide } from '@/components/agon/NetballScorersBySide'
@@ -474,6 +475,21 @@ function MatchDetail({
           recorded (live-scored or entered directly) — stays visible after
           the match finishes, unlike the live score header above. */}
       {footballEventSource && <FootballScorecard match={orderedMatch} detail={footballEventSource} />}
+
+      {/* Goal difference over time — a high-scoring match's swings, minute
+          by minute. Renders nothing itself once there aren't enough goals
+          to be worth it (see `FootballGoalDifferenceChart`'s own doc
+          comment). */}
+      {footballEventSource && (
+        <FootballGoalDifferenceChart
+          goals={footballEventSource.goals}
+          match={orderedMatch}
+          players={footballEventSource.players}
+          periodTimes={footballEventSource.period_times}
+          sideA={sideA}
+          sideB={sideB}
+        />
+      )}
 
       {/* Netball quarter breakdown — reads the same regardless of which
           live-scoring method produced the score (see

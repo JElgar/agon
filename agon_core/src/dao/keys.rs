@@ -62,6 +62,11 @@ pub enum Pk {
     UserFeed(String),
     /// An invitation. `INVITATION#<invId>`
     Invitation(String),
+    /// A shareable join link — many-use, unlike an `Invitation`'s single-use
+    /// token (see `JoinLinkRecord`'s doc comment). Standalone (not embedded
+    /// under `Match`/`Team`) so the same entity works for any context.
+    /// `JOINLINK#<linkId>`
+    JoinLink(String),
     /// An uploadable asset. `ASSET#<assetId>`
     Asset(String),
 }
@@ -82,6 +87,7 @@ impl Pk {
             Pk::Match(_) => "MATCH",
             Pk::UserFeed(_) => "UFEED",
             Pk::Invitation(_) => "INVITATION",
+            Pk::JoinLink(_) => "JOINLINK",
             Pk::Asset(_) => "ASSET",
         }
     }
@@ -103,6 +109,7 @@ impl fmt::Display for Pk {
             | Pk::Match(v)
             | Pk::UserFeed(v)
             | Pk::Invitation(v)
+            | Pk::JoinLink(v)
             | Pk::Asset(v) => v,
         };
         write!(f, "{}{}{}", self.prefix(), DELIMITER, value)
@@ -127,6 +134,7 @@ impl FromStr for Pk {
             "MATCH" => Ok(Pk::Match(value.into())),
             "UFEED" => Ok(Pk::UserFeed(value.into())),
             "INVITATION" => Ok(Pk::Invitation(value.into())),
+            "JOINLINK" => Ok(Pk::JoinLink(value.into())),
             "ASSET" => Ok(Pk::Asset(value.into())),
             other => Err(KeyError::UnknownPrefix(other.into())),
         }
@@ -416,6 +424,7 @@ mod tests {
         pk_roundtrip(Pk::Match("m1".into()), "MATCH#m1");
         pk_roundtrip(Pk::UserFeed("u1".into()), "UFEED#u1");
         pk_roundtrip(Pk::Invitation("i1".into()), "INVITATION#i1");
+        pk_roundtrip(Pk::JoinLink("jl1".into()), "JOINLINK#jl1");
         pk_roundtrip(Pk::Asset("a1".into()), "ASSET#a1");
     }
 

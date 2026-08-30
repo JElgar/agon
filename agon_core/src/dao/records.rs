@@ -375,6 +375,32 @@ pub struct TeamMemberRecord {
     pub created_at: String,
 }
 
+/// A match's self-serve-join settings: whether/how a joiner (via a join link
+/// today; team self-join in a later phase) may pick a side.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct JoinPolicyRecord {
+    pub side_selection: SideSelectionRecord,
+}
+
+/// See `JoinPolicyRecord`. Naming is literal about behavior — "unassigned" is
+/// not a new roster state (`MatchPlayerRecord.side_id: None` already means
+/// that); this only controls whether a self-serve joiner gets to choose.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SideSelectionRecord {
+    /// Every self-serve joiner lands unassigned; the organizer assigns sides
+    /// later (`Dao::update_match_meta`'s side-assignment path).
+    UnassignedOnly,
+    /// A joiner must pick one of the match's sides; landing unassigned isn't
+    /// offered.
+    SideRequired,
+    /// A joiner may pick a side or go unassigned. The default — matches the
+    /// implicit behavior invites already had (an invite's `side_id` was
+    /// always optional).
+    #[default]
+    SideOptional,
+}
+
 /// `MATCH#<matchId>` / `#META` — match metadata + resolved scores + social
 /// counts. `players`, the live-scoring score record, submissions, likes and
 /// comments live as separate items in the same partition; `sides` is
@@ -387,11 +413,20 @@ pub struct TeamMemberRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MatchRecord {
     pub id: String,
-    /// The user who created (organizes) the match. They may manage it — edit,
-    /// invite, record the result — even when not playing in it themselves.
+    /// The user who created (organizes) the match. Immutable — a historical
+    /// fact, unlike `owner_user_id` below. May manage it — edit, invite,
+    /// record the result — even when not playing in it themselves.
     /// `#[serde(default)]` for records written before this field existed.
     #[serde(default)]
     pub created_by_user_id: String,
+    /// The current match owner — starts as `created_by_user_id` but is
+    /// transferable (`Dao::transfer_match_ownership`) independently of it, so
+    /// control can hand off without rewriting history. Empty for records
+    /// written before this field existed; callers fall back to
+    /// `created_by_user_id` in that case (the same convention that field
+    /// itself used when introduced — see its own doc comment).
+    #[serde(default)]
+    pub owner_user_id: String,
     pub name: String,
     pub description: String,
     /// Sport tag, e.g. "tennis" (the API's `MatchType`, stored as a string).
@@ -399,6 +434,19 @@ pub struct MatchRecord {
     /// Lifecycle: "scheduled" | "in_progress" | "completed" | "cancelled".
     pub status: String,
     pub starts_at: String,
+    /// Whether/how a self-serve joiner may pick a side. `#[serde(default)]`
+    /// for records written before this field existed — defaults to
+    /// `SideOptional`, matching the implicit behavior invites already had
+    /// (an invite's `side_id` was always optional).
+    #[serde(default)]
+    pub join_policy: JoinPolicyRecord,
+    /// Total roster size (every side plus unassigned), maintained atomically
+    /// alongside each side's own `player_count` — see `Dao::join_match_tx`
+    /// and `MatchAggregate::effective_max_players` for how it's used to
+    /// enforce the derived overall cap. `#[serde(default)]` for records
+    /// written before this field existed.
+    #[serde(default)]
+    pub total_player_count: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<LocationRecord>,
     /// This match's sides, keyed by `side_id` — a DynamoDB map, not a list,
@@ -459,6 +507,19 @@ pub struct MatchRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<MatchFormatRecord>,
     pub created_at: String,
+}
+
+impl MatchRecord {
+    /// The match's current owner, falling back to `created_by_user_id` for
+    /// records written before `owner_user_id` existed — see that field's doc
+    /// comment for why the two are separate concepts.
+    pub fn effective_owner_user_id(&self) -> &str {
+        if self.owner_user_id.is_empty() {
+            &self.created_by_user_id
+        } else {
+            &self.owner_user_id
+        }
+    }
 }
 
 /// Mirrors `agon_service::match_format::MatchFormat`, sport-first
@@ -525,6 +586,12 @@ pub struct MatchSideRecord {
     pub team_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Cap on this side's roster. `None` = uncapped. When every side of a
+    /// match has one set, the match's overall cap is derived as their sum
+    /// (see `MatchAggregate::effective_max_players`) rather than stored
+    /// separately.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_players: Option<u32>,
     /// Total players currently on this side. Denormalized alongside
     /// `roster_preview` (kept in sync on every roster-changing write — see
     /// `Dao::refresh_side_roster_previews`) so the feed can decide "show
@@ -571,6 +638,48 @@ pub struct MatchPlayerRecord {
     pub is_member_of_team: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invitation: Option<EmbeddedInvitationRecord>,
+    /// This player's authority on the match — own enum, deliberately not a
+    /// reuse of `TeamMemberRecord.role`, since match and team roles may
+    /// diverge over time. `#[serde(default)]` (-> `Player`) for players
+    /// written before this field existed.
+    #[serde(default)]
+    pub role: MatchPlayerRole,
+    /// How this player got onto the roster: `None` means added directly by
+    /// the organizer/an admin (same as today), `Some` means they added
+    /// themselves — via a join link now, or team self-join in a later phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub joined_via: Option<JoinSourceRecord>,
+}
+
+/// A player's authority on a match. Kept as its own type rather than reusing
+/// `TeamMemberRecord.role` (a raw "admin"/"member" string) — match and team
+/// roles are conceptually related but not guaranteed to stay identical, and a
+/// shared type would couple them accidentally.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchPlayerRole {
+    /// Full authority over the match: manage `join_policy`/caps, mint or
+    /// revoke join-links, invite people. The playing creator gets this by
+    /// default; see `MatchRecord::owner_user_id` for the (possibly
+    /// non-playing) transferable owner, which is a separate concept.
+    Admin,
+    /// An ordinary roster member. Can still invite named people (today's
+    /// "any participant" behavior), just not the more structural actions
+    /// above.
+    #[default]
+    Player,
+}
+
+/// How a player joined the match, when it wasn't the organizer adding them
+/// directly (`MatchPlayerRecord.joined_via: None` covers that existing case).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum JoinSourceRecord {
+    /// Joined via a shareable `JoinLinkRecord`.
+    Link { link_id: String },
+    /// Joined via team-roster self-join (a later phase — see
+    /// `MatchSideRecord`'s doc comments once that toggle exists).
+    SelfServe,
 }
 
 /// `MATCH#<matchId>` / `SCORE#<sport>` — the match's live-scoring score
@@ -996,6 +1105,54 @@ pub struct InvitationRecord {
     pub invited_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub responded_at: Option<String>,
+}
+
+/// `JOINLINK#<linkId>` / `#META` — a shareable, many-use join link. Unlike
+/// `InvitationRecord`'s token (single-use — pre-bound to one specific roster
+/// row), any number of different people may join via the same link's token,
+/// bounded only by the target's own capacity (see `Dao::join_match_tx`).
+///
+/// Standalone and context-tagged the same way `InvitationRecord` is (reusing
+/// `InvitationContextRecord` as-is) rather than embedded under `MATCH#`/
+/// `TEAM#`, so the same entity serves a match join-link today and a team
+/// join-link later without a new type or a migration.
+///
+/// Projects to GSI2 as `JOINLINK_TOKEN#<token>` — a distinct prefix from
+/// `InvitationRecord`'s `TOKEN#` so the two entities never collide despite
+/// sharing the index.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct JoinLinkRecord {
+    pub id: String,
+    pub token: String,
+    /// What this link joins (currently always `Match`; `Team` is free for a
+    /// later team-join-link feature).
+    pub context: InvitationContextRecord,
+    /// Which side(s)/unassigned this link may join. Match-join-specific
+    /// today — a team join-link would carry its own, simpler scope type.
+    pub scope: JoinLinkScopeRecord,
+    pub created_by_user_id: String,
+    pub created_at: String,
+    /// Soft-revoke, not delete: keeps past joiners' provenance
+    /// (`MatchPlayerRecord.joined_via`) resolvable. A revoked link 404s on
+    /// lookup-to-join; its row otherwise remains as-is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<String>,
+}
+
+/// See `JoinLinkRecord::scope`. Overrides the match's own `JoinPolicyRecord`
+/// for joins made through this specific link.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum JoinLinkScopeRecord {
+    /// Defer to the match's own `join_policy`.
+    Inherit,
+    /// Always joins the unassigned pool, regardless of `join_policy`.
+    Unassigned,
+    /// May only join one of these specific sides — one entry for a
+    /// single-side link, several for e.g. "either side of this intra-squad
+    /// match". Always wins over an `UnassignedOnly` `join_policy`: making a
+    /// side-scoped link is an explicit choice to fill that side.
+    Sides { side_ids: Vec<String> },
 }
 
 /// `USER#<uid>` / `NOTIF#<ts>#<nid>` — a notification for a user.

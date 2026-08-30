@@ -156,3 +156,120 @@ pub enum InvitationStatus {
     Accepted,
     Declined,
 }
+
+/// A player's authority on a match — own type, deliberately not a reuse of
+/// `TeamRole` (team and match roles may diverge over time). See
+/// `MatchPlayer.role`.
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+#[oai(rename_all = "snake_case")]
+pub enum MatchPlayerRole {
+    /// Full authority: manage `join_policy`/side caps, mint or revoke
+    /// join-links, invite people. The playing creator gets this by default.
+    /// See `Match.owner_user_id` for the separate, transferable owner
+    /// concept — a non-playing organizer relies on that instead.
+    Admin,
+    /// An ordinary roster member. Can still invite named people (any
+    /// participant may), just not the more structural admin actions.
+    Player,
+}
+
+/// A match's self-serve-join settings: whether/how a joiner (via a join link
+/// today; team self-join in a later phase) may pick a side.
+#[derive(Object, Debug, Clone)]
+pub struct JoinPolicy {
+    pub side_selection: SideSelection,
+}
+
+/// See `JoinPolicy`. Naming is literal about behavior — landing unassigned is
+/// not a new roster state (a `MatchPlayer` with no `side_id` already means
+/// that); this only controls whether a self-serve joiner gets to choose.
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+#[oai(rename_all = "snake_case")]
+pub enum SideSelection {
+    /// Every self-serve joiner lands unassigned; the organizer assigns sides
+    /// later (`PATCH /matches/:id`'s `side_assignments`).
+    UnassignedOnly,
+    /// A joiner must pick one of the match's sides; landing unassigned isn't
+    /// offered.
+    SideRequired,
+    /// A joiner may pick a side or go unassigned. The default.
+    SideOptional,
+}
+
+/// A shareable, many-use join link for a match. Unlike a token `Invitation`
+/// (single-use — pre-bound to one specific roster row), any number of
+/// different people may join via the same link's token, bounded only by the
+/// match's own capacity.
+#[derive(Object)]
+pub struct JoinLink {
+    pub id: String,
+    pub match_id: String,
+    pub token: String,
+    pub scope: JoinLinkScope,
+    pub created_by_user_id: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Set once the link has been revoked — a revoked link can no longer be
+    /// joined via (`POST /matches/:id/join` / the by-token lookup 404s).
+    pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Which side(s)/unassigned a join link may join. Overrides the match's own
+/// `JoinPolicy` for joins made through this specific link.
+#[derive(Union)]
+#[oai(one_of, discriminator_name = "type")]
+pub enum JoinLinkScope {
+    /// Defer to the match's own `join_policy`.
+    Inherit(JoinLinkScopeInherit),
+    /// Always joins the unassigned pool, regardless of `join_policy`.
+    Unassigned(JoinLinkScopeUnassigned),
+    /// May only join one of these specific sides — one entry for a
+    /// single-side link, several for e.g. "either side of this intra-squad
+    /// match". Always wins over an `unassigned_only` `join_policy`: making a
+    /// side-scoped link is an explicit choice to fill that side.
+    Sides(JoinLinkScopeSides),
+}
+
+#[derive(Object)]
+pub struct JoinLinkScopeInherit {}
+
+#[derive(Object)]
+pub struct JoinLinkScopeUnassigned {}
+
+#[derive(Object)]
+pub struct JoinLinkScopeSides {
+    pub side_ids: Vec<String>,
+}
+
+#[derive(Object)]
+pub struct CreateJoinLinkInput {
+    pub scope: JoinLinkScope,
+}
+
+/// The public, unauthenticated preview of a join link — enough for a client
+/// to render "Join Sunday 5-a-side (Team A) — 6/10 joined" before the viewer
+/// signs in. Returned by `GET /join-links/by-token/:token`.
+#[derive(Object)]
+pub struct JoinLinkPreview {
+    pub match_id: String,
+    pub match_name: String,
+    pub starts_at: chrono::DateTime<chrono::Utc>,
+    pub scope: JoinLinkScope,
+    pub total_player_count: u32,
+    /// The match's derived overall cap (see `JoinPolicy`'s doc comment on
+    /// `Match` for how it's computed). `None` = uncapped.
+    pub max_players: Option<u32>,
+}
+
+/// Join a match — via a join link's token, or (a later phase) by virtue of
+/// team membership. `side_id` picks which side to join; omit for unassigned,
+/// where the resolved join scope allows it.
+#[derive(Object)]
+pub struct JoinMatchInput {
+    pub token: Option<String>,
+    pub side_id: Option<String>,
+}
+
+#[derive(Object)]
+pub struct TransferMatchOwnershipInput {
+    pub new_owner_user_id: String,
+}

@@ -80,7 +80,7 @@ mod membership;
 use membership::{
     AddInvitationsInput, CreateJoinLinkInput, Invitation, InvitationContext, InvitationDetail,
     InvitationKind, InvitationMatchContext, InvitationStatus, JoinLink, JoinLinkPreview,
-    JoinLinkScope, JoinMatchInput, JoinPolicy, Member, MatchPlayerRole, RespondByTokenInput,
+    JoinLinkScope, JoinMatchInput, JoinPolicy, MatchPlayerRole, Member, RespondByTokenInput,
     RespondToInvitationInput, SideSelection, TokenInvitation, TransferMatchOwnershipInput,
     UserInvitation, UserMember,
 };
@@ -3398,14 +3398,18 @@ impl Api {
         // renames above, these aren't coupled to the rest of that update, so
         // no atomicity is lost by it being separate.
         if join_policy_update.is_some() || !side_max_players.is_empty() {
-            dao.update_match_join_settings(&match_id, join_policy_update.as_ref(), &side_max_players)
-                .await
-                .map_err(|e| match e {
-                    dao::DaoError::NotFound(_) => {
-                        Error::from_string("match not found", StatusCode::NOT_FOUND)
-                    }
-                    other => dao_internal(other),
-                })?;
+            dao.update_match_join_settings(
+                &match_id,
+                join_policy_update.as_ref(),
+                &side_max_players,
+            )
+            .await
+            .map_err(|e| match e {
+                dao::DaoError::NotFound(_) => {
+                    Error::from_string("match not found", StatusCode::NOT_FOUND)
+                }
+                other => dao_internal(other),
+            })?;
         }
 
         // Roster: add ad-hoc players (no invitation) then apply side reassigns.
@@ -5318,9 +5322,9 @@ impl Api {
         };
         dao.create_join_link(&link).await.map_err(dao_internal)?;
 
-        Ok(CreateJoinLinkResponse::JoinLink(Json(join_link_from_record(
-            &link,
-        ))))
+        Ok(CreateJoinLinkResponse::JoinLink(Json(
+            join_link_from_record(&link),
+        )))
     }
 
     /// List a match's join links, newest first.
@@ -5361,7 +5365,10 @@ impl Api {
 
     /// Revoke a join link. Soft — the link stops accepting new joins, but
     /// players who already joined through it stay on the roster.
-    #[oai(path = "/matches/:match_id/join-links/:join_link_id", method = "delete")]
+    #[oai(
+        path = "/matches/:match_id/join-links/:join_link_id",
+        method = "delete"
+    )]
     async fn revoke_join_link(
         &self,
         Data(dao): Data<&dao::Dao>,
@@ -5385,9 +5392,13 @@ impl Api {
             )));
         }
 
-        match dao.get_join_link(&join_link_id).await.map_err(dao_internal)? {
-            Some(link)
-                if matches!(&link.context, dao::records::InvitationContextRecord::Match { match_id: m, .. } if m == &match_id) => {}
+        match dao
+            .get_join_link(&join_link_id)
+            .await
+            .map_err(dao_internal)?
+        {
+            Some(link) if matches!(&link.context, dao::records::InvitationContextRecord::Match { match_id: m, .. } if m == &match_id) =>
+                {}
             _ => {
                 return Ok(RevokeJoinLinkResponse::NotFound(PlainText(
                     "join link not found".into(),
@@ -5416,7 +5427,11 @@ impl Api {
         Data(dao): Data<&dao::Dao>,
         Path(token): Path<String>,
     ) -> Result<GetJoinLinkPreviewResponse> {
-        let link = match dao.get_join_link_by_token(&token).await.map_err(dao_internal)? {
+        let link = match dao
+            .get_join_link_by_token(&token)
+            .await
+            .map_err(dao_internal)?
+        {
             Some(l) if l.revoked_at.is_none() => l,
             _ => {
                 return Ok(GetJoinLinkPreviewResponse::NotFound(PlainText(
@@ -5487,7 +5502,11 @@ impl Api {
                 "joining this match requires a join-link token".into(),
             )));
         };
-        let link = match dao.get_join_link_by_token(token).await.map_err(dao_internal)? {
+        let link = match dao
+            .get_join_link_by_token(token)
+            .await
+            .map_err(dao_internal)?
+        {
             Some(l) if l.revoked_at.is_none() => l,
             _ => {
                 return Ok(JoinMatchResponse::NotFound(PlainText(
@@ -5505,11 +5524,11 @@ impl Api {
         }
 
         let scope = join_scope_from_link(&link, &agg.match_.join_policy);
-        let target_side_id =
-            match resolve_join_target(&scope, input.side_id.as_deref(), &agg.sides) {
-                Ok(t) => t,
-                Err(msg) => return Ok(JoinMatchResponse::ValidationError(PlainText(msg))),
-            };
+        let target_side_id = match resolve_join_target(&scope, input.side_id.as_deref(), &agg.sides)
+        {
+            Ok(t) => t,
+            Err(msg) => return Ok(JoinMatchResponse::ValidationError(PlainText(msg))),
+        };
 
         // Capacity, checked here for a precise error; `Dao::join_match_tx`
         // re-checks atomically as the last-moment race guard (its own doc
@@ -5557,9 +5576,7 @@ impl Api {
         )
         .await
         .map_err(|e| match e {
-            dao::DaoError::Conflict(_) => {
-                Error::from_string("match is full", StatusCode::CONFLICT)
-            }
+            dao::DaoError::Conflict(_) => Error::from_string("match is full", StatusCode::CONFLICT),
             other => dao_internal(other),
         })?;
 
@@ -5608,8 +5625,7 @@ impl Api {
             )));
         }
         // Always `Some` here — `caller_is_match_owner` already confirmed it.
-        let from =
-            caller_match_membership(&agg, &uid).expect("caller is the owner, just checked");
+        let from = caller_match_membership(&agg, &uid).expect("caller is the owner, just checked");
         let Some(to) = agg.players.iter().find(|p| p.player_id == input.player_id) else {
             return Ok(TransferMatchOwnershipResponse::NotFound(PlainText(
                 "player not found".into(),
@@ -7187,7 +7203,10 @@ fn caller_match_membership<'a>(
 
 /// The caller's role on the match, if they're an accepted player — see
 /// `caller_match_membership`.
-fn caller_match_role(agg: &dao::match_ops::MatchAggregate, uid: &str) -> Option<dao::records::MatchPlayerRole> {
+fn caller_match_role(
+    agg: &dao::match_ops::MatchAggregate,
+    uid: &str,
+) -> Option<dao::records::MatchPlayerRole> {
     caller_match_membership(agg, uid).map(|p| p.role)
 }
 

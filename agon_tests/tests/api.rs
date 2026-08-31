@@ -6553,7 +6553,9 @@ async fn a_self_served_participant_can_invite_but_not_manage_join_settings() {
             &participant_config,
             &created.id,
             models::UpdateMatchInput {
-                join_policy: Some(Box::new(join_policy_of(models::SideSelection::SideRequired))),
+                join_policy: Some(Box::new(join_policy_of(
+                    models::SideSelection::SideRequired,
+                ))),
                 ..Default::default()
             },
         )
@@ -6614,7 +6616,9 @@ async fn transferring_ownership_demotes_the_outgoing_owner_to_admin() {
         created
             .players
             .iter()
-            .find(|p| matches!(&*p.member, models::Member::User(u) if u.user_id == owner.profile.id))
+            .find(
+                |p| matches!(&*p.member, models::Member::User(u) if u.user_id == owner.profile.id)
+            )
             .unwrap()
             .role,
         models::MatchPlayerRole::Owner
@@ -6649,7 +6653,9 @@ async fn transferring_ownership_demotes_the_outgoing_owner_to_admin() {
             &new_owner_config,
             &created.id,
             models::UpdateMatchInput {
-                join_policy: Some(Box::new(join_policy_of(models::SideSelection::SideRequired))),
+                join_policy: Some(Box::new(join_policy_of(
+                    models::SideSelection::SideRequired,
+                ))),
                 ..Default::default()
             },
         )
@@ -6692,7 +6698,9 @@ async fn transferring_ownership_demotes_the_outgoing_owner_to_admin() {
         &new_owner_config,
         &created.id,
         models::UpdateMatchInput {
-            join_policy: Some(Box::new(join_policy_of(models::SideSelection::SideOptional))),
+            join_policy: Some(Box::new(join_policy_of(
+                models::SideSelection::SideOptional,
+            ))),
             ..Default::default()
         },
     )
@@ -6704,7 +6712,9 @@ async fn transferring_ownership_demotes_the_outgoing_owner_to_admin() {
         &owner_config,
         &created.id,
         models::UpdateMatchInput {
-            join_policy: Some(Box::new(join_policy_of(models::SideSelection::SideOptional))),
+            join_policy: Some(Box::new(join_policy_of(
+                models::SideSelection::SideOptional,
+            ))),
             ..Default::default()
         },
     )

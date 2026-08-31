@@ -23,7 +23,12 @@ impl Dao {
     /// link, so a match's links can be listed newest-first; GSI2
     /// (`JOINLINK_TOKEN#<token>`) always, for token lookup.
     fn join_link_item(&self, link: &JoinLinkRecord) -> DaoResult<super::item::Item> {
-        let base = to_item(&Pk::JoinLink(link.id.clone()), &Sk::Meta, TYPE_JOIN_LINK, link)?;
+        let base = to_item(
+            &Pk::JoinLink(link.id.clone()),
+            &Sk::Meta,
+            TYPE_JOIN_LINK,
+            link,
+        )?;
 
         let mut builder = ItemBuilder::new(base);
         match &link.context {

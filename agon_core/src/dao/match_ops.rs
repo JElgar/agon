@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 use aws_sdk_dynamodb::types::{
-    AttributeValue, DeleteRequest, Put, TransactWriteItem, WriteRequest,
+    AttributeValue, DeleteRequest, Put, TransactWriteItem, Update, WriteRequest,
 };
 
 use super::audience::AudienceMember;
@@ -16,8 +16,9 @@ use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_pk, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::{
-    ConfirmedScoreRecord, HeaderPhotoRecord, MatchFormatRecord, MatchPlayerRecord, MatchRecord,
-    MatchScoreRecord, MatchSideRecord, PendingScoreRecord, SideRosterMemberRecord,
+    ConfirmedScoreRecord, HeaderPhotoRecord, JoinPolicyRecord, MatchFormatRecord,
+    MatchPlayerRecord, MatchRecord, MatchScoreRecord, MatchSideRecord, PendingScoreRecord,
+    SideRosterMemberRecord,
 };
 
 pub const TYPE_MATCH: &str = "match";
@@ -75,6 +76,17 @@ fn sorted_sides(sides: &HashMap<String, MatchSideRecord>) -> Vec<MatchSideRecord
     sides
 }
 
+/// The match's overall roster cap, derived from its sides' own caps rather
+/// than stored separately: if *every* side has `max_players` set, the sum of
+/// them; otherwise uncapped (`None`). The unassigned pool counts toward this
+/// but has no cap of its own — enforced by `Dao::join_match_tx`.
+pub fn effective_max_players(sides: &[MatchSideRecord]) -> Option<u32> {
+    sides
+        .iter()
+        .map(|s| s.max_players)
+        .try_fold(0u32, |total, max| Some(total + max?))
+}
+
 /// A match plus its sides and players, assembled from one collection query.
 /// Excludes the live-scoring score record, likes and comments (fetched separately).
 #[derive(Debug)]
@@ -82,6 +94,13 @@ pub struct MatchAggregate {
     pub match_: MatchRecord,
     pub sides: Vec<MatchSideRecord>,
     pub players: Vec<MatchPlayerRecord>,
+}
+
+impl MatchAggregate {
+    /// See [`effective_max_players`].
+    pub fn effective_max_players(&self) -> Option<u32> {
+        effective_max_players(&self.sides)
+    }
 }
 
 /// A match plus its sides, *without* players — for contexts (the feed) that
@@ -117,6 +136,9 @@ impl Dao {
             side.player_count = player_count;
             side.roster_preview = roster_preview;
         }
+        // Seed the atomic roster-size counter `Dao::join_match_tx` maintains
+        // from here on — every player at creation counts, side-assigned or not.
+        match_.total_player_count = players.len() as u64;
         let match_ = match_;
 
         let meta_item = to_item(
@@ -579,6 +601,248 @@ impl Dao {
         }
     }
 
+    /// Update a match's join settings: the `join_policy`, and/or one or more
+    /// sides' `max_players`. Kept separate from `update_match_meta` (rather
+    /// than folded into its one big `UpdateItem`) since these settings aren't
+    /// coupled to the rest of that call's fields the way `side_names` is —
+    /// no atomicity is lost by it being its own call. `NotFound` if the match
+    /// is absent.
+    #[tracing::instrument(skip(self))]
+    pub async fn update_match_join_settings(
+        &self,
+        match_id: &str,
+        join_policy: Option<&JoinPolicyRecord>,
+        side_max_players: &[(String, Option<u32>)],
+    ) -> DaoResult<()> {
+        if join_policy.is_none() && side_max_players.is_empty() {
+            return Ok(());
+        }
+
+        let mut set: Vec<String> = Vec::new();
+        let mut remove: Vec<String> = Vec::new();
+        let mut names: std::collections::HashMap<String, String> = Default::default();
+        let mut values: std::collections::HashMap<String, AttributeValue> = Default::default();
+        names.insert("#pk".into(), ATTR_PK.into());
+
+        if let Some(policy) = join_policy {
+            set.push("join_policy = :jp".into());
+            values.insert(":jp".into(), to_attr(policy)?);
+        }
+        for (i, (side_id, max_players)) in side_max_players.iter().enumerate() {
+            let side_alias = format!("#s{i}");
+            names.insert(side_alias.clone(), side_id.clone());
+            match max_players {
+                Some(max) => {
+                    let value_alias = format!(":m{i}");
+                    set.push(format!("sides.{side_alias}.max_players = {value_alias}"));
+                    values.insert(value_alias, AttributeValue::N(max.to_string()));
+                }
+                None => {
+                    remove.push(format!("sides.{side_alias}.max_players"));
+                }
+            }
+        }
+
+        let mut expr = String::new();
+        if !set.is_empty() {
+            expr.push_str("SET ");
+            expr.push_str(&set.join(", "));
+        }
+        if !remove.is_empty() {
+            if !expr.is_empty() {
+                expr.push(' ');
+            }
+            expr.push_str("REMOVE ");
+            expr.push_str(&remove.join(", "));
+        }
+
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key("SK", s(Sk::Meta.to_string()))
+            .update_expression(expr)
+            .condition_expression("attribute_exists(#pk)")
+            .set_expression_attribute_names(Some(names))
+            .set_expression_attribute_values(if values.is_empty() {
+                None
+            } else {
+                Some(values)
+            })
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => {
+                Err(DaoError::NotFound(format!("match {match_id}")))
+            }
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// Move the `Owner` role from one player to another, in one transaction
+    /// — mirrors `Dao::transfer_team_ownership` exactly (same reasoning: the
+    /// promote and demote either both land or neither does, so the match is
+    /// never briefly ownerless or briefly double-owned). `NotFound` if either
+    /// player doesn't exist. The caller is responsible for every
+    /// business-rule check (caller is the current owner, `to` is an accepted
+    /// player, `to` isn't already the owner) — this just moves the role.
+    #[tracing::instrument(skip(self))]
+    pub async fn transfer_match_ownership(
+        &self,
+        match_id: &str,
+        from_player_id: &str,
+        to_player_id: &str,
+    ) -> DaoResult<()> {
+        let promote = Update::builder()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Player(to_player_id.into()).to_string()))
+            .update_expression("SET #role = :owner")
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#role", "role")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_values(":owner", s("owner"))
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        let demote = Update::builder()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Player(from_player_id.into()).to_string()))
+            .update_expression("SET #role = :admin")
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#role", "role")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_values(":admin", s("admin"))
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        let result = self
+            .client
+            .transact_write_items()
+            .transact_items(TransactWriteItem::builder().update(promote).build())
+            .transact_items(TransactWriteItem::builder().update(demote).build())
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if super::is_transaction_conditional_failure(&e) => Err(DaoError::NotFound(
+                format!("player {from_player_id} or {to_player_id} on match {match_id}"),
+            )),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// Join a match: insert `player` (fully built by the caller — `side_id`,
+    /// `role`, `joined_via` already set) and atomically bump the roster
+    /// counters it consumes, conditioned on the caps the caller already
+    /// resolved from a just-read [`MatchAggregate`]: `side_max_players` for
+    /// `player.side_id`'s side (ignored when `player.side_id` is `None`) and
+    /// `total_max_players` for the match's overall
+    /// [`effective_max_players`]. Also writes the joiner's own feed row (same
+    /// as `create_match`/`accept_invitation_tx`) so the match shows up on
+    /// their feed immediately.
+    ///
+    /// `Conflict` if a cap has been reached since the caller last read it (or
+    /// the match has since disappeared) — the caller is expected to have
+    /// already ruled out the common cases (full, already a player) from its
+    /// own read, so this is a last-moment race guard, not the primary check.
+    #[tracing::instrument(skip(self, player), fields(match_id, player_id = %player.player_id))]
+    pub async fn join_match_tx(
+        &self,
+        match_id: &str,
+        player: &MatchPlayerRecord,
+        side_max_players: Option<u32>,
+        total_max_players: Option<u32>,
+        starts_at: &str,
+        now: &str,
+    ) -> DaoResult<()> {
+        let put_player = Put::builder()
+            .table_name(self.table())
+            .set_item(Some(self.match_player_item(match_id, player)?))
+            .condition_expression("attribute_not_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        let mut names: std::collections::HashMap<String, String> = Default::default();
+        let mut values: std::collections::HashMap<String, AttributeValue> = Default::default();
+        names.insert("#pk".into(), ATTR_PK.into());
+        values.insert(":one".into(), AttributeValue::N("1".into()));
+
+        // A single `ADD` section, comma-separated — DynamoDB rejects an
+        // `UpdateExpression` with more than one `ADD` keyword.
+        let mut add_clauses = vec!["total_player_count :one".to_string()];
+        let mut conditions: Vec<String> = vec!["attribute_exists(#pk)".into()];
+        if let Some(max) = total_max_players {
+            conditions.push(
+                "(attribute_not_exists(total_player_count) OR total_player_count < :totalmax)"
+                    .into(),
+            );
+            values.insert(":totalmax".into(), AttributeValue::N(max.to_string()));
+        }
+        if let Some(side_id) = &player.side_id {
+            names.insert("#sid".into(), side_id.clone());
+            add_clauses.push("sides.#sid.player_count :one".to_string());
+            if let Some(max) = side_max_players {
+                conditions.push(
+                    "(attribute_not_exists(sides.#sid.max_players) OR sides.#sid.player_count < :sidemax)"
+                        .into(),
+                );
+                values.insert(":sidemax".into(), AttributeValue::N(max.to_string()));
+            }
+        }
+        let update_expr = format!("ADD {}", add_clauses.join(", "));
+
+        let update_meta = Update::builder()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key("SK", s(Sk::Meta.to_string()))
+            .update_expression(update_expr)
+            .condition_expression(conditions.join(" AND "))
+            .set_expression_attribute_names(Some(names))
+            .set_expression_attribute_values(Some(values))
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        let mut tx = self
+            .client
+            .transact_write_items()
+            .transact_items(TransactWriteItem::builder().put(put_player).build())
+            .transact_items(TransactWriteItem::builder().update(update_meta).build());
+
+        if let Some(uid) = &player.user_id {
+            let feed_item = self.feed_item(
+                uid,
+                match_id,
+                starts_at,
+                now,
+                &AudienceMember {
+                    viewer_side_id: player.side_id.clone(),
+                    ..Default::default()
+                },
+            )?;
+            let feed_put = Put::builder()
+                .table_name(self.table())
+                .set_item(Some(feed_item))
+                .build()
+                .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+            tx = tx.transact_items(TransactWriteItem::builder().put(feed_put).build());
+        }
+
+        match tx.send().await {
+            Ok(_) => Ok(()),
+            Err(e) if super::is_transaction_conditional_failure(&e) => Err(DaoError::Conflict(
+                "match is full, or you're already on the roster".into(),
+            )),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
     /// Add or update a single match player (roster reconciliation / late adds).
     #[tracing::instrument(skip(self, player), fields(player_id = %player.player_id))]
     pub async fn put_match_player(
@@ -799,4 +1063,38 @@ fn is_update_conditional_failure(err: &SdkError<UpdateItemError>) -> bool {
         SdkError::ServiceError(se)
             if matches!(se.err(), UpdateItemError::ConditionalCheckFailedException(_))
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn side(max_players: Option<u32>) -> MatchSideRecord {
+        MatchSideRecord {
+            side_id: "s".into(),
+            team_id: None,
+            name: None,
+            max_players,
+            player_count: 0,
+            roster_preview: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn effective_max_players_sums_when_every_side_has_one() {
+        assert_eq!(
+            effective_max_players(&[side(Some(5)), side(Some(7))]),
+            Some(12)
+        );
+    }
+
+    #[test]
+    fn effective_max_players_uncapped_if_any_side_is_uncapped() {
+        assert_eq!(effective_max_players(&[side(Some(5)), side(None)]), None);
+    }
+
+    #[test]
+    fn effective_max_players_zero_for_no_sides() {
+        assert_eq!(effective_max_players(&[]), Some(0));
+    }
 }

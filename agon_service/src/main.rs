@@ -42,12 +42,13 @@ use mapping::{
     assignable_team_role_str, comment_from_record, dao_internal, deleted_user_profile,
     derive_live_score, device_platform_to_record, feed_match_from_records,
     invitation_detail_from_record, invitation_from_record, invitation_status_from_str,
-    invitation_status_str, live_event_from_record, match_format_sport_tag, match_format_to_record,
-    match_from_records, match_score_from_record, match_score_to_record, match_status_str,
-    match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
-    roster_preview_player, score_submission_from_record, score_to_record,
-    search_match_from_records, team_from_records, team_list_item_from_record,
-    team_member_from_record, user_profile_from_record,
+    invitation_status_str, join_link_from_record, join_link_scope_from_record,
+    join_link_scope_to_record, join_policy_to_record, live_event_from_record,
+    match_format_sport_tag, match_format_to_record, match_from_records, match_score_from_record,
+    match_score_to_record, match_status_str, match_type_tag, new_live_event_to_dao,
+    notification_actor_id, notification_from_record, roster_preview_player,
+    score_submission_from_record, score_to_record, search_match_from_records, team_from_records,
+    team_list_item_from_record, team_member_from_record, user_profile_from_record,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -77,9 +78,11 @@ use live_score::{
 
 mod membership;
 use membership::{
-    AddInvitationsInput, Invitation, InvitationContext, InvitationDetail, InvitationKind,
-    InvitationMatchContext, InvitationStatus, Member, RespondByTokenInput,
-    RespondToInvitationInput, TokenInvitation, UserInvitation, UserMember,
+    AddInvitationsInput, CreateJoinLinkInput, Invitation, InvitationContext, InvitationDetail,
+    InvitationKind, InvitationMatchContext, InvitationStatus, JoinLink, JoinLinkPreview,
+    JoinLinkScope, JoinMatchInput, JoinPolicy, MatchPlayerRole, Member, RespondByTokenInput,
+    RespondToInvitationInput, SideSelection, TokenInvitation, TransferMatchOwnershipInput,
+    UserInvitation, UserMember,
 };
 
 mod team;
@@ -406,6 +409,10 @@ struct MatchSide {
     /// a denormalized cache refreshed whenever the roster changes, so it can
     /// occasionally lag a just-now roster change.
     roster_preview: Option<Vec<RosterPreviewPlayer>>,
+    /// Cap on this side's roster. `None` = uncapped. When every side of a
+    /// match has one set, the match's overall cap is their sum rather than a
+    /// separate setting — see `Match.join_policy`'s neighboring doc comments.
+    max_players: Option<u32>,
 }
 
 /// A player in a side's `roster_preview` — name/avatar only, not the full
@@ -434,6 +441,9 @@ struct MatchPlayer {
     /// True if this player is a member of their side's team; false = a ringer.
     /// None when unassigned or the side has no team.
     is_member_of_team: Option<bool>,
+    /// This player's authority on the match — includes who owns it (see
+    /// `MatchPlayerRole::Owner`).
+    role: MatchPlayerRole,
 }
 
 /// Match score. Tagged union so each sport's scoring shape is modelled
@@ -723,6 +733,9 @@ struct Match {
     /// ...), if configured. `None` means the creator didn't set one — clients
     /// should fall back to their own sensible per-sport defaults.
     format: Option<MatchFormat>,
+    /// Whether/how a self-serve joiner (a join link today; team self-join in
+    /// a later phase) may pick a side.
+    join_policy: JoinPolicy,
 }
 
 /// Social engagement summary for a match. Counts plus whether the requesting
@@ -909,6 +922,8 @@ struct CreateMatchSideInput {
     /// the team is normally the source of truth for the side's name, but two
     /// sides sharing one team need a name each to be told apart.
     name: Option<String>,
+    /// Cap on this side's roster. `None` = uncapped.
+    max_players: Option<u32>,
 }
 
 /// An invitation to create with the match. `side_client_id` references a
@@ -965,6 +980,9 @@ struct CreateMatchInput {
     /// Sport-specific format/rules. Optional — omit for the app's own
     /// defaults; must match `match_type`'s sport if supplied.
     format: Option<MatchFormat>,
+    /// Whether/how a self-serve joiner may pick a side. Omit for the default
+    /// (`side_optional`).
+    join_policy: Option<JoinPolicy>,
 }
 
 /// The organiser's one-stop update for a match: edit metadata, reconcile the
@@ -1035,6 +1053,22 @@ struct UpdateMatchInput {
     /// Replace the match's format/rules. `None` leaves it unchanged; must
     /// match the match's sport if supplied.
     format: Option<MatchFormat>,
+    /// Change whether/how a self-serve joiner may pick a side. Gated to a
+    /// match admin (owner, an `Admin`-role player, or an admin of a
+    /// participating team) — a stricter check than the rest of this input,
+    /// which any participant may edit.
+    join_policy: Option<JoinPolicy>,
+    /// Change one or more sides' `max_players`. `None` on an entry clears
+    /// that side's cap (uncapped); omitting a side from this list leaves its
+    /// cap untouched. Rejected if a new cap would be below that side's
+    /// current roster size. Same admin gate as `join_policy`.
+    side_max_players: Option<Vec<SetSideMaxPlayersInput>>,
+}
+
+#[derive(Object)]
+struct SetSideMaxPlayersInput {
+    side_id: String,
+    max_players: Option<u32>,
 }
 
 /// A single entry in the feed. Modelled as a union so new item types
@@ -1732,6 +1766,95 @@ enum AddInvitationsResponse {
 enum ListInvitationsResponse {
     #[oai(status = 200)]
     Invitations(Json<InvitationPage>),
+}
+
+#[derive(ApiResponse)]
+enum CreateJoinLinkResponse {
+    #[oai(status = 200)]
+    JoinLink(Json<JoinLink>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// Only a match admin may create a join link.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum ListJoinLinksResponse {
+    #[oai(status = 200)]
+    JoinLinks(Json<Vec<JoinLink>>),
+
+    /// Only a match admin may list this match's join links.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum RevokeJoinLinkResponse {
+    #[oai(status = 204)]
+    Ok,
+
+    /// Only a match admin may revoke this join link.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum GetJoinLinkPreviewResponse {
+    #[oai(status = 200)]
+    Preview(Json<JoinLinkPreview>),
+
+    /// No such link, or it's been revoked.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum JoinMatchResponse {
+    #[oai(status = 200)]
+    Match(Json<Match>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+
+    /// The match or the targeted side is full, or the caller is already on
+    /// the roster.
+    #[oai(status = 409)]
+    Conflict(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum TransferMatchOwnershipResponse {
+    /// Ownership moved; the caller is now an admin instead.
+    #[oai(status = 204)]
+    Ok,
+
+    /// The target is already the owner, or isn't an accepted player (a
+    /// pending invitee, say — ownership can only go to someone who's
+    /// actually joined).
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller is not the match's owner.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -2531,6 +2654,7 @@ impl Api {
                     // team, or alongside a team shared with another side (to
                     // tell the two apart) — never a lone team-assigned side.
                     name: side.name.clone(),
+                    max_players: side.max_players,
                     // `Dao::create_match` recomputes both from the players
                     // list it's given, in the same transaction — placeholders.
                     player_count: 0,
@@ -2574,6 +2698,12 @@ impl Api {
                 side_id: Some(side_id),
                 is_member_of_team: None,
                 invitation: None,
+                // The playing creator is the match's owner by default — see
+                // `MatchPlayerRole`'s doc comment. A non-playing creator has
+                // no player row at all (`created_by_user_id` is the stopgap
+                // for that case — see `MatchRecord`'s doc comment on it).
+                role: dao::records::MatchPlayerRole::Owner,
+                joined_via: None,
             });
         }
         for invite in &input.invites {
@@ -2626,6 +2756,18 @@ impl Api {
                     "side `{}` has no players, so it needs a name or a team",
                     side.client_id
                 ))));
+            }
+            if let Some(max) = side.max_players {
+                let count = player_records
+                    .iter()
+                    .filter(|p| p.side_id.as_deref() == Some(side_id.as_str()))
+                    .count() as u32;
+                if count > max {
+                    return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
+                        "side `{}` has {count} players, over its max_players of {max}",
+                        side.client_id
+                    ))));
+                }
             }
         }
 
@@ -2723,6 +2865,15 @@ impl Api {
             starts_at: input
                 .starts_at
                 .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            join_policy: input
+                .join_policy
+                .as_ref()
+                .map(join_policy_to_record)
+                .unwrap_or_default(),
+            // Seeded here as a placeholder; `Dao::create_match` recomputes it
+            // from `player_records` in the same transaction (mirrors how the
+            // sides' own `player_count`/`roster_preview` above are handled).
+            total_player_count: 0,
             location: input.location.map(|l| dao::records::LocationRecord {
                 latitude: l.latitude,
                 longitude: l.longitude,
@@ -2831,6 +2982,46 @@ impl Api {
                 "only a participant can edit this match".into(),
             )));
         }
+
+        // `join_policy`/`side_max_players` are structural settings, gated to
+        // a match admin — stricter than the rest of this input, which any
+        // participant may edit (see `caller_is_match_admin`'s doc comment).
+        if (input.join_policy.is_some() || input.side_max_players.is_some())
+            && !caller_is_match_admin(dao, &agg, &uid).await?
+        {
+            return Ok(UpdateMatchResponse::Forbidden(PlainText(
+                "only a match admin can change join settings".into(),
+            )));
+        }
+
+        // A lowered cap can't drop below the side's current roster — reject
+        // rather than silently leaving it over-full.
+        let side_max_players: Vec<(String, Option<u32>)> = match &input.side_max_players {
+            Some(updates) => {
+                for u in updates {
+                    let Some(side) = agg.sides.iter().find(|s| s.side_id == u.side_id) else {
+                        return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                            "side `{}` is not part of this match",
+                            u.side_id
+                        ))));
+                    };
+                    if let Some(max) = u.max_players
+                        && side.player_count > max
+                    {
+                        return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                            "side `{}` already has {} players, over the requested max_players of {max}",
+                            u.side_id, side.player_count
+                        ))));
+                    }
+                }
+                updates
+                    .iter()
+                    .map(|u| (u.side_id.clone(), u.max_players))
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        let join_policy_update = input.join_policy.as_ref().map(join_policy_to_record);
 
         if let Some(fmt) = &input.format {
             // The format is locked once the match has left `scheduled`: it
@@ -3202,6 +3393,25 @@ impl Api {
             other => dao_internal(other),
         })?;
 
+        // Join settings — validated and admin-gated above. Its own call
+        // rather than folded into `update_match_meta`: unlike the side
+        // renames above, these aren't coupled to the rest of that update, so
+        // no atomicity is lost by it being separate.
+        if join_policy_update.is_some() || !side_max_players.is_empty() {
+            dao.update_match_join_settings(
+                &match_id,
+                join_policy_update.as_ref(),
+                &side_max_players,
+            )
+            .await
+            .map_err(|e| match e {
+                dao::DaoError::NotFound(_) => {
+                    Error::from_string("match not found", StatusCode::NOT_FOUND)
+                }
+                other => dao_internal(other),
+            })?;
+        }
+
         // Roster: add ad-hoc players (no invitation) then apply side reassigns.
         if let Some(added) = &input.added_players {
             for p in added {
@@ -3212,6 +3422,8 @@ impl Api {
                     side_id: p.side_id.clone(),
                     is_member_of_team: None,
                     invitation: None,
+                    role: dao::records::MatchPlayerRole::Player,
+                    joined_via: None,
                 };
                 dao.put_match_player(&match_id, &player)
                     .await
@@ -5046,6 +5258,401 @@ impl Api {
         Ok(AddInvitationsResponse::Invitations(Json(created)))
     }
 
+    /// Mint a shareable, many-use join link for a match. Unlike
+    /// `POST /matches/:id/invitations` (single-use, pre-bound to one named
+    /// person), the same link's token may be used by any number of different
+    /// people, bounded only by the match's own capacity — see
+    /// `POST /matches/:id/join`.
+    #[oai(path = "/matches/:match_id/join-links", method = "post")]
+    async fn create_join_link(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        input: Json<CreateJoinLinkInput>,
+    ) -> Result<CreateJoinLinkResponse> {
+        info!("Creating join link for match {match_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let input = input.0;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(CreateJoinLinkResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(CreateJoinLinkResponse::Forbidden(PlainText(
+                "only a match admin can create a join link".into(),
+            )));
+        }
+
+        if let JoinLinkScope::Sides(s) = &input.scope {
+            if s.side_ids.is_empty() {
+                return Ok(CreateJoinLinkResponse::ValidationError(PlainText(
+                    "a sides-scoped join link needs at least one side".into(),
+                )));
+            }
+            if let Some(bad) = s
+                .side_ids
+                .iter()
+                .find(|sid| !agg.sides.iter().any(|s| &&s.side_id == sid))
+            {
+                return Ok(CreateJoinLinkResponse::ValidationError(PlainText(format!(
+                    "side `{bad}` is not part of this match"
+                ))));
+            }
+        }
+
+        let now = now_iso();
+        let link = dao::records::JoinLinkRecord {
+            id: new_id(),
+            token: new_id(),
+            context: dao::records::InvitationContextRecord::Match {
+                match_id: match_id.clone(),
+                match_name: agg.match_.name.clone(),
+            },
+            scope: join_link_scope_to_record(&input.scope),
+            created_by_user_id: uid,
+            created_at: now,
+            revoked_at: None,
+        };
+        dao.create_join_link(&link).await.map_err(dao_internal)?;
+
+        Ok(CreateJoinLinkResponse::JoinLink(Json(
+            join_link_from_record(&link),
+        )))
+    }
+
+    /// List a match's join links, newest first.
+    #[oai(path = "/matches/:match_id/join-links", method = "get")]
+    async fn list_join_links(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+    ) -> Result<ListJoinLinksResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(ListJoinLinksResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(ListJoinLinksResponse::Forbidden(PlainText(
+                "only a match admin can list this match's join links".into(),
+            )));
+        }
+
+        // A single page is plenty — a match realistically has a handful of
+        // links at most; add cursor pagination to the response if that stops
+        // holding.
+        let page = dao
+            .list_match_join_links(&match_id, None, 100)
+            .await
+            .map_err(dao_internal)?;
+        Ok(ListJoinLinksResponse::JoinLinks(Json(
+            page.items.iter().map(join_link_from_record).collect(),
+        )))
+    }
+
+    /// Revoke a join link. Soft — the link stops accepting new joins, but
+    /// players who already joined through it stay on the roster.
+    #[oai(
+        path = "/matches/:match_id/join-links/:join_link_id",
+        method = "delete"
+    )]
+    async fn revoke_join_link(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        Path(join_link_id): Path<String>,
+    ) -> Result<RevokeJoinLinkResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(RevokeJoinLinkResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(RevokeJoinLinkResponse::Forbidden(PlainText(
+                "only a match admin can revoke this match's join links".into(),
+            )));
+        }
+
+        match dao
+            .get_join_link(&join_link_id)
+            .await
+            .map_err(dao_internal)?
+        {
+            Some(link) if matches!(&link.context, dao::records::InvitationContextRecord::Match { match_id: m, .. } if m == &match_id) =>
+                {}
+            _ => {
+                return Ok(RevokeJoinLinkResponse::NotFound(PlainText(
+                    "join link not found".into(),
+                )));
+            }
+        }
+
+        dao.revoke_join_link(&join_link_id, &now_iso())
+            .await
+            .map_err(|e| match e {
+                dao::DaoError::NotFound(_) => {
+                    Error::from_string("join link not found", StatusCode::NOT_FOUND)
+                }
+                other => dao_internal(other),
+            })?;
+        Ok(RevokeJoinLinkResponse::Ok)
+    }
+
+    /// Public, unauthenticated preview of a join link — same shape of
+    /// exception as `GET /invitations/by-token/:token`: a link has to be
+    /// previewable before the holder has signed in. Enough for a client to
+    /// render "Join Sunday 5-a-side (Team A) — 6/10 joined".
+    #[oai(path = "/join-links/by-token/:token", method = "get")]
+    async fn get_join_link_preview(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        Path(token): Path<String>,
+    ) -> Result<GetJoinLinkPreviewResponse> {
+        let link = match dao
+            .get_join_link_by_token(&token)
+            .await
+            .map_err(dao_internal)?
+        {
+            Some(l) if l.revoked_at.is_none() => l,
+            _ => {
+                return Ok(GetJoinLinkPreviewResponse::NotFound(PlainText(
+                    "no join link matches that token".into(),
+                )));
+            }
+        };
+        let dao::records::InvitationContextRecord::Match {
+            match_id,
+            match_name,
+        } = &link.context
+        else {
+            return Ok(GetJoinLinkPreviewResponse::NotFound(PlainText(
+                "no join link matches that token".into(),
+            )));
+        };
+        let Some(agg) = dao.get_match(match_id).await.map_err(dao_internal)? else {
+            return Ok(GetJoinLinkPreviewResponse::NotFound(PlainText(
+                "no join link matches that token".into(),
+            )));
+        };
+
+        Ok(GetJoinLinkPreviewResponse::Preview(Json(JoinLinkPreview {
+            match_id: match_id.clone(),
+            match_name: match_name.clone(),
+            starts_at: mapping::parse_ts(&agg.match_.starts_at),
+            scope: join_link_scope_from_record(&link.scope),
+            total_player_count: agg.match_.total_player_count as u32,
+            max_players: agg.effective_max_players(),
+        })))
+    }
+
+    /// Join a match — via a join link's token today; a later phase adds
+    /// team-roster self-join (no token) as another authorization branch
+    /// here, sharing this same capacity-checked primitive.
+    #[oai(path = "/matches/:match_id/join", method = "post")]
+    async fn join_match(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        Data(assets): Data<&Assets>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        input: Json<JoinMatchInput>,
+    ) -> Result<JoinMatchResponse> {
+        info!("Joining match {match_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let input = input.0;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(JoinMatchResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+
+        if caller_is_participant(&agg.players, &uid) {
+            return Ok(JoinMatchResponse::Conflict(PlainText(
+                "you're already on this match's roster".into(),
+            )));
+        }
+
+        let Some(token) = &input.token else {
+            // Team self-join (no token) is a later phase — see this
+            // method's doc comment.
+            return Ok(JoinMatchResponse::ValidationError(PlainText(
+                "joining this match requires a join-link token".into(),
+            )));
+        };
+        let link = match dao
+            .get_join_link_by_token(token)
+            .await
+            .map_err(dao_internal)?
+        {
+            Some(l) if l.revoked_at.is_none() => l,
+            _ => {
+                return Ok(JoinMatchResponse::NotFound(PlainText(
+                    "join link not found".into(),
+                )));
+            }
+        };
+        match &link.context {
+            dao::records::InvitationContextRecord::Match { match_id: m, .. } if m == &match_id => {}
+            _ => {
+                return Ok(JoinMatchResponse::NotFound(PlainText(
+                    "join link not found".into(),
+                )));
+            }
+        }
+
+        let scope = join_scope_from_link(&link, &agg.match_.join_policy);
+        let target_side_id = match resolve_join_target(&scope, input.side_id.as_deref(), &agg.sides)
+        {
+            Ok(t) => t,
+            Err(msg) => return Ok(JoinMatchResponse::ValidationError(PlainText(msg))),
+        };
+
+        // Capacity, checked here for a precise error; `Dao::join_match_tx`
+        // re-checks atomically as the last-moment race guard (its own doc
+        // comment covers why the split).
+        let effective_max = agg.effective_max_players();
+        if let Some(max) = effective_max
+            && agg.match_.total_player_count >= max as u64
+        {
+            return Ok(JoinMatchResponse::Conflict(PlainText(
+                "this match is full".into(),
+            )));
+        }
+        let target_side = target_side_id
+            .as_ref()
+            .and_then(|sid| agg.sides.iter().find(|s| &s.side_id == sid));
+        if let Some(side) = target_side
+            && let Some(max) = side.max_players
+            && side.player_count >= max
+        {
+            return Ok(JoinMatchResponse::Conflict(PlainText(
+                "that side is full".into(),
+            )));
+        }
+
+        let player = dao::records::MatchPlayerRecord {
+            player_id: new_id(),
+            user_id: Some(uid.clone()),
+            display_name: None,
+            side_id: target_side_id,
+            is_member_of_team: None,
+            invitation: None,
+            role: dao::records::MatchPlayerRole::Player,
+            joined_via: Some(dao::records::JoinSourceRecord::Link {
+                link_id: link.id.clone(),
+            }),
+        };
+
+        dao.join_match_tx(
+            &match_id,
+            &player,
+            target_side.and_then(|s| s.max_players),
+            effective_max,
+            &agg.match_.starts_at,
+            &now_iso(),
+        )
+        .await
+        .map_err(|e| match e {
+            dao::DaoError::Conflict(_) => Error::from_string("match is full", StatusCode::CONFLICT),
+            other => dao_internal(other),
+        })?;
+
+        dao.refresh_side_roster_previews(&match_id)
+            .await
+            .map_err(dao_internal)?;
+
+        let Some(agg) = dao.get_match(&match_id).await.map_err(dao_internal)? else {
+            return Ok(JoinMatchResponse::NotFound(PlainText(
+                "match not found".into(),
+            )));
+        };
+        let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, false);
+        sign_match_headers(assets, &mut m);
+        let m = self.hydrate_match(dao, m, &uid).await?;
+        Ok(JoinMatchResponse::Match(Json(m)))
+    }
+
+    /// Transfer match ownership — owner-only, mirrors `POST
+    /// /teams/:team_id/transfer-ownership` exactly (see that handler and
+    /// `Dao::transfer_match_ownership`'s doc comments). `created_by_user_id`
+    /// is unaffected either way — see its own doc comment for why it's a
+    /// separate, immutable concept.
+    #[oai(path = "/matches/:match_id/transfer-ownership", method = "post")]
+    async fn transfer_match_ownership(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        input: Json<TransferMatchOwnershipInput>,
+    ) -> Result<TransferMatchOwnershipResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let input = input.0;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(TransferMatchOwnershipResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_owner(&agg, &uid) {
+            return Ok(TransferMatchOwnershipResponse::Forbidden(PlainText(
+                "only the current owner can transfer ownership".into(),
+            )));
+        }
+        // Always `Some` here — `caller_is_match_owner` already confirmed it.
+        let from = caller_match_membership(&agg, &uid).expect("caller is the owner, just checked");
+        let Some(to) = agg.players.iter().find(|p| p.player_id == input.player_id) else {
+            return Ok(TransferMatchOwnershipResponse::NotFound(PlainText(
+                "player not found".into(),
+            )));
+        };
+        if to.player_id == from.player_id {
+            return Ok(TransferMatchOwnershipResponse::ValidationError(PlainText(
+                "already the owner".into(),
+            )));
+        }
+        let to_is_accepted = to.user_id.is_some()
+            && to
+                .invitation
+                .as_ref()
+                .is_none_or(|inv| inv.status == "accepted");
+        if !to_is_accepted {
+            return Ok(TransferMatchOwnershipResponse::ValidationError(PlainText(
+                "ownership can only go to an accepted player".into(),
+            )));
+        }
+
+        dao.transfer_match_ownership(&match_id, &from.player_id, &to.player_id)
+            .await
+            .map_err(dao_internal)?;
+        Ok(TransferMatchOwnershipResponse::Ok)
+    }
+
     #[oai(path = "/teams/:team_id/invitations", method = "post")]
     async fn add_team_invitations(
         &self,
@@ -6578,6 +7185,158 @@ fn caller_can_manage_team(agg: &dao::team::TeamAggregate, uid: &str) -> bool {
     matches!(caller_team_role(agg, uid), Some("owner") | Some("admin"))
 }
 
+/// The caller's own roster row on the match, if they're an accepted player —
+/// `None` for a non-player or a pending (not yet accepted) invitee. Mirrors
+/// `caller_team_membership`'s same exclusion on the team side.
+fn caller_match_membership<'a>(
+    agg: &'a dao::match_ops::MatchAggregate,
+    uid: &str,
+) -> Option<&'a dao::records::MatchPlayerRecord> {
+    agg.players.iter().find(|p| {
+        p.user_id.as_deref() == Some(uid)
+            && match &p.invitation {
+                None => true,
+                Some(inv) => inv.status == "accepted",
+            }
+    })
+}
+
+/// The caller's role on the match, if they're an accepted player — see
+/// `caller_match_membership`.
+fn caller_match_role(
+    agg: &dao::match_ops::MatchAggregate,
+    uid: &str,
+) -> Option<dao::records::MatchPlayerRole> {
+    caller_match_membership(agg, uid).map(|p| p.role)
+}
+
+/// Whether the caller owns the match — see `MatchPlayerRole::Owner`'s doc
+/// comment for how a non-playing organizer isn't covered by this yet.
+fn caller_is_match_owner(agg: &dao::match_ops::MatchAggregate, uid: &str) -> bool {
+    caller_match_role(agg, uid) == Some(dao::records::MatchPlayerRole::Owner)
+}
+
+/// Whether `uid` may perform match-admin actions: minting/revoking
+/// join-links, changing `join_policy`, changing a side's `max_players`. A
+/// stricter tier than `caller_can_manage_match`'s "any participant" (which
+/// still gates ordinary named-person invites, unchanged) — true for a roster
+/// player with `role` `Owner` or `Admin`, the match's creator (a stopgap for
+/// a non-playing organizer — see `MatchRecord::created_by_user_id`'s doc
+/// comment), or an owner/admin of a team that has a side on this match (so a
+/// team's admin can manage a game their team is playing in even before
+/// joining the roster themselves — see `caller_can_manage_team` for that
+/// same owner-or-admin rule on the team side).
+async fn caller_is_match_admin(
+    dao: &dao::Dao,
+    agg: &dao::match_ops::MatchAggregate,
+    uid: &str,
+) -> Result<bool> {
+    if matches!(
+        caller_match_role(agg, uid),
+        Some(dao::records::MatchPlayerRole::Owner) | Some(dao::records::MatchPlayerRole::Admin)
+    ) {
+        return Ok(true);
+    }
+    if agg.match_.created_by_user_id == uid {
+        return Ok(true);
+    }
+    let team_ids: std::collections::HashSet<&str> = agg
+        .sides
+        .iter()
+        .filter_map(|s| s.team_id.as_deref())
+        .collect();
+    for team_id in team_ids {
+        let Some(team) = dao.get_team(team_id).await.map_err(dao_internal)? else {
+            continue;
+        };
+        if caller_can_manage_team(&team, uid) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Which side(s) (if any) a joiner may pick, and whether landing unassigned
+/// is allowed — the shared question `join_policy`, a join-link's `scope`,
+/// and (a later phase) team self-join all resolve to before
+/// `resolve_join_target` picks the final side and `Dao::join_match_tx`
+/// enforces capacity. `allowed_side_ids: None` = any of the match's sides;
+/// `Some([])` = none (the unassigned-only case).
+struct JoinScope {
+    allowed_side_ids: Option<Vec<String>>,
+    allow_unassigned: bool,
+}
+
+fn join_scope_from_policy(policy: &dao::records::JoinPolicyRecord) -> JoinScope {
+    match policy.side_selection {
+        dao::records::SideSelectionRecord::UnassignedOnly => JoinScope {
+            allowed_side_ids: Some(Vec::new()),
+            allow_unassigned: true,
+        },
+        dao::records::SideSelectionRecord::SideRequired => JoinScope {
+            allowed_side_ids: None,
+            allow_unassigned: false,
+        },
+        dao::records::SideSelectionRecord::SideOptional => JoinScope {
+            allowed_side_ids: None,
+            allow_unassigned: true,
+        },
+    }
+}
+
+/// See `JoinLinkScopeRecord`'s doc comment: a link's scope overrides the
+/// match's own `join_policy` (`Inherit` defers to it instead).
+fn join_scope_from_link(
+    link: &dao::records::JoinLinkRecord,
+    match_policy: &dao::records::JoinPolicyRecord,
+) -> JoinScope {
+    match &link.scope {
+        dao::records::JoinLinkScopeRecord::Inherit => join_scope_from_policy(match_policy),
+        dao::records::JoinLinkScopeRecord::Unassigned => JoinScope {
+            allowed_side_ids: Some(Vec::new()),
+            allow_unassigned: true,
+        },
+        dao::records::JoinLinkScopeRecord::Sides { side_ids } => JoinScope {
+            allowed_side_ids: Some(side_ids.clone()),
+            allow_unassigned: false,
+        },
+    }
+}
+
+/// Resolve the final target side (`Ok(Some(side_id))`) or unassigned
+/// (`Ok(None)`) for a join, validating the caller's `requested` side (if
+/// any) against `scope` and the match's actual sides. `Err` carries a
+/// user-facing validation message.
+fn resolve_join_target(
+    scope: &JoinScope,
+    requested: Option<&str>,
+    sides: &[dao::records::MatchSideRecord],
+) -> std::result::Result<Option<String>, String> {
+    match requested {
+        Some(side_id) => {
+            if !sides.iter().any(|s| s.side_id == side_id) {
+                return Err("side is not part of this match".into());
+            }
+            match &scope.allowed_side_ids {
+                Some(allowed) if !allowed.iter().any(|s| s == side_id) => {
+                    Err("that side isn't joinable this way".into())
+                }
+                _ => Ok(Some(side_id.to_string())),
+            }
+        }
+        None => match &scope.allowed_side_ids {
+            // Exactly one side allowed and no explicit pick — assign it
+            // directly (a single-side join link's whole point).
+            Some(allowed) if allowed.len() == 1 => Ok(Some(allowed[0].clone())),
+            Some(allowed) if !allowed.is_empty() => {
+                Err(format!("choose a side to join: {}", allowed.join(", ")))
+            }
+            _ if scope.allow_unassigned => Ok(None),
+            _ => Err("choose a side to join".into()),
+        },
+    }
+}
+
 fn build_invited_player(
     match_id: &str,
     match_name: &str,
@@ -6629,6 +7388,8 @@ fn build_invited_player(
         side_id,
         is_member_of_team: None,
         invitation: Some(embedded),
+        role: dao::records::MatchPlayerRole::Player,
+        joined_via: None,
     };
 
     let invitation = dao::records::InvitationRecord {
@@ -6956,6 +7717,7 @@ fn mock_match(id: String) -> Match {
                 name: Some(String::from("Red Team")),
                 team_logo: None,
                 roster_preview: None,
+                max_players: None,
             },
             MatchSide {
                 id: String::from("side_blue"),
@@ -6963,6 +7725,7 @@ fn mock_match(id: String) -> Match {
                 name: Some(String::from("Blue Team")),
                 team_logo: None,
                 roster_preview: None,
+                max_players: None,
             },
         ],
         players: vec![
@@ -6976,6 +7739,7 @@ fn mock_match(id: String) -> Match {
                 }),
                 side_id: Some(String::from("side_red")),
                 is_member_of_team: Some(true),
+                role: MatchPlayerRole::Owner,
             },
             MatchPlayer {
                 member: Member::User(UserMember {
@@ -6987,6 +7751,7 @@ fn mock_match(id: String) -> Match {
                 }),
                 side_id: Some(String::from("side_red")),
                 is_member_of_team: Some(true),
+                role: MatchPlayerRole::Player,
             },
             MatchPlayer {
                 member: Member::User(UserMember {
@@ -6998,6 +7763,7 @@ fn mock_match(id: String) -> Match {
                 }),
                 side_id: Some(String::from("side_blue")),
                 is_member_of_team: Some(true),
+                role: MatchPlayerRole::Player,
             },
         ],
         confirmed_score: Some(ConfirmedScore {
@@ -7016,6 +7782,9 @@ fn mock_match(id: String) -> Match {
             i_liked: false,
         },
         format: None,
+        join_policy: JoinPolicy {
+            side_selection: SideSelection::SideOptional,
+        },
     }
 }
 

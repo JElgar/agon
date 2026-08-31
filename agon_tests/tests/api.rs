@@ -142,11 +142,13 @@ fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
                 client_id: "a".to_string(),
                 team_id: None,
                 name: Some("Side A".to_string()),
+                max_players: None,
             },
             models::CreateMatchSideInput {
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
+                max_players: None,
             },
         ],
         invites: vec![models::CreateMatchInviteInput {
@@ -159,6 +161,7 @@ fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
         winner_side_id: None,
         header_photo_asset_ids: None,
         format: None,
+        join_policy: None,
     }
 }
 
@@ -188,11 +191,13 @@ fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::Create
                 client_id: "a".to_string(),
                 team_id: None,
                 name: Some("Side A".to_string()),
+                max_players: None,
             },
             models::CreateMatchSideInput {
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
+                max_players: None,
             },
         ],
         invites: vec![invite_side("a", side_a), invite_side("b", side_b)],
@@ -201,6 +206,7 @@ fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::Create
         winner_side_id: None,
         header_photo_asset_ids: None,
         format: None,
+        join_policy: None,
     }
 }
 
@@ -248,11 +254,13 @@ fn completed_match(invites: Vec<models::CreateMatchInviteInput>) -> models::Crea
                 client_id: "a".to_string(),
                 team_id: None,
                 name: Some("Side A".to_string()),
+                max_players: None,
             },
             models::CreateMatchSideInput {
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
+                max_players: None,
             },
         ],
         invites,
@@ -261,6 +269,7 @@ fn completed_match(invites: Vec<models::CreateMatchInviteInput>) -> models::Crea
         winner_side_id: Some("a".to_string()),
         header_photo_asset_ids: None,
         format: None,
+        join_policy: None,
     }
 }
 
@@ -6091,4 +6100,668 @@ async fn manual_score_conflicting_with_live_football_detail_is_rejected_even_mid
     .await
     .expect("override the live score");
     assert!(matches!(overridden.status, models::MatchStatus::Completed));
+}
+
+// ---------------------------------------------------------------------------
+// Join settings, join links, and match roles/ownership
+// ---------------------------------------------------------------------------
+
+/// A two-sided match the creator plays in (side "a"), with room on side "b"
+/// for others to self-serve join — no invitees. `join_policy`/the per-side
+/// caps are the knobs each test in this section varies.
+fn joinable_match_input(
+    join_policy: Option<models::JoinPolicy>,
+    side_a_max: Option<i32>,
+    side_b_max: Option<i32>,
+) -> models::CreateMatchInput {
+    models::CreateMatchInput {
+        name: "Joinable Match".to_string(),
+        description: "join-link test".to_string(),
+        match_type: models::MatchType::Tennis,
+        starts_at: iso_offset_hours(24),
+        location: None,
+        sides: vec![
+            models::CreateMatchSideInput {
+                client_id: "a".to_string(),
+                team_id: None,
+                name: Some("Side A".to_string()),
+                max_players: side_a_max,
+            },
+            models::CreateMatchSideInput {
+                client_id: "b".to_string(),
+                team_id: None,
+                name: Some("Side B".to_string()),
+                max_players: side_b_max,
+            },
+        ],
+        invites: vec![],
+        creator_side_client_id: Some("a".to_string()),
+        score: None,
+        winner_side_id: None,
+        header_photo_asset_ids: None,
+        format: None,
+        join_policy: join_policy.map(Box::new),
+    }
+}
+
+fn join_policy_of(side_selection: models::SideSelection) -> models::JoinPolicy {
+    models::JoinPolicy { side_selection }
+}
+
+fn inherit_scope() -> models::JoinLinkScope {
+    models::JoinLinkScope::Inherit(Box::default())
+}
+
+fn unassigned_scope() -> models::JoinLinkScope {
+    models::JoinLinkScope::Unassigned(Box::default())
+}
+
+fn sides_scope(side_ids: Vec<String>) -> models::JoinLinkScope {
+    models::JoinLinkScope::Sides(Box::new(models::JoinLinkScopeJoinLinkScopeSides {
+        side_ids,
+        r#type: Default::default(),
+    }))
+}
+
+/// The other of the match's two sides from `known_side_id` (both created by
+/// `joinable_match_input`, so there are always exactly two).
+fn other_side_id(match_: &models::Match, known_side_id: &str) -> String {
+    match_
+        .sides
+        .iter()
+        .find(|s| s.id != known_side_id)
+        .expect("a second side")
+        .id
+        .clone()
+}
+
+#[tokio::test]
+async fn join_link_scoped_to_one_side_assigns_it_directly() {
+    let (owner_config, owner) = new_user().await;
+    let created = matches_post(&owner_config, joinable_match_input(None, None, None))
+        .await
+        .expect("create match");
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+    let side_b = other_side_id(&created, &side_a);
+
+    let link = matches_match_id_join_links_post(
+        &owner_config,
+        &created.id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(sides_scope(vec![side_b.clone()])),
+        },
+    )
+    .await
+    .expect("create join link");
+
+    let (_joiner_config, joiner) = new_user().await;
+    let joined = matches_match_id_join_post(
+        &_joiner_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: Some(link.token.clone()),
+            side_id: None,
+        },
+    )
+    .await
+    .expect("join via single-side link");
+
+    assert_eq!(side_id_for_user(&joined, &joiner.profile.id), side_b);
+    let player = joined
+        .players
+        .iter()
+        .find(|p| matches!(&*p.member, models::Member::User(u) if u.user_id == joiner.profile.id))
+        .unwrap();
+    assert_eq!(player.role, models::MatchPlayerRole::Player);
+}
+
+#[tokio::test]
+async fn join_link_scoped_to_one_side_rejects_the_other() {
+    let (owner_config, owner) = new_user().await;
+    let created = matches_post(&owner_config, joinable_match_input(None, None, None))
+        .await
+        .expect("create match");
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+
+    let link = matches_match_id_join_links_post(
+        &owner_config,
+        &created.id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(sides_scope(vec![other_side_id(&created, &side_a)])),
+        },
+    )
+    .await
+    .expect("create join link");
+
+    let (joiner_config, _joiner) = new_user().await;
+    let response = matches_match_id_join_post(
+        &joiner_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: Some(link.token),
+            side_id: Some(side_a),
+        },
+    )
+    .await;
+    assert_status_with_content(
+        response,
+        reqwest::StatusCode::BAD_REQUEST,
+        "isn't joinable this way",
+    );
+}
+
+#[tokio::test]
+async fn unassigned_only_policy_forces_unassigned_but_a_side_link_still_overrides_it() {
+    let (owner_config, owner) = new_user().await;
+    let created = matches_post(
+        &owner_config,
+        joinable_match_input(
+            Some(join_policy_of(models::SideSelection::UnassignedOnly)),
+            None,
+            None,
+        ),
+    )
+    .await
+    .expect("create match");
+    assert_eq!(
+        created.join_policy.side_selection,
+        models::SideSelection::UnassignedOnly
+    );
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+    let side_b = other_side_id(&created, &side_a);
+
+    let general_link = matches_match_id_join_links_post(
+        &owner_config,
+        &created.id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(inherit_scope()),
+        },
+    )
+    .await
+    .expect("create general join link");
+
+    // No side requested: lands unassigned, per the game's policy.
+    let (joiner_a_config, joiner_a) = new_user().await;
+    let joined = matches_match_id_join_post(
+        &joiner_a_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: Some(general_link.token.clone()),
+            side_id: None,
+        },
+    )
+    .await
+    .expect("join unassigned");
+    assert_eq!(
+        joined
+            .players
+            .iter()
+            .find(|p| matches!(&*p.member, models::Member::User(u) if u.user_id == joiner_a.profile.id))
+            .unwrap()
+            .side_id,
+        None
+    );
+
+    // Requesting a side through the general link is rejected — the game's
+    // policy allows no side picking at all.
+    let (joiner_b_config, _joiner_b) = new_user().await;
+    let rejected = matches_match_id_join_post(
+        &joiner_b_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: Some(general_link.token),
+            side_id: Some(side_b.clone()),
+        },
+    )
+    .await;
+    assert_status_with_content(
+        rejected,
+        reqwest::StatusCode::BAD_REQUEST,
+        "isn't joinable this way",
+    );
+
+    // A side-scoped link overrides the game's policy — that's the point of
+    // making one.
+    let side_link = matches_match_id_join_links_post(
+        &owner_config,
+        &created.id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(sides_scope(vec![side_b.clone()])),
+        },
+    )
+    .await
+    .expect("create side-scoped join link");
+    let (joiner_c_config, joiner_c) = new_user().await;
+    let joined = matches_match_id_join_post(
+        &joiner_c_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: Some(side_link.token),
+            side_id: None,
+        },
+    )
+    .await
+    .expect("join via side-scoped link despite unassigned_only policy");
+    assert_eq!(side_id_for_user(&joined, &joiner_c.profile.id), side_b);
+}
+
+#[tokio::test]
+async fn side_required_policy_rejects_an_unassigned_join() {
+    let (owner_config, owner) = new_user().await;
+    let created = matches_post(
+        &owner_config,
+        joinable_match_input(
+            Some(join_policy_of(models::SideSelection::SideRequired)),
+            None,
+            None,
+        ),
+    )
+    .await
+    .expect("create match");
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+    let side_b = other_side_id(&created, &side_a);
+
+    let link = matches_match_id_join_links_post(
+        &owner_config,
+        &created.id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(inherit_scope()),
+        },
+    )
+    .await
+    .expect("create join link");
+
+    let (no_side_config, _no_side) = new_user().await;
+    let rejected = matches_match_id_join_post(
+        &no_side_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: Some(link.token.clone()),
+            side_id: None,
+        },
+    )
+    .await;
+    assert_status_with_content(
+        rejected,
+        reqwest::StatusCode::BAD_REQUEST,
+        "choose a side to join",
+    );
+
+    let (with_side_config, with_side) = new_user().await;
+    let joined = matches_match_id_join_post(
+        &with_side_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: Some(link.token),
+            side_id: Some(side_b.clone()),
+        },
+    )
+    .await
+    .expect("join with an explicit side");
+    assert_eq!(side_id_for_user(&joined, &with_side.profile.id), side_b);
+}
+
+#[tokio::test]
+async fn side_capacity_is_enforced() {
+    let (owner_config, owner) = new_user().await;
+    let created = matches_post(&owner_config, joinable_match_input(None, None, Some(1)))
+        .await
+        .expect("create match");
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+    let side_b = other_side_id(&created, &side_a);
+
+    let link = matches_match_id_join_links_post(
+        &owner_config,
+        &created.id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(sides_scope(vec![side_b.clone()])),
+        },
+    )
+    .await
+    .expect("create join link");
+
+    let (first_config, _first) = new_user().await;
+    matches_match_id_join_post(
+        &first_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: Some(link.token.clone()),
+            side_id: None,
+        },
+    )
+    .await
+    .expect("first join fills the side's only slot");
+
+    let (second_config, _second) = new_user().await;
+    let rejected = matches_match_id_join_post(
+        &second_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: Some(link.token),
+            side_id: None,
+        },
+    )
+    .await;
+    assert_status_with_content(rejected, reqwest::StatusCode::CONFLICT, "side is full");
+}
+
+/// The overall cap is derived, not stored: with both sides capped at 1
+/// (creator already filling side "a"), the match-wide cap is 2 — reached by
+/// one more join anywhere (including unassigned), and enforced even though
+/// no single side's own cap is what's being hit.
+#[tokio::test]
+async fn overall_capacity_is_derived_from_every_sides_cap() {
+    let (owner_config, _owner) = new_user().await;
+    let created = matches_post(&owner_config, joinable_match_input(None, Some(1), Some(1)))
+        .await
+        .expect("create match");
+
+    let link = matches_match_id_join_links_post(
+        &owner_config,
+        &created.id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(unassigned_scope()),
+        },
+    )
+    .await
+    .expect("create unassigned join link");
+
+    let (first_config, _first) = new_user().await;
+    matches_match_id_join_post(
+        &first_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: Some(link.token.clone()),
+            side_id: None,
+        },
+    )
+    .await
+    .expect("second overall player, exactly at the derived cap of 2");
+
+    let (second_config, _second) = new_user().await;
+    let rejected = matches_match_id_join_post(
+        &second_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: Some(link.token),
+            side_id: None,
+        },
+    )
+    .await;
+    assert_status_with_content(rejected, reqwest::StatusCode::CONFLICT, "match is full");
+}
+
+#[tokio::test]
+async fn a_self_served_participant_can_invite_but_not_manage_join_settings() {
+    let (owner_config, owner) = new_user().await;
+    let created = matches_post(&owner_config, joinable_match_input(None, None, None))
+        .await
+        .expect("create match");
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+
+    let link = matches_match_id_join_links_post(
+        &owner_config,
+        &created.id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(inherit_scope()),
+        },
+    )
+    .await
+    .expect("create join link");
+    let (participant_config, _participant) = new_user().await;
+    matches_match_id_join_post(
+        &participant_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: Some(link.token),
+            side_id: Some(other_side_id(&created, &side_a)),
+        },
+    )
+    .await
+    .expect("self-serve join");
+
+    // An ordinary (Player-role) participant may still invite a named person —
+    // unchanged, existing behavior.
+    let (_invitee_config, invitee) = new_user().await;
+    matches_match_id_invitations_post(
+        &participant_config,
+        &created.id,
+        models::AddInvitationsInput {
+            invited_user_ids: vec![invitee.profile.id],
+            invited_external_names: vec![],
+            side_id: None,
+            role: None,
+        },
+    )
+    .await
+    .expect("a participant may invite named people");
+
+    // But the newer, more structural actions are admin-only.
+    assert_status(
+        matches_match_id_join_links_post(
+            &participant_config,
+            &created.id,
+            models::CreateJoinLinkInput {
+                scope: Box::new(inherit_scope()),
+            },
+        )
+        .await,
+        reqwest::StatusCode::FORBIDDEN,
+    );
+    assert_status(
+        matches_match_id_patch(
+            &participant_config,
+            &created.id,
+            models::UpdateMatchInput {
+                join_policy: Some(Box::new(join_policy_of(
+                    models::SideSelection::SideRequired,
+                ))),
+                ..Default::default()
+            },
+        )
+        .await,
+        reqwest::StatusCode::FORBIDDEN,
+    );
+}
+
+#[tokio::test]
+async fn revoked_join_link_cannot_be_used() {
+    let (owner_config, _owner) = new_user().await;
+    let created = matches_post(&owner_config, joinable_match_input(None, None, None))
+        .await
+        .expect("create match");
+
+    let link = matches_match_id_join_links_post(
+        &owner_config,
+        &created.id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(inherit_scope()),
+        },
+    )
+    .await
+    .expect("create join link");
+
+    matches_match_id_join_links_join_link_id_delete(&owner_config, &created.id, &link.id)
+        .await
+        .expect("revoke join link");
+
+    assert_not_found(join_links_by_token_token_get(&owner_config, &link.token).await);
+
+    let (joiner_config, _joiner) = new_user().await;
+    assert_not_found(
+        matches_match_id_join_post(
+            &joiner_config,
+            &created.id,
+            models::JoinMatchInput {
+                token: Some(link.token),
+                side_id: None,
+            },
+        )
+        .await,
+    );
+}
+
+/// Transferring ownership demotes the outgoing owner to `Admin` (mirroring
+/// team ownership transfer) rather than stripping their authority outright:
+/// they keep managing join settings, just not transferring ownership again —
+/// that's owner-only, not admin-accessible.
+#[tokio::test]
+async fn transferring_ownership_demotes_the_outgoing_owner_to_admin() {
+    let (owner_config, owner) = new_user().await;
+    let created = matches_post(&owner_config, joinable_match_input(None, None, None))
+        .await
+        .expect("create match");
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+    assert_eq!(
+        created
+            .players
+            .iter()
+            .find(
+                |p| matches!(&*p.member, models::Member::User(u) if u.user_id == owner.profile.id)
+            )
+            .unwrap()
+            .role,
+        models::MatchPlayerRole::Owner
+    );
+
+    let link = matches_match_id_join_links_post(
+        &owner_config,
+        &created.id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(inherit_scope()),
+        },
+    )
+    .await
+    .expect("create join link");
+    let (new_owner_config, new_owner) = new_user().await;
+    let joined = matches_match_id_join_post(
+        &new_owner_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: Some(link.token),
+            side_id: Some(other_side_id(&created, &side_a)),
+        },
+    )
+    .await
+    .expect("self-serve join");
+    let new_owner_player_id = player_id_for_user(&joined, &new_owner.profile.id);
+
+    // Before the transfer, the new joiner (a plain Player) can't manage
+    // join settings.
+    assert_status(
+        matches_match_id_patch(
+            &new_owner_config,
+            &created.id,
+            models::UpdateMatchInput {
+                join_policy: Some(Box::new(join_policy_of(
+                    models::SideSelection::SideRequired,
+                ))),
+                ..Default::default()
+            },
+        )
+        .await,
+        reqwest::StatusCode::FORBIDDEN,
+    );
+
+    matches_match_id_transfer_ownership_post(
+        &owner_config,
+        &created.id,
+        models::TransferMatchOwnershipInput {
+            player_id: new_owner_player_id,
+        },
+    )
+    .await
+    .expect("owner transfers ownership");
+
+    let after_transfer = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match");
+    let role_of = |m: &models::Match, uid: &str| -> models::MatchPlayerRole {
+        m.players
+            .iter()
+            .find(|p| matches!(&*p.member, models::Member::User(u) if u.user_id == uid))
+            .unwrap()
+            .role
+    };
+    assert_eq!(
+        role_of(&after_transfer, &new_owner.profile.id),
+        models::MatchPlayerRole::Owner
+    );
+    assert_eq!(
+        role_of(&after_transfer, &owner.profile.id),
+        models::MatchPlayerRole::Admin,
+        "the outgoing owner is demoted to admin, not stripped of authority"
+    );
+
+    // The new owner can now manage join settings...
+    matches_match_id_patch(
+        &new_owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            join_policy: Some(Box::new(join_policy_of(
+                models::SideSelection::SideOptional,
+            ))),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("new owner can manage join settings");
+
+    // ...and so can the demoted former owner, now an admin.
+    matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            join_policy: Some(Box::new(join_policy_of(
+                models::SideSelection::SideOptional,
+            ))),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the demoted owner's new Admin role still manages join settings");
+
+    // But transferring ownership again is owner-only — the (now-Admin)
+    // original owner can no longer do it themselves.
+    let former_owner_player_id = player_id_for_user(&after_transfer, &owner.profile.id);
+    assert_status(
+        matches_match_id_transfer_ownership_post(
+            &owner_config,
+            &created.id,
+            models::TransferMatchOwnershipInput {
+                player_id: former_owner_player_id,
+            },
+        )
+        .await,
+        reqwest::StatusCode::FORBIDDEN,
+    );
+}
+
+#[tokio::test]
+async fn create_join_link_validates_its_sides_scope() {
+    let (owner_config, _owner) = new_user().await;
+    let created = matches_post(&owner_config, joinable_match_input(None, None, None))
+        .await
+        .expect("create match");
+
+    assert_bad_request(
+        matches_match_id_join_links_post(
+            &owner_config,
+            &created.id,
+            models::CreateJoinLinkInput {
+                scope: Box::new(sides_scope(vec![])),
+            },
+        )
+        .await,
+    );
+    assert_bad_request(
+        matches_match_id_join_links_post(
+            &owner_config,
+            &created.id,
+            models::CreateJoinLinkInput {
+                scope: Box::new(sides_scope(vec!["not-a-real-side".to_string()])),
+            },
+        )
+        .await,
+    );
 }

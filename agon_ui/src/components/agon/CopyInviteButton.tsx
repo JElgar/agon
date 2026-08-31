@@ -1,20 +1,23 @@
 import { useEffect, useState } from 'react'
 import { Check, Link2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { inviteLink } from '@/lib/members'
+import { inviteLink, joinLink } from '@/lib/members'
 import { cn } from '@/lib/utils'
 
 /**
- * Copies a pending token-invite's shareable link to the clipboard (with a
- * native share-sheet fallback on devices that support it), showing a transient
- * "Copied!" confirmation. Rendered next to external, not-yet-accepted players so
- * the inviter can hand out the `/invite/:token` link.
+ * Copies a shareable link to the clipboard (with a native share-sheet
+ * fallback on devices that support it), showing a transient "Copied!"
+ * confirmation. Rendered next to an external, not-yet-accepted player's
+ * single-use invite token (`kind: 'invite'`, the default, `/invite/:token`),
+ * or a many-use `JoinLink`'s token (`kind: 'join'`, `/join/:token`).
  */
 export function CopyInviteButton({
   token,
+  kind = 'invite',
   className,
 }: {
   token: string
+  kind?: 'invite' | 'join'
   className?: string
 }) {
   const [copied, setCopied] = useState(false)
@@ -27,7 +30,7 @@ export function CopyInviteButton({
   }, [copied])
 
   const share = async () => {
-    const url = inviteLink(token)
+    const url = kind === 'join' ? joinLink(token) : inviteLink(token)
     // Prefer the native share sheet on mobile; fall back to clipboard copy.
     if (navigator.share) {
       try {

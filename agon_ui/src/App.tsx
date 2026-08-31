@@ -34,11 +34,13 @@ import { UserSearchPage } from '@/pages/UserSearchPage'
 import { FollowListPage } from '@/pages/FollowListPage'
 import { SportStatsPage } from '@/pages/SportStatsPage'
 import { AcceptInvitePage } from '@/pages/AcceptInvitePage'
+import { JoinMatchPage } from '@/pages/JoinMatchPage'
 import { TeamsPage } from '@/pages/TeamsPage'
 import { TeamPage } from '@/pages/TeamPage'
 import {
   getPendingInvite,
   setPendingInvite,
+  type PendingInvite,
 } from '@/lib/pendingInvite'
 
 /** Full-screen centered content, used for the loading / error / auth gates. */
@@ -108,6 +110,7 @@ function AppShell({ email, onSignOut }: { email: string; onSignOut: () => void }
           <Route path="/notifications" element={<NotificationsPage />} />
           <Route path="/invitations" element={<ComingSoon title="Invitations" />} />
           <Route path="/invite/:token" element={<AcceptInvitePage />} />
+          <Route path="/join/:token" element={<JoinMatchPage />} />
           <Route path="/search" element={<UserSearchPage />} />
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="/profile/stats/:sport" element={<SportStatsPage />} />
@@ -133,37 +136,46 @@ function AppShell({ email, onSignOut }: { email: string; onSignOut: () => void }
 
 /**
  * Where "/" (and unknown paths) land. Normally the feed — but if the visitor
- * arrived via an invite link, the token was stashed before login (and survives
- * the OAuth redirect back to the app origin, which drops the path). Once signed
- * in with a profile, send them to accept it. AcceptInvitePage clears the token.
+ * arrived via an invite or join link, the token was stashed before login (and
+ * survives the OAuth redirect back to the app origin, which drops the path).
+ * Once signed in with a profile, send them to accept/join it —
+ * `AcceptInvitePage`/`JoinMatchPage` each clear the token once they've
+ * consumed it.
  */
 function HomeRedirect() {
   const pending = getPendingInvite()
   return (
-    <Navigate to={pending ? `/invite/${pending}` : '/feed'} replace />
+    <Navigate
+      to={pending ? `/${pending.kind}/${pending.token}` : '/feed'}
+      replace
+    />
   )
 }
 
-/** Extract an invite token from an `/invite/:token` pathname, else null. */
-function inviteTokenFromPath(pathname: string): string | null {
-  const match = pathname.match(/^\/invite\/([^/]+)/)
-  return match ? decodeURIComponent(match[1]) : null
+/** Extract a pending link (kind + token) from an `/invite/:token` or
+ *  `/join/:token` pathname, else null. */
+function pendingLinkFromPath(pathname: string): PendingInvite | null {
+  const match = pathname.match(/^\/(invite|join)\/([^/]+)/)
+  if (!match) return null
+  return { kind: match[1] as PendingInvite['kind'], token: decodeURIComponent(match[2]) }
 }
 
 /**
- * Persist an invite token from `/invite/:token` the moment it's seen, before
- * the auth gate can swallow the route. Reads the pathname directly (not
- * `useParams`) so it fires even on the logged-out screen, which renders no
- * `<Routes>`. Lets the token survive login — including OAuth, which redirects
- * back to the app origin and loses the path.
+ * Persist an invite/join token from `/invite/:token` or `/join/:token` the
+ * moment it's seen, before the auth gate can swallow the route. Reads the
+ * pathname directly (not `useParams`) so it fires even on the logged-out
+ * screen, which renders no `<Routes>`. Lets the token survive login —
+ * including OAuth, which redirects back to the app origin and loses the path.
  */
-function useInviteCapture(): string | null {
+function usePendingLinkCapture(): PendingInvite | null {
   const location = useLocation()
-  const token = inviteTokenFromPath(location.pathname)
+  const pending = pendingLinkFromPath(location.pathname)
+  const kind = pending?.kind
+  const token = pending?.token
   useEffect(() => {
-    if (token) setPendingInvite(token)
-  }, [token])
-  return token
+    if (kind && token) setPendingInvite(kind, token)
+  }, [kind, token])
+  return pending
 }
 
 /** Whether the signed-in Supabase account has completed Agon signup. */
@@ -172,10 +184,10 @@ type ProfileGate = 'has-profile' | 'needs-profile'
 function AuthenticatedApp() {
   const { user, session, signOut, loading: authLoading } = useAuth()
 
-  // Capture an invite token (if the visitor arrived via a link) so it survives
-  // login. `inviteToken` is the token on the *current* URL, used to preview the
-  // invite on the logged-out screen.
-  const inviteToken = useInviteCapture()
+  // Capture an invite/join token (if the visitor arrived via a link) so it
+  // survives login. `pendingLink` is the token on the *current* URL, used to
+  // preview the invite/join on the logged-out screen.
+  const pendingLink = usePendingLinkCapture()
 
   // Resolve the caller's Agon profile. A 404 means the Supabase account exists
   // but hasn't completed signup (no `/users` record yet) → show profile creation.
@@ -202,7 +214,7 @@ function AuthenticatedApp() {
       <CenteredMessage>
         <div className="w-full max-w-md">
           <h1 className="text-3xl font-bold text-center mb-8">Welcome to Agon</h1>
-          {inviteToken && <InvitePreviewBanner token={inviteToken} />}
+          {pendingLink && <InvitePreviewBanner {...pendingLink} />}
           <LoginForm />
         </div>
       </CenteredMessage>
@@ -217,7 +229,7 @@ function AuthenticatedApp() {
     return (
       <CenteredMessage>
         <div className="w-full max-w-md">
-          {inviteToken && <InvitePreviewBanner token={inviteToken} />}
+          {pendingLink && <InvitePreviewBanner {...pendingLink} />}
           <CreateProfileForm
             email={user.email || ''}
             onProfileCreated={() => gate.refetch()}

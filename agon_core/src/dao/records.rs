@@ -414,19 +414,16 @@ pub enum SideSelectionRecord {
 pub struct MatchRecord {
     pub id: String,
     /// The user who created (organizes) the match. Immutable — a historical
-    /// fact, unlike `owner_user_id` below. May manage it — edit, invite,
-    /// record the result — even when not playing in it themselves.
+    /// fact, unrelated to the transferable `Owner` role on `players` below
+    /// (see `MatchPlayerRole`). Still checked directly by
+    /// `caller_can_manage_match`/`caller_is_match_admin` as a stopgap for a
+    /// creator who organizes without playing — they'd otherwise have no
+    /// roster row to carry any role at all. A future "non-player organizers"
+    /// list (tracked separately, not yet built) is the real fix for that
+    /// case; this field isn't it, just today's fallback.
     /// `#[serde(default)]` for records written before this field existed.
     #[serde(default)]
     pub created_by_user_id: String,
-    /// The current match owner — starts as `created_by_user_id` but is
-    /// transferable (`Dao::transfer_match_ownership`) independently of it, so
-    /// control can hand off without rewriting history. Empty for records
-    /// written before this field existed; callers fall back to
-    /// `created_by_user_id` in that case (the same convention that field
-    /// itself used when introduced — see its own doc comment).
-    #[serde(default)]
-    pub owner_user_id: String,
     pub name: String,
     pub description: String,
     /// Sport tag, e.g. "tennis" (the API's `MatchType`, stored as a string).
@@ -507,19 +504,6 @@ pub struct MatchRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<MatchFormatRecord>,
     pub created_at: String,
-}
-
-impl MatchRecord {
-    /// The match's current owner, falling back to `created_by_user_id` for
-    /// records written before `owner_user_id` existed — see that field's doc
-    /// comment for why the two are separate concepts.
-    pub fn effective_owner_user_id(&self) -> &str {
-        if self.owner_user_id.is_empty() {
-            &self.created_by_user_id
-        } else {
-            &self.owner_user_id
-        }
-    }
 }
 
 /// Mirrors `agon_service::match_format::MatchFormat`, sport-first
@@ -658,10 +642,16 @@ pub struct MatchPlayerRecord {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchPlayerRole {
-    /// Full authority over the match: manage `join_policy`/caps, mint or
-    /// revoke join-links, invite people. The playing creator gets this by
-    /// default; see `MatchRecord::owner_user_id` for the (possibly
-    /// non-playing) transferable owner, which is a separate concept.
+    /// The match's owner — permanently so, in the sense that there's exactly
+    /// one at a time, transferable via `Dao::transfer_match_ownership` (which
+    /// atomically demotes the outgoing owner to `Admin`, mirroring
+    /// `Dao::transfer_team_ownership`). The playing creator gets this by
+    /// default. A non-playing organizer has no roster row and so can't hold
+    /// it today — `MatchRecord::created_by_user_id` is the stopgap for that
+    /// case (see its doc comment) until a non-player-organizers list exists.
+    Owner,
+    /// Full authority over the match short of transferring ownership: manage
+    /// `join_policy`/caps, mint or revoke join-links, invite people.
     Admin,
     /// An ordinary roster member. Can still invite named people (today's
     /// "any participant" behavior), just not the more structural actions

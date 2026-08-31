@@ -1,5 +1,7 @@
 use poem_openapi::{Enum, Object, Union};
 
+use crate::team::AssignableTeamRole;
+
 /// A person in some context (a team, a match side). Modelled as a union so the
 /// type enforces what data applies: a linked Agon user has a `user_id` (name and
 /// profile resolved from the account), while an external person has only a
@@ -128,6 +130,11 @@ pub struct AddInvitationsInput {
     /// them to the match without a side, to be chosen on acceptance. Ignored for
     /// team invitations.
     pub side_id: Option<String>,
+    /// (Team invitations only) the role every invitee in this batch gets once
+    /// accepted — `Admin` or `Member`, applied uniformly (invite some people as
+    /// admin and others as member in one call by sending two calls). None
+    /// defaults to `Member`. Ignored for match invitations.
+    pub role: Option<AssignableTeamRole>,
 }
 
 #[derive(Object)]
@@ -163,10 +170,12 @@ pub enum InvitationStatus {
 #[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
 #[oai(rename_all = "snake_case")]
 pub enum MatchPlayerRole {
-    /// Full authority: manage `join_policy`/side caps, mint or revoke
-    /// join-links, invite people. The playing creator gets this by default.
-    /// See `Match.owner_user_id` for the separate, transferable owner
-    /// concept — a non-playing organizer relies on that instead.
+    /// The match's owner — one at a time, transferable (`POST
+    /// /matches/:id/transfer-ownership`, which demotes the outgoing owner to
+    /// `Admin`). The playing creator gets this by default.
+    Owner,
+    /// Full authority over the match short of transferring ownership: manage
+    /// `join_policy`/side caps, mint or revoke join-links, invite people.
     Admin,
     /// An ordinary roster member. Can still invite named people (any
     /// participant may), just not the more structural admin actions.
@@ -271,5 +280,7 @@ pub struct JoinMatchInput {
 
 #[derive(Object)]
 pub struct TransferMatchOwnershipInput {
-    pub new_owner_user_id: String,
+    /// The player (by stable player id, as seen on `MatchPlayer.member.id`)
+    /// to hand the `Owner` role to. Must already be an accepted player.
+    pub player_id: String,
 }

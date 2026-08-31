@@ -682,31 +682,57 @@ impl Dao {
         }
     }
 
-    /// Transfer match ownership. `NotFound` if the match is absent.
+    /// Move the `Owner` role from one player to another, in one transaction
+    /// — mirrors `Dao::transfer_team_ownership` exactly (same reasoning: the
+    /// promote and demote either both land or neither does, so the match is
+    /// never briefly ownerless or briefly double-owned). `NotFound` if either
+    /// player doesn't exist. The caller is responsible for every
+    /// business-rule check (caller is the current owner, `to` is an accepted
+    /// player, `to` isn't already the owner) — this just moves the role.
     #[tracing::instrument(skip(self))]
     pub async fn transfer_match_ownership(
         &self,
         match_id: &str,
-        new_owner_user_id: &str,
+        from_player_id: &str,
+        to_player_id: &str,
     ) -> DaoResult<()> {
-        let result = self
-            .client
-            .update_item()
+        let promote = Update::builder()
             .table_name(self.table())
             .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
-            .key("SK", s(Sk::Meta.to_string()))
-            .update_expression("SET owner_user_id = :owner")
+            .key(ATTR_SK, s(Sk::Player(to_player_id.into()).to_string()))
+            .update_expression("SET #role = :owner")
             .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#role", "role")
             .expression_attribute_names("#pk", ATTR_PK)
-            .expression_attribute_values(":owner", s(new_owner_user_id))
+            .expression_attribute_values(":owner", s("owner"))
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        let demote = Update::builder()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Player(from_player_id.into()).to_string()))
+            .update_expression("SET #role = :admin")
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#role", "role")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_values(":admin", s("admin"))
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        let result = self
+            .client
+            .transact_write_items()
+            .transact_items(TransactWriteItem::builder().update(promote).build())
+            .transact_items(TransactWriteItem::builder().update(demote).build())
             .send()
             .await;
 
         match result {
             Ok(_) => Ok(()),
-            Err(e) if is_update_conditional_failure(&e) => {
-                Err(DaoError::NotFound(format!("match {match_id}")))
-            }
+            Err(e) if super::is_transaction_conditional_failure(&e) => Err(DaoError::NotFound(
+                format!("player {from_player_id} or {to_player_id} on match {match_id}"),
+            )),
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
     }

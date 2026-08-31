@@ -348,81 +348,91 @@ export function MatchCard({
           the usual confirmed/pending result; a finished cricket match with
           per-innings detail gets its own tile too. */}
       {footballState ? (
-        <button type="button" onClick={onOpen} className="mx-3.5 mb-3 block text-left">
-          <LiveMatchBlock match={orderedMatch} state={footballState} />
-        </button>
+        <div className="mx-3.5 mb-3">
+          <button type="button" onClick={onOpen} className="block w-full text-left">
+            <LiveMatchBlock match={orderedMatch} state={footballState} />
+          </button>
+        </div>
       ) : netballState ? (
-        <button type="button" onClick={onOpen} className="mx-3.5 mb-3 block text-left">
-          <NetballMatchBlock match={orderedMatch} state={netballState} />
-        </button>
+        <div className="mx-3.5 mb-3">
+          <button type="button" onClick={onOpen} className="block w-full text-left">
+            <NetballMatchBlock match={orderedMatch} state={netballState} />
+          </button>
+        </div>
       ) : cricketState ? (
-        <button type="button" onClick={onOpen} className="mx-3.5 mb-3 block text-left">
-          <CricketMatchBlock match={orderedMatch} state={cricketState} showDescription={false} />
-        </button>
+        <div className="mx-3.5 mb-3">
+          <button type="button" onClick={onOpen} className="block w-full text-left">
+            <CricketMatchBlock match={orderedMatch} state={cricketState} showDescription={false} />
+          </button>
+        </div>
       ) : cricketScore ? (
-        <button type="button" onClick={onOpen} className="mx-3.5 mb-3 block text-left">
-          <CricketScoreBlock match={orderedMatch} score={cricketScore} showDescription={false} />
-        </button>
+        <div className="mx-3.5 mb-3">
+          <button type="button" onClick={onOpen} className="block w-full text-left">
+            <CricketScoreBlock match={orderedMatch} score={cricketScore} showDescription={false} />
+          </button>
+        </div>
       ) : (
         scoreInfo && (
-          <button
-            type="button"
-            onClick={onOpen}
-            className="mx-3.5 mb-3 block rounded-lg bg-muted/50 px-3.5 py-3 text-left"
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex min-w-0 flex-1 items-center gap-2">
-                <Avatar name={nameA} imageUrl={sideA?.team_logo?.image_url} size="md" ring={aWon ? 'winner' : 'none'} />
-                <span className="truncate text-xs font-medium">{nameA}</span>
-              </div>
-              <div className="px-3 text-center">
-                <div className="text-2xl font-medium leading-none tracking-tight">
-                  {headline[sideA?.id ?? ''] ?? 0}
-                  <span className="text-muted-foreground">–</span>
-                  {headline[sideB?.id ?? ''] ?? 0}
+          <div className="mx-3.5 mb-3">
+            <button
+              type="button"
+              onClick={onOpen}
+              className="block w-full rounded-lg bg-muted/50 px-3.5 py-3 text-left"
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex min-w-0 flex-1 items-center gap-2">
+                  <Avatar name={nameA} imageUrl={sideA?.team_logo?.image_url} size="md" ring={aWon ? 'winner' : 'none'} />
+                  <span className="truncate text-xs font-medium">{nameA}</span>
                 </div>
-                <div className="mt-0.5 text-[9px] uppercase tracking-widest text-muted-foreground">
-                  {headlineLabel(scoreInfo.score)}
+                <div className="px-3 text-center">
+                  <div className="text-2xl font-medium leading-none tracking-tight">
+                    {headline[sideA?.id ?? ''] ?? 0}
+                    <span className="text-muted-foreground">–</span>
+                    {headline[sideB?.id ?? ''] ?? 0}
+                  </div>
+                  <div className="mt-0.5 text-[9px] uppercase tracking-widest text-muted-foreground">
+                    {headlineLabel(scoreInfo.score)}
+                  </div>
+                </div>
+                <div className="flex min-w-0 flex-1 flex-row-reverse items-center gap-2 text-right">
+                  <Avatar name={nameB} imageUrl={sideB?.team_logo?.image_url} size="md" ring={bWon ? 'winner' : 'none'} />
+                  <span className="truncate text-xs font-medium">{nameB}</span>
                 </div>
               </div>
-              <div className="flex min-w-0 flex-1 flex-row-reverse items-center gap-2 text-right">
-                <Avatar name={nameB} imageUrl={sideB?.team_logo?.image_url} size="md" ring={bWon ? 'winner' : 'none'} />
-                <span className="truncate text-xs font-medium">{nameB}</span>
-              </div>
-            </div>
-            {sets.length > 0 && (
-              <div className="mt-2 border-t pt-2 text-center text-[11px] text-muted-foreground">
-                {sets.map((s, i) => (
-                  <span key={i}>
-                    {i > 0 && <span className="mx-1.5 text-border">·</span>}
-                    Set {i + 1} <span className="font-medium text-foreground">{s}</span>
-                  </span>
-                ))}
-              </div>
-            )}
-            {finishedFootballGoals && (
-              <FootballScorersBySide
-                goals={finishedFootballGoals}
-                match={orderedMatch}
-                players={finishedFootballScorePlayers}
-                periodTimes={finishedFootballPeriodTimes}
-                sideA={sideA}
-                sideB={sideB}
-                className="mt-2.5 text-[11px]"
-              />
-            )}
-            {finishedNetballGoals && (
-              <NetballScorersBySide
-                goals={finishedNetballGoals}
-                match={orderedMatch}
-                players={finishedNetballScorePlayers}
-                periodTimes={finishedNetballPeriodTimes}
-                sideA={sideA}
-                sideB={sideB}
-                className="mt-2.5 text-[11px]"
-              />
-            )}
-          </button>
+              {sets.length > 0 && (
+                <div className="mt-2 border-t pt-2 text-center text-[11px] text-muted-foreground">
+                  {sets.map((s, i) => (
+                    <span key={i}>
+                      {i > 0 && <span className="mx-1.5 text-border">·</span>}
+                      Set {i + 1} <span className="font-medium text-foreground">{s}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+              {finishedFootballGoals && (
+                <FootballScorersBySide
+                  goals={finishedFootballGoals}
+                  match={orderedMatch}
+                  players={finishedFootballScorePlayers}
+                  periodTimes={finishedFootballPeriodTimes}
+                  sideA={sideA}
+                  sideB={sideB}
+                  className="mt-2.5 text-[11px]"
+                />
+              )}
+              {finishedNetballGoals && (
+                <NetballScorersBySide
+                  goals={finishedNetballGoals}
+                  match={orderedMatch}
+                  players={finishedNetballScorePlayers}
+                  periodTimes={finishedNetballPeriodTimes}
+                  sideA={sideA}
+                  sideB={sideB}
+                  className="mt-2.5 text-[11px]"
+                />
+              )}
+            </button>
+          </div>
         )
       )}
 

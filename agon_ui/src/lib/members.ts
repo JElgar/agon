@@ -24,23 +24,19 @@ export type ScorePlayers = Record<string, RosterPreviewPlayer>
 type InvitationKind = components['schemas']['InvitationKind']
 
 /**
- * Anything with an optional `players` list: a full `Match` (which also
- * carries the server-computed `viewer_role` — see `myMatchRole`), a
- * locally-built draft (e.g. `FootballScoreFields`' not-yet-created match,
- * which has neither), or one of the trimmed shapes with no `players` field
- * at all — a feed's `FeedMatch` (see `known_participants`/`viewer_side_id`)
- * or search/profile-activity's `SearchMatch`.
+ * Anything with an optional `players` list: a full `Match`, a locally-built
+ * draft (e.g. `FootballScoreFields`' not-yet-created match), or one of the
+ * trimmed shapes with no `players` field at all — a feed's `FeedMatch` (see
+ * `known_participants`/`viewer_side_id`) or search/profile-activity's
+ * `SearchMatch`.
  *
  * The `FeedMatch`/`SearchMatch` branches are listed explicitly (rather than
  * relying on `{ players?: ... }` alone) because TypeScript's weak-type check
  * rejects such an argument against an all-optional object type on its own:
  * it shares literally no properties with `{ players?: ... }`. Narrow with
- * `'players' in match`/`'viewer_role' in match`.
+ * `'players' in match`.
  */
-type MatchLike =
-  | { players?: MatchPlayer[]; viewer_role?: MatchPlayerRole }
-  | FeedMatch
-  | SearchMatch
+type MatchLike = { players?: MatchPlayer[] } | FeedMatch | SearchMatch
 
 /**
  * The bearer invite token for a member with a pending token-invitation, else
@@ -200,34 +196,26 @@ export function isParticipant(
 
 /**
  * The viewer's role on the match, if they're an accepted (or not-yet-invited,
- * i.e. added ad-hoc) player — else undefined.
+ * i.e. added ad-hoc) player — else undefined. Reads the server-computed
+ * `viewer_role` directly (resolved by `caller_match_role` off the same
+ * aggregate the response was built from — see `Match.viewer_role`'s doc
+ * comment) rather than re-deriving it by scanning `players` here too: the
+ * server has already done the work, and re-scanning client-side risks
+ * disagreeing with it (e.g. a permission check silently loosening if the two
+ * ever drift).
  *
- * A full `Match` already carries this pre-computed (`viewer_role`, resolved
- * server-side by `caller_match_role` off the same aggregate the response was
- * built from — see its doc comment), so this reads that field directly
- * rather than re-deriving it by scanning `players` here too: the server has
- * already done the work, and re-scanning client-side risks disagreeing with
- * it (e.g. a permission check silently loosening if the two ever drift).
- * `FeedMatch`/`SearchMatch` don't carry a roster to look this up from at all,
- * so this is always `undefined` for those — same as `isParticipant`. The
- * `players`-scan fallback only matters for a locally-built draft that isn't
- * a real API response (see `MatchLike`'s doc comment).
+ * Takes a full `Match` specifically, not the wider `MatchLike` union
+ * `isParticipant`/`mySideId` accept: `FeedMatch`/`SearchMatch` don't carry
+ * `viewer_role` (or a roster to derive it from), so there's nothing this
+ * could return for either — a feed card checking "is the viewer playing"
+ * should use `FeedMatch.viewer_side_id` directly instead.
  */
 export function myMatchRole(
-  match: MatchLike,
+  match: Match,
   currentUserId: string | undefined,
 ): MatchPlayerRole | undefined {
   if (!currentUserId) return undefined
-  if ('viewer_role' in match) return match.viewer_role ?? undefined
-  const players = ('players' in match && match.players) || []
-  for (const player of players) {
-    if (player.member.type !== 'User') continue
-    if (player.member.user_id !== currentUserId) continue
-    const invitation = player.member.invitation
-    if (invitation && invitation.status !== 'accepted') continue
-    return player.role
-  }
-  return undefined
+  return match.viewer_role ?? undefined
 }
 
 /**
@@ -241,7 +229,7 @@ export function myMatchRole(
  * has for the equivalent server-side creator fallback.
  */
 export function canManageMatchJoinSettings(
-  match: MatchLike,
+  match: Match,
   currentUserId: string | undefined,
 ): boolean {
   const role = myMatchRole(match, currentUserId)
@@ -250,7 +238,7 @@ export function canManageMatchJoinSettings(
 
 /** Whether the viewer owns the match — see `MatchPlayerRole`'s doc comment. */
 export function isMatchOwner(
-  match: MatchLike,
+  match: Match,
   currentUserId: string | undefined,
 ): boolean {
   return myMatchRole(match, currentUserId) === 'owner'

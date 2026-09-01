@@ -16,9 +16,8 @@ use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_pk, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::{
-    ConfirmedScoreRecord, HeaderPhotoRecord, JoinPolicyRecord, MatchFormatRecord,
-    MatchPlayerRecord, MatchRecord, MatchScoreRecord, MatchSideRecord, PendingScoreRecord,
-    SideRosterMemberRecord,
+    ConfirmedScoreRecord, HeaderPhotoRecord, MatchFormatRecord, MatchPlayerRecord, MatchRecord,
+    MatchScoreRecord, MatchSideRecord, PendingScoreRecord, SideRosterMemberRecord,
 };
 
 pub const TYPE_MATCH: &str = "match";
@@ -601,20 +600,20 @@ impl Dao {
         }
     }
 
-    /// Update a match's join settings: the `join_policy`, and/or one or more
-    /// sides' `max_players`. Kept separate from `update_match_meta` (rather
-    /// than folded into its one big `UpdateItem`) since these settings aren't
-    /// coupled to the rest of that call's fields the way `side_names` is —
-    /// no atomicity is lost by it being its own call. `NotFound` if the match
-    /// is absent.
+    /// Update a match's join settings: `allow_unassigned`, and/or one or more
+    /// sides' `max_players`/`team_join_enabled`. Kept separate from
+    /// `update_match_meta` (rather than folded into its one big `UpdateItem`)
+    /// since these settings aren't coupled to the rest of that call's fields
+    /// the way `side_names` is — no atomicity is lost by it being its own
+    /// call. `NotFound` if the match is absent.
     #[tracing::instrument(skip(self))]
     pub async fn update_match_join_settings(
         &self,
         match_id: &str,
-        join_policy: Option<&JoinPolicyRecord>,
-        side_max_players: &[(String, Option<u32>)],
+        allow_unassigned: Option<bool>,
+        side_join_settings: &[(String, Option<u32>, bool)],
     ) -> DaoResult<()> {
-        if join_policy.is_none() && side_max_players.is_empty() {
+        if allow_unassigned.is_none() && side_join_settings.is_empty() {
             return Ok(());
         }
 
@@ -624,11 +623,12 @@ impl Dao {
         let mut values: std::collections::HashMap<String, AttributeValue> = Default::default();
         names.insert("#pk".into(), ATTR_PK.into());
 
-        if let Some(policy) = join_policy {
-            set.push("join_policy = :jp".into());
-            values.insert(":jp".into(), to_attr(policy)?);
+        if let Some(allow) = allow_unassigned {
+            set.push("allow_unassigned = :au".into());
+            values.insert(":au".into(), AttributeValue::Bool(allow));
         }
-        for (i, (side_id, max_players)) in side_max_players.iter().enumerate() {
+        for (i, (side_id, max_players, team_join_enabled)) in side_join_settings.iter().enumerate()
+        {
             let side_alias = format!("#s{i}");
             names.insert(side_alias.clone(), side_id.clone());
             match max_players {
@@ -641,6 +641,11 @@ impl Dao {
                     remove.push(format!("sides.{side_alias}.max_players"));
                 }
             }
+            let tje_alias = format!(":tje{i}");
+            set.push(format!(
+                "sides.{side_alias}.team_join_enabled = {tje_alias}"
+            ));
+            values.insert(tje_alias, AttributeValue::Bool(*team_join_enabled));
         }
 
         let mut expr = String::new();
@@ -1077,6 +1082,7 @@ mod tests {
             max_players,
             player_count: 0,
             roster_preview: Vec::new(),
+            team_join_enabled: false,
         }
     }
 

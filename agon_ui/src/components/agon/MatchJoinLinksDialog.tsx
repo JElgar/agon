@@ -18,40 +18,57 @@ type Match = components['schemas']['Match']
 type JoinLink = components['schemas']['JoinLink']
 type JoinLinkScope = components['schemas']['JoinLinkScope']
 
-/** Which side(s)/unassigned a new link should be scoped to — the form's own
- *  shape, simpler than `JoinLinkScope` (no `Sides` case with zero ids). */
-type ScopeChoice = { kind: 'inherit' } | { kind: 'unassigned' } | { kind: 'sides'; sideIds: string[] }
+/** Which sides a new link should allow — the form's own shape.
+ *  `'any'` -> `side_ids: undefined` (any side of the match is fine);
+ *  `'specific'` -> `side_ids: [...]` (one or more, picked below);
+ *  `'none'` -> `side_ids: []` (force-unassigned — see `JoinLinkScope`'s
+ *  doc comment). */
+type SidesChoice = 'any' | 'specific' | 'none'
 
-function scopeInputFor(choice: ScopeChoice): JoinLinkScope {
-  // The generated `JoinLinkScope*Inherit`/`*Unassigned` branches are
-  // `Record<string, never> & { type: '...' }` — an artifact of how
-  // openapi-typescript encodes a discriminated union whose variant has no
-  // fields of its own — which TS won't accept as an object literal without
-  // a cast (same erased-discriminant issue as `InvitationKind` etc.).
-  if (choice.kind === 'unassigned') return { type: 'Unassigned' } as JoinLinkScope
-  if (choice.kind === 'sides') return { type: 'Sides', side_ids: choice.sideIds }
-  return { type: 'Inherit' } as JoinLinkScope
+interface ScopeForm {
+  sidesChoice: SidesChoice
+  sideIds: string[]
+  allowUnassigned: boolean
+}
+
+function scopeInputFor(form: ScopeForm): JoinLinkScope {
+  return {
+    side_ids: form.sidesChoice === 'any' ? undefined : form.sideIds,
+    // `'none'` requires unassigned to actually be reachable — force it,
+    // regardless of the (hidden, in that mode) checkbox's last value.
+    allow_unassigned: form.sidesChoice === 'none' ? true : form.allowUnassigned,
+  }
 }
 
 /** Human summary of an existing link's scope, for the list. */
 function scopeSummary(scope: JoinLinkScope, match: Match): string {
-  if (scope.type === 'Unassigned') return 'Unassigned only'
-  if (scope.type === 'Inherit') return "Anyone — follows this game's settings"
-  const names = scope.side_ids.map((id, i) => {
+  const ids = scope.side_ids
+  if (ids === undefined) {
+    return scope.allow_unassigned ? 'Any side, or unassigned' : 'Any side — must pick one'
+  }
+  if (ids.length === 0) return 'Unassigned only'
+  const names = ids.map((id, i) => {
     const side = match.sides.find((s) => s.id === id)
     return side?.name?.trim() || `Side ${i + 1}`
   })
-  return names.length === 1 ? `Side: ${names[0]}` : `Either: ${names.join(', ')}`
+  const sideLabel = names.length === 1 ? `Side: ${names[0]}` : `Either: ${names.join(', ')}`
+  return scope.allow_unassigned ? `${sideLabel}, or unassigned` : sideLabel
 }
 
+const emptyForm: ScopeForm = { sidesChoice: 'any', sideIds: [], allowUnassigned: true }
+
 /**
- * Manage a match's shareable join links: mint a many-use link scoped to
- * inherit the game's own `join_policy`, always join unassigned, or join one
- * (or, for an intra-squad match, either) specific side, list the ones already
- * made with a share button and a revoke action. Structure mirrors
- * `InviteToTeamDialog` — one dialog, a list, a "new" sub-form below it.
- * Admin-only; the match page only renders the trigger for an admin viewer
- * (see `canManageMatchJoinSettings`).
+ * Manage a match's shareable join links: mint a many-use link allowing any
+ * side (optionally also unassigned), one or more specific sides, or
+ * unassigned only, list the ones already made with a share button and a
+ * revoke action. Structure mirrors `InviteToTeamDialog` — one dialog, a
+ * list, a "new" sub-form below it. Admin-only; the match page only renders
+ * the trigger for an admin viewer (see `canManageMatchJoinSettings`).
+ *
+ * A link's own "allow unassigned" is always capped by the match's own
+ * `allow_unassigned` (see `Match.allow_unassigned`'s doc comment) — when the
+ * match doesn't allow it at all, that half of the form is hidden rather than
+ * offering a setting that would silently do nothing.
  */
 export function MatchJoinLinksDialog({
   match,
@@ -62,8 +79,7 @@ export function MatchJoinLinksDialog({
 }) {
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
-  const [scopeKind, setScopeKind] = useState<ScopeChoice['kind']>('inherit')
-  const [sideIds, setSideIds] = useState<string[]>([])
+  const [form, setForm] = useState<ScopeForm>(emptyForm)
 
   const linksKey = ['match-join-links', match.id]
   const linksQuery = useQuery({
@@ -80,19 +96,15 @@ export function MatchJoinLinksDialog({
 
   const createMutation = useMutation({
     mutationFn: async () => {
-      const scope = scopeInputFor(
-        scopeKind === 'sides' ? { kind: 'sides', sideIds } : { kind: scopeKind },
-      )
       const { error } = await fetchClient.POST('/matches/{match_id}/join-links', {
         params: { path: { match_id: match.id } },
-        body: { scope },
+        body: { scope: scopeInputFor(form) },
       })
       if (error) throw new Error('Could not create join link')
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: linksKey })
-      setScopeKind('inherit')
-      setSideIds([])
+      setForm(emptyForm)
     },
   })
 
@@ -110,19 +122,21 @@ export function MatchJoinLinksDialog({
   const handleOpenChange = (next: boolean) => {
     setOpen(next)
     if (next) {
-      setScopeKind('inherit')
-      setSideIds([])
+      setForm(emptyForm)
       createMutation.reset()
     }
   }
 
   const toggleSide = (sideId: string) => {
-    setSideIds((prev) =>
-      prev.includes(sideId) ? prev.filter((id) => id !== sideId) : [...prev, sideId],
-    )
+    setForm((prev) => ({
+      ...prev,
+      sideIds: prev.sideIds.includes(sideId)
+        ? prev.sideIds.filter((id) => id !== sideId)
+        : [...prev.sideIds, sideId],
+    }))
   }
 
-  const canCreate = scopeKind !== 'sides' || sideIds.length > 0
+  const canCreate = form.sidesChoice !== 'specific' || form.sideIds.length > 0
   const links = (linksQuery.data ?? []).filter((l) => !l.revoked_at)
 
   return (
@@ -170,39 +184,41 @@ export function MatchJoinLinksDialog({
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="radio"
-                name="join-link-scope"
-                checked={scopeKind === 'inherit'}
-                onChange={() => setScopeKind('inherit')}
+                name="join-link-sides"
+                checked={form.sidesChoice === 'any'}
+                onChange={() => setForm((prev) => ({ ...prev, sidesChoice: 'any' }))}
               />
-              Anyone — follows this game's settings
+              Any side
             </label>
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="radio"
-                name="join-link-scope"
-                checked={scopeKind === 'unassigned'}
-                onChange={() => setScopeKind('unassigned')}
+                name="join-link-sides"
+                checked={form.sidesChoice === 'specific'}
+                onChange={() => setForm((prev) => ({ ...prev, sidesChoice: 'specific' }))}
               />
-              Unassigned only
+              Specific side(s)
             </label>
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="radio"
-                name="join-link-scope"
-                checked={scopeKind === 'sides'}
-                onChange={() => setScopeKind('sides')}
-              />
-              A specific side
-            </label>
+            {match.allow_unassigned && (
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="join-link-sides"
+                  checked={form.sidesChoice === 'none'}
+                  onChange={() => setForm((prev) => ({ ...prev, sidesChoice: 'none' }))}
+                />
+                None — always unassigned
+              </label>
+            )}
           </div>
 
-          {scopeKind === 'sides' && (
+          {form.sidesChoice === 'specific' && (
             <div className="ml-6 flex flex-col gap-1">
               {match.sides.map((side, i) => (
                 <label key={side.id} className="flex items-center gap-2 text-sm">
                   <input
                     type="checkbox"
-                    checked={sideIds.includes(side.id)}
+                    checked={form.sideIds.includes(side.id)}
                     onChange={() => toggleSide(side.id)}
                   />
                   {side.name?.trim() || `Side ${i + 1}`}
@@ -212,6 +228,23 @@ export function MatchJoinLinksDialog({
                 Pick more than one to let the link's user choose between them.
               </p>
             </div>
+          )}
+
+          {/* Hidden entirely when the match itself disallows unassigned —
+              offering this checkbox would just silently do nothing (see
+              `Match.allow_unassigned`'s doc comment). Also hidden for
+              `'none'`, where it's implied. */}
+          {match.allow_unassigned && form.sidesChoice !== 'none' && (
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={form.allowUnassigned}
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, allowUnassigned: e.target.checked }))
+                }
+              />
+              Also allow joining unassigned
+            </label>
           )}
 
           {createMutation.isError && (

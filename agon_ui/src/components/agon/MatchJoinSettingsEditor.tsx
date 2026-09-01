@@ -7,30 +7,38 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 
 type Match = components['schemas']['Match']
-type SideSelection = components['schemas']['SideSelection']
 
-const SIDE_SELECTION_LABEL: Record<SideSelection, string> = {
-  unassigned_only: 'Always unassigned — you place people on sides later',
-  side_required: 'Must pick a side to join',
-  side_optional: 'May pick a side, or join unassigned',
+/** A side's draft `max_players`/`team_join_enabled`. */
+interface SideDraft {
+  maxPlayers: string // '' = uncapped
+  teamJoinEnabled: boolean
 }
+type SideDrafts = Record<string, SideDraft>
 
-/** A side's draft `max_players`, as a form-friendly string (`''` = uncapped). */
-type MaxPlayersDraft = Record<string, string>
-
-function draftFromMatch(match: Match): MaxPlayersDraft {
+function draftsFromMatch(match: Match): SideDrafts {
   return Object.fromEntries(
-    match.sides.map((side) => [side.id, side.max_players?.toString() ?? '']),
+    match.sides.map((side) => [
+      side.id,
+      {
+        maxPlayers: side.max_players?.toString() ?? '',
+        teamJoinEnabled: side.team_join_enabled,
+      },
+    ]),
   )
 }
 
 /**
- * Editable "join settings" card — whether/how a self-serve joiner may pick a
- * side, and each side's player cap. Read-only for everyone; an admin
- * (`canManage`, i.e. `canManageMatchJoinSettings`) gets an "Edit" affordance,
- * same posture as `MatchFormatCard`/`MatchDetailsEditor` (whole-value
- * replace on save, not a diff — mirrors `MatchFormatCard`, which always
- * resubmits its full draft rather than tracking what changed).
+ * Editable "join settings" card — whether a self-serve joiner may ever land
+ * unassigned (a match-wide ceiling every join link's own preference is
+ * capped by — see the backend's `Match.allow_unassigned` doc comment), each
+ * side's player cap, and (for a side linked to a team) whether that team's
+ * members may join it directly (see `TeamJoinBanner`, the entry point a
+ * viewer eligible via this actually sees). Read-only for everyone; an admin
+ * (`canManage`, i.e. `canManageMatchJoinSettings`) gets
+ * an "Edit" affordance, same posture as `MatchFormatCard`/
+ * `MatchDetailsEditor` (whole-value replace on save, not a diff — mirrors
+ * `MatchFormatCard`, which always resubmits its full draft rather than
+ * tracking what changed).
  */
 export function MatchJoinSettingsEditor({
   match,
@@ -41,20 +49,23 @@ export function MatchJoinSettingsEditor({
 }) {
   const queryClient = useQueryClient()
   const [editing, setEditing] = useState(false)
-  const [sideSelection, setSideSelection] = useState<SideSelection>(
-    match.join_policy.side_selection,
-  )
-  const [maxPlayers, setMaxPlayers] = useState<MaxPlayersDraft>(() => draftFromMatch(match))
+  const [allowUnassigned, setAllowUnassigned] = useState(match.allow_unassigned)
+  const [sides, setSides] = useState<SideDrafts>(() => draftsFromMatch(match))
 
   const save = useMutation({
     mutationFn: async () => {
       const { error } = await fetchClient.PATCH('/matches/{match_id}', {
         params: { path: { match_id: match.id } },
         body: {
-          join_policy: { side_selection: sideSelection },
-          side_max_players: match.sides.map((side) => {
-            const raw = maxPlayers[side.id]?.trim()
-            return { side_id: side.id, max_players: raw ? Number(raw) : undefined }
+          allow_unassigned: allowUnassigned,
+          side_join_settings: match.sides.map((side) => {
+            const draft = sides[side.id]
+            const raw = draft?.maxPlayers.trim()
+            return {
+              side_id: side.id,
+              max_players: raw ? Number(raw) : undefined,
+              team_join_enabled: draft?.teamJoinEnabled ?? false,
+            }
           }),
         },
       })
@@ -79,7 +90,9 @@ export function MatchJoinSettingsEditor({
         <div>
           <p className="text-sm font-medium">Join settings</p>
           <p className="text-xs text-muted-foreground">
-            {SIDE_SELECTION_LABEL[match.join_policy.side_selection]}
+            {match.allow_unassigned
+              ? 'A join link may let people join without a side'
+              : 'Everyone must join with a side — never unassigned'}
           </p>
           <p className="text-xs text-muted-foreground">
             {match.sides.every((s) => s.max_players == null)
@@ -95,8 +108,8 @@ export function MatchJoinSettingsEditor({
             size="sm"
             className="h-7 shrink-0 gap-1 px-2 text-xs text-muted-foreground"
             onClick={() => {
-              setSideSelection(match.join_policy.side_selection)
-              setMaxPlayers(draftFromMatch(match))
+              setAllowUnassigned(match.allow_unassigned)
+              setSides(draftsFromMatch(match))
               setEditing(true)
             }}
           >
@@ -111,43 +124,64 @@ export function MatchJoinSettingsEditor({
     <div className="rounded-xl border bg-card p-4">
       <p className="mb-3 text-sm font-medium">Join settings</p>
 
-      <div className="mb-3">
-        <Label htmlFor="side-selection" className="text-xs text-muted-foreground">
-          Who can pick a side?
-        </Label>
-        <select
-          id="side-selection"
-          value={sideSelection}
-          onChange={(e) => setSideSelection(e.target.value as SideSelection)}
-          className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm"
-        >
-          {(Object.keys(SIDE_SELECTION_LABEL) as SideSelection[]).map((value) => (
-            <option key={value} value={value}>
-              {SIDE_SELECTION_LABEL[value]}
-            </option>
-          ))}
-        </select>
-      </div>
+      <label className="mb-3 flex items-start gap-2 text-sm">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={allowUnassigned}
+          onChange={(e) => setAllowUnassigned(e.target.checked)}
+        />
+        <span>
+          Allow joining without a side
+          <span className="block text-xs text-muted-foreground">
+            A ceiling, not a default — a join link can still require a side even when this is
+            on, but no link can offer "unassigned" when this is off.
+          </span>
+        </span>
+      </label>
 
-      <div className="flex flex-col gap-2">
-        {match.sides.map((side, i) => (
-          <div key={side.id} className="flex items-center gap-2">
-            <Label htmlFor={`max-players-${side.id}`} className="flex-1 text-xs">
-              {side.name?.trim() || `Side ${i + 1}`} — max players
-            </Label>
-            <input
-              id={`max-players-${side.id}`}
-              type="number"
-              min={1}
-              placeholder="No cap"
-              value={maxPlayers[side.id] ?? ''}
-              onChange={(e) =>
-                setMaxPlayers((prev) => ({ ...prev, [side.id]: e.target.value }))
-              }
-              className="h-8 w-24 rounded-md border bg-background px-2 text-sm"
-            />
-          </div>
-        ))}
+      <div className="flex flex-col gap-3">
+        {match.sides.map((side, i) => {
+          const draft = sides[side.id]
+          return (
+            <div key={side.id} className="flex flex-col gap-1.5 rounded-lg border p-2">
+              <div className="flex items-center gap-2">
+                <Label htmlFor={`max-players-${side.id}`} className="flex-1 text-xs">
+                  {side.name?.trim() || `Side ${i + 1}`} — max players
+                </Label>
+                <input
+                  id={`max-players-${side.id}`}
+                  type="number"
+                  min={1}
+                  placeholder="No cap"
+                  value={draft?.maxPlayers ?? ''}
+                  onChange={(e) =>
+                    setSides((prev) => ({
+                      ...prev,
+                      [side.id]: { ...prev[side.id], maxPlayers: e.target.value },
+                    }))
+                  }
+                  className="h-8 w-24 rounded-md border bg-background px-2 text-sm"
+                />
+              </div>
+              {side.team_id && (
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={draft?.teamJoinEnabled ?? false}
+                    onChange={(e) =>
+                      setSides((prev) => ({
+                        ...prev,
+                        [side.id]: { ...prev[side.id], teamJoinEnabled: e.target.checked },
+                      }))
+                    }
+                  />
+                  Let this side's team members join directly
+                </label>
+              )}
+            </div>
+          )
+        })}
       </div>
 
       {save.isError && (

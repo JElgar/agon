@@ -375,32 +375,6 @@ pub struct TeamMemberRecord {
     pub created_at: String,
 }
 
-/// A match's self-serve-join settings: whether/how a joiner (via a join link
-/// today; team self-join in a later phase) may pick a side.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct JoinPolicyRecord {
-    pub side_selection: SideSelectionRecord,
-}
-
-/// See `JoinPolicyRecord`. Naming is literal about behavior — "unassigned" is
-/// not a new roster state (`MatchPlayerRecord.side_id: None` already means
-/// that); this only controls whether a self-serve joiner gets to choose.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SideSelectionRecord {
-    /// Every self-serve joiner lands unassigned; the organizer assigns sides
-    /// later (`Dao::update_match_meta`'s side-assignment path).
-    UnassignedOnly,
-    /// A joiner must pick one of the match's sides; landing unassigned isn't
-    /// offered.
-    SideRequired,
-    /// A joiner may pick a side or go unassigned. The default — matches the
-    /// implicit behavior invites already had (an invite's `side_id` was
-    /// always optional).
-    #[default]
-    SideOptional,
-}
-
 /// `MATCH#<matchId>` / `#META` — match metadata + resolved scores + social
 /// counts. `players`, the live-scoring score record, submissions, likes and
 /// comments live as separate items in the same partition; `sides` is
@@ -431,12 +405,17 @@ pub struct MatchRecord {
     /// Lifecycle: "scheduled" | "in_progress" | "completed" | "cancelled".
     pub status: String,
     pub starts_at: String,
-    /// Whether/how a self-serve joiner may pick a side. `#[serde(default)]`
-    /// for records written before this field existed — defaults to
-    /// `SideOptional`, matching the implicit behavior invites already had
-    /// (an invite's `side_id` was always optional).
-    #[serde(default)]
-    pub join_policy: JoinPolicyRecord,
+    /// Whether a self-serve joiner (a join link, or a team member via
+    /// `MatchSideRecord::team_join_enabled` in a later phase) may ever land
+    /// unassigned rather than on a specific side. A hard ceiling, not a
+    /// default: a join link's own `allow_unassigned` is ANDed with this one
+    /// (see `join_scope_from_link`) — if the match says no, no link can
+    /// offer it regardless of its own setting. `#[serde(default =
+    /// "default_true")]` for records written before this field existed,
+    /// matching the implicit behavior invites already had (an invite's
+    /// `side_id` was always optional).
+    #[serde(default = "default_true")]
+    pub allow_unassigned: bool,
     /// Total roster size (every side plus unassigned), maintained atomically
     /// alongside each side's own `player_count` — see `Dao::join_match_tx`
     /// and `MatchAggregate::effective_max_players` for how it's used to
@@ -576,6 +555,15 @@ pub struct MatchSideRecord {
     /// separately.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_players: Option<u32>,
+    /// Whether an accepted member of this side's `team_id` may join it
+    /// directly, with no invite or join link — the match admin's per-side
+    /// opt-in for team self-join. Meaningless without a `team_id`. Not yet
+    /// read by any join flow (team self-join is a later phase — see
+    /// `MatchPlayerRole::Owner`'s neighboring doc comments for the same
+    /// "modeled now, built later" posture); stored ahead of that so the
+    /// setting doesn't need its own migration once it lands.
+    #[serde(default)]
+    pub team_join_enabled: bool,
     /// Total players currently on this side. Denormalized alongside
     /// `roster_preview` (kept in sync on every roster-changing write — see
     /// `Dao::refresh_side_roster_previews`) so the feed can decide "show
@@ -1129,20 +1117,22 @@ pub struct JoinLinkRecord {
     pub revoked_at: Option<String>,
 }
 
-/// See `JoinLinkRecord::scope`. Overrides the match's own `JoinPolicyRecord`
-/// for joins made through this specific link.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum JoinLinkScopeRecord {
-    /// Defer to the match's own `join_policy`.
-    Inherit,
-    /// Always joins the unassigned pool, regardless of `join_policy`.
-    Unassigned,
-    /// May only join one of these specific sides — one entry for a
-    /// single-side link, several for e.g. "either side of this intra-squad
-    /// match". Always wins over an `UnassignedOnly` `join_policy`: making a
-    /// side-scoped link is an explicit choice to fill that side.
-    Sides { side_ids: Vec<String> },
+/// See `JoinLinkRecord::scope` — this link's own join rule, independent of
+/// any other link on the same match. `None` `side_ids` means any of the
+/// match's sides is fine; `Some(vec![])` means none are (the link only ever
+/// lands unassigned); `Some([id])` auto-assigns that one side (no choice to
+/// make); `Some([...])` (2+) lets the joiner pick among just those.
+/// `allow_unassigned` is this link's own preference for whether landing
+/// unassigned is also on offer alongside whatever `side_ids` allows — always
+/// capped by the match's own `MatchRecord::allow_unassigned` at resolve time
+/// (see `join_scope_from_link`), so a link can only ever be *more*
+/// restrictive than the match, never less.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct JoinLinkScopeRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_ids: Option<Vec<String>>,
+    #[serde(default = "default_true")]
+    pub allow_unassigned: bool,
 }
 
 /// `USER#<uid>` / `NOTIF#<ts>#<nid>` — a notification for a user.

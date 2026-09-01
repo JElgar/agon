@@ -31,9 +31,8 @@ use crate::live_score::{
 use crate::match_format::{CricketFormat, FootballFormat, MatchFormat, NetballFormat};
 use crate::membership::{
     ExternalMember, Invitation, InvitationContext, InvitationKind, InvitationMatchContext,
-    InvitationStatus, InvitationTeamContext, JoinLink, JoinLinkScope, JoinLinkScopeInherit,
-    JoinLinkScopeSides, JoinLinkScopeUnassigned, JoinPolicy, MatchPlayerRole, Member,
-    SideSelection, TokenInvitation, UserInvitation, UserMember,
+    InvitationStatus, InvitationTeamContext, JoinLink, JoinLinkScope, MatchPlayerRole, Member,
+    TokenInvitation, UserInvitation, UserMember,
 };
 use crate::notification::{
     CommentNotification, FollowNotification, InvitationAcceptedNotification, LikeNotification,
@@ -64,15 +63,14 @@ use agon_core::dao::records::{
     FootballPeriodEventRecord, FootballPeriodRecord, FootballStatsRecord,
     FootballSubstitutionEventRecord, GenericSportStatsRecord, InningsEndReasonRecord,
     InvitationContextRecord, InvitationKindRecord, InvitationRecord, JoinLinkRecord,
-    JoinLinkScopeRecord, JoinPolicyRecord, LiveEventPayloadRecord, LiveEventRecord,
-    MatchFormatRecord, MatchLikeRecord, MatchPlayerRecord,
-    MatchPlayerRole as MatchPlayerRoleRecord, MatchRecord, MatchScoreRecord, MatchSideRecord,
-    NetballFormatRecord, NetballFoulEventRecord, NetballFoulKindRecord, NetballGoalEventRecord,
-    NetballLiveEventRecord, NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord,
-    NextBallContextRecord, NotificationKindRecord, NotificationRecord, OversRecord,
-    PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord,
-    ScoreSubmissionRecord, SideSelectionRecord, TeamMemberRecord, TeamRecord, UserRecord,
-    UserStatsRecord,
+    JoinLinkScopeRecord, LiveEventPayloadRecord, LiveEventRecord, MatchFormatRecord,
+    MatchLikeRecord, MatchPlayerRecord, MatchPlayerRole as MatchPlayerRoleRecord, MatchRecord,
+    MatchScoreRecord, MatchSideRecord, NetballFormatRecord, NetballFoulEventRecord,
+    NetballFoulKindRecord, NetballGoalEventRecord, NetballLiveEventRecord,
+    NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord, NextBallContextRecord,
+    NotificationKindRecord, NotificationRecord, OversRecord, PendingScoreRecord,
+    ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord, ScoreSubmissionRecord,
+    TeamMemberRecord, TeamRecord, UserRecord, UserStatsRecord,
 };
 
 /// Parse an RFC-3339 timestamp string stored by the DAO into a UTC datetime,
@@ -931,51 +929,17 @@ pub fn match_player_role_to_record(role: MatchPlayerRole) -> MatchPlayerRoleReco
     }
 }
 
-pub fn side_selection_from_record(rec: SideSelectionRecord) -> SideSelection {
-    match rec {
-        SideSelectionRecord::UnassignedOnly => SideSelection::UnassignedOnly,
-        SideSelectionRecord::SideRequired => SideSelection::SideRequired,
-        SideSelectionRecord::SideOptional => SideSelection::SideOptional,
-    }
-}
-
-pub fn side_selection_to_record(sel: SideSelection) -> SideSelectionRecord {
-    match sel {
-        SideSelection::UnassignedOnly => SideSelectionRecord::UnassignedOnly,
-        SideSelection::SideRequired => SideSelectionRecord::SideRequired,
-        SideSelection::SideOptional => SideSelectionRecord::SideOptional,
-    }
-}
-
-pub fn join_policy_from_record(rec: &JoinPolicyRecord) -> JoinPolicy {
-    JoinPolicy {
-        side_selection: side_selection_from_record(rec.side_selection),
-    }
-}
-
-pub fn join_policy_to_record(policy: &JoinPolicy) -> JoinPolicyRecord {
-    JoinPolicyRecord {
-        side_selection: side_selection_to_record(policy.side_selection),
-    }
-}
-
 pub fn join_link_scope_from_record(rec: &JoinLinkScopeRecord) -> JoinLinkScope {
-    match rec {
-        JoinLinkScopeRecord::Inherit => JoinLinkScope::Inherit(JoinLinkScopeInherit {}),
-        JoinLinkScopeRecord::Unassigned => JoinLinkScope::Unassigned(JoinLinkScopeUnassigned {}),
-        JoinLinkScopeRecord::Sides { side_ids } => JoinLinkScope::Sides(JoinLinkScopeSides {
-            side_ids: side_ids.clone(),
-        }),
+    JoinLinkScope {
+        side_ids: rec.side_ids.clone(),
+        allow_unassigned: rec.allow_unassigned,
     }
 }
 
 pub fn join_link_scope_to_record(scope: &JoinLinkScope) -> JoinLinkScopeRecord {
-    match scope {
-        JoinLinkScope::Inherit(_) => JoinLinkScopeRecord::Inherit,
-        JoinLinkScope::Unassigned(_) => JoinLinkScopeRecord::Unassigned,
-        JoinLinkScope::Sides(s) => JoinLinkScopeRecord::Sides {
-            side_ids: s.side_ids.clone(),
-        },
+    JoinLinkScopeRecord {
+        side_ids: scope.side_ids.clone(),
+        allow_unassigned: scope.allow_unassigned,
     }
 }
 
@@ -1004,6 +968,7 @@ pub fn match_side_from_record(rec: &MatchSideRecord) -> MatchSide {
         team_id: rec.team_id.clone(),
         name: rec.name.clone(),
         max_players: rec.max_players,
+        team_join_enabled: rec.team_join_enabled,
         // Filled in afterward, alongside `name`: live team-meta lookup for
         // `Match` (`Api::resolve_side_names`), or the same batch for a feed's
         // `FeedMatch`/a search hit's `SearchMatch`
@@ -1090,7 +1055,7 @@ pub fn match_from_records(
         match_type: match_type_from_tag(&rec.match_type),
         status: match_status_from_str(&rec.status),
         starts_at: parse_ts(&rec.starts_at),
-        join_policy: join_policy_from_record(&rec.join_policy),
+        allow_unassigned: rec.allow_unassigned,
         location: rec.location.as_ref().map(|l| Location {
             latitude: l.latitude,
             longitude: l.longitude,
@@ -1121,6 +1086,7 @@ pub fn match_from_records(
         // sites in `main.rs`) — a placeholder here, since this pure mapping
         // function has no viewer to resolve it against.
         viewer_role: None,
+        viewer_team_join_side_ids: None,
     }
 }
 

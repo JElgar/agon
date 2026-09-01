@@ -220,7 +220,8 @@ export function myMatchRole(
 
 /**
  * Whether the viewer may manage the match's join settings — join-link
- * creation/revocation, `join_policy`, and per-side `max_players`. Mirrors the
+ * creation/revocation, `allow_unassigned`, and per-side `max_players`/
+ * `team_join_enabled`. Mirrors the
  * server's `caller_is_match_admin`, minus the team-admin-bridge and
  * non-playing-creator fallback: neither is client-checkable (`Match` doesn't
  * expose `created_by_user_id` or the team roles behind a side's `team_id`),

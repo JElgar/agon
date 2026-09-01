@@ -29,6 +29,18 @@ type MatchSide = components['schemas']['MatchSide']
 type MatchPlayer = components['schemas']['MatchPlayer']
 type Score = components['schemas']['Score']
 type TeamListItem = components['schemas']['TeamListItem']
+type SideSelection = components['schemas']['SideSelection']
+
+/** Labels for the "who can pick a side?" choice, plus a `''` "server default"
+ *  option so leaving this section alone omits `join_policy` entirely rather
+ *  than sending an explicit `side_optional` — same posture as the format
+ *  section, which omits `format` unless the user actually opened it. */
+const SIDE_SELECTION_LABEL: Record<SideSelection | '', string> = {
+  '': 'Default — may pick a side, or join unassigned',
+  unassigned_only: 'Always unassigned — place people on sides later',
+  side_required: 'Must pick a side to join',
+  side_optional: 'May pick a side, or join unassigned',
+}
 
 /** A tagged side's players, reshaped into the API's `MatchPlayer` so the
  *  football/cricket detail editors (`FootballScoreFields`/`CricketScoreFields`,
@@ -48,10 +60,15 @@ function toMatchPlayers(players: TaggedPlayer[], sideId: string): MatchPlayer[] 
             avatar_url: p.imageUrl,
           },
           side_id: sideId,
+          // A placeholder — the match doesn't exist yet, so there's no real
+          // role to report. These synthetic players only feed the local
+          // score-detail editors below, which never read this field.
+          role: 'player',
         }
       : {
           member: { type: 'External', id: p.id, display_name: p.name },
           side_id: sideId,
+          role: 'player',
         },
   )
 }
@@ -169,6 +186,14 @@ export function LogMatchPage() {
   // Optional header images for the match, uploaded via the Asset API. Holds the
   // ordered uploaded asset ids (attached as `header_photo_asset_ids` on submit).
   const [headerAssetIds, setHeaderAssetIds] = useState<string[]>([])
+
+  // Optional self-serve join settings — who (via a future join link) may pick
+  // a side, and each side's player cap. `''` means "don't send `join_policy`"
+  // (the server default). Most casual matches won't touch this, same
+  // reasoning as the format section being optional.
+  const [sideSelection, setSideSelection] = useState<SideSelection | ''>('')
+  const [sideAMaxPlayers, setSideAMaxPlayers] = useState('')
+  const [sideBMaxPlayers, setSideBMaxPlayers] = useState('')
 
   // The signed-in user's profile. Used to seed them onto their own side by
   // default (as a real, removable player) and to badge/exclude them in search.
@@ -409,11 +434,13 @@ export function LogMatchPage() {
           client_id: SIDE_A,
           name: sideAName.trim() || undefined,
           team_id: sideATeam?.id,
+          max_players: sideAMaxPlayers.trim() ? Number(sideAMaxPlayers) : undefined,
         },
         {
           client_id: SIDE_B,
           name: sideBName.trim() || undefined,
           team_id: sideBTeam?.id,
+          max_players: sideBMaxPlayers.trim() ? Number(sideBMaxPlayers) : undefined,
         },
       ],
       invites: buildInvites(),
@@ -424,6 +451,7 @@ export function LogMatchPage() {
 
     if (headerAssetIds.length > 0) body.header_photo_asset_ids = headerAssetIds
     if (format) body.format = format
+    if (sideSelection) body.join_policy = { side_selection: sideSelection }
 
     const scored = buildScore()
     if (scored) {
@@ -527,6 +555,62 @@ export function LogMatchPage() {
               so the match can show who it was against.
             </p>
           )}
+        </div>
+      </Section>
+
+      {/* Join settings (optional) — self-serve joining via a link, added once
+          the match exists (see MatchJoinLinksDialog); this just seeds the
+          policy and caps at creation time so a link minted right away
+          already respects them. */}
+      <Section title="Join settings">
+        <div className="mb-3">
+          <Label htmlFor="side-selection" className="text-xs text-muted-foreground">
+            Who can pick a side?
+          </Label>
+          <select
+            id="side-selection"
+            value={sideSelection}
+            onChange={(e) => setSideSelection(e.target.value as SideSelection | '')}
+            className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm"
+          >
+            {(Object.keys(SIDE_SELECTION_LABEL) as (SideSelection | '')[]).map((value) => (
+              <option key={value} value={value}>
+                {SIDE_SELECTION_LABEL[value]}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-2">
+            <Label htmlFor="side-a-max-players" className="flex-1 text-xs">
+              {sideName(sideA, sideAName, sideATeam, 'Your side')} — max players
+            </Label>
+            <Input
+              id="side-a-max-players"
+              type="number"
+              min={1}
+              inputMode="numeric"
+              placeholder="No cap"
+              value={sideAMaxPlayers}
+              onChange={(e) => setSideAMaxPlayers(e.target.value)}
+              className="h-8 w-24"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <Label htmlFor="side-b-max-players" className="flex-1 text-xs">
+              {sideName(sideB, sideBName, sideBTeam, 'Opposition')} — max players
+            </Label>
+            <Input
+              id="side-b-max-players"
+              type="number"
+              min={1}
+              inputMode="numeric"
+              placeholder="No cap"
+              value={sideBMaxPlayers}
+              onChange={(e) => setSideBMaxPlayers(e.target.value)}
+              className="h-8 w-24"
+            />
+          </div>
         </div>
       </Section>
 

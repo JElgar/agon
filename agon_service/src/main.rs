@@ -44,11 +44,12 @@ use mapping::{
     invitation_detail_from_record, invitation_from_record, invitation_status_from_str,
     invitation_status_str, join_link_from_record, join_link_scope_from_record,
     join_link_scope_to_record, join_policy_to_record, live_event_from_record,
-    match_format_sport_tag, match_format_to_record, match_from_records, match_score_from_record,
-    match_score_to_record, match_status_str, match_type_tag, new_live_event_to_dao,
-    notification_actor_id, notification_from_record, roster_preview_player,
-    score_submission_from_record, score_to_record, search_match_from_records, team_from_records,
-    team_list_item_from_record, team_member_from_record, user_profile_from_record,
+    match_format_sport_tag, match_format_to_record, match_from_records,
+    match_player_role_from_record, match_score_from_record, match_score_to_record,
+    match_status_str, match_type_tag, new_live_event_to_dao, notification_actor_id,
+    notification_from_record, roster_preview_player, score_submission_from_record, score_to_record,
+    search_match_from_records, team_from_records, team_list_item_from_record,
+    team_member_from_record, user_profile_from_record,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -736,6 +737,12 @@ struct Match {
     /// Whether/how a self-serve joiner (a join link today; team self-join in
     /// a later phase) may pick a side.
     join_policy: JoinPolicy,
+    /// The requesting user's own role on this match, if they're an accepted
+    /// player — `None` if they're not playing (not on the roster, or still a
+    /// pending invitee). Server-computed (see `caller_match_role`) so a
+    /// client never has to re-derive it by scanning `players` itself — the
+    /// same reasoning as `MatchSocial.i_liked`/`FeedMatch.viewer_side_id`.
+    viewer_role: Option<MatchPlayerRole>,
 }
 
 /// Social engagement summary for a match. Counts plus whether the requesting
@@ -2920,6 +2927,7 @@ impl Api {
         sides_for_response.sort_by(|a, b| a.side_id.cmp(&b.side_id));
 
         let mut m = match_from_records(&match_record, &sides_for_response, &player_records, false);
+        m.viewer_role = caller_match_role(&player_records, &uid).map(match_player_role_from_record);
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m, &uid).await?;
         Ok(CreateMatchResponse::Match(Json(m)))
@@ -2948,6 +2956,7 @@ impl Api {
             .await
             .map_err(dao_internal)?;
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
+        m.viewer_role = caller_match_role(&agg.players, &uid).map(match_player_role_from_record);
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m, &uid).await?;
         Ok(GetMatchResponse::Match(Json(m)))
@@ -3478,6 +3487,7 @@ impl Api {
             .await
             .map_err(dao_internal)?;
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
+        m.viewer_role = caller_match_role(&agg.players, &uid).map(match_player_role_from_record);
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m, &uid).await?;
         Ok(UpdateMatchResponse::Match(Json(m)))
@@ -5590,6 +5600,7 @@ impl Api {
             )));
         };
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, false);
+        m.viewer_role = caller_match_role(&agg.players, &uid).map(match_player_role_from_record);
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m, &uid).await?;
         Ok(JoinMatchResponse::Match(Json(m)))
@@ -5625,7 +5636,8 @@ impl Api {
             )));
         }
         // Always `Some` here — `caller_is_match_owner` already confirmed it.
-        let from = caller_match_membership(&agg, &uid).expect("caller is the owner, just checked");
+        let from =
+            caller_match_membership(&agg.players, &uid).expect("caller is the owner, just checked");
         let Some(to) = agg.players.iter().find(|p| p.player_id == input.player_id) else {
             return Ok(TransferMatchOwnershipResponse::NotFound(PlainText(
                 "player not found".into(),
@@ -7187,12 +7199,16 @@ fn caller_can_manage_team(agg: &dao::team::TeamAggregate, uid: &str) -> bool {
 
 /// The caller's own roster row on the match, if they're an accepted player —
 /// `None` for a non-player or a pending (not yet accepted) invitee. Mirrors
-/// `caller_team_membership`'s same exclusion on the team side.
+/// `caller_team_membership`'s same exclusion on the team side. Takes the
+/// roster slice directly (like `caller_is_participant`), not a whole
+/// `MatchAggregate` — the one lookup this API needs is a `user_id` match, so
+/// any already-fetched roster works, including a match being created (no
+/// aggregate exists yet — see `create_match`'s call site).
 fn caller_match_membership<'a>(
-    agg: &'a dao::match_ops::MatchAggregate,
+    players: &'a [dao::records::MatchPlayerRecord],
     uid: &str,
 ) -> Option<&'a dao::records::MatchPlayerRecord> {
-    agg.players.iter().find(|p| {
+    players.iter().find(|p| {
         p.user_id.as_deref() == Some(uid)
             && match &p.invitation {
                 None => true,
@@ -7202,18 +7218,23 @@ fn caller_match_membership<'a>(
 }
 
 /// The caller's role on the match, if they're an accepted player — see
-/// `caller_match_membership`.
+/// `caller_match_membership`. The one place this lookup is implemented;
+/// both server-side authorization checks (`caller_is_match_owner`,
+/// `caller_is_match_admin`) and `Match.viewer_role` (the client-facing
+/// equivalent, set at each handler that returns a `Match` — see
+/// `main.rs`'s `match_from_records` call sites) go through this so the two
+/// can never disagree.
 fn caller_match_role(
-    agg: &dao::match_ops::MatchAggregate,
+    players: &[dao::records::MatchPlayerRecord],
     uid: &str,
 ) -> Option<dao::records::MatchPlayerRole> {
-    caller_match_membership(agg, uid).map(|p| p.role)
+    caller_match_membership(players, uid).map(|p| p.role)
 }
 
 /// Whether the caller owns the match — see `MatchPlayerRole::Owner`'s doc
 /// comment for how a non-playing organizer isn't covered by this yet.
 fn caller_is_match_owner(agg: &dao::match_ops::MatchAggregate, uid: &str) -> bool {
-    caller_match_role(agg, uid) == Some(dao::records::MatchPlayerRole::Owner)
+    caller_match_role(&agg.players, uid) == Some(dao::records::MatchPlayerRole::Owner)
 }
 
 /// Whether `uid` may perform match-admin actions: minting/revoking
@@ -7232,7 +7253,7 @@ async fn caller_is_match_admin(
     uid: &str,
 ) -> Result<bool> {
     if matches!(
-        caller_match_role(agg, uid),
+        caller_match_role(&agg.players, uid),
         Some(dao::records::MatchPlayerRole::Owner) | Some(dao::records::MatchPlayerRole::Admin)
     ) {
         return Ok(true);
@@ -7785,6 +7806,7 @@ fn mock_match(id: String) -> Match {
         join_policy: JoinPolicy {
             side_selection: SideSelection::SideOptional,
         },
+        viewer_role: Some(MatchPlayerRole::Owner),
     }
 }
 

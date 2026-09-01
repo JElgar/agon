@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ChevronLeft, Flame, MailOpen, Pencil, Radio, UserPlus } from 'lucide-react'
+import { ChevronLeft, Flame, Link2, MailOpen, Pencil, Radio, ShieldPlus, UserPlus } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
@@ -37,6 +37,8 @@ import {
   setLine,
 } from '@/lib/score'
 import {
+  canManageMatchJoinSettings,
+  isMatchOwner,
   isParticipant,
   memberAvatarUrl,
   memberInviteToken,
@@ -49,6 +51,8 @@ import {
 import { CopyInviteButton } from '@/components/agon/CopyInviteButton'
 import { MatchDetailsEditor } from '@/components/agon/MatchDetailsEditor'
 import { MatchFormatCard } from '@/components/agon/MatchFormatCard'
+import { MatchJoinSettingsEditor } from '@/components/agon/MatchJoinSettingsEditor'
+import { MatchJoinLinksDialog } from '@/components/agon/MatchJoinLinksDialog'
 import { MatchResultEditor } from '@/components/agon/MatchResultEditor'
 import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
@@ -145,6 +149,10 @@ function MatchDetail({
   const [rosterTab, setRosterTab] = useState<string>(ROSTER_TAB_A)
 
   const canEdit = isParticipant(match, currentUserId)
+  // The join-link/join-settings tier is stricter than "any participant" —
+  // owner or admin only, mirroring the server's `caller_is_match_admin`.
+  const canManageJoin = canManageMatchJoinSettings(match, currentUserId)
+  const iAmOwner = isMatchOwner(match, currentUserId)
   const cancelled = match.status === 'cancelled'
   const isLiveSport =
     match.match_type === 'football' || match.match_type === 'cricket' || match.match_type === 'netball'
@@ -416,6 +424,10 @@ function MatchDetail({
           cricket only. Renders nothing for other sports. */}
       <MatchFormatCard match={match} canEdit={canEdit && !cancelled} />
 
+      {/* Join settings — whether/how a self-serve joiner may pick a side,
+          and each side's player cap. Owner/admin only to edit. */}
+      {!cancelled && <MatchJoinSettingsEditor match={match} canManage={canManageJoin} />}
+
       {/* Respond to a pending invite first; only once joined does the score
           confirm/dispute prompt apply — the two are mutually exclusive (same
           logic as the feed/profile match card). */}
@@ -450,6 +462,7 @@ function MatchDetail({
             </div>
           )}
           <RosterTabs
+            matchId={match.id}
             nameA={nameA}
             nameB={nameB}
             playersA={match.players.filter((p) => p.side_id === sideA?.id)}
@@ -459,6 +472,8 @@ function MatchDetail({
             )}
             activeTab={rosterTab}
             onTabChange={setRosterTab}
+            currentUserId={currentUserId}
+            iAmOwner={iAmOwner}
           />
         </div>
       )}
@@ -501,6 +516,16 @@ function MatchDetail({
             <UserPlus className="size-4" /> Invite players
           </Button>
         )
+      )}
+
+      {/* Share a many-use join link (owner/admin only — a stricter tier
+          than "invite a named person" above). */}
+      {canManageJoin && !cancelled && (
+        <MatchJoinLinksDialog match={match}>
+          <Button variant="outline" className="gap-1.5">
+            <Link2 className="size-4" /> Join links
+          </Button>
+        </MatchJoinLinksDialog>
       )}
 
       {/* Social: like the match, then the comment thread. */}
@@ -753,6 +778,7 @@ function CancelMatch({ match }: { match: Match }) {
  * at all, so the tab is the only place they're visible).
  */
 function RosterTabs({
+  matchId,
   nameA,
   nameB,
   playersA,
@@ -760,7 +786,10 @@ function RosterTabs({
   unassigned,
   activeTab,
   onTabChange,
+  currentUserId,
+  iAmOwner,
 }: {
+  matchId: string
   nameA: string
   nameB: string
   playersA: MatchPlayer[]
@@ -768,6 +797,8 @@ function RosterTabs({
   unassigned: MatchPlayer[]
   activeTab: string
   onTabChange: (tab: string) => void
+  currentUserId?: string
+  iAmOwner: boolean
 }) {
   const tabs = [
     { id: ROSTER_TAB_A, title: nameA, players: playersA },
@@ -810,18 +841,60 @@ function RosterTabs({
         ))}
       </div>
       <div className="sm:hidden">
-        <SideRoster title={active.title} players={active.players} />
+        <SideRoster
+          title={active.title}
+          players={active.players}
+          matchId={matchId}
+          currentUserId={currentUserId}
+          iAmOwner={iAmOwner}
+        />
       </div>
 
       <div className="hidden gap-3 sm:grid sm:grid-cols-2">
-        <SideRoster title={nameA} players={playersA} />
-        <SideRoster title={nameB} players={playersB} />
+        <SideRoster
+          title={nameA}
+          players={playersA}
+          matchId={matchId}
+          currentUserId={currentUserId}
+          iAmOwner={iAmOwner}
+        />
+        <SideRoster
+          title={nameB}
+          players={playersB}
+          matchId={matchId}
+          currentUserId={currentUserId}
+          iAmOwner={iAmOwner}
+        />
       </div>
     </>
   )
 }
 
-function SideRoster({ title, players }: { title: string; players: MatchPlayer[] }) {
+function SideRoster({
+  title,
+  players,
+  matchId,
+  currentUserId,
+  iAmOwner,
+}: {
+  title: string
+  players: MatchPlayer[]
+  matchId: string
+  currentUserId?: string
+  iAmOwner: boolean
+}) {
+  const queryClient = useQueryClient()
+  const transferMutation = useMutation({
+    mutationFn: async (playerId: string) => {
+      const { error } = await fetchClient.POST('/matches/{match_id}/transfer-ownership', {
+        params: { path: { match_id: matchId } },
+        body: { player_id: playerId },
+      })
+      if (error) throw new Error('Failed to transfer ownership')
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['match', matchId] }),
+  })
+
   return (
     <div className="rounded-xl border bg-card p-3">
       <p className="mb-2 truncate text-xs font-medium uppercase tracking-wider text-muted-foreground">
@@ -842,6 +915,11 @@ function SideRoster({ title, players }: { title: string; players: MatchPlayer[] 
           // Only linked Agon users have a profile to open — external players
           // (invited by name only) have no `user_id` and stay plain text.
           const userId = p.member.type === 'User' ? p.member.user_id : undefined
+          // The owner may hand the role to any other accepted player — not
+          // themselves, and not a still-pending invitee (mirrors the server's
+          // "must already be an accepted player" rule).
+          const isYou = userId !== undefined && userId === currentUserId
+          const canTransferTo = iAmOwner && !isYou && !pending && p.role !== 'owner'
           return (
             <div key={i} className="flex items-center gap-2">
               {userId ? (
@@ -858,6 +936,24 @@ function SideRoster({ title, players }: { title: string; players: MatchPlayer[] 
                   <span className="flex-1 truncate text-sm">{name}</span>
                 </>
               )}
+              {(p.role === 'owner' || p.role === 'admin') && (
+                <span className="text-[10px] capitalize text-muted-foreground">
+                  {p.role}
+                </span>
+              )}
+              {canTransferTo && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-6 shrink-0"
+                  disabled={transferMutation.isPending}
+                  aria-label={`Make ${name} owner`}
+                  title="Make owner"
+                  onClick={() => transferMutation.mutate(p.member.id)}
+                >
+                  <ShieldPlus className="size-3.5" />
+                </Button>
+              )}
               {inviteToken ? (
                 <CopyInviteButton token={inviteToken} />
               ) : (
@@ -869,6 +965,11 @@ function SideRoster({ title, players }: { title: string; players: MatchPlayer[] 
           )
         })}
       </div>
+      {transferMutation.isError && (
+        <p className="mt-2 text-[10px] text-destructive">
+          Couldn't transfer ownership. Try again.
+        </p>
+      )}
     </div>
   )
 }

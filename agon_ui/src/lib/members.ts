@@ -8,6 +8,7 @@ type FeedMatch = components['schemas']['FeedMatch']
 type SearchMatch = components['schemas']['SearchMatch']
 type Invitation = components['schemas']['Invitation']
 type TeamMember = components['schemas']['TeamMember']
+export type MatchPlayerRole = components['schemas']['MatchPlayerRole']
 /** Name/avatar only, not the full `Member` shape — a side's `roster_preview`
  *  entry, or a resolved id in a cricket/football score's `players` map (see
  *  `CricketScore.players`'s backend doc comment). */
@@ -52,6 +53,13 @@ export function memberInviteToken(member: Member): string | null {
 /** Absolute invite-link URL for a token, matching the `/invite/:token` route. */
 export function inviteLink(token: string): string {
   return `${window.location.origin}/invite/${encodeURIComponent(token)}`
+}
+
+/** Absolute join-link URL for a token, matching the `/join/:token` route —
+ *  `inviteLink`'s counterpart for a many-use `JoinLink` token rather than a
+ *  single-use `Invitation` one. */
+export function joinLink(token: string): string {
+  return `${window.location.origin}/join/${encodeURIComponent(token)}`
 }
 
 /**
@@ -184,6 +192,56 @@ export function isParticipant(
     const invitation = player.member.invitation
     return !invitation || invitation.status === 'accepted'
   })
+}
+
+/**
+ * The viewer's role on the match, if they're an accepted (or not-yet-invited,
+ * i.e. added ad-hoc) player — else undefined. Reads the server-computed
+ * `viewer_role` directly (resolved by `caller_match_role` off the same
+ * aggregate the response was built from — see `Match.viewer_role`'s doc
+ * comment) rather than re-deriving it by scanning `players` here too: the
+ * server has already done the work, and re-scanning client-side risks
+ * disagreeing with it (e.g. a permission check silently loosening if the two
+ * ever drift).
+ *
+ * Takes a full `Match` specifically, not the wider `MatchLike` union
+ * `isParticipant`/`mySideId` accept: `FeedMatch`/`SearchMatch` don't carry
+ * `viewer_role` (or a roster to derive it from), so there's nothing this
+ * could return for either — a feed card checking "is the viewer playing"
+ * should use `FeedMatch.viewer_side_id` directly instead.
+ */
+export function myMatchRole(
+  match: Match,
+  currentUserId: string | undefined,
+): MatchPlayerRole | undefined {
+  if (!currentUserId) return undefined
+  return match.viewer_role ?? undefined
+}
+
+/**
+ * Whether the viewer may manage the match's join settings — join-link
+ * creation/revocation, `join_policy`, and per-side `max_players`. Mirrors the
+ * server's `caller_is_match_admin`, minus the team-admin-bridge and
+ * non-playing-creator fallback: neither is client-checkable (`Match` doesn't
+ * expose `created_by_user_id` or the team roles behind a side's `team_id`),
+ * so those stay server-enforced only — a viewer who qualifies solely via one
+ * of those just won't see the button, the same gap `isParticipant` already
+ * has for the equivalent server-side creator fallback.
+ */
+export function canManageMatchJoinSettings(
+  match: Match,
+  currentUserId: string | undefined,
+): boolean {
+  const role = myMatchRole(match, currentUserId)
+  return role === 'owner' || role === 'admin'
+}
+
+/** Whether the viewer owns the match — see `MatchPlayerRole`'s doc comment. */
+export function isMatchOwner(
+  match: Match,
+  currentUserId: string | undefined,
+): boolean {
+  return myMatchRole(match, currentUserId) === 'owner'
 }
 
 /**

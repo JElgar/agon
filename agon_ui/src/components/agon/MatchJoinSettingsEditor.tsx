@@ -66,8 +66,10 @@ export function MatchJoinSettingsEditor({
     },
   })
 
+  // `!= null` (not `!== undefined`): the server serializes a Rust
+  // `Option::None` here as JSON `null`, not an absent key.
   const derivedCap =
-    match.sides.length > 0 && match.sides.every((s) => s.max_players !== undefined)
+    match.sides.length > 0 && match.sides.every((s) => s.max_players != null)
       ? match.sides.reduce((sum, s) => sum + (s.max_players ?? 0), 0)
       : undefined
 
@@ -80,7 +82,7 @@ export function MatchJoinSettingsEditor({
             {SIDE_SELECTION_LABEL[match.join_policy.side_selection]}
           </p>
           <p className="text-xs text-muted-foreground">
-            {match.sides.every((s) => s.max_players === undefined)
+            {match.sides.every((s) => s.max_players == null)
               ? 'No player caps set'
               : `${match.sides
                   .map((s, i) => `${s.name?.trim() || `Side ${i + 1}`}: ${s.max_players ?? '∞'}`)

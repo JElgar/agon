@@ -147,7 +147,9 @@ export function JoinMatchPage() {
       <h2 className="mb-1 text-xl font-semibold">Join this game</h2>
       <p className="mb-6 text-sm text-muted-foreground">
         <strong className="font-medium text-foreground">{preview.data.match_name}</strong>
-        {preview.data.max_players !== undefined && (
+        {/* `!= null` (not `!== undefined`): the server serializes a Rust
+            `Option::None` here as JSON `null`, not an absent key. */}
+        {preview.data.max_players != null && (
           <>
             {' '}
             · {preview.data.total_player_count}/{preview.data.max_players} joined

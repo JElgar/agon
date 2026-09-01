@@ -29,18 +29,6 @@ type MatchSide = components['schemas']['MatchSide']
 type MatchPlayer = components['schemas']['MatchPlayer']
 type Score = components['schemas']['Score']
 type TeamListItem = components['schemas']['TeamListItem']
-type SideSelection = components['schemas']['SideSelection']
-
-/** Labels for the "who can pick a side?" choice, plus a `''` "server default"
- *  option so leaving this section alone omits `join_policy` entirely rather
- *  than sending an explicit `side_optional` — same posture as the format
- *  section, which omits `format` unless the user actually opened it. */
-const SIDE_SELECTION_LABEL: Record<SideSelection | '', string> = {
-  '': 'Default — may pick a side, or join unassigned',
-  unassigned_only: 'Always unassigned — place people on sides later',
-  side_required: 'Must pick a side to join',
-  side_optional: 'May pick a side, or join unassigned',
-}
 
 /** A tagged side's players, reshaped into the API's `MatchPlayer` so the
  *  football/cricket detail editors (`FootballScoreFields`/`CricketScoreFields`,
@@ -187,11 +175,12 @@ export function LogMatchPage() {
   // ordered uploaded asset ids (attached as `header_photo_asset_ids` on submit).
   const [headerAssetIds, setHeaderAssetIds] = useState<string[]>([])
 
-  // Optional self-serve join settings — who (via a future join link) may pick
-  // a side, and each side's player cap. `''` means "don't send `join_policy`"
-  // (the server default). Most casual matches won't touch this, same
-  // reasoning as the format section being optional.
-  const [sideSelection, setSideSelection] = useState<SideSelection | ''>('')
+  // Optional self-serve join settings — whether a join link (minted later,
+  // once the match exists) may ever land someone unassigned, and each side's
+  // player cap. `allowUnassigned` starts at the server's own default
+  // (`true`), so leaving it alone sends the same value the server would
+  // have picked anyway.
+  const [allowUnassigned, setAllowUnassigned] = useState(true)
   const [sideAMaxPlayers, setSideAMaxPlayers] = useState('')
   const [sideBMaxPlayers, setSideBMaxPlayers] = useState('')
 
@@ -451,7 +440,7 @@ export function LogMatchPage() {
 
     if (headerAssetIds.length > 0) body.header_photo_asset_ids = headerAssetIds
     if (format) body.format = format
-    if (sideSelection) body.join_policy = { side_selection: sideSelection }
+    body.allow_unassigned = allowUnassigned
 
     const scored = buildScore()
     if (scored) {
@@ -563,23 +552,21 @@ export function LogMatchPage() {
           policy and caps at creation time so a link minted right away
           already respects them. */}
       <Section title="Join settings">
-        <div className="mb-3">
-          <Label htmlFor="side-selection" className="text-xs text-muted-foreground">
-            Who can pick a side?
-          </Label>
-          <select
-            id="side-selection"
-            value={sideSelection}
-            onChange={(e) => setSideSelection(e.target.value as SideSelection | '')}
-            className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm"
-          >
-            {(Object.keys(SIDE_SELECTION_LABEL) as (SideSelection | '')[]).map((value) => (
-              <option key={value} value={value}>
-                {SIDE_SELECTION_LABEL[value]}
-              </option>
-            ))}
-          </select>
-        </div>
+        <label className="mb-3 flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={allowUnassigned}
+            onChange={(e) => setAllowUnassigned(e.target.checked)}
+          />
+          <span>
+            Allow joining without a side
+            <span className="block text-xs text-muted-foreground">
+              A ceiling for any join link minted later — turn this off if everyone joining should
+              always be placed on a side.
+            </span>
+          </span>
+        </label>
         <div className="flex flex-col gap-2">
           <div className="flex items-center gap-2">
             <Label htmlFor="side-a-max-players" className="flex-1 text-xs">
@@ -663,11 +650,16 @@ export function LogMatchPage() {
               id: SIDE_A,
               name: resolvedSideName(sideA, sideAName, sideATeam),
               team_id: sideATeam?.id,
+              // A placeholder, like `toMatchPlayers`' `role` — the match
+              // doesn't exist yet, so there's no real setting to report; the
+              // score-detail editors below never read this field.
+              team_join_enabled: false,
             }
             const sideBObj: MatchSide = {
               id: SIDE_B,
               name: resolvedSideName(sideB, sideBName, sideBTeam),
               team_id: sideBTeam?.id,
+              team_join_enabled: false,
             }
             const players = [...toMatchPlayers(sideA, SIDE_A), ...toMatchPlayers(sideB, SIDE_B)]
             return isFootball ? (

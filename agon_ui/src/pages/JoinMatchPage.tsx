@@ -22,16 +22,12 @@ interface JoinChoice {
 
 function joinChoiceFor(preview: JoinLinkPreview, match: Match): JoinChoice {
   const scope = preview.scope
-  if (scope.type === 'Unassigned') return { allowedSideIds: [], allowUnassigned: true }
-  if (scope.type === 'Sides') return { allowedSideIds: scope.side_ids, allowUnassigned: false }
-  // Inherit — defers to the match's own join policy.
-  switch (match.join_policy.side_selection) {
-    case 'unassigned_only':
-      return { allowedSideIds: [], allowUnassigned: true }
-    case 'side_required':
-      return { allowedSideIds: null, allowUnassigned: false }
-    case 'side_optional':
-      return { allowedSideIds: null, allowUnassigned: true }
+  return {
+    allowedSideIds: scope.side_ids ?? null,
+    // The link's own preference, capped by the match's own ceiling — see
+    // `Match.allow_unassigned`'s doc comment. The server re-enforces this
+    // regardless; this only decides what the picker offers.
+    allowUnassigned: scope.allow_unassigned && match.allow_unassigned,
   }
 }
 

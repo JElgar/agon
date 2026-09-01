@@ -143,12 +143,14 @@ fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
                 team_id: None,
                 name: Some("Side A".to_string()),
                 max_players: None,
+                team_join_enabled: None,
             },
             models::CreateMatchSideInput {
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
                 max_players: None,
+                team_join_enabled: None,
             },
         ],
         invites: vec![models::CreateMatchInviteInput {
@@ -161,7 +163,7 @@ fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
         winner_side_id: None,
         header_photo_asset_ids: None,
         format: None,
-        join_policy: None,
+        allow_unassigned: None,
     }
 }
 
@@ -192,12 +194,14 @@ fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::Create
                 team_id: None,
                 name: Some("Side A".to_string()),
                 max_players: None,
+                team_join_enabled: None,
             },
             models::CreateMatchSideInput {
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
                 max_players: None,
+                team_join_enabled: None,
             },
         ],
         invites: vec![invite_side("a", side_a), invite_side("b", side_b)],
@@ -206,7 +210,7 @@ fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::Create
         winner_side_id: None,
         header_photo_asset_ids: None,
         format: None,
-        join_policy: None,
+        allow_unassigned: None,
     }
 }
 
@@ -255,12 +259,14 @@ fn completed_match(invites: Vec<models::CreateMatchInviteInput>) -> models::Crea
                 team_id: None,
                 name: Some("Side A".to_string()),
                 max_players: None,
+                team_join_enabled: None,
             },
             models::CreateMatchSideInput {
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
                 max_players: None,
+                team_join_enabled: None,
             },
         ],
         invites,
@@ -269,7 +275,7 @@ fn completed_match(invites: Vec<models::CreateMatchInviteInput>) -> models::Crea
         winner_side_id: Some("a".to_string()),
         header_photo_asset_ids: None,
         format: None,
-        join_policy: None,
+        allow_unassigned: None,
     }
 }
 
@@ -6107,10 +6113,10 @@ async fn manual_score_conflicting_with_live_football_detail_is_rejected_even_mid
 // ---------------------------------------------------------------------------
 
 /// A two-sided match the creator plays in (side "a"), with room on side "b"
-/// for others to self-serve join — no invitees. `join_policy`/the per-side
-/// caps are the knobs each test in this section varies.
+/// for others to self-serve join — no invitees. `allow_unassigned`/the
+/// per-side caps are the knobs each test in this section varies.
 fn joinable_match_input(
-    join_policy: Option<models::JoinPolicy>,
+    allow_unassigned: Option<bool>,
     side_a_max: Option<i32>,
     side_b_max: Option<i32>,
 ) -> models::CreateMatchInput {
@@ -6126,12 +6132,14 @@ fn joinable_match_input(
                 team_id: None,
                 name: Some("Side A".to_string()),
                 max_players: side_a_max,
+                team_join_enabled: None,
             },
             models::CreateMatchSideInput {
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
                 max_players: side_b_max,
+                team_join_enabled: None,
             },
         ],
         invites: vec![],
@@ -6140,27 +6148,44 @@ fn joinable_match_input(
         winner_side_id: None,
         header_photo_asset_ids: None,
         format: None,
-        join_policy: join_policy.map(Box::new),
+        allow_unassigned,
     }
 }
 
-fn join_policy_of(side_selection: models::SideSelection) -> models::JoinPolicy {
-    models::JoinPolicy { side_selection }
+/// A join-link scope allowing any of the match's sides, plus unassigned —
+/// capped by the match's own `allow_unassigned` at resolve time (see
+/// `JoinLinkScope`'s doc comment).
+fn any_side_scope() -> models::JoinLinkScope {
+    models::JoinLinkScope {
+        side_ids: None,
+        allow_unassigned: Some(true),
+    }
 }
 
-fn inherit_scope() -> models::JoinLinkScope {
-    models::JoinLinkScope::Inherit(Box::default())
+/// A join-link scope allowing any of the match's sides, but never unassigned
+/// (also capped by the match — see `any_side_scope`).
+fn side_required_scope() -> models::JoinLinkScope {
+    models::JoinLinkScope {
+        side_ids: None,
+        allow_unassigned: Some(false),
+    }
 }
 
+/// A join-link scope that only ever lands unassigned.
 fn unassigned_scope() -> models::JoinLinkScope {
-    models::JoinLinkScope::Unassigned(Box::default())
+    models::JoinLinkScope {
+        side_ids: Some(vec![]),
+        allow_unassigned: Some(true),
+    }
 }
 
+/// A join-link scope restricted to exactly these sides — no unassigned
+/// fallback.
 fn sides_scope(side_ids: Vec<String>) -> models::JoinLinkScope {
-    models::JoinLinkScope::Sides(Box::new(models::JoinLinkScopeJoinLinkScopeSides {
-        side_ids,
-        r#type: Default::default(),
-    }))
+    models::JoinLinkScope {
+        side_ids: Some(side_ids),
+        allow_unassigned: Some(false),
+    }
 }
 
 /// The other of the match's two sides from `known_side_id` (both created by
@@ -6250,23 +6275,17 @@ async fn join_link_scoped_to_one_side_rejects_the_other() {
     );
 }
 
+/// The match's own `allow_unassigned` is a ceiling every link is capped by —
+/// a link that says "any side, or unassigned" still can't actually land
+/// anyone unassigned if the match disallows it outright. Side selection
+/// itself is unaffected: an explicit pick still works normally.
 #[tokio::test]
-async fn unassigned_only_policy_forces_unassigned_but_a_side_link_still_overrides_it() {
+async fn match_disallowing_unassigned_caps_a_links_own_setting() {
     let (owner_config, owner) = new_user().await;
-    let created = matches_post(
-        &owner_config,
-        joinable_match_input(
-            Some(join_policy_of(models::SideSelection::UnassignedOnly)),
-            None,
-            None,
-        ),
-    )
-    .await
-    .expect("create match");
-    assert_eq!(
-        created.join_policy.side_selection,
-        models::SideSelection::UnassignedOnly
-    );
+    let created = matches_post(&owner_config, joinable_match_input(Some(false), None, None))
+        .await
+        .expect("create match");
+    assert!(!created.allow_unassigned);
     let side_a = side_id_for_user(&created, &owner.profile.id);
     let side_b = other_side_id(&created, &side_a);
 
@@ -6274,15 +6293,16 @@ async fn unassigned_only_policy_forces_unassigned_but_a_side_link_still_override
         &owner_config,
         &created.id,
         models::CreateJoinLinkInput {
-            scope: Box::new(inherit_scope()),
+            scope: Box::new(any_side_scope()),
         },
     )
     .await
     .expect("create general join link");
 
-    // No side requested: lands unassigned, per the game's policy.
-    let (joiner_a_config, joiner_a) = new_user().await;
-    let joined = matches_match_id_join_post(
+    // No side requested: rejected — the match's allow_unassigned=false caps
+    // the link's own allow_unassigned=true down to false.
+    let (joiner_a_config, _joiner_a) = new_user().await;
+    let rejected = matches_match_id_join_post(
         &joiner_a_config,
         &created.id,
         models::JoinMatchInput {
@@ -6290,22 +6310,17 @@ async fn unassigned_only_policy_forces_unassigned_but_a_side_link_still_override
             side_id: None,
         },
     )
-    .await
-    .expect("join unassigned");
-    assert_eq!(
-        joined
-            .players
-            .iter()
-            .find(|p| matches!(&*p.member, models::Member::User(u) if u.user_id == joiner_a.profile.id))
-            .unwrap()
-            .side_id,
-        None
+    .await;
+    assert_status_with_content(
+        rejected,
+        reqwest::StatusCode::BAD_REQUEST,
+        "choose a side to join",
     );
 
-    // Requesting a side through the general link is rejected — the game's
-    // policy allows no side picking at all.
-    let (joiner_b_config, _joiner_b) = new_user().await;
-    let rejected = matches_match_id_join_post(
+    // An explicit side pick still works — the cap only affects landing
+    // unassigned, not side selection.
+    let (joiner_b_config, joiner_b) = new_user().await;
+    let joined = matches_match_id_join_post(
         &joiner_b_config,
         &created.id,
         models::JoinMatchInput {
@@ -6313,51 +6328,17 @@ async fn unassigned_only_policy_forces_unassigned_but_a_side_link_still_override
             side_id: Some(side_b.clone()),
         },
     )
-    .await;
-    assert_status_with_content(
-        rejected,
-        reqwest::StatusCode::BAD_REQUEST,
-        "isn't joinable this way",
-    );
-
-    // A side-scoped link overrides the game's policy — that's the point of
-    // making one.
-    let side_link = matches_match_id_join_links_post(
-        &owner_config,
-        &created.id,
-        models::CreateJoinLinkInput {
-            scope: Box::new(sides_scope(vec![side_b.clone()])),
-        },
-    )
     .await
-    .expect("create side-scoped join link");
-    let (joiner_c_config, joiner_c) = new_user().await;
-    let joined = matches_match_id_join_post(
-        &joiner_c_config,
-        &created.id,
-        models::JoinMatchInput {
-            token: Some(side_link.token),
-            side_id: None,
-        },
-    )
-    .await
-    .expect("join via side-scoped link despite unassigned_only policy");
-    assert_eq!(side_id_for_user(&joined, &joiner_c.profile.id), side_b);
+    .expect("join with an explicit side despite the match-wide cap");
+    assert_eq!(side_id_for_user(&joined, &joiner_b.profile.id), side_b);
 }
 
 #[tokio::test]
-async fn side_required_policy_rejects_an_unassigned_join() {
+async fn link_requiring_a_side_rejects_an_unassigned_join() {
     let (owner_config, owner) = new_user().await;
-    let created = matches_post(
-        &owner_config,
-        joinable_match_input(
-            Some(join_policy_of(models::SideSelection::SideRequired)),
-            None,
-            None,
-        ),
-    )
-    .await
-    .expect("create match");
+    let created = matches_post(&owner_config, joinable_match_input(None, None, None))
+        .await
+        .expect("create match");
     let side_a = side_id_for_user(&created, &owner.profile.id);
     let side_b = other_side_id(&created, &side_a);
 
@@ -6365,7 +6346,7 @@ async fn side_required_policy_rejects_an_unassigned_join() {
         &owner_config,
         &created.id,
         models::CreateJoinLinkInput {
-            scope: Box::new(inherit_scope()),
+            scope: Box::new(side_required_scope()),
         },
     )
     .await
@@ -6503,7 +6484,7 @@ async fn a_self_served_participant_can_invite_but_not_manage_join_settings() {
         &owner_config,
         &created.id,
         models::CreateJoinLinkInput {
-            scope: Box::new(inherit_scope()),
+            scope: Box::new(any_side_scope()),
         },
     )
     .await
@@ -6542,7 +6523,7 @@ async fn a_self_served_participant_can_invite_but_not_manage_join_settings() {
             &participant_config,
             &created.id,
             models::CreateJoinLinkInput {
-                scope: Box::new(inherit_scope()),
+                scope: Box::new(any_side_scope()),
             },
         )
         .await,
@@ -6553,9 +6534,7 @@ async fn a_self_served_participant_can_invite_but_not_manage_join_settings() {
             &participant_config,
             &created.id,
             models::UpdateMatchInput {
-                join_policy: Some(Box::new(join_policy_of(
-                    models::SideSelection::SideRequired,
-                ))),
+                allow_unassigned: Some(false),
                 ..Default::default()
             },
         )
@@ -6575,7 +6554,7 @@ async fn revoked_join_link_cannot_be_used() {
         &owner_config,
         &created.id,
         models::CreateJoinLinkInput {
-            scope: Box::new(inherit_scope()),
+            scope: Box::new(any_side_scope()),
         },
     )
     .await
@@ -6628,7 +6607,7 @@ async fn transferring_ownership_demotes_the_outgoing_owner_to_admin() {
         &owner_config,
         &created.id,
         models::CreateJoinLinkInput {
-            scope: Box::new(inherit_scope()),
+            scope: Box::new(any_side_scope()),
         },
     )
     .await
@@ -6653,9 +6632,7 @@ async fn transferring_ownership_demotes_the_outgoing_owner_to_admin() {
             &new_owner_config,
             &created.id,
             models::UpdateMatchInput {
-                join_policy: Some(Box::new(join_policy_of(
-                    models::SideSelection::SideRequired,
-                ))),
+                allow_unassigned: Some(false),
                 ..Default::default()
             },
         )
@@ -6698,9 +6675,7 @@ async fn transferring_ownership_demotes_the_outgoing_owner_to_admin() {
         &new_owner_config,
         &created.id,
         models::UpdateMatchInput {
-            join_policy: Some(Box::new(join_policy_of(
-                models::SideSelection::SideOptional,
-            ))),
+            allow_unassigned: Some(true),
             ..Default::default()
         },
     )
@@ -6712,9 +6687,7 @@ async fn transferring_ownership_demotes_the_outgoing_owner_to_admin() {
         &owner_config,
         &created.id,
         models::UpdateMatchInput {
-            join_policy: Some(Box::new(join_policy_of(
-                models::SideSelection::SideOptional,
-            ))),
+            allow_unassigned: Some(true),
             ..Default::default()
         },
     )

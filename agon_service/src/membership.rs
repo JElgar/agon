@@ -175,34 +175,12 @@ pub enum MatchPlayerRole {
     /// `Admin`). The playing creator gets this by default.
     Owner,
     /// Full authority over the match short of transferring ownership: manage
-    /// `join_policy`/side caps, mint or revoke join-links, invite people.
+    /// `allow_unassigned`/side settings, mint or revoke join-links, invite
+    /// people.
     Admin,
     /// An ordinary roster member. Can still invite named people (any
     /// participant may), just not the more structural admin actions.
     Player,
-}
-
-/// A match's self-serve-join settings: whether/how a joiner (via a join link
-/// today; team self-join in a later phase) may pick a side.
-#[derive(Object, Debug, Clone)]
-pub struct JoinPolicy {
-    pub side_selection: SideSelection,
-}
-
-/// See `JoinPolicy`. Naming is literal about behavior — landing unassigned is
-/// not a new roster state (a `MatchPlayer` with no `side_id` already means
-/// that); this only controls whether a self-serve joiner gets to choose.
-#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
-#[oai(rename_all = "snake_case")]
-pub enum SideSelection {
-    /// Every self-serve joiner lands unassigned; the organizer assigns sides
-    /// later (`PATCH /matches/:id`'s `side_assignments`).
-    UnassignedOnly,
-    /// A joiner must pick one of the match's sides; landing unassigned isn't
-    /// offered.
-    SideRequired,
-    /// A joiner may pick a side or go unassigned. The default.
-    SideOptional,
 }
 
 /// A shareable, many-use join link for a match. Unlike a token `Invitation`
@@ -222,31 +200,24 @@ pub struct JoinLink {
     pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// Which side(s)/unassigned a join link may join. Overrides the match's own
-/// `JoinPolicy` for joins made through this specific link.
-#[derive(Union)]
-#[oai(one_of, discriminator_name = "type")]
-pub enum JoinLinkScope {
-    /// Defer to the match's own `join_policy`.
-    Inherit(JoinLinkScopeInherit),
-    /// Always joins the unassigned pool, regardless of `join_policy`.
-    Unassigned(JoinLinkScopeUnassigned),
-    /// May only join one of these specific sides — one entry for a
-    /// single-side link, several for e.g. "either side of this intra-squad
-    /// match". Always wins over an `unassigned_only` `join_policy`: making a
-    /// side-scoped link is an explicit choice to fill that side.
-    Sides(JoinLinkScopeSides),
+/// Which side(s)/unassigned a join link may join — this link's own rule,
+/// independent of any other link on the same match. `None` `side_ids` means
+/// any of the match's sides is fine; `Some(vec![])` means none are (the link
+/// only ever lands unassigned); `Some([id])` auto-assigns that one side (no
+/// choice to make); `Some([...])` (2+) lets the joiner pick among just those.
+/// `allow_unassigned` is this link's own preference for whether landing
+/// unassigned is also on offer alongside whatever `side_ids` allows — always
+/// capped by the match's own `Match.allow_unassigned`, so a link can only
+/// ever be *more* restrictive than the match, never less.
+#[derive(Object, Debug, Clone, Default)]
+pub struct JoinLinkScope {
+    pub side_ids: Option<Vec<String>>,
+    #[oai(default = "true_default")]
+    pub allow_unassigned: bool,
 }
 
-#[derive(Object)]
-pub struct JoinLinkScopeInherit {}
-
-#[derive(Object)]
-pub struct JoinLinkScopeUnassigned {}
-
-#[derive(Object)]
-pub struct JoinLinkScopeSides {
-    pub side_ids: Vec<String>,
+fn true_default() -> bool {
+    true
 }
 
 #[derive(Object)]
@@ -264,8 +235,9 @@ pub struct JoinLinkPreview {
     pub starts_at: chrono::DateTime<chrono::Utc>,
     pub scope: JoinLinkScope,
     pub total_player_count: u32,
-    /// The match's derived overall cap (see `JoinPolicy`'s doc comment on
-    /// `Match` for how it's computed). `None` = uncapped.
+    /// The match's derived overall cap (see `Match.allow_unassigned`'s doc
+    /// comment for the unrelated unassigned-vs-capacity distinction).
+    /// `None` = uncapped.
     pub max_players: Option<u32>,
 }
 

@@ -1116,6 +1116,11 @@ pub fn match_from_records(
             i_liked,
         },
         format: rec.format.as_ref().map(match_format_from_record),
+        // Set by the caller right after this call, from the same aggregate
+        // this function already consumed (see `caller_match_role`'s call
+        // sites in `main.rs`) — a placeholder here, since this pure mapping
+        // function has no viewer to resolve it against.
+        viewer_role: None,
     }
 }
 

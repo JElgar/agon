@@ -24,19 +24,23 @@ export type ScorePlayers = Record<string, RosterPreviewPlayer>
 type InvitationKind = components['schemas']['InvitationKind']
 
 /**
- * Anything with an optional `players` list: a full `Match`, a locally-built
- * draft (e.g. `FootballScoreFields`' not-yet-created match), or one of the
- * trimmed shapes with no `players` field at all — a feed's `FeedMatch` (see
- * `known_participants`/`viewer_side_id`) or search/profile-activity's
- * `SearchMatch`.
+ * Anything with an optional `players` list: a full `Match` (which also
+ * carries the server-computed `viewer_role` — see `myMatchRole`), a
+ * locally-built draft (e.g. `FootballScoreFields`' not-yet-created match,
+ * which has neither), or one of the trimmed shapes with no `players` field
+ * at all — a feed's `FeedMatch` (see `known_participants`/`viewer_side_id`)
+ * or search/profile-activity's `SearchMatch`.
  *
  * The `FeedMatch`/`SearchMatch` branches are listed explicitly (rather than
  * relying on `{ players?: ... }` alone) because TypeScript's weak-type check
  * rejects such an argument against an all-optional object type on its own:
  * it shares literally no properties with `{ players?: ... }`. Narrow with
- * `'players' in match`.
+ * `'players' in match`/`'viewer_role' in match`.
  */
-type MatchLike = { players?: MatchPlayer[] } | FeedMatch | SearchMatch
+type MatchLike =
+  | { players?: MatchPlayer[]; viewer_role?: MatchPlayerRole }
+  | FeedMatch
+  | SearchMatch
 
 /**
  * The bearer invite token for a member with a pending token-invitation, else
@@ -196,16 +200,25 @@ export function isParticipant(
 
 /**
  * The viewer's role on the match, if they're an accepted (or not-yet-invited,
- * i.e. added ad-hoc) player — else undefined. Mirrors the server's
- * `caller_match_role`. Also accepts a feed's `FeedMatch`/a `SearchMatch`
- * (see `myPendingInvitation`'s doc comment) — always `undefined` there, same
- * as `isParticipant`.
+ * i.e. added ad-hoc) player — else undefined.
+ *
+ * A full `Match` already carries this pre-computed (`viewer_role`, resolved
+ * server-side by `caller_match_role` off the same aggregate the response was
+ * built from — see its doc comment), so this reads that field directly
+ * rather than re-deriving it by scanning `players` here too: the server has
+ * already done the work, and re-scanning client-side risks disagreeing with
+ * it (e.g. a permission check silently loosening if the two ever drift).
+ * `FeedMatch`/`SearchMatch` don't carry a roster to look this up from at all,
+ * so this is always `undefined` for those — same as `isParticipant`. The
+ * `players`-scan fallback only matters for a locally-built draft that isn't
+ * a real API response (see `MatchLike`'s doc comment).
  */
 export function myMatchRole(
   match: MatchLike,
   currentUserId: string | undefined,
 ): MatchPlayerRole | undefined {
   if (!currentUserId) return undefined
+  if ('viewer_role' in match) return match.viewer_role ?? undefined
   const players = ('players' in match && match.players) || []
   for (const player of players) {
     if (player.member.type !== 'User') continue

@@ -38,6 +38,7 @@ use crate::notification::{
     CommentNotification, FollowNotification, InvitationAcceptedNotification, LikeNotification,
     MatchInvitationNotification, Notification, NotificationKind, ReplyNotification,
     ScoreConfirmedNotification, ScoreSubmittedNotification, TeamInvitationNotification,
+    TeamMatchJoinableNotification,
 };
 use crate::team::{AssignableTeamRole, Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
@@ -2051,6 +2052,7 @@ pub fn notification_actor_id(kind: &NotificationKindRecord) -> &str {
         NotificationKindRecord::Reply { actor_user_id, .. } => actor_user_id,
         NotificationKindRecord::ScoreSubmitted { actor_user_id, .. } => actor_user_id,
         NotificationKindRecord::ScoreConfirmed { actor_user_id, .. } => actor_user_id,
+        NotificationKindRecord::TeamMatchJoinable { actor_user_id, .. } => actor_user_id,
     }
 }
 
@@ -2179,6 +2181,19 @@ pub fn notification_from_record(rec: &NotificationRecord, actor: UserProfile) ->
             match_id: match_id.clone(),
             match_name: match_name.clone(),
             submission_id: submission_id.clone(),
+        }),
+        NotificationKindRecord::TeamMatchJoinable {
+            team_id,
+            team_name,
+            match_id,
+            match_name,
+            ..
+        } => NotificationKind::TeamMatchJoinable(TeamMatchJoinableNotification {
+            organizer: actor,
+            team_id: team_id.clone(),
+            team_name: team_name.clone(),
+            match_id: match_id.clone(),
+            match_name: match_name.clone(),
         }),
     };
     Notification {

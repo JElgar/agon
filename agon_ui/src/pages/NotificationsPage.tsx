@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   ClipboardCheck,
   Flame,
+  LogIn,
   MessageCircle,
   Swords,
   UserPlus,
@@ -516,6 +517,21 @@ function describe(kind: Kind): NotificationView {
         ),
         badgeIcon: CheckCircle2,
         badgeClass: 'bg-emerald-600',
+        href: `/matches/${kind.match_id}`,
+        actions: { viewLabel: 'View match' },
+      }
+    case 'TeamMatchJoinable':
+      return {
+        actorName: kind.organizer.name,
+        actorImage: kind.organizer.profile_image?.image_url,
+        message: (
+          <>
+            <strong className="font-medium">{kind.team_name}</strong> can join{' '}
+            <strong className="font-medium">{kind.match_name}</strong> — hop in?
+          </>
+        ),
+        badgeIcon: LogIn,
+        badgeClass: 'bg-primary',
         href: `/matches/${kind.match_id}`,
         actions: { viewLabel: 'View match' },
       }

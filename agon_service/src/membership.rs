@@ -241,9 +241,9 @@ pub struct JoinLinkPreview {
     pub max_players: Option<u32>,
 }
 
-/// Join a match — via a join link's token, or (a later phase) by virtue of
-/// team membership. `side_id` picks which side to join; omit for unassigned,
-/// where the resolved join scope allows it.
+/// Join a match — via a join link's token, or (omitting `token`) by virtue of
+/// team membership on a `team_join_enabled` side. `side_id` picks which side
+/// to join; omit for unassigned, where the resolved join scope allows it.
 #[derive(Object)]
 pub struct JoinMatchInput {
     pub token: Option<String>,

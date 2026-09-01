@@ -89,6 +89,9 @@ fn push_link(ui_base_url: &str, kind: &NotificationKindRecord) -> String {
         NotificationKindRecord::Reply { match_id, .. } => format!("/matches/{match_id}"),
         NotificationKindRecord::ScoreSubmitted { match_id, .. } => format!("/matches/{match_id}"),
         NotificationKindRecord::ScoreConfirmed { match_id, .. } => format!("/matches/{match_id}"),
+        NotificationKindRecord::TeamMatchJoinable { match_id, .. } => {
+            format!("/matches/{match_id}")
+        }
     };
     // Config::from_env already strips any trailing slash from AGON_UI_URL.
     format!("{ui_base_url}{path}")
@@ -139,6 +142,14 @@ fn push_text(kind: &NotificationKindRecord) -> (String, String) {
         NotificationKindRecord::ScoreConfirmed { match_name, .. } => (
             "Score confirmed".to_string(),
             format!("Your score for {match_name} was confirmed"),
+        ),
+        NotificationKindRecord::TeamMatchJoinable {
+            team_name,
+            match_name,
+            ..
+        } => (
+            "Your team can join a match".to_string(),
+            format!("{team_name} can join {match_name} — hop in?"),
         ),
     }
 }
@@ -212,6 +223,13 @@ mod tests {
                 match_id: "m1".into(),
                 match_name: "Sunday Tennis".into(),
                 submission_id: "s1".into(),
+            },
+            NotificationKindRecord::TeamMatchJoinable {
+                actor_user_id: "u1".into(),
+                team_id: "t1".into(),
+                team_name: "The Aces".into(),
+                match_id: "m1".into(),
+                match_name: "Sunday Tennis".into(),
             },
         ]
     }

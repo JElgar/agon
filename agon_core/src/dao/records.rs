@@ -406,8 +406,8 @@ pub struct MatchRecord {
     pub status: String,
     pub starts_at: String,
     /// Whether a self-serve joiner (a join link, or a team member via
-    /// `MatchSideRecord::team_join_enabled` in a later phase) may ever land
-    /// unassigned rather than on a specific side. A hard ceiling, not a
+    /// `MatchSideRecord::team_join_enabled`) may ever land unassigned rather
+    /// than on a specific side. A hard ceiling, not a
     /// default: a join link's own `allow_unassigned` is ANDed with this one
     /// (see `join_scope_from_link`) — if the match says no, no link can
     /// offer it regardless of its own setting. `#[serde(default =
@@ -557,11 +557,7 @@ pub struct MatchSideRecord {
     pub max_players: Option<u32>,
     /// Whether an accepted member of this side's `team_id` may join it
     /// directly, with no invite or join link — the match admin's per-side
-    /// opt-in for team self-join. Meaningless without a `team_id`. Not yet
-    /// read by any join flow (team self-join is a later phase — see
-    /// `MatchPlayerRole::Owner`'s neighboring doc comments for the same
-    /// "modeled now, built later" posture); stored ahead of that so the
-    /// setting doesn't need its own migration once it lands.
+    /// opt-in for team self-join. Meaningless without a `team_id`.
     #[serde(default)]
     pub team_join_enabled: bool,
     /// Total players currently on this side. Denormalized alongside
@@ -618,7 +614,7 @@ pub struct MatchPlayerRecord {
     pub role: MatchPlayerRole,
     /// How this player got onto the roster: `None` means added directly by
     /// the organizer/an admin (same as today), `Some` means they added
-    /// themselves — via a join link now, or team self-join in a later phase.
+    /// themselves — via a join link or team self-join.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub joined_via: Option<JoinSourceRecord>,
 }
@@ -655,8 +651,8 @@ pub enum MatchPlayerRole {
 pub enum JoinSourceRecord {
     /// Joined via a shareable `JoinLinkRecord`.
     Link { link_id: String },
-    /// Joined via team-roster self-join (a later phase — see
-    /// `MatchSideRecord`'s doc comments once that toggle exists).
+    /// Joined via team self-join (`MatchSideRecord::team_join_enabled`) — no
+    /// link involved.
     SelfServe,
 }
 
@@ -1215,6 +1211,20 @@ pub enum NotificationKindRecord {
         match_id: String,
         match_name: String,
         submission_id: String,
+    },
+    /// A match now has a side your team may join directly
+    /// (`MatchSideRecord::team_join_enabled`) — sent to every accepted member
+    /// of that team not already on the roster, whether because the match was
+    /// just created that way or an organizer just turned the setting on for
+    /// an existing one. `actor_user_id` is the match's organizer
+    /// (`MatchRecord::created_by_user_id`); there's no more specific "who
+    /// flipped the toggle" actor available from the stream event alone.
+    TeamMatchJoinable {
+        actor_user_id: String,
+        team_id: String,
+        team_name: String,
+        match_id: String,
+        match_name: String,
     },
 }
 

@@ -183,6 +183,10 @@ export function LogMatchPage() {
   const [allowUnassigned, setAllowUnassigned] = useState(true)
   const [sideAMaxPlayers, setSideAMaxPlayers] = useState('')
   const [sideBMaxPlayers, setSideBMaxPlayers] = useState('')
+  // Per-side team self-join — meaningless (and hidden) until that side is
+  // actually linked to a team via its `TeamPicker`.
+  const [sideATeamJoinEnabled, setSideATeamJoinEnabled] = useState(false)
+  const [sideBTeamJoinEnabled, setSideBTeamJoinEnabled] = useState(false)
 
   // The signed-in user's profile. Used to seed them onto their own side by
   // default (as a real, removable player) and to badge/exclude them in search.
@@ -424,12 +428,14 @@ export function LogMatchPage() {
           name: sideAName.trim() || undefined,
           team_id: sideATeam?.id,
           max_players: sideAMaxPlayers.trim() ? Number(sideAMaxPlayers) : undefined,
+          team_join_enabled: sideATeam ? sideATeamJoinEnabled : undefined,
         },
         {
           client_id: SIDE_B,
           name: sideBName.trim() || undefined,
           team_id: sideBTeam?.id,
           max_players: sideBMaxPlayers.trim() ? Number(sideBMaxPlayers) : undefined,
+          team_join_enabled: sideBTeam ? sideBTeamJoinEnabled : undefined,
         },
       ],
       invites: buildInvites(),
@@ -518,7 +524,13 @@ export function LogMatchPage() {
             onNameChange={setSideAName}
             nameFieldVisible={sideANameAllowed}
             team={sideATeam}
-            onTeamChange={setSideATeam}
+            onTeamChange={(team) => {
+              setSideATeam(team)
+              // Unlinking a team makes the toggle meaningless (and it hides
+              // again) — reset it so relinking a different team later starts
+              // from "off" rather than a stale "on".
+              if (!team) setSideATeamJoinEnabled(false)
+            }}
           />
           <div className="flex items-center justify-center">
             <span className="rounded-full border border-primary/30 bg-accent px-3 py-0.5 text-[11px] font-medium text-primary">
@@ -536,7 +548,10 @@ export function LogMatchPage() {
             onNameChange={setSideBName}
             nameFieldVisible={sideBNameAllowed}
             team={sideBTeam}
-            onTeamChange={setSideBTeam}
+            onTeamChange={(team) => {
+              setSideBTeam(team)
+              if (!team) setSideBTeamJoinEnabled(false)
+            }}
           />
           {sideB.length === 0 && sideBName.trim().length === 0 && !sideBTeam && (
             <p className="px-1 text-xs text-muted-foreground">
@@ -568,35 +583,59 @@ export function LogMatchPage() {
           </span>
         </label>
         <div className="flex flex-col gap-2">
-          <div className="flex items-center gap-2">
-            <Label htmlFor="side-a-max-players" className="flex-1 text-xs">
-              {sideName(sideA, sideAName, sideATeam, 'Your side')} — max players
-            </Label>
-            <Input
-              id="side-a-max-players"
-              type="number"
-              min={1}
-              inputMode="numeric"
-              placeholder="No cap"
-              value={sideAMaxPlayers}
-              onChange={(e) => setSideAMaxPlayers(e.target.value)}
-              className="h-8 w-24"
-            />
+          <div className="flex flex-col gap-1.5 rounded-lg border p-2">
+            <div className="flex items-center gap-2">
+              <Label htmlFor="side-a-max-players" className="flex-1 text-xs">
+                {sideName(sideA, sideAName, sideATeam, 'Your side')} — max players
+              </Label>
+              <Input
+                id="side-a-max-players"
+                type="number"
+                min={1}
+                inputMode="numeric"
+                placeholder="No cap"
+                value={sideAMaxPlayers}
+                onChange={(e) => setSideAMaxPlayers(e.target.value)}
+                className="h-8 w-24"
+              />
+            </div>
+            {sideATeam && (
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={sideATeamJoinEnabled}
+                  onChange={(e) => setSideATeamJoinEnabled(e.target.checked)}
+                />
+                Let {sideATeam.name}'s members join this side directly
+              </label>
+            )}
           </div>
-          <div className="flex items-center gap-2">
-            <Label htmlFor="side-b-max-players" className="flex-1 text-xs">
-              {sideName(sideB, sideBName, sideBTeam, 'Opposition')} — max players
-            </Label>
-            <Input
-              id="side-b-max-players"
-              type="number"
-              min={1}
-              inputMode="numeric"
-              placeholder="No cap"
-              value={sideBMaxPlayers}
-              onChange={(e) => setSideBMaxPlayers(e.target.value)}
-              className="h-8 w-24"
-            />
+          <div className="flex flex-col gap-1.5 rounded-lg border p-2">
+            <div className="flex items-center gap-2">
+              <Label htmlFor="side-b-max-players" className="flex-1 text-xs">
+                {sideName(sideB, sideBName, sideBTeam, 'Opposition')} — max players
+              </Label>
+              <Input
+                id="side-b-max-players"
+                type="number"
+                min={1}
+                inputMode="numeric"
+                placeholder="No cap"
+                value={sideBMaxPlayers}
+                onChange={(e) => setSideBMaxPlayers(e.target.value)}
+                className="h-8 w-24"
+              />
+            </div>
+            {sideBTeam && (
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={sideBTeamJoinEnabled}
+                  onChange={(e) => setSideBTeamJoinEnabled(e.target.checked)}
+                />
+                Let {sideBTeam.name}'s members join this side directly
+              </label>
+            )}
           </div>
         </div>
       </Section>

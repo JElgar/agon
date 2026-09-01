@@ -17,8 +17,8 @@
 use agon_core::dao::Dao;
 use agon_core::dao::keys::{Pk, Sk};
 use agon_core::dao::records::{
-    InvitationContextRecord, InvitationRecord, NotificationKindRecord, NotificationRecord,
-    ScoreSubmissionRecord,
+    InvitationContextRecord, InvitationRecord, MatchRecord, NotificationKindRecord,
+    NotificationRecord, ScoreSubmissionRecord,
 };
 
 use crate::error::{WorkerError, WorkerResult};
@@ -45,6 +45,13 @@ pub async fn handle(dao: &Dao, ev: &ChangeEvent, now: &str) -> WorkerResult<()> 
     // notify the inviter). Handle before the INSERT-only guard below.
     if let (Pk::Invitation(invitation_id), Sk::Meta) = (&ev.pk, &ev.sk) {
         return notify_invitation_event(dao, ev, invitation_id, now).await;
+    }
+
+    // A match's own item, likewise: INSERT (created with a team_join_enabled
+    // side already set) and MODIFY (that setting just turned on for an
+    // existing match) both count — see `notify_team_join_sides`.
+    if let (Pk::Match(_), Sk::Meta) = (&ev.pk, &ev.sk) {
+        return notify_team_join_sides(dao, ev, now).await;
     }
 
     // Every other notification is generated only on the creation of the edge.
@@ -334,6 +341,124 @@ async fn notify_reply(dao: &Dao, match_id: &str, reply_id: &str) -> WorkerResult
                 comment_id: reply_id.to_string(),
                 parent_comment_id: parent_id.clone(),
                 preview: preview.clone(),
+            },
+        };
+        dao.create_notification(&notif).await?;
+    }
+    Ok(())
+}
+
+/// A match's meta item was created or edited: notify every accepted member of
+/// a team newly offered self-join on one of the match's sides
+/// (`MatchSideRecord::team_join_enabled`). One notification per (match, team)
+/// pair, not per side — an intra-squad match where the same team fills both
+/// sides would otherwise double-notify its members about what's really one
+/// event ("your team can join this match"); `TeamJoinBanner` resolves which
+/// specific side(s) once they open the match.
+///
+/// INSERT considers every such side. MODIFY considers only a side whose team
+/// join eligibility just changed (a brand-new side, a newly-linked team, or
+/// the flag flipping `false → true`) — comparing against the stream's old
+/// image — so redelivery, an unrelated field edit, or the flag already having
+/// been on is a no-op, matching every other transition-only notification
+/// here. Skipped entirely once the match is no longer `scheduled`: a toggle
+/// on a match that's already started, finished, or been cancelled isn't
+/// actionable.
+async fn notify_team_join_sides(dao: &Dao, ev: &ChangeEvent, now: &str) -> WorkerResult<()> {
+    if ev.kind == ChangeKind::Remove {
+        return Ok(());
+    }
+    let Some(new) = ev.new_record::<MatchRecord>() else {
+        return Ok(());
+    };
+    if new.status != "scheduled" {
+        return Ok(());
+    }
+    let old = ev.old_record::<MatchRecord>();
+
+    let mut newly_joinable_teams = std::collections::BTreeSet::new();
+    for (side_id, side) in &new.sides {
+        let (Some(team_id), true) = (&side.team_id, side.team_join_enabled) else {
+            continue;
+        };
+        if ev.kind == ChangeKind::Modify {
+            let was_already_offered =
+                old.as_ref()
+                    .and_then(|o| o.sides.get(side_id))
+                    .is_some_and(|old_side| {
+                        old_side.team_join_enabled && old_side.team_id.as_deref() == Some(team_id)
+                    });
+            if was_already_offered {
+                continue;
+            }
+        }
+        newly_joinable_teams.insert(team_id.clone());
+    }
+
+    for team_id in newly_joinable_teams {
+        notify_team_match_joinable(dao, &new, &team_id, now).await?;
+    }
+    Ok(())
+}
+
+async fn notify_team_match_joinable(
+    dao: &Dao,
+    match_rec: &MatchRecord,
+    team_id: &str,
+    now: &str,
+) -> WorkerResult<()> {
+    let Some(team_agg) = dao.get_team(team_id).await? else {
+        return Ok(());
+    };
+    let Some(match_agg) = dao.get_match(&match_rec.id).await? else {
+        return Ok(());
+    };
+    let rostered_user_ids: std::collections::BTreeSet<&str> = match_agg
+        .players
+        .iter()
+        .filter_map(|p| p.user_id.as_deref())
+        .collect();
+
+    for member in &team_agg.members {
+        let Some(user_id) = &member.user_id else {
+            continue;
+        };
+        // Accepted members only — an invitee who hasn't accepted yet has no
+        // standing to join through the team (mirrors
+        // `caller_team_membership`'s definition of "accepted").
+        let accepted = member
+            .invitation
+            .as_ref()
+            .is_none_or(|inv| inv.status == "accepted");
+        if !accepted {
+            continue;
+        }
+        // Already on the match (however they got there) — nothing to offer.
+        if rostered_user_ids.contains(user_id.as_str()) {
+            continue;
+        }
+        // Never notify the match's own organizer about their own match.
+        if user_id == &match_rec.created_by_user_id {
+            continue;
+        }
+
+        let notif = NotificationRecord {
+            // Deterministic per (match, team, recipient) → idempotent under
+            // redelivery, and naturally collapses the two sides of an
+            // intra-squad match into one row per member.
+            id: format!(
+                "notif-teammatchjoinable-{}-{team_id}-{user_id}",
+                match_rec.id
+            ),
+            user_id: user_id.clone(),
+            is_read: false,
+            created_at: now.to_string(),
+            kind: NotificationKindRecord::TeamMatchJoinable {
+                actor_user_id: match_rec.created_by_user_id.clone(),
+                team_id: team_id.to_string(),
+                team_name: team_agg.team.name.clone(),
+                match_id: match_rec.id.clone(),
+                match_name: match_rec.name.clone(),
             },
         };
         dao.create_notification(&notif).await?;

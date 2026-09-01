@@ -738,10 +738,10 @@ struct Match {
     /// should fall back to their own sensible per-sport defaults.
     format: Option<MatchFormat>,
     /// Whether a self-serve joiner (a join link, or a team member via
-    /// `MatchSide.team_join_enabled` in a later phase) may ever land
-    /// unassigned rather than on a specific side. A hard ceiling, not a
-    /// default: a join link's own `JoinLinkScope.allow_unassigned` is capped
-    /// by this one, never the other way round.
+    /// `MatchSide.team_join_enabled`) may ever land unassigned rather than
+    /// on a specific side. A hard ceiling, not a default: a join link's own
+    /// `JoinLinkScope.allow_unassigned` is capped by this one, never the
+    /// other way round.
     allow_unassigned: bool,
     /// The requesting user's own role on this match, if they're an accepted
     /// player — `None` if they're not playing (not on the roster, or still a
@@ -749,6 +749,18 @@ struct Match {
     /// client never has to re-derive it by scanning `players` itself — the
     /// same reasoning as `MatchSocial.i_liked`/`FeedMatch.viewer_side_id`.
     viewer_role: Option<MatchPlayerRole>,
+    /// Side ids the viewer may join directly, by virtue of an accepted
+    /// membership on that side's team (`MatchSide.team_join_enabled`) —
+    /// `None` if they're already a participant, no side offers this, or
+    /// they don't belong to any of the teams that do. Two or more ids means
+    /// an intra-squad match where they're eligible via more than one side —
+    /// `POST /matches/:id/join` with no `token` resolves that the same way a
+    /// join link naming multiple sides does (pick one, or unassigned if
+    /// `allow_unassigned`). Only computed by `GET /matches/:id` (the view
+    /// that decides whether to show a "join" affordance at all) — `None` on
+    /// every other `Match`-returning response, not because it doesn't
+    /// apply, just because nothing reads it there.
+    viewer_team_join_side_ids: Option<Vec<String>>,
 }
 
 /// Social engagement summary for a match. Counts plus whether the requesting
@@ -2971,6 +2983,12 @@ impl Api {
             .map_err(dao_internal)?;
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
         m.viewer_role = caller_match_role(&agg.players, &uid).map(match_player_role_from_record);
+        // Only worth the extra team lookups for a non-participant on a match
+        // that actually offers team self-join somewhere.
+        if m.viewer_role.is_none() && agg.sides.iter().any(|s| s.team_join_enabled) {
+            let eligible = caller_team_join_sides(dao, &agg, &uid).await?;
+            m.viewer_team_join_side_ids = (!eligible.is_empty()).then_some(eligible);
+        }
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m, &uid).await?;
         Ok(GetMatchResponse::Match(Json(m)))
@@ -5523,35 +5541,57 @@ impl Api {
             )));
         }
 
-        let Some(token) = &input.token else {
-            // Team self-join (no token) is a later phase — see this
-            // method's doc comment.
-            return Ok(JoinMatchResponse::ValidationError(PlainText(
-                "joining this match requires a join-link token".into(),
-            )));
-        };
-        let link = match dao
-            .get_join_link_by_token(token)
-            .await
-            .map_err(dao_internal)?
-        {
-            Some(l) if l.revoked_at.is_none() => l,
-            _ => {
-                return Ok(JoinMatchResponse::NotFound(PlainText(
-                    "join link not found".into(),
-                )));
+        // Two ways in: a join-link token, or (no token) team self-join —
+        // an accepted member of a side's team, where that side has opted
+        // into it (`MatchSide.team_join_enabled`). Either way resolves to
+        // the same `JoinScope`, so everything from here on (side
+        // resolution, capacity, the actual write) is shared.
+        let (scope, joined_via) = match &input.token {
+            Some(token) => {
+                let link = match dao
+                    .get_join_link_by_token(token)
+                    .await
+                    .map_err(dao_internal)?
+                {
+                    Some(l) if l.revoked_at.is_none() => l,
+                    _ => {
+                        return Ok(JoinMatchResponse::NotFound(PlainText(
+                            "join link not found".into(),
+                        )));
+                    }
+                };
+                match &link.context {
+                    dao::records::InvitationContextRecord::Match { match_id: m, .. }
+                        if m == &match_id => {}
+                    _ => {
+                        return Ok(JoinMatchResponse::NotFound(PlainText(
+                            "join link not found".into(),
+                        )));
+                    }
+                }
+                let scope = join_scope_from_link(&link, agg.match_.allow_unassigned);
+                let joined_via = dao::records::JoinSourceRecord::Link {
+                    link_id: link.id.clone(),
+                };
+                (scope, joined_via)
+            }
+            None => {
+                let eligible = caller_team_join_sides(dao, &agg, &uid).await?;
+                if eligible.is_empty() {
+                    return Ok(JoinMatchResponse::ValidationError(PlainText(
+                        "you're not eligible to join this match directly — ask for a join link \
+                         or invite instead"
+                            .into(),
+                    )));
+                }
+                let scope = JoinScope {
+                    allowed_side_ids: Some(eligible),
+                    allow_unassigned: agg.match_.allow_unassigned,
+                };
+                (scope, dao::records::JoinSourceRecord::SelfServe)
             }
         };
-        match &link.context {
-            dao::records::InvitationContextRecord::Match { match_id: m, .. } if m == &match_id => {}
-            _ => {
-                return Ok(JoinMatchResponse::NotFound(PlainText(
-                    "join link not found".into(),
-                )));
-            }
-        }
 
-        let scope = join_scope_from_link(&link, agg.match_.allow_unassigned);
         let target_side_id = match resolve_join_target(&scope, input.side_id.as_deref(), &agg.sides)
         {
             Ok(t) => t,
@@ -5589,9 +5629,7 @@ impl Api {
             is_member_of_team: None,
             invitation: None,
             role: dao::records::MatchPlayerRole::Player,
-            joined_via: Some(dao::records::JoinSourceRecord::Link {
-                link_id: link.id.clone(),
-            }),
+            joined_via: Some(joined_via),
         };
 
         dao.join_match_tx(
@@ -7295,15 +7333,45 @@ async fn caller_is_match_admin(
     Ok(false)
 }
 
+/// Side ids the caller may join directly by virtue of an accepted (any
+/// role) membership on that side's team — every side with
+/// `team_join_enabled` whose `team_id` the caller belongs to. Empty if none
+/// (including "no side on this match offers team self-join at all"). Does
+/// *not* check whether the caller is already a participant — callers that
+/// care (`join_match`) check that themselves first. Used by `join_match`'s
+/// no-token path, and to compute `Match.viewer_team_join_side_ids`.
+async fn caller_team_join_sides(
+    dao: &dao::Dao,
+    agg: &dao::match_ops::MatchAggregate,
+    uid: &str,
+) -> Result<Vec<String>> {
+    let mut eligible = Vec::new();
+    for side in &agg.sides {
+        if !side.team_join_enabled {
+            continue;
+        }
+        let Some(team_id) = &side.team_id else {
+            continue;
+        };
+        let Some(team) = dao.get_team(team_id).await.map_err(dao_internal)? else {
+            continue;
+        };
+        if caller_team_membership(&team, uid).is_some() {
+            eligible.push(side.side_id.clone());
+        }
+    }
+    Ok(eligible)
+}
+
 /// Which side(s) (if any) a joiner may pick, and whether landing unassigned
-/// is allowed — the shared question a join-link's `scope` and (a later
-/// phase) team self-join both resolve to before `resolve_join_target` picks
-/// the final side and `Dao::join_match_tx` enforces capacity.
-/// `allowed_side_ids: None` = any of the match's sides; `Some([])` = none
-/// (the unassigned-only case); `Some([...])` with 2+ entries — e.g. team
-/// self-join on an intra-squad match where both sides are the same team —
-/// lets the joiner pick between just those, or unassigned too if
-/// `allow_unassigned`.
+/// is allowed — the shared question a join-link's `scope` and team
+/// self-join (`caller_team_join_sides`) both resolve to before
+/// `resolve_join_target` picks the final side and `Dao::join_match_tx`
+/// enforces capacity. `allowed_side_ids: None` = any of the match's sides;
+/// `Some([])` = none (the unassigned-only case); `Some([...])` with 2+
+/// entries — e.g. team self-join on an intra-squad match where both sides
+/// are the same team — lets the joiner pick between just those, or
+/// unassigned too if `allow_unassigned`.
 struct JoinScope {
     allowed_side_ids: Option<Vec<String>>,
     allow_unassigned: bool,
@@ -7813,6 +7881,7 @@ fn mock_match(id: String) -> Match {
         format: None,
         allow_unassigned: true,
         viewer_role: Some(MatchPlayerRole::Owner),
+        viewer_team_join_side_ids: None,
     }
 }
 

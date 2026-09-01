@@ -6738,3 +6738,308 @@ async fn create_join_link_validates_its_sides_scope() {
         .await,
     );
 }
+
+// ---------------------------------------------------------------------------
+// Team self-join
+// ---------------------------------------------------------------------------
+
+/// Create a team under `owner_config` with `member` invited, then have
+/// `member_config` accept — the two-step dance every team-self-join test
+/// needs to get an *accepted* (not just invited) member onto the roster,
+/// which is what `caller_team_membership`/self-join eligibility requires.
+async fn team_with_accepted_member(
+    owner_config: &Configuration,
+    member_config: &Configuration,
+    member_id: &str,
+) -> models::Team {
+    let team = teams_post(
+        owner_config,
+        models::CreateTeamInput {
+            name: "Self-join FC".to_string(),
+            logo_asset_id: None,
+            invited_user_ids: vec![member_id.to_string()],
+            invited_external_names: vec![],
+            invited_role: None,
+        },
+    )
+    .await
+    .expect("create team");
+
+    let inbox = users_me_invitations_get(member_config, None, None, None)
+        .await
+        .expect("inbox");
+    let detail = inbox
+        .items
+        .iter()
+        .find(|i| {
+            matches!(&*i.context, models::InvitationContext::Team(ctx) if ctx.team_id == team.id)
+        })
+        .expect("team invitation in inbox");
+    invitations_invitation_id_respond_post(
+        member_config,
+        &detail.invitation.id,
+        models::RespondToInvitationInput {
+            response: models::InvitationResponse::Accepted,
+            side_id: None,
+        },
+    )
+    .await
+    .expect("accept team invitation");
+
+    team
+}
+
+/// A two-sided match with side "a" linked to `team_id` (self-join enabled)
+/// and a plain, unlinked side "b" — the creator plays on side "b" so an
+/// eligible team member joining side "a" is a genuinely different player.
+fn team_joinable_match_input(team_id: &str) -> models::CreateMatchInput {
+    models::CreateMatchInput {
+        name: "Team Joinable Match".to_string(),
+        description: "team self-join test".to_string(),
+        match_type: models::MatchType::Tennis,
+        starts_at: iso_offset_hours(24),
+        location: None,
+        sides: vec![
+            models::CreateMatchSideInput {
+                client_id: "a".to_string(),
+                team_id: Some(team_id.to_string()),
+                name: None,
+                max_players: None,
+                team_join_enabled: Some(true),
+            },
+            models::CreateMatchSideInput {
+                client_id: "b".to_string(),
+                team_id: None,
+                name: Some("Side B".to_string()),
+                max_players: None,
+                team_join_enabled: None,
+            },
+        ],
+        invites: vec![],
+        creator_side_client_id: Some("b".to_string()),
+        score: None,
+        winner_side_id: None,
+        header_photo_asset_ids: None,
+        format: None,
+        allow_unassigned: None,
+    }
+}
+
+#[tokio::test]
+async fn accepted_team_member_can_self_join_their_sides_side() {
+    let (creator_config, _creator) = new_user().await;
+    let (member_config, member) = new_user().await;
+    let team = team_with_accepted_member(&creator_config, &member_config, &member.profile.id).await;
+
+    let created = matches_post(&creator_config, team_joinable_match_input(&team.id))
+        .await
+        .expect("create match");
+    let side_a = other_side_id(
+        &created,
+        side_id_for_user(&created, &_creator.profile.id).as_str(),
+    );
+
+    // The match page would show this before the member joins.
+    let preview = matches_match_id_get(&member_config, &created.id)
+        .await
+        .expect("get match as the eligible member");
+    assert_eq!(
+        preview.viewer_team_join_side_ids,
+        Some(vec![side_a.clone()])
+    );
+
+    let joined = matches_match_id_join_post(
+        &member_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: None,
+            side_id: None,
+        },
+    )
+    .await
+    .expect("self-serve join via team membership");
+    assert_eq!(side_id_for_user(&joined, &member.profile.id), side_a);
+    let player = joined
+        .players
+        .iter()
+        .find(|p| matches!(&*p.member, models::Member::User(u) if u.user_id == member.profile.id))
+        .unwrap();
+    assert_eq!(player.role, models::MatchPlayerRole::Player);
+
+    // Once joined, they're a participant — no longer offered team self-join.
+    let after = matches_match_id_get(&member_config, &created.id)
+        .await
+        .expect("get match after joining");
+    assert_eq!(after.viewer_team_join_side_ids, None);
+}
+
+#[tokio::test]
+async fn a_stranger_cannot_self_join_via_team_membership() {
+    let (creator_config, _creator) = new_user().await;
+    let (owner_config, owner) = new_user().await;
+    let (stranger_config, _stranger) = new_user().await;
+    let team = team_with_accepted_member(&owner_config, &owner_config, &owner.profile.id).await;
+
+    let created = matches_post(&creator_config, team_joinable_match_input(&team.id))
+        .await
+        .expect("create match");
+
+    let preview = matches_match_id_get(&stranger_config, &created.id)
+        .await
+        .expect("get match as a stranger");
+    assert_eq!(preview.viewer_team_join_side_ids, None);
+
+    let rejected = matches_match_id_join_post(
+        &stranger_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: None,
+            side_id: None,
+        },
+    )
+    .await;
+    assert_status_with_content(
+        rejected,
+        reqwest::StatusCode::BAD_REQUEST,
+        "not eligible to join",
+    );
+}
+
+#[tokio::test]
+async fn team_self_join_requires_the_sides_own_opt_in() {
+    let (creator_config, _creator) = new_user().await;
+    let (member_config, member) = new_user().await;
+    let team = team_with_accepted_member(&creator_config, &member_config, &member.profile.id).await;
+
+    // Same shape as `team_joinable_match_input`, but side "a" never opts in.
+    let created = matches_post(
+        &creator_config,
+        models::CreateMatchInput {
+            name: "No Self-Join".to_string(),
+            description: "".to_string(),
+            match_type: models::MatchType::Tennis,
+            starts_at: iso_offset_hours(24),
+            location: None,
+            sides: vec![
+                models::CreateMatchSideInput {
+                    client_id: "a".to_string(),
+                    team_id: Some(team.id.clone()),
+                    name: None,
+                    max_players: None,
+                    team_join_enabled: None,
+                },
+                models::CreateMatchSideInput {
+                    client_id: "b".to_string(),
+                    team_id: None,
+                    name: Some("Side B".to_string()),
+                    max_players: None,
+                    team_join_enabled: None,
+                },
+            ],
+            invites: vec![],
+            creator_side_client_id: Some("b".to_string()),
+            score: None,
+            winner_side_id: None,
+            header_photo_asset_ids: None,
+            format: None,
+            allow_unassigned: None,
+        },
+    )
+    .await
+    .expect("create match");
+
+    let rejected = matches_match_id_join_post(
+        &member_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: None,
+            side_id: None,
+        },
+    )
+    .await;
+    assert_status_with_content(
+        rejected,
+        reqwest::StatusCode::BAD_REQUEST,
+        "not eligible to join",
+    );
+}
+
+/// An intra-squad match — both sides linked to the same team, both opted
+/// into self-join — lets an eligible member pick either side, or land
+/// unassigned (the `resolve_join_target` fix this whole redesign was for).
+#[tokio::test]
+async fn team_self_join_on_an_intra_squad_match_offers_a_pick_or_unassigned() {
+    let (creator_config, _creator) = new_user().await;
+    let (member_config, member) = new_user().await;
+    let team = team_with_accepted_member(&creator_config, &member_config, &member.profile.id).await;
+
+    let created = matches_post(
+        &creator_config,
+        models::CreateMatchInput {
+            name: "Intra-squad Self-Join".to_string(),
+            description: "".to_string(),
+            match_type: models::MatchType::Tennis,
+            starts_at: iso_offset_hours(24),
+            location: None,
+            sides: vec![
+                models::CreateMatchSideInput {
+                    client_id: "a".to_string(),
+                    team_id: Some(team.id.clone()),
+                    name: Some("Side A".to_string()),
+                    max_players: None,
+                    team_join_enabled: Some(true),
+                },
+                models::CreateMatchSideInput {
+                    client_id: "b".to_string(),
+                    team_id: Some(team.id.clone()),
+                    name: Some("Side B".to_string()),
+                    max_players: None,
+                    team_join_enabled: Some(true),
+                },
+            ],
+            invites: vec![],
+            creator_side_client_id: None,
+            score: None,
+            winner_side_id: None,
+            header_photo_asset_ids: None,
+            format: None,
+            allow_unassigned: None,
+        },
+    )
+    .await
+    .expect("create match");
+
+    let preview = matches_match_id_get(&member_config, &created.id)
+        .await
+        .expect("get match as the eligible member");
+    let mut eligible = preview
+        .viewer_team_join_side_ids
+        .expect("eligible for both sides");
+    eligible.sort();
+    let mut side_ids: Vec<String> = created.sides.iter().map(|s| s.id.clone()).collect();
+    side_ids.sort();
+    assert_eq!(eligible, side_ids);
+
+    // No side requested: lands unassigned (the match's own default allows it).
+    let joined = matches_match_id_join_post(
+        &member_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: None,
+            side_id: None,
+        },
+    )
+    .await
+    .expect("join unassigned via team membership");
+    assert_eq!(
+        joined
+            .players
+            .iter()
+            .find(
+                |p| matches!(&*p.member, models::Member::User(u) if u.user_id == member.profile.id)
+            )
+            .unwrap()
+            .side_id,
+        None
+    );
+}

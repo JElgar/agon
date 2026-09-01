@@ -1086,6 +1086,7 @@ pub fn match_from_records(
         // sites in `main.rs`) — a placeholder here, since this pure mapping
         // function has no viewer to resolve it against.
         viewer_role: None,
+        viewer_team_join_side_ids: None,
     }
 }
 

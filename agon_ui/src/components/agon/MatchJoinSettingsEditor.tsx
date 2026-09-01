@@ -32,8 +32,9 @@ function draftsFromMatch(match: Match): SideDrafts {
  * unassigned (a match-wide ceiling every join link's own preference is
  * capped by — see the backend's `Match.allow_unassigned` doc comment), each
  * side's player cap, and (for a side linked to a team) whether that team's
- * members may join it directly once team self-join ships. Read-only for
- * everyone; an admin (`canManage`, i.e. `canManageMatchJoinSettings`) gets
+ * members may join it directly (see `TeamJoinBanner`, the entry point a
+ * viewer eligible via this actually sees). Read-only for everyone; an admin
+ * (`canManage`, i.e. `canManageMatchJoinSettings`) gets
  * an "Edit" affordance, same posture as `MatchFormatCard`/
  * `MatchDetailsEditor` (whole-value replace on save, not a diff — mirrors
  * `MatchFormatCard`, which always resubmits its full draft rather than
@@ -175,7 +176,7 @@ export function MatchJoinSettingsEditor({
                       }))
                     }
                   />
-                  Let this side's team members join directly (coming soon)
+                  Let this side's team members join directly
                 </label>
               )}
             </div>

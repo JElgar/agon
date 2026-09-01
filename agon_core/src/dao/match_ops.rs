@@ -1082,6 +1082,7 @@ mod tests {
             max_players,
             player_count: 0,
             roster_preview: Vec::new(),
+            team_join_enabled: false,
         }
     }
 

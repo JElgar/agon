@@ -95,7 +95,7 @@ use notification::{
     CommentNotification, FollowNotification, InvitationAcceptedNotification, LikeNotification,
     MatchInvitationNotification, Notification, NotificationKind, NotificationPage,
     ReplyNotification, ScoreConfirmedNotification, ScoreSubmittedNotification,
-    TeamInvitationNotification, UnreadCount,
+    TeamInvitationNotification, TeamMatchJoinableNotification, UnreadCount,
 };
 
 #[derive(SecurityScheme)]
@@ -950,10 +950,8 @@ struct CreateMatchSideInput {
     /// Cap on this side's roster. `None` = uncapped.
     max_players: Option<u32>,
     /// Whether an accepted member of `team_id` may join this side directly,
-    /// with no invite or join link. Meaningless without a `team_id`. Not yet
-    /// read by any join flow — team self-join is a later phase — stored
-    /// ahead of that so this setting doesn't need its own migration once it
-    /// lands. Omit for the default (`false`).
+    /// with no invite or join link. Meaningless without a `team_id`. Omit
+    /// for the default (`false`).
     team_join_enabled: Option<bool>,
 }
 
@@ -5510,9 +5508,9 @@ impl Api {
         })))
     }
 
-    /// Join a match — via a join link's token today; a later phase adds
-    /// team-roster self-join (no token) as another authorization branch
-    /// here, sharing this same capacity-checked primitive.
+    /// Join a match — via a join link's token, or (omitting `token`)
+    /// team-roster self-join, resolved via `caller_team_join_sides`. Both
+    /// branches share this same capacity-checked primitive from here on.
     #[oai(path = "/matches/:match_id/join", method = "post")]
     async fn join_match(
         &self,
@@ -8094,6 +8092,18 @@ fn mock_notifications() -> Vec<Notification> {
                 match_id: String::from("match_123"),
                 match_name: String::from("Tennis vs Raj"),
                 submission_id: String::from("sub_abc"),
+            }),
+        },
+        Notification {
+            id: String::from("notif_team_match_joinable"),
+            is_read: false,
+            created_at: mock_timestamp(),
+            kind: NotificationKind::TeamMatchJoinable(TeamMatchJoinableNotification {
+                organizer: actor("user_2", "Raj Patel"),
+                team_id: String::from("team_kent"),
+                team_name: String::from("Kent"),
+                match_id: String::from("match_456"),
+                match_name: String::from("Kent vs Surrey"),
             }),
         },
     ]

@@ -48,6 +48,9 @@ pub enum NotificationKind {
     ScoreSubmitted(ScoreSubmittedNotification),
     /// A score you submitted was confirmed by the other side(s).
     ScoreConfirmed(ScoreConfirmedNotification),
+    /// A team you belong to may now join a match directly on one of its
+    /// sides (`MatchSide.team_join_enabled`) — no invite or link needed.
+    TeamMatchJoinable(TeamMatchJoinableNotification),
 }
 
 #[derive(Object)]
@@ -143,6 +146,20 @@ pub struct ScoreConfirmedNotification {
     /// Display label so the row renders without fetching the match.
     pub match_name: String,
     pub submission_id: String,
+}
+
+#[derive(Object)]
+pub struct TeamMatchJoinableNotification {
+    /// The match's organizer. Not necessarily who turned on
+    /// `team_join_enabled` — just the closest thing to an "actor" the event
+    /// carries.
+    pub organizer: UserProfile,
+    pub team_id: String,
+    /// Display label so the row renders without fetching the team.
+    pub team_name: String,
+    pub match_id: String,
+    /// Display label so the row renders without fetching the match.
+    pub match_name: String,
 }
 
 /// One page of notifications. `next_cursor` absent => end.

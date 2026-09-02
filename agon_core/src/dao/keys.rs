@@ -27,6 +27,21 @@ use thiserror::Error;
 /// The character separating key segments.
 pub const DELIMITER: char = '#';
 
+/// Closes a rating-history range query at the top of one ladder's keyspace —
+/// see [`Sk::rating_history_end`].
+///
+/// `~` (0x7E) is the highest printable ASCII character, so it sorts above
+/// every character that can appear in an ISO-8601 timestamp (digits, `-`,
+/// `:`, `.`, `T`, `Z` — top out at `Z`, 0x5A) and above every character in a
+/// base64url id (top out at `z`, 0x7A). DynamoDB orders strings by their
+/// UTF-8 bytes, so that ordering is the one the query actually uses.
+///
+/// Deliberately not `char::MAX`: U+10FFFF would sort above non-ASCII values
+/// too, but it is a Unicode noncharacter, and pinning a correctness argument
+/// on a value that some intermediary might normalise away is not worth the
+/// generality when every value in these keys is ASCII by construction.
+pub const RATING_RANGE_SENTINEL: char = '~';
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum KeyError {
     #[error("key is empty")]
@@ -202,6 +217,47 @@ pub enum Sk {
     /// A fan-out feed entry, ordered by match start time. `FEED#<starts_at>#<mid>`
     /// (only ever listed, never addressed by id — keeps ts in the key).
     Feed { starts_at: String, match_id: String },
+
+    /// Records what a match currently contributes to one participant's
+    /// rating, in the match's partition. `RATINGCONTRIB#<participantId>` —
+    /// the direct analogue of [`Sk::StatContribution`], and what makes
+    /// re-rating idempotent under at-least-once redelivery: the handler
+    /// diffs the contribution the match's current state implies against this
+    /// stored one, and a redelivery of an unchanged match finds them equal
+    /// and writes nothing.
+    ///
+    /// One deliberate deviation from `STATCONTRIB#<userId>` worth flagging,
+    /// because it looks like an inconsistency: the id here is a user id *or*
+    /// a team id, since teams carry ratings of their own (see
+    /// `TeamRecord::ratings`). Which one it is lives in the record's
+    /// `owner_kind`, not the key — keeping it out of the key is what lets
+    /// "every participant's contribution for this match" stay a single
+    /// `begins_with(SK, RATINGCONTRIB#)` query instead of two.
+    RatingContribution(String),
+
+    /// One match's effect on one participant's rating, in that participant's
+    /// own partition (`USER#<uid>` or `TEAM#<tid>`).
+    /// `RATING#<ladder>#<played_at>#<matchId>`.
+    ///
+    /// `played_at` is the match's `starts_at`, and the name is the point:
+    /// matches are rated in the order they were *played*, never the order
+    /// they were confirmed, so a Monday game confirmed after a Wednesday one
+    /// still lands in Monday's place. Because the key sorts on it, this item
+    /// collection is simultaneously the replay source for repair and the
+    /// rating-over-time chart — one write, two access patterns.
+    ///
+    /// The `ladder` segment leads so that one ladder's history is a
+    /// contiguous range (see [`Sk::rating_prefix`]). It can never contain
+    /// `#`: `rating::Ladder` uses `:` as its sub-ladder separator
+    /// (`"tennis:doubles"`) precisely so that `#` stays free as the key
+    /// delimiter here. Guarded from this side by
+    /// `tests::rating_keys_round_trip_for_every_ladder`, and from the other
+    /// by `rating::ladder::tests::ladder_keys_never_contain_the_key_delimiter`.
+    Rating {
+        ladder: String,
+        played_at: String,
+        match_id: String,
+    },
 }
 
 impl Sk {
@@ -231,6 +287,8 @@ impl Sk {
             Sk::Device(_) => "DEVICE",
             Sk::StatContribution(_) => "STATCONTRIB",
             Sk::Feed { .. } => "FEED",
+            Sk::RatingContribution(_) => "RATINGCONTRIB",
+            Sk::Rating { .. } => "RATING",
         }
     }
 
@@ -299,6 +357,83 @@ impl Sk {
             .prefix()
         )
     }
+
+    /// Lists a match's rating contributions: `RATINGCONTRIB#`.
+    pub fn rating_contribution_prefix() -> String {
+        format!(
+            "{}{DELIMITER}",
+            Sk::RatingContribution(String::new()).prefix()
+        )
+    }
+
+    /// The stem every ladder's rating-history prefix extends: `RATING#`.
+    ///
+    /// Private on purpose — no caller wants it, because a query over *all*
+    /// of an account's ladders at once isn't an access pattern we have (the
+    /// chart and the replay are both per-ladder). It exists so the three
+    /// range helpers below name the keyword once, and so
+    /// `no_range_query_prefix_is_a_prefix_of_another` can guard the stem
+    /// rather than one arbitrarily-chosen ladder: every ladder prefix
+    /// extends this, so a collision with the stem is a collision with all of
+    /// them.
+    fn rating_stem() -> String {
+        format!(
+            "{}{DELIMITER}",
+            Sk::Rating {
+                ladder: String::new(),
+                played_at: String::new(),
+                match_id: String::new(),
+            }
+            .prefix()
+        )
+    }
+
+    /// Lists one ladder's rating history in a user's or team's partition:
+    /// `RATING#<ladder>#`. Also the inclusive lower bound of the `BETWEEN`
+    /// form built by [`Sk::rating_history_from`] /
+    /// [`Sk::rating_history_end`].
+    pub fn rating_prefix(ladder: &str) -> String {
+        format!("{}{ladder}{DELIMITER}", Sk::rating_stem())
+    }
+
+    /// The inclusive lower bound for "this ladder's history from `played_at`
+    /// onwards" — `RATING#<ladder>#<played_at>`.
+    ///
+    /// A key at exactly `played_at` is `RATING#<ladder>#<played_at>#<mid>`,
+    /// of which this is a proper string prefix and therefore smaller, so the
+    /// bound includes every match played at that instant rather than
+    /// straddling them. That matters: the repair replay resumes from a
+    /// checkpointed `played_at`, and dropping a same-instant match would
+    /// silently lose it from the replay.
+    pub fn rating_history_from(ladder: &str, played_at: &str) -> String {
+        format!("{}{played_at}", Sk::rating_prefix(ladder))
+    }
+
+    /// The inclusive upper bound closing either lower bound above into a
+    /// `SK BETWEEN :low AND :high`.
+    ///
+    /// A range query, not `begins_with`, because DynamoDB permits only one
+    /// sort-key condition and repair needs "this ladder, from here onwards" —
+    /// which is a range. `begins_with` alone can't express the lower bound
+    /// and `SK >= :low` alone can't express the upper: it would run off the
+    /// end of `RATING#…` into whatever sort key is added to the user
+    /// partition next, which is exactly the class of silent bug
+    /// `no_range_query_prefix_is_a_prefix_of_another` exists to prevent.
+    ///
+    /// The bound is the ladder's prefix followed by
+    /// [`RATING_RANGE_SENTINEL`]. Two things make that correct, both tested:
+    ///
+    /// - It sorts above every key *in* the ladder, because the sentinel is
+    ///   above every character an ISO-8601 `played_at` can start with.
+    /// - It excludes every key of a *different* ladder, including one this
+    ///   ladder's name is a prefix of (`"tennis"` vs `"tennis:doubles"`).
+    ///   Where the two names diverge, the character is either above `#` —
+    ///   putting the other ladder's keys above this bound — or below it,
+    ///   putting them below the lower bound. `#` itself is the one character
+    ///   that would break the argument, and a ladder can never contain it.
+    pub fn rating_history_end(ladder: &str) -> String {
+        format!("{}{RATING_RANGE_SENTINEL}", Sk::rating_prefix(ladder))
+    }
 }
 
 impl fmt::Display for Sk {
@@ -319,7 +454,8 @@ impl fmt::Display for Sk {
             | Sk::Reply(v)
             | Sk::Notification(v)
             | Sk::Device(v)
-            | Sk::StatContribution(v) => write!(f, "{}{}{}", self.prefix(), DELIMITER, v),
+            | Sk::StatContribution(v)
+            | Sk::RatingContribution(v) => write!(f, "{}{}{}", self.prefix(), DELIMITER, v),
 
             // Zero-padded so lexicographic order matches numeric seq order.
             Sk::LiveEvent(seq) => write!(f, "LIVEEVT{DELIMITER}{seq:010}"),
@@ -330,6 +466,19 @@ impl fmt::Display for Sk {
                 match_id,
             } => {
                 write!(f, "FEED{DELIMITER}{starts_at}{DELIMITER}{match_id}")
+            }
+
+            // Rating history keeps the ladder and the match's start time in
+            // the key (list-only, ordered by when the match was played).
+            Sk::Rating {
+                ladder,
+                played_at,
+                match_id,
+            } => {
+                write!(
+                    f,
+                    "RATING{DELIMITER}{ladder}{DELIMITER}{played_at}{DELIMITER}{match_id}"
+                )
             }
         }
     }
@@ -361,6 +510,19 @@ impl FromStr for Sk {
                 .ok_or_else(|| KeyError::Malformed(s.into()))
         };
 
+        // Splits a compound `<a>#<b>#<c>` remainder into three segments. The
+        // last one absorbs any further delimiters, exactly like `two` above —
+        // no value we put in a trailing segment contains one, so this only
+        // ever affects how a corrupt key is reported, and round-tripping such
+        // a key still yields the same string.
+        let three = |rest: &str| -> Result<(String, String, String), KeyError> {
+            let mut parts = rest.splitn(3, DELIMITER);
+            match (parts.next(), parts.next(), parts.next()) {
+                (Some(a), Some(b), Some(c)) => Ok((a.into(), b.into(), c.into())),
+                _ => Err(KeyError::Malformed(s.into())),
+            }
+        };
+
         match prefix {
             "FOLLOWER" => Ok(Sk::Follower(rest.into())),
             "MEMBER" => Ok(Sk::Member(rest.into())),
@@ -382,6 +544,15 @@ impl FromStr for Sk {
                 let (starts_at, match_id) = two(rest)?;
                 Ok(Sk::Feed {
                     starts_at,
+                    match_id,
+                })
+            }
+            "RATINGCONTRIB" => Ok(Sk::RatingContribution(rest.into())),
+            "RATING" => {
+                let (ladder, played_at, match_id) = three(rest)?;
+                Ok(Sk::Rating {
+                    ladder,
+                    played_at,
                     match_id,
                 })
             }
@@ -478,6 +649,131 @@ mod tests {
     }
 
     #[test]
+    fn sk_rating_variants_roundtrip() {
+        sk_roundtrip(Sk::RatingContribution("u5".into()), "RATINGCONTRIB#u5");
+        sk_roundtrip(
+            Sk::Rating {
+                ladder: "squash".into(),
+                played_at: "2026-06-01T10:00:00Z".into(),
+                match_id: "m1".into(),
+            },
+            "RATING#squash#2026-06-01T10:00:00Z#m1",
+        );
+    }
+
+    /// The `:` in a sub-ladder key (`"tennis:doubles"`) is not decoration:
+    /// `rating::Ladder` picked it over `#` so that a ladder can be a segment
+    /// of this sort key without breaking the round-trip. That contract spans
+    /// two modules, so it is asserted from both ends — `rating::ladder`
+    /// checks no ladder contains `#`, and this checks that every ladder it
+    /// can mint, plus the sub-ladder split that is most likely to happen
+    /// next, survives a format/parse cycle with its segments intact.
+    #[test]
+    fn rating_keys_round_trip_for_every_ladder() {
+        use crate::rating::{Sport, ladder_for};
+
+        let ladders: Vec<String> = Sport::ALL
+            .into_iter()
+            .filter_map(ladder_for)
+            .map(|l| l.as_str().to_string())
+            // Not mintable today; the split Part 2.5 calls most likely, and
+            // the whole reason the separator is `:`.
+            .chain(std::iter::once("tennis:doubles".to_string()))
+            .collect();
+
+        for ladder in ladders {
+            let sk = Sk::Rating {
+                ladder: ladder.clone(),
+                played_at: "2026-06-01T10:00:00.000Z".into(),
+                match_id: "m-Ab_1".into(),
+            };
+            assert_eq!(sk.to_string().parse::<Sk>().unwrap(), sk, "{ladder}");
+        }
+    }
+
+    /// The `BETWEEN` bounds must cover exactly one ladder's history: every
+    /// key in it, and nothing else in the partition. The interesting case is
+    /// a ladder whose name is a string prefix of another's — `"tennis"` and
+    /// `"tennis:doubles"` — because that is the shape a future singles/
+    /// doubles split creates, and getting it wrong would silently blend two
+    /// ladders' histories into one replay.
+    #[test]
+    fn rating_history_bounds_cover_exactly_one_ladder() {
+        let key = |ladder: &str, played_at: &str| {
+            Sk::Rating {
+                ladder: ladder.into(),
+                played_at: played_at.into(),
+                match_id: "m1".into(),
+            }
+            .to_string()
+        };
+
+        let low = Sk::rating_prefix("tennis");
+        let high = Sk::rating_history_end("tennis");
+        assert!(low < high, "{low} must sort below {high}");
+
+        for played_at in [
+            "1970-01-01T00:00:00Z",
+            "2026-06-01T10:00:00.000Z",
+            "9999-12-31T23:59:59Z",
+        ] {
+            let k = key("tennis", played_at);
+            assert!(low <= k && k <= high, "{k} must fall inside {low}..={high}");
+        }
+
+        // Neighbouring ladders, on both sides of the divergence character.
+        for other in ["tennis:doubles", "table_tennis", "squash", "netball"] {
+            let k = key(other, "2026-06-01T10:00:00.000Z");
+            assert!(
+                k < low || k > high,
+                "{other}'s history ({k}) must fall outside tennis's {low}..={high}"
+            );
+        }
+
+        // And nothing from another item kind in the same partition.
+        for other in [
+            Sk::Profile.to_string(),
+            Sk::Follower("u1".into()).to_string(),
+            Sk::Notification("n1".into()).to_string(),
+            Sk::Device("t1".into()).to_string(),
+            Sk::RatingContribution("u1".into()).to_string(),
+        ] {
+            assert!(
+                other < low || other > high,
+                "{other} must fall outside {low}..={high}"
+            );
+        }
+    }
+
+    /// The resume bound is inclusive of matches played at exactly that
+    /// instant. A repair replay checkpoints a `played_at` and pages from it;
+    /// an exclusive bound would drop every match sharing that timestamp —
+    /// which for a club night running four courts at 19:00 is most of them.
+    #[test]
+    fn rating_history_from_includes_matches_at_that_instant() {
+        let at = "2026-06-01T19:00:00.000Z";
+        let low = Sk::rating_history_from("squash", at);
+        let high = Sk::rating_history_end("squash");
+        for match_id in ["", "aaa", "zzz", "m-Ab_1"] {
+            let k = Sk::Rating {
+                ladder: "squash".into(),
+                played_at: at.into(),
+                match_id: match_id.into(),
+            }
+            .to_string();
+            assert!(low <= k && k <= high, "{k} must fall inside {low}..={high}");
+        }
+        // ...and excludes anything played before it.
+        let earlier = Sk::Rating {
+            ladder: "squash".into(),
+            played_at: "2026-06-01T18:59:59.999Z".into(),
+            match_id: "m1".into(),
+        }
+        .to_string();
+        assert!(earlier < low, "{earlier} must fall below {low}");
+    }
+
+    #[test]
     fn errors_are_reported() {
         assert_eq!("".parse::<Pk>(), Err(KeyError::Empty));
         assert_eq!(
@@ -497,6 +793,13 @@ mod tests {
             "BOGUS#a#b".parse::<Sk>(),
             Err(KeyError::UnknownPrefix("BOGUS".into()))
         );
+        // Rating SK missing its third segment.
+        assert_eq!(
+            "RATING#squash#2026-06-01T10:00:00Z".parse::<Sk>(),
+            Err(KeyError::Malformed(
+                "RATING#squash#2026-06-01T10:00:00Z".into()
+            ))
+        );
     }
 
     #[test]
@@ -512,6 +815,13 @@ mod tests {
         assert_eq!(Sk::live_event_prefix(), "LIVEEVT#");
         assert_eq!(Sk::stat_contribution_prefix(), "STATCONTRIB#");
         assert_eq!(Sk::feed_prefix(), "FEED#");
+        assert_eq!(Sk::rating_contribution_prefix(), "RATINGCONTRIB#");
+        assert_eq!(Sk::rating_prefix("squash"), "RATING#squash#");
+        assert_eq!(
+            Sk::rating_history_from("squash", "2026-06-01T10:00:00Z"),
+            "RATING#squash#2026-06-01T10:00:00Z"
+        );
+        assert_eq!(Sk::rating_history_end("squash"), "RATING#squash#~");
     }
 
     #[test]
@@ -525,6 +835,16 @@ mod tests {
         // (score submissions are addressed by id / listed via GSI1) but is
         // included here as a literal precisely so it keeps guarding future
         // additions, not just the ones that already have a function.
+        //
+        // `Sk::rating_prefix` is ladder-parameterised, so what goes in the
+        // list is its stem (`RATING#`) rather than one arbitrary ladder:
+        // every ladder prefix extends the stem, so guarding the stem guards
+        // all of them at once — and putting both in would trivially fail,
+        // the stem being a prefix of each. The assertion below the loop
+        // pins the helper to the stem so that stays true. `RATING#` versus
+        // `RATINGCONTRIB#` is the near-miss this pairing is really here for:
+        // the two differ only at the delimiter, exactly as `SCORE#` and
+        // `SCORESUB#` did.
         let prefixes = [
             Sk::follower_prefix(),
             Sk::member_prefix(),
@@ -534,6 +854,8 @@ mod tests {
             Sk::live_event_prefix(),
             Sk::stat_contribution_prefix(),
             Sk::feed_prefix(),
+            Sk::rating_contribution_prefix(),
+            Sk::rating_stem(),
             "SCORESUB#".to_string(),
         ];
         for (i, a) in prefixes.iter().enumerate() {
@@ -541,6 +863,20 @@ mod tests {
                 if i != j {
                     assert!(!b.starts_with(a.as_str()), "{a:?} is a prefix of {b:?}");
                 }
+            }
+        }
+
+        let stem = Sk::rating_stem();
+        for ladder in ["squash", "tennis", "tennis:doubles"] {
+            for prefix in [
+                Sk::rating_prefix(ladder),
+                Sk::rating_history_from(ladder, "2026-06-01T10:00:00Z"),
+                Sk::rating_history_end(ladder),
+            ] {
+                assert!(
+                    prefix.starts_with(&stem),
+                    "{prefix:?} must extend the guarded stem {stem:?}"
+                );
             }
         }
     }

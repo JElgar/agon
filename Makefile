@@ -42,11 +42,11 @@ generate-schema:
 	# inside `LiveEventInput`) — all three need the same fix, not just
 	# `type`. See docs/openapi-client.md.
 	find openapi_client/src/models -name '*.rs' -exec \
-		perl -0pi -e 's/#\[serde\(rename = "type"\)\]\n(\s*)pub r#type: Type,/#[serde(rename = "type", default)]\n$1pub r#type: Type,/g' {} +
+		perl -0pi -e 's/#\[serde\(rename = "type"\)\]\n(\s*)pub r#type: Type,/#[serde(rename = "type", default)]\n$$1pub r#type: Type,/g' {} +
 	find openapi_client/src/models -name '*.rs' -exec \
-		perl -0pi -e 's/#\[serde\(rename = "sport"\)\]\n(\s*)pub sport: Sport,/#[serde(rename = "sport", default)]\n$1pub sport: Sport,/g' {} +
+		perl -0pi -e 's/#\[serde\(rename = "sport"\)\]\n(\s*)pub sport: Sport,/#[serde(rename = "sport", default)]\n$$1pub sport: Sport,/g' {} +
 	find openapi_client/src/models -name '*.rs' -exec \
-		perl -0pi -e 's/#\[serde\(rename = "kind"\)\]\n(\s*)pub kind: Kind,/#[serde(rename = "kind", default)]\n$1pub kind: Kind,/g' {} +
+		perl -0pi -e 's/#\[serde\(rename = "kind"\)\]\n(\s*)pub kind: Kind,/#[serde(rename = "kind", default)]\n$$1pub kind: Kind,/g' {} +
 	# Post-process: `LiveEventInput` nests a second discriminated union (each
 	# sport's own `kind`-tagged event union) inside its own `sport`-tagged
 	# variants. The generator handles that inner `oneOf` correctly wherever
@@ -62,7 +62,7 @@ generate-schema:
 	# fine (both discriminators live on the same flat JSON object), so this
 	# is a pure type-reference swap, no behavior change beyond fixing the
 	# bug. See docs/openapi-client.md.
-	perl -pi -e 's/models::LiveEventInput(Football|Cricket|Netball)LiveEvent/models::$1LiveEvent/g' \
+	perl -pi -e 's/models::LiveEventInput(Football|Cricket|Netball)LiveEvent/models::$$1LiveEvent/g' \
 		openapi_client/src/models/live_event_input.rs
 
 generate:

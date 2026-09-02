@@ -184,9 +184,11 @@ export function LogMatchPage() {
   const [sideAMaxPlayers, setSideAMaxPlayers] = useState('')
   const [sideBMaxPlayers, setSideBMaxPlayers] = useState('')
   // Per-side team self-join — meaningless (and hidden) until that side is
-  // actually linked to a team via its `TeamPicker`.
-  const [sideATeamJoinEnabled, setSideATeamJoinEnabled] = useState(false)
-  const [sideBTeamJoinEnabled, setSideBTeamJoinEnabled] = useState(false)
+  // actually linked to a team via its `TeamPicker`. Defaults on: linking a
+  // team is itself the signal you want that team playing, so "its members
+  // can join" should default to yes, not require a second opt-in click.
+  const [sideATeamJoinEnabled, setSideATeamJoinEnabled] = useState(true)
+  const [sideBTeamJoinEnabled, setSideBTeamJoinEnabled] = useState(true)
 
   // The signed-in user's profile. Used to seed them onto their own side by
   // default (as a real, removable player) and to badge/exclude them in search.
@@ -526,10 +528,11 @@ export function LogMatchPage() {
             team={sideATeam}
             onTeamChange={(team) => {
               setSideATeam(team)
-              // Unlinking a team makes the toggle meaningless (and it hides
-              // again) — reset it so relinking a different team later starts
-              // from "off" rather than a stale "on".
-              if (!team) setSideATeamJoinEnabled(false)
+              // Unlinking a team makes the toggle meaningless (and it
+              // hides again) — reset it to the default so relinking a
+              // different team later starts from "on" again, not
+              // whatever was left over from the previous team.
+              if (!team) setSideATeamJoinEnabled(true)
             }}
           />
           <div className="flex items-center justify-center">
@@ -550,7 +553,7 @@ export function LogMatchPage() {
             team={sideBTeam}
             onTeamChange={(team) => {
               setSideBTeam(team)
-              if (!team) setSideBTeamJoinEnabled(false)
+              if (!team) setSideBTeamJoinEnabled(true)
             }}
           />
           {sideB.length === 0 && sideBName.trim().length === 0 && !sideBTeam && (

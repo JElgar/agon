@@ -21,4 +21,19 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 openapi = { path = "../openapi_client" }
+# The shared DAO, used *only* by the rating tests — ratings have no API
+# surface until phase 3, so asserting on them means reading the table these
+# tests' service is writing to. A path dependency on a crate outside this
+# workspace, exactly like `openapi` above. Deliberately the real DAO rather
+# than a raw `aws-sdk-dynamodb` client: it means the assertions go through the
+# same typed `Pk`/`Sk` keys and record shapes the service and worker use, so a
+# key or field rename can't leave a test passing against a stale hand-written
+# key string.
+agon_core = { path = "../agon_core" }
+# For the two places a test has to write a match field the API cannot set yet
+# (`ranked`) — a raw `UpdateItem` against the same table, still keyed through
+# `agon_core`'s `Pk`/`Sk`.
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-dynamodb = "1"
+
 uuid = { version = "1.16.0", features = ["v4"] }

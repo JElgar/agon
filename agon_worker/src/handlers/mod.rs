@@ -12,6 +12,7 @@
 pub mod index;
 pub mod notify;
 pub mod push;
+pub mod rating;
 pub mod stats;
 
 use agon_core::dao::Dao;
@@ -24,12 +25,19 @@ use agon_core::search::SearchClient;
 /// Run every inline handler applicable to one event. `now` is the processing
 /// timestamp (RFC3339), used where an event carries no timestamp of its own.
 ///
-/// Ordering: indexing, notifications, push, then stats. All are independent
-/// and idempotent, so if a later one fails after an earlier succeeded,
-/// redelivery re-runs them all harmlessly. `push` runs after `notify`
-/// deliberately: a `NotificationRecord` write from `notify::handle` produces
-/// its own stream event, which `push::handle` reacts to on a later call to
-/// `route` — see `handlers/push.rs`'s module docs.
+/// Ordering: indexing, notifications, push, stats, then ratings. All are
+/// independent and idempotent, so if a later one fails after an earlier
+/// succeeded, redelivery re-runs them all harmlessly. `push` runs after
+/// `notify` deliberately: a `NotificationRecord` write from `notify::handle`
+/// produces its own stream event, which `push::handle` reacts to on a later
+/// call to `route` — see `handlers/push.rs`'s module docs.
+///
+/// `rating` runs last, and unlike the rest of the ordering that is not
+/// arbitrary: it is the only handler that can fail *permanently* (a match the
+/// engine refuses to rate is a `WorkerError::Invariant`, which parks the
+/// message in the DLQ rather than redelivering it). Running it last means a
+/// corrupt match still gets indexed, notified and counted before the message
+/// stops being retried.
 pub async fn route(
     dao: &Dao,
     search: &SearchClient,
@@ -42,5 +50,6 @@ pub async fn route(
     notify::handle(dao, ev, now).await?;
     push::handle(dao, push, ui_base_url, ev).await?;
     stats::handle(dao, ev).await?;
+    rating::handle(dao, ev, now).await?;
     Ok(())
 }

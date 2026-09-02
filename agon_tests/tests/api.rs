@@ -6092,3 +6092,694 @@ async fn manual_score_conflicting_with_live_football_detail_is_rejected_even_mid
     .expect("override the live score");
     assert!(matches!(overridden.status, models::MatchStatus::Completed));
 }
+
+// ---------------------------------------------------------------------------
+// Ratings — the incremental path (phase 2b-i)
+// ---------------------------------------------------------------------------
+//
+// Ratings have no API surface yet (that is phase 3), so these assertions read
+// the table the service under test writes to, through `agon_core`'s own DAO —
+// same typed keys, same record shapes, no hand-written key strings. That means
+// they need DynamoDB credentials as well as a service URL, which `make test`
+// supplies from `.env` and the staging CI job does not; see [`rating_dao`] for
+// what happens when it can't connect.
+//
+// Everything here goes through the real pipeline: the API confirms a score,
+// which rewrites the match's `#META`, which the stream bridge turns into an
+// SQS message, which `agon_worker`'s rating handler picks up. So these are
+// also the only coverage `agon_core::dao::rating` has against a real table —
+// in particular the two things that cannot be checked in a unit test: that a
+// `ratings.<ladder> = :expected` condition on a *map*-typed attribute
+// evaluates the way the optimistic lock assumes, and that `mu`/`sigma`
+// survive a round trip through DynamoDB's `N` type exactly (they must, or an
+// unchanged redelivery would recompute a different movement and look like a
+// re-score every time somebody likes a finished match).
+
+/// A DAO on the table under test, or `None` when the environment isn't wired
+/// for direct table access.
+///
+/// The gate is `AGON_TABLE_NAME`, which `make test` exports from `.env`
+/// alongside the AWS credentials and endpoint. The staging CI job
+/// (`.github/workflows/test.yml`) deliberately sets only `AGON_SERVICE_URL` —
+/// it tests a deployed API, and handing CI database credentials to assert on
+/// storage internals would be a worse trade than skipping. Every rating test
+/// therefore starts by asking for one and returns early without it, printing
+/// why so a skipped run is never silent.
+async fn rating_dao() -> Option<agon_core::dao::Dao> {
+    let Ok(table) = std::env::var("AGON_TABLE_NAME") else {
+        eprintln!(
+            "SKIPPING rating assertions: AGON_TABLE_NAME is unset, so the table \
+             the service writes to can't be read. Run via `make test`."
+        );
+        return None;
+    };
+    Some(agon_core::dao::Dao::from_env(table).await)
+}
+
+/// Poll until `user_id` has a rating on `ladder` folded from exactly
+/// `matches_rated` matches.
+///
+/// Polls rather than reads once because rating is the far end of an async
+/// pipeline (API → DynamoDB stream → SQS → worker), and asserts on
+/// `matches_rated` rather than on the rating value because it is the one field
+/// that is exactly predictable — a count, not a float.
+async fn rating_after_matches(
+    dao: &agon_core::dao::Dao,
+    user_id: &str,
+    ladder: &str,
+    matches_rated: u64,
+) -> agon_core::dao::records::RatingRecord {
+    let owner = agon_core::dao::rating::RatingOwner::user(user_id);
+    eventually(
+        &format!("{user_id} to be rated on {ladder} from {matches_rated} match(es)"),
+        || async {
+            dao.get_rating(&owner, ladder)
+                .await
+                .expect("read rating")
+                .filter(|r| r.matches_rated == matches_rated)
+        },
+    )
+    .await
+}
+
+/// One user's stored rating on a ladder, or `None` if they have never been
+/// rated on it. A point read, for the cases that assert nothing happened.
+async fn stored_rating(
+    dao: &agon_core::dao::Dao,
+    user_id: &str,
+    ladder: &str,
+) -> Option<agon_core::dao::records::RatingRecord> {
+    dao.get_rating(&agon_core::dao::rating::RatingOwner::user(user_id), ladder)
+        .await
+        .expect("read rating")
+}
+
+/// A match's rating contributions, keyed by the account they belong to.
+async fn contributions_by_owner(
+    dao: &agon_core::dao::Dao,
+    match_id: &str,
+) -> std::collections::HashMap<String, agon_core::dao::records::RatingContributionRecord> {
+    dao.list_rating_contributions(match_id)
+        .await
+        .expect("list rating contributions")
+        .into_iter()
+        .map(|c| (c.owner_id.clone(), c))
+        .collect()
+}
+
+/// One user's whole rating history on a ladder, oldest first.
+async fn rating_history(
+    dao: &agon_core::dao::Dao,
+    user_id: &str,
+    ladder: &str,
+) -> Vec<agon_core::dao::records::RatingHistoryRecord> {
+    dao.list_rating_history(
+        &agon_core::dao::rating::RatingOwner::user(user_id),
+        ladder,
+        None,
+        None,
+        50,
+    )
+    .await
+    .expect("list rating history")
+    .items
+}
+
+/// A completed (already-played) tennis match starting at exactly `starts_at`,
+/// creator on side "a" with a 6-3 win recorded, `invites` placing everyone
+/// else. [`completed_match`] with a caller-chosen start time, because ratings
+/// are applied in **played** order and half of what is worth testing here is
+/// what happens when confirmation order disagrees with it. The caller passes
+/// the literal string so it can compare stored `played_at` values against it
+/// (the API re-serializes timestamps, so the round-tripped form on the
+/// response is not necessarily character-identical to what was stored).
+fn completed_match_at(
+    starts_at: &str,
+    invites: Vec<models::CreateMatchInviteInput>,
+) -> models::CreateMatchInput {
+    models::CreateMatchInput {
+        starts_at: starts_at.to_string(),
+        ..completed_match(invites)
+    }
+}
+
+/// Play a full ranked tennis match to a confirmed score: `winner` creates it
+/// (on side "a", 6-3 in their favour), `loser` accepts their invitation and
+/// then confirms the score, which is the write that makes the match eligible
+/// to be rated. Returns the created match.
+///
+/// The accept matters as much as the confirm: a pending invitee has not been
+/// established to have played, so a match whose losing side is nothing but
+/// unanswered invitations is not rated at all.
+async fn play_ranked_tennis_match(
+    winner_config: &Configuration,
+    loser_config: &Configuration,
+    loser_id: &str,
+    starts_at: &str,
+) -> models::Match {
+    let created = matches_post(
+        winner_config,
+        completed_match_at(starts_at, vec![invite_users("b", &[loser_id])]),
+    )
+    .await
+    .expect("create ranked match");
+    accept_match_invitation(loser_config, &created.id).await;
+    confirm_pending_score(loser_config, &created).await;
+    created
+}
+
+/// Confirm a match's outstanding score submission as `config`'s user — the
+/// last side to agree, which is what promotes the submission to the match's
+/// `confirmed_score`.
+async fn confirm_pending_score(config: &Configuration, match_: &models::Match) {
+    let submission_id = match_
+        .pending_score
+        .as_ref()
+        .expect("a pending score to confirm")
+        .submission_id
+        .clone();
+    matches_match_id_score_submissions_submission_id_respond_post(
+        config,
+        &match_.id,
+        &submission_id,
+        models::RespondToScoreInput {
+            response: models::ScoreResponseKind::Confirm,
+        },
+    )
+    .await
+    .expect("confirm score");
+}
+
+/// Set a match's `ranked` flag directly on its `#META` item.
+///
+/// There is no API for this until phase 3 — `create_match` hard-codes
+/// `ranked: true` — so the friendly-match test has to write the field the way
+/// the record defines it. Keyed through `agon_core`'s `Pk`/`Sk` rather than a
+/// literal `"MATCH#..."`, so a key change breaks this loudly instead of
+/// silently addressing nothing.
+async fn set_match_ranked(match_id: &str, ranked: bool) {
+    use agon_core::dao::keys::{Pk, Sk};
+    let config = aws_config::load_from_env().await;
+    aws_sdk_dynamodb::Client::new(&config)
+        .update_item()
+        .table_name(std::env::var("AGON_TABLE_NAME").expect("AGON_TABLE_NAME"))
+        .key(
+            "PK",
+            aws_sdk_dynamodb::types::AttributeValue::S(Pk::Match(match_id.into()).to_string()),
+        )
+        .key(
+            "SK",
+            aws_sdk_dynamodb::types::AttributeValue::S(Sk::Meta.to_string()),
+        )
+        .update_expression("SET #ranked = :ranked")
+        .expression_attribute_names("#ranked", "ranked")
+        .expression_attribute_values(
+            ":ranked",
+            aws_sdk_dynamodb::types::AttributeValue::Bool(ranked),
+        )
+        .send()
+        .await
+        .expect("set ranked");
+}
+
+/// The end-to-end happy path: a ranked match both sides confirm moves both
+/// ratings, writes each participant a history entry, and records what the
+/// match contributed as a `RATINGCONTRIB#` item.
+///
+/// The three writes are one transaction in the DAO precisely so they cannot
+/// disagree — a movement with no contribution recording it would be applied
+/// again on the next redelivery — so this asserts all three rather than just
+/// the headline number.
+#[tokio::test]
+async fn a_confirmed_ranked_match_moves_both_ratings_and_writes_history() {
+    let Some(dao) = rating_dao().await else {
+        return;
+    };
+    let (winner_config, winner) = new_user().await;
+    let (loser_config, loser) = new_user().await;
+
+    let starts_at = iso_offset_hours(-3);
+    let created =
+        play_ranked_tennis_match(&winner_config, &loser_config, &loser.profile.id, &starts_at)
+            .await;
+
+    let winner_rating = rating_after_matches(&dao, &winner.profile.id, "tennis", 1).await;
+    let loser_rating = rating_after_matches(&dao, &loser.profile.id, "tennis", 1).await;
+
+    // Everyone starts at the engine's native mu 25 with sigma 25/3. Winning
+    // moves mu up, losing moves it down, and a result of any kind shrinks the
+    // uncertainty for both.
+    assert!(
+        winner_rating.mu > 25.0,
+        "the winner's rating should rise, got {}",
+        winner_rating.mu
+    );
+    assert!(
+        loser_rating.mu < 25.0,
+        "the loser's rating should fall, got {}",
+        loser_rating.mu
+    );
+    for (whose, rating) in [("winner", &winner_rating), ("loser", &loser_rating)] {
+        assert!(
+            rating.sigma < 25.0 / 3.0,
+            "{whose}'s uncertainty should shrink, got {}",
+            rating.sigma
+        );
+        assert_eq!(
+            rating.last_rated_at, starts_at,
+            "{whose}'s newest rated match is the one just played"
+        );
+    }
+
+    // A zero-sum-ish sanity check on the pair: the loser lost roughly what the
+    // winner gained. Exactly equal for two identically-rated players, so this
+    // would catch a sign or scale error in either direction.
+    assert!(
+        ((winner_rating.mu - 25.0) - (25.0 - loser_rating.mu)).abs() < 1e-9,
+        "evenly-matched players should move symmetrically: {} vs {}",
+        winner_rating.mu,
+        loser_rating.mu
+    );
+
+    // The per-match record of what was applied, which is what makes a
+    // redelivery a no-op and what the UI will read to show "+18".
+    let contributions = contributions_by_owner(&dao, &created.id).await;
+    assert_eq!(contributions.len(), 2, "one contribution per participant");
+    let winner_side = side_id_for_user(&created, &winner.profile.id);
+    let loser_side = side_id_for_user(&created, &loser.profile.id);
+    let winner_contribution = &contributions[&winner.profile.id];
+    let loser_contribution = &contributions[&loser.profile.id];
+    assert_eq!(winner_contribution.ladder, "tennis");
+    assert_eq!(winner_contribution.side_id, winner_side);
+    assert_eq!(loser_contribution.side_id, loser_side);
+    assert_eq!(winner_contribution.played_at, starts_at);
+    assert_eq!(
+        winner_contribution.owner_kind,
+        agon_core::dao::records::RatingOwnerKindRecord::User
+    );
+    // The contribution's `after` is the stored rating: the two are written in
+    // the same transaction and must agree, or a repair replaying history would
+    // land somewhere the profile doesn't.
+    assert_eq!(winner_contribution.movement.mu_after, winner_rating.mu);
+    assert_eq!(
+        winner_contribution.movement.sigma_after,
+        winner_rating.sigma
+    );
+    assert_eq!(winner_contribution.movement.mu_before, 25.0);
+    assert!(
+        winner_contribution.movement.display_delta > 0,
+        "the winner's shown delta should be positive, got {}",
+        winner_contribution.movement.display_delta
+    );
+    assert!(
+        loser_contribution.movement.display_delta < 0,
+        "the loser's shown delta should be negative, got {}",
+        loser_contribution.movement.display_delta
+    );
+
+    // The history entry — the replay source for repair, and the
+    // rating-over-time chart, from the same write.
+    let history = rating_history(&dao, &winner.profile.id, "tennis").await;
+    assert_eq!(history.len(), 1, "one history entry per rated match");
+    assert_eq!(history[0].match_id, created.id);
+    assert_eq!(history[0].played_at, starts_at);
+    assert_eq!(history[0].movement, winner_contribution.movement);
+}
+
+/// A friendly match moves nothing. `ranked` has no API surface until phase 3
+/// (`create_match` hard-codes it true), so the flag is flipped directly on the
+/// stored record before the score is confirmed — which is also the only shape
+/// this can take until then.
+///
+/// The barrier for asserting a negative is the *stats* handler: it runs
+/// immediately before the rating handler on the same event in
+/// `handlers::route`, so once the match has been counted as played, the rating
+/// handler has demonstrably seen it and decided not to rate it. Sleeping
+/// instead would make this a test of how fast the worker happens to be.
+#[tokio::test]
+async fn a_friendly_match_is_not_rated() {
+    let Some(dao) = rating_dao().await else {
+        return;
+    };
+    let (winner_config, winner) = new_user().await;
+    let (loser_config, loser) = new_user().await;
+
+    let created = matches_post(
+        &winner_config,
+        completed_match_at(
+            &iso_offset_hours(-3),
+            vec![invite_users("b", &[&loser.profile.id])],
+        ),
+    )
+    .await
+    .expect("create match");
+    set_match_ranked(&created.id, false).await;
+    accept_match_invitation(&loser_config, &created.id).await;
+    confirm_pending_score(&loser_config, &created).await;
+
+    assert_matches_played_reaches(&loser_config, models::MatchType::Tennis, 1, "loser").await;
+
+    assert_eq!(
+        stored_rating(&dao, &winner.profile.id, "tennis").await,
+        None,
+        "a friendly must not rate the winner"
+    );
+    assert_eq!(
+        stored_rating(&dao, &loser.profile.id, "tennis").await,
+        None,
+        "a friendly must not rate the loser"
+    );
+    assert!(
+        contributions_by_owner(&dao, &created.id).await.is_empty(),
+        "a friendly must not record a rating contribution"
+    );
+}
+
+/// One unlinked guest on a side leaves the whole match unrated — not just the
+/// guest's own row.
+///
+/// The rule looks harsh until you look at the maths: Weng-Lin treats a side's
+/// strength as the sum of its players' beliefs, so silently rating "everyone
+/// we happen to have an account for" would model a 2-player side as a
+/// 1-player one and credit the guest's contribution to their partner. There is
+/// nothing to rate a guest *with* and nothing to give them, so the match
+/// waits until the guest claims their invite (which is a roster change, and
+/// therefore a repair).
+#[tokio::test]
+async fn a_match_with_an_unlinked_guest_is_not_rated() {
+    let Some(dao) = rating_dao().await else {
+        return;
+    };
+    let (winner_config, winner) = new_user().await;
+    let (loser_config, loser) = new_user().await;
+
+    let created = matches_post(
+        &winner_config,
+        completed_match_at(
+            &iso_offset_hours(-3),
+            vec![
+                invite_users("b", &[&loser.profile.id]),
+                invite_externals("b", &["Ringer Rita"]),
+            ],
+        ),
+    )
+    .await
+    .expect("create match");
+    accept_match_invitation(&loser_config, &created.id).await;
+    confirm_pending_score(&loser_config, &created).await;
+
+    // Same barrier as the friendly test: stats prove the event was processed.
+    assert_matches_played_reaches(&loser_config, models::MatchType::Tennis, 1, "loser").await;
+
+    assert_eq!(
+        stored_rating(&dao, &winner.profile.id, "tennis").await,
+        None,
+        "a match with an unlinked guest must rate nobody"
+    );
+    assert_eq!(
+        stored_rating(&dao, &loser.profile.id, "tennis").await,
+        None,
+        "a match with an unlinked guest must rate nobody"
+    );
+    assert!(
+        contributions_by_owner(&dao, &created.id).await.is_empty(),
+        "nothing should have been applied to back out later"
+    );
+}
+
+/// Redelivering an already-rated match applies nothing a second time.
+///
+/// This is the property the whole design rests on and the easiest one to get
+/// wrong: a match's `#META` item is rewritten by every like and every comment,
+/// so the rating handler re-runs on finished matches constantly, and SQS is
+/// at-least-once on top of that. The naive implementation — re-rate against
+/// the account's *current* rating and write if it differs — double-counts
+/// every one of those.
+///
+/// The like here is a real redelivery trigger (it rewrites `#META`), and the
+/// second match is both the observable barrier proving the queue drained past
+/// it and the check that the chain is intact: match two's `mu_before` must be
+/// exactly match one's `mu_after`, which cannot hold if match one was applied
+/// twice in between.
+#[tokio::test]
+async fn redelivering_a_rated_match_does_not_apply_it_twice() {
+    let Some(dao) = rating_dao().await else {
+        return;
+    };
+    let (winner_config, winner) = new_user().await;
+    let (loser_config, loser) = new_user().await;
+
+    let first_starts_at = iso_offset_hours(-5);
+    let first = play_ranked_tennis_match(
+        &winner_config,
+        &loser_config,
+        &loser.profile.id,
+        &first_starts_at,
+    )
+    .await;
+    let after_first = rating_after_matches(&dao, &winner.profile.id, "tennis", 1).await;
+    let first_contributions = contributions_by_owner(&dao, &first.id).await;
+
+    // A like rewrites the match's `#META`, which is exactly the handler's
+    // trigger — the redelivery, arranged through the API rather than simulated.
+    matches_match_id_likes_post(&loser_config, &first.id)
+        .await
+        .expect("like the match");
+
+    // A second, later match on the same ladder: the barrier, and the thing
+    // that exercises the optimistic lock's map-typed condition
+    // (`ratings.tennis = :expected`), which only runs on a *second* rating.
+    let second_starts_at = iso_offset_hours(-2);
+    let second = play_ranked_tennis_match(
+        &winner_config,
+        &loser_config,
+        &loser.profile.id,
+        &second_starts_at,
+    )
+    .await;
+    let after_second = rating_after_matches(&dao, &winner.profile.id, "tennis", 2).await;
+
+    // Two matches played, two matches rated — not three.
+    assert_eq!(after_second.matches_rated, 2);
+    assert_eq!(after_second.last_rated_at, second_starts_at);
+
+    // The first match's contribution is untouched, `applied_at` included — a
+    // rewrite would have refreshed that wall clock even if the numbers
+    // happened to land in the same place.
+    assert_eq!(
+        contributions_by_owner(&dao, &first.id).await,
+        first_contributions,
+        "a redelivered match must not be rewritten"
+    );
+
+    // The chain: the second match started from exactly where the first
+    // finished. Bit-exact, because the stored value is fed straight back into
+    // the engine — anything less than exact here means `mu`/`sigma` are not
+    // surviving the round trip through DynamoDB's `N` type, which would make
+    // every redelivery look like a re-score.
+    let second_contributions = contributions_by_owner(&dao, &second.id).await;
+    let second_winner = &second_contributions[&winner.profile.id];
+    assert_eq!(second_winner.movement.mu_before, after_first.mu);
+    assert_eq!(second_winner.movement.sigma_before, after_first.sigma);
+    assert_eq!(second_winner.movement.mu_after, after_second.mu);
+
+    // Both matches are in the history exactly once each, in played order.
+    let history = rating_history(&dao, &winner.profile.id, "tennis").await;
+    let match_ids: Vec<&str> = history.iter().map(|h| h.match_id.as_str()).collect();
+    assert_eq!(match_ids, vec![first.id.as_str(), second.id.as_str()]);
+}
+
+/// A match played earlier but confirmed later is still rated, and does not
+/// drag `last_rated_at` backwards.
+///
+/// Confirmation order is the order the stream delivers results in; played
+/// order is the order they are supposed to be rated in, and the two disagree
+/// routinely (a Monday game confirmed on Thursday). Phase 2b-i detects the
+/// disagreement and applies the result anyway — the alternative, refusing to
+/// rate it, would leave the match with no history entry, which is precisely
+/// what a replay reads, so it would be invisible to the repair meant to fix
+/// it. What must hold in the meantime is that the *history* is in played
+/// order, since that is what makes the eventual replay produce the right
+/// answer, and that `last_rated_at` still names the newest match played.
+#[tokio::test]
+async fn a_match_confirmed_out_of_order_is_still_rated_and_lands_in_played_order() {
+    let Some(dao) = rating_dao().await else {
+        return;
+    };
+    let (winner_config, winner) = new_user().await;
+    let (loser_config, loser) = new_user().await;
+
+    // Played on Wednesday, confirmed first.
+    let recent_starts_at = iso_offset_hours(-2);
+    let recent = play_ranked_tennis_match(
+        &winner_config,
+        &loser_config,
+        &loser.profile.id,
+        &recent_starts_at,
+    )
+    .await;
+    rating_after_matches(&dao, &winner.profile.id, "tennis", 1).await;
+
+    // Played on Monday, confirmed second.
+    let older_starts_at = iso_offset_hours(-30);
+    let older = play_ranked_tennis_match(
+        &winner_config,
+        &loser_config,
+        &loser.profile.id,
+        &older_starts_at,
+    )
+    .await;
+    let rating = rating_after_matches(&dao, &winner.profile.id, "tennis", 2).await;
+
+    assert_eq!(
+        rating.last_rated_at, recent_starts_at,
+        "the newest match *played* stays the newest, whatever order they were confirmed in"
+    );
+
+    // The history collection is keyed on played time, so it is already in the
+    // order a replay needs even though the second match arrived last.
+    let history = rating_history(&dao, &winner.profile.id, "tennis").await;
+    let match_ids: Vec<&str> = history.iter().map(|h| h.match_id.as_str()).collect();
+    assert_eq!(
+        match_ids,
+        vec![older.id.as_str(), recent.id.as_str()],
+        "history is ordered by when matches were played, not when they were rated"
+    );
+
+    // Both matches were applied, neither was dropped.
+    assert_eq!(contributions_by_owner(&dao, &older.id).await.len(), 2);
+    assert_eq!(contributions_by_owner(&dao, &recent.id).await.len(), 2);
+}
+
+/// A rated match that stops counting has its contribution and history entry
+/// removed — and its effect deliberately left in the stored rating.
+///
+/// That last part looks like a bug and is the design: a Weng-Lin update
+/// depends on every opponent's σ at the time and has no inverse, so "subtract
+/// this match" cannot be computed — only replayed. Removing the two items
+/// first is what makes the eventual replay correct, because history is what a
+/// replay reads; leaving them would have it faithfully re-apply a match that
+/// no longer counts. Until `RepairRatings` lands (phase 2b-ii) the stored
+/// rating stays stale, which is exactly what the DAO's
+/// `withdraw_rating_contribution` documents.
+///
+/// Flipping `ranked` on the stored record stands in for every way a match can
+/// stop counting (cancellation, a roster edit that unlinks a player), since it
+/// is the one this phase can trigger without an API for it.
+#[tokio::test]
+async fn a_match_that_stops_being_ranked_has_its_contribution_withdrawn() {
+    let Some(dao) = rating_dao().await else {
+        return;
+    };
+    let (winner_config, winner) = new_user().await;
+    let (loser_config, loser) = new_user().await;
+
+    let starts_at = iso_offset_hours(-4);
+    let created =
+        play_ranked_tennis_match(&winner_config, &loser_config, &loser.profile.id, &starts_at)
+            .await;
+    let rated = rating_after_matches(&dao, &winner.profile.id, "tennis", 1).await;
+    assert_eq!(
+        rating_history(&dao, &winner.profile.id, "tennis")
+            .await
+            .len(),
+        1
+    );
+
+    // Demoting it to a friendly rewrites `#META`, which is the handler's own
+    // trigger — no separate nudge needed.
+    set_match_ranked(&created.id, false).await;
+
+    eventually(
+        "the withdrawn match's contributions to disappear",
+        || async {
+            contributions_by_owner(&dao, &created.id)
+                .await
+                .is_empty()
+                .then_some(())
+        },
+    )
+    .await;
+    assert!(
+        rating_history(&dao, &winner.profile.id, "tennis")
+            .await
+            .is_empty(),
+        "the history entry goes with the contribution — it is the replay's input"
+    );
+    assert_eq!(
+        stored_rating(&dao, &winner.profile.id, "tennis").await,
+        Some(rated),
+        "the rating itself is left stale on purpose; only a replay can unwind it"
+    );
+}
+
+/// Re-scoring a rated match is *detected*, not applied.
+///
+/// A Weng-Lin update cannot be inverted, so correcting a match that has
+/// already been folded into a rating means replaying that ladder from the
+/// match forward — `RepairRatings`, which is phase 2b-ii. What phase 2b-i owes
+/// is that it notices and then keeps its hands off: the stored contributions
+/// are the replay's input, so overwriting them with a recomputed guess (which
+/// would be computed from the wrong base — the rating has moved on since)
+/// would destroy the only record of what was actually applied.
+///
+/// The barrier is the stats handler again: it reconciles the flipped result on
+/// the same event, so once the previously-losing side shows a win, the rating
+/// handler has seen the re-score too.
+#[tokio::test]
+async fn re_scoring_a_rated_match_is_detected_and_left_for_repair() {
+    let Some(dao) = rating_dao().await else {
+        return;
+    };
+    let (winner_config, winner) = new_user().await;
+    let (loser_config, loser) = new_user().await;
+
+    let starts_at = iso_offset_hours(-6);
+    let created =
+        play_ranked_tennis_match(&winner_config, &loser_config, &loser.profile.id, &starts_at)
+            .await;
+    let rated = rating_after_matches(&dao, &winner.profile.id, "tennis", 1).await;
+    let contributions = contributions_by_owner(&dao, &created.id).await;
+
+    // Correct the result the other way round: the loser actually won.
+    let side_a = side_id_for_user(&created, &winner.profile.id);
+    let side_b = side_id_for_user(&created, &loser.profile.id);
+    let rescored = matches_match_id_patch(
+        &winner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(simple_score(&side_a, &side_b, 3, 6))),
+            winner_side_id: Some(side_b),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("re-score the match");
+    confirm_pending_score(&loser_config, &rescored).await;
+
+    // Stats reconcile the flip, which proves the worker processed the event.
+    eventually(
+        "the re-scored result to reach the new winner's stats",
+        || async {
+            let me = users_me_get(&loser_config).await.expect("get me");
+            me.profile
+                .stats
+                .tennis
+                .and_then(|s| s.win_percentage)
+                .filter(|pct| *pct > 99.0)
+                .map(|_| ())
+        },
+    )
+    .await;
+
+    assert_eq!(
+        contributions_by_owner(&dao, &created.id).await,
+        contributions,
+        "the stored contributions are the replay's input and must survive untouched"
+    );
+    assert_eq!(
+        stored_rating(&dao, &winner.profile.id, "tennis").await,
+        Some(rated),
+        "the rating still reflects the old result until a replay corrects it"
+    );
+}

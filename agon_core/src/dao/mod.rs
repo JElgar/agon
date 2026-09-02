@@ -32,6 +32,7 @@ pub mod live_score_ops;
 pub mod match_ops;
 pub mod match_social;
 pub mod notification;
+pub mod rating;
 pub mod stats;
 pub mod team;
 pub mod user;

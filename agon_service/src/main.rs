@@ -2028,6 +2028,14 @@ impl Api {
             following_count: 0,
             unread_count: 0,
             stats: dao::records::UserStatsRecord::default(),
+            // A brand-new account has played nothing, so it is rated on no
+            // ladder — the same state a profile written before ratings
+            // existed deserializes into. Visibility matches the record's own
+            // serde default (`Private`) deliberately: you opt in to being
+            // seen. Exposing either through the API is phase 3; these are
+            // here only because the record now has the fields.
+            ratings: HashMap::new(),
+            rating_visibility: Default::default(),
             created_at: now_iso(),
         };
         match dao.create_user(&jwt_data.sub, &record).await {
@@ -2736,6 +2744,17 @@ impl Api {
             live_seq: 0,
             live_tip_seq: None,
             format: input.format.as_ref().map(match_format_to_record),
+            // Matches are ranked by default, with friendly as the explicit
+            // opt-out: in an amateur app most games are casual, and
+            // opt-in-ranked would leave every ladder too sparse to matchmake
+            // on. Note this deliberately disagrees with `MatchRecord::ranked`'s
+            // serde default of `false`, which exists to keep the pre-rating
+            // back catalogue *out* of the ladders — see that field's doc
+            // comment. The API input that lets an organiser opt out, and the
+            // guard locking the flag once the match starts, are phase 3;
+            // there is no way to say "friendly" yet.
+            ranked: true,
+            rating_requirement: None,
             created_at: now.clone(),
         };
 
@@ -4486,6 +4505,9 @@ impl Api {
             logo_url,
             invite_token: Some(new_id()),
             follower_count: 0,
+            // Unrated until the team plays something — see `UserRecord`
+            // above.
+            ratings: HashMap::new(),
             created_at: now.clone(),
         };
         // The creator becomes the first member with the Owner role (already

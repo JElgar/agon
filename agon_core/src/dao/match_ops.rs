@@ -4,8 +4,6 @@
 
 use std::collections::HashMap;
 
-use aws_sdk_dynamodb::error::SdkError;
-use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 use aws_sdk_dynamodb::types::{
     AttributeValue, DeleteRequest, Put, TransactWriteItem, WriteRequest,
 };
@@ -13,6 +11,7 @@ use aws_sdk_dynamodb::types::{
 use super::audience::AudienceMember;
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
+use super::is_update_conditional_failure;
 use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_pk, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::{
@@ -791,12 +790,4 @@ impl Dao {
 /// Serialize any record value into a DynamoDB AttributeValue (nested map/list).
 fn to_attr<T: serde::Serialize>(value: &T) -> DaoResult<AttributeValue> {
     Ok(serde_dynamo::to_attribute_value(value)?)
-}
-
-fn is_update_conditional_failure(err: &SdkError<UpdateItemError>) -> bool {
-    matches!(
-        err,
-        SdkError::ServiceError(se)
-            if matches!(se.err(), UpdateItemError::ConditionalCheckFailedException(_))
-    )
 }

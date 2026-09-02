@@ -38,6 +38,7 @@ pub mod user;
 
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError;
+use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 
 /// True if a `TransactWriteItems` failure was caused by a condition check (one
 /// of our `attribute_(not_)exists` guards) rather than a transient error.
@@ -53,6 +54,24 @@ pub(crate) fn is_transaction_conditional_failure(err: &SdkError<TransactWriteIte
         },
         _ => false,
     }
+}
+
+/// True if a plain (non-transactional) `UpdateItem` failed its
+/// `ConditionExpression`. Distinguishing that from a real error is what lets
+/// a guarded update mean "not found" (`attribute_exists(PK)`), "somebody else
+/// got there first" (an optimistic lock), or "this match didn't beat the
+/// record" (`update_best_figures`) rather than a 500.
+///
+/// Lives here, beside [`is_transaction_conditional_failure`], because it is
+/// the same question asked of the other write API. It was previously a
+/// private copy in both `stats` and `user`; `rating` needed a third, which is
+/// where duplication stops being cheaper than a shared function.
+pub(crate) fn is_update_conditional_failure(err: &SdkError<UpdateItemError>) -> bool {
+    matches!(
+        err,
+        SdkError::ServiceError(se)
+            if matches!(se.err(), UpdateItemError::ConditionalCheckFailedException(_))
+    )
 }
 
 // Re-exported for the API layer once wired in; unused within the crate for now.

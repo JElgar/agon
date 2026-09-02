@@ -2,12 +2,11 @@
 
 use std::collections::HashMap;
 
-use aws_sdk_dynamodb::error::SdkError;
-use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 use aws_sdk_dynamodb::types::{AttributeValue, Put, TransactWriteItem};
 
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
+use super::is_update_conditional_failure;
 use super::item::{ATTR_PK, ATTR_SK, from_item, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::{AuthGuardRecord, EmailGuardRecord, UserRecord};
@@ -253,13 +252,4 @@ impl Dao {
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
     }
-}
-
-/// True if an `UpdateItem` failed its condition expression.
-fn is_update_conditional_failure(err: &SdkError<UpdateItemError>) -> bool {
-    matches!(
-        err,
-        SdkError::ServiceError(se)
-            if matches!(se.err(), UpdateItemError::ConditionalCheckFailedException(_))
-    )
 }

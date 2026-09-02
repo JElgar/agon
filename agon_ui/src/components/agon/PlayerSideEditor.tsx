@@ -239,6 +239,14 @@ export function PlayerSideEditor({
         autoHighlight
         inputValue={term}
         onInputValueChange={setTerm}
+        // Without this, selecting an item makes the combobox fill the input
+        // with a stringified dump of the selected `SearchItem` object (no
+        // natural label) right after `onValueChange` below clears it back to
+        // "" — the two land in the same batch and the fill wins, leaving the
+        // box showing `{"kind":"user",...}` and re-querying `/users/search`
+        // for that garbage. We always want it blank post-select (the picked
+        // player becomes a tagged row, not text in the box), so just say so.
+        itemToStringLabel={() => ''}
         onValueChange={(next) => {
           const item = next as SearchItem | null
           if (!item) return

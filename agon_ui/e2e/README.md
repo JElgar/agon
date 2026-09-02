@@ -93,6 +93,31 @@ The very first login creates the account's Agon profile too (via
 `CreateProfileForm`, driven automatically by `auth.setup.ts`) — nothing else
 to provision by hand.
 
+### Provisioning the search-target account (optional)
+
+`tests/team-creation.spec.ts` needs a *second*, independent real Agon user to
+search for and select — the primary test account can't play that role since
+the search box excludes the signed-in caller themselves. Provisioning it is
+optional: without `E2E_SEARCH_TARGET_EMAIL`/`E2E_SEARCH_TARGET_PASSWORD` set,
+that one test skips itself (with a message saying so) and the rest of the
+suite runs as normal.
+
+Set it up exactly like the primary account above — same admin-API call
+(different email), same `pulumi config set` pair:
+
+```bash
+pulumi config set e2eSearchTargetEmail agon-e2e-search-target@example.com
+pulumi config set --secret e2eSearchTargetPassword '<a real password>'
+```
+
+`agon_infra/index.ts` doesn't need to export these the way it does
+`e2eTestEmail`/`e2eTestPassword` — nothing else in the stack reads them, so a
+plain `pulumi config set` on the target stack is enough; only the CI job
+needs to fetch them (`test-ui-e2e.yml`, alongside the primary account's). The
+first run of `team-creation.spec.ts` against a freshly-provisioned account
+creates its Agon profile the same way `auth.setup.ts` does for the primary
+one (see `support/secondAccount.ts`); every run after that just signs in.
+
 ## Running
 
 Locally, the suite just reads plain env vars — Pulumi is only wired into the
@@ -127,6 +152,15 @@ npm run test:e2e
 
 `npm run test:e2e:ui` opens Playwright's UI mode for interactively stepping
 through a run.
+
+To also run `team-creation.spec.ts`'s real-user-search case (skipped
+otherwise), add the search-target account's credentials:
+
+```bash
+E2E_TEST_EMAIL=... E2E_TEST_PASSWORD=... \
+E2E_SEARCH_TARGET_EMAIL=... E2E_SEARCH_TARGET_PASSWORD=... \
+npm run test:e2e
+```
 
 ## Running fully local
 
@@ -208,6 +242,21 @@ against your own machine instead:
    npm run test:e2e
    ```
 
+   To also seed the optional search-target account (see "Provisioning the
+   search-target account" above) against the local stack, reuse the same
+   script under different env var names — it doesn't care which names you
+   read the email/password from, just that `E2E_TEST_EMAIL`/`E2E_TEST_PASSWORD`
+   are set to whatever you're seeding:
+
+   ```bash
+   E2E_TEST_EMAIL=search-target@example.com E2E_TEST_PASSWORD=local-search-target-password \
+   node agon_ui/e2e/local-seed-user.mjs
+
+   E2E_TEST_EMAIL=e2e@example.com E2E_TEST_PASSWORD=local-e2e-test-password \
+   E2E_SEARCH_TARGET_EMAIL=search-target@example.com E2E_SEARCH_TARGET_PASSWORD=local-search-target-password \
+   npm run test:e2e
+   ```
+
 `make test-ui-e2e-local` wraps steps 2 and 7 (seed + run, with matching
 defaults) — steps 1, 3–6 (the backing services and the four app processes:
 agon_service, agon_worker, the stream bridge, the UI dev server) still need
@@ -221,6 +270,10 @@ to be up first.
   recording a goal with an assist, undoing it, half-time (and that scoring
   is unavailable while the clock is stopped), resuming the second half, a
   second goal, full-time, and finishing the match.
+- `tests/team-creation.spec.ts` — creating a team and searching for and
+  selecting a *real* registered user (not just tagging a guest) from
+  `PlayerSideEditor`'s combobox, then confirming the invite actually landed.
+  Needs the optional search-target account above; skips itself without it.
 
 Test data isn't cleaned up afterwards — created matches accumulate against
 the test account like any other match would, named `E2E football …` / `E2E

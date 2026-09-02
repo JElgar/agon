@@ -46,6 +46,20 @@ jobs:
           echo "::add-mask::$PASSWORD"
           echo "E2E_TEST_EMAIL=$EMAIL" >> "$GITHUB_ENV"
           echo "E2E_TEST_PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
+
+          # Optional second account for team-creation.spec.ts's real-user-
+          # search case (see agon_ui/e2e/README.md's "Provisioning the
+          # search-target account") — that one test just skips itself if
+          # this isn't configured on the stack, so don't fail the job over
+          # a missing key.
+          SEARCH_TARGET_EMAIL="$(pulumi config get e2eSearchTargetEmail 2>/dev/null || true)"
+          SEARCH_TARGET_PASSWORD="$(pulumi config get e2eSearchTargetPassword 2>/dev/null || true)"
+          if [ -n "$SEARCH_TARGET_EMAIL" ] && [ -n "$SEARCH_TARGET_PASSWORD" ]; then
+            echo "::add-mask::$SEARCH_TARGET_EMAIL"
+            echo "::add-mask::$SEARCH_TARGET_PASSWORD"
+            echo "E2E_SEARCH_TARGET_EMAIL=$SEARCH_TARGET_EMAIL" >> "$GITHUB_ENV"
+            echo "E2E_SEARCH_TARGET_PASSWORD=$SEARCH_TARGET_PASSWORD" >> "$GITHUB_ENV"
+          fi
         env:
           PULUMI_ACCESS_TOKEN: ${{ secrets.pulumi-access-token }}
 

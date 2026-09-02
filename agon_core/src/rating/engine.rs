@@ -35,9 +35,12 @@
 //! summation is order-dependent, and the sides it starts from live in a
 //! `HashMap` on `MatchRecord`, whose iteration order is not stable even
 //! within one process. [`group_by_side`] therefore sorts sides by `side_id`
-//! and players by `user_id` before any arithmetic happens, and
-//! [`rate_sides`] preserves that order. Every rating this module produces is
-//! a function of the participant *set*, never of the order it was handed in.
+//! and players by `user_id` before any arithmetic happens — and
+//! [`rate_sides`] sorts again itself rather than trusting that it was handed
+//! sorted input, because it is public and `RatingSide`'s fields are public
+//! too, so "the caller sorted" is a convention a caller can break without
+//! the compiler noticing. Every rating this module produces is a function of
+//! the participant *set*, never of the order it was handed in.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -69,8 +72,15 @@ pub const INITIAL_SIGMA: f64 = 25.0 / 3.0;
 /// the band widths are derived from. Retuning one means retuning the other.
 pub const BETA: f64 = 25.0 / 6.0;
 
-/// Lower clamp on `σ` inside the update, preventing a player's uncertainty
-/// from collapsing to zero (and their rating with it). The crate's default.
+/// Lower clamp on the *variance multiplier* inside the uncertainty update —
+/// not on `σ` itself, which is the reading the name invites. Upstream
+/// computes `σ_after = σ_before · sqrt(max(1 − (σp²/σt²)·Δ, tol))`, so this
+/// floors the bracketed term: the effective clamp is `σ_before / 1000` per
+/// update, not an absolute `1e-6`. Worth stating plainly because anyone
+/// retuning this to reach a particular `σ` floor would otherwise set a value
+/// about six orders of magnitude away from what they meant, and the pinned-
+/// config test only checks it still equals upstream's default — it would not
+/// catch the misunderstanding. The crate's default.
 pub const UNCERTAINTY_TOLERANCE: f64 = 0.000_001;
 
 /// The config every rating in this system is computed with.
@@ -296,13 +306,35 @@ pub fn rate_sides(
         return Err(RatingError::UnknownWinnerSide(winner.to_string()));
     }
 
-    let groups: Vec<Vec<WengLinRating>> = sides
+    // Defensive ordering, not tidiness. The arithmetic below is
+    // floating-point and therefore order-dependent: reversing the side order
+    // or a side's player order moves results in the last bits.
+    // `group_by_side` already sorts, but this function is `pub` and
+    // `RatingSide`'s fields are too, so a caller that assembles sides itself
+    // is not covered by that — and the repair path, reconstructing sides
+    // from stored history items, is exactly such a caller. Replay equality
+    // is asserted bit-for-bit, so a few ULPs is the difference between
+    // "converged, nothing to do" and "rewrite every rating on every run".
+    // Sorting here makes the module's determinism guarantee true by
+    // construction rather than by convention.
+    let mut ordered: Vec<&RatingSide> = sides.iter().collect();
+    ordered.sort_by(|a, b| a.side_id.cmp(&b.side_id));
+    let ordered_players: Vec<Vec<&RatedPlayer>> = ordered
         .iter()
-        .map(|side| side.players.iter().map(|p| p.rating.into()).collect())
+        .map(|side| {
+            let mut players: Vec<&RatedPlayer> = side.players.iter().collect();
+            players.sort_by(|a, b| a.user_id.cmp(&b.user_id));
+            players
+        })
+        .collect();
+
+    let groups: Vec<Vec<WengLinRating>> = ordered_players
+        .iter()
+        .map(|players| players.iter().map(|p| p.rating.into()).collect())
         .collect();
     // Rank 1 for the winner, 2 for everybody else; all 1 for a draw. Equal
     // ranks are how Weng-Lin expresses a tie.
-    let ranked: Vec<(&[WengLinRating], MultiTeamOutcome)> = sides
+    let ranked: Vec<(&[WengLinRating], MultiTeamOutcome)> = ordered
         .iter()
         .zip(&groups)
         .map(|(side, group)| {
@@ -316,11 +348,11 @@ pub fn rate_sides(
 
     let rated = weng_lin_multi_team(&ranked, &config());
 
-    Ok(sides
+    Ok(ordered_players
         .iter()
         .zip(rated)
-        .flat_map(|(side, new_group)| {
-            side.players
+        .flat_map(|(players, new_group)| {
+            players
                 .iter()
                 .zip(new_group)
                 .map(|(player, after)| RatingUpdate {
@@ -383,6 +415,13 @@ mod tests {
 
     fn rating(mu: f64, sigma: f64) -> PlayerRating {
         PlayerRating { mu, sigma }
+    }
+
+    fn rated_player(user_id: &str, rating: PlayerRating) -> RatedPlayer {
+        RatedPlayer {
+            user_id: user_id.to_string(),
+            rating,
+        }
     }
 
     /// A 1v1: `a` on side `home`, `b` on side `away`.
@@ -686,6 +725,67 @@ mod tests {
         two.sort_by(|a, b| a.user_id.cmp(&b.user_id));
 
         assert_eq!(one, two, "participant order leaked into the result");
+    }
+
+    /// The same guarantee one level down, at the public `rate_sides` entry
+    /// point. `rate_match` gets its ordering from `group_by_side`, so it
+    /// would pass this even if `rate_sides` trusted its caller — but
+    /// `rate_sides` is public and `RatingSide`'s fields are public, so the
+    /// repair path can and will assemble sides itself from stored history
+    /// items. Weng-Lin's arithmetic is floating-point and genuinely
+    /// order-sensitive in the last bits; replay equality is asserted
+    /// bit-for-bit, so an unsorted caller would make repair believe every
+    /// rating had drifted and rewrite them on every single run.
+    #[test]
+    fn rate_sides_sorts_its_own_input_rather_than_trusting_the_caller() {
+        // Deterministic LCG rather than a fixed hand-picked case. A single
+        // 2v2 is not enough: order-sensitivity here is last-bit
+        // floating-point behaviour that only *some* rating combinations
+        // exhibit, so one case passes whether or not the sort exists — a
+        // green test that guards nothing. Sweeping many shapes makes the
+        // failure reliable. Fixed seed, so it is reproducible, not flaky.
+        let mut seed = 0x2026_0902_u64;
+        let mut next = move || {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            ((seed >> 33) as f64) / ((1u64 << 31) as f64)
+        };
+
+        for case in 0..250 {
+            let side_count = 2 + (case % 3);
+            let sides: Vec<RatingSide> = (0..side_count)
+                .map(|s| RatingSide {
+                    side_id: format!("side{s}"),
+                    players: (0..2 + (case + s) % 3)
+                        .map(|p| {
+                            rated_player(
+                                &format!("s{s}p{p}"),
+                                rating(18.0 + next() * 14.0, 1.5 + next() * 7.0),
+                            )
+                        })
+                        .collect(),
+                })
+                .collect();
+
+            let reversed: Vec<RatingSide> = sides
+                .iter()
+                .rev()
+                .map(|side| RatingSide {
+                    side_id: side.side_id.clone(),
+                    players: side.players.iter().rev().cloned().collect(),
+                })
+                .collect();
+
+            let winner = Some("side0");
+            let mut forwards = rate_sides(&sides, winner).unwrap();
+            let mut backwards = rate_sides(&reversed, winner).unwrap();
+            forwards.sort_by(|a, b| a.user_id.cmp(&b.user_id));
+            backwards.sort_by(|a, b| a.user_id.cmp(&b.user_id));
+
+            assert_eq!(
+                forwards, backwards,
+                "case {case}: side/player order leaked into rate_sides' arithmetic"
+            );
+        }
     }
 
     // -----------------------------------------------------------------

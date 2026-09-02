@@ -135,7 +135,16 @@ export function TeamPicker({ team, onChange, placeholder = 'Link a team…' }: T
         <span className="flex-1 truncate text-sm font-medium">{team.name}</span>
         <button
           type="button"
-          onClick={() => onChange(null)}
+          onClick={() => {
+            onChange(null)
+            // The combobox sets `term` to a stringified form of the picked
+            // team on select (no `itemToStringValue` — the input's hidden
+            // while a team's linked, so it's never been worth wiring one
+            // up). Clear it here too, or the search box reappears pre-filled
+            // with that stringified team instead of empty.
+            setTerm('')
+            setDebounced('')
+          }}
           className="text-muted-foreground transition-colors hover:text-foreground"
           aria-label={`Unlink ${team.name}`}
         >
@@ -155,7 +164,10 @@ export function TeamPicker({ team, onChange, placeholder = 'Link a team…' }: T
       inputValue={term}
       onInputValueChange={setTerm}
       onValueChange={(next) => {
-        if (next) onChange(next as TeamListItem)
+        if (!next) return
+        onChange(next as TeamListItem)
+        setTerm('')
+        setDebounced('')
       }}
     >
       <ComboboxInput placeholder={placeholder} showTrigger={false} className="mb-2" />

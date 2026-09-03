@@ -9,7 +9,7 @@ use super::error::{DaoError, DaoResult};
 use super::is_update_conditional_failure;
 use super::item::{ATTR_PK, ATTR_SK, from_item, s, to_item};
 use super::keys::{Pk, Sk};
-use super::records::{AuthGuardRecord, EmailGuardRecord, UserRecord};
+use super::records::{AuthGuardRecord, EmailGuardRecord, RatingVisibilityRecord, UserRecord};
 
 pub const TYPE_USER: &str = "user";
 pub const TYPE_EMAIL_GUARD: &str = "email_guard";
@@ -172,15 +172,24 @@ impl Dao {
         Ok(out)
     }
 
-    /// Update a user's mutable profile fields (name, profile image). Email
-    /// changes are handled separately (they must re-run the guard) and are not
-    /// covered here. Fails with `NotFound` if the user doesn't exist.
+    /// Update a user's mutable profile fields (name, profile image, rating
+    /// visibility). Email changes are handled separately (they must re-run the
+    /// guard) and are not covered here. Fails with `NotFound` if the user
+    /// doesn't exist.
+    ///
+    /// `rating_visibility` is `Some` only when the caller is changing it, like
+    /// every other argument here. It has no "clear" case, unlike
+    /// `profile_image_url`: the record's serde default (`Private`) is what an
+    /// account written before the field existed reads as, so removing the
+    /// attribute and writing `Private` are the same state, and offering both
+    /// would be two ways to say one thing.
     #[tracing::instrument(skip(self))]
     pub async fn update_user_profile(
         &self,
         user_id: &str,
         name: Option<&str>,
         profile_image_url: Option<Option<&str>>,
+        rating_visibility: Option<RatingVisibilityRecord>,
     ) -> DaoResult<()> {
         let mut set_parts: Vec<String> = Vec::new();
         let mut remove_parts: Vec<String> = Vec::new();
@@ -205,6 +214,15 @@ impl Dao {
                     names.insert("#img".into(), "profile_image_url".into());
                 }
             }
+        }
+
+        if let Some(visibility) = rating_visibility {
+            set_parts.push("#rv = :rv".into());
+            names.insert("#rv".into(), "rating_visibility".into());
+            // Through serde rather than a literal `"public"`/`"private"`, so
+            // `RatingVisibilityRecord`'s own `rename_all` stays the single
+            // place the stored spelling is decided.
+            values.insert(":rv".into(), serde_dynamo::to_attribute_value(visibility)?);
         }
 
         if set_parts.is_empty() && remove_parts.is_empty() {

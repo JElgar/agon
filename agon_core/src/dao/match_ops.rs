@@ -447,6 +447,13 @@ impl Dao {
         // overwrites. No "clear" case yet (Phase 1 doesn't need one — a
         // match's sport, and so its format shape, doesn't change).
         format: Option<MatchFormatRecord>,
+        // Flip the match between ranked and friendly. `None` leaves it alone.
+        // Whether the flip is still *allowed* is the API's call, not this
+        // one's — the lock ("once `starts_at` has passed or any score has been
+        // submitted") is a question about the state the caller already read,
+        // and re-reading it here to re-decide would be a second answer that
+        // could disagree with the first. See `MatchRecord::ranked`.
+        ranked: Option<bool>,
         side_names: &[(String, Option<String>)],
     ) -> DaoResult<()> {
         let mut set: Vec<String> = Vec::new();
@@ -512,6 +519,11 @@ impl Dao {
             set.push("#fmt = :fmt".into());
             names.insert("#fmt".into(), "format".into());
             values.insert(":fmt".into(), to_attr(&fmt)?);
+        }
+        if let Some(is_ranked) = ranked {
+            set.push("#ranked = :ranked".into());
+            names.insert("#ranked".into(), "ranked".into());
+            values.insert(":ranked".into(), AttributeValue::Bool(is_ranked));
         }
         if !side_names.is_empty() {
             // Same literal attribute name ("name") as the top-level `#name`

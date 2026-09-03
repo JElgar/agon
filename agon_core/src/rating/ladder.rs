@@ -123,6 +123,31 @@ impl Ladder {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// A ladder read back from a key we already stored.
+    ///
+    /// This does not weaken the invariant above, and the distinction is worth
+    /// being precise about: [`ladder_for`] remains the only place a ladder is
+    /// *chosen* — "what pool does this result count towards" is still one
+    /// match arm. This is the other direction. A profile item carries a
+    /// `ratings` map keyed by ladder string and no sport at all, so the read
+    /// path (`bands::bands_for`, and the API mapping behind it) has no way to
+    /// re-derive a `Ladder` from `ladder_for` and would otherwise have to
+    /// reach past `bands_for` to `DEFAULT_BANDS` directly — silently opting
+    /// out of the per-sport tuning `bands_for` exists to keep cheap.
+    ///
+    /// It deliberately does **not** validate, and that is the whole reason it
+    /// takes a raw key rather than going through [`ladder_for_tag`]: a key
+    /// written by a newer build (`"tennis:doubles"`, per the split this type
+    /// exists to make additive) parses to [`Sport::Other`] and would come
+    /// back `None`, which would leave an older build showing that rating's
+    /// number with no band rather than with the shared default one. Reading
+    /// a key back as itself is always right; deciding a *new* one never
+    /// happens here.
+    #[must_use]
+    pub fn from_key(key: impl Into<String>) -> Self {
+        Ladder(key.into())
+    }
 }
 
 impl fmt::Display for Ladder {
@@ -224,6 +249,25 @@ mod tests {
         assert_eq!(Sport::from_tag("kabaddi"), Sport::Other);
         assert_eq!(ladder_for_tag("kabaddi"), None);
         assert_eq!(ladder_for_tag(""), None);
+    }
+
+    /// The read-side constructor is the exact inverse of the stored key, for
+    /// every ladder *and* for a key this build has never heard of — a
+    /// `"tennis:doubles"` rating written by a newer deploy must still band
+    /// against the shared table rather than losing its band, which is what
+    /// `ladder_for_tag` returning `None` for it would cause.
+    #[test]
+    fn a_stored_key_reads_back_as_itself_even_when_unknown() {
+        for sport in Sport::ALL {
+            if let Some(ladder) = ladder_for(sport) {
+                assert_eq!(Ladder::from_key(ladder.as_str()), ladder);
+            }
+        }
+        assert_eq!(
+            Ladder::from_key("tennis:doubles").as_str(),
+            "tennis:doubles"
+        );
+        assert_eq!(ladder_for_tag("tennis:doubles"), None, "still not mintable");
     }
 
     /// Distinct sports never collide onto one ladder — the whole per-sport

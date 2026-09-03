@@ -42,10 +42,12 @@ use crate::team::{AssignableTeamRole, Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
     BestBowlingFigures, BestFigure, Comment, ConfirmedScore, CricketPlayerStats, CricketScore,
     CricketScoreInnings, DevicePlatform, FeedMatch, FootballPlayerStats, FootballScore,
-    GenericPlayerStats, Location, Match, MatchOutcome, MatchPlayer, MatchSide, MatchSocial,
-    MatchStatus, MatchType, NetballScore, PendingScore, Photo, RosterPreviewPlayer, Score,
+    GenericPlayerStats, LadderRating, Location, Match, MatchOutcome, MatchPlayer, MatchSide,
+    MatchSocial, MatchStatus, MatchType, NetballScore, PendingScore, Photo, PlacedRating,
+    RatingBand, RatingHistoryEntry, RatingPlacement, RatingVisibility, RosterPreviewPlayer, Score,
     ScoreConfirmation, ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse,
-    ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
+    ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore, UnratedPlacement, UserProfile,
+    UserStats,
 };
 use agon_core::dao::error::DaoError;
 use agon_core::dao::live_score_ops::NewLiveEvent;
@@ -67,9 +69,11 @@ use agon_core::dao::records::{
     NetballFoulKindRecord, NetballGoalEventRecord, NetballLiveEventRecord,
     NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord, NextBallContextRecord,
     NotificationKindRecord, NotificationRecord, OversRecord, PendingScoreRecord,
-    ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord, ScoreSubmissionRecord,
-    TeamMemberRecord, TeamRecord, UserRecord, UserStatsRecord,
+    RatingHistoryRecord, RatingRecord, RatingVisibilityRecord, ScoreConfirmationRecord,
+    ScoreRecord, ScoreResponseRecord, ScoreSubmissionRecord, TeamMemberRecord, TeamRecord,
+    UserRecord, UserStatsRecord,
 };
+use agon_core::rating::{Band, Ladder, Placement, bands_for, display};
 
 /// Parse an RFC-3339 timestamp string stored by the DAO into a UTC datetime,
 /// defaulting to the epoch on a malformed value (reads never fail on bad data).
@@ -133,7 +137,18 @@ pub fn device_platform_to_record(p: &DevicePlatform) -> DevicePlatformRecord {
 
 /// Build the public `UserProfile` from a stored user record (its inline
 /// per-sport `stats` map) and the viewer-relative follow flag.
-pub fn user_profile_from_record(user: &UserRecord, is_followed_by_me: bool) -> UserProfile {
+///
+/// `viewer_id` is the id of the account making the request, and it decides
+/// only one thing: whether a `Private` account's ratings are included.
+/// `None` — a context with no resolved caller — is the safe direction, and it
+/// is not a fudge: an unknown viewer is by definition not the owner, so the
+/// answer it produces (public ratings shown, private ones not) is the correct
+/// one rather than a degraded one.
+pub fn user_profile_from_record(
+    user: &UserRecord,
+    is_followed_by_me: bool,
+    viewer_id: Option<&str>,
+) -> UserProfile {
     UserProfile {
         id: user.id.clone(),
         name: user.name.clone(),
@@ -142,9 +157,154 @@ pub fn user_profile_from_record(user: &UserRecord, is_followed_by_me: bool) -> U
             asset_id: None,
         }),
         stats: user_stats_from_record(&user.stats),
+        ratings: visible_ladder_ratings(user, viewer_id),
+        rating_visibility: rating_visibility_from_record(user.rating_visibility),
         follower_count: user.follower_count as u32,
         following_count: user.following_count as u32,
         is_followed_by_me,
+    }
+}
+
+// ===========================================================================
+// Ratings
+//
+// Every number below is derived here, at read time, from the native μ/σ on
+// the stored record — nothing in this section is persisted in the form it is
+// returned. That is what makes both the display scale and the band
+// thresholds retunable by deploy rather than by backfill, and it is why the
+// service, not the client, owns the band lookup.
+// ===========================================================================
+
+/// Whether this viewer may see this account's ratings at all.
+///
+/// The owner always can; everyone else only when the account has opted in.
+/// "Everyone else" genuinely means everyone — followers included. Following
+/// somebody is not consent to see their rating, and the design is explicit
+/// that opting in unlocks information rather than access.
+#[must_use]
+pub fn ratings_visible_to(user: &UserRecord, viewer_id: Option<&str>) -> bool {
+    user.rating_visibility == RatingVisibilityRecord::Public || viewer_id == Some(user.id.as_str())
+}
+
+/// This account's ratings as this viewer may see them — empty when hidden.
+///
+/// Empty rather than absent, with `UserProfile::rating_visibility` carried
+/// alongside so the two empty states stay distinguishable. Note this hides
+/// the *number and the band together*: revealing a band while hiding the
+/// number would be no privacy at all, since a band is a 150-point window on
+/// the value it was supposed to conceal.
+fn visible_ladder_ratings(user: &UserRecord, viewer_id: Option<&str>) -> Vec<LadderRating> {
+    if ratings_visible_to(user, viewer_id) {
+        ladder_ratings_from_record(&user.ratings)
+    } else {
+        Vec::new()
+    }
+}
+
+/// Map a stored `ratings` map to the API list, most-played first.
+///
+/// Sorted here rather than by each client because the profile headline is a
+/// portfolio — the top one or two sports by games played — and that ordering
+/// is one server decision, not one per surface. Ties break on the ladder name
+/// so the order is stable between two reads of an unchanged profile, which a
+/// `HashMap`'s iteration order is not.
+#[must_use]
+pub fn ladder_ratings_from_record(
+    ratings: &std::collections::HashMap<String, RatingRecord>,
+) -> Vec<LadderRating> {
+    let mut out: Vec<LadderRating> = ratings
+        .iter()
+        .map(|(ladder, rec)| ladder_rating_from_record(ladder, rec))
+        .collect();
+    out.sort_by(|a, b| {
+        b.matches_rated
+            .cmp(&a.matches_rated)
+            .then_with(|| a.ladder.cmp(&b.ladder))
+    });
+    out
+}
+
+/// One ladder's stored rating, in the numbers a player reads.
+fn ladder_rating_from_record(ladder: &str, rec: &RatingRecord) -> LadderRating {
+    let shown = display(rec.mu, rec.sigma);
+    // `Ladder::from_key` rather than `ladder_for_tag`, because a key written
+    // by a newer build (`"tennis:doubles"`) is not one this build can mint
+    // and would come back `None` — which would drop the band off a rating
+    // whose number we are still showing. See that function's doc comment.
+    let scale = bands_for(&Ladder::from_key(ladder));
+    LadderRating {
+        ladder: ladder.to_string(),
+        rating: shown.rating,
+        confidence: shown.confidence,
+        floor: shown.floor,
+        // The counter is a `u64` on the record and an `i32` on the wire (the
+        // only integer poem-openapi and the generated clients agree on).
+        // Saturating rather than wrapping, in both narrowings: the placement
+        // gate is "at least 5", so clamping an absurd count *high* keeps a
+        // real player placed, where a wrap could quietly unplace them.
+        matches_rated: i32::try_from(rec.matches_rated).unwrap_or(i32::MAX),
+        placement: placement_to_api(scale.placement(
+            shown.rating,
+            u32::try_from(rec.matches_rated).unwrap_or(u32::MAX),
+        )),
+        last_rated_at: parse_ts(&rec.last_rated_at),
+    }
+}
+
+/// The engine's placement state as the API union.
+fn placement_to_api(placement: Placement) -> RatingPlacement {
+    match placement {
+        Placement::Unrated { matches_remaining } => RatingPlacement::Unrated(UnratedPlacement {
+            matches_remaining: matches_remaining as i32,
+        }),
+        Placement::Placed(band) => RatingPlacement::Placed(PlacedRating {
+            band: band_to_api(band),
+        }),
+    }
+}
+
+/// The engine's band as the API enum. Exhaustive on purpose: a band added to
+/// `agon_core::rating::Band` has to be handled here, so the two can't drift.
+fn band_to_api(band: Band) -> RatingBand {
+    match band {
+        Band::Beginner => RatingBand::Beginner,
+        Band::Improver => RatingBand::Improver,
+        Band::Intermediate => RatingBand::Intermediate,
+        Band::Advanced => RatingBand::Advanced,
+        Band::Expert => RatingBand::Expert,
+        Band::Elite => RatingBand::Elite,
+    }
+}
+
+pub fn rating_visibility_from_record(visibility: RatingVisibilityRecord) -> RatingVisibility {
+    match visibility {
+        RatingVisibilityRecord::Private => RatingVisibility::Private,
+        RatingVisibilityRecord::Public => RatingVisibility::Public,
+    }
+}
+
+pub fn rating_visibility_to_record(visibility: &RatingVisibility) -> RatingVisibilityRecord {
+    match visibility {
+        RatingVisibility::Private => RatingVisibilityRecord::Private,
+        RatingVisibility::Public => RatingVisibilityRecord::Public,
+    }
+}
+
+/// One stored history item as a point on the rating-over-time chart.
+///
+/// The `rating`/`confidence`/`floor` here are the *after* side of the stored
+/// movement, put through the same display mapping as everything else, so a
+/// chart's last point equals the number on the profile. `delta` is the one
+/// value that is **not** recomputed — see `RatingHistoryEntry::delta`.
+pub fn rating_history_entry_from_record(rec: &RatingHistoryRecord) -> RatingHistoryEntry {
+    let shown = display(rec.movement.mu_after, rec.movement.sigma_after);
+    RatingHistoryEntry {
+        match_id: rec.match_id.clone(),
+        played_at: parse_ts(&rec.played_at),
+        rating: shown.rating,
+        confidence: shown.confidence,
+        floor: shown.floor,
+        delta: rec.movement.display_delta,
     }
 }
 
@@ -879,6 +1039,7 @@ pub fn team_from_records(team: &TeamRecord, is_followed_by_me: bool) -> Team {
         invite_token: team.invite_token.clone(),
         follower_count: team.follower_count as u32,
         is_followed_by_me,
+        ratings: ladder_ratings_from_record(&team.ratings),
     }
 }
 
@@ -1024,7 +1185,45 @@ pub fn match_from_records(
             i_liked,
         },
         format: rec.format.as_ref().map(match_format_from_record),
+        ranked: rec.ranked,
     }
+}
+
+/// Whether a match's `ranked` flag is still free to change, and if not, why.
+///
+/// `None` means the flag may still be set. `Some(reason)` is the message the
+/// caller gets back, and the whole rule is that the decision has to be made
+/// **before the result is knowable**: otherwise you log a game, see that you
+/// won, and only then enrol it in the ladder.
+///
+/// Three closing conditions rather than the plan's two. A submitted score
+/// comes first because it is the one that actually matters, and it is checked
+/// on the record's own fields rather than inferred: `pending_score` is
+/// *cleared* by a dispute, so a match that has been scored and disputed has
+/// neither score set and would otherwise reopen. `status != "scheduled"`
+/// catches exactly that case (and live scoring having started), and is the
+/// same phrasing the format lock a few lines up in `update_match` uses, so
+/// the two locks agree about what "scoring has started" means. The clock
+/// check is last because a match can be scored before its own start time.
+///
+/// It lives in `mapping` rather than beside its caller in `main.rs` for a
+/// dull reason worth writing down: `main.rs` has no test module, and this is
+/// exactly the kind of rule that needs one.
+#[must_use]
+pub fn ranked_lock_reason(
+    rec: &MatchRecord,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<&'static str> {
+    if rec.confirmed_score.is_some() || rec.pending_score.is_some() {
+        return Some("a score has already been submitted");
+    }
+    if rec.status != "scheduled" {
+        return Some("scoring has already started");
+    }
+    if parse_ts(&rec.starts_at) <= now {
+        return Some("the match has already started");
+    }
+    None
 }
 
 /// Build the feed's `FeedMatch` from a match summary (meta + sides, no
@@ -2016,6 +2215,12 @@ pub fn deleted_user_profile(actor_id: &str) -> UserProfile {
             netball: None,
             other: None,
         },
+        // A deleted account has no ratings to show and nobody to have opted
+        // in on its behalf, so it reads as an ordinary private profile with
+        // nothing on it — not as a special "hidden" state a client would
+        // need to render differently.
+        ratings: Vec::new(),
+        rating_visibility: RatingVisibility::Private,
         follower_count: 0,
         following_count: 0,
         is_followed_by_me: false,
@@ -2131,7 +2336,305 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+    use agon_core::dao::records::{RatingMovementRecord, UserStatsRecord};
+    use agon_core::rating::{INITIAL_MU, INITIAL_SIGMA, PLACEMENT_MATCHES};
     use poem_openapi::types::ToJSON;
+
+    // -----------------------------------------------------------------------
+    // Ratings
+    // -----------------------------------------------------------------------
+
+    fn user_record(id: &str, visibility: RatingVisibilityRecord) -> UserRecord {
+        UserRecord {
+            id: id.to_string(),
+            email: format!("{id}@example.com"),
+            name: "Test User".to_string(),
+            profile_image_url: None,
+            follower_count: 0,
+            following_count: 0,
+            unread_count: 0,
+            stats: UserStatsRecord::default(),
+            ratings: HashMap::new(),
+            rating_visibility: visibility,
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+        }
+    }
+
+    fn rating_record(mu: f64, matches_rated: u64) -> RatingRecord {
+        RatingRecord {
+            mu,
+            sigma: 2.0,
+            matches_rated,
+            last_rated_at: "2026-06-01T10:00:00.000Z".to_string(),
+        }
+    }
+
+    fn band_of(rating: &LadderRating) -> Option<RatingBand> {
+        match &rating.placement {
+            RatingPlacement::Placed(placed) => Some(placed.band),
+            RatingPlacement::Unrated(_) => None,
+        }
+    }
+
+    /// The whole point of `rating_visibility`: another account sees neither
+    /// the number nor the band of a private rating. Both, not one — a band is
+    /// a 150-point window on the number it would otherwise be hiding, so
+    /// leaking it would make the setting decorative.
+    #[test]
+    fn a_private_rating_is_hidden_from_everyone_but_its_owner() {
+        let mut user = user_record("u1", RatingVisibilityRecord::Private);
+        user.ratings
+            .insert("squash".to_string(), rating_record(30.0, 20));
+
+        let stranger = user_profile_from_record(&user, false, Some("u2"));
+        assert!(stranger.ratings.is_empty(), "a stranger must see nothing");
+        // Following somebody is not consent to see their rating.
+        let follower = user_profile_from_record(&user, true, Some("u2"));
+        assert!(follower.ratings.is_empty(), "a follower must see nothing");
+        let anonymous = user_profile_from_record(&user, false, None);
+        assert!(anonymous.ratings.is_empty(), "no viewer, no ratings");
+
+        let owner = user_profile_from_record(&user, false, Some("u1"));
+        assert_eq!(owner.ratings.len(), 1, "the owner always sees their own");
+        assert_eq!(owner.ratings[0].rating, 1650);
+    }
+
+    /// Opting in shows the number and the band to everybody — including a
+    /// viewer the service could not identify, which is the case comment and
+    /// notification hydration hit.
+    #[test]
+    fn a_public_rating_is_visible_to_anyone() {
+        let mut user = user_record("u1", RatingVisibilityRecord::Public);
+        user.ratings
+            .insert("squash".to_string(), rating_record(30.0, 20));
+
+        for viewer in [Some("u2"), None] {
+            let profile = user_profile_from_record(&user, false, viewer);
+            assert_eq!(profile.ratings.len(), 1, "viewer {viewer:?}");
+            assert_eq!(profile.ratings[0].rating, 1650);
+            assert_eq!(band_of(&profile.ratings[0]), Some(RatingBand::Advanced));
+        }
+    }
+
+    /// "Hidden" and "never played a ranked match" are different states with
+    /// different renderings, and an empty list alone cannot tell them apart —
+    /// which is exactly why the setting is returned beside the list rather
+    /// than inferred from it.
+    #[test]
+    fn an_empty_rating_list_is_disambiguated_by_the_visibility_field() {
+        let hidden = user_record("u1", RatingVisibilityRecord::Private);
+        let unplayed = user_record("u2", RatingVisibilityRecord::Public);
+
+        let hidden = user_profile_from_record(&hidden, false, Some("someone_else"));
+        let unplayed = user_profile_from_record(&unplayed, false, Some("someone_else"));
+
+        assert!(hidden.ratings.is_empty() && unplayed.ratings.is_empty());
+        assert_eq!(hidden.rating_visibility, RatingVisibility::Private);
+        assert_eq!(unplayed.rating_visibility, RatingVisibility::Public);
+    }
+
+    /// The portfolio order the profile headline is built on — most-played
+    /// first, so "your top one or two sports" is a `take(2)` and not a sort
+    /// every client reimplements. Ties break on the ladder name because a
+    /// `HashMap`'s order is not stable even within one process, and a profile
+    /// that reshuffled between two identical reads would look broken.
+    #[test]
+    fn ratings_come_back_most_played_first_with_a_stable_tiebreak() {
+        let mut ratings = HashMap::new();
+        ratings.insert("tennis".to_string(), rating_record(26.0, 3));
+        ratings.insert("squash".to_string(), rating_record(26.0, 40));
+        ratings.insert("netball".to_string(), rating_record(26.0, 3));
+
+        let ordered = ladder_ratings_from_record(&ratings);
+        let ladders: Vec<&str> = ordered.iter().map(|r| r.ladder.as_str()).collect();
+        assert_eq!(ladders, vec!["squash", "netball", "tennis"]);
+    }
+
+    /// Below the placement gate there is no band at all, only the countdown —
+    /// a two-game player has a ±500 interval and naming a tier off that would
+    /// be fake precision the UI would present as fact. The number is still
+    /// shown throughout, which is the other half of the deal.
+    #[test]
+    fn a_rating_below_the_placement_gate_carries_a_countdown_not_a_band() {
+        let mut ratings = HashMap::new();
+        ratings.insert("squash".to_string(), rating_record(INITIAL_MU, 2));
+        let shown = ladder_ratings_from_record(&ratings);
+
+        assert_eq!(shown[0].rating, 1500, "the number is shown regardless");
+        match &shown[0].placement {
+            RatingPlacement::Unrated(unrated) => {
+                assert_eq!(unrated.matches_remaining, PLACEMENT_MATCHES as i32 - 2);
+            }
+            RatingPlacement::Placed(_) => panic!("two games must not earn a band"),
+        }
+
+        ratings.insert(
+            "squash".to_string(),
+            rating_record(INITIAL_MU, u64::from(PLACEMENT_MATCHES)),
+        );
+        assert_eq!(
+            band_of(&ladder_ratings_from_record(&ratings)[0]),
+            Some(RatingBand::Intermediate),
+            "the fifth rated match places the account"
+        );
+    }
+
+    /// A brand-new account reads exactly 1500 ±750 with a floor of 750, and
+    /// the three agree arithmetically — they are shown side by side, so a
+    /// floor that didn't equal `rating - confidence` would look like a bug in
+    /// whichever of the three the reader trusted least.
+    #[test]
+    fn the_display_triple_is_self_consistent() {
+        let mut ratings = HashMap::new();
+        ratings.insert(
+            "squash".to_string(),
+            RatingRecord {
+                mu: INITIAL_MU,
+                sigma: INITIAL_SIGMA,
+                matches_rated: 0,
+                last_rated_at: "2026-06-01T10:00:00.000Z".to_string(),
+            },
+        );
+        let shown = &ladder_ratings_from_record(&ratings)[0];
+        assert_eq!(
+            (shown.rating, shown.confidence, shown.floor),
+            (1500, 750, 750)
+        );
+    }
+
+    /// A ladder key this build cannot mint — the `"tennis:doubles"` split the
+    /// `Ladder` newtype exists to keep additive — must still band against the
+    /// shared table. Going through `ladder_for_tag` would return `None` for
+    /// it and silently drop the band off a rating whose number is on screen.
+    #[test]
+    fn an_unknown_ladder_key_still_gets_a_band() {
+        let mut ratings = HashMap::new();
+        ratings.insert("tennis:doubles".to_string(), rating_record(30.0, 20));
+        let shown = ladder_ratings_from_record(&ratings);
+        assert_eq!(shown[0].ladder, "tennis:doubles");
+        assert_eq!(band_of(&shown[0]), Some(RatingBand::Advanced));
+    }
+
+    /// The chart's last point has to equal the number on the profile, so the
+    /// history entry maps the movement's *after* side through the same
+    /// display function — and `delta` is the value stored on the day, never a
+    /// recomputation, so a future retune of the scale can't rewrite what a
+    /// player was told.
+    #[test]
+    fn a_history_entry_shows_the_rating_after_the_match_and_the_stored_delta() {
+        let entry = rating_history_entry_from_record(&RatingHistoryRecord {
+            ladder: "squash".to_string(),
+            match_id: "m1".to_string(),
+            played_at: "2026-06-01T10:00:00.000Z".to_string(),
+            movement: RatingMovementRecord {
+                mu_before: 25.0,
+                sigma_before: 2.0,
+                mu_after: 26.0,
+                sigma_after: 2.0,
+                // Deliberately not `(26.0 - 25.0) * 30`: this is a log of
+                // what was displayed, so the mapping must copy it rather
+                // than derive it.
+                display_delta: 17,
+            },
+            applied_at: "2026-06-02T09:00:00.000Z".to_string(),
+        });
+        assert_eq!(entry.rating, 1530);
+        assert_eq!(entry.confidence, 180);
+        assert_eq!(entry.floor, 1350);
+        assert_eq!(entry.delta, 17);
+        assert_eq!(entry.match_id, "m1");
+    }
+
+    // -----------------------------------------------------------------------
+    // The ranked lock
+    // -----------------------------------------------------------------------
+
+    fn scheduled_match(starts_at: &str) -> MatchRecord {
+        MatchRecord {
+            id: "m1".to_string(),
+            created_by_user_id: "u1".to_string(),
+            name: "Tuesday".to_string(),
+            description: String::new(),
+            match_type: "squash".to_string(),
+            status: "scheduled".to_string(),
+            starts_at: starts_at.to_string(),
+            location: None,
+            sides: HashMap::new(),
+            header_photos: Vec::new(),
+            confirmed_score: None,
+            pending_score: None,
+            like_count: 0,
+            comment_count: 0,
+            live_seq: 0,
+            live_tip_seq: None,
+            format: None,
+            ranked: true,
+            rating_requirement: None,
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+        }
+    }
+
+    fn now() -> chrono::DateTime<chrono::Utc> {
+        parse_ts("2026-06-01T12:00:00.000Z")
+    }
+
+    /// The flag is free to change right up to kick-off. Anything stricter
+    /// would stop an organiser correcting a mis-click on a match nobody has
+    /// played yet, which is the only time the decision is genuinely free.
+    #[test]
+    fn ranked_is_open_until_the_match_starts() {
+        assert_eq!(
+            ranked_lock_reason(&scheduled_match("2026-06-01T18:00:00.000Z"), now()),
+            None
+        );
+    }
+
+    /// The bug this lock exists to prevent: log a game, look at the result,
+    /// and only *then* enrol it in the ladder. Once the clock passes
+    /// `starts_at` the outcome may be known, so the decision is closed.
+    #[test]
+    fn ranked_locks_once_the_match_has_started() {
+        assert_eq!(
+            ranked_lock_reason(&scheduled_match("2026-06-01T09:00:00.000Z"), now()),
+            Some("the match has already started")
+        );
+    }
+
+    /// A score can be submitted before the scheduled start time (nothing
+    /// stops a match being logged early), so the clock alone is not enough —
+    /// a submitted score closes the decision on its own.
+    #[test]
+    fn ranked_locks_on_a_submitted_score_even_before_the_start_time() {
+        let mut m = scheduled_match("2026-06-01T18:00:00.000Z");
+        m.pending_score = Some(PendingScoreRecord {
+            submission_id: "s1".to_string(),
+            score: ScoreRecord::Simple {
+                entries: HashMap::new(),
+            },
+            winner_side_id: None,
+            confirmations: Vec::new(),
+        });
+        assert_eq!(
+            ranked_lock_reason(&m, now()),
+            Some("a score has already been submitted")
+        );
+    }
+
+    /// The case a `confirmed_score`/`pending_score` check alone would miss: a
+    /// dispute *clears* `pending_score`, so a scored-then-disputed match has
+    /// neither field set. Without the status arm the lock would reopen on
+    /// precisely the match whose result everybody has already seen.
+    #[test]
+    fn ranked_stays_locked_after_a_submitted_score_is_disputed() {
+        let mut m = scheduled_match("2026-06-01T18:00:00.000Z");
+        m.status = "completed".to_string();
+        m.pending_score = None;
+        m.confirmed_score = None;
+        assert_eq!(
+            ranked_lock_reason(&m, now()),
+            Some("scoring has already started")
+        );
+    }
 
     /// Round-tripping through the DAO mirror must reproduce the same wire
     /// JSON as the original — the property that actually matters here, since

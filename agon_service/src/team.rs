@@ -1,7 +1,7 @@
 use poem_openapi::{Enum, Object};
 
-use crate::Photo;
 use crate::membership::Member;
+use crate::{LadderRating, Photo};
 
 /// A persistent team/squad's metadata. The pool of people a match side can be
 /// drawn from; a match never derives its roster live from this (see
@@ -23,6 +23,26 @@ pub struct Team {
     pub follower_count: u32,
     /// Whether the requesting user follows this team.
     pub is_followed_by_me: bool,
+    /// Every ladder this team is rated on **as a unit**, most-played first —
+    /// same shape and ordering as `UserProfile::ratings`.
+    ///
+    /// Two things worth stating, because the shared ladder names invite the
+    /// mistake:
+    ///
+    /// - A team's rating and a player's rating on the same-named ladder are
+    ///   **different pools**. They live in different partitions, are computed
+    ///   from different results, and must never appear in one leaderboard or
+    ///   be compared. Rating a team against an ad-hoc side would import
+    ///   player ratings into the team pool and make every team number quietly
+    ///   incomparable, which is why it is never done.
+    /// - There is no visibility setting here, unlike a user's. `TeamRecord`
+    ///   carries none: the case for hiding a rating is a personal one, and a
+    ///   team is already a public entity with a public results history.
+    ///
+    /// Empty on every team today — teams are not rated until phase 2b-iii
+    /// adds the side pass. The field is here now so clients have one shape to
+    /// build against rather than two.
+    pub ratings: Vec<LadderRating>,
 }
 
 /// A person's membership of a team: the shared `Member` (user or external,

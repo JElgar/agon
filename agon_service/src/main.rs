@@ -45,7 +45,8 @@ use mapping::{
     invitation_status_str, live_event_from_record, match_format_sport_tag, match_format_to_record,
     match_from_records, match_score_from_record, match_score_to_record, match_status_str,
     match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
-    roster_preview_player, score_submission_from_record, score_to_record,
+    ranked_lock_reason, rating_history_entry_from_record, rating_visibility_to_record,
+    ratings_visible_to, roster_preview_player, score_submission_from_record, score_to_record,
     search_match_from_records, team_from_records, team_list_item_from_record,
     team_member_from_record, user_profile_from_record,
 };
@@ -133,7 +134,11 @@ pub struct GenericPlayerStats {
     /// `None` when no confirmed matches have been played yet — display as
     /// "-", not 0%.
     pub win_percentage: Option<f32>,
-    // TODO Elo
+    // (There was a `TODO Elo` here. Ratings landed, but not on this struct:
+    // they hang off `UserProfile::ratings` keyed by *ladder*, not by sport,
+    // because the set of ladders is deliberately open where the set of sports
+    // is closed — see `LadderRating::ladder`. Stats and ratings also answer
+    // different questions and are visible under different rules.)
 }
 
 /// A personal-best single-match value for one counter, plus the match it
@@ -236,6 +241,142 @@ pub struct UserStats {
     pub other: Option<GenericPlayerStats>,
 }
 
+/// Whether an account's ratings are shown to anyone but its owner. Mirrors
+/// `agon_core::dao::records::RatingVisibilityRecord`.
+///
+/// This gates **information, not access**. Eligibility for a rating-gated
+/// match uses the true rating either way — the server knows your number
+/// whether or not anyone can see it, so it can enforce a window without
+/// revealing anything.
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+#[oai(rename_all = "snake_case")]
+pub enum RatingVisibility {
+    /// The default. Only the account itself sees its numbers and bands.
+    Private,
+    /// Visible to everyone, and eligible to appear on leaderboards.
+    Public,
+}
+
+/// A skill tier, shown next to a rating (`1620 · Advanced`). Mirrors
+/// `agon_core::rating::Band`, whose table is the only place the thresholds
+/// live.
+///
+/// A mirrored enum rather than the band's own string, for the reason
+/// `MatchType` mirrors `rating::Sport`: `agon_core` has no web framework and
+/// the API has no rating engine, so the two meet in `mapping`, where an
+/// exhaustive match makes a band added upstream a compile error here rather
+/// than a string clients have never seen.
+///
+/// Clients must **not** re-derive this from the number. The thresholds are
+/// expected to be retuned once there are real users, and the entire point of
+/// deriving bands at read time is that a retune is a service deploy rather
+/// than a coordinated service + client release.
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+#[oai(rename_all = "snake_case")]
+pub enum RatingBand {
+    Beginner,
+    Improver,
+    Intermediate,
+    Advanced,
+    Expert,
+    Elite,
+}
+
+/// Not enough rated matches on this ladder to name a tier yet.
+#[derive(Object)]
+pub struct UnratedPlacement {
+    /// How many more rated matches before a band is assigned — "3 more games
+    /// to get placed". Always at least 1.
+    pub matches_remaining: i32,
+}
+
+/// Placed: enough history for the band to mean something.
+#[derive(Object)]
+pub struct PlacedRating {
+    pub band: RatingBand,
+}
+
+/// Whether a rating has enough evidence behind it to carry a band.
+///
+/// A union rather than an `Option<RatingBand>` beside an
+/// `Option<i32> matches_remaining`, deliberately: exactly one of those two is
+/// ever set, and a pair of options makes rendering a band for an unplaced
+/// player a plausible client bug instead of an impossible one. Same reasoning
+/// as `AssignableTeamRole` excluding `Owner` — the type carries the rule.
+///
+/// A player with two games has a ±500 confidence interval; naming a tier off
+/// that would be fake precision the UI would present as fact. The *number* is
+/// still shown throughout, with its `±`.
+#[derive(Union)]
+#[oai(one_of, discriminator_name = "type")]
+pub enum RatingPlacement {
+    Unrated(UnratedPlacement),
+    Placed(PlacedRating),
+}
+
+/// One account's (or team's) rating on one ladder, on the display scale.
+///
+/// Everything here is derived at read time from the stored native `μ`/`σ` —
+/// nothing in this struct is persisted in this form. That is what makes both
+/// the scale and the band thresholds retunable by deploy instead of by
+/// backfill.
+#[derive(Object)]
+pub struct LadderRating {
+    /// The pool this rating belongs to — the sport tag (`"squash"`) today.
+    /// An opaque string on purpose: a later singles/doubles split adds
+    /// `"tennis:doubles"` as a *new* ladder rather than migrating this one,
+    /// so clients must treat unknown values as new ladders, not as errors.
+    pub ladder: String,
+    /// The headline number. A new player reads 1500.
+    pub rating: i32,
+    /// The `±` half-width (3σ). Wide for a new account (±750), narrowing to
+    /// roughly ±180 once settled. Show it: it is the honest answer to a thin
+    /// ladder, and the reason no band is claimed early.
+    pub confidence: i32,
+    /// `rating - confidence` — the conservative value, used for gating and
+    /// leaderboards so an unproven account can't sit at the top on variance
+    /// alone.
+    pub floor: i32,
+    /// How many rated matches this ladder's number is built from.
+    pub matches_rated: i32,
+    /// The tier, or the countdown to earning one.
+    pub placement: RatingPlacement,
+    /// When the newest match folded into this rating was **played** — not
+    /// when it was rated. Confirmations routinely arrive out of order.
+    pub last_rated_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// One match's effect on one account's rating, for the rating-over-time
+/// chart. An entry of `GET /users/:user_id/rating-history`.
+#[derive(Object)]
+pub struct RatingHistoryEntry {
+    pub match_id: String,
+    /// The match's start time — the series' x-axis. Entries are returned in
+    /// this order (oldest first), which is played order, not the order the
+    /// results were confirmed in.
+    pub played_at: chrono::DateTime<chrono::Utc>,
+    /// The displayed rating *after* this match.
+    pub rating: i32,
+    /// The `±` after this match. It narrows as a ladder fills in, so the
+    /// chart can shade a confidence band that visibly tightens.
+    pub confidence: i32,
+    /// `rating - confidence` after this match.
+    pub floor: i32,
+    /// The movement this match produced — the "+18" on a match card.
+    ///
+    /// The value stored on the day, not a recomputation. If the display scale
+    /// were ever retuned, recomputing would quietly rewrite history; this
+    /// keeps saying what the player was actually told.
+    pub delta: i32,
+}
+
+/// A page of rating history for one account on one ladder.
+#[derive(Object)]
+pub struct RatingHistoryPage {
+    pub items: Vec<RatingHistoryEntry>,
+    pub next_cursor: Option<String>,
+}
+
 #[derive(Object)]
 pub struct UserProfile {
     pub id: String,
@@ -244,6 +385,32 @@ pub struct UserProfile {
     /// (Supabase Storage); the API only stores/returns the resulting URL.
     pub profile_image: Option<Photo>,
     pub stats: UserStats,
+    /// Every ladder this account is rated on, **most-played first** (ties
+    /// broken by ladder name so the order is stable between requests).
+    ///
+    /// Sorted server-side because the profile headline is a *portfolio* —
+    /// "Advanced · Squash / Intermediate · Tennis", the top one or two sports
+    /// by games played — and that is one decision made once here rather than
+    /// re-derived by every client. A map keyed by ladder was the alternative
+    /// and loses exactly this: JSON objects carry no order, and the generated
+    /// clients hand back a `HashMap`.
+    ///
+    /// **Empty when this viewer may not see them** — see `rating_visibility`.
+    /// Empty is therefore ambiguous on its own (hidden, or genuinely nothing
+    /// played), which is precisely why the setting is returned beside it
+    /// instead of being inferred from presence.
+    pub ratings: Vec<LadderRating>,
+    /// Whether this account's ratings are public.
+    ///
+    /// Returned to *every* viewer, not just the owner, and both halves of
+    /// that are deliberate. Others need it to tell "this player keeps their
+    /// ratings private" apart from "this player has no rated matches", which
+    /// are different empty states with different renderings. The owner needs
+    /// it to render their own opt-in toggle from the profile they already
+    /// fetched. It leaks nothing the number itself doesn't: it is a display
+    /// preference, and the value that could be considered revealing
+    /// (`Public`) is the one the account chose to advertise.
+    pub rating_visibility: RatingVisibility,
     pub follower_count: u32,
     pub following_count: u32,
     /// Whether the requesting user follows this profile. False for your own.
@@ -278,6 +445,14 @@ struct CreateUserInput {
 struct UpdateUserInput {
     name: Option<String>,
     profile_image_asset_id: Option<String>,
+    /// Opt in to (or back out of) showing your ratings to other people.
+    /// `None` leaves the setting alone, like every other field here.
+    ///
+    /// This changes who can *see* your numbers, never how they are computed
+    /// or what you are eligible for: rated matches keep moving your rating
+    /// while it is `Private`, so opting in shows a real rating earned over
+    /// real games rather than starting a placement period.
+    rating_visibility: Option<RatingVisibility>,
     // Note: no `email` field. Email is owned by the identity provider (the JWT
     // `email` claim), not user-editable through the API — accepting it here would
     // be both a no-op (the DAO doesn't update email) and misleading.
@@ -723,6 +898,12 @@ struct Match {
     /// ...), if configured. `None` means the creator didn't set one — clients
     /// should fall back to their own sensible per-sport defaults.
     format: Option<MatchFormat>,
+    /// Whether this match counts towards the participants' ratings. True by
+    /// default; a friendly is the explicit opt-out.
+    ///
+    /// Read-only after the match starts or is scored — see
+    /// `UpdateMatchInput::ranked`.
+    ranked: bool,
 }
 
 /// Social engagement summary for a match. Counts plus whether the requesting
@@ -965,6 +1146,15 @@ struct CreateMatchInput {
     /// Sport-specific format/rules. Optional — omit for the app's own
     /// defaults; must match `match_type`'s sport if supplied.
     format: Option<MatchFormat>,
+    /// Whether the result should count towards everyone's rating. Omit for
+    /// the default, which is **ranked**.
+    ///
+    /// Ranked-by-default with friendly as the opt-out, rather than the other
+    /// way round: in an amateur app most games are casual, and opt-in-ranked
+    /// would leave every ladder too sparse to matchmake on. Setting it is the
+    /// only chance to decide freely — once the match starts or a score is
+    /// submitted the flag locks (see `UpdateMatchInput::ranked`).
+    ranked: Option<bool>,
 }
 
 /// The organiser's one-stop update for a match: edit metadata, reconcile the
@@ -1035,6 +1225,20 @@ struct UpdateMatchInput {
     /// Replace the match's format/rules. `None` leaves it unchanged; must
     /// match the match's sport if supplied.
     format: Option<MatchFormat>,
+    /// Flip the match between ranked and friendly, **before it starts and
+    /// before anybody submits a score**. Afterwards the request is rejected
+    /// (400) rather than quietly ignored.
+    ///
+    /// The lock is a correctness requirement, not a nicety: without it you
+    /// could log a game, see that you won, and only *then* enrol it in the
+    /// ladder. It is evaluated against the match's stored state, so a request
+    /// that moves `starts_at` back into the future and flips this in the same
+    /// call cannot unlock itself.
+    ///
+    /// Re-sending the value the match already has is always accepted — a
+    /// client that PATCHes its whole edit form shouldn't be refused for
+    /// mentioning an unchanged flag.
+    ranked: Option<bool>,
 }
 
 /// A single entry in the feed. Modelled as a union so new item types
@@ -1182,6 +1386,25 @@ enum GetUserResponse {
 enum GetUserProfileResponse {
     #[oai(status = 200)]
     User(Json<UserProfile>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// `GET /users/:user_id/rating-history`.
+///
+/// `Forbidden` rather than an empty page for a private rating, deliberately:
+/// an empty page already means "no rated matches on this ladder", and a
+/// caller cannot act sensibly on a single response that means either. It
+/// leaks nothing a profile read doesn't — `UserProfile::rating_visibility`
+/// says the same thing, and is what a client should check before asking.
+#[derive(ApiResponse)]
+enum GetRatingHistoryResponse {
+    #[oai(status = 200)]
+    History(Json<RatingHistoryPage>),
+
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
@@ -1836,8 +2059,9 @@ impl Api {
                 )));
             }
         };
-        // Own profile: not "followed by me".
-        let profile = user_profile_from_record(&record, false);
+        // Own profile: not "followed by me", and the owner always sees their
+        // own ratings whatever their visibility setting says.
+        let profile = user_profile_from_record(&record, false, Some(&uid));
         Ok(GetUserResponse::User(Json(User {
             email: record.email,
             profile,
@@ -1875,6 +2099,10 @@ impl Api {
             &uid,
             input.name.as_deref(),
             resolved_image.as_ref().map(|o| o.as_deref()),
+            input
+                .rating_visibility
+                .as_ref()
+                .map(rating_visibility_to_record),
         )
         .await
         .map_err(|e| match e {
@@ -1890,7 +2118,7 @@ impl Api {
             .await
             .map_err(dao_internal)?
             .ok_or_else(|| Error::from_string("user not found", StatusCode::NOT_FOUND))?;
-        let profile = user_profile_from_record(&record, false);
+        let profile = user_profile_from_record(&record, false, Some(&uid));
         Ok(UpdateUserResponse::User(Json(User {
             email: record.email,
             profile,
@@ -1992,8 +2220,76 @@ impl Api {
                 .map_err(dao_internal)?
         };
         Ok(GetUserProfileResponse::User(Json(
-            user_profile_from_record(&record, is_followed),
+            user_profile_from_record(&record, is_followed, Some(&caller_uid)),
         )))
+    }
+
+    /// One account's rating over time on one ladder — the series behind the
+    /// history chart, oldest first.
+    ///
+    /// `ladder` is required rather than optional because the history lives in
+    /// one item collection per ladder and mixing two of them into one series
+    /// would draw a line between numbers from disjoint pools (Part 2.5's
+    /// connected-component argument). Read the ladder keys off
+    /// `UserProfile.ratings[].ladder`.
+    ///
+    /// Played order, not confirmation order: a Monday game confirmed after a
+    /// Wednesday one still plots on Monday. The same visibility rule as the
+    /// profile applies — the owner always sees their own, everyone else only
+    /// when the account is `Public`.
+    #[oai(path = "/users/:user_id/rating-history", method = "get")]
+    async fn get_user_rating_history(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(user_id): Path<String>,
+        /// Which ladder's history to return — a `ladder` value from the
+        /// profile's `ratings` (e.g. `squash`).
+        Query(ladder): Query<String>,
+        /// Opaque cursor from the previous page's `next_cursor`.
+        Query(cursor): Query<Option<String>>,
+        /// Maximum number of items to return (defaults to 20, capped at 50).
+        Query(limit): Query<Option<u32>>,
+    ) -> Result<GetRatingHistoryResponse> {
+        info!("Getting {ladder} rating history for user {user_id}");
+        let caller_uid = self.require_uid(dao, &jwt_data).await?;
+
+        // The profile read is what answers "may this caller see it", so it
+        // happens before the history query rather than after — a hidden
+        // history is never fetched, let alone filtered on the way out.
+        let record = match dao.get_user(&user_id).await.map_err(dao_internal)? {
+            Some(r) => r,
+            None => {
+                return Ok(GetRatingHistoryResponse::NotFound(PlainText(
+                    "user not found".into(),
+                )));
+            }
+        };
+        if !ratings_visible_to(&record, Some(&caller_uid)) {
+            return Ok(GetRatingHistoryResponse::Forbidden(PlainText(
+                "this account's ratings are private".into(),
+            )));
+        }
+
+        let page = dao
+            .list_rating_history(
+                &dao::rating::RatingOwner::user(&user_id),
+                &ladder,
+                None,
+                cursor.as_deref(),
+                page_limit(limit),
+            )
+            .await
+            .map_err(dao_internal)?;
+
+        Ok(GetRatingHistoryResponse::History(Json(RatingHistoryPage {
+            items: page
+                .items
+                .iter()
+                .map(rating_history_entry_from_record)
+                .collect(),
+            next_cursor: page.next_cursor,
+        })))
     }
 
     #[oai(path = "/users", method = "post")]
@@ -2047,7 +2343,7 @@ impl Api {
             }
             Err(e) => return Err(dao_internal(e)),
         }
-        let profile = user_profile_from_record(&record, false);
+        let profile = user_profile_from_record(&record, false, Some(&record.id));
         Ok(CreateUserResponse::User(Json(User {
             email: record.email,
             profile,
@@ -2207,7 +2503,7 @@ impl Api {
                     .known_player_ids
                     .iter()
                     .filter_map(|uid| users.get(uid))
-                    .map(|record| user_profile_from_record(record, true))
+                    .map(|record| user_profile_from_record(record, true, Some(&uid)))
                     .collect();
                 let mut m = feed_match_from_records(
                     &summary.match_,
@@ -2750,10 +3046,10 @@ impl Api {
             // on. Note this deliberately disagrees with `MatchRecord::ranked`'s
             // serde default of `false`, which exists to keep the pre-rating
             // back catalogue *out* of the ladders — see that field's doc
-            // comment. The API input that lets an organiser opt out, and the
-            // guard locking the flag once the match starts, are phase 3;
-            // there is no way to say "friendly" yet.
-            ranked: true,
+            // comment. Creation is the only unconstrained chance to choose:
+            // from here `ranked_lock_reason` closes the flag once the match
+            // starts or is scored.
+            ranked: input.ranked.unwrap_or(true),
             rating_requirement: None,
             created_at: now.clone(),
         };
@@ -2870,6 +3166,25 @@ impl Api {
                     agg.match_.match_type
                 ))));
             }
+        }
+
+        // Ranked/friendly is locked once the match has started or anybody has
+        // submitted a score, whichever comes first — see `ranked_lock_reason`
+        // for the rule and why it is checked against the *stored* record
+        // rather than against this request's resulting state. Rejected rather
+        // than ignored: a caller who asked to enrol a finished match in the
+        // ladder needs to be told it didn't happen.
+        //
+        // Only a genuine *change* is refused. Re-sending the flag the match
+        // already carries is a no-op, so a client that PATCHes its whole edit
+        // form doesn't start failing the moment the match kicks off.
+        let ranked_change = input.ranked.filter(|r| *r != agg.match_.ranked);
+        if ranked_change.is_some()
+            && let Some(reason) = ranked_lock_reason(&agg.match_, chrono::Utc::now())
+        {
+            return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                "a match can no longer be changed between ranked and friendly: {reason}"
+            ))));
         }
 
         // Resolve any replacement header images to asset id + stored URL
@@ -3211,6 +3526,7 @@ impl Api {
             pending_score.map(Some),
             header_photos,
             input.format.as_ref().map(match_format_to_record),
+            ranked_change,
             &side_name_updates,
         )
         .await
@@ -3559,6 +3875,7 @@ impl Api {
                 None,
                 None,
                 Some("in_progress"),
+                None,
                 None,
                 None,
                 None,
@@ -4043,6 +4360,7 @@ impl Api {
                     Some(None),
                     None,
                     None,
+                    None,
                     &[],
                 )
                 .await
@@ -4098,6 +4416,7 @@ impl Api {
                         None,
                         Some(confirmed),
                         Some(None),
+                        None,
                         None,
                         None,
                         &[],
@@ -5059,6 +5378,7 @@ impl Api {
                 None,
                 None,
                 None,
+                None,
                 &[],
             )
             .await
@@ -5225,7 +5545,7 @@ impl Api {
             // expected case to render, not an error to fail the page over.
             let actor_id = notification_actor_id(&rec.kind);
             let actor = match actor_records.get(actor_id) {
-                Some(record) => user_profile_from_record(record, false),
+                Some(record) => user_profile_from_record(record, false, Some(&uid)),
                 None => deleted_user_profile(actor_id),
             };
             items.push(notification_from_record(&rec, actor));
@@ -5700,6 +6020,13 @@ impl Api {
     /// skipped. `is_followed_by_me` is left false when there's no viewer (a
     /// follow-list view rarely needs it per-row); compute it if a screen
     /// requires it.
+    ///
+    /// `viewer_uid` also decides whether a `Private` account's own ratings
+    /// come back on its row. `None` means they don't, which is the right
+    /// answer rather than a degraded one — an unresolved caller is by
+    /// definition not the owner. The one caller that passes `None` and could
+    /// pass a viewer is `list_likes`, whose endpoint deliberately never
+    /// resolves a caller id at all.
     async fn hydrate_user_profiles(
         &self,
         dao: &dao::Dao,
@@ -5720,7 +6047,11 @@ impl Api {
         let mut profiles = Vec::with_capacity(ids.len());
         for id in ids {
             if let Some(record) = records.get(id) {
-                profiles.push(user_profile_from_record(record, followed.contains(id)));
+                profiles.push(user_profile_from_record(
+                    record,
+                    followed.contains(id),
+                    viewer_uid,
+                ));
             }
         }
         Ok(profiles)
@@ -6012,9 +6343,16 @@ impl Api {
 
     /// Fetch a single user's public profile, or `None` if absent. Used to embed
     /// an author/actor inline. (N+1 in list contexts — batch later.)
+    ///
+    /// Hydrates with no viewer, so a private account's ratings are omitted
+    /// even from its own author's view of its own comment. Deliberate: the
+    /// only caller is comment hydration, whose endpoints don't resolve a
+    /// caller id at all (`AuthSchema(_jwt_data)`), so threading one through
+    /// would cost a `require_uid` round trip per list purely to unhide a
+    /// number no comment renders.
     async fn try_user_profile(&self, dao: &dao::Dao, user_id: &str) -> Result<Option<UserProfile>> {
         match dao.get_user(user_id).await.map_err(dao_internal)? {
-            Some(record) => Ok(Some(user_profile_from_record(&record, false))),
+            Some(record) => Ok(Some(user_profile_from_record(&record, false, None))),
             None => Ok(None),
         }
     }
@@ -6947,6 +7285,34 @@ fn mock_user_profile(id: String, name: String) -> UserProfile {
             netball: None,
             other: None,
         },
+        // A placed rating on one ladder and an unplaced one on another, so
+        // the mock exercises both arms of `RatingPlacement` — the union is
+        // the shape a client is most likely to get wrong.
+        ratings: vec![
+            LadderRating {
+                ladder: String::from("tennis"),
+                rating: 1587,
+                confidence: 186,
+                floor: 1401,
+                matches_rated: 12,
+                placement: RatingPlacement::Placed(PlacedRating {
+                    band: RatingBand::Advanced,
+                }),
+                last_rated_at: mock_timestamp(),
+            },
+            LadderRating {
+                ladder: String::from("squash"),
+                rating: 1524,
+                confidence: 402,
+                floor: 1122,
+                matches_rated: 2,
+                placement: RatingPlacement::Unrated(UnratedPlacement {
+                    matches_remaining: 3,
+                }),
+                last_rated_at: mock_timestamp(),
+            },
+        ],
+        rating_visibility: RatingVisibility::Public,
         follower_count: 42,
         following_count: 17,
         is_followed_by_me: false,
@@ -7038,6 +7404,7 @@ fn mock_match(id: String) -> Match {
             i_liked: false,
         },
         format: None,
+        ranked: true,
     }
 }
 
@@ -7275,6 +7642,8 @@ fn mock_team(id: String, name: String) -> Team {
         invite_token: Some(String::from("team_invite_abc123")),
         follower_count: 128,
         is_followed_by_me: false,
+        // Empty until teams are rated (phase 2b-iii).
+        ratings: Vec::new(),
     }
 }
 

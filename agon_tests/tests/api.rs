@@ -159,6 +159,7 @@ fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
         winner_side_id: None,
         header_photo_asset_ids: None,
         format: None,
+        ranked: None,
     }
 }
 
@@ -201,6 +202,7 @@ fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::Create
         winner_side_id: None,
         header_photo_asset_ids: None,
         format: None,
+        ranked: None,
     }
 }
 
@@ -261,6 +263,7 @@ fn completed_match(invites: Vec<models::CreateMatchInviteInput>) -> models::Crea
         winner_side_id: Some("a".to_string()),
         header_photo_asset_ids: None,
         format: None,
+        ranked: None,
     }
 }
 
@@ -347,6 +350,7 @@ async fn update_me_changes_name() {
         models::UpdateUserInput {
             name: Some("New Name".to_string()),
             profile_image_asset_id: None,
+            rating_visibility: None,
         },
     )
     .await
@@ -4814,6 +4818,7 @@ async fn upload_profile_image_end_to_end() {
         models::UpdateUserInput {
             name: None,
             profile_image_asset_id: Some(asset.id.clone()),
+            rating_visibility: None,
         },
     )
     .await
@@ -5218,6 +5223,7 @@ async fn attach_rejects_pending_asset() {
         models::UpdateUserInput {
             name: None,
             profile_image_asset_id: Some(asset.id.clone()),
+            rating_visibility: None,
         },
     )
     .await;
@@ -5239,6 +5245,7 @@ async fn attach_rejects_asset_owned_by_another_user() {
         models::UpdateUserInput {
             name: None,
             profile_image_asset_id: Some(asset.id.clone()),
+            rating_visibility: None,
         },
     )
     .await;
@@ -5258,6 +5265,7 @@ async fn attach_rejects_wrong_purpose_asset() {
         models::UpdateUserInput {
             name: None,
             profile_image_asset_id: Some(asset.id.clone()),
+            rating_visibility: None,
         },
     )
     .await;
@@ -6693,8 +6701,8 @@ fn replayed_from_scratch(
     for (participants, winner_side_id) in matches {
         let participants: Vec<MatchParticipant> = participants
             .iter()
-            .map(|(user_id, side_id)| MatchParticipant {
-                user_id: user_id.clone(),
+            .map(|(competitor_id, side_id)| MatchParticipant {
+                competitor_id: competitor_id.clone(),
                 side_id: side_id.clone(),
             })
             .collect();
@@ -7066,4 +7074,591 @@ async fn withdrawing_a_match_replays_the_owners_remaining_history() {
             .await
             .is_empty()
     );
+}
+
+// ---------------------------------------------------------------------------
+// Ratings — the API surface (phase 3a)
+// ---------------------------------------------------------------------------
+//
+// Unlike the 2b tests above, everything here goes through the API alone: no
+// `rating_dao()`, no table reads, so these also run in the staging CI job that
+// only has a service URL. That is the point of the phase — a rating that only
+// the table can see is not a surface.
+//
+// They still depend on the same async pipeline (API → stream → SQS → worker),
+// so the first read of a freshly-earned rating polls; everything after it is a
+// synchronous read of state that has already landed.
+
+/// Poll `GET /users/:id` as `viewer` until the profile carries a rating on
+/// `ladder` folded from exactly `matches_rated` matches.
+///
+/// Keyed on the count rather than on the number for the same reason
+/// [`rating_after_matches`] is: it is the one field that is exactly
+/// predictable, and it is what distinguishes "the second match landed" from
+/// "the first one is still all there is".
+async fn profile_rating_after_matches(
+    viewer: &Configuration,
+    user_id: &str,
+    ladder: &str,
+    matches_rated: i32,
+) -> models::LadderRating {
+    eventually(
+        &format!("{user_id}'s {ladder} rating on their profile, from {matches_rated} match(es)"),
+        || async {
+            users_user_id_get(viewer, user_id)
+                .await
+                .expect("get profile")
+                .ratings
+                .into_iter()
+                .find(|r| r.ladder == ladder && r.matches_rated == matches_rated)
+        },
+    )
+    .await
+}
+
+/// Opt an account's ratings in or out of being publicly visible.
+async fn set_rating_visibility(config: &Configuration, visibility: models::RatingVisibility) {
+    users_me_patch(
+        config,
+        models::UpdateUserInput {
+            name: None,
+            profile_image_asset_id: None,
+            rating_visibility: Some(visibility),
+        },
+    )
+    .await
+    .expect("set rating visibility");
+}
+
+/// The band a placement carries, or `None` while the account is unplaced.
+fn band_of(rating: &models::LadderRating) -> Option<models::RatingBand> {
+    match &*rating.placement {
+        models::RatingPlacement::Placed(placed) => Some(placed.band),
+        models::RatingPlacement::Unrated(_) => None,
+    }
+}
+
+/// How many more rated matches this account needs before it is placed, or
+/// `None` once it is.
+fn matches_remaining(rating: &models::LadderRating) -> Option<i32> {
+    match &*rating.placement {
+        models::RatingPlacement::Unrated(unrated) => Some(unrated.matches_remaining),
+        models::RatingPlacement::Placed(_) => None,
+    }
+}
+
+/// Play `count` ranked tennis matches between the same two accounts, each an
+/// hour after the last, waiting for each to be folded into `winner`'s rating
+/// before starting the next.
+///
+/// Sequential on purpose, twice over: rating a ladder is one optimistic-locked
+/// write, so overlapping confirmations would race it, and confirming out of
+/// played order is the out-of-order case that starts a repair — a real
+/// behaviour with its own tests (`2b-ii`), and not what anything here is
+/// about.
+async fn play_ranked_series(
+    winner_config: &Configuration,
+    winner_id: &str,
+    loser_config: &Configuration,
+    loser_id: &str,
+    count: i32,
+) -> Vec<models::Match> {
+    let mut played = Vec::new();
+    for index in 0..count {
+        let starts_at = iso_offset_hours(-24 + i64::from(index));
+        played.push(
+            play_ranked_tennis_match(winner_config, loser_config, loser_id, &starts_at).await,
+        );
+        profile_rating_after_matches(winner_config, winner_id, "tennis", index + 1).await;
+    }
+    played
+}
+
+/// The headline of the visibility design: opting in unlocks *information*,
+/// never access. A private account is rated all along — the owner can see the
+/// number the whole time — and opting in publishes the rating that was already
+/// there rather than starting one.
+///
+/// Also pins that hiding covers the number **and** the band together. A band
+/// is a 150-point window on the number it would be concealing, so leaking one
+/// while hiding the other would make the setting decorative.
+#[tokio::test]
+async fn a_rating_is_shown_to_others_only_once_its_owner_opts_in() {
+    let (winner_config, winner) = new_user().await;
+    let (loser_config, loser) = new_user().await;
+    let (viewer_config, _viewer) = new_user().await;
+
+    play_ranked_tennis_match(
+        &winner_config,
+        &loser_config,
+        &loser.profile.id,
+        &iso_offset_hours(-3),
+    )
+    .await;
+
+    // The owner sees their own while it is still Private, which is the
+    // default nobody opted into.
+    let own = profile_rating_after_matches(&winner_config, &winner.profile.id, "tennis", 1).await;
+    assert!(
+        own.rating > 1500,
+        "the winner's rating should have risen, got {}",
+        own.rating
+    );
+    assert_eq!(own.confidence, own.rating - own.floor, "the three must agree");
+    assert_eq!(
+        matches_remaining(&own),
+        Some(4),
+        "one game earns a number, not a band"
+    );
+
+    // A third party sees neither the number nor the band — but is told the
+    // account is private, so it can render that rather than "never played".
+    let hidden = users_user_id_get(&viewer_config, &winner.profile.id)
+        .await
+        .expect("get profile as a stranger");
+    assert!(
+        hidden.ratings.is_empty(),
+        "a private rating must not reach another account"
+    );
+    assert_eq!(hidden.rating_visibility, models::RatingVisibility::Private);
+
+    // Opting in publishes exactly the rating that was already there.
+    set_rating_visibility(&winner_config, models::RatingVisibility::Public).await;
+    let shown = users_user_id_get(&viewer_config, &winner.profile.id)
+        .await
+        .expect("get profile as a stranger");
+    assert_eq!(shown.rating_visibility, models::RatingVisibility::Public);
+    let shown = shown
+        .ratings
+        .into_iter()
+        .find(|r| r.ladder == "tennis")
+        .expect("the opted-in rating is visible");
+    assert_eq!(shown.rating, own.rating, "opting in must not restate it");
+    assert_eq!(shown.confidence, own.confidence);
+    assert_eq!(shown.matches_rated, 1);
+
+    // And it can be taken back.
+    set_rating_visibility(&winner_config, models::RatingVisibility::Private).await;
+    assert!(
+        users_user_id_get(&viewer_config, &winner.profile.id)
+            .await
+            .expect("get profile as a stranger")
+            .ratings
+            .is_empty(),
+        "opting back out must hide it again"
+    );
+}
+
+/// `/users/me` is the owner's own view, so it carries their ratings whatever
+/// their visibility setting says — that is what makes the opt-in toggle
+/// renderable from the profile the client already has.
+#[tokio::test]
+async fn the_owner_sees_their_own_private_rating_on_users_me() {
+    let (winner_config, winner) = new_user().await;
+    let (loser_config, loser) = new_user().await;
+
+    play_ranked_tennis_match(
+        &winner_config,
+        &loser_config,
+        &loser.profile.id,
+        &iso_offset_hours(-3),
+    )
+    .await;
+    profile_rating_after_matches(&winner_config, &winner.profile.id, "tennis", 1).await;
+
+    let me = users_me_get(&winner_config).await.expect("get me");
+    assert_eq!(
+        me.profile.rating_visibility,
+        models::RatingVisibility::Private,
+        "still opted out"
+    );
+    assert_eq!(
+        me.profile
+            .ratings
+            .iter()
+            .filter(|r| r.ladder == "tennis")
+            .count(),
+        1,
+        "the owner sees their own rating regardless"
+    );
+}
+
+/// The friendly opt-out, end to end: a match created with `ranked: false` is
+/// confirmed like any other and contributes nothing to anybody's ladder.
+///
+/// Proved against a *subsequent* ranked match rather than by waiting for
+/// nothing to happen: `matches_rated == 1` after playing two games is a
+/// positive assertion that exactly one of them counted, where a bare "no
+/// rating yet" would also pass if the pipeline were simply slow.
+#[tokio::test]
+async fn a_match_created_as_friendly_never_reaches_the_ladder() {
+    let (winner_config, winner) = new_user().await;
+    let (loser_config, loser) = new_user().await;
+
+    let friendly = matches_post(
+        &winner_config,
+        models::CreateMatchInput {
+            ranked: Some(false),
+            ..completed_match_at(
+                &iso_offset_hours(-5),
+                vec![invite_users("b", &[&loser.profile.id])],
+            )
+        },
+    )
+    .await
+    .expect("create friendly match");
+    assert!(!friendly.ranked, "the create input must be honoured");
+    assert!(
+        !matches_match_id_get(&winner_config, &friendly.id)
+            .await
+            .expect("re-read the friendly match")
+            .ranked,
+        "and be readable back"
+    );
+    accept_match_invitation(&loser_config, &friendly.id).await;
+    confirm_pending_score(&loser_config, &friendly).await;
+
+    // A ranked match afterwards, which is what gives the assertion a moment
+    // it can be checked at.
+    play_ranked_tennis_match(
+        &winner_config,
+        &loser_config,
+        &loser.profile.id,
+        &iso_offset_hours(-4),
+    )
+    .await;
+
+    let rating = profile_rating_after_matches(&winner_config, &winner.profile.id, "tennis", 1).await;
+    assert_eq!(
+        rating.matches_rated, 1,
+        "only the ranked match may count towards the ladder"
+    );
+}
+
+/// The lock that makes `ranked` trustworthy: you cannot log a game, see that
+/// you won, and *then* enrol it in the ladder.
+///
+/// Rejected rather than silently ignored — a caller who asked for something
+/// that didn't happen has to be told — and the stored flag is checked
+/// afterwards, because "returns 400" and "changed nothing" are two claims and
+/// only one of them is about correctness.
+#[tokio::test]
+async fn ranked_cannot_be_changed_once_a_score_has_been_submitted() {
+    let (config, _user) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+
+    // A scheduled match, so the flag starts out genuinely open. The creator
+    // plays in it too, because only an assigned participant may submit the
+    // score that closes the flag later on.
+    let mut input = create_match_input(&opponent.profile.id);
+    input.creator_side_client_id = Some("a".to_string());
+    let scheduled = matches_post(&config, input)
+        .await
+        .expect("create scheduled match");
+    assert!(scheduled.ranked, "matches are ranked unless opted out");
+
+    let friendly = matches_match_id_patch(
+        &config,
+        &scheduled.id,
+        models::UpdateMatchInput {
+            ranked: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("flip to friendly before it starts");
+    assert!(!friendly.ranked);
+
+    // Scoring it closes the decision. (A PATCHed score references the match's
+    // real side ids, not the `client_id`s only `create_match` resolves.)
+    accept_match_invitation(&opponent_config, &scheduled.id).await;
+    let side_a = scheduled.sides[0].id.clone();
+    let side_b = scheduled.sides[1].id.clone();
+    matches_match_id_patch(
+        &config,
+        &scheduled.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 3))),
+            winner_side_id: Some(side_a.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("submit a score");
+
+    assert_status_with_content(
+        matches_match_id_patch(
+            &config,
+            &scheduled.id,
+            models::UpdateMatchInput {
+                ranked: Some(true),
+                ..Default::default()
+            },
+        )
+        .await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "a score has already been submitted",
+    );
+    assert!(
+        !matches_match_id_get(&config, &scheduled.id)
+            .await
+            .expect("re-read the match")
+            .ranked,
+        "a rejected change must leave the flag alone"
+    );
+
+    // Re-sending the value it already has is not a change, and is accepted —
+    // otherwise a client that PATCHes its whole edit form would start failing
+    // the moment the match was scored.
+    let unchanged = matches_match_id_patch(
+        &config,
+        &scheduled.id,
+        models::UpdateMatchInput {
+            name: Some("Renamed after the fact".to_string()),
+            ranked: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("re-sending the unchanged flag is a no-op, not a rejection");
+    assert_eq!(unchanged.name, "Renamed after the fact");
+    assert!(!unchanged.ranked);
+}
+
+/// The other half of the lock: a match whose start time has passed is closed
+/// even if nobody has scored it yet, because by then the result is knowable
+/// whether or not it has been typed in.
+#[tokio::test]
+async fn ranked_cannot_be_changed_once_the_match_has_started() {
+    let (config, _user) = new_user().await;
+    let (_opponent_config, opponent) = new_user().await;
+
+    let played = matches_post(
+        &config,
+        completed_match_at(
+            &iso_offset_hours(-2),
+            vec![invite_users("b", &[&opponent.profile.id])],
+        ),
+    )
+    .await
+    .expect("create an already-played match");
+
+    assert_status_with_content(
+        matches_match_id_patch(
+            &config,
+            &played.id,
+            models::UpdateMatchInput {
+                ranked: Some(false),
+                ..Default::default()
+            },
+        )
+        .await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "ranked and friendly",
+    );
+    assert!(
+        matches_match_id_get(&config, &played.id)
+            .await
+            .expect("re-read the match")
+            .ranked
+    );
+}
+
+/// The rating-over-time series: one entry per rated match, oldest first, and
+/// paginated because it is the same collection a three-year-old account's
+/// repair replays.
+///
+/// The last entry has to equal the number on the profile. They come from two
+/// different items written in one transaction, so a mismatch would mean the
+/// chart and the headline disagreed about the same account.
+#[tokio::test]
+async fn rating_history_is_returned_oldest_first_and_paginates() {
+    let (winner_config, winner) = new_user().await;
+    let (loser_config, loser) = new_user().await;
+
+    let played = play_ranked_series(
+        &winner_config,
+        &winner.profile.id,
+        &loser_config,
+        &loser.profile.id,
+        3,
+    )
+    .await;
+
+    let first = users_user_id_rating_history_get(
+        &winner_config,
+        &winner.profile.id,
+        "tennis",
+        None,
+        Some(2),
+    )
+    .await
+    .expect("first page of rating history");
+    assert_eq!(first.items.len(), 2, "the page limit is honoured");
+    let cursor = first
+        .next_cursor
+        .clone()
+        .expect("a third entry is still to come");
+
+    let second = users_user_id_rating_history_get(
+        &winner_config,
+        &winner.profile.id,
+        "tennis",
+        Some(&cursor),
+        Some(2),
+    )
+    .await
+    .expect("second page of rating history");
+    assert_eq!(second.items.len(), 1, "the tail of the series");
+
+    let entries: Vec<&models::RatingHistoryEntry> =
+        first.items.iter().chain(second.items.iter()).collect();
+    assert_eq!(
+        entries.iter().map(|e| e.match_id.as_str()).collect::<Vec<_>>(),
+        played.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+        "the series is in played order, oldest first"
+    );
+    assert!(
+        entries.windows(2).all(|w| w[0].played_at < w[1].played_at),
+        "played_at must ascend: {:?}",
+        entries.iter().map(|e| &e.played_at).collect::<Vec<_>>()
+    );
+    assert!(
+        entries.iter().all(|e| e.delta > 0),
+        "three wins should each be a rise: {:?}",
+        entries.iter().map(|e| e.delta).collect::<Vec<_>>()
+    );
+    assert!(
+        entries.windows(2).all(|w| w[0].confidence >= w[1].confidence),
+        "the ± should narrow as the ladder fills in"
+    );
+
+    // The chart's last point is the profile's headline number.
+    let profile = profile_rating_after_matches(&winner_config, &winner.profile.id, "tennis", 3)
+        .await;
+    let last = entries.last().expect("at least one entry");
+    assert_eq!(last.rating, profile.rating);
+    assert_eq!(last.confidence, profile.confidence);
+    assert_eq!(last.floor, profile.floor);
+}
+
+/// History obeys the same visibility rule as the profile — otherwise the
+/// setting would hide a number that a second endpoint handed straight over.
+///
+/// `403` rather than an empty page, because an empty page already means "no
+/// rated matches on this ladder" and a client cannot render one response that
+/// means either.
+#[tokio::test]
+async fn rating_history_is_private_until_its_owner_opts_in() {
+    let (winner_config, winner) = new_user().await;
+    let (loser_config, loser) = new_user().await;
+    let (viewer_config, _viewer) = new_user().await;
+
+    play_ranked_tennis_match(
+        &winner_config,
+        &loser_config,
+        &loser.profile.id,
+        &iso_offset_hours(-3),
+    )
+    .await;
+    profile_rating_after_matches(&winner_config, &winner.profile.id, "tennis", 1).await;
+
+    assert_forbidden(
+        users_user_id_rating_history_get(
+            &viewer_config,
+            &winner.profile.id,
+            "tennis",
+            None,
+            None,
+        )
+        .await,
+    );
+    // The owner is never locked out of their own.
+    assert_eq!(
+        users_user_id_rating_history_get(
+            &winner_config,
+            &winner.profile.id,
+            "tennis",
+            None,
+            None
+        )
+        .await
+        .expect("own history")
+        .items
+        .len(),
+        1
+    );
+
+    set_rating_visibility(&winner_config, models::RatingVisibility::Public).await;
+    assert_eq!(
+        users_user_id_rating_history_get(
+            &viewer_config,
+            &winner.profile.id,
+            "tennis",
+            None,
+            None
+        )
+        .await
+        .expect("history is public now")
+        .items
+        .len(),
+        1
+    );
+
+    assert_not_found(
+        users_user_id_rating_history_get(
+            &viewer_config,
+            "does-not-exist",
+            "tennis",
+            None,
+            None,
+        )
+        .await,
+    );
+}
+
+/// The placement gate, through the API: five rated matches on a ladder before
+/// a band is named, with the countdown visible the whole way.
+///
+/// The number is shown throughout — it is only the *tier* that would
+/// overclaim from a ±500 belief.
+#[tokio::test]
+async fn a_band_is_only_named_after_five_rated_matches() {
+    let (winner_config, winner) = new_user().await;
+    let (loser_config, loser) = new_user().await;
+
+    let mut seen_countdowns = Vec::new();
+    for played in 1..5 {
+        play_ranked_tennis_match(
+            &winner_config,
+            &loser_config,
+            &loser.profile.id,
+            &iso_offset_hours(-24 + i64::from(played)),
+        )
+        .await;
+        let rating =
+            profile_rating_after_matches(&winner_config, &winner.profile.id, "tennis", played).await;
+        assert!(rating.rating > 0, "the number is shown while unplaced");
+        assert_eq!(band_of(&rating), None, "{played} matches must not band");
+        seen_countdowns.push(matches_remaining(&rating));
+    }
+    assert_eq!(
+        seen_countdowns,
+        vec![Some(4), Some(3), Some(2), Some(1)],
+        "the countdown must tick down towards placement"
+    );
+
+    play_ranked_tennis_match(
+        &winner_config,
+        &loser_config,
+        &loser.profile.id,
+        &iso_offset_hours(-19),
+    )
+    .await;
+    let placed = profile_rating_after_matches(&winner_config, &winner.profile.id, "tennis", 5).await;
+    assert!(
+        band_of(&placed).is_some(),
+        "the fifth rated match places the account"
+    );
+    assert_eq!(matches_remaining(&placed), None);
 }

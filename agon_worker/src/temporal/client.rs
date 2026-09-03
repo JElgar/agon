@@ -11,7 +11,9 @@ use temporalio_client::{
 };
 use temporalio_common::protos::temporal::api::enums::v1::WorkflowIdConflictPolicy;
 
-use super::workflows::{AcceptInvitation, AcceptInvitationInput, FanOutMatch};
+use super::workflows::{
+    AcceptInvitation, AcceptInvitationInput, FanOutMatch, RepairRatings, RepairRatingsInput,
+};
 use super::{TASK_QUEUE, accept_workflow_id, fanout_workflow_id};
 
 /// Thin wrapper over a Temporal client for starting Agon workflows.
@@ -41,6 +43,33 @@ impl TemporalClient {
                 FanOutMatch::run,
                 match_id.to_string(),
                 WorkflowStartOptions::new(TASK_QUEUE, fanout_workflow_id(match_id))
+                    .id_conflict_policy(WorkflowIdConflictPolicy::UseExisting)
+                    .build(),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Start (or attach to) a rating repair for one owner and ladder.
+    ///
+    /// `UseExisting` is doing more work here than it does for the other two.
+    /// A single re-scored match starts one of these per participant, each
+    /// under its own id, and each of the three triggers can fire repeatedly
+    /// for the same owner as a match's `#META` is rewritten by likes and
+    /// comments — so duplicate starts are the norm, not an edge case. Attaching
+    /// is sound because every run replays the owner's whole ladder, i.e. all
+    /// runs do the identical job (see [`RepairRatings`], which also documents
+    /// the one window this leaves open).
+    pub async fn start_repair(
+        &self,
+        input: RepairRatingsInput,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let id = input.workflow_id();
+        self.client
+            .start_workflow(
+                RepairRatings::run,
+                input,
+                WorkflowStartOptions::new(TASK_QUEUE, id)
                     .id_conflict_policy(WorkflowIdConflictPolicy::UseExisting)
                     .build(),
             )

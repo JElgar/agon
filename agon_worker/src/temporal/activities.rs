@@ -5,10 +5,14 @@
 //! passed as structs.
 
 use agon_core::dao::Dao;
+use agon_core::dao::rating::RatingOwner;
+use agon_core::dao::records::RatingOwnerKindRecord;
 use agon_core::search::{Index, SearchClient};
 use serde::{Deserialize, Serialize};
 use temporalio_macros::activities;
 use temporalio_sdk::activities::{ActivityContext, ActivityError};
+
+use crate::handlers::rating::{ReplayProgress, ReplayState};
 
 /// Shared dependencies available to every activity. Registered once with the
 /// worker; activities read `dao` / `search` off it.
@@ -54,6 +58,53 @@ pub struct LinkAccepted {
     pub invitation_id: String,
     pub accepting_user_id: String,
     pub responded_at: String,
+}
+
+/// One chunk of a rating replay: whose ladder, where to resume, and the state
+/// carried from the previous chunk.
+///
+/// The owner is carried as kind + id rather than as a `RatingOwner` for the
+/// same reason [`FeedViewer`] mirrors `dao::audience::AudienceMember`: an
+/// activity payload is a wire format of its own, and giving a DAO type serde
+/// derives it does not otherwise need would couple the two.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplayRatingChunk {
+    pub owner_kind: RatingOwnerKindRecord,
+    pub owner_id: String,
+    pub ladder: String,
+    /// Opaque history cursor; `None` starts at the oldest match on the ladder.
+    pub cursor: Option<String>,
+    pub state: ReplayState,
+    /// `applied_at` for everything this repair writes, stamped once by the
+    /// workflow from its deterministic clock.
+    pub now: String,
+}
+
+/// The tail of a rating replay: write the settled rating.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FinishRatingReplay {
+    pub owner_kind: RatingOwnerKindRecord,
+    pub owner_id: String,
+    pub ladder: String,
+    pub state: ReplayState,
+}
+
+impl ReplayRatingChunk {
+    fn owner(&self) -> RatingOwner {
+        RatingOwner {
+            kind: self.owner_kind,
+            id: self.owner_id.clone(),
+        }
+    }
+}
+
+impl FinishRatingReplay {
+    fn owner(&self) -> RatingOwner {
+        RatingOwner {
+            kind: self.owner_kind,
+            id: self.owner_id.clone(),
+        }
+    }
 }
 
 #[activities]
@@ -175,6 +226,47 @@ impl AgonActivities {
             )
             .await
             .map_err(activity_err)
+    }
+
+    /// Replay one page of an owner's rating history on one ladder, writing
+    /// back whatever changed. Idempotent: it re-reads the owner's stored
+    /// rating and re-reads the page, so a retry after a partial write
+    /// recomputes the same movements and skips the ones already applied. See
+    /// `handlers::rating::replay_rating_chunk` for the replay's semantics.
+    #[activity]
+    pub async fn replay_rating_chunk(
+        self: std::sync::Arc<Self>,
+        _ctx: ActivityContext,
+        chunk: ReplayRatingChunk,
+    ) -> Result<ReplayProgress, ActivityError> {
+        crate::handlers::rating::replay_rating_chunk(
+            &self.dao,
+            &chunk.owner(),
+            &chunk.ladder,
+            chunk.cursor.as_deref(),
+            chunk.state,
+            &chunk.now,
+        )
+        .await
+        .map_err(worker_err)
+    }
+
+    /// Write an owner's rating as the completed replay computed it. Idempotent
+    /// — a second run finds the value already there and writes nothing.
+    #[activity]
+    pub async fn finish_rating_replay(
+        self: std::sync::Arc<Self>,
+        _ctx: ActivityContext,
+        input: FinishRatingReplay,
+    ) -> Result<(), ActivityError> {
+        crate::handlers::rating::finish_rating_replay(
+            &self.dao,
+            &input.owner(),
+            &input.ladder,
+            &input.state,
+        )
+        .await
+        .map_err(worker_err)
     }
 
     /// Refresh every side's cached roster preview from the match's current

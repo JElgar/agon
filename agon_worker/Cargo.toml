@@ -19,7 +19,20 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "tim
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-sdk-sqs = "1"
 serde = { version = "1.0.209", features = ["derive"] }
-serde_json = "1.0.140"
+# `float_roundtrip` is not optional here. The Temporal payload converter
+# deserializes every workflow/activity argument through `serde_json::Value`
+# (`temporalio-common-wasm`'s `SerdeJsonPayloadConverter`), and serde_json's
+# default float parser is fast rather than correctly rounded — it lands within
+# 1 ULP. `RepairRatings` carries a rating's μ/σ across that boundary between
+# every chunk, and the whole repair design rests on a replay reproducing the
+# incremental numbers *bit for bit*, so a single-ULP drift per hop is the
+# difference between "converged, wrote nothing" and "rewrite every rating on
+# every run". Cargo feature unification is what makes declaring it here reach
+# the transitive dependency that actually does the parsing; the coupling is
+# invisible in the source, so it is pinned by
+# `handlers::rating::tests::a_rating_survives_the_temporal_payload_round_trip`,
+# which fails without this feature.
+serde_json = { version = "1.0.140", features = ["float_roundtrip"] }
 # Deserializes DynamoDB Streams images (attribute-value JSON) straight into the
 # shared record structs — same crate agon_core uses for item (de)serialization.
 serde_dynamo = "4"

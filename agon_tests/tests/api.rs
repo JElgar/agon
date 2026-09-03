@@ -6651,83 +6651,239 @@ async fn a_match_confirmed_out_of_order_is_still_rated_and_lands_in_played_order
     assert_eq!(contributions_by_owner(&dao, &recent.id).await.len(), 2);
 }
 
-/// A rated match that stops counting has its contribution and history entry
-/// removed — and its effect deliberately left in the stored rating.
+// ---------------------------------------------------------------------------
+// Ratings — repair (phase 2b-ii)
+// ---------------------------------------------------------------------------
+//
+// Where the tests above assert that a change is *detected*, these assert what
+// `RepairRatings` does about it. The bar is the same one
+// `rating::engine::tests::replaying_from_scratch_matches_incremental_rating`
+// sets for the pure engine, carried through the whole pipeline: **the repaired
+// state must equal the state a from-scratch replay produces** — bit for bit,
+// not approximately, because any drift would compound on every correction.
+//
+// The expectation is computed here through the engine itself rather than
+// hard-coded, which is the only way to state that property. That does mean a
+// bug shared between the engine and the worker would pass; the engine's own
+// known-vector tests are what guard against that, and duplicating Weng-Lin's
+// arithmetic in a test would guard nothing while rotting immediately.
+//
+// **What these deliberately do not assert: global consistency.** Repair is
+// first-order (see `temporal::workflows::RepairRatings`) — it corrects the
+// owner it replays and holds everybody else at the belief their own
+// contribution recorded. Each scenario below is therefore built so that the
+// held-fixed beliefs happen to be the true ones for the owner under test
+// (their opponents are playing their first rated match), which is what makes
+// "equals a from-scratch replay" a legitimate assertion rather than a lucky
+// one. Where a third party is left knowingly stale, the test says so.
+
+/// Rate a sequence of matches from scratch in played order, through the same
+/// engine the worker uses. Each entry is `(participants, winner_side_id)`,
+/// with participants as `(user_id, side_id)`.
 ///
-/// That last part looks like a bug and is the design: a Weng-Lin update
-/// depends on every opponent's σ at the time and has no inverse, so "subtract
-/// this match" cannot be computed — only replayed. Removing the two items
-/// first is what makes the eventual replay correct, because history is what a
-/// replay reads; leaving them would have it faithfully re-apply a match that
-/// no longer counts. Until `RepairRatings` lands (phase 2b-ii) the stored
-/// rating stays stale, which is exactly what the DAO's
-/// `withdraw_rating_contribution` documents.
+/// Real side ids, not `"a"`/`"b"`: `rate_sides` orders sides by id before doing
+/// any floating-point arithmetic, so a different id ordering moves the result
+/// in the last bits — and these comparisons are exact.
+fn replayed_from_scratch(
+    matches: &[(Vec<(String, String)>, Option<String>)],
+) -> agon_core::rating::RatingTable {
+    use agon_core::rating::{MatchParticipant, RatingTable, apply, rate_match};
+
+    let mut ratings = RatingTable::new();
+    for (participants, winner_side_id) in matches {
+        let participants: Vec<MatchParticipant> = participants
+            .iter()
+            .map(|(user_id, side_id)| MatchParticipant {
+                user_id: user_id.clone(),
+                side_id: side_id.clone(),
+            })
+            .collect();
+        let updates = rate_match(&participants, winner_side_id.as_deref(), &ratings)
+            .expect("the replayed match is rateable");
+        apply(&updates, &mut ratings);
+    }
+    ratings
+}
+
+/// One match in the shape [`replayed_from_scratch`] wants, given the two
+/// users' side ids and who won.
+fn replayable(
+    winner: (&str, &str),
+    loser: (&str, &str),
+    winner_won: bool,
+) -> (Vec<(String, String)>, Option<String>) {
+    let participants = vec![
+        (winner.0.to_string(), winner.1.to_string()),
+        (loser.0.to_string(), loser.1.to_string()),
+    ];
+    let winning_side = if winner_won { winner.1 } else { loser.1 };
+    (participants, Some(winning_side.to_string()))
+}
+
+/// Poll until `user_id`'s stored rating is exactly the one a from-scratch
+/// replay produces, and return it.
 ///
-/// Flipping `ranked` on the stored record stands in for every way a match can
-/// stop counting (cancellation, a roster edit that unlinks a player), since it
-/// is the one this phase can trigger without an API for it.
-#[tokio::test]
-async fn a_match_that_stops_being_ranked_has_its_contribution_withdrawn() {
-    let Some(dao) = rating_dao().await else {
-        return;
-    };
-    let (winner_config, winner) = new_user().await;
-    let (loser_config, loser) = new_user().await;
-
-    let starts_at = iso_offset_hours(-4);
-    let created =
-        play_ranked_tennis_match(&winner_config, &loser_config, &loser.profile.id, &starts_at)
-            .await;
-    let rated = rating_after_matches(&dao, &winner.profile.id, "tennis", 1).await;
-    assert_eq!(
-        rating_history(&dao, &winner.profile.id, "tennis")
-            .await
-            .len(),
-        1
-    );
-
-    // Demoting it to a friendly rewrites `#META`, which is the handler's own
-    // trigger — no separate nudge needed.
-    set_match_ranked(&created.id, false).await;
-
-    eventually(
-        "the withdrawn match's contributions to disappear",
-        || async {
-            contributions_by_owner(&dao, &created.id)
-                .await
-                .is_empty()
-                .then_some(())
-        },
-    )
-    .await;
-    assert!(
-        rating_history(&dao, &winner.profile.id, "tennis")
-            .await
-            .is_empty(),
-        "the history entry goes with the contribution — it is the replay's input"
-    );
-    assert_eq!(
-        stored_rating(&dao, &winner.profile.id, "tennis").await,
-        Some(rated),
-        "the rating itself is left stale on purpose; only a replay can unwind it"
+/// Not [`eventually`], for two reasons. The comparison is bit-exact on `f64`
+/// by design — the whole repair story rests on a replay reproducing the
+/// incremental numbers precisely — so a near miss is a real failure and the
+/// message has to show both numbers to be diagnosable at all. And the
+/// pre-repair value is itself a perfectly plausible rating, so there is no
+/// coarser "has it happened yet" signal to wait on first.
+async fn rating_converges_on(
+    dao: &agon_core::dao::Dao,
+    user_id: &str,
+    ladder: &str,
+    expected: agon_core::rating::PlayerRating,
+    matches_rated: u64,
+) -> agon_core::dao::records::RatingRecord {
+    const ATTEMPTS: u32 = 25;
+    let mut last = None;
+    for attempt in 1..=ATTEMPTS {
+        let current = stored_rating(dao, user_id, ladder).await;
+        if let Some(rating) = &current
+            && rating.matches_rated == matches_rated
+            && rating.mu == expected.mu
+            && rating.sigma == expected.sigma
+        {
+            return rating.clone();
+        }
+        last = current;
+        if attempt < ATTEMPTS {
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        }
+    }
+    panic!(
+        "timed out after {ATTEMPTS}s waiting for {user_id}'s {ladder} rating to be replayed onto \
+         mu={} sigma={} over {matches_rated} match(es); last saw {last:?}",
+        expected.mu, expected.sigma
     );
 }
 
-/// Re-scoring a rated match is *detected*, not applied.
+/// A match confirmed after a later one is applied out of order, then repaired
+/// back onto the ratings played order would have produced.
 ///
-/// A Weng-Lin update cannot be inverted, so correcting a match that has
-/// already been folded into a rating means replaying that ladder from the
-/// match forward — `RepairRatings`, which is phase 2b-ii. What phase 2b-i owes
-/// is that it notices and then keeps its hands off: the stored contributions
-/// are the replay's input, so overwriting them with a recomputed guess (which
-/// would be computed from the wrong base — the rating has moved on since)
-/// would destroy the only record of what was actually applied.
+/// This is the trigger phase 2b-i could only log. The incremental result is
+/// self-consistent but wrong: the Monday match was rated from the belief the
+/// player carried *out* of Wednesday's, because Wednesday's was confirmed
+/// first. `RepairRatings` replays the ladder from the start and lands on the
+/// numbers a from-scratch run produces.
 ///
-/// The barrier is the stats handler again: it reconciles the flipped result on
-/// the same event, so once the previously-losing side shows a win, the rating
-/// handler has seen the re-score too.
+/// The two opponents are different accounts, each playing their first rated
+/// match, and that is not incidental. Only the account with an existing
+/// rating is flagged out of order, and holding an opponent at the belief
+/// their contribution recorded is exactly right when that belief is the
+/// starting default — so first-order repair coincides with full consistency
+/// here, and the assertion can be the strong one. Both opponents are left
+/// carrying the second-order error the design documents: they each played a
+/// player whose rating has since been corrected underneath them, and nothing
+/// goes back for them.
 #[tokio::test]
-async fn re_scoring_a_rated_match_is_detected_and_left_for_repair() {
+async fn a_match_confirmed_out_of_order_is_replayed_into_played_order() {
+    let Some(dao) = rating_dao().await else {
+        return;
+    };
+    let (hero_config, hero) = new_user().await;
+    let (recent_foe_config, recent_foe) = new_user().await;
+    let (older_foe_config, older_foe) = new_user().await;
+
+    // Wednesday, confirmed first — so it is rated first, from nothing.
+    let recent_starts_at = iso_offset_hours(-2);
+    let recent = play_ranked_tennis_match(
+        &hero_config,
+        &recent_foe_config,
+        &recent_foe.profile.id,
+        &recent_starts_at,
+    )
+    .await;
+    rating_after_matches(&dao, &hero.profile.id, "tennis", 1).await;
+
+    // Monday, confirmed second — out of played order, which is what fires the
+    // repair.
+    let older_starts_at = iso_offset_hours(-30);
+    let older = play_ranked_tennis_match(
+        &hero_config,
+        &older_foe_config,
+        &older_foe.profile.id,
+        &older_starts_at,
+    )
+    .await;
+
+    let replayed = replayed_from_scratch(&[
+        replayable(
+            (
+                &hero.profile.id,
+                &side_id_for_user(&older, &hero.profile.id),
+            ),
+            (
+                &older_foe.profile.id,
+                &side_id_for_user(&older, &older_foe.profile.id),
+            ),
+            true,
+        ),
+        replayable(
+            (
+                &hero.profile.id,
+                &side_id_for_user(&recent, &hero.profile.id),
+            ),
+            (
+                &recent_foe.profile.id,
+                &side_id_for_user(&recent, &recent_foe.profile.id),
+            ),
+            true,
+        ),
+    ]);
+
+    let repaired = rating_converges_on(
+        &dao,
+        &hero.profile.id,
+        "tennis",
+        replayed[&hero.profile.id],
+        2,
+    )
+    .await;
+    assert_eq!(
+        repaired.last_rated_at, recent_starts_at,
+        "the newest match played is still the newest after a replay"
+    );
+
+    // The replay rewrote the Monday match's own record of what it did: it was
+    // originally applied on top of Wednesday's result, and now starts from an
+    // unrated player, as played order says it should. Without this the
+    // contribution would still describe the movement that was actually
+    // applied, and the next redelivery would read it as a re-score.
+    let older_contributions = contributions_by_owner(&dao, &older.id).await;
+    assert_eq!(
+        older_contributions[&hero.profile.id].movement.mu_before,
+        agon_core::rating::INITIAL_MU,
+        "the earliest match must be replayed from an unrated player"
+    );
+
+    // History stays keyed on played time throughout — it is the replay's own
+    // input, so a repair that reordered it would be unable to run twice.
+    let history = rating_history(&dao, &hero.profile.id, "tennis").await;
+    let match_ids: Vec<&str> = history.iter().map(|h| h.match_id.as_str()).collect();
+    assert_eq!(match_ids, vec![older.id.as_str(), recent.id.as_str()]);
+    assert_eq!(
+        history[1].movement.mu_before, history[0].movement.mu_after,
+        "each replayed match must start from the one before it"
+    );
+}
+
+/// Re-scoring a rated match replays it, and both sides land on the ratings the
+/// corrected result implies.
+///
+/// A Weng-Lin update has no inverse, so this cannot be applied as a delta —
+/// the old movement is unwound only by computing the whole thing again. Phase
+/// 2b-i detected the change and deliberately left the stored contributions
+/// alone because they are the replay's input; this is the other half of that
+/// bargain.
+///
+/// Both accounts can be asserted exactly here, and symmetrically, because it
+/// is each of their first rated matches: the belief each holds the other at is
+/// the starting default either way round, so it does not matter which of the
+/// two repairs runs first.
+#[tokio::test]
+async fn re_scoring_a_rated_match_replays_both_sides_onto_the_corrected_result() {
     let Some(dao) = rating_dao().await else {
         return;
     };
@@ -6738,8 +6894,11 @@ async fn re_scoring_a_rated_match_is_detected_and_left_for_repair() {
     let created =
         play_ranked_tennis_match(&winner_config, &loser_config, &loser.profile.id, &starts_at)
             .await;
-    let rated = rating_after_matches(&dao, &winner.profile.id, "tennis", 1).await;
-    let contributions = contributions_by_owner(&dao, &created.id).await;
+    let originally = rating_after_matches(&dao, &winner.profile.id, "tennis", 1).await;
+    assert!(
+        originally.mu > agon_core::rating::INITIAL_MU,
+        "the recorded winner should have gone up first"
+    );
 
     // Correct the result the other way round: the loser actually won.
     let side_a = side_id_for_user(&created, &winner.profile.id);
@@ -6749,7 +6908,7 @@ async fn re_scoring_a_rated_match_is_detected_and_left_for_repair() {
         &created.id,
         models::UpdateMatchInput {
             score: Some(Box::new(simple_score(&side_a, &side_b, 3, 6))),
-            winner_side_id: Some(side_b),
+            winner_side_id: Some(side_b.clone()),
             ..Default::default()
         },
     )
@@ -6757,29 +6916,154 @@ async fn re_scoring_a_rated_match_is_detected_and_left_for_repair() {
     .expect("re-score the match");
     confirm_pending_score(&loser_config, &rescored).await;
 
-    // Stats reconcile the flip, which proves the worker processed the event.
-    eventually(
-        "the re-scored result to reach the new winner's stats",
-        || async {
-            let me = users_me_get(&loser_config).await.expect("get me");
-            me.profile
-                .stats
-                .tennis
-                .and_then(|s| s.win_percentage)
-                .filter(|pct| *pct > 99.0)
-                .map(|_| ())
-        },
+    let replayed = replayed_from_scratch(&[replayable(
+        (&winner.profile.id, &side_a),
+        (&loser.profile.id, &side_b),
+        false,
+    )]);
+
+    let corrected = rating_converges_on(
+        &dao,
+        &winner.profile.id,
+        "tennis",
+        replayed[&winner.profile.id],
+        1,
     )
     .await;
-
-    assert_eq!(
-        contributions_by_owner(&dao, &created.id).await,
-        contributions,
-        "the stored contributions are the replay's input and must survive untouched"
+    rating_converges_on(
+        &dao,
+        &loser.profile.id,
+        "tennis",
+        replayed[&loser.profile.id],
+        1,
+    )
+    .await;
+    assert!(
+        corrected.mu < agon_core::rating::INITIAL_MU,
+        "the account that actually lost must end up below the starting rating, got {}",
+        corrected.mu
     );
+
+    // The contribution and the history entry describe the corrected match, not
+    // the original one — including the "+18" the player was shown, which flips
+    // sign with the result.
+    let contributions = contributions_by_owner(&dao, &created.id).await;
     assert_eq!(
-        stored_rating(&dao, &winner.profile.id, "tennis").await,
-        Some(rated),
-        "the rating still reflects the old result until a replay corrects it"
+        contributions[&winner.profile.id].movement.mu_after, corrected.mu,
+        "the contribution and the stored rating are written in one transaction"
+    );
+    let history = rating_history(&dao, &winner.profile.id, "tennis").await;
+    assert_eq!(history.len(), 1, "a replay rewrites history, never appends");
+    assert!(
+        history[0].movement.display_delta < 0,
+        "the shown movement follows the corrected result"
+    );
+}
+
+/// A match that stops counting is replayed out of its participants' ratings —
+/// including all the way back to unrated when it was the only one.
+///
+/// Phase 2b-i removes the contribution and the history entry immediately (they
+/// are the replay's input, so leaving them would have a replay faithfully
+/// re-apply a match that no longer counts) and leaves the stored rating stale,
+/// because subtracting a Weng-Lin update is not a thing that can be computed.
+/// This is what finishes the job.
+///
+/// The two halves are worth asserting separately: the account with a match
+/// left keeps a rating replayed from what remains, and the account with none
+/// left goes back to the unrated default — which is the only path in the whole
+/// system that *lowers* `matches_rated`, and the reason the replay has a
+/// separate settling step at all (an empty history writes nothing per-match
+/// and would otherwise leave the stale value untouched).
+#[tokio::test]
+async fn withdrawing_a_match_replays_the_owners_remaining_history() {
+    let Some(dao) = rating_dao().await else {
+        return;
+    };
+    let (hero_config, hero) = new_user().await;
+    let (withdrawn_foe_config, withdrawn_foe) = new_user().await;
+    let (kept_foe_config, kept_foe) = new_user().await;
+
+    // Both in played order, so nothing is out of order and the only change is
+    // the withdrawal.
+    let withdrawn = play_ranked_tennis_match(
+        &hero_config,
+        &withdrawn_foe_config,
+        &withdrawn_foe.profile.id,
+        &iso_offset_hours(-30),
+    )
+    .await;
+    rating_after_matches(&dao, &hero.profile.id, "tennis", 1).await;
+
+    let kept_starts_at = iso_offset_hours(-2);
+    let kept = play_ranked_tennis_match(
+        &hero_config,
+        &kept_foe_config,
+        &kept_foe.profile.id,
+        &kept_starts_at,
+    )
+    .await;
+    rating_after_matches(&dao, &hero.profile.id, "tennis", 2).await;
+
+    // Demoting it to a friendly rewrites `#META`, which is the handler's own
+    // trigger — no separate nudge needed. It stands in for every way a match
+    // can stop counting (cancellation, a roster edit that unlinks a player).
+    set_match_ranked(&withdrawn.id, false).await;
+
+    let replayed = replayed_from_scratch(&[replayable(
+        (&hero.profile.id, &side_id_for_user(&kept, &hero.profile.id)),
+        (
+            &kept_foe.profile.id,
+            &side_id_for_user(&kept, &kept_foe.profile.id),
+        ),
+        true,
+    )]);
+
+    let repaired = rating_converges_on(
+        &dao,
+        &hero.profile.id,
+        "tennis",
+        replayed[&hero.profile.id],
+        1,
+    )
+    .await;
+    assert_eq!(
+        repaired.last_rated_at, kept_starts_at,
+        "the withdrawn match no longer counts as the newest played"
+    );
+
+    assert!(
+        contributions_by_owner(&dao, &withdrawn.id).await.is_empty(),
+        "the withdrawn match contributes to nobody"
+    );
+    let history = rating_history(&dao, &hero.profile.id, "tennis").await;
+    assert_eq!(
+        history
+            .iter()
+            .map(|h| h.match_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![kept.id.as_str()],
+        "only the surviving match is left for the next replay to read"
+    );
+
+    // The opponent's only match is gone, so their replay covers no matches at
+    // all and has to put them back where they started — not leave them holding
+    // a rating earned in a game that no longer counts.
+    let reset = rating_converges_on(
+        &dao,
+        &withdrawn_foe.profile.id,
+        "tennis",
+        agon_core::rating::PlayerRating::default(),
+        0,
+    )
+    .await;
+    assert_eq!(
+        reset.last_rated_at, "",
+        "an emptied ladder must not keep claiming a newest match played"
+    );
+    assert!(
+        rating_history(&dao, &withdrawn_foe.profile.id, "tennis")
+            .await
+            .is_empty()
     );
 }

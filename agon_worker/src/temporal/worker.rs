@@ -14,10 +14,10 @@ use temporalio_sdk_core::{CoreRuntime, RuntimeOptions};
 
 use super::TASK_QUEUE;
 use super::activities::AgonActivities;
-use super::workflows::{AcceptInvitation, FanOutMatch};
+use super::workflows::{AcceptInvitation, FanOutMatch, RepairRatings};
 
 /// Connect to Temporal (config from the standard `TEMPORAL_*` env / profile) and
-/// run the worker until the process exits. Registers both workflows and the
+/// run the worker until the process exits. Registers every workflow and the
 /// shared activities struct.
 pub async fn run(dao: Dao, search: SearchClient) -> Result<(), Box<dyn std::error::Error>> {
     let runtime = CoreRuntime::new_assume_tokio(RuntimeOptions::builder().build()?)?;
@@ -31,6 +31,7 @@ pub async fn run(dao: Dao, search: SearchClient) -> Result<(), Box<dyn std::erro
         .register_activities(AgonActivities { dao, search })
         .register_workflow::<FanOutMatch>()?
         .register_workflow::<AcceptInvitation>()?
+        .register_workflow::<RepairRatings>()?
         .build();
 
     tracing::info!(task_queue = TASK_QUEUE, "temporal worker starting");

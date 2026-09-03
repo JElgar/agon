@@ -162,6 +162,7 @@ impl Consumer {
             &self.dao,
             &self.search,
             self.push.as_ref(),
+            self.temporal.as_ref(),
             self.config.ui_base_url.as_deref(),
             &event,
             &now,

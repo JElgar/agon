@@ -30,3 +30,26 @@ pub fn fanout_workflow_id(match_id: &str) -> String {
 pub fn accept_workflow_id(invitation_id: &str) -> String {
     format!("accept-{invitation_id}")
 }
+
+/// Deterministic workflow id for a rating repair — one per (owner, ladder),
+/// which is the unit a replay actually works on (`Dao::list_rating_history`
+/// takes exactly an owner and a ladder).
+///
+/// Keyed on the owner rather than on the match that triggered it, even though
+/// a re-scored match invalidates every participant at once and this therefore
+/// starts N workflows for one event. A match-keyed repair would have to fan
+/// back out to one replay per participant anyway — the checkpointed state is a
+/// cursor into *one* owner's history — and it would dedupe on the wrong thing:
+/// two different changes to the same match are one workflow id, while the same
+/// change delivered twice for two different owners are two. Per-owner gets
+/// both right, and the N runs are independent (disjoint partitions, no shared
+/// writes), so they proceed in parallel.
+///
+/// The kind is in the id because a user and a team can hold the same id string
+/// in principle, and their ratings are different pools entirely (see the plan's
+/// Part 2.7). Segments are joined with `-`; ladders never contain one
+/// (`rating::Ladder` uses `:` for sub-ladders), so the tail is unambiguous even
+/// though an owner id may contain `-` (ids are base64url).
+pub fn repair_workflow_id(owner_kind: &str, owner_id: &str, ladder: &str) -> String {
+    format!("repair-{owner_kind}-{owner_id}-{ladder}")
+}

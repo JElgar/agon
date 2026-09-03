@@ -20,8 +20,14 @@
 //! - **A first rating is applied here, incrementally and authoritatively.**
 //! - **A change to an already-rated match is only *detected* here.** Re-score,
 //!   roster edit, cancellation, ranked→friendly: all of them need a replay,
-//!   which is `RepairRatings`' job (phase 2b-ii). This handler classifies and
-//!   records; see [`note_repair_needed`], the seam that workflow plugs into.
+//!   which is `RepairRatings`' job. This handler classifies and hands off; see
+//!   [`note_repair_needed`], the one place that workflow is started from.
+//! - **The replay itself also lives in this module**
+//!   ([`replay_rating_chunk`]), not in `temporal/`, because it is the same
+//!   eligibility gate and the same projection the incremental path uses —
+//!   sharing them is the only reason the two can be expected to agree. The
+//!   activity in `temporal/activities.rs` is a thin wrapper, exactly as
+//!   `reconcile_match_stats`' is.
 //! - **"Has anything changed?" is answered from the stored contributions, not
 //!   from the participants' current ratings.** `dao::rating`'s module header
 //!   spells out the double-counting bug the obvious version walks into; the
@@ -43,6 +49,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use agon_core::dao::Dao;
+use agon_core::dao::error::DaoError;
 use agon_core::dao::keys::{Pk, Sk};
 use agon_core::dao::rating::RatingOwner;
 use agon_core::dao::records::{
@@ -50,22 +57,35 @@ use agon_core::dao::records::{
     RatingOwnerKindRecord, RatingRecord,
 };
 use agon_core::rating::{
-    Ladder, MatchParticipant, PlayerRating, RatingTable, RatingUpdate, ladder_for_tag, rate_match,
+    INITIAL_MU, INITIAL_SIGMA, Ladder, MatchParticipant, PlayerRating, RatingTable, RatingUpdate,
+    ladder_for_tag, rate_match,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::error::{WorkerError, WorkerResult};
 use crate::event::ChangeEvent;
+use crate::temporal::client::TemporalClient;
+use crate::temporal::workflows::RepairRatingsInput;
 
 /// Handle a rating-relevant change event: any non-remove write to a match's
 /// `#META`. Everything else is ignored.
-pub async fn handle(dao: &Dao, ev: &ChangeEvent, now: &str) -> WorkerResult<()> {
+///
+/// `temporal` is the client repairs are started on. `None` (unit tests, a local
+/// run without the `full` compose profile) degrades to detection-only, exactly
+/// as `push` does when FCM is unconfigured — the condition is still logged.
+pub async fn handle(
+    dao: &Dao,
+    temporal: Option<&TemporalClient>,
+    ev: &ChangeEvent,
+    now: &str,
+) -> WorkerResult<()> {
     if ev.kind.is_remove() {
         return Ok(());
     }
     let (Pk::Match(match_id), Sk::Meta) = (&ev.pk, &ev.sk) else {
         return Ok(());
     };
-    reconcile_match_rating(dao, match_id, now).await
+    reconcile_match_rating(dao, temporal, match_id, now).await
 }
 
 /// Reconcile a match's rating contributions against its current state.
@@ -75,7 +95,12 @@ pub async fn handle(dao: &Dao, ev: &ChangeEvent, now: &str) -> WorkerResult<()> 
 /// contributions already stored (bit-for-bit — the engine is deterministic and
 /// starts from the same stored `before` ratings), so the "nothing changed"
 /// branch is reached without writing.
-pub async fn reconcile_match_rating(dao: &Dao, match_id: &str, now: &str) -> WorkerResult<()> {
+pub async fn reconcile_match_rating(
+    dao: &Dao,
+    temporal: Option<&TemporalClient>,
+    match_id: &str,
+    now: &str,
+) -> WorkerResult<()> {
     // Re-read the current aggregate rather than trusting the stream image, for
     // the same reason `reconcile_match_stats` does: the image is a snapshot of
     // one item, and eligibility depends on the roster items too. A missing
@@ -97,14 +122,25 @@ pub async fn reconcile_match_rating(dao: &Dao, match_id: &str, now: &str) -> Wor
         // a later replay faithfully re-apply a match that no longer counts.
         for contribution in &stored {
             let owner = RatingOwner::from(contribution);
-            dao.withdraw_rating_contribution(match_id, contribution)
-                .await?;
+            // Repair first, withdrawal second, and the order is load-bearing.
+            // Starting after the delete would lose the repair entirely if the
+            // workflow start failed: the message redelivers, finds the
+            // contributions already gone, and reports nothing to repair — so
+            // the owner's rating would keep this match's effect forever.
+            // Starting first costs nothing, because the replay re-runs the
+            // eligibility gate against the *match*, not against the history
+            // item: a run that races ahead of the delete skips this match all
+            // the same and still lands on the right number.
             note_repair_needed(
+                temporal,
                 RepairTrigger::Withdrawn,
                 match_id,
                 &owner,
                 &contribution.ladder,
-            );
+            )
+            .await?;
+            dao.withdraw_rating_contribution(match_id, contribution)
+                .await?;
         }
         return Ok(());
     };
@@ -175,7 +211,7 @@ pub async fn reconcile_match_rating(dao: &Dao, match_id: &str, now: &str) -> Wor
     let mut pending: Vec<(&RatingUpdate, RatingContributionRecord)> = Vec::new();
     let mut rerated: Vec<(RatingOwner, String)> = Vec::new();
     for update in &updates {
-        let contribution = contribution_for(update, &rateable, now);
+        let contribution = contribution_for(update, &rateable, RatingOwnerKindRecord::User, now);
         match stored_by_owner.get(update.user_id.as_str()) {
             Some(previous) if previous.has_same_effect_as(&contribution) => {}
             // The match itself changed under an existing rating — a re-score,
@@ -201,7 +237,7 @@ pub async fn reconcile_match_rating(dao: &Dao, match_id: &str, now: &str) -> Wor
         // written — the stored contributions are the replay's input and stay
         // exactly as they are until it runs.
         for (owner, ladder) in &rerated {
-            note_repair_needed(RepairTrigger::Rerated, match_id, owner, ladder);
+            note_repair_needed(temporal, RepairTrigger::Rerated, match_id, owner, ladder).await?;
         }
         return Ok(());
     }
@@ -212,22 +248,19 @@ pub async fn reconcile_match_rating(dao: &Dao, match_id: &str, now: &str) -> Wor
     // participant is one transaction, so a crash or a lost optimistic-lock
     // race in the middle is recoverable rather than corrupting, and this is
     // where it recovers.
+    let mut out_of_order: Vec<RatingOwner> = Vec::new();
     for (update, contribution) in pending {
         let stored_rating = current_rating(&update.user_id);
         let owner = RatingOwner::user(&update.user_id);
 
         // Out-of-order arrival: this match was played *before* the newest one
         // already folded into this rating, so the incremental result is not
-        // the one a `starts_at`-ordered replay would produce.
+        // the one a `starts_at`-ordered replay would produce. Collected, not
+        // started — see below.
         if let Some(previous) = &stored_rating
             && previous.last_rated_at > rateable.played_at
         {
-            note_repair_needed(
-                RepairTrigger::OutOfOrder,
-                match_id,
-                &owner,
-                rateable.ladder.as_str(),
-            );
+            out_of_order.push(owner.clone());
         }
 
         let rating = RatingRecord {
@@ -254,6 +287,36 @@ pub async fn reconcile_match_rating(dao: &Dao, match_id: &str, now: &str) -> Wor
             None,
             &rating,
             stored_rating.as_ref(),
+        )
+        .await?;
+    }
+
+    // Started only once every apply above has committed, and that ordering is
+    // the opposite of the withdrawal branch's on purpose — do not "fix" it to
+    // match. The replay reads the history collection as it stands when it
+    // runs, and the history entry this match is about is written by the loop
+    // that just finished. Starting inside the loop would routinely hand the
+    // workflow a history that does not yet contain the very match it was
+    // started for: it would replay, find nothing wrong, settle, and exit — and
+    // nothing would start it again.
+    //
+    // The cost of waiting is a window nothing recovers: if the start fails
+    // (Temporal unreachable) or an earlier apply in the loop errors, the
+    // message redelivers, finds every contribution already written and
+    // unchanged, and reports nothing to repair. That is a real hole, and it is
+    // the better half of the trade — losing an out-of-order repair leaves the
+    // incrementally-applied numbers, which are self-consistent and are exactly
+    // what phase 2b-i shipped, whereas racing the workflow would make the
+    // repair silently no-op most of the time. The withdrawal branch does not
+    // face the choice: its replay decides from the *match*, which is already
+    // committed, so starting first there costs nothing.
+    for owner in &out_of_order {
+        note_repair_needed(
+            temporal,
+            RepairTrigger::OutOfOrder,
+            match_id,
+            owner,
+            rateable.ladder.as_str(),
         )
         .await?;
     }
@@ -422,12 +485,19 @@ fn withdrawn(player: &MatchPlayerRecord) -> bool {
 
 /// The contribution record one rating update implies for this match.
 ///
-/// Every field a repair needs to re-rate the match without the roster —
-/// `side_id`, the incoming belief, the ladder — comes from here, which is why
-/// this is one function and not a struct literal at each call site.
+/// Every field a repair needs to re-rate the match — `side_id`, the incoming
+/// belief, the ladder — comes from here, which is why this is one function and
+/// not a struct literal at each call site.
+///
+/// `owner_kind` is a parameter rather than a constant because the replay path
+/// builds contributions for whichever owner kind it is repairing. The
+/// incremental path above only ever passes `User`: a team is a *side*, not a
+/// participant, so rating one is a second pass over the same match (phase
+/// 2b-iii), not a variation on this one.
 fn contribution_for(
     update: &RatingUpdate,
     rateable: &Rateable,
+    owner_kind: RatingOwnerKindRecord,
     now: &str,
 ) -> RatingContributionRecord {
     let side_id = rateable
@@ -441,11 +511,7 @@ fn contribution_for(
         // comparison loudly instead.
         .unwrap_or_default();
     RatingContributionRecord {
-        // Users only for now. Teams carry ratings of their own and the DAO
-        // writes for either owner kind, but nothing computes a team's rating
-        // yet — a team is a *side*, not a participant, so rating one is a
-        // second pass over the same match rather than a variation on this one.
-        owner_kind: RatingOwnerKindRecord::User,
+        owner_kind,
         owner_id: update.user_id.clone(),
         ladder: rateable.ladder.as_str().to_string(),
         side_id,
@@ -474,7 +540,9 @@ enum RepairTrigger {
     /// very repair that was supposed to fix it, i.e. permanently unrated.
     /// Applying puts it in the collection at its correct `starts_at` key, so
     /// the replay finds it in the right place and converges; only the interim
-    /// numbers are approximate.
+    /// numbers are approximate. That also fixes when the repair may be
+    /// started: not until the history entry exists, or the replay would find
+    /// nothing to fix.
     OutOfOrder,
     /// An already-rated match's effect changed — a re-score, a reschedule, a
     /// sport edit, or a roster change. Weng-Lin is not invertible, so this
@@ -487,37 +555,442 @@ enum RepairTrigger {
     Withdrawn,
 }
 
-/// Record that an owner's rating on a ladder needs replaying.
+/// Start the replay that brings an owner's ladder back into line, and record
+/// why it was needed.
 ///
-/// **This is the seam phase 2b-ii plugs into.** It will start a
-/// `RepairRatings` Temporal workflow keyed `repair-<ownerId>-<ladder>`, whose
-/// deterministic id makes a duplicate trigger a no-op — which is why this
-/// function is free to be called more than once for the same owner and match.
+/// **The single choke point.** All three triggers come through here, and the
+/// deterministic workflow id (`repair-<kind>-<ownerId>-<ladder>`) plus
+/// `UseExisting` are what make that safe: calling it twice for the same owner
+/// and ladder — which every one of the three paths above can do — attaches to
+/// the run already going instead of starting a second one. Scattering
+/// `start_repair` calls across the three call sites would work exactly as well
+/// and would make it far easier for a fourth trigger to forget one of the
+/// invariants documented at each of them (chiefly: for a withdrawal, start
+/// *before* deleting).
 ///
-/// It deliberately does not stub a workflow, or write a "pending repair" item,
-/// or half-start anything: an inert stub is indistinguishable from working
-/// machinery when read, and a pending-repair item would be a storage shape the
-/// design has not chosen (phase 2a designed no key for one, and inventing one
-/// now would have to be migrated away from when the workflow lands). A
-/// structured log line is the honest amount of state for a phase that can
-/// detect but not yet repair, and it goes out at `warn` so the condition is
-/// visible in Loki rather than only in a debugger.
+/// `temporal = None` degrades to the log line alone. That is the shape phase
+/// 2b-i shipped and it stays deliberately: a unit test or a local run without
+/// the `full` compose profile should still exercise detection, and a silent
+/// no-op would be indistinguishable from working machinery.
 ///
-/// The repair it will start is **first-order**, and the code should say so
-/// plainly rather than let a reader assume global consistency: replaying A's
-/// ladder corrects A, but B — who played A — got a slightly wrong movement
-/// from that match too, and so on transitively. Chasing the closure means
-/// recomputing the whole graph on every correction. Second-order error is
-/// heavily damped by σ at each hop, so first-order is the trade.
-fn note_repair_needed(trigger: RepairTrigger, match_id: &str, owner: &RatingOwner, ladder: &str) {
-    tracing::warn!(
+/// A failed start is returned as an error, so the SQS message is not ACKed and
+/// the whole event redelivers. For `Rerated` and `Withdrawn` that is a
+/// complete recovery — nothing is consumed before the start, so the next
+/// delivery detects the same thing again. For `OutOfOrder` it is not, and the
+/// call site says why: the start has to wait until the applies have committed,
+/// by which point a redelivery finds nothing left to notice. That window is
+/// the one place a repair can be dropped, and dropping it leaves the
+/// incrementally-applied numbers rather than corrupting anything.
+async fn note_repair_needed(
+    temporal: Option<&TemporalClient>,
+    trigger: RepairTrigger,
+    match_id: &str,
+    owner: &RatingOwner,
+    ladder: &str,
+) -> WorkerResult<()> {
+    tracing::info!(
         trigger = ?trigger,
         match_id,
         owner_kind = ?owner.kind,
         owner_id = %owner.id,
         ladder,
-        "rating repair needed; RepairRatings is not implemented yet (phase 2b-ii)"
+        started = temporal.is_some(),
+        "rating repair needed"
     );
+    let Some(temporal) = temporal else {
+        return Ok(());
+    };
+    temporal
+        .start_repair(RepairRatingsInput {
+            owner_kind: owner.kind,
+            owner_id: owner.id.clone(),
+            ladder: ladder.to_string(),
+        })
+        .await
+        // `Sqs` is the variant the consumer already classifies a failed
+        // Temporal start under (`maybe_start_workflow`). The name is a
+        // misnomer for it; what matters is that it is *not* one of the
+        // permanent variants, so the message redelivers rather than being
+        // parked in the DLQ.
+        .map_err(|e| WorkerError::Sqs(format!("start rating repair: {e}")))
+}
+
+// ===========================================================================
+// The replay — `RepairRatings`' body, one chunk at a time.
+// ===========================================================================
+
+/// How many history items one replay chunk covers.
+///
+/// Each one costs a match read plus a contribution query, so a chunk is
+/// roughly `2 × REPLAY_PAGE` round trips; 50 keeps that comfortably inside the
+/// activity's start-to-close timeout while still checkpointing often enough
+/// that a crashed repair resumes near where it stopped.
+pub const REPLAY_PAGE: u32 = 50;
+
+/// The replay's running state, carried between chunks by the workflow.
+///
+/// Deliberately small and serializable: it is round-tripped through Temporal's
+/// event history on every chunk boundary, and it is the *only* thing a resumed
+/// chunk is allowed to assume. Everything else a chunk needs — what the table
+/// currently holds, what the match now says — it re-reads, because an activity
+/// can be retried after a partial write and must recompute the same answer
+/// from the same input.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReplayState {
+    /// Matches folded in so far. Ends as the owner's `matches_rated`.
+    pub matches_rated: u64,
+    pub mu: f64,
+    pub sigma: f64,
+    /// The greatest `played_at` folded in so far. Ends as `last_rated_at`.
+    pub last_rated_at: String,
+}
+
+impl Default for ReplayState {
+    /// Where every replay starts: the belief a never-rated account has.
+    fn default() -> Self {
+        Self {
+            matches_rated: 0,
+            mu: INITIAL_MU,
+            sigma: INITIAL_SIGMA,
+            last_rated_at: String::new(),
+        }
+    }
+}
+
+impl ReplayState {
+    fn belief(&self) -> PlayerRating {
+        PlayerRating {
+            mu: self.mu,
+            sigma: self.sigma,
+        }
+    }
+
+    /// Fold one replayed match in.
+    fn fold(&mut self, after: PlayerRating, played_at: &str) {
+        self.matches_rated += 1;
+        self.mu = after.mu;
+        self.sigma = after.sigma;
+        if played_at > self.last_rated_at.as_str() {
+            self.last_rated_at = played_at.to_string();
+        }
+    }
+
+    /// The rating record this state describes.
+    fn rating(&self) -> RatingRecord {
+        RatingRecord {
+            mu: self.mu,
+            sigma: self.sigma,
+            matches_rated: self.matches_rated,
+            last_rated_at: self.last_rated_at.clone(),
+        }
+    }
+}
+
+/// One chunk's result: the state to carry forward, and where to resume.
+/// `next_cursor = None` means the ladder's history is exhausted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplayProgress {
+    pub state: ReplayState,
+    pub next_cursor: Option<String>,
+}
+
+/// Replay one page of an owner's rating history on one ladder, writing the
+/// corrected contribution, history entry and rating for every match whose
+/// effect on this owner has changed.
+///
+/// ## What "correct" means here, precisely
+///
+/// The owner's belief walks forward through their own matches in played order.
+/// Everybody *else* in each match is held at the belief they carried into it,
+/// as recorded by their own `RATINGCONTRIB#` item for that match. That is what
+/// makes repair first-order rather than a graph recompute, and it is the
+/// single most important thing to understand before changing this function —
+/// see [`crate::temporal::workflows::RepairRatings`] for why the second-order
+/// term is left on the table.
+///
+/// ## Why it re-reads the match instead of trusting the contributions alone
+///
+/// Phase 2a designed the contribution collection to be a self-sufficient
+/// replay input, and for the *beliefs* it is. It cannot supply two things: the
+/// current `winner_side_id` (a re-score is one of the three triggers, so the
+/// stored view is precisely the one that is wrong), and the current roster (a
+/// roster edit is another trigger — replaying from the contributions alone
+/// would silently drop a player added since, and the match would never reflect
+/// them). So the match goes through the very same [`rateable`] gate the
+/// incremental path uses, which also means the two can never disagree about
+/// what counts.
+///
+/// ## Idempotence
+///
+/// A chunk is a pure function of `(owner, ladder, cursor, state)`: it re-reads
+/// the owner's stored rating rather than being told it, and it re-reads the
+/// page rather than being handed items. So a retry after a partial write
+/// recomputes the same movements and finds the ones it already wrote unchanged
+/// (`has_same_effect_as`), skipping them. A replay of a *healthy* history
+/// writes nothing at all, which is what makes an over-eager repair cost reads
+/// and nothing else.
+pub async fn replay_rating_chunk(
+    dao: &Dao,
+    owner: &RatingOwner,
+    ladder: &str,
+    cursor: Option<&str>,
+    state: ReplayState,
+    now: &str,
+) -> WorkerResult<ReplayProgress> {
+    // The optimistic-lock guard for every rating write below. Re-read per
+    // chunk rather than threaded through the workflow: the workflow's copy
+    // could only ever be staler, and a stale guard is a `Conflict`, which
+    // costs an activity retry.
+    let mut stored_rating = dao.get_rating(owner, ladder).await?;
+    let mut state = state;
+
+    // Ascending by `played_at`, which is the order ratings are defined to be
+    // applied in — see `Sk::Rating`.
+    let page = dao
+        .list_rating_history(owner, ladder, None, cursor, REPLAY_PAGE)
+        .await?;
+
+    for entry in &page.items {
+        // Only this owner kind's contributions. `RATINGCONTRIB#<id>`
+        // deliberately does not say whether the id names a user or a team (so
+        // that one `begins_with` lists a match's whole set), which means both
+        // kinds land in the same collection once phase 2b-iii rates teams —
+        // and a team's `μ` is not a number that belongs anywhere near a
+        // player's side strength.
+        let stored: BTreeMap<String, RatingContributionRecord> = dao
+            .list_rating_contributions(&entry.match_id)
+            .await?
+            .into_iter()
+            .filter(|c| c.owner_kind == owner.kind)
+            .map(|c| (c.owner_id.clone(), c))
+            .collect();
+
+        let Some(update) =
+            replay_match(dao, owner, ladder, &entry.match_id, &state, &stored, now).await?
+        else {
+            // The match no longer counts for this owner — cancelled, demoted
+            // to a friendly, or they were dropped from the roster. Take it out
+            // of the history here rather than leaving it: it is what the *next*
+            // replay reads, and a history entry describing a movement the
+            // rating no longer contains would be shown on the chart forever.
+            // The inline handler does the same thing, but it only ever sees
+            // `#META` writes — a roster edit is a `PLAYER#` write, which never
+            // reaches it — so this is not redundant with it.
+            if let Some(previous) = stored.get(&owner.id) {
+                dao.withdraw_rating_contribution(&entry.match_id, previous)
+                    .await?;
+            }
+            continue;
+        };
+
+        state.fold(update.after, &update.played_at);
+
+        let previous = stored.get(&owner.id);
+        if previous.is_some_and(|p| p.has_same_effect_as(&update.contribution)) {
+            // Byte-identical to what is stored, so there is nothing to write.
+            // This is the common case even inside a real repair: only matches
+            // at or after the disturbance actually move.
+            continue;
+        }
+
+        let rating = state.rating();
+        match dao
+            .apply_rating_contribution(
+                &entry.match_id,
+                &update.contribution,
+                previous,
+                &rating,
+                stored_rating.as_ref(),
+            )
+            .await
+        {
+            Ok(()) => stored_rating = Some(rating),
+            // The owner's profile item is gone (a deleted account or team).
+            // Stop rather than fail forever: the plan's team open question
+            // settles this the same way stat contributions already are — stop
+            // rating a deleted entity and leave its history orphaned.
+            Err(DaoError::NotFound(what)) => {
+                tracing::warn!(
+                    owner_id = %owner.id,
+                    ladder,
+                    "abandoning rating repair: {what} no longer exists"
+                );
+                return Ok(ReplayProgress {
+                    state,
+                    next_cursor: None,
+                });
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    Ok(ReplayProgress {
+        state,
+        next_cursor: page.next_cursor,
+    })
+}
+
+/// What replaying one match did to the owner being repaired, or `None` if the
+/// match no longer counts for them at all.
+struct ReplayedMatch {
+    after: PlayerRating,
+    played_at: String,
+    contribution: RatingContributionRecord,
+}
+
+/// Re-rate one match as of the replay's current position, from the owner's
+/// point of view.
+async fn replay_match(
+    dao: &Dao,
+    owner: &RatingOwner,
+    ladder: &str,
+    match_id: &str,
+    state: &ReplayState,
+    stored: &BTreeMap<String, RatingContributionRecord>,
+    now: &str,
+) -> WorkerResult<Option<ReplayedMatch>> {
+    let Some(agg) = dao.get_match(match_id).await? else {
+        return Ok(None);
+    };
+    let Some(rateable) = rateable_for(owner.kind, &agg.match_, &agg.players)? else {
+        return Ok(None);
+    };
+    // The match's sport was edited onto a different ladder. It is not this
+    // ladder's business any more; the incremental path moves the history item
+    // to the new ladder's keyspace when it re-applies the match.
+    if rateable.ladder.as_str() != ladder {
+        return Ok(None);
+    }
+    if !rateable.participants.iter().any(|p| p.user_id == owner.id) {
+        return Ok(None);
+    }
+
+    let mut base: RatingTable = RatingTable::new();
+    for participant in &rateable.participants {
+        let belief = if participant.user_id == owner.id {
+            state.belief()
+        } else if let Some(contribution) = stored.get(&participant.user_id) {
+            PlayerRating {
+                mu: contribution.movement.mu_before,
+                sigma: contribution.movement.sigma_before,
+            }
+        } else {
+            // A participant this match was never rated for: they joined the
+            // roster after it was. Nothing records what they believed at the
+            // time, so their current rating is the closest available stand-in
+            // — wrong by whatever they have played since, but far closer than
+            // the alternative of treating an established player as brand new.
+            // Only reachable on the roster-edit trigger.
+            dao.get_rating(
+                &RatingOwner {
+                    kind: owner.kind,
+                    id: participant.user_id.clone(),
+                },
+                ladder,
+            )
+            .await?
+            .map(|r| PlayerRating {
+                mu: r.mu,
+                sigma: r.sigma,
+            })
+            .unwrap_or_default()
+        };
+        base.insert(participant.user_id.clone(), belief);
+    }
+
+    let updates = rate_match(
+        &rateable.participants,
+        rateable.winner_side_id.as_deref(),
+        &base,
+    )
+    .map_err(|e| WorkerError::Invariant(format!("match {match_id} cannot be replayed: {e}")))?;
+
+    let update = updates
+        .iter()
+        .find(|u| u.user_id == owner.id)
+        .ok_or_else(|| {
+            WorkerError::Invariant(format!(
+                "match {match_id} produced no rating update for {}",
+                owner.id
+            ))
+        })?;
+
+    Ok(Some(ReplayedMatch {
+        after: update.after,
+        played_at: rateable.played_at.clone(),
+        contribution: contribution_for(update, &rateable, owner.kind, now),
+    }))
+}
+
+/// Settle an owner's rating at the end of a replay.
+///
+/// Separate from the per-match writes because the last of those does not
+/// necessarily leave the right value behind: a replay whose *tail* was
+/// unchanged writes nothing for it, and a replay of an empty history (every
+/// match withdrawn) writes nothing at all and still has to put the account
+/// back to unrated. This is also the only write in a repair that can lower
+/// `matches_rated`.
+pub async fn finish_rating_replay(
+    dao: &Dao,
+    owner: &RatingOwner,
+    ladder: &str,
+    state: &ReplayState,
+) -> WorkerResult<()> {
+    let stored = dao.get_rating(owner, ladder).await?;
+    let settled = state.rating();
+    if stored.as_ref() == Some(&settled) {
+        return Ok(());
+    }
+    // Never rated, nothing replayed: there is no rating to settle, and writing
+    // one would enrol an account into a ladder it has never played on.
+    if stored.is_none() && state.matches_rated == 0 {
+        return Ok(());
+    }
+    match dao
+        .put_rating(owner, ladder, &settled, stored.as_ref())
+        .await
+    {
+        Ok(()) => Ok(()),
+        Err(DaoError::NotFound(what)) => {
+            tracing::warn!(
+                owner_id = %owner.id,
+                ladder,
+                "abandoning rating repair: {what} no longer exists"
+            );
+            Ok(())
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The `MatchRecord` → participants projection for one owner kind.
+///
+/// The **only** owner-specific step in the whole repair path: everything else
+/// — the workflow, the chunking, the state, every DAO call — takes a
+/// [`RatingOwner`] and does not care which kind it holds. That is deliberate,
+/// because phase 2b-iii rates teams as entities in their own right and is
+/// meant to inherit this replay whole; its job here is to fill in the `Team`
+/// arm with the side pass (one competitor per side, keyed on the side's
+/// `team_id`), and nothing else.
+///
+/// It errors rather than returning `None` for a kind it cannot project, and
+/// that distinction matters: `None` means "this match does not count", so a
+/// silent one would replay a team's whole history as *no* matches and reset a
+/// real rating to unrated. Unreachable today — nothing writes a team rating,
+/// so no team repair can be triggered — which is exactly why it must be loud
+/// if it ever becomes reachable.
+fn rateable_for(
+    owner_kind: RatingOwnerKindRecord,
+    m: &MatchRecord,
+    players: &[MatchPlayerRecord],
+) -> WorkerResult<Option<Rateable>> {
+    match owner_kind {
+        RatingOwnerKindRecord::User => Ok(rateable(m, players)),
+        RatingOwnerKindRecord::Team => Err(WorkerError::Invariant(
+            "team ratings are not computed yet (phase 2b-iii), so a team ladder has nothing to replay"
+                .into(),
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -838,7 +1311,12 @@ mod tests {
                 sigma: 7.0,
             },
         };
-        let contribution = contribution_for(&update, &rated, "2026-06-02T09:00:00.000Z");
+        let contribution = contribution_for(
+            &update,
+            &rated,
+            RatingOwnerKindRecord::User,
+            "2026-06-02T09:00:00.000Z",
+        );
         assert_eq!(contribution.owner_kind, RatingOwnerKindRecord::User);
         assert_eq!(contribution.owner_id, "u2");
         assert_eq!(contribution.ladder, "squash");
@@ -847,6 +1325,121 @@ mod tests {
         assert_eq!(contribution.movement.mu_before, 25.0);
         assert_eq!(contribution.movement.mu_after, 22.0);
         assert_eq!(contribution.movement.display_delta, -90);
+    }
+
+    /// A replay walks matches in played order, so `last_rated_at` is the
+    /// *last* one it folds in — but it is written as a maximum anyway, and
+    /// that is not belt-and-braces. `Sk::Rating` sorts on `played_at` and then
+    /// on match id, so two matches at the same instant come back in id order,
+    /// and a history whose entries were written by an out-of-order incremental
+    /// run is exactly the input a repair is handed. Taking the maximum makes
+    /// the field mean what `RatingRecord::last_rated_at` says it means —
+    /// "the newest match played" — regardless of how the collection is walked.
+    #[test]
+    fn a_replay_tracks_the_newest_match_played_not_the_last_one_folded_in() {
+        let mut state = ReplayState::default();
+        assert_eq!(state.matches_rated, 0);
+        assert_eq!(state.belief(), PlayerRating::default());
+
+        let moved = PlayerRating {
+            mu: 27.0,
+            sigma: 7.0,
+        };
+        state.fold(moved, "2026-06-10T10:00:00.000Z");
+        state.fold(moved, "2026-06-03T10:00:00.000Z");
+
+        assert_eq!(state.matches_rated, 2, "both matches count");
+        assert_eq!(
+            state.rating().last_rated_at,
+            "2026-06-10T10:00:00.000Z",
+            "an earlier match must not drag the newest-played marker backwards"
+        );
+    }
+
+    /// An empty replay is how a rating gets *unwound*: withdraw the only match
+    /// on a ladder and the replay finds no history at all, which has to mean
+    /// "never rated" rather than "leave it alone". The default state is
+    /// therefore the same belief a brand-new account has, with a zero count —
+    /// which is what puts the account back below `PLACEMENT_MATCHES` and so
+    /// back to an `Unrated` band.
+    #[test]
+    fn a_replay_over_no_history_settles_on_the_unrated_default() {
+        let settled = ReplayState::default().rating();
+        assert_eq!(settled.matches_rated, 0);
+        assert_eq!(settled.mu, INITIAL_MU);
+        assert_eq!(settled.sigma, INITIAL_SIGMA);
+        assert_eq!(
+            settled.last_rated_at, "",
+            "an empty marker sorts below every real `played_at`, so it can \
+             never make the next match look out of order"
+        );
+    }
+
+    /// The one owner-kind-specific step in the repair path must fail loudly
+    /// for a kind it cannot project, never quietly return "no participants".
+    ///
+    /// `None` from this function means "this match does not count", so a
+    /// silent `None` for teams would make a team's repair replay its entire
+    /// history as zero matches and reset a real rating to unrated — a data
+    /// loss dressed up as a no-op. Unreachable today (nothing writes a team
+    /// rating, so no team repair can be triggered), which is precisely why the
+    /// guard has to be in place before phase 2b-iii makes it reachable.
+    #[test]
+    fn a_replay_refuses_an_owner_kind_it_cannot_project_rather_than_wiping_it() {
+        let m = match_record();
+        assert!(
+            rateable_for(RatingOwnerKindRecord::User, &m, &singles())
+                .expect("users project")
+                .is_some()
+        );
+        let team = rateable_for(RatingOwnerKindRecord::Team, &m, &singles());
+        assert!(
+            matches!(team, Err(WorkerError::Invariant(_))),
+            "a team ladder must fail the replay, not replay as nothing: {team:?}"
+        );
+    }
+
+    /// A replay's running belief has to survive the Temporal payload boundary
+    /// unchanged, to the last bit.
+    ///
+    /// It crosses that boundary on every chunk: the activity returns a
+    /// [`ReplayProgress`], the workflow deserializes it and serializes it back
+    /// into the next chunk's input. Temporal's converter routes that through
+    /// `serde_json::Value`, and serde_json's *default* float parser is fast
+    /// rather than correctly rounded — it can land a single ULP away. One ULP
+    /// is enough to break the property the whole repair design rests on: a
+    /// replay is supposed to reproduce an untouched history exactly and write
+    /// nothing, so a drifting μ would make every repair rewrite every rating,
+    /// and each rewrite would then look like a re-score to the next
+    /// redelivery.
+    ///
+    /// The fix is the `float_roundtrip` feature on `serde_json` in
+    /// `Cargo.toml`, which reaches the SDK's own copy through Cargo's feature
+    /// unification and is therefore invisible at every call site — hence this
+    /// test. The values are a real pair observed drifting in a local repair
+    /// run, not synthetic: `29.883225470630926` came back as
+    /// `29.88322547063093`.
+    #[test]
+    fn a_rating_survives_the_temporal_payload_round_trip() {
+        use serde::Deserialize;
+
+        let state = ReplayState {
+            matches_rated: 2,
+            mu: 29.883225470630926,
+            sigma: 7.824_035_397_027_08,
+            last_rated_at: "2026-09-03T06:45:46.710Z".into(),
+        };
+        // Exactly what `temporalio-common-wasm`'s `SerdeJsonPayloadConverter`
+        // does: serialize to bytes, parse to a `Value`, deserialize from that.
+        let bytes = serde_json::to_vec(&state).expect("serialize");
+        let value: serde_json::Value = serde_json::from_slice(&bytes).expect("parse");
+        let back = ReplayState::deserialize(value).expect("deserialize");
+
+        assert_eq!(
+            back, state,
+            "a rating drifted crossing the workflow boundary: {} -> {}",
+            state.mu, back.mu
+        );
     }
 
     /// `applied_at` is a fresh wall clock on every delivery, so it must not
@@ -864,8 +1457,9 @@ mod tests {
                 sigma: 7.1,
             },
         };
-        let first = contribution_for(&update, &rated, "2026-06-02T09:00:00.000Z");
-        let redelivered = contribution_for(&update, &rated, "2026-06-09T18:22:00.000Z");
+        let kind = RatingOwnerKindRecord::User;
+        let first = contribution_for(&update, &rated, kind, "2026-06-02T09:00:00.000Z");
+        let redelivered = contribution_for(&update, &rated, kind, "2026-06-09T18:22:00.000Z");
         assert!(first.has_same_effect_as(&redelivered));
         assert_ne!(first.applied_at, redelivered.applied_at);
     }

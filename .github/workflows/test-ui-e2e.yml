@@ -47,18 +47,13 @@ jobs:
           echo "E2E_TEST_EMAIL=$EMAIL" >> "$GITHUB_ENV"
           echo "E2E_TEST_PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
 
-          # Optional secondary account for tests that need a real *other*
-          # user (see agon_ui/e2e/README.md's "Provisioning the secondary
-          # account") — shares the primary account's password to keep
-          # secrets-management simple, just a different email, so there's
-          # nothing new to store as a secret here. Any test needing it just
-          # skips itself if this isn't configured on the stack, so don't
-          # fail the job over a missing key.
-          SECONDARY_EMAIL="$(pulumi config get e2eSecondaryEmail 2>/dev/null || true)"
-          if [ -n "$SECONDARY_EMAIL" ]; then
-            echo "::add-mask::$SECONDARY_EMAIL"
-            echo "E2E_SECONDARY_EMAIL=$SECONDARY_EMAIL" >> "$GITHUB_ENV"
-          fi
+          # Secondary account for tests that need a real *other* user (see
+          # agon_ui/e2e/README.md's "Provisioning the secondary account") —
+          # shares the primary account's password above, just a different
+          # email, so there's nothing new to store as a secret here.
+          SECONDARY_EMAIL="$(pulumi config get e2eSecondaryEmail)"
+          echo "::add-mask::$SECONDARY_EMAIL"
+          echo "E2E_SECONDARY_EMAIL=$SECONDARY_EMAIL" >> "$GITHUB_ENV"
         env:
           PULUMI_ACCESS_TOKEN: ${{ secrets.pulumi-access-token }}
 

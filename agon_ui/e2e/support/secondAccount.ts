@@ -5,13 +5,15 @@ import { type Page, expect } from '@playwright/test'
  * the primary `E2E_TEST_EMAIL`/`E2E_TEST_PASSWORD` account the suite's
  * `setup` project logs in as — and returns their Agon display name.
  *
- * Only needed by a test that must search for and select a *real* registered
- * user (as opposed to tagging a guest): the primary account can't play that
- * role, since `PlayerSideEditor`/`TeamPicker` search excludes the signed-in
- * caller themselves (see their `currentUserId` prop) so a person can't add
- * themselves twice. Run this against its own `browser.newContext()`, never
- * the shared `page` fixture — signing in there would overwrite the primary
- * account's saved storage state for every other test in the run.
+ * Needed by any test that must interact with a *real other* registered user
+ * rather than the caller themselves or a typed-in guest — e.g. searching for
+ * and selecting a real user in `PlayerSideEditor`/`TeamPicker` (the primary
+ * account can't play that role, since search excludes the signed-in caller
+ * themselves — see their `currentUserId` prop), or a future
+ * invite-and-accept flow, which needs a second real session to receive the
+ * invite and respond to it. Run this against its own `browser.newContext()`,
+ * never the shared `page` fixture — signing in there would overwrite the
+ * primary account's saved storage state for every other test in the run.
  *
  * First run only: like `auth.setup.ts`, a brand-new account has no Agon
  * profile yet, so this completes `CreateProfileForm` with a fixed name.
@@ -35,7 +37,7 @@ export async function signInSecondAccount(
 
   if (await profileHeading.isVisible()) {
     await page.getByLabel('First name').fill('Agon')
-    await page.getByLabel('Last name').fill('Search Target')
+    await page.getByLabel('Last name').fill('E2E Bot Two')
     await page.getByRole('button', { name: 'Create profile' }).click()
     await expect(feedLink).toBeVisible({ timeout: 20_000 })
   }

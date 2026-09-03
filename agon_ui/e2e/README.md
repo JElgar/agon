@@ -93,30 +93,32 @@ The very first login creates the account's Agon profile too (via
 `CreateProfileForm`, driven automatically by `auth.setup.ts`) — nothing else
 to provision by hand.
 
-### Provisioning the search-target account (optional)
+### Provisioning the secondary account (optional)
 
-`tests/team-creation.spec.ts` needs a *second*, independent real Agon user to
-search for and select — the primary test account can't play that role since
-the search box excludes the signed-in caller themselves. Provisioning it is
-optional: without `E2E_SEARCH_TARGET_EMAIL`/`E2E_SEARCH_TARGET_PASSWORD` set,
-that one test skips itself (with a message saying so) and the rest of the
-suite runs as normal.
+Some tests need a *second*, independent real Agon user to interact with —
+someone other than the caller to search for and select (the primary account
+can't play that role since search excludes the signed-in caller themselves)
+or, in the future, to invite and have accept. `support/secondAccount.ts`
+signs in as this account (see its doc comment). Provisioning it is optional:
+without `E2E_SECONDARY_EMAIL` set, any test that needs it skips itself (with
+a message saying so) and the rest of the suite runs as normal.
 
-Set it up exactly like the primary account above — same admin-API call
-(different email), same `pulumi config set` pair:
+It reuses the primary account's password — one credential to manage instead
+of two, and nothing new to hold as a secret. Set up the account itself
+exactly like the primary one above (same admin-API call, same password,
+different email), then point the suite at its email:
 
 ```bash
-pulumi config set e2eSearchTargetEmail agon-e2e-search-target@example.com
-pulumi config set --secret e2eSearchTargetPassword '<a real password>'
+pulumi config set e2eSecondaryEmail agon-e2e-bot-2@example.com
 ```
 
-`agon_infra/index.ts` doesn't need to export these the way it does
-`e2eTestEmail`/`e2eTestPassword` — nothing else in the stack reads them, so a
+`agon_infra/index.ts` doesn't need to export this the way it does
+`e2eTestEmail`/`e2eTestPassword` — nothing else in the stack reads it, so a
 plain `pulumi config set` on the target stack is enough; only the CI job
-needs to fetch them (`test-ui-e2e.yml`, alongside the primary account's). The
-first run of `team-creation.spec.ts` against a freshly-provisioned account
-creates its Agon profile the same way `auth.setup.ts` does for the primary
-one (see `support/secondAccount.ts`); every run after that just signs in.
+needs to fetch it (`test-ui-e2e.yml`, alongside the primary account's). The
+first run of a test using it against a freshly-provisioned account creates
+its Agon profile the same way `auth.setup.ts` does for the primary one (see
+`support/secondAccount.ts`); every run after that just signs in.
 
 ## Running
 
@@ -154,11 +156,12 @@ npm run test:e2e
 through a run.
 
 To also run `team-creation.spec.ts`'s real-user-search case (skipped
-otherwise), add the search-target account's credentials:
+otherwise), add the secondary account's email — it signs in with the same
+`E2E_TEST_PASSWORD` as the primary account:
 
 ```bash
 E2E_TEST_EMAIL=... E2E_TEST_PASSWORD=... \
-E2E_SEARCH_TARGET_EMAIL=... E2E_SEARCH_TARGET_PASSWORD=... \
+E2E_SECONDARY_EMAIL=... \
 npm run test:e2e
 ```
 
@@ -242,18 +245,19 @@ against your own machine instead:
    npm run test:e2e
    ```
 
-   To also seed the optional search-target account (see "Provisioning the
-   search-target account" above) against the local stack, reuse the same
-   script under different env var names — it doesn't care which names you
-   read the email/password from, just that `E2E_TEST_EMAIL`/`E2E_TEST_PASSWORD`
-   are set to whatever you're seeding:
+   To also seed the optional secondary account (see "Provisioning the
+   secondary account" above) against the local stack, reuse the same script
+   under different env var names — it doesn't care which names you read the
+   email/password from, just that `E2E_TEST_EMAIL`/`E2E_TEST_PASSWORD` are
+   set to whatever you're seeding. Reuse the primary account's password here
+   too, same as staging:
 
    ```bash
-   E2E_TEST_EMAIL=search-target@example.com E2E_TEST_PASSWORD=local-search-target-password \
+   E2E_TEST_EMAIL=agon-e2e-bot-2@example.com E2E_TEST_PASSWORD=local-e2e-test-password \
    node agon_ui/e2e/local-seed-user.mjs
 
    E2E_TEST_EMAIL=e2e@example.com E2E_TEST_PASSWORD=local-e2e-test-password \
-   E2E_SEARCH_TARGET_EMAIL=search-target@example.com E2E_SEARCH_TARGET_PASSWORD=local-search-target-password \
+   E2E_SECONDARY_EMAIL=agon-e2e-bot-2@example.com \
    npm run test:e2e
    ```
 
@@ -273,7 +277,7 @@ to be up first.
 - `tests/team-creation.spec.ts` — creating a team and searching for and
   selecting a *real* registered user (not just tagging a guest) from
   `PlayerSideEditor`'s combobox, then confirming the invite actually landed.
-  Needs the optional search-target account above; skips itself without it.
+  Needs the optional secondary account above; skips itself without it.
 
 Test data isn't cleaned up afterwards — created matches accumulate against
 the test account like any other match would, named `E2E football …` / `E2E

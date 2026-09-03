@@ -21,13 +21,17 @@ import { signInSecondAccount } from '../support/secondAccount'
  * right).
  */
 test.describe('team creation — real user search', () => {
-  const targetEmail = process.env.E2E_SEARCH_TARGET_EMAIL
-  const targetPassword = process.env.E2E_SEARCH_TARGET_PASSWORD
+  const targetEmail = process.env.E2E_SECONDARY_EMAIL
+  // Shares the primary account's password — one less credential to
+  // provision/store, see e2e/README.md's "Provisioning the secondary
+  // account". Required either way (the whole suite needs it to sign in as
+  // the primary account), so this is just reusing it, not a new dependency.
+  const targetPassword = process.env.E2E_TEST_PASSWORD
 
   test('selecting a searched user tags and invites them', async ({ page, browser }) => {
     test.skip(
       !targetEmail || !targetPassword,
-      'E2E_SEARCH_TARGET_EMAIL/E2E_SEARCH_TARGET_PASSWORD not set — see e2e/README.md',
+      'E2E_SECONDARY_EMAIL not set — see e2e/README.md',
     )
 
     // A second, independent signed-in account so there's a real registered

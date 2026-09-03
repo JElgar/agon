@@ -1202,9 +1202,14 @@ pub fn match_from_records(
 /// *cleared* by a dispute, so a match that has been scored and disputed has
 /// neither score set and would otherwise reopen. `status != "scheduled"`
 /// catches exactly that case (and live scoring having started), and is the
-/// same phrasing the format lock a few lines up in `update_match` uses, so
-/// the two locks agree about what "scoring has started" means. The clock
-/// check is last because a match can be scored before its own start time.
+/// same phrasing the format lock in `update_match` uses, so the two locks
+/// agree about what "scoring has started" means. The clock check is last
+/// because a match can be scored before its own start time.
+///
+/// **This looks at one match state.** `update_match` must not call it on the
+/// stored record alone — a PATCH carries its own state change, and the flag
+/// has to be closed against both. See [`ranked_lock_reason_for_update`],
+/// which is the only thing that endpoint should use.
 ///
 /// It lives in `mapping` rather than beside its caller in `main.rs` for a
 /// dull reason worth writing down: `main.rs` has no test module, and this is
@@ -1222,6 +1227,56 @@ pub fn ranked_lock_reason(
     }
     if parse_ts(&rec.starts_at) <= now {
         return Some("the match has already started");
+    }
+    None
+}
+
+/// The same lock, evaluated against a PATCH: the match as stored **and** the
+/// state this one request would leave it in.
+///
+/// Both, and neither half is redundant.
+///
+/// *Stored*, because a request that pushed `starts_at` back into the future
+/// and flipped `ranked` in one call would otherwise unlock itself — the
+/// resulting state of that request is a perfectly innocent scheduled match.
+///
+/// *Resulting*, because the prior state alone lets a single PATCH walk
+/// straight through the lock and then close it. `{ score, ranked: false }` on
+/// a match still stored `scheduled` with a start time in the future passes —
+/// nothing has been submitted *yet* — and the very same request then records
+/// the score and completes the match. That is exactly the "log the game, see
+/// that you lost, then de-rank it" case the lock exists to prevent, and it is
+/// reachable without any trickery, because a match played earlier than its
+/// scheduled slot is ordinary. It was the shape the original lock missed: its
+/// doc anticipated the `starts_at` half of the attack and not the score half.
+///
+/// The three resulting-state conditions mirror the stored ones one for one, so
+/// there is no state a PATCH can reach in one step that it could not have
+/// reached in two.
+///
+/// `resulting_status` and `resulting_starts_at` are what `update_match` has
+/// already computed for the rest of its validation, passed in rather than
+/// re-derived so the lock can never disagree with the write about what this
+/// request does.
+#[must_use]
+pub fn ranked_lock_reason_for_update(
+    stored: &MatchRecord,
+    resulting_status: &str,
+    resulting_starts_at: &str,
+    submits_score: bool,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<&'static str> {
+    if let Some(reason) = ranked_lock_reason(stored, now) {
+        return Some(reason);
+    }
+    if submits_score {
+        return Some("this request submits a score");
+    }
+    if resulting_status != "scheduled" {
+        return Some("this request starts scoring");
+    }
+    if parse_ts(resulting_starts_at) <= now {
+        return Some("this request moves the start time into the past");
     }
     None
 }
@@ -2633,6 +2688,102 @@ mod tests {
         assert_eq!(
             ranked_lock_reason(&m, now()),
             Some("scoring has already started")
+        );
+    }
+
+    /// **Regression.** The lock used to read the stored record alone, which
+    /// let a single PATCH walk through it and then close it behind itself:
+    /// `{ score, ranked: false }` on a match still stored `scheduled` with a
+    /// start time in the future recorded the result *and* de-ranked it. That
+    /// is precisely the "log the game, see that you lost, then de-rank it"
+    /// bug the lock exists to prevent, and it needs no trickery to reach —
+    /// playing earlier than the scheduled slot is ordinary.
+    #[test]
+    fn ranked_cannot_be_flipped_by_the_same_request_that_submits_the_score() {
+        let scheduled = scheduled_match("2026-06-01T18:00:00.000Z");
+        assert_eq!(
+            ranked_lock_reason(&scheduled, now()),
+            None,
+            "the stored state alone still says the flag is open, which is the trap"
+        );
+        assert_eq!(
+            ranked_lock_reason_for_update(
+                &scheduled,
+                "scheduled",
+                "2026-06-01T18:00:00.000Z",
+                true,
+                now()
+            ),
+            Some("this request submits a score")
+        );
+    }
+
+    /// The same hole reached without a `score`: completing (or starting) the
+    /// match in the same call. Mirrors the stored `status != "scheduled"` arm,
+    /// so a PATCH cannot reach in one step a state it could not reach in two.
+    #[test]
+    fn ranked_cannot_be_flipped_by_the_same_request_that_starts_scoring() {
+        assert_eq!(
+            ranked_lock_reason_for_update(
+                &scheduled_match("2026-06-01T18:00:00.000Z"),
+                "in_progress",
+                "2026-06-01T18:00:00.000Z",
+                false,
+                now()
+            ),
+            Some("this request starts scoring")
+        );
+    }
+
+    /// ...and the clock arm: backdating the match into the past is the same
+    /// claim as "it has already been played".
+    #[test]
+    fn ranked_cannot_be_flipped_by_the_same_request_that_backdates_the_match() {
+        assert_eq!(
+            ranked_lock_reason_for_update(
+                &scheduled_match("2026-06-01T18:00:00.000Z"),
+                "scheduled",
+                "2026-05-30T09:00:00.000Z",
+                false,
+                now()
+            ),
+            Some("this request moves the start time into the past")
+        );
+    }
+
+    /// The other direction, which is why the stored record is still consulted:
+    /// pushing `starts_at` back into the future must not *re*-open the flag on
+    /// a match that has already started. The resulting state of that request
+    /// is an innocent scheduled match, so a resulting-state-only lock would
+    /// let it through.
+    #[test]
+    fn ranked_cannot_be_reopened_by_rescheduling_a_started_match_into_the_future() {
+        assert_eq!(
+            ranked_lock_reason_for_update(
+                &scheduled_match("2026-06-01T09:00:00.000Z"),
+                "scheduled",
+                "2026-06-08T18:00:00.000Z",
+                false,
+                now()
+            ),
+            Some("the match has already started")
+        );
+    }
+
+    /// An ordinary edit to a match nobody has played yet still leaves the flag
+    /// open — the lock has to stay off until something genuinely closes it, or
+    /// an organiser can never correct a mis-click.
+    #[test]
+    fn ranked_is_still_open_on_an_unplayed_match_being_edited() {
+        assert_eq!(
+            ranked_lock_reason_for_update(
+                &scheduled_match("2026-06-01T18:00:00.000Z"),
+                "scheduled",
+                "2026-06-02T18:00:00.000Z",
+                false,
+                now()
+            ),
+            None
         );
     }
 

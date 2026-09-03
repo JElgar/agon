@@ -7076,6 +7076,188 @@ async fn withdrawing_a_match_replays_the_owners_remaining_history() {
     );
 }
 
+/// A player added to an already-rated match ends up rated for it, end to end.
+///
+/// The roster edit rewrites `#META` (side roster previews are cached on the
+/// match record), which re-runs the rating handler with one delivery carrying
+/// two different jobs: the two players already there have *moved*, because the
+/// side they face just gained a player, so they need a replay — while the
+/// added player has no contribution at all and needs a first apply. Handling
+/// only the first strands the second, and `RepairRatings` cannot cover for it,
+/// because it replays *stored history* and so can only correct a contribution
+/// that already exists.
+///
+/// **This is not the regression test for that**, and the distinction is worth
+/// stating rather than assuming. It passes against the buggy handler too: a
+/// single `PATCH { added_players }` produces *two* `#META` writes (the
+/// metadata update, then `refresh_side_roster_previews`), and if the repairs
+/// the first one starts happen to land before the second delivery arrives, the
+/// second finds the existing contributions already corrected, classifies
+/// nothing as re-rated, and applies the added player after all. That masking
+/// is a race, not a guarantee. The deterministic reproduction is the unit test
+/// `handlers::rating::tests::a_participant_added_to_a_rated_match_is_applied_even_when_the_others_need_a_replay`,
+/// which drives one delivery. This is the end-to-end assertion that the
+/// pipeline really does reach the intended state.
+#[tokio::test]
+async fn a_player_added_to_a_rated_match_is_rated_for_it() {
+    let Some(dao) = rating_dao().await else {
+        return;
+    };
+    let (winner_config, winner) = new_user().await;
+    let (loser_config, loser) = new_user().await;
+    let (_latecomer_config, latecomer) = new_user().await;
+
+    let starts_at = iso_offset_hours(-4);
+    let created =
+        play_ranked_tennis_match(&winner_config, &loser_config, &loser.profile.id, &starts_at)
+            .await;
+    rating_after_matches(&dao, &winner.profile.id, "tennis", 1).await;
+
+    // Somebody who actually played turns up on the roster afterwards, on the
+    // losing side. Added ad hoc rather than invited, so they count as having
+    // played under the same rule `reconcile_match_stats` uses (no embedded
+    // invitation) without a second round trip to accept one.
+    let side_b = side_id_for_user(&created, &loser.profile.id);
+    matches_match_id_patch(
+        &winner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            added_players: Some(vec![models::AddMatchPlayerInput {
+                user_id: Some(latecomer.profile.id.clone()),
+                display_name: None,
+                side_id: Some(side_b.clone()),
+            }]),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("add a player to the completed match");
+
+    let rating = rating_after_matches(&dao, &latecomer.profile.id, "tennis", 1).await;
+    assert_eq!(
+        rating.last_rated_at, starts_at,
+        "the added player is rated as of when the match was played"
+    );
+
+    // ...and the contribution recording it exists, which is what makes the
+    // apply idempotent and what a later repair of theirs would replay.
+    let contributions = contributions_by_owner(&dao, &created.id).await;
+    assert_eq!(
+        contributions.len(),
+        3,
+        "every participant on the corrected roster contributes: {:?}",
+        contributions.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        contributions[&latecomer.profile.id].side_id, side_b,
+        "the contribution records the side they were added to"
+    );
+    assert_eq!(
+        rating_history(&dao, &latecomer.profile.id, "tennis")
+            .await
+            .iter()
+            .map(|h| h.match_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![created.id.as_str()],
+        "and the history entry a repair of theirs would read"
+    );
+}
+
+/// Rescheduling a rated match replays it at its new played time, and counts it
+/// exactly once.
+///
+/// Moving `starts_at` moves the sort key of the match's history item, so the
+/// replay writes the item at the new key and deletes the old one in the same
+/// transaction. This asserts the two properties that fall out of getting that
+/// right end to end: the ladder still holds one entry per match, at the new
+/// time, and `matches_rated` has not grown.
+///
+/// It does **not** reproduce the double-fold that
+/// `handlers::rating::tests::a_match_rescheduled_mid_replay_is_folded_once_not_twice`
+/// covers. That one needs the moved key to land beyond a *page* boundary,
+/// which takes more than `REPLAY_PAGE` (50) rated matches on one ladder — far
+/// past what is reasonable to play through an HTTP API here. This is the
+/// end-to-end smoke test for the same code path; the unit test is the
+/// regression.
+#[tokio::test]
+async fn rescheduling_a_rated_match_replays_it_at_its_new_played_time() {
+    let Some(dao) = rating_dao().await else {
+        return;
+    };
+    let (hero_config, hero) = new_user().await;
+    let (older_foe_config, older_foe) = new_user().await;
+    let (recent_foe_config, recent_foe) = new_user().await;
+
+    // In played order, so nothing is out of order and the reschedule is the
+    // only change the repair has to account for.
+    let older = play_ranked_tennis_match(
+        &hero_config,
+        &older_foe_config,
+        &older_foe.profile.id,
+        &iso_offset_hours(-30),
+    )
+    .await;
+    rating_after_matches(&dao, &hero.profile.id, "tennis", 1).await;
+    let recent = play_ranked_tennis_match(
+        &hero_config,
+        &recent_foe_config,
+        &recent_foe.profile.id,
+        &iso_offset_hours(-6),
+    )
+    .await;
+    rating_after_matches(&dao, &hero.profile.id, "tennis", 2).await;
+
+    // The organiser corrects the older match's date to *after* the newer one.
+    // `starts_at` is freely editable on a completed match, and the `#META`
+    // write it produces is what the handler sees as a re-rating.
+    let corrected_starts_at = iso_offset_hours(-1);
+    matches_match_id_patch(
+        &hero_config,
+        &older.id,
+        models::UpdateMatchInput {
+            starts_at: Some(corrected_starts_at.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("correct the match's date");
+
+    // The history item moving to its new key is the observable signal that the
+    // replay has run — the rating count, which is what is actually at stake,
+    // is unchanged either way and so cannot be waited on.
+    let history = eventually(
+        "the rescheduled match's history entry to move to its new played time",
+        || async {
+            let history = rating_history(&dao, &hero.profile.id, "tennis").await;
+            history
+                .iter()
+                .any(|h| h.match_id == older.id && h.played_at == corrected_starts_at)
+                .then_some(history)
+        },
+    )
+    .await;
+
+    assert_eq!(
+        history
+            .iter()
+            .map(|h| h.match_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![recent.id.as_str(), older.id.as_str()],
+        "one entry per match, now in the corrected played order"
+    );
+    let rated = stored_rating(&dao, &hero.profile.id, "tennis")
+        .await
+        .expect("a rating");
+    assert_eq!(
+        rated.matches_rated, 2,
+        "a rescheduled match must be folded once, not twice"
+    );
+    assert_eq!(
+        rated.last_rated_at, corrected_starts_at,
+        "the rescheduled match is now the newest played"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Ratings — the API surface (phase 3a)
 // ---------------------------------------------------------------------------
@@ -7461,6 +7643,62 @@ async fn ranked_cannot_be_changed_once_the_match_has_started() {
             .await
             .expect("re-read the match")
             .ranked
+    );
+}
+
+/// **Regression.** The lock used to be evaluated against the match *as
+/// stored*, which let a single PATCH carry both the result and the flag.
+///
+/// The match below is still `scheduled` and still starts tomorrow at the
+/// moment the lock runs, so on the prior state alone it passes — and the very
+/// same request then records the score and completes the match. That is
+/// exactly the "log the game, see that you lost, then de-rank it" case the
+/// lock exists to prevent, and reaching it needs no trickery at all: playing
+/// earlier than the scheduled slot is ordinary.
+#[tokio::test]
+async fn ranked_cannot_be_flipped_by_the_same_request_that_submits_the_score() {
+    let (config, _user) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+
+    // Scheduled for tomorrow, so the flag is genuinely open right now — which
+    // is the trap: the lock has nothing to object to in the stored record.
+    let mut input = create_match_input(&opponent.profile.id);
+    input.creator_side_client_id = Some("a".to_string());
+    let scheduled = matches_post(&config, input)
+        .await
+        .expect("create scheduled match");
+    assert!(scheduled.ranked, "matches are ranked unless opted out");
+    accept_match_invitation(&opponent_config, &scheduled.id).await;
+
+    let side_a = scheduled.sides[0].id.clone();
+    let side_b = scheduled.sides[1].id.clone();
+    assert_status_with_content(
+        matches_match_id_patch(
+            &config,
+            &scheduled.id,
+            models::UpdateMatchInput {
+                score: Some(Box::new(simple_score(&side_a, &side_b, 3, 6))),
+                winner_side_id: Some(side_b.clone()),
+                ranked: Some(false),
+                ..Default::default()
+            },
+        )
+        .await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "this request submits a score",
+    );
+
+    // The whole request is refused, not half of it: the endpoint validates
+    // before it writes anything, so the score is not recorded either. That
+    // matters — a caller who got the score in and the flag rejected would
+    // simply have needed one more request.
+    let after = matches_match_id_get(&config, &scheduled.id)
+        .await
+        .expect("re-read the match");
+    assert!(after.ranked, "the flag must be untouched");
+    assert!(
+        after.pending_score.is_none(),
+        "and the score must not have landed either"
     );
 }
 

@@ -522,10 +522,25 @@ pub struct MatchRecord {
     /// touched by a like or a comment. Please don't "fix" this to a
     /// `default = "…true"` — the two defaults disagreeing is the point.
     ///
-    /// Locked once `starts_at` passes or any score is submitted, whichever
-    /// comes first. That is a correctness requirement rather than a nicety:
-    /// without it you could log a game, see that you won, and *then* mark it
-    /// ranked.
+    /// **Set once, at creation; locked against *change* thereafter** — once
+    /// `starts_at` passes or any score is submitted, whichever comes first.
+    /// The lock is a correctness requirement rather than a nicety: without it
+    /// you could log a game, see that you won, and *then* enrol it in the
+    /// ladder.
+    ///
+    /// Note what that does and does not cover, because the two are easy to
+    /// conflate. It closes the *edit* path: nobody changes their mind about a
+    /// match once its result is in. It does not, and cannot, constrain
+    /// creation — a match logged after it was played has no moment "before the
+    /// result was knowable" to lock against, and refusing to rate
+    /// after-the-fact results would refuse nearly every real amateur game. So
+    /// somebody logging a match they have already played does choose this flag
+    /// knowing the outcome; what stops that from being a free hand is that
+    /// nothing is rated until every *other* side confirms the score (see the
+    /// `confirmed_score` gate in `handlers::rating::rateable`). The residual
+    /// gap — the opponent agrees to the score but never to the flag — is
+    /// stated on `CreateMatchInput::ranked` and is a known limitation, not an
+    /// oversight.
     #[serde(default)]
     pub ranked: bool,
     /// The rating window an account must fall inside to join, if the

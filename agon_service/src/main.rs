@@ -45,7 +45,7 @@ use mapping::{
     invitation_status_str, live_event_from_record, match_format_sport_tag, match_format_to_record,
     match_from_records, match_score_from_record, match_score_to_record, match_status_str,
     match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
-    ranked_lock_reason, rating_history_entry_from_record, rating_visibility_to_record,
+    ranked_lock_reason_for_update, rating_history_entry_from_record, rating_visibility_to_record,
     ratings_visible_to, roster_preview_player, score_submission_from_record, score_to_record,
     search_match_from_records, team_from_records, team_list_item_from_record,
     team_member_from_record, user_profile_from_record,
@@ -1151,9 +1151,30 @@ struct CreateMatchInput {
     ///
     /// Ranked-by-default with friendly as the opt-out, rather than the other
     /// way round: in an amateur app most games are casual, and opt-in-ranked
-    /// would leave every ladder too sparse to matchmake on. Setting it is the
-    /// only chance to decide freely — once the match starts or a score is
+    /// would leave every ladder too sparse to matchmake on. Setting it here is
+    /// the only chance to decide freely — once the match starts or a score is
     /// submitted the flag locks (see `UpdateMatchInput::ranked`).
+    ///
+    /// **Creation is deliberately unconstrained, including for a match that
+    /// has already been played.** This endpoint accepts a completed match with
+    /// a score and a start time in the past, so somebody logging last night's
+    /// game picks this flag knowing how it went. That is not an oversight, and
+    /// it is not something the lock on `UpdateMatchInput::ranked` covers or
+    /// could cover: after-the-fact logging has no moment "before the result
+    /// was knowable", and requiring matches to be scheduled in advance to be
+    /// rated would exclude nearly every real amateur game — which is most of
+    /// them, and the whole point of the ladders.
+    ///
+    /// What limits it is the confirmation flow, not this field. A match is
+    /// only ever rated once it carries a `confirmed_score`, which means every
+    /// *other* side has agreed to the result; a fabricated or one-sided
+    /// scoreline never reaches a ladder. The gap that leaves — the opponent
+    /// confirms the **score**, never the **`ranked` flag** — is real and
+    /// known: a creator can log the games they won as ranked and the ones they
+    /// lost as friendly. The principled fix is to make `ranked` part of what
+    /// the opposing side confirms, which is a change to the confirmation flow
+    /// rather than a restriction here, and is not worth building before there
+    /// is evidence anyone does it.
     ranked: Option<bool>,
 }
 
@@ -1231,13 +1252,25 @@ struct UpdateMatchInput {
     ///
     /// The lock is a correctness requirement, not a nicety: without it you
     /// could log a game, see that you won, and only *then* enrol it in the
-    /// ladder. It is evaluated against the match's stored state, so a request
-    /// that moves `starts_at` back into the future and flips this in the same
-    /// call cannot unlock itself.
+    /// ladder. It is evaluated against the match's stored state **and** the
+    /// state this request would leave it in, because either alone is
+    /// exploitable in one call: stored-only lets `{ score, ranked: false }`
+    /// through on a not-yet-started match and then records the result, while
+    /// resulting-only lets a request push `starts_at` back into the future to
+    /// unlock a match that has already been played.
+    ///
+    /// So a PATCH that submits a score, completes the match, or backdates its
+    /// start time may not also change this flag — send them as separate
+    /// requests, and the earlier one will be refused on its own merits if the
+    /// match is already past the lock.
     ///
     /// Re-sending the value the match already has is always accepted — a
     /// client that PATCHes its whole edit form shouldn't be refused for
     /// mentioning an unchanged flag.
+    ///
+    /// Note this constrains *changing* the flag only. Choosing it at creation
+    /// is unconstrained even for a match that has already been played; see
+    /// `CreateMatchInput::ranked` for why, and for what does limit it.
     ranked: Option<bool>,
 }
 
@@ -3047,8 +3080,16 @@ impl Api {
             // serde default of `false`, which exists to keep the pre-rating
             // back catalogue *out* of the ladders — see that field's doc
             // comment. Creation is the only unconstrained chance to choose:
-            // from here `ranked_lock_reason` closes the flag once the match
-            // starts or is scored.
+            // from here `ranked_lock_reason_for_update` closes the flag once
+            // the match starts or is scored.
+            //
+            // Unconstrained on purpose, and there is no lock to add here. This
+            // endpoint accepts an already-played match (a score plus a past
+            // `starts_at`), so the creator does pick this flag knowing the
+            // result — but there is no earlier moment to have picked it at,
+            // and refusing to rate after-the-fact results would refuse most of
+            // amateur sport. `CreateMatchInput::ranked` carries the full
+            // argument, including the gap confirmation does not close.
             ranked: input.ranked.unwrap_or(true),
             rating_requirement: None,
             created_at: now.clone(),
@@ -3168,19 +3209,40 @@ impl Api {
             }
         }
 
+        // The state this request would leave the match in, needed by both the
+        // ranked lock immediately below and the score validation further down.
+        // Computed once so the two cannot disagree about what this PATCH does.
+        let resulting_status = input
+            .status
+            .as_ref()
+            .map(match_status_str)
+            .unwrap_or(agg.match_.status.as_str());
+        let resulting_starts_at = input
+            .starts_at
+            .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+
         // Ranked/friendly is locked once the match has started or anybody has
-        // submitted a score, whichever comes first — see `ranked_lock_reason`
-        // for the rule and why it is checked against the *stored* record
-        // rather than against this request's resulting state. Rejected rather
-        // than ignored: a caller who asked to enrol a finished match in the
-        // ladder needs to be told it didn't happen.
+        // submitted a score, whichever comes first — see
+        // `ranked_lock_reason_for_update` for the rule, and in particular for
+        // why it is evaluated against the stored record *and* this request's
+        // resulting state rather than either one alone. Rejected rather than
+        // ignored: a caller who asked to enrol a finished match in the ladder
+        // needs to be told it didn't happen.
         //
         // Only a genuine *change* is refused. Re-sending the flag the match
         // already carries is a no-op, so a client that PATCHes its whole edit
         // form doesn't start failing the moment the match kicks off.
         let ranked_change = input.ranked.filter(|r| *r != agg.match_.ranked);
         if ranked_change.is_some()
-            && let Some(reason) = ranked_lock_reason(&agg.match_, chrono::Utc::now())
+            && let Some(reason) = ranked_lock_reason_for_update(
+                &agg.match_,
+                resulting_status,
+                resulting_starts_at
+                    .as_deref()
+                    .unwrap_or(&agg.match_.starts_at),
+                input.score.is_some(),
+                chrono::Utc::now(),
+            )
         {
             return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
                 "a match can no longer be changed between ranked and friendly: {reason}"
@@ -3209,11 +3271,6 @@ impl Api {
         };
 
         // A cancelled match can't be scored.
-        let resulting_status = input
-            .status
-            .as_ref()
-            .map(match_status_str)
-            .unwrap_or(agg.match_.status.as_str());
         if resulting_status == "cancelled" && input.score.is_some() {
             return Ok(UpdateMatchResponse::ValidationError(PlainText(
                 "a cancelled match cannot be scored".into(),
@@ -3518,10 +3575,7 @@ impl Api {
             input.name.as_deref(),
             input.description.as_deref(),
             status_override,
-            input
-                .starts_at
-                .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
-                .as_deref(),
+            resulting_starts_at.as_deref(),
             None,
             pending_score.map(Some),
             header_photos,

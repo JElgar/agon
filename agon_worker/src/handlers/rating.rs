@@ -156,8 +156,8 @@ pub async fn reconcile_match_rating(
     let need_current: Vec<String> = rateable
         .participants
         .iter()
-        .filter(|p| !stored_by_owner.contains_key(p.user_id.as_str()))
-        .map(|p| p.user_id.clone())
+        .filter(|p| !stored_by_owner.contains_key(p.competitor_id.as_str()))
+        .map(|p| p.competitor_id.clone())
         .collect();
     let current = dao.batch_get_users(&need_current).await?;
     let current_rating = |user_id: &str| -> Option<RatingRecord> {
@@ -169,19 +169,19 @@ pub async fn reconcile_match_rating(
 
     let mut base: RatingTable = RatingTable::new();
     for participant in &rateable.participants {
-        let belief = match stored_by_owner.get(participant.user_id.as_str()) {
+        let belief = match stored_by_owner.get(participant.competitor_id.as_str()) {
             Some(contribution) => PlayerRating {
                 mu: contribution.movement.mu_before,
                 sigma: contribution.movement.sigma_before,
             },
-            None => current_rating(&participant.user_id)
+            None => current_rating(&participant.competitor_id)
                 .map(|r| PlayerRating {
                     mu: r.mu,
                     sigma: r.sigma,
                 })
                 .unwrap_or_default(),
         };
-        base.insert(participant.user_id.clone(), belief);
+        base.insert(participant.competitor_id.clone(), belief);
     }
 
     // Any remaining error out of the engine is a state the write path is
@@ -206,13 +206,13 @@ pub async fn reconcile_match_rating(
     let participant_ids: BTreeSet<&str> = rateable
         .participants
         .iter()
-        .map(|p| p.user_id.as_str())
+        .map(|p| p.competitor_id.as_str())
         .collect();
     let mut pending: Vec<(&RatingUpdate, RatingContributionRecord)> = Vec::new();
     let mut rerated: Vec<(RatingOwner, String)> = Vec::new();
     for update in &updates {
         let contribution = contribution_for(update, &rateable, RatingOwnerKindRecord::User, now);
-        match stored_by_owner.get(update.user_id.as_str()) {
+        match stored_by_owner.get(update.competitor_id.as_str()) {
             Some(previous) if previous.has_same_effect_as(&contribution) => {}
             // The match itself changed under an existing rating — a re-score,
             // a reschedule, a sport edit, or a roster change that moved
@@ -250,8 +250,8 @@ pub async fn reconcile_match_rating(
     // where it recovers.
     let mut out_of_order: Vec<RatingOwner> = Vec::new();
     for (update, contribution) in pending {
-        let stored_rating = current_rating(&update.user_id);
-        let owner = RatingOwner::user(&update.user_id);
+        let stored_rating = current_rating(&update.competitor_id);
+        let owner = RatingOwner::user(&update.competitor_id);
 
         // Out-of-order arrival: this match was played *before* the newest one
         // already folded into this rating, so the incremental result is not
@@ -432,7 +432,7 @@ fn rateable(m: &MatchRecord, players: &[MatchPlayerRecord]) -> Option<Rateable> 
             return None;
         }
         participants.push(MatchParticipant {
-            user_id: user_id.clone(),
+            competitor_id: user_id.clone(),
             side_id: side_id.clone(),
         });
     }
@@ -503,7 +503,7 @@ fn contribution_for(
     let side_id = rateable
         .participants
         .iter()
-        .find(|p| p.user_id == update.user_id)
+        .find(|p| p.competitor_id == update.competitor_id)
         .map(|p| p.side_id.clone())
         // Unreachable: every update comes from a participant. Falling back to
         // an empty side rather than panicking because a worker that panics
@@ -512,7 +512,7 @@ fn contribution_for(
         .unwrap_or_default();
     RatingContributionRecord {
         owner_kind,
-        owner_id: update.user_id.clone(),
+        owner_id: update.competitor_id.clone(),
         ladder: rateable.ladder.as_str().to_string(),
         side_id,
         played_at: rateable.played_at.clone(),
@@ -861,15 +861,19 @@ async fn replay_match(
     if rateable.ladder.as_str() != ladder {
         return Ok(None);
     }
-    if !rateable.participants.iter().any(|p| p.user_id == owner.id) {
+    if !rateable
+        .participants
+        .iter()
+        .any(|p| p.competitor_id == owner.id)
+    {
         return Ok(None);
     }
 
     let mut base: RatingTable = RatingTable::new();
     for participant in &rateable.participants {
-        let belief = if participant.user_id == owner.id {
+        let belief = if participant.competitor_id == owner.id {
             state.belief()
-        } else if let Some(contribution) = stored.get(&participant.user_id) {
+        } else if let Some(contribution) = stored.get(&participant.competitor_id) {
             PlayerRating {
                 mu: contribution.movement.mu_before,
                 sigma: contribution.movement.sigma_before,
@@ -884,7 +888,7 @@ async fn replay_match(
             dao.get_rating(
                 &RatingOwner {
                     kind: owner.kind,
-                    id: participant.user_id.clone(),
+                    id: participant.competitor_id.clone(),
                 },
                 ladder,
             )
@@ -895,7 +899,7 @@ async fn replay_match(
             })
             .unwrap_or_default()
         };
-        base.insert(participant.user_id.clone(), belief);
+        base.insert(participant.competitor_id.clone(), belief);
     }
 
     let updates = rate_match(
@@ -907,7 +911,7 @@ async fn replay_match(
 
     let update = updates
         .iter()
-        .find(|u| u.user_id == owner.id)
+        .find(|u| u.competitor_id == owner.id)
         .ok_or_else(|| {
             WorkerError::Invariant(format!(
                 "match {match_id} produced no rating update for {}",
@@ -1093,11 +1097,11 @@ mod tests {
             rated.participants,
             vec![
                 MatchParticipant {
-                    user_id: "u1".into(),
+                    competitor_id: "u1".into(),
                     side_id: "a".into()
                 },
                 MatchParticipant {
-                    user_id: "u2".into(),
+                    competitor_id: "u2".into(),
                     side_id: "b".into()
                 },
             ]
@@ -1204,7 +1208,7 @@ mod tests {
         players.push(invited(player("p3", Some("u3"), Some("a")), "pending"));
         let rated = rateable(&match_record(), &players).expect("rateable");
         assert_eq!(rated.participants.len(), 2);
-        assert!(rated.participants.iter().all(|p| p.user_id != "u3"));
+        assert!(rated.participants.iter().all(|p| p.competitor_id != "u3"));
     }
 
     /// An accepted invitee played, and rates.
@@ -1301,7 +1305,7 @@ mod tests {
     fn the_contribution_carries_the_side_and_the_incoming_belief() {
         let rated = rateable(&match_record(), &singles()).expect("rateable");
         let update = RatingUpdate {
-            user_id: "u2".into(),
+            competitor_id: "u2".into(),
             before: PlayerRating {
                 mu: 25.0,
                 sigma: 25.0 / 3.0,
@@ -1450,7 +1454,7 @@ mod tests {
     fn a_redelivery_differs_only_in_applied_at_and_so_has_the_same_effect() {
         let rated = rateable(&match_record(), &singles()).expect("rateable");
         let update = RatingUpdate {
-            user_id: "u1".into(),
+            competitor_id: "u1".into(),
             before: PlayerRating::default(),
             after: PlayerRating {
                 mu: 27.6,

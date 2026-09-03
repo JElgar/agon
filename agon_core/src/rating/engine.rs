@@ -35,7 +35,7 @@
 //! summation is order-dependent, and the sides it starts from live in a
 //! `HashMap` on `MatchRecord`, whose iteration order is not stable even
 //! within one process. [`group_by_side`] therefore sorts sides by `side_id`
-//! and players by `user_id` before any arithmetic happens — and
+//! and players by `competitor_id` before any arithmetic happens — and
 //! [`rate_sides`] sorts again itself rather than trusting that it was handed
 //! sorted input, because it is public and `RatingSide`'s fields are public
 //! too, so "the caller sorted" is a convention a caller can break without
@@ -147,32 +147,41 @@ impl From<WengLinRating> for PlayerRating {
     }
 }
 
-/// Every rated player's current rating on one ladder, by user id.
+/// Every rated competitor's current rating on one ladder, by competitor id.
 ///
 /// A `BTreeMap` rather than a `HashMap` purely so anything that iterates it
 /// (replay, tests, log lines) is ordered — see the module doc on
 /// determinism.
 pub type RatingTable = BTreeMap<String, PlayerRating>;
 
-/// One player's participation in a match: who they are and which side they
-/// played for.
+/// One competitor's participation in a match: who they are and which side
+/// they played for.
 ///
-/// `user_id` is not optional. A match with an unlinked guest on any side is
-/// not rated *at all* — an unlinked player has no rating to contribute and
-/// none to receive, so rating around them would quietly credit their side's
-/// result to whoever else was on it. That check belongs with the records
-/// that can answer it (phase 2's eligibility gate), which is why by the time
+/// `competitor_id` is a *user* id on the player pass and a *team* id on the
+/// team pass (Part 2.7's second pass over the same match), which is why it is
+/// not called `user_id`: this module only ever compares and groups the value,
+/// so one field serves both pools, and a name saying "user" would have been
+/// a lie the moment team ratings landed. The two pools never mix — which
+/// partition a rating is written back to comes from `RatingOwner::kind` at
+/// the storage boundary, not from anything in here.
+///
+/// It is not optional. A match with an unlinked guest on any side is not
+/// rated *at all* — an unlinked player has no rating to contribute and none
+/// to receive, so rating around them would quietly credit their side's result
+/// to whoever else was on it. That check belongs with the records that can
+/// answer it (phase 2's eligibility gate), which is why by the time
 /// participants reach here every one of them is a real account.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchParticipant {
-    pub user_id: String,
+    pub competitor_id: String,
     pub side_id: String,
 }
 
-/// A participant with their rating going into the match resolved.
+/// A participant with their rating going into the match resolved. See
+/// [`MatchParticipant::competitor_id`] on why the id is not called a user id.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RatedPlayer {
-    pub user_id: String,
+    pub competitor_id: String,
     pub rating: PlayerRating,
 }
 
@@ -180,20 +189,20 @@ pub struct RatedPlayer {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RatingSide {
     pub side_id: String,
-    /// Sorted by `user_id` — see the module doc on determinism.
+    /// Sorted by `competitor_id` — see the module doc on determinism.
     pub players: Vec<RatedPlayer>,
 }
 
-/// What a match did to one player's rating.
+/// What a match did to one competitor's rating.
 ///
-/// Owns its `user_id` rather than borrowing from the participants it came
-/// from: the update outlives the projection in every real caller (it gets
+/// Owns its `competitor_id` rather than borrowing from the participants it
+/// came from: the update outlives the projection in every real caller (it gets
 /// written to three items and handed to a workflow), and a lifetime here
 /// would spread through every signature that carries one for the sake of a
 /// few short allocations per match.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RatingUpdate {
-    pub user_id: String,
+    pub competitor_id: String,
     pub before: PlayerRating,
     pub after: PlayerRating,
 }
@@ -227,9 +236,9 @@ pub enum RatingError {
     /// A side with no players on it.
     #[error("side `{0}` has no players")]
     EmptySide(String),
-    /// One account on more than one side (or twice on one side) — the
+    /// One competitor on more than one side (or twice on one side) — the
     /// updates would disagree about their own rating.
-    #[error("user `{0}` appears more than once in the same match")]
+    #[error("competitor `{0}` appears more than once in the same match")]
     DuplicatePlayer(String),
     /// `winner_side_id` names a side that isn't in the match.
     #[error("winning side `{0}` is not one of the match's sides")]
@@ -239,8 +248,9 @@ pub enum RatingError {
 /// Project a match's participants into one rating group per side, resolving
 /// each player's current rating.
 ///
-/// Sport-agnostic by construction: it only knows about sides and user ids, so
-/// squash, cricket and an N-way ladder night all project the same way.
+/// Sport-agnostic by construction: it only knows about sides and competitor
+/// ids, so squash, cricket and an N-way ladder night all project the same
+/// way.
 ///
 /// A player absent from `ratings` gets [`PlayerRating::default`] — their
 /// first ever match on this ladder. That is a silent default on purpose:
@@ -255,9 +265,9 @@ pub fn group_by_side(participants: &[MatchParticipant], ratings: &RatingTable) -
             .entry(&participant.side_id)
             .or_default()
             .push(RatedPlayer {
-                user_id: participant.user_id.clone(),
+                competitor_id: participant.competitor_id.clone(),
                 rating: ratings
-                    .get(&participant.user_id)
+                    .get(&participant.competitor_id)
                     .copied()
                     .unwrap_or_default(),
             });
@@ -266,7 +276,7 @@ pub fn group_by_side(participants: &[MatchParticipant], ratings: &RatingTable) -
     by_side
         .into_iter()
         .map(|(side_id, mut players)| {
-            players.sort_by(|a, b| a.user_id.cmp(&b.user_id));
+            players.sort_by(|a, b| a.competitor_id.cmp(&b.competitor_id));
             RatingSide {
                 side_id: side_id.to_string(),
                 players,
@@ -296,8 +306,8 @@ pub fn rate_sides(
     }
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     for player in sides.iter().flat_map(|side| &side.players) {
-        if !seen.insert(&player.user_id) {
-            return Err(RatingError::DuplicatePlayer(player.user_id.clone()));
+        if !seen.insert(&player.competitor_id) {
+            return Err(RatingError::DuplicatePlayer(player.competitor_id.clone()));
         }
     }
     if let Some(winner) = winner_side_id
@@ -323,7 +333,7 @@ pub fn rate_sides(
         .iter()
         .map(|side| {
             let mut players: Vec<&RatedPlayer> = side.players.iter().collect();
-            players.sort_by(|a, b| a.user_id.cmp(&b.user_id));
+            players.sort_by(|a, b| a.competitor_id.cmp(&b.competitor_id));
             players
         })
         .collect();
@@ -356,7 +366,7 @@ pub fn rate_sides(
                 .iter()
                 .zip(new_group)
                 .map(|(player, after)| RatingUpdate {
-                    user_id: player.user_id.clone(),
+                    competitor_id: player.competitor_id.clone(),
                     before: player.rating,
                     after: after.into(),
                 })
@@ -383,7 +393,7 @@ pub fn rate_match(
 /// `tests::replaying_from_scratch_matches_incremental_rating`).
 pub fn apply(updates: &[RatingUpdate], ratings: &mut RatingTable) {
     for update in updates {
-        ratings.insert(update.user_id.clone(), update.after);
+        ratings.insert(update.competitor_id.clone(), update.after);
     }
 }
 
@@ -406,9 +416,9 @@ mod tests {
         );
     }
 
-    fn participant(user_id: &str, side_id: &str) -> MatchParticipant {
+    fn participant(competitor_id: &str, side_id: &str) -> MatchParticipant {
         MatchParticipant {
-            user_id: user_id.to_string(),
+            competitor_id: competitor_id.to_string(),
             side_id: side_id.to_string(),
         }
     }
@@ -417,9 +427,9 @@ mod tests {
         PlayerRating { mu, sigma }
     }
 
-    fn rated_player(user_id: &str, rating: PlayerRating) -> RatedPlayer {
+    fn rated_player(competitor_id: &str, rating: PlayerRating) -> RatedPlayer {
         RatedPlayer {
-            user_id: user_id.to_string(),
+            competitor_id: competitor_id.to_string(),
             rating,
         }
     }
@@ -436,11 +446,11 @@ mod tests {
             .collect()
     }
 
-    fn after(updates: &[RatingUpdate], user_id: &str) -> PlayerRating {
+    fn after(updates: &[RatingUpdate], competitor_id: &str) -> PlayerRating {
         updates
             .iter()
-            .find(|u| u.user_id == user_id)
-            .unwrap_or_else(|| panic!("no update for {user_id}"))
+            .find(|u| u.competitor_id == competitor_id)
+            .unwrap_or_else(|| panic!("no update for {competitor_id}"))
             .after
     }
 
@@ -721,8 +731,8 @@ mod tests {
 
         let mut one = rate_match(&forwards, Some("away"), &ratings).unwrap();
         let mut two = rate_match(&shuffled, Some("away"), &ratings).unwrap();
-        one.sort_by(|a, b| a.user_id.cmp(&b.user_id));
-        two.sort_by(|a, b| a.user_id.cmp(&b.user_id));
+        one.sort_by(|a, b| a.competitor_id.cmp(&b.competitor_id));
+        two.sort_by(|a, b| a.competitor_id.cmp(&b.competitor_id));
 
         assert_eq!(one, two, "participant order leaked into the result");
     }
@@ -778,8 +788,8 @@ mod tests {
             let winner = Some("side0");
             let mut forwards = rate_sides(&sides, winner).unwrap();
             let mut backwards = rate_sides(&reversed, winner).unwrap();
-            forwards.sort_by(|a, b| a.user_id.cmp(&b.user_id));
-            backwards.sort_by(|a, b| a.user_id.cmp(&b.user_id));
+            forwards.sort_by(|a, b| a.competitor_id.cmp(&b.competitor_id));
+            backwards.sort_by(|a, b| a.competitor_id.cmp(&b.competitor_id));
 
             assert_eq!(
                 forwards, backwards,
@@ -921,7 +931,7 @@ mod tests {
                 assert!(
                     update.after.sigma <= update.before.sigma,
                     "{} widened: {} -> {}",
-                    update.user_id,
+                    update.competitor_id,
                     update.before.sigma,
                     update.after.sigma
                 );
@@ -940,7 +950,7 @@ mod tests {
             let after = update.after.display().rating;
             assert_eq!(update.display_delta(), after - before);
         }
-        let winner = updates.iter().find(|u| u.user_id == "a").unwrap();
+        let winner = updates.iter().find(|u| u.competitor_id == "a").unwrap();
         assert_eq!(winner.display_delta(), 79, "a first win off 1500");
     }
 
@@ -971,7 +981,7 @@ mod tests {
             sides[1]
                 .players
                 .iter()
-                .map(|p| p.user_id.as_str())
+                .map(|p| p.competitor_id.as_str())
                 .collect::<Vec<_>>(),
             ["h0", "h1"],
             "players sort by id within a side"
@@ -1014,7 +1024,7 @@ mod tests {
             RatingSide {
                 side_id: "home".into(),
                 players: vec![RatedPlayer {
-                    user_id: "a".into(),
+                    competitor_id: "a".into(),
                     rating: PlayerRating::default(),
                 }],
             },

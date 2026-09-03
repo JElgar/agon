@@ -29,8 +29,8 @@
 //! ## What this module does *not* know
 //!
 //! It has no idea what a `MatchRecord` is. The projection into rating groups
-//! takes loose [`MatchParticipant`]s (`user_id` + `side_id`), not records,
-//! for two reasons:
+//! takes loose [`MatchParticipant`]s (`competitor_id` + `side_id`), not
+//! records, for two reasons:
 //!
 //! 1. There is no single record to take. A match's sides live on
 //!    `MatchRecord`, but its *rosters* do not — `MatchSideRecord::

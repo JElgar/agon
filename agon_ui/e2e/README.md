@@ -93,6 +93,33 @@ The very first login creates the account's Agon profile too (via
 `CreateProfileForm`, driven automatically by `auth.setup.ts`) — nothing else
 to provision by hand.
 
+### Provisioning the secondary account
+
+Some tests need a *second*, independent real Agon user to interact with —
+someone other than the caller to search for and select (the primary account
+can't play that role since search excludes the signed-in caller themselves)
+or, in the future, to invite and have accept. `support/secondAccount.ts`
+signs in as this account (see its doc comment). It's required, the same way
+the primary account is: `E2E_SECONDARY_EMAIL` unset fails the run immediately
+via `requireEnv` (`support/env.ts`), rather than a test silently skipping.
+
+It reuses the primary account's password — one credential to manage instead
+of two, and nothing new to hold as a secret. Set up the account itself
+exactly like the primary one above (same admin-API call, same password,
+different email), then point the suite at its email:
+
+```bash
+pulumi config set e2eSecondaryEmail agon-e2e-bot-2@example.com
+```
+
+`agon_infra/index.ts` doesn't need to export this the way it does
+`e2eTestEmail`/`e2eTestPassword` — nothing else in the stack reads it, so a
+plain `pulumi config set` on the target stack is enough; only the CI job
+needs to fetch it (`test-ui-e2e.yml`, alongside the primary account's). The
+first run against a freshly-provisioned account creates its Agon profile the
+same way `auth.setup.ts` does for the primary one (see
+`support/secondAccount.ts`); every run after that just signs in.
+
 ## Running
 
 Locally, the suite just reads plain env vars — Pulumi is only wired into the
@@ -102,7 +129,7 @@ CI job (`test-ui-e2e.yml`), not into `npm run test:e2e` itself:
 cd agon_ui
 npm install
 npx playwright install --with-deps chromium   # once, to fetch the browser
-E2E_TEST_EMAIL=... E2E_TEST_PASSWORD=... npm run test:e2e
+E2E_TEST_EMAIL=... E2E_TEST_PASSWORD=... E2E_SECONDARY_EMAIL=... npm run test:e2e
 ```
 
 Pull the values straight from Pulumi instead of retyping them:
@@ -110,6 +137,7 @@ Pull the values straight from Pulumi instead of retyping them:
 ```bash
 E2E_TEST_EMAIL="$(cd ../agon_infra && pulumi config get e2eTestEmail --stack staging)" \
 E2E_TEST_PASSWORD="$(cd ../agon_infra && pulumi config get e2eTestPassword --stack staging)" \
+E2E_SECONDARY_EMAIL="$(cd ../agon_infra && pulumi config get e2eSecondaryEmail --stack staging)" \
 npm run test:e2e
 ```
 
@@ -121,7 +149,7 @@ local server, set `E2E_BASE_URL` (e.g. a preview URL):
 
 ```bash
 E2E_BASE_URL=https://agon.staging.get-agon.com \
-E2E_TEST_EMAIL=... E2E_TEST_PASSWORD=... \
+E2E_TEST_EMAIL=... E2E_TEST_PASSWORD=... E2E_SECONDARY_EMAIL=... \
 npm run test:e2e
 ```
 
@@ -198,20 +226,31 @@ against your own machine instead:
    AGON_API_PROXY_TARGET=http://localhost:7000
    ```
 
-7. **Run the tests**, same as always — the local Supabase Auth stack has no
-   Pulumi-stored secret, so the test account's email/password are whatever
-   you passed `local-seed-user.mjs` (or its defaults, `e2e@example.com` /
-   `local-e2e-test-password`, if you ran it with none):
+7. **Seed the secondary account** too (see "Provisioning the secondary
+   account" above — it's required, the same script, just a different email,
+   reusing the same password):
+
+   ```bash
+   E2E_TEST_EMAIL=e2e-2@example.com E2E_TEST_PASSWORD=local-e2e-test-password \
+   node agon_ui/e2e/local-seed-user.mjs
+   ```
+
+8. **Run the tests**, same as always — the local Supabase Auth stack has no
+   Pulumi-stored secret, so both accounts' email/password are whatever you
+   passed `local-seed-user.mjs` (or its defaults, `e2e@example.com` /
+   `local-e2e-test-password` for the primary and `e2e-2@example.com` for the
+   secondary, if you ran it with none):
 
    ```bash
    E2E_TEST_EMAIL=e2e@example.com E2E_TEST_PASSWORD=local-e2e-test-password \
+   E2E_SECONDARY_EMAIL=e2e-2@example.com \
    npm run test:e2e
    ```
 
-`make test-ui-e2e-local` wraps steps 2 and 7 (seed + run, with matching
-defaults) — steps 1, 3–6 (the backing services and the four app processes:
-agon_service, agon_worker, the stream bridge, the UI dev server) still need
-to be up first.
+`make test-ui-e2e-local` wraps steps 2, 7 and 8 (seed both accounts + run,
+with matching defaults) — steps 1, 3–6 (the backing services and the four
+app processes: agon_service, agon_worker, the stream bridge, the UI dev
+server) still need to be up first.
 
 ## What's covered
 
@@ -221,6 +260,10 @@ to be up first.
   recording a goal with an assist, undoing it, half-time (and that scoring
   is unavailable while the clock is stopped), resuming the second half, a
   second goal, full-time, and finishing the match.
+- `tests/team-creation.spec.ts` — creating a team and searching for and
+  selecting a *real* registered user (not just tagging a guest) from
+  `PlayerSideEditor`'s combobox, then confirming the invite actually landed.
+  Uses the secondary account above.
 
 Test data isn't cleaned up afterwards — created matches accumulate against
 the test account like any other match would, named `E2E football …` / `E2E

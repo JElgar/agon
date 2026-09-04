@@ -110,7 +110,16 @@ function ComboboxContent({
         align={align}
         alignOffset={alignOffset}
         anchor={anchor}
-        className="isolate z-50"
+        // Radix's `Dialog` sets `document.body.style.pointerEvents = 'none'`
+        // while open and opts only its own content back in — this popup
+        // portals to `document.body` as a *sibling* of `DialogContent`, not a
+        // descendant, so without this it silently inherits `none` from the
+        // body. Results still render (that's opacity/visibility, unaffected),
+        // but every click passes straight through to whatever's behind the
+        // popup instead of selecting anything. `pointer-events` is
+        // inherited, so setting it here covers every descendant (items,
+        // guest row, etc.) in one place.
+        className="isolate z-50 pointer-events-auto"
       >
         <ComboboxPrimitive.Popup
           data-slot="combobox-content"

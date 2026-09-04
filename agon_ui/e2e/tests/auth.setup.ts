@@ -1,17 +1,10 @@
 import { test as setup, expect } from '@playwright/test'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { requireEnv } from '../support/env'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const authFile = path.join(__dirname, '../.auth/user.json')
-
-function requireEnv(name: string): string {
-  const value = process.env[name]
-  if (!value) {
-    throw new Error(`${name} must be set to run the e2e suite — see e2e/README.md`)
-  }
-  return value
-}
 
 /**
  * Signs in once as the fixed e2e test account and saves the resulting

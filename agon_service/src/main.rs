@@ -8307,7 +8307,13 @@ enum Commands {
     /// Starts the service
     #[command(arg_required_else_help = true)]
     RunServer {
-        /// The url of the service
+        /// The public base URL this service is reachable at, e.g.
+        /// `https://agon.staging.get-agon.com/api`. Seeds the OpenAPI
+        /// "servers" entry so the docs page's "Test Request" hits the real
+        /// deployed origin — including the `/api` prefix a reverse proxy
+        /// strips before forwarding here (see agon_infra's
+        /// agon-api-ingress), since this service itself is mounted at `/`
+        /// and has no way to know about that prefix on its own.
         url: String,
     },
 
@@ -8413,26 +8419,32 @@ async fn main() {
 
     let args = Cli::parse();
 
-    // Relative, not absolute: this string is baked once into the docs page's
-    // embedded spec at startup (poem-openapi's `scalar()` renders the spec to
-    // a static HTML string), so it can't be a request-derived absolute URL.
-    // A relative server URL is resolved by each visitor's *browser* against
-    // wherever it loaded the docs page from instead, and "." (this doc's own
-    // directory) lands on the right origin in every environment `/docs` is
-    // reachable from:
-    //   - hitting agon_service directly (e.g. local dev, localhost:7000/docs)
-    //     puts `/ping` etc. one level up from `/docs`, i.e. at ".";
-    //   - through the deployed ingress (agon_infra's agon-api-ingress, which
-    //     strips a leading `/api` before forwarding to this service), the
-    //     docs page lives at `/api/docs` and `/api/ping` is likewise one
-    //     level up from it, at "." — which the ingress then maps back to
-    //     this service's own `/ping`.
-    // See OpenAPI 3's Server Object: server URLs may be relative to the
-    // document's own serving location.
-    let api_service = OpenApiService::new(Api, "Agon API", "1.0").server(".");
+    // Seeds the OpenAPI "servers" entry baked into the docs page at startup
+    // (poem-openapi's `scalar()` renders the spec to a static HTML string
+    // once, not per-request) with wherever this service is really publicly
+    // reachable, so the docs page's "Test Request" hits the deployed origin
+    // instead of a guess. Must be an absolute URL, `/api` prefix and all —
+    // a *relative* server URL (e.g. ".") doesn't work here even though the
+    // docs page itself lives under that same prefix: every operation path in
+    // the spec starts with `/` (e.g. `/ping`), and resolving a leading-`/`
+    // reference against any base, relative or absolute, always collapses to
+    // that base's origin root, discarding the base's own path — so a
+    // relative server URL silently sends every request to the bare domain
+    // instead of through `/api`.
+    //
+    // `RunServer`'s `url` arg carries this in from the deployment (see
+    // agon_infra's agon-deployment container args); every other subcommand
+    // here is a local/offline tool (schema generation, token minting, ...)
+    // that never serves the docs page, so the exact value doesn't matter —
+    // default to the plain local address.
+    let public_url = match &args.command {
+        Commands::RunServer { url } => url.clone(),
+        _ => "http://localhost:7000".to_string(),
+    };
+    let api_service = OpenApiService::new(Api, "Agon API", "1.0").server(public_url);
 
     match args.command {
-        Commands::RunServer { url: _ } => {
+        Commands::RunServer { .. } => {
             info!("Starting up server");
 
             let ui = api_service.scalar();

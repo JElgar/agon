@@ -90,7 +90,7 @@ test-staging:
 	cargo test --manifest-path agon_tests/Cargo.toml -- --test-threads=1
 
 run:
-	cargo run -p agon_service -- run-server abc.com
+	cargo run -p agon_service -- run-server http://localhost:7000
 
 # agon_worker: consumes the DynamoDB stream + runs the Temporal workflows
 # (feed fan-out, accept-invitation). Needs the `full` docker-compose profile

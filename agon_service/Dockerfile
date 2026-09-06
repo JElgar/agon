@@ -48,5 +48,8 @@ USER appuser
 # Expose the port the Poem app listens on
 EXPOSE 7000
 
-# Start the app
-CMD ["app", "run-server", "abc.com"]
+# Start the app. The URL here only matters for a bare `docker run` — every
+# real deployment overrides it via the container's `args` (see agon_infra's
+# agon-deployment) with wherever that environment is actually publicly
+# reachable, `/api` prefix and all (see `RunServer`'s `url` doc comment).
+CMD ["app", "run-server", "http://localhost:7000"]

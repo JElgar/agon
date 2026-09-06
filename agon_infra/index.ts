@@ -1655,6 +1655,11 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 					{
 						name: "agon-service",
 						image: config.get("agonServiceImage"),
+						// The service's own public base URL, `/api` prefix included —
+						// see `RunServer`'s `url` doc comment for why. Reuses
+						// `agonUiUrl` (same host as `fullDomain` below) rather than
+						// `fullDomain` itself since that's declared later in this file.
+						args: ["run-server", `${agonUiUrl}/api`],
 						ports: [{ containerPort: 7000 }],
 							envFrom: [{ secretRef: { name: awsSecret.metadata.name } }],
 						env: [

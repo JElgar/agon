@@ -3519,6 +3519,8 @@ impl Api {
         Ok(UpdateMatchResponse::Match(Json(m)))
     }
 
+    /// Get a match's current score.
+    ///
     /// Both sports' persisted records are kept incrementally correct by
     /// every live-scoring append (see `apply_live_events_incrementally`), so
     /// this trusts the persisted record directly, with a full refold only as
@@ -3688,6 +3690,8 @@ impl Api {
         Ok(())
     }
 
+    /// Append live-scoring events.
+    ///
     /// Append a batch of live-scoring events (1 to
     /// [`dao::live_score_ops::MAX_LIVE_EVENTS_PER_BATCH`]) to a match's live
     /// event log, atomically. `expected_last_seq` gates ordering and
@@ -3914,6 +3918,8 @@ impl Api {
         }))
     }
 
+    /// Get the match's live-scoring sequence counter.
+    ///
     /// The match's current live-scoring counter — what a client with no
     /// cached mutation response should seed `expected_last_seq` from (a
     /// fresh page load, or a device that's never scored this match before).
@@ -3946,6 +3952,8 @@ impl Api {
         })))
     }
 
+    /// List a match's live event log.
+    ///
     /// The raw live event log, oldest first — for reconstructing the full
     /// scorecard client-side (see `inningsDeliveriesFromEvents`, used by a
     /// completed match's run-progression graph) or for the scorer's own
@@ -3985,6 +3993,8 @@ impl Api {
         })))
     }
 
+    /// Delete the most recent live event.
+    ///
     /// Delete a single live event outright — but only the current tip
     /// ("undo the last thing I recorded"). An arbitrary-position delete
     /// would need real conflict resolution to reconcile against a device's
@@ -4057,6 +4067,8 @@ impl Api {
         }
     }
 
+    /// Amend a live event (unsupported).
+    ///
     /// Amending an event in place isn't supported: it would need real
     /// conflict resolution to reconcile against a device's own offline
     /// queue, the way appends and tip-only deletes don't. The correction
@@ -4810,6 +4822,8 @@ impl Api {
         }
     }
 
+    /// List a team's members.
+    ///
     /// A team's members, paginated (`Dao::list_team_members`, a
     /// `begins_with(SK, "MEMBER#")` range query on the team's own partition).
     /// Split out from `Team` itself (see its doc comment) so a large roster
@@ -5019,6 +5033,8 @@ impl Api {
         ))))
     }
 
+    /// Change a team member's role.
+    ///
     /// Change a member's role between `admin` and `member` — never `owner`,
     /// which is permanent (see `AssignableTeamRole`'s doc comment). Owner or
     /// admin may call this; the target can't be the team's owner (their role
@@ -5062,6 +5078,8 @@ impl Api {
         Ok(UpdateTeamMemberRoleResponse::Ok)
     }
 
+    /// Delete a team.
+    ///
     /// Permanently delete a team — owner-only. Cascades: every membership and
     /// follow edge in the team's partition is deleted along with it
     /// (`Dao::delete_team`), not just the team's own meta item.
@@ -5090,6 +5108,8 @@ impl Api {
         Ok(DeleteTeamResponse::Ok)
     }
 
+    /// Leave a team.
+    ///
     /// Leave a team the caller is an accepted member of. The owner can't
     /// leave this way — `POST /teams/:team_id/transfer-ownership` first,
     /// which hands the role to someone else and demotes the caller to admin,
@@ -5128,6 +5148,8 @@ impl Api {
         Ok(LeaveTeamResponse::Ok)
     }
 
+    /// Transfer team ownership.
+    ///
     /// Hand the `owner` role to another accepted member; the caller (the
     /// current owner) becomes an admin. Owner-only — including the fact that
     /// there's no other way to become the target of this: an admin can't
@@ -5294,6 +5316,8 @@ impl Api {
         Ok(AddInvitationsResponse::Invitations(Json(created)))
     }
 
+    /// Create a match join link.
+    ///
     /// Mint a shareable, many-use join link for a match. Unlike
     /// `POST /matches/:id/invitations` (single-use, pre-bound to one named
     /// person), the same link's token may be used by any number of different
@@ -5407,8 +5431,10 @@ impl Api {
         )))
     }
 
-    /// Revoke a join link. Soft — the link stops accepting new joins, but
-    /// players who already joined through it stay on the roster.
+    /// Revoke a join link.
+    ///
+    /// Soft — the link stops accepting new joins, but players who already
+    /// joined through it stay on the roster.
     #[oai(
         path = "/matches/:match_id/join-links/:join_link_id",
         method = "delete"
@@ -5461,6 +5487,8 @@ impl Api {
         Ok(RevokeJoinLinkResponse::Ok)
     }
 
+    /// Preview a join link by token.
+    ///
     /// Public, unauthenticated preview of a join link — same shape of
     /// exception as `GET /invitations/by-token/:token`: a link has to be
     /// previewable before the holder has signed in. Enough for a client to
@@ -5508,6 +5536,8 @@ impl Api {
         })))
     }
 
+    /// Join a match.
+    ///
     /// Join a match — via a join link's token, or (omitting `token`)
     /// team-roster self-join, resolved via `caller_team_join_sides`. Both
     /// branches share this same capacity-checked primitive from here on.
@@ -5660,6 +5690,8 @@ impl Api {
         Ok(JoinMatchResponse::Match(Json(m)))
     }
 
+    /// Transfer match ownership.
+    ///
     /// Transfer match ownership — owner-only, mirrors `POST
     /// /teams/:team_id/transfer-ownership` exactly (see that handler and
     /// `Dao::transfer_match_ownership`'s doc comments). `created_by_user_id`
@@ -6003,6 +6035,8 @@ impl Api {
         }
     }
 
+    /// Preview an invitation by token.
+    ///
     /// Preview an invitation by its bearer token. Public (no auth): the token is
     /// itself the credential, so anyone holding an invite link can see what it is
     /// an invite *to* before signing in. Used by the invite-link landing/accept
@@ -8379,8 +8413,23 @@ async fn main() {
 
     let args = Cli::parse();
 
-    let api_service =
-        OpenApiService::new(Api, "Hello World", "1.0").server("http://localhost:7000");
+    // Relative, not absolute: this string is baked once into the docs page's
+    // embedded spec at startup (poem-openapi's `scalar()` renders the spec to
+    // a static HTML string), so it can't be a request-derived absolute URL.
+    // A relative server URL is resolved by each visitor's *browser* against
+    // wherever it loaded the docs page from instead, and "." (this doc's own
+    // directory) lands on the right origin in every environment `/docs` is
+    // reachable from:
+    //   - hitting agon_service directly (e.g. local dev, localhost:7000/docs)
+    //     puts `/ping` etc. one level up from `/docs`, i.e. at ".";
+    //   - through the deployed ingress (agon_infra's agon-api-ingress, which
+    //     strips a leading `/api` before forwarding to this service), the
+    //     docs page lives at `/api/docs` and `/api/ping` is likewise one
+    //     level up from it, at "." — which the ingress then maps back to
+    //     this service's own `/ping`.
+    // See OpenAPI 3's Server Object: server URLs may be relative to the
+    // document's own serving location.
+    let api_service = OpenApiService::new(Api, "Agon API", "1.0").server(".");
 
     match args.command {
         Commands::RunServer { url: _ } => {

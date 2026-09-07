@@ -173,8 +173,10 @@ export function withTeamMemberInvitationStatus(
 /**
  * Whether the viewer is a participant in the match — a linked player who was
  * either added ad-hoc (no invitation) or has accepted. Mirrors the server's
- * `caller_is_participant`: participants may edit the match, invite others, and
- * record the result. Pending/declined invitees are not participants.
+ * `caller_is_participant`. Editing the match, inviting others, and recording
+ * the result are all gated to a match admin instead (see `canManageMatch`) —
+ * a plain participant's own action is `POST /matches/:match_id/leave` (see
+ * `LeaveMatchDialog`). Pending/declined invitees are not participants.
  *
  * Also accepts a feed's `FeedMatch` (see `myPendingInvitation`'s doc comment)
  * — always `false` there; check `FeedMatch.viewer_side_id` instead if you
@@ -219,17 +221,23 @@ export function myMatchRole(
 }
 
 /**
- * Whether the viewer may manage the match's join settings — join-link
- * creation/revocation, `allow_unassigned`, and per-side `max_players`/
- * `team_join_enabled`. Mirrors the
- * server's `caller_is_match_admin`, minus the team-admin-bridge and
+ * Whether the viewer may manage the match: edit its details/format/roster/
+ * score/status (including cancelling it), invite people, record live
+ * events, and the join-link tier — join-link creation/revocation,
+ * `allow_unassigned`, per-side `max_players`/`team_join_enabled`. All of
+ * these are gated to the same tier server-side (`caller_is_match_admin`) —
+ * an ordinary player is read-only on the match itself; `POST
+ * /matches/:match_id/leave` is the one action left to them (see
+ * `LeaveMatchDialog`).
+ *
+ * Mirrors `caller_is_match_admin` minus the team-admin-bridge and
  * non-playing-creator fallback: neither is client-checkable (`Match` doesn't
  * expose `created_by_user_id` or the team roles behind a side's `team_id`),
  * so those stay server-enforced only — a viewer who qualifies solely via one
  * of those just won't see the button, the same gap `isParticipant` already
  * has for the equivalent server-side creator fallback.
  */
-export function canManageMatchJoinSettings(
+export function canManageMatch(
   match: Match,
   currentUserId: string | undefined,
 ): boolean {

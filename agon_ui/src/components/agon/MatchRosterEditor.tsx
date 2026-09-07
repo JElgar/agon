@@ -43,7 +43,7 @@ const UNASSIGNED = '__unassigned__'
  * one `PATCH`. Saving with any pending removals detours through a confirm
  * dialog naming who's being cut, since that part can't be undone once it's
  * sent; a save with only side moves goes straight through. Shown in place of
- * the read-only roster grid when a participant taps "Edit".
+ * the read-only roster grid when a match admin taps "Edit".
  */
 export function MatchRosterEditor({
   match,

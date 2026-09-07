@@ -63,7 +63,7 @@ const emptyForm: ScopeForm = { sidesChoice: 'any', sideIds: [], allowUnassigned:
  * unassigned only, list the ones already made with a share button and a
  * revoke action. Structure mirrors `InviteToTeamDialog` — one dialog, a
  * list, a "new" sub-form below it. Admin-only; the match page only renders
- * the trigger for an admin viewer (see `canManageMatchJoinSettings`).
+ * the trigger for an admin viewer (see `canManageMatch`).
  *
  * A link's own "allow unassigned" is always capped by the match's own
  * `allow_unassigned` (see `Match.allow_unassigned`'s doc comment) — when the

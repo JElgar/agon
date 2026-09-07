@@ -5806,7 +5806,7 @@ impl Api {
             )));
         }
 
-        dao.remove_match_players(&match_id, &[player.player_id.clone()])
+        dao.remove_match_players(&match_id, std::slice::from_ref(&player.player_id))
             .await
             .map_err(dao_internal)?;
         dao.refresh_side_roster_previews(&match_id)

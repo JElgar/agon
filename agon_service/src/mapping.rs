@@ -975,6 +975,9 @@ pub fn match_side_from_record(rec: &MatchSideRecord) -> MatchSide {
         // `FeedMatch`/a search hit's `SearchMatch`
         // (`Api::resolve_side_names_from_cache`).
         team_logo: None,
+        // Filled in afterward, alongside `team_logo`: same live/cached
+        // lookup as above.
+        team_name: None,
         // Filled in afterward: live from `players` for `Match`
         // (`Api::resolve_side_names`), or from the denormalized cache for a
         // feed's `FeedMatch` (`feed_roster_preview`, below).

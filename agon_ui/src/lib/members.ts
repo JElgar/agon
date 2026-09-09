@@ -305,6 +305,22 @@ export function orderSidesForViewer(
 }
 
 /**
+ * The actual team a side is linked to, when that fact isn't already obvious
+ * from its display name — i.e. `team_name` is set (see `MatchSide.team_name`'s
+ * backend doc comment) and differs from `name` itself. `name` takes over as a
+ * custom name (two sides sharing one club, told apart as "1st XI"/"2nd XI")
+ * or a solo player's own name, either of which otherwise leaves no visible
+ * trace of which team the side belongs to. `undefined` for an ad-hoc side, a
+ * side whose linked team has since been deleted, or one already showing its
+ * team's own name.
+ */
+export function sideTeamHint(side: MatchSide | undefined): string | undefined {
+  const team = side?.team_name?.trim()
+  if (!team) return undefined
+  return team !== side?.name?.trim() ? team : undefined
+}
+
+/**
  * Display name for a match player: a linked Agon user's name is hydrated onto
  * the member server-side, an external player carries a display name directly.
  */

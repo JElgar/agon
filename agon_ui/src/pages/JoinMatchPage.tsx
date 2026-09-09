@@ -96,7 +96,17 @@ export function JoinMatchPage() {
     ? choice.allowedSideIds === null || choice.allowedSideIds.length > 1
     : false
   const effectiveSideId = forcedSideId ?? sideId
-  const canSubmit = !choice ? false : needsPick ? !!effectiveSideId : true
+  // No explicit side chosen: still submittable when the scope defaults to
+  // landing unassigned (the picker's own default-selected option — see its
+  // "an unassigned scope defaults to that explicitly" comment below). Without
+  // this, the picker visually shows "Unassigned" pre-selected while the
+  // button stays disabled, since an untouched picker and an explicit
+  // unassigned pick are the same `sideId === undefined` state.
+  const canSubmit = !choice
+    ? false
+    : needsPick
+      ? !!effectiveSideId || choice.allowUnassigned
+      : true
 
   const join = useMutation({
     mutationFn: async (): Promise<'joined' | 'conflict'> => {

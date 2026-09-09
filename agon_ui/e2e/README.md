@@ -264,6 +264,10 @@ server) still need to be up first.
   selecting a *real* registered user (not just tagging a guest) from
   `PlayerSideEditor`'s combobox, then confirming the invite actually landed.
   Uses the secondary account above.
+- `tests/match-join-link.spec.ts` — minting a general ("any side, or
+  unassigned") join link from a match's "Join links" dialog, then landing on
+  it as a different real account and joining unassigned. Uses the secondary
+  account above.
 
 Test data isn't cleaned up afterwards — created matches accumulate against
 the test account like any other match would, named `E2E football …` / `E2E

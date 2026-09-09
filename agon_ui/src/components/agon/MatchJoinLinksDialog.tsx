@@ -9,6 +9,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
   DialogTrigger,
 } from '@/components/ui/dialog'
@@ -43,7 +44,10 @@ function scopeInputFor(form: ScopeForm): JoinLinkScope {
 /** Human summary of an existing link's scope, for the list. */
 function scopeSummary(scope: JoinLinkScope, match: Match): string {
   const ids = scope.side_ids
-  if (ids === undefined) {
+  // `!= null` (not `!== undefined`): the server serializes a Rust
+  // `Option::None` here as JSON `null`, not an absent key (see
+  // `JoinMatchPage.tsx`'s `joinChoiceFor` for the same quirk).
+  if (ids == null) {
     return scope.allow_unassigned ? 'Any side, or unassigned' : 'Any side — must pick one'
   }
   if (ids.length === 0) return 'Unassigned only'
@@ -145,6 +149,9 @@ export function MatchJoinLinksDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Join links</DialogTitle>
+          <DialogDescription>
+            Anyone with a link below can join this game without an invite.
+          </DialogDescription>
         </DialogHeader>
 
         {linksQuery.isLoading ? (

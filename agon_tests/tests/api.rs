@@ -5553,6 +5553,58 @@ async fn live_seq_endpoint_reflects_the_real_counter_not_the_physical_log_max() 
     assert_eq!(after_append.last_seq, 4);
 }
 
+/// Recording and undoing live events are both match-admin actions, same tier
+/// as `PATCH /matches/:id` — an accepted (Player-role) participant is
+/// rejected from either, not just from editing the match's own fields.
+#[tokio::test]
+async fn only_a_match_admin_can_record_or_undo_live_events() {
+    let (owner_config, _owner) = new_user().await;
+    let (participant_config, participant) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&participant.profile.id))
+        .await
+        .expect("create match");
+    accept_match_invitation(&participant_config, &created.id).await;
+    let side_a = created.sides[0].id.clone();
+
+    // A plain participant may not append a live event...
+    let res = reqwest::Client::new()
+        .post(format!(
+            "{}/matches/{}/live/events",
+            participant_config.base_path, created.id
+        ))
+        .bearer_auth(
+            participant_config
+                .bearer_access_token
+                .as_ref()
+                .expect("config has a bearer token"),
+        )
+        .json(&serde_json::json!({
+            "expected_last_seq": 0,
+            "events": [{
+                "occurred_at": iso_offset_hours(0),
+                "event": netball_goal_event_json(&side_a, false),
+            }],
+        }))
+        .send()
+        .await
+        .expect("send append request");
+    assert_eq!(res.status(), reqwest::StatusCode::FORBIDDEN);
+
+    // ...nor undo one the admin recorded.
+    append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![netball_goal_event_json(&side_a, false)],
+    )
+    .await;
+    assert_status(
+        matches_match_id_live_events_seq_delete(&participant_config, &created.id, 1).await,
+        reqwest::StatusCode::FORBIDDEN,
+    );
+}
+
 /// Regression test for the bug where undoing the tip event left the client
 /// unable to record anything else afterward.
 ///
@@ -6473,7 +6525,7 @@ async fn overall_capacity_is_derived_from_every_sides_cap() {
 }
 
 #[tokio::test]
-async fn a_self_served_participant_can_invite_but_not_manage_join_settings() {
+async fn a_self_served_participant_cannot_invite_or_manage_join_settings() {
     let (owner_config, owner) = new_user().await;
     let created = matches_post(&owner_config, joinable_match_input(None, None, None))
         .await
@@ -6501,23 +6553,25 @@ async fn a_self_served_participant_can_invite_but_not_manage_join_settings() {
     .await
     .expect("self-serve join");
 
-    // An ordinary (Player-role) participant may still invite a named person —
-    // unchanged, existing behavior.
+    // An ordinary (Player-role) participant is read-only on the match: they
+    // may not invite a named person, manage join links, or edit anything —
+    // only a match admin (owner/admin) can. All admin-gated actions share
+    // the same tier server-side (`caller_is_match_admin`).
     let (_invitee_config, invitee) = new_user().await;
-    matches_match_id_invitations_post(
-        &participant_config,
-        &created.id,
-        models::AddInvitationsInput {
-            invited_user_ids: vec![invitee.profile.id],
-            invited_external_names: vec![],
-            side_id: None,
-            role: None,
-        },
-    )
-    .await
-    .expect("a participant may invite named people");
-
-    // But the newer, more structural actions are admin-only.
+    assert_status(
+        matches_match_id_invitations_post(
+            &participant_config,
+            &created.id,
+            models::AddInvitationsInput {
+                invited_user_ids: vec![invitee.profile.id],
+                invited_external_names: vec![],
+                side_id: None,
+                role: None,
+            },
+        )
+        .await,
+        reqwest::StatusCode::FORBIDDEN,
+    );
     assert_status(
         matches_match_id_join_links_post(
             &participant_config,
@@ -6540,6 +6594,127 @@ async fn a_self_served_participant_can_invite_but_not_manage_join_settings() {
         )
         .await,
         reqwest::StatusCode::FORBIDDEN,
+    );
+    // A plain participant may not edit the match at all, not just its join
+    // settings.
+    assert_status_with_content(
+        matches_match_id_patch(
+            &participant_config,
+            &created.id,
+            models::UpdateMatchInput {
+                name: Some("Hijacked name".to_string()),
+                ..Default::default()
+            },
+        )
+        .await,
+        reqwest::StatusCode::FORBIDDEN,
+        "only a match admin can edit this match",
+    );
+
+    // The one thing left to them: leaving.
+    matches_match_id_leave_post(&participant_config, &created.id)
+        .await
+        .expect("a plain participant can leave");
+}
+
+/// Mirrors `member_and_admin_can_leave_but_owner_must_transfer_first` on the
+/// team side: a plain player leaves outright, the owner is rejected until
+/// they transfer ownership away, and the demoted former owner (now an admin)
+/// can then leave like anyone else.
+#[tokio::test]
+async fn match_owner_must_transfer_ownership_before_leaving() {
+    let (owner_config, owner) = new_user().await;
+    let created = matches_post(&owner_config, joinable_match_input(None, None, None))
+        .await
+        .expect("create match");
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+
+    let link = matches_match_id_join_links_post(
+        &owner_config,
+        &created.id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(any_side_scope()),
+        },
+    )
+    .await
+    .expect("create join link");
+
+    let (player_config, player) = new_user().await;
+    matches_match_id_join_post(
+        &player_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: Some(link.token.clone()),
+            side_id: Some(other_side_id(&created, &side_a)),
+        },
+    )
+    .await
+    .expect("player self-serve joins");
+
+    let (new_owner_config, new_owner) = new_user().await;
+    let joined = matches_match_id_join_post(
+        &new_owner_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: Some(link.token),
+            side_id: Some(other_side_id(&created, &side_a)),
+        },
+    )
+    .await
+    .expect("second joiner self-serve joins");
+    let new_owner_player_id = player_id_for_user(&joined, &new_owner.profile.id);
+
+    // The plain player leaves on their own — no owner/admin action needed.
+    matches_match_id_leave_post(&player_config, &created.id)
+        .await
+        .expect("player leaves");
+    let after_player_leaves = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match");
+    assert!(
+        !after_player_leaves.players.iter().any(
+            |p| matches!(&*p.member, models::Member::User(u) if u.user_id == player.profile.id)
+        ),
+        "the player is off the roster"
+    );
+
+    // The owner can't leave directly — the server rejects it with a specific
+    // reason, and they're still on the roster afterward.
+    assert_status_with_content(
+        matches_match_id_leave_post(&owner_config, &created.id).await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "transfer ownership",
+    );
+
+    // Transfer ownership to the other joiner — roles swap...
+    matches_match_id_transfer_ownership_post(
+        &owner_config,
+        &created.id,
+        models::TransferMatchOwnershipInput {
+            player_id: new_owner_player_id,
+        },
+    )
+    .await
+    .expect("owner transfers ownership");
+
+    // ...and now the former owner (just an admin) can leave like anyone else.
+    matches_match_id_leave_post(&owner_config, &created.id)
+        .await
+        .expect("former owner (now admin) leaves");
+    let final_match = matches_match_id_get(&new_owner_config, &created.id)
+        .await
+        .expect("get match");
+    assert!(
+        !final_match.players.iter().any(
+            |p| matches!(&*p.member, models::Member::User(u) if u.user_id == owner.profile.id)
+        ),
+        "the former owner is off the roster"
+    );
+    assert!(
+        final_match.players.iter().any(
+            |p| matches!(&*p.member, models::Member::User(u) if u.user_id == new_owner.profile.id)
+        ),
+        "the new owner is still on the roster"
     );
 }
 

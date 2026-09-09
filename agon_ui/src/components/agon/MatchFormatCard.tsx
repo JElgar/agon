@@ -59,7 +59,7 @@ function FormatSummary({ match }: { match: Match }) {
 /**
  * Editable "match format" card — half length/overs limit/penalty runs, shown
  * on the match detail page for football/cricket. Read-only for everyone;
- * participants get an "Edit" affordance, same posture as `MatchDetailsEditor`.
+ * a match admin gets an "Edit" affordance, same posture as `MatchDetailsEditor`.
  * Always edits a concrete value (seeded from the match's own format, or the
  * app default) — there's no "unset" option here, only at creation time (see
  * `MatchFormatEditor`'s doc comment for why).

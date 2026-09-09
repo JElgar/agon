@@ -16,7 +16,7 @@ function sideLabel(match: Match, index: number, fallback: string): string {
 }
 
 /**
- * "Invite players" panel on the match detail page (participants only). Collects
+ * "Invite players" panel on the match detail page (match admins only). Collects
  * people to invite via the shared `PlayerSideEditor` — registered users or
  * typed-in guests — plus which side they're joining, then POSTs them to
  * `/matches/{id}/invitations`. The server creates each invitee's roster slot +

@@ -37,7 +37,7 @@ import {
   setLine,
 } from '@/lib/score'
 import {
-  canManageMatchJoinSettings,
+  canManageMatch,
   isMatchOwner,
   isParticipant,
   memberAvatarUrl,
@@ -149,11 +149,12 @@ function MatchDetail({
   // player was placed on a side).
   const [rosterTab, setRosterTab] = useState<string>(ROSTER_TAB_A)
 
-  const canEdit = isParticipant(match, currentUserId)
-  // The join-link/join-settings tier is stricter than "any participant" —
-  // owner or admin only, mirroring the server's `caller_is_match_admin`.
-  const canManageJoin = canManageMatchJoinSettings(match, currentUserId)
+  // Owner or admin only, mirroring the server's `caller_is_match_admin` — an
+  // ordinary player is read-only on the match itself; `LeaveMatch` below is
+  // the one action left to them.
+  const canEdit = canManageMatch(match, currentUserId)
   const iAmOwner = isMatchOwner(match, currentUserId)
+  const iAmParticipant = isParticipant(match, currentUserId)
   const cancelled = match.status === 'cancelled'
   const isLiveSport =
     match.match_type === 'football' || match.match_type === 'cricket' || match.match_type === 'netball'
@@ -427,7 +428,7 @@ function MatchDetail({
 
       {/* Join settings — whether/how a self-serve joiner may pick a side,
           and each side's player cap. Owner/admin only to edit. */}
-      {!cancelled && <MatchJoinSettingsEditor match={match} canManage={canManageJoin} />}
+      {!cancelled && <MatchJoinSettingsEditor match={match} canManage={canEdit} />}
 
       {/* Respond to a pending invite first; only once joined does the score
           confirm/dispute prompt apply — the two are mutually exclusive (same
@@ -508,7 +509,7 @@ function MatchDetail({
           finishes, unlike the live score header above. */}
       {netballEventSource && <NetballScorecard match={orderedMatch} detail={netballEventSource} />}
 
-      {/* Invite more people (participants only). */}
+      {/* Invite more people (match admins only). */}
       {canEdit && !cancelled && (
         inviting ? (
           <InvitePlayers match={match} onDone={() => setInviting(false)} />
@@ -523,9 +524,8 @@ function MatchDetail({
         )
       )}
 
-      {/* Share a many-use join link (owner/admin only — a stricter tier
-          than "invite a named person" above). */}
-      {canManageJoin && !cancelled && (
+      {/* Share a many-use join link (owner/admin only). */}
+      {canEdit && !cancelled && (
         <MatchJoinLinksDialog match={match}>
           <Button variant="outline" className="gap-1.5">
             <Link2 className="size-4" /> Join links
@@ -537,8 +537,16 @@ function MatchDetail({
       <LikeBar match={match} />
       <MatchComments matchId={match.id} currentUserId={currentUserId} />
 
-      {/* Cancel the match (participants only; not already cancelled). */}
+      {/* Cancel the match (match admins only; not already cancelled). */}
       {canEdit && !cancelled && <CancelMatch match={match} />}
+
+      {/* Leave the match — the one action left to a plain player once
+          they're read-only on everything else here. An admin can leave too
+          (mirrors team leave); the owner is pointed at the roster's own
+          "Make owner" button first. */}
+      {iAmParticipant && !cancelled && (
+        <LeaveMatch match={match} isOwner={iAmOwner} />
+      )}
     </div>
   )
 }
@@ -768,6 +776,94 @@ function CancelMatch({ match }: { match: Match }) {
           onClick={() => setConfirming(false)}
         >
           Keep match
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * "Leave match" action: same two-step confirm as `CancelMatch`, then `POST
+ * /matches/:id/leave`. The owner can't leave this way — the server rejects
+ * it — so rather than duplicate `LeaveTeamDialog`'s in-dialog "pick a new
+ * owner" picker, this just points them at the roster's own "Make owner"
+ * button (`SideRoster`'s `ShieldPlus` affordance, next to each other
+ * accepted player) and asks them to come back once they've handed it off.
+ */
+function LeaveMatch({ match, isOwner }: { match: Match; isOwner: boolean }) {
+  const queryClient = useQueryClient()
+  const [confirming, setConfirming] = useState(false)
+
+  const leave = useMutation({
+    mutationFn: async () => {
+      const { error } = await fetchClient.POST('/matches/{match_id}/leave', {
+        params: { path: { match_id: match.id } },
+      })
+      if (error) throw new Error('Failed to leave the match')
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['match', match.id] })
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
+      queryClient.invalidateQueries({ queryKey: ['profile-activity'] })
+    },
+  })
+
+  if (!confirming) {
+    return (
+      <Button
+        variant="ghost"
+        className="text-sm text-destructive hover:text-destructive"
+        onClick={() => setConfirming(true)}
+      >
+        Leave match
+      </Button>
+    )
+  }
+
+  if (isOwner) {
+    return (
+      <div className="rounded-xl border p-4">
+        <p className="text-sm font-medium">Transfer ownership first</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">
+          As owner, hand the role to someone else — tap "Make owner" next to
+          their name in the roster above — before you can leave.
+        </p>
+        <div className="mt-3">
+          <Button variant="outline" size="sm" onClick={() => setConfirming(false)}>
+            Got it
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4">
+      <p className="text-sm font-medium">Leave this match?</p>
+      <p className="mt-0.5 text-xs text-muted-foreground">
+        You'll need to be invited or added again to rejoin.
+      </p>
+      {leave.isError && (
+        <p className="mt-1 text-xs text-destructive">
+          Something went wrong. Please try again.
+        </p>
+      )}
+      <div className="mt-3 flex gap-2">
+        <Button
+          variant="destructive"
+          size="sm"
+          disabled={leave.isPending}
+          onClick={() => leave.mutate()}
+        >
+          {leave.isPending ? 'Leaving…' : 'Yes, leave'}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={leave.isPending}
+          onClick={() => setConfirming(false)}
+        >
+          Stay in match
         </Button>
       </div>
     </div>

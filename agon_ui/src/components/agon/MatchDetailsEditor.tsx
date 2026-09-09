@@ -24,7 +24,7 @@ function isRenameable(side: MatchSide, sides: MatchSide[]): boolean {
 /**
  * Inline editor for a match's metadata — name, description, start time,
  * header photos, and side names — shown in place of the details card when a
- * participant taps "Edit". Saves via `PATCH /matches/{id}` (only the changed
+ * match admin taps "Edit". Saves via `PATCH /matches/{id}` (only the changed
  * fields are sent) and, on success, refreshes the match and feed then closes
  * back to the read-only card.
  *

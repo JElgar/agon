@@ -1716,6 +1716,10 @@ enum DeleteLiveEventResponse {
     #[oai(status = 400)]
     ValidationError(PlainText<String>),
 
+    /// The caller is not a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
     /// Either the match or that specific seq doesn't exist.
     #[oai(status = 404)]
     NotFound(PlainText<String>),
@@ -1887,6 +1891,22 @@ enum TransferMatchOwnershipResponse {
     #[oai(status = 403)]
     Forbidden(PlainText<String>),
 
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum LeaveMatchResponse {
+    /// The caller is no longer on the roster.
+    #[oai(status = 204)]
+    Ok,
+
+    /// The caller is the match's owner — they must transfer ownership (`POST
+    /// /matches/:match_id/transfer-ownership`) before they can leave.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The match doesn't exist, or the caller isn't an accepted player on it.
     #[oai(status = 404)]
     NotFound(PlainText<String>),
 }
@@ -3015,22 +3035,14 @@ impl Api {
             }
         };
 
-        // The creator (organizer) or a participant may edit the match.
-        if !caller_can_manage_match(&agg, &uid) {
+        // Editing a match — details, format, roster, scores, or status (e.g.
+        // cancelling it) — is a match-admin action. An ordinary player is
+        // read-only on the match itself; `POST /matches/:match_id/leave` is
+        // the one action left to them (see `caller_is_match_admin`'s doc
+        // comment for exactly who qualifies as an admin here).
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
             return Ok(UpdateMatchResponse::Forbidden(PlainText(
-                "only a participant can edit this match".into(),
-            )));
-        }
-
-        // `allow_unassigned`/`side_join_settings` are structural settings,
-        // gated to a match admin — stricter than the rest of this input,
-        // which any participant may edit (see `caller_is_match_admin`'s doc
-        // comment).
-        if (input.allow_unassigned.is_some() || input.side_join_settings.is_some())
-            && !caller_is_match_admin(dao, &agg, &uid).await?
-        {
-            return Ok(UpdateMatchResponse::Forbidden(PlainText(
-                "only a match admin can change join settings".into(),
+                "only a match admin can edit this match".into(),
             )));
         }
 
@@ -3740,13 +3752,13 @@ impl Api {
             }
         };
 
-        // Only a participant may record live events — same gate as editing
+        // Only a match admin may record live events — same gate as editing
         // the match (`update_match`). Confirmation now covers the detail
-        // these events fold into, so a non-participant writing them isn't
-        // just noise, it's data someone else's confirmation would vouch for.
-        if !caller_can_manage_match(&agg, &uid) {
+        // these events fold into, so a non-admin writing them isn't just
+        // noise, it's data someone else's confirmation would vouch for.
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
             return Ok(AppendLiveEventsResponse::Forbidden(PlainText(
-                "only a participant can record live events for this match".into(),
+                "only a match admin can record live events for this match".into(),
             )));
         }
 
@@ -4017,7 +4029,7 @@ impl Api {
         Path(match_id): Path<String>,
         Path(seq): Path<u32>,
     ) -> Result<DeleteLiveEventResponse> {
-        self.require_uid(dao, &jwt_data).await?;
+        let uid = self.require_uid(dao, &jwt_data).await?;
         info!("Deleting live event {seq} on match {match_id}");
 
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
@@ -4028,6 +4040,13 @@ impl Api {
                 )));
             }
         };
+
+        // Same gate as recording the event in the first place.
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(DeleteLiveEventResponse::Forbidden(PlainText(
+                "only a match admin can undo a live event for this match".into(),
+            )));
+        }
 
         let new_tip = match dao.delete_live_event(&match_id, seq).await {
             Ok(new_tip) => new_tip,
@@ -5232,10 +5251,10 @@ impl Api {
             }
         };
 
-        // The creator (organizer) or a participant may invite others.
-        if !caller_can_manage_match(&agg, &uid) {
+        // Only a match admin may invite others.
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
             return Ok(AddInvitationsResponse::Forbidden(PlainText(
-                "only a participant can invite people to this match".into(),
+                "only a match admin can invite people to this match".into(),
             )));
         }
 
@@ -5749,6 +5768,51 @@ impl Api {
             .await
             .map_err(dao_internal)?;
         Ok(TransferMatchOwnershipResponse::Ok)
+    }
+
+    /// Leave a match.
+    ///
+    /// Leave a match the caller is an accepted player on. Mirrors `POST
+    /// /teams/:team_id/leave` exactly: the owner can't leave this way —
+    /// `POST /matches/:match_id/transfer-ownership` first, which hands the
+    /// role to someone else and demotes the caller to admin, at which point
+    /// this works. Without that block a leaving owner would take the role
+    /// with them, leaving the match permanently ownerless. This is the one
+    /// action left to a plain player once they're no longer able to edit the
+    /// match, manage its roster, or record its result themselves.
+    #[oai(path = "/matches/:match_id/leave", method = "post")]
+    async fn leave_match(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+    ) -> Result<LeaveMatchResponse> {
+        info!("Leaving match {match_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let Some(agg) = dao.get_match(&match_id).await.map_err(dao_internal)? else {
+            return Ok(LeaveMatchResponse::NotFound(PlainText(
+                "match not found".into(),
+            )));
+        };
+        let Some(player) = caller_match_membership(&agg.players, &uid) else {
+            return Ok(LeaveMatchResponse::NotFound(PlainText(
+                "you're not a player on this match".into(),
+            )));
+        };
+        if player.role == dao::records::MatchPlayerRole::Owner {
+            return Ok(LeaveMatchResponse::ValidationError(PlainText(
+                "transfer ownership to someone else before leaving".into(),
+            )));
+        }
+
+        dao.remove_match_players(&match_id, std::slice::from_ref(&player.player_id))
+            .await
+            .map_err(dao_internal)?;
+        dao.refresh_side_roster_previews(&match_id)
+            .await
+            .map_err(dao_internal)?;
+        Ok(LeaveMatchResponse::Ok)
     }
 
     #[oai(path = "/teams/:team_id/invitations", method = "post")]
@@ -7239,13 +7303,6 @@ fn caller_is_participant(players: &[dao::records::MatchPlayerRecord], uid: &str)
     })
 }
 
-/// Whether the caller may manage the match (edit, invite, record the result):
-/// the creator who organized it, or any participant. The creator can manage a
-/// match they set up between other people without playing in it themselves.
-fn caller_can_manage_match(agg: &dao::match_ops::MatchAggregate, uid: &str) -> bool {
-    agg.match_.created_by_user_id == uid || caller_is_participant(&agg.players, uid)
-}
-
 /// The caller's own membership on a team, if they're an accepted member —
 /// `None` for a non-member or a pending (not yet accepted) invitee. Pending
 /// invitees are deliberately excluded, mirroring `caller_is_participant`'s
@@ -7325,14 +7382,15 @@ fn caller_is_match_owner(agg: &dao::match_ops::MatchAggregate, uid: &str) -> boo
     caller_match_role(&agg.players, uid) == Some(dao::records::MatchPlayerRole::Owner)
 }
 
-/// Whether `uid` may perform match-admin actions: minting/revoking
-/// join-links, changing `join_policy`, changing a side's `max_players`. A
-/// stricter tier than `caller_can_manage_match`'s "any participant" (which
-/// still gates ordinary named-person invites, unchanged) — true for a roster
-/// player with `role` `Owner` or `Admin`, the match's creator (a stopgap for
-/// a non-playing organizer — see `MatchRecord::created_by_user_id`'s doc
-/// comment), or an owner/admin of a team that has a side on this match (so a
-/// team's admin can manage a game their team is playing in even before
+/// Whether `uid` may perform match-admin actions: editing the match (details,
+/// format, roster, scores, status), inviting people, recording live events,
+/// minting/revoking join-links, changing `join_policy`, changing a side's
+/// `max_players`. An ordinary player is read-only on the match itself — the
+/// only action left to them is `POST /matches/:match_id/leave`. True for a
+/// roster player with `role` `Owner` or `Admin`, the match's creator (a
+/// stopgap for a non-playing organizer — see `MatchRecord::created_by_user_id`'s
+/// doc comment), or an owner/admin of a team that has a side on this match
+/// (so a team's admin can manage a game their team is playing in even before
 /// joining the roster themselves — see `caller_can_manage_team` for that
 /// same owner-or-admin rule on the team side).
 async fn caller_is_match_admin(

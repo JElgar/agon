@@ -157,7 +157,12 @@ function ShareMatchButton({ match }: { match: Match | FeedMatch | SearchMatch })
   }, [copied])
 
   const share = async () => {
-    const url = `${window.location.origin}/matches/${match.id}`
+    // Points at the server-rendered unfurl page (`agon_service/src/share.rs`)
+    // rather than the SPA's own `/matches/:id` route, so a link pasted into
+    // WhatsApp/iMessage/etc. shows the match's header image, sides and score
+    // instead of a generic "Agon" card — see `inviteLink`'s doc comment for
+    // why. It bounces a human visitor on to the SPA route itself.
+    const url = `${window.location.origin}/api/share/matches/${match.id}`
     if (navigator.share) {
       try {
         await navigator.share({ title: match.name, url })

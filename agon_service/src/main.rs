@@ -98,6 +98,12 @@ use notification::{
     TeamInvitationNotification, TeamMatchJoinableNotification, UnreadCount,
 };
 
+// Plain (non-OpenAPI) HTML "unfurl" pages for match/invite/join links, so
+// messaging apps that unfurl a shared link (WhatsApp, iMessage, Slack, ...)
+// see the actual match/invite instead of a generic "Agon" card. See its own
+// doc comment for why this can't be done from `agon_ui` (a client-only SPA).
+mod share;
+
 #[derive(SecurityScheme)]
 #[oai(
     ty = "bearer",
@@ -8501,6 +8507,19 @@ async fn main() {
             // Object storage: presigned S3 uploads + CloudFront serving URLs.
             let assets = Assets::from_env().await;
 
+            // The web app's public base URL, for the share/unfurl pages below to
+            // build the SPA URL a real visitor is bounced on to (see
+            // `share::UiBaseUrl`). Same env var and trailing-slash trim as
+            // `agon_worker`'s push-notification deep links; defaults to the
+            // local Vite dev server so `make run` renders working previews
+            // with no extra setup.
+            let ui_base_url = share::UiBaseUrl(
+                std::env::var("AGON_UI_URL")
+                    .ok()
+                    .map(|v| v.trim_end_matches('/').to_string())
+                    .unwrap_or_else(|| "http://localhost:5173".to_string()),
+            );
+
             // Meilisearch client for discovery endpoints (users/teams/matches
             // search). Indexes are kept in sync by the async worker; the API only
             // queries them and hydrates results from DynamoDB.
@@ -8529,11 +8548,13 @@ async fn main() {
             let app = Route::new()
                 .nest("/", api_service)
                 .nest("/docs", ui)
+                .nest("/share", share::routes())
                 .with(cors)
                 .data(dao)
                 .data(search)
                 .data(verifier)
                 .data(assets)
+                .data(ui_base_url)
                 .around(log_middleware)
                 // Outermost: opens a tracing span per request, so it covers
                 // log_middleware's logging/metrics and everything downstream.

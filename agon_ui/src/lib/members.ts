@@ -50,16 +50,25 @@ export function memberInviteToken(member: Member): string | null {
   return kind.type === 'Token' ? kind.invite_token : null
 }
 
-/** Absolute invite-link URL for a token, matching the `/invite/:token` route. */
+/**
+ * Shareable invite-link URL for a token. Points at `agon_service`'s
+ * `/api/share/invite/:token` "unfurl" page (see `agon_service/src/share.rs`)
+ * rather than straight at the SPA's own `/invite/:token` route: WhatsApp/
+ * iMessage/Slack/etc. generate a link preview by fetching the URL and
+ * reading its `<head>` tags directly, which the client-only SPA has none of
+ * — the share page renders the real invite (match/team, side, spots left)
+ * server-side, then bounces a human visitor on to the SPA route itself via a
+ * meta-refresh.
+ */
 export function inviteLink(token: string): string {
-  return `${window.location.origin}/invite/${encodeURIComponent(token)}`
+  return `${window.location.origin}/api/share/invite/${encodeURIComponent(token)}`
 }
 
-/** Absolute join-link URL for a token, matching the `/join/:token` route —
- *  `inviteLink`'s counterpart for a many-use `JoinLink` token rather than a
- *  single-use `Invitation` one. */
+/** Absolute join-link URL for a token — `inviteLink`'s counterpart for a
+ *  many-use `JoinLink` token rather than a single-use `Invitation` one. Same
+ *  unfurl-page redirect, to `/api/share/join/:token`. */
 export function joinLink(token: string): string {
-  return `${window.location.origin}/join/${encodeURIComponent(token)}`
+  return `${window.location.origin}/api/share/join/${encodeURIComponent(token)}`
 }
 
 /**

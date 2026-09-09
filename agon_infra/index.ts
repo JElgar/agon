@@ -1685,6 +1685,11 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 							// OTLP export to the Alloy collector. Unset ⇒ stdout logs only.
 							{ name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: otlpEndpoint },
 							{ name: "OTEL_SERVICE_NAME", value: "agon-service" },
+							// The web app's public URL — share.rs's link-preview "unfurl"
+							// pages (match/invite/join links) redirect a real visitor here
+							// after rendering their OG tags server-side. Same var/value as
+							// agon_worker's push-notification deep links below.
+							{ name: "AGON_UI_URL", value: agonUiUrl },
 						]
 					},
 				],

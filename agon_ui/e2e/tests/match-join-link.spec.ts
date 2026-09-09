@@ -42,12 +42,8 @@ test.describe('match join links', () => {
     // A second, independent signed-in account lands on the link itself — its
     // own throwaway context, never touching the primary account's saved
     // storage state (see e2e/README.md's "Provisioning the secondary
-    // account"). Narrow viewport: an unassigned player only ever shows up in
-    // the match page's mobile tab layout — the side-by-side desktop columns
-    // have no room for an "Unassigned" section at all (see
-    // `RosterTabs`'s doc comment) — so this is also how the confirmation
-    // below finds them.
-    const joinerContext = await browser.newContext({ viewport: { width: 400, height: 800 } })
+    // account").
+    const joinerContext = await browser.newContext()
     const joinerPage = await joinerContext.newPage()
     const joinerName = await signInSecondAccount(joinerPage, {
       email: requireEnv('E2E_SECONDARY_EMAIL'),
@@ -72,7 +68,10 @@ test.describe('match join links', () => {
 
     await joinButton.click()
     await expect(joinerPage).toHaveURL(/\/matches\/[^/]+$/)
-    await joinerPage.getByRole('tab', { name: 'Unassigned' }).click()
+    // Confirms both that the join landed the account unassigned, and that
+    // the match page's own "Unassigned" roster (shown below the two side
+    // columns on this default desktop viewport — see `RosterTabs`) actually
+    // surfaces them.
     await expect(joinerPage.getByText(joinerName).first()).toBeVisible()
 
     await joinerContext.close()

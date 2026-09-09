@@ -875,8 +875,10 @@ function LeaveMatch({ match, isOwner }: { match: Match; isOwner: boolean }) {
  * phone-width column pair squeezes both names down too far to read, so
  * below that breakpoint this switches to one roster at a time behind a
  * tablist: a tab per side, plus "Unassigned" whenever anyone hasn't been
- * placed on a side yet (the side-by-side layout has no room to show them
- * at all, so the tab is the only place they're visible).
+ * placed on a side yet. At `sm:` and up, unassigned players instead get
+ * their own full-width roster below the two side columns (there's no room
+ * for a third column there, only a third row) — still only when there are
+ * any, same as the tab.
  */
 function RosterTabs({
   matchId,
@@ -967,6 +969,17 @@ function RosterTabs({
           iAmOwner={iAmOwner}
         />
       </div>
+      {unassigned.length > 0 && (
+        <div className="hidden sm:block">
+          <SideRoster
+            title="Unassigned"
+            players={unassigned}
+            matchId={matchId}
+            currentUserId={currentUserId}
+            iAmOwner={iAmOwner}
+          />
+        </div>
+      )}
     </>
   )
 }

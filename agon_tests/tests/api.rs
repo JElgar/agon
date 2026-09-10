@@ -6292,6 +6292,76 @@ async fn join_link_scoped_to_one_side_assigns_it_directly() {
     assert_eq!(player.role, models::MatchPlayerRole::Player);
 }
 
+/// Using the same join link again once already on the roster is rejected —
+/// this is what the join-link landing page checks `viewer_role` for, to skip
+/// straight to the match instead of re-showing the invite screen.
+#[tokio::test]
+async fn joining_a_match_twice_via_the_same_link_is_rejected() {
+    let (owner_config, owner) = new_user().await;
+    let created = matches_post(&owner_config, joinable_match_input(None, None, None))
+        .await
+        .expect("create match");
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+    let side_b = other_side_id(&created, &side_a);
+
+    let link = matches_match_id_join_links_post(
+        &owner_config,
+        &created.id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(sides_scope(vec![side_b.clone()])),
+        },
+    )
+    .await
+    .expect("create join link");
+
+    let (joiner_config, joiner) = new_user().await;
+    let joined = matches_match_id_join_post(
+        &joiner_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: Some(link.token.clone()),
+            side_id: None,
+        },
+    )
+    .await
+    .expect("join via single-side link");
+    assert_eq!(joined.viewer_role, Some(models::MatchPlayerRole::Player));
+    let roster_size = joined.players.len();
+
+    // Same joiner, same link, again — rejected as a conflict rather than
+    // adding a second roster entry.
+    let rejected = matches_match_id_join_post(
+        &joiner_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: Some(link.token.clone()),
+            side_id: None,
+        },
+    )
+    .await;
+    assert_status_with_content(
+        rejected,
+        reqwest::StatusCode::CONFLICT,
+        "already on this match's roster",
+    );
+
+    // Roster unaffected by the rejected retry.
+    let after = matches_match_id_get(&joiner_config, &created.id)
+        .await
+        .expect("get match after the rejected retry");
+    assert_eq!(after.players.len(), roster_size);
+    assert_eq!(
+        after
+            .players
+            .iter()
+            .filter(
+                |p| matches!(&*p.member, models::Member::User(u) if u.user_id == joiner.profile.id)
+            )
+            .count(),
+        1
+    );
+}
+
 #[tokio::test]
 async fn join_link_scoped_to_one_side_rejects_the_other() {
     let (owner_config, owner) = new_user().await;

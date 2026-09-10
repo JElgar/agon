@@ -84,6 +84,17 @@ export function JoinMatchPage() {
   })
 
   const match = matchQuery.data
+
+  // Already on the roster (joined via this link earlier, or some other way)
+  // — the server would just bounce the join with a 409, so skip straight to
+  // the match instead of showing an invite screen for a game we're already in.
+  useEffect(() => {
+    if (match?.viewer_role != null) {
+      clearPendingInvite()
+      navigate(`/matches/${match.id}`, { replace: true })
+    }
+  }, [match?.viewer_role, match?.id, navigate])
+
   const choice = preview.data && match ? joinChoiceFor(preview.data, match) : undefined
   const pickableSides = choice && match ? sidesFor(choice, match) : []
   // A scope naming exactly one side auto-assigns it (mirroring the server's
@@ -127,7 +138,7 @@ export function JoinMatchPage() {
     },
   })
 
-  if (preview.isLoading || (matchId && matchQuery.isLoading)) {
+  if (preview.isLoading || (matchId && matchQuery.isLoading) || match?.viewer_role != null) {
     return <JoinCard>Loading this game…</JoinCard>
   }
 

@@ -341,6 +341,25 @@ export function sidePlayerCountLabel(side: MatchSide | undefined): string {
   return `${count} ${count === 1 ? 'player' : 'players'}`
 }
 
+/** "12/20 players" (capped) or "12 players" (uncapped) — the match's overall
+ *  headcount, alongside the per-side counts from `sidePlayerCountLabel`.
+ *  Unlike those, this counts everyone on the match (`match.players`),
+ *  including anyone not yet assigned to a side — there's no per-side
+ *  equivalent for the unassigned, so this is the only place their headcount
+ *  shows at all. The cap only shows once every side has one set (there's no
+ *  overall ceiling to report while any side is uncapped) — mirrors
+ *  `Match.allow_unassigned`'s neighboring doc comment on the match's overall
+ *  cap being the sum of its sides' caps. */
+export function matchPlayerTotalLabel(match: Match): string {
+  const count = match.players.length
+  const caps = match.sides.map((s) => s.max_players)
+  const cap = caps.every((c) => c != null)
+    ? caps.reduce<number>((sum, c) => sum + (c ?? 0), 0)
+    : undefined
+  if (cap != null) return `${count}/${cap} players`
+  return `${count} ${count === 1 ? 'player' : 'players'}`
+}
+
 /**
  * Display name for a match player: a linked Agon user's name is hydrated onto
  * the member server-side, an external player carries a display name directly.

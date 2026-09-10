@@ -8,19 +8,27 @@
 //! JS, so per-route tags baked in client-side are invisible to them.
 //!
 //! These routes serve a tiny real HTML page per link instead, with the
-//! match/invite/join's own title, description and header image baked in
+//! match/invite/join/team's own title, description and image baked in
 //! server-side, then bounce a real visitor on to the actual SPA route via a
 //! `<meta http-equiv="refresh">` (crawlers read the `<head>` tags and stop;
 //! they don't fetch again or run the refresh).
 //!
-//! Mounted at `/share` on `agon_service` directly — reachable at
-//! `/api/share/...` through the existing `agon-api-ingress` `/api` prefix
-//! (see `agon_infra/index.ts`), so no infra change was needed to put these on
-//! the same public host as the SPA. Share links (`CopyInviteButton`,
-//! `ShareMatchButton`, `MatchJoinLinksDialog`) point here instead of straight
-//! at the SPA route. No auth, mirroring the `by-token` preview endpoints
-//! these reuse: the token/id in the URL is the only credential a visitor has
-//! before signing in, same as the acceptance flow itself.
+//! Reached two ways:
+//!
+//! - `agon_ui/nginx.conf` recognizes a link-preview crawler's user agent and
+//!   proxies it here, in place of the SPA shell, for *any* canonical app URL
+//!   — `/matches/:id`, `/teams/:id`, `/invite/:token`, `/join/:token`, or
+//!   anything else (via the catch-all fallback below) — pasted anywhere, not
+//!   just a link built by this app's own share buttons. This is the path
+//!   that matters: it's what makes a copy-pasted address-bar URL unfurl.
+//! - Directly, at `/api/share/...` through the existing `agon-api-ingress`
+//!   `/api` prefix (see `agon_infra/index.ts`) — handy for checking a given
+//!   link's preview by hand (no user-agent spoofing needed) without needing
+//!   the nginx layer at all.
+//!
+//! No auth, mirroring the `by-token` preview endpoints these reuse: the
+//! token/id in the URL is the only credential a visitor (human or crawler)
+//! has before signing in, same as the acceptance flow itself.
 
 use agon_core::dao::{self, match_ops::effective_max_players, records::InvitationContextRecord};
 use poem::{
@@ -41,8 +49,18 @@ pub struct UiBaseUrl(pub String);
 pub fn routes() -> Route {
     Route::new()
         .at("/matches/:match_id", get(share_match))
+        .at("/teams/:team_id", get(share_team))
         .at("/invite/:token", get(share_invite))
         .at("/join/:token", get(share_join))
+        // Anything else (the home page, /feed, /profile, /users/:id, ...) —
+        // a static, named/param route always outranks a catch-all in poem's
+        // router regardless of registration order, so this only ever
+        // catches requests none of the routes above matched. Renders the
+        // generic Agon card rather than a 404: nginx's crawler-vs-asset `if`
+        // (see nginx.conf) only screens out *existing files*, not unknown
+        // app routes, so this is the backstop that keeps every crawler
+        // request landing on a real (if plain) preview instead of an error.
+        .at("/*path", get(share_fallback))
 }
 
 /// Everything the HTML template needs — assembled per link type below, then
@@ -65,6 +83,20 @@ async fn share_match(
 ) -> impl IntoResponse {
     let target_url = format!("{ui_base_url}/matches/{match_id}");
     let card = match match_card(dao, assets, &match_id, &target_url).await {
+        Some(card) => card,
+        None => fallback_card(target_url),
+    };
+    Html(render(&card, ui_base_url))
+}
+
+#[handler]
+async fn share_team(
+    Data(dao): Data<&dao::Dao>,
+    Data(UiBaseUrl(ui_base_url)): Data<&UiBaseUrl>,
+    Path(team_id): Path<String>,
+) -> impl IntoResponse {
+    let target_url = format!("{ui_base_url}/teams/{team_id}");
+    let card = match team_card(dao, &team_id, &target_url).await {
         Some(card) => card,
         None => fallback_card(target_url),
     };
@@ -99,6 +131,19 @@ async fn share_join(
         None => fallback_card(target_url),
     };
     Html(render(&card, ui_base_url))
+}
+
+/// Catch-all for any app route with no dedicated preview above (the home
+/// page, `/feed`, `/profile`, `/users/:id`, ...) — just the generic Agon
+/// card, pointed at that same route. See `routes`'s doc comment for why this
+/// exists at all rather than 404ing.
+#[handler]
+async fn share_fallback(
+    Data(UiBaseUrl(ui_base_url)): Data<&UiBaseUrl>,
+    Path(path): Path<String>,
+) -> impl IntoResponse {
+    let target_url = format!("{ui_base_url}/{path}");
+    Html(render(&fallback_card(target_url), ui_base_url))
 }
 
 /// A plain match link's preview: the two (or more) sides as the title, the
@@ -180,6 +225,35 @@ async fn invite_card(
             })
         }
     }
+}
+
+/// A plain team page's preview: the team's name and logo, plus a member/
+/// follower-count blurb — the only stats a team carries that are worth
+/// surfacing with no further context.
+async fn team_card(dao: &dao::Dao, team_id: &str, target_url: &str) -> Option<PreviewCard> {
+    let agg = dao.get_team(team_id).await.ok()??;
+    let member_count = agg.members.len();
+    let mut lines = vec![format!(
+        "{member_count} member{} on Agon.",
+        if member_count == 1 { "" } else { "s" }
+    )];
+    if agg.team.follower_count > 0 {
+        lines.push(format!(
+            "{} follower{}.",
+            agg.team.follower_count,
+            if agg.team.follower_count == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ));
+    }
+    Some(PreviewCard {
+        target_url: target_url.to_string(),
+        title: agg.team.name,
+        description: lines.join(" "),
+        image_url: agg.team.logo_url,
+    })
 }
 
 /// A many-use join link's preview — the match it joins, which side(s) (if

@@ -51,24 +51,25 @@ export function memberInviteToken(member: Member): string | null {
 }
 
 /**
- * Shareable invite-link URL for a token. Points at `agon_service`'s
- * `/api/share/invite/:token` "unfurl" page (see `agon_service/src/share.rs`)
- * rather than straight at the SPA's own `/invite/:token` route: WhatsApp/
- * iMessage/Slack/etc. generate a link preview by fetching the URL and
- * reading its `<head>` tags directly, which the client-only SPA has none of
- * — the share page renders the real invite (match/team, side, spots left)
- * server-side, then bounces a human visitor on to the SPA route itself via a
- * meta-refresh.
+ * Absolute invite-link URL for a token, matching the `/invite/:token` route.
+ *
+ * This is the plain SPA URL — not a separate "share" URL — so a link copied
+ * from here is identical to one copied straight out of the browser's address
+ * bar. Both unfurl the same way: `agon_ui/nginx.conf` recognizes a
+ * link-preview crawler's user agent (WhatsApp/Slack/etc.) and transparently
+ * proxies *any* app route to `agon_service`'s server-rendered `/share/...`
+ * page instead of the SPA shell (see `agon_service/src/share.rs`) — a real
+ * visitor's browser is never redirected or otherwise affected.
  */
 export function inviteLink(token: string): string {
-  return `${window.location.origin}/api/share/invite/${encodeURIComponent(token)}`
+  return `${window.location.origin}/invite/${encodeURIComponent(token)}`
 }
 
-/** Absolute join-link URL for a token — `inviteLink`'s counterpart for a
- *  many-use `JoinLink` token rather than a single-use `Invitation` one. Same
- *  unfurl-page redirect, to `/api/share/join/:token`. */
+/** Absolute join-link URL for a token, matching the `/join/:token` route —
+ *  `inviteLink`'s counterpart for a many-use `JoinLink` token rather than a
+ *  single-use `Invitation` one. Same nginx-level unfurling. */
 export function joinLink(token: string): string {
-  return `${window.location.origin}/api/share/join/${encodeURIComponent(token)}`
+  return `${window.location.origin}/join/${encodeURIComponent(token)}`
 }
 
 /**

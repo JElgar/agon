@@ -320,6 +320,17 @@ export function sideTeamHint(side: MatchSide | undefined): string | undefined {
   return team !== side?.name?.trim() ? team : undefined
 }
 
+/** "4/10 players" (capped) or "4 players" (uncapped) — how a side's roster is
+ *  filling up, shown in place of a score before a scheduled match has a
+ *  result to show. `player_count` is always present (unlike `roster_preview`,
+ *  which is capped) — see `MatchSide.player_count`'s backend doc comment. */
+export function sidePlayerCountLabel(side: MatchSide | undefined): string {
+  const count = side?.player_count ?? 0
+  const cap = side?.max_players
+  if (cap != null) return `${count}/${cap} players`
+  return `${count} ${count === 1 ? 'player' : 'players'}`
+}
+
 /**
  * Display name for a match player: a linked Agon user's name is hydrated onto
  * the member server-side, an external player carries a display name directly.

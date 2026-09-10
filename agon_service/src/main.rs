@@ -416,6 +416,15 @@ struct MatchSide {
     /// a denormalized cache refreshed whenever the roster changes, so it can
     /// occasionally lag a just-now roster change.
     roster_preview: Option<Vec<RosterPreviewPlayer>>,
+    /// Total players currently on this side — unlike `roster_preview`, always
+    /// present regardless of roster size, so callers can show "4/10" (with
+    /// `max_players`) even once there are too many players to list by name.
+    /// On `Match` this is resolved live from `players` (see
+    /// `Api::resolve_side_names`), alongside `roster_preview`; on a feed's
+    /// `FeedMatch`/a search hit's `SearchMatch` it comes from the same
+    /// denormalized cache as `roster_preview` (`MatchSideRecord::player_count`),
+    /// so it can occasionally lag a just-now roster change the same way.
+    player_count: u32,
     /// Cap on this side's roster. `None` = uncapped. When every side of a
     /// match has one set, the match's overall cap is their sum rather than a
     /// separate setting — see `Match.allow_unassigned`'s neighboring doc
@@ -6633,6 +6642,7 @@ impl Api {
                 }),
                 _ => None,
             };
+            side.player_count = on_side.len() as u32;
             // Same "small enough to show players directly" call the feed
             // makes from its denormalized cache (`ROSTER_PREVIEW_CAP`) — here
             // computed live, since the full roster is already in memory.
@@ -7909,6 +7919,7 @@ fn mock_match(id: String) -> Match {
                 team_logo: None,
                 team_name: None,
                 roster_preview: None,
+                player_count: 2,
                 max_players: None,
                 team_join_enabled: false,
             },
@@ -7919,6 +7930,7 @@ fn mock_match(id: String) -> Match {
                 team_logo: None,
                 team_name: None,
                 roster_preview: None,
+                player_count: 1,
                 max_players: None,
                 team_join_enabled: false,
             },

@@ -37,7 +37,13 @@ import {
   headlineLabel,
   setLine,
 } from '@/lib/score'
-import { myPendingInvitation, mySideId, orderSidesForViewer, sideTeamHint } from '@/lib/members'
+import {
+  myPendingInvitation,
+  mySideId,
+  orderSidesForViewer,
+  sidePlayerCountLabel,
+  sideTeamHint,
+} from '@/lib/members'
 
 type Match = components['schemas']['Match']
 type FeedMatch = components['schemas']['FeedMatch']
@@ -375,7 +381,7 @@ export function MatchCard({
           </button>
         </div>
       ) : (
-        scoreInfo && (
+        (scoreInfo || match.status === 'scheduled') && (
           <div className="mx-3.5 mb-3">
             <button
               type="button"
@@ -390,24 +396,38 @@ export function MatchCard({
                     {sideTeamHint(sideA) && (
                       <span className="block truncate text-[9px] text-muted-foreground">{sideTeamHint(sideA)}</span>
                     )}
+                    {!scoreInfo && (
+                      <span className="block truncate text-[9px] text-muted-foreground">
+                        {sidePlayerCountLabel(sideA)}
+                      </span>
+                    )}
                   </div>
                 </div>
-                <div className="px-3 text-center">
-                  <div className="text-2xl font-medium leading-none tracking-tight">
-                    {headline[sideA?.id ?? ''] ?? 0}
-                    <span className="text-muted-foreground">–</span>
-                    {headline[sideB?.id ?? ''] ?? 0}
+                {scoreInfo ? (
+                  <div className="px-3 text-center">
+                    <div className="text-2xl font-medium leading-none tracking-tight">
+                      {headline[sideA?.id ?? ''] ?? 0}
+                      <span className="text-muted-foreground">–</span>
+                      {headline[sideB?.id ?? ''] ?? 0}
+                    </div>
+                    <div className="mt-0.5 text-[9px] uppercase tracking-widest text-muted-foreground">
+                      {headlineLabel(scoreInfo.score)}
+                    </div>
                   </div>
-                  <div className="mt-0.5 text-[9px] uppercase tracking-widest text-muted-foreground">
-                    {headlineLabel(scoreInfo.score)}
-                  </div>
-                </div>
+                ) : (
+                  <div className="shrink-0 px-3 text-center text-xs text-muted-foreground">vs</div>
+                )}
                 <div className="flex min-w-0 flex-1 flex-row-reverse items-center gap-2 text-right">
                   <Avatar name={nameB} imageUrl={sideB?.team_logo?.image_url} size="md" ring={bWon ? 'winner' : 'none'} />
                   <div className="min-w-0">
                     <span className="block truncate text-xs font-medium">{nameB}</span>
                     {sideTeamHint(sideB) && (
                       <span className="block truncate text-[9px] text-muted-foreground">{sideTeamHint(sideB)}</span>
+                    )}
+                    {!scoreInfo && (
+                      <span className="block truncate text-[9px] text-muted-foreground">
+                        {sidePlayerCountLabel(sideB)}
+                      </span>
                     )}
                   </div>
                 </div>

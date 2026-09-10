@@ -47,6 +47,7 @@ import {
   myPendingInvitation,
   mySideId,
   orderSidesForViewer,
+  sidePlayerCountLabel,
   sideTeamHint,
   withInvitationStatus,
 } from '@/lib/members'
@@ -173,6 +174,11 @@ function MatchDetail({
   const [sideA, sideB] = orderedSides
   const nameA = sideName(sideA, 'Side A')
   const nameB = sideName(sideB, 'Side B')
+  // How full each side's roster is, shown in place of a score while the
+  // match is still to come — a result once there is one is a better use of
+  // that space (see `scoreInfo` below), and neither cap nor headcount matter
+  // any more once the match is cancelled.
+  const showPlayerCounts = match.status === 'scheduled'
 
   const scoreInfo = displayScore(match)
   const headline = scoreInfo ? headlineBySide(scoreInfo.score) : {}
@@ -322,6 +328,11 @@ function MatchDetail({
                   {sideTeamHint(sideA) && (
                     <p className="truncate text-[10px] text-muted-foreground">{sideTeamHint(sideA)}</p>
                   )}
+                  {showPlayerCounts && (
+                    <p className="truncate text-[10px] text-muted-foreground">
+                      {sidePlayerCountLabel(sideA)}
+                    </p>
+                  )}
                 </div>
               </div>
               {scoreInfo ? (
@@ -346,6 +357,11 @@ function MatchDetail({
                   <p className={cn('truncate text-sm', bWon && 'font-medium')}>{nameB}</p>
                   {sideTeamHint(sideB) && (
                     <p className="truncate text-[10px] text-muted-foreground">{sideTeamHint(sideB)}</p>
+                  )}
+                  {showPlayerCounts && (
+                    <p className="truncate text-[10px] text-muted-foreground">
+                      {sidePlayerCountLabel(sideB)}
+                    </p>
                   )}
                 </div>
               </div>

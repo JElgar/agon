@@ -970,6 +970,10 @@ pub fn match_side_from_record(rec: &MatchSideRecord) -> MatchSide {
         name: rec.name.clone(),
         max_players: rec.max_players,
         team_join_enabled: rec.team_join_enabled,
+        // Live-overwritten for `Match` (`Api::resolve_side_names`); left as
+        // the denormalized cache value for a feed's `FeedMatch`/a search
+        // hit's `SearchMatch`, same as `roster_preview` below.
+        player_count: rec.player_count,
         // Filled in afterward, alongside `name`: live team-meta lookup for
         // `Match` (`Api::resolve_side_names`), or the same batch for a feed's
         // `FeedMatch`/a search hit's `SearchMatch`

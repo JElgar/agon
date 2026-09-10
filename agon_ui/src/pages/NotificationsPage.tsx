@@ -10,6 +10,7 @@ import {
   LogIn,
   MessageCircle,
   Swords,
+  UserCheck,
   UserPlus,
   Users,
 } from 'lucide-react'
@@ -534,6 +535,36 @@ function describe(kind: Kind): NotificationView {
         badgeClass: 'bg-primary',
         href: `/matches/${kind.match_id}`,
         actions: { viewLabel: 'View match' },
+      }
+    case 'PlayerJoined':
+      return {
+        actorName: kind.joined_by.name,
+        actorImage: kind.joined_by.profile_image?.image_url,
+        message: (
+          <>
+            <strong className="font-medium">{kind.joined_by.name}</strong>{' '}
+            joined <strong className="font-medium">{kind.match_name}</strong>.
+          </>
+        ),
+        badgeIcon: UserCheck,
+        badgeClass: 'bg-sky-600',
+        href: `/matches/${kind.match_id}`,
+        actions: { viewLabel: 'View match' },
+      }
+    case 'TeamMemberJoined':
+      return {
+        actorName: kind.joined_by.name,
+        actorImage: kind.joined_by.profile_image?.image_url,
+        message: (
+          <>
+            <strong className="font-medium">{kind.joined_by.name}</strong>{' '}
+            joined <strong className="font-medium">{kind.team_name}</strong>.
+          </>
+        ),
+        badgeIcon: UserCheck,
+        badgeClass: 'bg-sky-600',
+        href: `/teams/${kind.team_id}`,
+        actions: { viewLabel: 'View team' },
       }
   }
 }

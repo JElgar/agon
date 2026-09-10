@@ -92,6 +92,8 @@ fn push_link(ui_base_url: &str, kind: &NotificationKindRecord) -> String {
         NotificationKindRecord::TeamMatchJoinable { match_id, .. } => {
             format!("/matches/{match_id}")
         }
+        NotificationKindRecord::PlayerJoined { match_id, .. } => format!("/matches/{match_id}"),
+        NotificationKindRecord::TeamMemberJoined { team_id, .. } => format!("/teams/{team_id}"),
     };
     // Config::from_env already strips any trailing slash from AGON_UI_URL.
     format!("{ui_base_url}{path}")
@@ -150,6 +152,14 @@ fn push_text(kind: &NotificationKindRecord) -> (String, String) {
         } => (
             "Your team can join a match".to_string(),
             format!("{team_name} can join {match_name} — hop in?"),
+        ),
+        NotificationKindRecord::PlayerJoined { match_name, .. } => (
+            "New player joined".to_string(),
+            format!("Someone joined {match_name}"),
+        ),
+        NotificationKindRecord::TeamMemberJoined { team_name, .. } => (
+            "New team member".to_string(),
+            format!("Someone joined {team_name}"),
         ),
     }
 }
@@ -230,6 +240,16 @@ mod tests {
                 team_name: "The Aces".into(),
                 match_id: "m1".into(),
                 match_name: "Sunday Tennis".into(),
+            },
+            NotificationKindRecord::PlayerJoined {
+                actor_user_id: "u1".into(),
+                match_id: "m1".into(),
+                match_name: "Sunday Tennis".into(),
+            },
+            NotificationKindRecord::TeamMemberJoined {
+                actor_user_id: "u1".into(),
+                team_id: "t1".into(),
+                team_name: "The Aces".into(),
             },
         ]
     }

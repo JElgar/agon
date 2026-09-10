@@ -77,4 +77,52 @@ test.describe('match join links', () => {
 
     await joinerContext.close()
   })
+
+  test('revisiting a join link after already joining goes straight to the match', async ({
+    page,
+    browser,
+  }) => {
+    const opponentName = `E2E Away ${uniqueSuffix()}`
+    const { name } = await logFootballMatch(page, { opponentName })
+
+    await page.getByText(name, { exact: true }).first().click()
+    await expect(page).toHaveURL(/\/matches\/[^/]+$/)
+    const matchUrl = page.url()
+
+    await page.getByRole('button', { name: 'Join links' }).click()
+    const [createResponse] = await Promise.all([
+      page.waitForResponse(
+        (res) => res.request().method() === 'POST' && res.url().includes('/join-links'),
+      ),
+      page.getByRole('button', { name: 'Create link', exact: true }).click(),
+    ])
+    const { token } = await createResponse.json()
+    expect(token).toBeTruthy()
+    await page.getByRole('button', { name: 'Done', exact: true }).click()
+
+    const joinerContext = await browser.newContext({ viewport: { width: 400, height: 800 } })
+    const joinerPage = await joinerContext.newPage()
+    const joinerName = await signInSecondAccount(joinerPage, {
+      email: requireEnv('E2E_SECONDARY_EMAIL'),
+      password: requireEnv('E2E_TEST_PASSWORD'),
+    })
+
+    await joinerPage.goto(`/join/${token}`)
+    await expect(joinerPage.getByRole('heading', { name: 'Join this game' })).toBeVisible()
+    await joinerPage.getByRole('button', { name: 'Join', exact: true }).click()
+    await expect(joinerPage).toHaveURL(/\/matches\/[^/]+$/)
+
+    // Same account, same link, again — already on the roster, so the invite
+    // screen should never reappear; it should land straight on the match
+    // instead (the server would just bounce a second join attempt as a 409).
+    await joinerPage.goto(`/join/${token}`)
+    await expect(joinerPage).toHaveURL(matchUrl)
+    await expect(joinerPage.getByRole('heading', { name: 'Join this game' })).not.toBeVisible()
+
+    // And the roster wasn't touched a second time.
+    await joinerPage.getByRole('tab', { name: 'Unassigned' }).click()
+    await expect(joinerPage.getByText(joinerName)).toHaveCount(1)
+
+    await joinerContext.close()
+  })
 })

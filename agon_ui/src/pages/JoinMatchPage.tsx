@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Swords } from 'lucide-react'
+import { CalendarClock, MapPin, Swords } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { clearPendingInvite } from '@/lib/pendingInvite'
+import { relativeTime, scheduledDateTime } from '@/lib/datetime'
+import { sidePlayerCountLabel, sideTeamHint } from '@/lib/members'
+import { Avatar } from '@/components/agon/Avatar'
+import { SportBadge } from '@/components/agon/SportBadge'
 
 type JoinLinkPreview = components['schemas']['JoinLinkPreview']
 type Match = components['schemas']['Match']
@@ -162,7 +166,7 @@ export function JoinMatchPage() {
         <Swords className="size-7" />
       </div>
       <h2 className="mb-1 text-xl font-semibold">Join this game</h2>
-      <p className="mb-6 text-sm text-muted-foreground">
+      <p className="mb-3 text-sm text-muted-foreground">
         <strong className="font-medium text-foreground">{preview.data.match_name}</strong>
         {/* `!= null` (not `!== undefined`): the server serializes a Rust
             `Option::None` here as JSON `null`, not an absent key. */}
@@ -173,6 +177,60 @@ export function JoinMatchPage() {
           </>
         )}
       </p>
+
+      <div className="mb-4 w-full space-y-2 text-left text-sm">
+        <div className="flex flex-wrap items-center gap-2">
+          <SportBadge sport={match.match_type} />
+          <span className="text-muted-foreground" title={relativeTime(match.starts_at)}>
+            <CalendarClock className="mr-1 inline size-3.5 align-text-bottom" />
+            {scheduledDateTime(match.starts_at)}
+          </span>
+        </div>
+
+        {match.location && (
+          <a
+            href={`https://www.google.com/maps?q=${match.location.latitude},${match.location.longitude}`}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground"
+          >
+            <MapPin className="size-3.5 shrink-0" />
+            View location
+          </a>
+        )}
+
+        {match.description && <p className="text-muted-foreground">{match.description}</p>}
+
+        {/* The sides this link can actually land the joiner on (mirrors the
+            picker below), each with how full its roster already is — the
+            same info the picker's options carry, but visible even when
+            there's nothing to pick (a single forced side, or unassigned-only). */}
+        {pickableSides.length > 0 && (
+          <div className="space-y-1.5 rounded-lg border bg-muted/30 p-2.5">
+            {pickableSides.map((side, i) => {
+              const name = side.name?.trim() || `Side ${i + 1}`
+              return (
+                <div key={side.id} className="flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Avatar name={name} imageUrl={side.team_logo?.image_url} size="sm" />
+                    <div className="min-w-0">
+                      <span className="block truncate font-medium">{name}</span>
+                      {sideTeamHint(side) && (
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {sideTeamHint(side)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {sidePlayerCountLabel(side)}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
 
       {needsPick && (
         <div className="mb-4 w-full">
@@ -197,7 +255,7 @@ export function JoinMatchPage() {
             )}
             {pickableSides.map((side, i) => (
               <option key={side.id} value={side.id}>
-                {side.name?.trim() || `Side ${i + 1}`}
+                {side.name?.trim() || `Side ${i + 1}`} · {sidePlayerCountLabel(side)}
               </option>
             ))}
           </select>

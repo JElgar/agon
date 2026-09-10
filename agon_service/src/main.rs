@@ -400,6 +400,14 @@ struct MatchSide {
     /// not-yet-resolved side — callers fall back to initials (e.g. `Avatar`'s
     /// `name`-derived placeholder) when this is absent.
     team_logo: Option<Photo>,
+    /// The linked team's actual name, resolved fresh alongside `team_logo`
+    /// whenever `team_id` is set and that team still exists — independent of
+    /// what `name` ends up displaying. `name` can be a custom name (e.g. two
+    /// sides sharing a club disambiguated as "1st XI"/"2nd XI") or a solo
+    /// player's own name, in which case it no longer says which team the side
+    /// belongs to; `team_name` lets a caller show that alongside it. `None`
+    /// for an ad-hoc side or one whose linked team has since been deleted.
+    team_name: Option<String>,
     /// This side's full roster, when small enough to show directly instead of
     /// just `name`/`team_id`'s logo (1v1, doubles, a small squad). `None`
     /// when the side has more players than that — render `name`/the team's
@@ -408,6 +416,15 @@ struct MatchSide {
     /// a denormalized cache refreshed whenever the roster changes, so it can
     /// occasionally lag a just-now roster change.
     roster_preview: Option<Vec<RosterPreviewPlayer>>,
+    /// Total players currently on this side — unlike `roster_preview`, always
+    /// present regardless of roster size, so callers can show "4/10" (with
+    /// `max_players`) even once there are too many players to list by name.
+    /// On `Match` this is resolved live from `players` (see
+    /// `Api::resolve_side_names`), alongside `roster_preview`; on a feed's
+    /// `FeedMatch`/a search hit's `SearchMatch` it comes from the same
+    /// denormalized cache as `roster_preview` (`MatchSideRecord::player_count`),
+    /// so it can occasionally lag a just-now roster change the same way.
+    player_count: u32,
     /// Cap on this side's roster. `None` = uncapped. When every side of a
     /// match has one set, the match's overall cap is their sum rather than a
     /// separate setting — see `Match.allow_unassigned`'s neighboring doc
@@ -6625,6 +6642,7 @@ impl Api {
                 }),
                 _ => None,
             };
+            side.player_count = on_side.len() as u32;
             // Same "small enough to show players directly" call the feed
             // makes from its denormalized cache (`ROSTER_PREVIEW_CAP`) — here
             // computed live, since the full roster is already in memory.
@@ -6654,12 +6672,18 @@ impl Api {
                 .map(str::trim)
                 .filter(|n| !n.is_empty());
 
-            // Resolves alongside `name` below: `team_logo` is only ever set
-            // when the side falls all the way through to the team-name
-            // branch — a custom name or a sole player's name means the team
-            // isn't actually what's being shown, so its logo shouldn't show
-            // either (see doc comment on `MatchSide::team_logo`).
-            side.team_logo = None;
+            // Resolved independently of `name` below, whenever `team_id`
+            // points at a team that still exists — a custom name or a sole
+            // player's name can still take over `name` itself (see the
+            // priority chain below), but the side's actual team affiliation
+            // is a fact of its own that callers may want to show alongside
+            // that (see doc comment on `MatchSide::team_name`).
+            let team = side.team_id.as_ref().and_then(|id| team_metas.get(id));
+            side.team_name = team.map(|t| t.name.clone());
+            side.team_logo = team.and_then(|t| t.logo_url.as_ref()).map(|url| Photo {
+                image_url: url.clone(),
+                asset_id: None,
+            });
 
             side.name = Some(match custom_name {
                 // An explicit name always wins, over both the sole player's
@@ -6669,23 +6693,16 @@ impl Api {
                 Some(name) => name.to_string(),
                 None => match sole_player_name {
                     Some(name) => name,
-                    None => match &side.team_id {
-                        Some(team_id) => match team_metas.get(team_id) {
-                            Some(team) => {
-                                side.team_logo = team.logo_url.as_ref().map(|url| Photo {
-                                    image_url: url.clone(),
-                                    asset_id: None,
-                                });
-                                team.name.clone()
-                            }
-                            // The team was deleted (`DELETE /teams/{team_id}`)
-                            // but the side's `team_id` snapshot outlives it —
-                            // same "outlives the record it points to, resolve
-                            // the gap at read time" shape as
-                            // `deleted_user_profile`. `team_id` itself is left
-                            // as-is (not scrubbed) rather than cleared.
-                            None => "Deleted team".to_string(),
-                        },
+                    None => match team {
+                        Some(team) => team.name.clone(),
+                        // The team was deleted (`DELETE /teams/{team_id}`)
+                        // but the side's `team_id` snapshot outlives it —
+                        // same "outlives the record it points to, resolve
+                        // the gap at read time" shape as
+                        // `deleted_user_profile`. `team_id` itself is left
+                        // as-is (not scrubbed) rather than cleared. Only hit
+                        // when `side.team_id` was set but not found above.
+                        None if side.team_id.is_some() => "Deleted team".to_string(),
                         None => match &viewer_side_id {
                             Some(vs) if vs == &side.id => "Your side".to_string(),
                             Some(_) => "Opposition".to_string(),
@@ -6726,7 +6743,14 @@ impl Api {
                 .map(str::trim)
                 .filter(|n| !n.is_empty());
 
-            side.team_logo = None;
+            // Same "resolved independently of `name`" shape as
+            // `resolve_side_names` above.
+            let team = side.team_id.as_ref().and_then(|id| team_metas.get(id));
+            side.team_name = team.map(|t| t.name.clone());
+            side.team_logo = team.and_then(|t| t.logo_url.as_ref()).map(|url| Photo {
+                image_url: url.clone(),
+                asset_id: None,
+            });
 
             side.name = Some(match custom_name {
                 // Same priority as `resolve_side_names`: an explicit name
@@ -6734,19 +6758,11 @@ impl Api {
                 Some(name) => name.to_string(),
                 None => match sole_player_name {
                     Some(name) => name,
-                    None => match &side.team_id {
-                        Some(team_id) => match team_metas.get(team_id) {
-                            Some(team) => {
-                                side.team_logo = team.logo_url.as_ref().map(|url| Photo {
-                                    image_url: url.clone(),
-                                    asset_id: None,
-                                });
-                                team.name.clone()
-                            }
-                            // Same "team was deleted" fallback as
-                            // `resolve_side_names` above.
-                            None => "Deleted team".to_string(),
-                        },
+                    None => match team {
+                        Some(team) => team.name.clone(),
+                        // Same "team was deleted" fallback as
+                        // `resolve_side_names` above.
+                        None if side.team_id.is_some() => "Deleted team".to_string(),
                         None => match viewer_side_id {
                             Some(vs) if vs == side.id => "Your side".to_string(),
                             Some(_) => "Opposition".to_string(),
@@ -7901,7 +7917,9 @@ fn mock_match(id: String) -> Match {
                 team_id: Some(String::from("team_red")),
                 name: Some(String::from("Red Team")),
                 team_logo: None,
+                team_name: None,
                 roster_preview: None,
+                player_count: 2,
                 max_players: None,
                 team_join_enabled: false,
             },
@@ -7910,7 +7928,9 @@ fn mock_match(id: String) -> Match {
                 team_id: Some(String::from("team_blue")),
                 name: Some(String::from("Blue Team")),
                 team_logo: None,
+                team_name: None,
                 roster_preview: None,
+                player_count: 1,
                 max_players: None,
                 team_join_enabled: false,
             },

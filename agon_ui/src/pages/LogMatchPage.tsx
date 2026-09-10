@@ -692,16 +692,18 @@ export function LogMatchPage() {
               id: SIDE_A,
               name: resolvedSideName(sideA, sideAName, sideATeam),
               team_id: sideATeam?.id,
-              // A placeholder, like `toMatchPlayers`' `role` — the match
+              // Placeholders, like `toMatchPlayers`' `role` — the match
               // doesn't exist yet, so there's no real setting to report; the
-              // score-detail editors below never read this field.
+              // score-detail editors below never read these fields.
               team_join_enabled: false,
+              player_count: 0,
             }
             const sideBObj: MatchSide = {
               id: SIDE_B,
               name: resolvedSideName(sideB, sideBName, sideBTeam),
               team_id: sideBTeam?.id,
               team_join_enabled: false,
+              player_count: 0,
             }
             const players = [...toMatchPlayers(sideA, SIDE_A), ...toMatchPlayers(sideB, SIDE_B)]
             return isFootball ? (

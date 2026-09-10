@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ChevronLeft, Flame, Link2, MailOpen, Pencil, Radio, ShieldPlus, UserPlus } from 'lucide-react'
+import { CalendarClock, ChevronLeft, Flame, Link2, MailOpen, Pencil, Radio, ShieldPlus, UserPlus } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
+import { scheduledDateTime } from '@/lib/datetime'
 import { Button } from '@/components/ui/button'
 import { Avatar } from '@/components/agon/Avatar'
 import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
@@ -46,6 +47,8 @@ import {
   myPendingInvitation,
   mySideId,
   orderSidesForViewer,
+  sidePlayerCountLabel,
+  sideTeamHint,
   withInvitationStatus,
 } from '@/lib/members'
 import { CopyInviteButton } from '@/components/agon/CopyInviteButton'
@@ -171,6 +174,11 @@ function MatchDetail({
   const [sideA, sideB] = orderedSides
   const nameA = sideName(sideA, 'Side A')
   const nameB = sideName(sideB, 'Side B')
+  // How full each side's roster is, shown in place of a score while the
+  // match is still to come — a result once there is one is a better use of
+  // that space (see `scoreInfo` below), and neither cap nor headcount matter
+  // any more once the match is cancelled.
+  const showPlayerCounts = match.status === 'scheduled'
 
   const scoreInfo = displayScore(match)
   const headline = scoreInfo ? headlineBySide(scoreInfo.score) : {}
@@ -273,7 +281,13 @@ function MatchDetail({
       ) : (
         <div className="rounded-xl border bg-card p-4">
           <div className="flex items-start justify-between gap-2">
-            <p className="text-sm text-muted-foreground">{match.name}</p>
+            <div className="min-w-0">
+              <p className="text-sm text-muted-foreground">{match.name}</p>
+              <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
+                <CalendarClock className="size-3 shrink-0" />
+                {scheduledDateTime(match.starts_at)}
+              </p>
+            </div>
             {canEdit && !cancelled && (
               <Button
                 variant="ghost"
@@ -305,31 +319,53 @@ function MatchDetail({
             <div className="mt-3">
               <CricketScoreBlock match={orderedMatch} score={cricketScore} />
             </div>
-          ) : scoreInfo ? (
+          ) : (
             <div className="mt-3 flex items-center justify-between">
               <div className="flex min-w-0 flex-1 items-center gap-2">
                 <Avatar name={nameA} imageUrl={sideA?.team_logo?.image_url} size="md" ring={aWon ? 'winner' : 'none'} />
-                <p className={cn('truncate text-sm', aWon && 'font-medium')}>{nameA}</p>
-              </div>
-              <div className="px-3 text-center">
-                <div className="text-3xl font-medium tracking-tight">
-                  {headline[sideA?.id ?? ''] ?? 0}
-                  <span className="text-muted-foreground">–</span>
-                  {headline[sideB?.id ?? ''] ?? 0}
+                <div className="min-w-0">
+                  <p className={cn('truncate text-sm', aWon && 'font-medium')}>{nameA}</p>
+                  {sideTeamHint(sideA) && (
+                    <p className="truncate text-[10px] text-muted-foreground">{sideTeamHint(sideA)}</p>
+                  )}
+                  {showPlayerCounts && (
+                    <p className="truncate text-[10px] text-muted-foreground">
+                      {sidePlayerCountLabel(sideA)}
+                    </p>
+                  )}
                 </div>
-                <div className="mt-0.5 text-[9px] uppercase tracking-widest text-muted-foreground">
-                  {headlineLabel(scoreInfo.score)}
-                </div>
               </div>
+              {scoreInfo ? (
+                <div className="px-3 text-center">
+                  <div className="text-3xl font-medium tracking-tight">
+                    {headline[sideA?.id ?? ''] ?? 0}
+                    <span className="text-muted-foreground">–</span>
+                    {headline[sideB?.id ?? ''] ?? 0}
+                  </div>
+                  <div className="mt-0.5 text-[9px] uppercase tracking-widest text-muted-foreground">
+                    {headlineLabel(scoreInfo.score)}
+                  </div>
+                </div>
+              ) : (
+                <div className="shrink-0 px-3 text-center text-xs text-muted-foreground">
+                  vs
+                </div>
+              )}
               <div className="flex min-w-0 flex-1 flex-row-reverse items-center gap-2 text-right">
                 <Avatar name={nameB} imageUrl={sideB?.team_logo?.image_url} size="md" ring={bWon ? 'winner' : 'none'} />
-                <p className={cn('truncate text-sm', bWon && 'font-medium')}>{nameB}</p>
+                <div className="min-w-0">
+                  <p className={cn('truncate text-sm', bWon && 'font-medium')}>{nameB}</p>
+                  {sideTeamHint(sideB) && (
+                    <p className="truncate text-[10px] text-muted-foreground">{sideTeamHint(sideB)}</p>
+                  )}
+                  {showPlayerCounts && (
+                    <p className="truncate text-[10px] text-muted-foreground">
+                      {sidePlayerCountLabel(sideB)}
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
-          ) : (
-            <p className="mt-3 text-sm text-muted-foreground">
-              No score recorded yet.
-            </p>
           )}
 
           {sets.length > 0 && (

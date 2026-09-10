@@ -26,22 +26,47 @@ export function isoToDateTimeLocal(iso: string): string {
 /**
  * A short, human relative time for an ISO instant (e.g. "3m", "2h", "5d"),
  * falling back to a localized date for anything older than a week. Used for
- * comment timestamps, where a compact marker reads better than a full date.
+ * comment timestamps (always in the past) and a match's `starts_at` (which
+ * can just as easily be ahead of now, for a still-upcoming scheduled match —
+ * that case reads as "in 3d" rather than silently clamping to "now").
  */
 export function relativeTime(iso: string): string {
   const then = new Date(iso).getTime()
   if (Number.isNaN(then)) return ''
-  const seconds = Math.max(0, Math.round((Date.now() - then) / 1000))
+  const diff = Math.round((Date.now() - then) / 1000) // positive = past, negative = future
+  const future = diff < 0
+  const seconds = Math.abs(diff)
   if (seconds < 60) return 'now'
   const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m`
+  if (minutes < 60) return future ? `in ${minutes}m` : `${minutes}m`
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h`
+  if (hours < 24) return future ? `in ${hours}h` : `${hours}h`
   const days = Math.floor(hours / 24)
-  if (days < 7) return `${days}d`
+  if (days < 7) return future ? `in ${days}d` : `${days}d`
   return new Date(iso).toLocaleDateString(undefined, {
     month: 'short',
     day: 'numeric',
+  })
+}
+
+/**
+ * The full scheduled date + time for a match's `starts_at`, e.g. "Sat, 12
+ * Sep · 3:00 PM" (the year is added only when it isn't the current one).
+ * Unlike `relativeTime`, this doesn't decay with elapsed time — it's the one
+ * place a match's actual kick-off time is spelled out in full, on the detail
+ * page and (space permitting) the feed/profile card.
+ */
+export function scheduledDateTime(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  const now = new Date()
+  return date.toLocaleString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: date.getFullYear() === now.getFullYear() ? undefined : 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
   })
 }
 

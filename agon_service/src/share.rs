@@ -84,7 +84,7 @@ async fn share_match(
     let target_url = format!("{ui_base_url}/matches/{match_id}");
     let card = match match_card(dao, assets, &match_id, &target_url).await {
         Some(card) => card,
-        None => fallback_card(target_url),
+        None => not_found_card(target_url),
     };
     Html(render(&card, ui_base_url))
 }
@@ -98,7 +98,7 @@ async fn share_team(
     let target_url = format!("{ui_base_url}/teams/{team_id}");
     let card = match team_card(dao, &team_id, &target_url).await {
         Some(card) => card,
-        None => fallback_card(target_url),
+        None => not_found_card(target_url),
     };
     Html(render(&card, ui_base_url))
 }
@@ -113,7 +113,7 @@ async fn share_invite(
     let target_url = format!("{ui_base_url}/invite/{token}");
     let card = match invite_card(dao, assets, &token, &target_url).await {
         Some(card) => card,
-        None => fallback_card(target_url),
+        None => not_found_card(target_url),
     };
     Html(render(&card, ui_base_url))
 }
@@ -128,22 +128,23 @@ async fn share_join(
     let target_url = format!("{ui_base_url}/join/{token}");
     let card = match join_card(dao, assets, &token, &target_url).await {
         Some(card) => card,
-        None => fallback_card(target_url),
+        None => not_found_card(target_url),
     };
     Html(render(&card, ui_base_url))
 }
 
 /// Catch-all for any app route with no dedicated preview above (the home
-/// page, `/feed`, `/profile`, `/users/:id`, ...) — just the generic Agon
-/// card, pointed at that same route. See `routes`'s doc comment for why this
-/// exists at all rather than 404ing.
+/// page, `/feed`, `/profile`, `/users/:id`, ...) — the neutral `generic_card`,
+/// pointed at that same route. NOT `not_found_card`: nothing here is invalid
+/// or expired, there's just no richer preview built for this route (yet) —
+/// see `routes`'s doc comment for why this exists at all rather than 404ing.
 #[handler]
 async fn share_fallback(
     Data(UiBaseUrl(ui_base_url)): Data<&UiBaseUrl>,
     Path(path): Path<String>,
 ) -> impl IntoResponse {
     let target_url = format!("{ui_base_url}/{path}");
-    Html(render(&fallback_card(target_url), ui_base_url))
+    Html(render(&generic_card(target_url), ui_base_url))
 }
 
 /// A plain match link's preview: the two (or more) sides as the title, the
@@ -376,15 +377,31 @@ fn sport_label(t: &MatchType) -> &'static str {
     }
 }
 
-/// The generic "Agon" card shown for a bad/expired/unknown token or id —
-/// nothing is lost versus today's behaviour (the SPA itself renders the
-/// proper "invite not found"/"link not found" screen once a visitor actually
-/// opens `target_url`), just no richer preview to offer.
-fn fallback_card(target_url: String) -> PreviewCard {
+/// The card shown for a bad/expired/unknown token or id on an otherwise
+/// recognized link shape (`/matches/:id`, `/invite/:token`, `/join/:token`,
+/// `/teams/:id`) — nothing is lost versus today's behaviour (the SPA itself
+/// renders the proper "invite not found"/"link not found" screen once a
+/// visitor actually opens `target_url`), just no richer preview to offer.
+/// Distinct from `generic_card`: this one specifically means "this link
+/// doesn't work", which would be actively misleading on, say, the homepage.
+fn not_found_card(target_url: String) -> PreviewCard {
     PreviewCard {
         target_url,
         title: "Agon".to_string(),
         description: "This link is invalid or has expired.".to_string(),
+        image_url: None,
+    }
+}
+
+/// The card shown for any route with no dedicated preview of its own (the
+/// home page, `/feed`, `/profile`, `/users/:id`, ...) — just the app's name
+/// and a neutral strapline, never a claim that anything is wrong. See
+/// `routes`'s doc comment for why this exists at all rather than 404ing.
+fn generic_card(target_url: String) -> PreviewCard {
+    PreviewCard {
+        target_url,
+        title: "Agon".to_string(),
+        description: "Organize matches, invite players, track the score.".to_string(),
         image_url: None,
     }
 }

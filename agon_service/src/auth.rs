@@ -20,7 +20,9 @@
 use std::sync::{Arc, RwLock};
 
 use jsonwebtoken::jwk::{Jwk, JwkSet};
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
+use jsonwebtoken::{
+    Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, decode_header, encode,
+};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
@@ -67,11 +69,17 @@ impl JwtVerifier {
     /// Build from the environment:
     /// - `SUPABASE_JWKS_URL` — optional Supabase JWKS endpoint.
     /// - `AGON_STATIC_JWKS` — optional JSON JWK Set of always-trusted keys.
+    /// - `AGON_DEVICE_JWKS` — optional JSON JWK Set trusting the device-pairing
+    ///   signing key (see `DeviceTokenSigner`). Kept separate from
+    ///   `AGON_STATIC_JWKS` (documented as test/local-only) since this one is
+    ///   meant to be set in every real deployment that wants device pairing
+    ///   (Garmin, ...) to work — merged into the same always-trusted set, so
+    ///   verification itself needs no special-casing.
     /// - `AGON_JWT_AUDIENCE` — expected `aud` claim (default `authenticated`).
     ///
-    /// Both key sources are optional so a deployment can run with only Supabase
-    /// (no test key) or only the static set (local/offline), but at least one
-    /// must be present or every token is rejected — we warn loudly in that case.
+    /// Every key source is optional so a deployment can run with only Supabase
+    /// (no test/device key), but at least one must be present or every token
+    /// is rejected — we warn loudly in that case.
     pub fn from_env() -> Self {
         let jwks_url = std::env::var("SUPABASE_JWKS_URL")
             .ok()
@@ -80,16 +88,8 @@ impl JwtVerifier {
         let expected_audience =
             std::env::var("AGON_JWT_AUDIENCE").unwrap_or_else(|_| "authenticated".to_string());
 
-        let static_keys = match std::env::var("AGON_STATIC_JWKS") {
-            Ok(raw) if !raw.is_empty() => match serde_json::from_str::<JwkSet>(&raw) {
-                Ok(set) => set.keys,
-                Err(e) => {
-                    warn!("AGON_STATIC_JWKS is not a valid JWK Set: {e}; ignoring");
-                    Vec::new()
-                }
-            },
-            _ => Vec::new(),
-        };
+        let mut static_keys = load_jwk_set_env("AGON_STATIC_JWKS");
+        static_keys.extend(load_jwk_set_env("AGON_DEVICE_JWKS"));
 
         if jwks_url.is_none() && static_keys.is_empty() {
             warn!(
@@ -202,6 +202,97 @@ fn find_by_kid(keys: &[Jwk], kid: &str) -> Option<Jwk> {
     keys.iter()
         .find(|k| k.common.key_id.as_deref() == Some(kid))
         .cloned()
+}
+
+/// Load a JSON JWK Set from an env var, tolerating it being unset/empty (an
+/// empty `Vec`) and logging (not failing) a malformed value — same "opt-in,
+/// never fatal" treatment `AGON_STATIC_JWKS` has always had.
+fn load_jwk_set_env(var: &str) -> Vec<Jwk> {
+    match std::env::var(var) {
+        Ok(raw) if !raw.is_empty() => match serde_json::from_str::<JwkSet>(&raw) {
+            Ok(set) => set.keys,
+            Err(e) => {
+                warn!("{var} is not a valid JWK Set: {e}; ignoring");
+                Vec::new()
+            }
+        },
+        _ => Vec::new(),
+    }
+}
+
+/// Mints device-credential JWTs during pairing (`POST /devices/pair` — see
+/// `agon_core::dao::device_pairing`). A dedicated signing key, not the
+/// Supabase-issued kind: the device never authenticates with Supabase at
+/// all, so this is the sole source of trust for its long-lived token. Its
+/// public half must be trusted by every `JwtVerifier` in the deployment via
+/// `AGON_DEVICE_JWKS`, or a token minted here would verify nowhere.
+///
+/// **Known v1 limitation**: a minted token is a full, undifferentiated
+/// account credential — `JwtClaims` carries no scope/device marker, so
+/// `require_uid` (and everything built on it) treats a paired device
+/// exactly like a normal login. A lost/compromised watch can therefore do
+/// anything the account owner can, not just append live-scoring events, and
+/// there's no revocation endpoint yet (deleting the device's `AUTH#<sub>`
+/// guard item by hand is the only way to cut it off). Scoping this
+/// properly — a `scope` claim plus a check in every sensitive handler — is
+/// tracked as follow-up work; see `docs/garmin-live-scoring.md`.
+#[derive(Clone)]
+pub struct DeviceTokenSigner {
+    private_key_pem: String,
+    kid: String,
+    audience: String,
+}
+
+/// How long a minted device token is valid. Long — there's no refresh flow
+/// yet, and a watch has no practical way to re-pair itself unattended, so
+/// the token needs to comfortably outlive a season rather than expire
+/// underfoot mid-match.
+pub const DEVICE_TOKEN_TTL: chrono::Duration = chrono::Duration::days(365);
+
+impl DeviceTokenSigner {
+    /// Reads `AGON_DEVICE_JWT_PRIVATE_KEY` (PEM, ES256 — matching the public
+    /// key trusted via `AGON_DEVICE_JWKS`) and `AGON_DEVICE_JWT_KID` (default
+    /// `agon-device`); `AGON_JWT_AUDIENCE` is shared with `JwtVerifier`.
+    /// Returns `None` when the private key isn't set — device pairing is
+    /// simply unavailable on this deployment, not a startup failure (same
+    /// "absent means the feature is off" pattern as `assets::CloudFrontSigner`).
+    pub fn from_env() -> Option<Self> {
+        let private_key_pem = std::env::var("AGON_DEVICE_JWT_PRIVATE_KEY")
+            .ok()
+            .filter(|s| !s.is_empty())?;
+        let kid =
+            std::env::var("AGON_DEVICE_JWT_KID").unwrap_or_else(|_| "agon-device".to_string());
+        let audience =
+            std::env::var("AGON_JWT_AUDIENCE").unwrap_or_else(|_| "authenticated".to_string());
+        Some(Self {
+            private_key_pem,
+            kid,
+            audience,
+        })
+    }
+
+    /// Mint a device token for `sub` (the device's own reserved auth
+    /// identity — see `DevicePairingRecord::device_sub`), valid for
+    /// [`DEVICE_TOKEN_TTL`].
+    pub fn mint(&self, sub: &str) -> Result<String, AuthError> {
+        let claims = JwtClaims {
+            sub: sub.to_string(),
+            exp: (chrono::Utc::now() + DEVICE_TOKEN_TTL).timestamp() as usize,
+            iss: Some("agon-device".into()),
+            aud: Some(self.audience.clone()),
+            role: None,
+            email: None,
+        };
+
+        let mut header = Header::new(Algorithm::ES256);
+        header.kid = Some(self.kid.clone());
+
+        let key = EncodingKey::from_ec_pem(self.private_key_pem.as_bytes())
+            .map_err(|e| AuthError(format!("invalid AGON_DEVICE_JWT_PRIVATE_KEY: {e}")))?;
+
+        encode(&header, &claims, &key)
+            .map_err(|e| AuthError(format!("failed to sign device token: {e}")))
+    }
 }
 
 #[cfg(test)]
@@ -338,5 +429,78 @@ yuPC5L8ZcNr/wsPZHrn9SKPfMfhIiE9Ay0nj+7bSFLz3QafZDk6t6fbR\n\
         )
         .unwrap();
         assert!(static_verifier().verify(&token).await.is_err());
+    }
+
+    // ── DeviceTokenSigner ───────────────────────────────────────────────
+
+    // A second throwaway ES256 keypair standing in for the device-signing
+    // key (`AGON_DEVICE_JWT_PRIVATE_KEY` / `AGON_DEVICE_JWKS`), generated only
+    // for these tests — same spirit as TEST_PRIV_PEM/TEST_JWKS above, just a
+    // distinct keypair so a device token can never accidentally verify
+    // against the plain test-key trust store or vice versa.
+    const DEVICE_PRIV_PEM: &str = "-----BEGIN PRIVATE KEY-----\n\
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg9aF8EoAP3W+9lWIp\n\
+WZh/XzzyP7WuhO9mf3AC5JcWB1ehRANCAAT4Unn5HgobZXWGBnsnrn1h8E975gnU\n\
+rdMKmVzU3xhtCEnDnDWxqRISC9Ylad533olIZCkeALgwXkkDIW+V1ePB\n\
+-----END PRIVATE KEY-----\n";
+    const DEVICE_KID: &str = "agon-device-dev";
+    const DEVICE_JWKS: &str = r#"{"keys":[{"kty":"EC","crv":"P-256","alg":"ES256","use":"sig","kid":"agon-device-dev","x":"-FJ5-R4KG2V1hgZ7J659YfBPe-YJ1K3TCplc1N8YbQg","y":"ScOcNbGpEhIL1iVp3nfeiUhkKR4AuDBeSQMhb5XV48E"}]}"#;
+
+    fn device_signer() -> DeviceTokenSigner {
+        DeviceTokenSigner {
+            private_key_pem: DEVICE_PRIV_PEM.to_string(),
+            kid: DEVICE_KID.to_string(),
+            audience: "authenticated".to_string(),
+        }
+    }
+
+    /// A verifier trusting only the device-signing key — standing in for
+    /// what `AGON_DEVICE_JWKS` wires into the real `static_keys` set.
+    fn verifier_trusting_device_key() -> JwtVerifier {
+        let keys = serde_json::from_str::<JwkSet>(DEVICE_JWKS).unwrap().keys;
+        JwtVerifier {
+            inner: Arc::new(Inner {
+                http: reqwest::Client::new(),
+                jwks_url: None,
+                static_keys: keys,
+                remote_cache: RwLock::new(Vec::new()),
+                expected_audience: "authenticated".into(),
+                leeway_secs: 60,
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn device_token_round_trips_through_the_verifier() {
+        let token = device_signer().mint("device:abc123").expect("mint");
+
+        let claims = verifier_trusting_device_key()
+            .verify(&token)
+            .await
+            .expect("device token should verify against its own trusted key");
+
+        assert_eq!(claims.sub, "device:abc123");
+        assert_eq!(claims.aud.as_deref(), Some("authenticated"));
+        // Long-lived, not a near-term expiry — see DEVICE_TOKEN_TTL.
+        assert!(claims.exp as i64 > chrono::Utc::now().timestamp() + 60 * 60 * 24 * 300);
+    }
+
+    #[tokio::test]
+    async fn device_token_does_not_verify_against_the_unrelated_test_key() {
+        let token = device_signer().mint("device:abc123").expect("mint");
+        assert!(static_verifier().verify(&token).await.is_err());
+    }
+
+    #[test]
+    fn device_signer_from_env_is_none_when_unconfigured() {
+        // Env var mutation is `unsafe` (edition 2024) since it's
+        // process-global — fine here, nothing else in this crate reads this
+        // particular var, and clearing it first makes the test correct even
+        // if a real deployment config happens to be present in the process
+        // environment.
+        unsafe {
+            std::env::remove_var("AGON_DEVICE_JWT_PRIVATE_KEY");
+        }
+        assert!(DeviceTokenSigner::from_env().is_none());
     }
 }

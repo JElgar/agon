@@ -17,6 +17,13 @@ endif
 # recipe-level override (a real key from Pulumi) still wins.
 AGON_TEST_JWT_PRIVATE_KEY ?= $(shell cat local/agon-test-key.pem 2>/dev/null)
 
+# Same story, for device pairing's signing key (`POST /devices/pair` — see
+# agon_service/src/auth.rs's DeviceTokenSigner and
+# docs/garmin-live-scoring.md). AGON_DEVICE_JWKS (the public half) still
+# lives in .env/.env.example — it's a single JSON line, safe for both Make's
+# and Compose's parsers, same as AGON_STATIC_JWKS.
+AGON_DEVICE_JWT_PRIVATE_KEY ?= $(shell cat local/agon-device-key.pem 2>/dev/null)
+
 init:
 	[[ -d openapi_client ]] || cargo new --lib --name openapi openapi_client
 

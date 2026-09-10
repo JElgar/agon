@@ -163,6 +163,9 @@ function ShareMatchButton({ match }: { match: Match | FeedMatch | SearchMatch })
   }, [copied])
 
   const share = async () => {
+    // The plain SPA URL — see `inviteLink`'s doc comment (agon_ui/src/lib/
+    // members.ts) for how this still gets a rich WhatsApp/etc. preview via
+    // agon_ui/nginx.conf without needing a separate share URL.
     const url = `${window.location.origin}/matches/${match.id}`
     if (navigator.share) {
       try {

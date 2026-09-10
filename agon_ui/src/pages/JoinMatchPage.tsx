@@ -6,6 +6,8 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { clearPendingInvite } from '@/lib/pendingInvite'
+import { forgetJoinLink, rememberJoinLink } from '@/lib/joinLinkMemory'
+import { joinChoiceFor, sidesFor } from '@/lib/joinLink'
 import { relativeTime, scheduledDateTime } from '@/lib/datetime'
 import { sidePlayerCountLabel, sideTeamHint } from '@/lib/members'
 import { Avatar } from '@/components/agon/Avatar'
@@ -13,33 +15,6 @@ import { SportBadge } from '@/components/agon/SportBadge'
 
 type JoinLinkPreview = components['schemas']['JoinLinkPreview']
 type Match = components['schemas']['Match']
-type MatchSide = components['schemas']['MatchSide']
-
-/** Which side(s) (if any) a join scope allows picking, and whether landing
- *  unassigned is offered — the client-side mirror of the server's
- *  `JoinScope`/`resolve_join_target` (see `agon_service/src/main.rs`). The
- *  server re-validates regardless; this only decides what the picker shows. */
-interface JoinChoice {
-  allowedSideIds: string[] | null
-  allowUnassigned: boolean
-}
-
-function joinChoiceFor(preview: JoinLinkPreview, match: Match): JoinChoice {
-  const scope = preview.scope
-  return {
-    allowedSideIds: scope.side_ids ?? null,
-    // The link's own preference, capped by the match's own ceiling — see
-    // `Match.allow_unassigned`'s doc comment. The server re-enforces this
-    // regardless; this only decides what the picker offers.
-    allowUnassigned: scope.allow_unassigned && match.allow_unassigned,
-  }
-}
-
-function sidesFor(choice: JoinChoice, match: Match): MatchSide[] {
-  if (choice.allowedSideIds === null) return match.sides
-  const allowed = choice.allowedSideIds
-  return match.sides.filter((s) => allowed.includes(s.id))
-}
 
 /**
  * The join-link landing screen. Reached once the visitor is signed in with an
@@ -48,6 +23,12 @@ function sidesFor(choice: JoinChoice, match: Match): MatchSide[] {
  * endpoint, loads the match itself for side names, offers a side picker when
  * the resolved scope names more than one option, then joins via
  * `POST /matches/:id/join`.
+ *
+ * Once the link resolves, its token is also remembered against the match id
+ * (see `lib/joinLinkMemory`) so "View match" — checking the game out before
+ * committing — doesn't lose it: `JoinLinkBanner` resurfaces the same join
+ * offer on the match detail page, the way a real invitation stays actionable
+ * there too.
  */
 export function JoinMatchPage() {
   const { token } = useParams<{ token: string }>()
@@ -75,6 +56,14 @@ export function JoinMatchPage() {
   })
 
   const matchId = preview.data?.match_id
+
+  // The link resolved to a real match — remember it so it's still usable
+  // from that match's own detail page (via `JoinLinkBanner`) if the visitor
+  // leaves via "View match" instead of joining right away.
+  useEffect(() => {
+    if (matchId && token) rememberJoinLink(matchId, token)
+  }, [matchId, token])
+
   const matchQuery = useQuery({
     queryKey: ['match', matchId],
     enabled: !!matchId,
@@ -136,6 +125,7 @@ export function JoinMatchPage() {
     onSuccess: (result) => {
       if (result === 'conflict' || !matchId) return
       clearPendingInvite()
+      forgetJoinLink(matchId)
       queryClient.invalidateQueries({ queryKey: ['match', matchId] })
       queryClient.invalidateQueries({ queryKey: ['feed'] })
       navigate(`/matches/${matchId}`, { replace: true })
@@ -277,6 +267,17 @@ export function JoinMatchPage() {
         onClick={() => join.mutate()}
       >
         {join.isPending ? 'Joining…' : 'Join'}
+      </Button>
+
+      {/* Check the game out first without committing — the link stays
+          usable from there too (just-remembered above), via
+          `JoinLinkBanner`. */}
+      <Button
+        variant="ghost"
+        className="mt-2 w-full"
+        onClick={() => navigate(`/matches/${matchId}`)}
+      >
+        View match
       </Button>
     </JoinCard>
   )

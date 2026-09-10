@@ -69,6 +69,9 @@ pub enum Pk {
     JoinLink(String),
     /// An uploadable asset. `ASSET#<assetId>`
     Asset(String),
+    /// A one-time device-pairing code (see `dao::device_pairing`).
+    /// `DEVPAIR#<code>`
+    DevicePairing(String),
 }
 
 impl Pk {
@@ -89,6 +92,7 @@ impl Pk {
             Pk::Invitation(_) => "INVITATION",
             Pk::JoinLink(_) => "JOINLINK",
             Pk::Asset(_) => "ASSET",
+            Pk::DevicePairing(_) => "DEVPAIR",
         }
     }
 
@@ -110,7 +114,8 @@ impl fmt::Display for Pk {
             | Pk::UserFeed(v)
             | Pk::Invitation(v)
             | Pk::JoinLink(v)
-            | Pk::Asset(v) => v,
+            | Pk::Asset(v)
+            | Pk::DevicePairing(v) => v,
         };
         write!(f, "{}{}{}", self.prefix(), DELIMITER, value)
     }
@@ -136,6 +141,7 @@ impl FromStr for Pk {
             "INVITATION" => Ok(Pk::Invitation(value.into())),
             "JOINLINK" => Ok(Pk::JoinLink(value.into())),
             "ASSET" => Ok(Pk::Asset(value.into())),
+            "DEVPAIR" => Ok(Pk::DevicePairing(value.into())),
             other => Err(KeyError::UnknownPrefix(other.into())),
         }
     }
@@ -426,6 +432,7 @@ mod tests {
         pk_roundtrip(Pk::Invitation("i1".into()), "INVITATION#i1");
         pk_roundtrip(Pk::JoinLink("jl1".into()), "JOINLINK#jl1");
         pk_roundtrip(Pk::Asset("a1".into()), "ASSET#a1");
+        pk_roundtrip(Pk::DevicePairing("ABC123".into()), "DEVPAIR#ABC123");
     }
 
     #[test]

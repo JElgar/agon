@@ -288,6 +288,29 @@ pub struct AuthGuardRecord {
     pub user_id: String,
 }
 
+/// `DEVPAIR#<code>` / `#META` — a one-time code linking a device with no
+/// practical login UI of its own (a Garmin watch, initially) to a user's
+/// account. See `dao::device_pairing` for the claim flow.
+///
+/// `device_sub` is the identity-provider-style subject reserved for this
+/// device *before* pairing succeeds — claiming the code creates its
+/// `AUTH#<device_sub>` guard mapping straight to `user_id`, the same shape
+/// as any other login provider's `sub` (see `AuthGuardRecord`), so every
+/// existing uid-resolution path handles a device exactly like a second login
+/// method on the same account, no special-casing required.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DevicePairingRecord {
+    pub code: String,
+    pub user_id: String,
+    pub device_sub: String,
+    pub created_at: String,
+    pub expires_at: String,
+    /// Set once the device has claimed the code. A code is single-use:
+    /// `claim_device_pairing_code` only succeeds while this is `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claimed_at: Option<String>,
+}
+
 /// `USER#<id>` / `#PROFILE` — the user profile item.
 ///
 /// Counts are denormalized and maintained via atomic `ADD` (see follow ops).

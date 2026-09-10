@@ -180,3 +180,21 @@ documented format). The Makefile picks this file up as
 recipe-level override still wins) — nothing needs to be set in `.env` for
 this at all, only `AGON_STATIC_JWKS` (a single JSON line — safe for both
 parsers) to opt in.
+
+### The device-signing key
+
+Same story, for a different feature: device pairing (`POST
+/devices/pairing-codes` / `POST /devices/pair`, see
+`docs/garmin-live-scoring.md`) lets a device with no practical login UI of
+its own — a Garmin watch, initially — join a user's account. It's signed
+with its own dedicated keypair (`agon_service/src/auth.rs`'s
+`DeviceTokenSigner`), not the test key above, because unlike the test key
+it's meant to actually work in a non-local deployment too, not just
+`agon_tests`. The private half lives in `agon-device-key.pem` here, for the
+exact same reason `agon-test-key.pem` isn't in `.env`/`.env.example` (see
+above); the Makefile picks it up as `AGON_DEVICE_JWT_PRIVATE_KEY`'s default.
+The public half is `AGON_DEVICE_JWKS` in `.env.example` (commented out —
+uncomment to enable pairing locally).
+
+Both halves committed here are a fixed, dev-only ES256 keypair generated for
+this repo, not used anywhere real.

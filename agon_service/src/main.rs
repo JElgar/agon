@@ -35,7 +35,7 @@ use tracing::{error, info};
 use agon_core::dao;
 // JWT verification (asymmetric; Supabase JWKS + static test key).
 mod auth;
-use auth::{JwtClaims, JwtVerifier};
+use auth::{DeviceTokenSigner, JwtClaims, JwtVerifier};
 // Boundary mapping between API models and DAO records.
 mod mapping;
 use mapping::{
@@ -1658,6 +1658,56 @@ enum UnregisterDeviceResponse {
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
+}
+
+/// How long a device-pairing code stays valid. Short — it's meant to be
+/// generated on one screen and typed into the device within the same
+/// sitting, not saved for later (see `POST /devices/pairing-codes`).
+const DEVICE_PAIRING_CODE_TTL: chrono::Duration = chrono::Duration::minutes(10);
+
+#[derive(Object)]
+struct DevicePairingCode {
+    /// A short, human-typeable one-time code — see `POST /devices/pair`.
+    code: String,
+    expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(ApiResponse)]
+enum CreateDevicePairingCodeResponse {
+    #[oai(status = 201)]
+    Created(Json<DevicePairingCode>),
+}
+
+#[derive(Object)]
+struct PairDeviceInput {
+    /// The pairing code shown to the caller by an already-authenticated
+    /// client (phone/web) via `POST /devices/pairing-codes`.
+    code: String,
+}
+
+#[derive(Object)]
+struct PairDeviceOutput {
+    /// A long-lived bearer credential this device should send as
+    /// `Authorization: Bearer <access_token>` on every subsequent request —
+    /// the same header, and the same `AuthSchema`, as a normal user session.
+    access_token: String,
+}
+
+#[derive(ApiResponse)]
+enum PairDeviceResponse {
+    #[oai(status = 200)]
+    Paired(Json<PairDeviceOutput>),
+
+    /// The code doesn't exist, was already used, or has expired. These
+    /// aren't distinguished — a device has no useful way to act differently
+    /// on each, the human just generates a fresh code and retypes it.
+    #[oai(status = 400)]
+    InvalidCode(PlainText<String>),
+
+    /// Device pairing isn't configured on this deployment (no
+    /// `AGON_DEVICE_JWT_PRIVATE_KEY` — see `DeviceTokenSigner::from_env`).
+    #[oai(status = 503)]
+    NotConfigured(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -6100,6 +6150,96 @@ impl Api {
         }
     }
 
+    /// Mint a short-lived, single-use code an already-authenticated client
+    /// can hand to a device with no practical login UI of its own — a
+    /// Garmin watch, typed in via its companion phone app — to pair it to
+    /// this account. See `POST /devices/pair`, which claims the code.
+    #[oai(path = "/devices/pairing-codes", method = "post")]
+    async fn create_device_pairing_code(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+    ) -> Result<CreateDevicePairingCodeResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        info!("Creating device pairing code for {uid}");
+
+        let now = chrono::Utc::now();
+        let expires_at = now + DEVICE_PAIRING_CODE_TTL;
+        let created_at = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let expires_at_str = expires_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
+        // Retry on the (astronomically unlikely) chance of a code collision —
+        // same pattern as any other random-id generator in this DAO.
+        const MAX_ATTEMPTS: u32 = 5;
+        let mut last_err = None;
+        for _ in 0..MAX_ATTEMPTS {
+            let code = new_pairing_code();
+            let pairing = dao::records::DevicePairingRecord {
+                code: code.clone(),
+                user_id: uid.clone(),
+                device_sub: format!("device:{}", new_id()),
+                created_at: created_at.clone(),
+                expires_at: expires_at_str.clone(),
+                claimed_at: None,
+            };
+            match dao.create_device_pairing_code(&pairing).await {
+                Ok(()) => {
+                    return Ok(CreateDevicePairingCodeResponse::Created(Json(
+                        DevicePairingCode { code, expires_at },
+                    )));
+                }
+                Err(e @ dao::DaoError::Conflict(_)) => last_err = Some(e),
+                Err(e) => return Err(dao_internal(e)),
+            }
+        }
+        Err(dao_internal(last_err.expect(
+            "loop only exits via return, or after setting last_err on every iteration",
+        )))
+    }
+
+    /// Exchange a pairing code for a long-lived device credential. Called by
+    /// the device itself, unauthenticated — no bearer token to send yet,
+    /// since the whole point of pairing is a device with no practical way to
+    /// log in on its own. This and signup are the only endpoints that don't
+    /// take `AuthSchema`.
+    #[oai(path = "/devices/pair", method = "post")]
+    async fn pair_device(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        Data(device_signer): Data<&Option<DeviceTokenSigner>>,
+        input: Json<PairDeviceInput>,
+    ) -> Result<PairDeviceResponse> {
+        let Some(signer) = device_signer else {
+            return Ok(PairDeviceResponse::NotConfigured(PlainText(
+                "device pairing is not configured on this deployment".into(),
+            )));
+        };
+
+        let code = input.code.trim().to_uppercase();
+        let now = now_iso();
+
+        match dao.claim_device_pairing_code(&code, &now).await {
+            Ok(pairing) => {
+                let access_token = signer.mint(&pairing.device_sub).map_err(|e| {
+                    error!("failed to mint device token: {}", e.0);
+                    Error::from_string(
+                        "failed to mint device token",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    )
+                })?;
+                Ok(PairDeviceResponse::Paired(Json(PairDeviceOutput {
+                    access_token,
+                })))
+            }
+            Err(dao::DaoError::NotFound(_)) | Err(dao::DaoError::Conflict(_)) => {
+                Ok(PairDeviceResponse::InvalidCode(PlainText(
+                    "invalid or expired pairing code".into(),
+                )))
+            }
+            Err(e) => Err(dao_internal(e)),
+        }
+    }
+
     #[oai(path = "/invitations/:invitation_id", method = "get")]
     async fn get_invitation(
         &self,
@@ -8026,6 +8166,19 @@ fn new_id() -> String {
     BASE64_URL_SAFE_NO_PAD.encode(bytes)
 }
 
+/// Generate a device-pairing code: 6 characters from a 32-symbol alphabet
+/// that drops visually ambiguous characters (`0`/`O`, `1`/`I`/`L`) — the
+/// whole point is a person reading it off one screen and typing it into a
+/// device with no real keyboard. See `POST /devices/pairing-codes`.
+fn new_pairing_code() -> String {
+    use rand::Rng;
+    const ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    let mut rng = rand::rng();
+    (0..6)
+        .map(|_| ALPHABET[rng.random_range(0..ALPHABET.len())] as char)
+        .collect()
+}
+
 /// A mock confirmed score submission with one confirm response.
 fn mock_score_submission() -> ScoreSubmission {
     ScoreSubmission {
@@ -8565,6 +8718,12 @@ async fn main() {
             // static test key (integration tests / local). Built once, shared.
             let verifier = auth::JwtVerifier::from_env();
 
+            // Device-pairing token signer (Garmin, ...) — `None` when
+            // AGON_DEVICE_JWT_PRIVATE_KEY isn't configured, in which case
+            // `POST /devices/pair` reports the feature as unavailable rather
+            // than failing to start. See `DeviceTokenSigner`.
+            let device_signer = auth::DeviceTokenSigner::from_env();
+
             let app = Route::new()
                 .nest("/", api_service)
                 .nest("/docs", ui)
@@ -8573,6 +8732,7 @@ async fn main() {
                 .data(dao)
                 .data(search)
                 .data(verifier)
+                .data(device_signer)
                 .data(assets)
                 .data(ui_base_url)
                 .around(log_middleware)

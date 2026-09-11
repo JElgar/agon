@@ -14,6 +14,16 @@
  */
 const KEY = 'agon-remembered-join-links'
 
+/**
+ * An entry is only ever removed by `forgetJoinLink` — on a successful join,
+ * or when `JoinLinkBanner` notices its link no longer resolves, which only
+ * happens if the viewer revisits that exact match while still not a
+ * participant. A link previewed via "View match" and then abandoned
+ * otherwise sits here forever, so this cap bounds it regardless: oldest
+ * (least-recently-seen) entries are evicted first once there are too many.
+ */
+const MAX_ENTRIES = 20
+
 type JoinLinkMap = Record<string, string>
 
 function readAll(): JoinLinkMap {
@@ -41,8 +51,17 @@ function writeAll(map: JoinLinkMap): void {
 
 export function rememberJoinLink(matchId: string, token: string): void {
   const map = readAll()
-  if (map[matchId] === token) return
+  // Delete-then-reinsert moves the key to the end — plain object insertion
+  // order for string keys — so eviction below always drops the entries
+  // least recently seen, not just the numerically oldest ones.
+  delete map[matchId]
   map[matchId] = token
+  const keys = Object.keys(map)
+  if (keys.length > MAX_ENTRIES) {
+    for (const staleId of keys.slice(0, keys.length - MAX_ENTRIES)) {
+      delete map[staleId]
+    }
+  }
   writeAll(map)
 }
 

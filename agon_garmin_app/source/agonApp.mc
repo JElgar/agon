@@ -15,21 +15,24 @@ class agonApp extends Application.AppBase {
 
     // onStart() is called on application start up
     function onStart(state as Dictionary?) as Void {
-        // Recording starts as soon as the app opens, independent of the
-        // scoring menu entirely — see docs/garmin-live-scoring.md's
-        // "Recording + scoring, concurrently" section on why these two
-        // don't gate each other.
-        activityRecorder.start();
+        // Recording is *not* started here — it starts when the wearer
+        // records the first "start of half" event (kick-off / second-half
+        // kick-off), not the moment the app happens to open. See
+        // agonMenuDelegate's period handling.
     }
 
     // onStop() is called when your application is exiting
     function onStop(state as Dictionary?) as Void {
+        // Safety net if the app is closed mid-match without an explicit
+        // "End match" — never leaves a recording running unsaved.
         activityRecorder.stopAndSave();
     }
 
-    // Return the initial view of your application here
+    // Return the initial view of your application here: a sport picker
+    // (only football is wired up today — see SportMenuDelegate), not the
+    // scoring screen directly.
     function getInitialView() as [Views] or [Views, InputDelegates] {
-        return [ new agonView(), new agonDelegate() ];
+        return [ new Rez.Menus.SportMenu(), new SportMenuDelegate() ];
     }
 
 }

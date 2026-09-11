@@ -14,8 +14,16 @@ class MockApiClient {
     function initialize() {
     }
 
-    function recordGoal(side as Symbol, ownGoal as Boolean) as Void {
-        System.println("[mock api] Goal — side=" + side.toString() + " ownGoal=" + ownGoal.toString());
+    //! `scorer`/`assist` are `null` when skipped on the watch (see
+    //! GoalFlow.mc's "Unknown"/"No assist" options) — mirrors the
+    //! backend's `FootballGoalEvent` fields being optional.
+    function recordGoal(side as Symbol, scorer as String?, assist as String?) as Void {
+        var scorerText = (scorer == null) ? "unknown" : scorer;
+        var assistText = (assist == null) ? "none" : assist;
+        System.println(
+            "[mock api] Goal — side=" + side.toString()
+            + " scorer=" + scorerText + " assist=" + assistText
+        );
     }
 
     function recordPeriod(periodLabel as String) as Void {

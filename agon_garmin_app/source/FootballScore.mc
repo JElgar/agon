@@ -29,14 +29,18 @@ class FootballScore {
         _apiClient = apiClient;
     }
 
-    function recordHomeGoal() as Void {
-        homeGoals += 1;
-        _apiClient.recordGoal(:home, false);
-    }
-
-    function recordAwayGoal() as Void {
-        awayGoals += 1;
-        _apiClient.recordGoal(:away, false);
+    //! `scorer`/`assist` are `null` when skipped (the on-watch flow's
+    //! "Unknown"/"No assist" options — see GoalFlow.mc) — a goal doesn't
+    //! require picking a player, same as the backend's
+    //! `FootballGoalEvent.scorer_player_id`/`assist_player_id` being
+    //! optional.
+    function recordGoal(side as Symbol, scorer as String?, assist as String?) as Void {
+        if (side == :home) {
+            homeGoals += 1;
+        } else {
+            awayGoals += 1;
+        }
+        _apiClient.recordGoal(side, scorer, assist);
     }
 
     function setPeriod(newPeriod as Number) as Void {

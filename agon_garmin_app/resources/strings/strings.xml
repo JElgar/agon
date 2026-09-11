@@ -6,8 +6,9 @@
          stays internally valid rather than deleted outright. -->
     <string id="prompt">Click the menu button</string>
 
-    <string id="menuGoalHome">Goal - Home</string>
-    <string id="menuGoalAway">Goal - Away</string>
+    <string id="sportFootball">Football</string>
+
+    <string id="menuGoal">Goal</string>
     <string id="menuKickOff">Kick-off</string>
     <string id="menuHalfTime">Half-time</string>
     <string id="menuSecondHalf">2nd half kick-off</string>

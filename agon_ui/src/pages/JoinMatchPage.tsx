@@ -1,41 +1,20 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Swords } from 'lucide-react'
+import { CalendarClock, MapPin, Swords } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { clearPendingInvite } from '@/lib/pendingInvite'
+import { forgetJoinLink, rememberJoinLink } from '@/lib/joinLinkMemory'
+import { joinChoiceFor, sidesFor } from '@/lib/joinLink'
+import { relativeTime, scheduledDateTime } from '@/lib/datetime'
+import { sidePlayerCountLabel, sideTeamHint } from '@/lib/members'
+import { Avatar } from '@/components/agon/Avatar'
+import { SportBadge } from '@/components/agon/SportBadge'
 
 type JoinLinkPreview = components['schemas']['JoinLinkPreview']
 type Match = components['schemas']['Match']
-type MatchSide = components['schemas']['MatchSide']
-
-/** Which side(s) (if any) a join scope allows picking, and whether landing
- *  unassigned is offered — the client-side mirror of the server's
- *  `JoinScope`/`resolve_join_target` (see `agon_service/src/main.rs`). The
- *  server re-validates regardless; this only decides what the picker shows. */
-interface JoinChoice {
-  allowedSideIds: string[] | null
-  allowUnassigned: boolean
-}
-
-function joinChoiceFor(preview: JoinLinkPreview, match: Match): JoinChoice {
-  const scope = preview.scope
-  return {
-    allowedSideIds: scope.side_ids ?? null,
-    // The link's own preference, capped by the match's own ceiling — see
-    // `Match.allow_unassigned`'s doc comment. The server re-enforces this
-    // regardless; this only decides what the picker offers.
-    allowUnassigned: scope.allow_unassigned && match.allow_unassigned,
-  }
-}
-
-function sidesFor(choice: JoinChoice, match: Match): MatchSide[] {
-  if (choice.allowedSideIds === null) return match.sides
-  const allowed = choice.allowedSideIds
-  return match.sides.filter((s) => allowed.includes(s.id))
-}
 
 /**
  * The join-link landing screen. Reached once the visitor is signed in with an
@@ -44,6 +23,12 @@ function sidesFor(choice: JoinChoice, match: Match): MatchSide[] {
  * endpoint, loads the match itself for side names, offers a side picker when
  * the resolved scope names more than one option, then joins via
  * `POST /matches/:id/join`.
+ *
+ * Once the link resolves, its token is also remembered against the match id
+ * (see `lib/joinLinkMemory`) so "View match" — checking the game out before
+ * committing — doesn't lose it: `JoinLinkBanner` resurfaces the same join
+ * offer on the match detail page, the way a real invitation stays actionable
+ * there too.
  */
 export function JoinMatchPage() {
   const { token } = useParams<{ token: string }>()
@@ -71,6 +56,14 @@ export function JoinMatchPage() {
   })
 
   const matchId = preview.data?.match_id
+
+  // The link resolved to a real match — remember it so it's still usable
+  // from that match's own detail page (via `JoinLinkBanner`) if the visitor
+  // leaves via "View match" instead of joining right away.
+  useEffect(() => {
+    if (matchId && token) rememberJoinLink(matchId, token)
+  }, [matchId, token])
+
   const matchQuery = useQuery({
     queryKey: ['match', matchId],
     enabled: !!matchId,
@@ -132,6 +125,7 @@ export function JoinMatchPage() {
     onSuccess: (result) => {
       if (result === 'conflict' || !matchId) return
       clearPendingInvite()
+      forgetJoinLink(matchId)
       queryClient.invalidateQueries({ queryKey: ['match', matchId] })
       queryClient.invalidateQueries({ queryKey: ['feed'] })
       navigate(`/matches/${matchId}`, { replace: true })
@@ -162,7 +156,7 @@ export function JoinMatchPage() {
         <Swords className="size-7" />
       </div>
       <h2 className="mb-1 text-xl font-semibold">Join this game</h2>
-      <p className="mb-6 text-sm text-muted-foreground">
+      <p className="mb-3 text-sm text-muted-foreground">
         <strong className="font-medium text-foreground">{preview.data.match_name}</strong>
         {/* `!= null` (not `!== undefined`): the server serializes a Rust
             `Option::None` here as JSON `null`, not an absent key. */}
@@ -173,6 +167,60 @@ export function JoinMatchPage() {
           </>
         )}
       </p>
+
+      <div className="mb-4 w-full space-y-2 text-left text-sm">
+        <div className="flex flex-wrap items-center gap-2">
+          <SportBadge sport={match.match_type} />
+          <span className="text-muted-foreground" title={relativeTime(match.starts_at)}>
+            <CalendarClock className="mr-1 inline size-3.5 align-text-bottom" />
+            {scheduledDateTime(match.starts_at)}
+          </span>
+        </div>
+
+        {match.location && (
+          <a
+            href={`https://www.google.com/maps?q=${match.location.latitude},${match.location.longitude}`}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground"
+          >
+            <MapPin className="size-3.5 shrink-0" />
+            View location
+          </a>
+        )}
+
+        {match.description && <p className="text-muted-foreground">{match.description}</p>}
+
+        {/* The sides this link can actually land the joiner on (mirrors the
+            picker below), each with how full its roster already is — the
+            same info the picker's options carry, but visible even when
+            there's nothing to pick (a single forced side, or unassigned-only). */}
+        {pickableSides.length > 0 && (
+          <div className="space-y-1.5 rounded-lg border bg-muted/30 p-2.5">
+            {pickableSides.map((side, i) => {
+              const name = side.name?.trim() || `Side ${i + 1}`
+              return (
+                <div key={side.id} className="flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Avatar name={name} imageUrl={side.team_logo?.image_url} size="sm" />
+                    <div className="min-w-0">
+                      <span className="block truncate font-medium">{name}</span>
+                      {sideTeamHint(side) && (
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {sideTeamHint(side)}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {sidePlayerCountLabel(side)}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
 
       {needsPick && (
         <div className="mb-4 w-full">
@@ -197,7 +245,7 @@ export function JoinMatchPage() {
             )}
             {pickableSides.map((side, i) => (
               <option key={side.id} value={side.id}>
-                {side.name?.trim() || `Side ${i + 1}`}
+                {side.name?.trim() || `Side ${i + 1}`} · {sidePlayerCountLabel(side)}
               </option>
             ))}
           </select>
@@ -219,6 +267,17 @@ export function JoinMatchPage() {
         onClick={() => join.mutate()}
       >
         {join.isPending ? 'Joining…' : 'Join'}
+      </Button>
+
+      {/* Check the game out first without committing — the link stays
+          usable from there too (just-remembered above), via
+          `JoinLinkBanner`. */}
+      <Button
+        variant="ghost"
+        className="mt-2 w-full"
+        onClick={() => navigate(`/matches/${matchId}`)}
+      >
+        View match
       </Button>
     </JoinCard>
   )

@@ -1,0 +1,9 @@
+# Build output — compiled .prg / debug xml, regenerated every build
+bin/
+gen/
+
+# Garmin developer signing keys
+*.der
+
+# vscode
+.vscode/

@@ -1,8 +1,16 @@
 <strings xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://developer.garmin.com/downloads/connect-iq/resources.xsd">
     <string id="AppName">agon</string>
 
+    <!-- Still referenced by resources/layouts/layout.xml, which agonView.mc
+         no longer draws (see its onLayout) — kept so that unused resource
+         stays internally valid rather than deleted outright. -->
     <string id="prompt">Click the menu button</string>
 
-    <string id="menu_label_1">Item 1</string>
-    <string id="menu_label_2">Item 2</string>
+    <string id="menuGoalHome">Goal - Home</string>
+    <string id="menuGoalAway">Goal - Away</string>
+    <string id="menuKickOff">Kick-off</string>
+    <string id="menuHalfTime">Half-time</string>
+    <string id="menuSecondHalf">2nd half kick-off</string>
+    <string id="menuFullTime">Full-time</string>
+    <string id="menuEndMatch">End match (save activity)</string>
 </strings>

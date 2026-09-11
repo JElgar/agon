@@ -2,29 +2,23 @@ import Toybox.Lang;
 import Toybox.WatchUi;
 
 //! The "Goal" menu flow: pick a side, then (optionally) who scored, then
-//! (optionally) who assisted — three chained `WatchUi.Menu` screens
-//! rather than one, since a 5-button watch can't usefully show
-//! "side + scorer + assist" as a single list. Built programmatically
-//! (not a menu.xml resource) because the scorer/assist lists come from
-//! `MockRoster` today and a real per-match roster fetch tomorrow —
-//! neither is knowable at resource-compile time the way a fixed menu.xml
-//! is.
+//! (optionally) who assisted — three chained screens rather than one,
+//! since a 5-button watch can't usefully show "side + scorer + assist" as
+//! a single list. Built programmatically (not a menu.xml resource)
+//! because the scorer/assist lists come from `MockRoster` today and a
+//! real per-match roster fetch tomorrow — neither is knowable at
+//! resource-compile time the way a fixed menu.xml is.
 //!
-//! `Menu` here is the legacy widget (same one `resources/menus/menu.xml`
-//! resolves to) — no `MenuItem` object involved: it's built with a
-//! no-arg constructor, `setTitle(title)`, and
-//! `addItem(label, identifier as Symbol)`, confirmed against a real
-//! build (the first pass here guessed a `Menu2`-shaped API — options
-//! dictionary constructor + `MenuItem` objects — which doesn't exist on
-//! this class and failed to compile).
-//!
-//! Relies on the same per-selection auto-dismiss behavior every menu in
-//! this app already depends on (see `agonMenuDelegate` — no explicit
-//! `popView` calls there either): a `WatchUi.Menu` pops itself the moment
-//! an item is chosen, so having the next menu already pushed in its place
-//! by then is what keeps the view stack from growing at every step —
-//! after the final (assist) selection, that self-dismiss lands you back
-//! on the score screen, not three menus deep.
+//! Each step uses `WatchUi.switchToView` (not `pushView`) to move to the
+//! next one, and the final step `switchToView`s back to `agonView`. The
+//! first version of this chained `pushView`s instead, assuming each
+//! `WatchUi.Menu` would pop itself on selection and land the flow back
+//! where it started once the last one did the same — confirmed wrong on
+//! a real device: it oscillated between the scorer and assist screens
+//! instead. `switchToView` sidesteps the question entirely by replacing
+//! the whole view stack outright at every step, which is also exactly
+//! the (already working) mechanism `SportMenuDelegate` uses to get from
+//! the sport picker into the score screen in the first place.
 //!
 //! Item ids are fixed symbols (`:player_0`.. `:player_4`, `:unknown`,
 //! `:none`) rather than the player's own name, so `onMenuItem`'s
@@ -88,7 +82,7 @@ class GoalSideMenuDelegate extends WatchUi.MenuInputDelegate {
     function onMenuItem(item as Symbol) as Void {
         // item is :home or :away — that symbol IS the side value the rest
         // of the flow needs, no resolving required.
-        WatchUi.pushView(
+        WatchUi.switchToView(
             buildPlayerMenu("Scorer", item, "Unknown", :unknown),
             new GoalScorerMenuDelegate(item),
             WatchUi.SLIDE_UP
@@ -107,7 +101,7 @@ class GoalScorerMenuDelegate extends WatchUi.MenuInputDelegate {
 
     function onMenuItem(item as Symbol) as Void {
         var scorer = resolvePlayerSlot(_side, item);
-        WatchUi.pushView(
+        WatchUi.switchToView(
             buildPlayerMenu("Assist", _side, "No assist", :none),
             new GoalAssistMenuDelegate(_side, scorer),
             WatchUi.SLIDE_UP
@@ -129,6 +123,9 @@ class GoalAssistMenuDelegate extends WatchUi.MenuInputDelegate {
     function onMenuItem(item as Symbol) as Void {
         var assist = resolvePlayerSlot(_side, item);
         getApp().score.recordGoal(_side, _scorer, assist);
-        WatchUi.requestUpdate();
+        // Back to the score screen — a fresh agonView/agonDelegate is
+        // fine, it reads app.score straight from the singleton app on
+        // every onUpdate rather than carrying its own state.
+        WatchUi.switchToView(new agonView(), new agonDelegate(), WatchUi.SLIDE_DOWN);
     }
 }

@@ -7,11 +7,4 @@
     <string id="prompt">Click the menu button</string>
 
     <string id="sportFootball">Football</string>
-
-    <string id="menuGoal">Goal</string>
-    <string id="menuKickOff">Kick-off</string>
-    <string id="menuHalfTime">Half-time</string>
-    <string id="menuSecondHalf">2nd half kick-off</string>
-    <string id="menuFullTime">Full-time</string>
-    <string id="menuEndMatch">End match (save activity)</string>
 </strings>

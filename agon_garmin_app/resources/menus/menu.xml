@@ -1,8 +1,0 @@
-<menu id="MainMenu" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://developer.garmin.com/downloads/connect-iq/resources.xsd">
-    <menu-item id="goal" label="@Strings.menuGoal" />
-    <menu-item id="period_kick_off" label="@Strings.menuKickOff" />
-    <menu-item id="period_half_time" label="@Strings.menuHalfTime" />
-    <menu-item id="period_second_half" label="@Strings.menuSecondHalf" />
-    <menu-item id="period_full_time" label="@Strings.menuFullTime" />
-    <menu-item id="end_match" label="@Strings.menuEndMatch" />
-</menu>

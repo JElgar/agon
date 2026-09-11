@@ -25,7 +25,10 @@ class agonDelegate extends WatchUi.BehaviorDelegate {
     }
 
     function openMenu() as Void {
-        WatchUi.pushView(new Rez.Menus.MainMenu(), new agonMenuDelegate(), WatchUi.SLIDE_UP);
+        // Built dynamically from the match's current period — see
+        // agonMenuDelegate.buildMainMenu — not the (now unused)
+        // resources/menus/menu.xml resource.
+        WatchUi.pushView(buildMainMenu(), new agonMenuDelegate(), WatchUi.SLIDE_UP);
     }
 
 }

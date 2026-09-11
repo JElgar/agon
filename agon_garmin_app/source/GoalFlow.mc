@@ -54,19 +54,35 @@ function buildSideMenu() as WatchUi.Menu {
 }
 
 //! Shared builder for the scorer/assist menus — same roster, different
-//! title and "skip this" placeholder (Unknown vs. No assist).
+//! title and "skip this" placeholder (Unknown vs. No assist). The skip
+//! option always sits last in the list — the only control guaranteed to
+//! exist on every device this app targets (including the touchscreen-only
+//! ones with no extra buttons) is select/back, and repurposing Back for
+//! "skip" would be an undiscoverable, screen-dependent shortcut; an
+//! explicit trailing list item needs no explanation.
+//!
+//! `excludePlayerName` drops one name from the list — used so the assist
+//! menu can't offer the same player who was just picked as scorer (a
+//! player can't assist their own goal). `null` shows the full roster, as
+//! the scorer menu always does (nothing to exclude yet).
 function buildPlayerMenu(
     title as String,
     side as Symbol,
     placeholderLabel as String,
-    placeholderId as Symbol
+    placeholderId as Symbol,
+    excludePlayerName as String?
 ) as WatchUi.Menu {
     var menu = new WatchUi.Menu();
     menu.setTitle(title);
     var players = MockRoster.playersFor(side);
     var i = 0;
     while (i < players.size() && i < PLAYER_SLOT_SYMBOLS.size()) {
-        menu.addItem(players[i], PLAYER_SLOT_SYMBOLS[i]);
+        if (excludePlayerName == null || !players[i].equals(excludePlayerName)) {
+            // Slot symbols are index-based, not list-position-based, so
+            // skipping an entry here just leaves a gap — resolvePlayerSlot
+            // still maps the remaining ones back to the right player.
+            menu.addItem(players[i], PLAYER_SLOT_SYMBOLS[i]);
+        }
         i += 1;
     }
     menu.addItem(placeholderLabel, placeholderId);
@@ -83,7 +99,7 @@ class GoalSideMenuDelegate extends WatchUi.MenuInputDelegate {
         // item is :home or :away — that symbol IS the side value the rest
         // of the flow needs, no resolving required.
         WatchUi.switchToView(
-            buildPlayerMenu("Scorer", item, "Unknown", :unknown),
+            buildPlayerMenu("Scorer", item, "Unknown", :unknown, null),
             new GoalScorerMenuDelegate(item),
             WatchUi.SLIDE_UP
         );
@@ -102,7 +118,10 @@ class GoalScorerMenuDelegate extends WatchUi.MenuInputDelegate {
     function onMenuItem(item as Symbol) as Void {
         var scorer = resolvePlayerSlot(_side, item);
         WatchUi.switchToView(
-            buildPlayerMenu("Assist", _side, "No assist", :none),
+            // Exclude the scorer — a player can't assist their own goal.
+            // scorer is null when they were left "Unknown", in which case
+            // there's nothing to exclude.
+            buildPlayerMenu("Assist", _side, "No assist", :none, scorer),
             new GoalAssistMenuDelegate(_side, scorer),
             WatchUi.SLIDE_UP
         );

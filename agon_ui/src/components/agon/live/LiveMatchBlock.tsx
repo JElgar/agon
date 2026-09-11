@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { components } from '@/types/api'
 import { Avatar } from '@/components/agon/Avatar'
+import { TeamLink } from '@/components/agon/TeamLink'
 import { LiveIndicator } from './LiveIndicator'
 import {
   describeEvent,
@@ -61,10 +62,10 @@ export function LiveMatchBlock({
   return (
     <div className="rounded-lg bg-muted/50 px-3.5 py-3">
       <div className="flex items-center justify-between">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
+        <TeamLink teamId={sideA?.team_id} className="flex min-w-0 flex-1 items-center gap-2">
           <Avatar name={nameA} imageUrl={sideA?.team_logo?.image_url} size="md" />
           <span className="truncate text-xs font-medium">{nameA}</span>
-        </div>
+        </TeamLink>
         <div className="px-3 text-center">
           <div className="text-2xl font-medium leading-none tracking-tight">
             {goalsFor(sideA?.id)}
@@ -78,10 +79,13 @@ export function LiveMatchBlock({
             })()}
           </div>
         </div>
-        <div className="flex min-w-0 flex-1 flex-row-reverse items-center gap-2 text-right">
+        <TeamLink
+          teamId={sideB?.team_id}
+          className="flex min-w-0 flex-1 flex-row-reverse items-center gap-2 text-right"
+        >
           <Avatar name={nameB} imageUrl={sideB?.team_logo?.image_url} size="md" />
           <span className="truncate text-xs font-medium">{nameB}</span>
-        </div>
+        </TeamLink>
       </div>
 
       {events.length > 0 && (

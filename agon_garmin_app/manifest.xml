@@ -105,12 +105,18 @@
             <!-- Needed for ActivityRecording's session to actually capture
                  a GPS track, not just HR/time. -->
             <iq:uses-permission id="Positioning"/>
+            <!-- Required for ActivityRecording.createSession/Session itself
+                 (confirmed via a real build: "Permission 'Fit' required
+                 for ...ActivityRecording..."). -->
+            <iq:uses-permission id="Fit"/>
         </iq:permissions>
         <!--
             Use "Monkey C: Edit Languages" from the Visual Studio Code command
             palette to edit your compatible language list.
         -->
-        <iq:languages/>
+        <iq:languages>
+            <iq:language>eng</iq:language>
+        </iq:languages>
         <!--
             Use "Monkey C: Configure Monkey Barrel" from the Visual Studio Code
             command palette to edit the included barrels.

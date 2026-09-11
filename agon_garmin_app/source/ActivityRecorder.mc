@@ -1,3 +1,4 @@
+import Toybox.Activity;
 import Toybox.ActivityRecording;
 import Toybox.Lang;
 
@@ -7,11 +8,10 @@ import Toybox.Lang;
 //! docs/garmin-live-scoring.md's "Recording + scoring, concurrently"
 //! section.
 //!
-//! Uses `SPORT_GENERIC` with a descriptive session name rather than a
-//! soccer-specific sport constant — swap in a more specific one if your
-//! SDK version exposes it (check `Toybox.ActivityRecording`'s API docs).
-//! Generic still gets a normal recorded activity in Garmin Connect either
-//! way; only the auto-categorization would improve.
+//! Sport is `Activity.SPORT_SOCCER` — `ActivityRecording.SPORT_GENERIC`
+//! (what this used before a real build caught it) is deprecated in favor
+//! of the `Activity.Sport` constants, and there's a real soccer/football
+//! one available, so no need for "generic" at all.
 class ActivityRecorder {
 
     var _session as ActivityRecording.Session?;
@@ -35,7 +35,7 @@ class ActivityRecorder {
         }
         _session = ActivityRecording.createSession({
             :name => "Football",
-            :sport => ActivityRecording.SPORT_GENERIC,
+            :sport => Activity.SPORT_SOCCER,
         });
         _session.start();
     }

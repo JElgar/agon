@@ -10,16 +10,21 @@ import Toybox.WatchUi;
 //! neither is knowable at resource-compile time the way a fixed menu.xml
 //! is.
 //!
+//! `Menu` here is the legacy widget (same one `resources/menus/menu.xml`
+//! resolves to) — no `MenuItem` object involved: it's built with a
+//! no-arg constructor, `setTitle(title)`, and
+//! `addItem(label, identifier as Symbol)`, confirmed against a real
+//! build (the first pass here guessed a `Menu2`-shaped API — options
+//! dictionary constructor + `MenuItem` objects — which doesn't exist on
+//! this class and failed to compile).
+//!
 //! Relies on the same per-selection auto-dismiss behavior every menu in
 //! this app already depends on (see `agonMenuDelegate` — no explicit
 //! `popView` calls there either): a `WatchUi.Menu` pops itself the moment
 //! an item is chosen, so having the next menu already pushed in its place
 //! by then is what keeps the view stack from growing at every step —
 //! after the final (assist) selection, that self-dismiss lands you back
-//! on the score screen, not three menus deep. If that assumption turns
-//! out to be wrong once this actually runs (extra menus stack up, or a
-//! step closes when it shouldn't), the fix is explicit `WatchUi.popView`
-//! calls here rather than relying on it.
+//! on the score screen, not three menus deep.
 //!
 //! Item ids are fixed symbols (`:player_0`.. `:player_4`, `:unknown`,
 //! `:none`) rather than the player's own name, so `onMenuItem`'s
@@ -47,9 +52,10 @@ function resolvePlayerSlot(side as Symbol, item as Symbol) as String? {
 }
 
 function buildSideMenu() as WatchUi.Menu {
-    var menu = new WatchUi.Menu({ :title => "Goal" });
-    menu.addItem(new WatchUi.MenuItem("Home", null, :home, {}));
-    menu.addItem(new WatchUi.MenuItem("Away", null, :away, {}));
+    var menu = new WatchUi.Menu();
+    menu.setTitle("Goal");
+    menu.addItem("Home", :home);
+    menu.addItem("Away", :away);
     return menu;
 }
 
@@ -61,14 +67,15 @@ function buildPlayerMenu(
     placeholderLabel as String,
     placeholderId as Symbol
 ) as WatchUi.Menu {
-    var menu = new WatchUi.Menu({ :title => title });
+    var menu = new WatchUi.Menu();
+    menu.setTitle(title);
     var players = MockRoster.playersFor(side);
     var i = 0;
     while (i < players.size() && i < PLAYER_SLOT_SYMBOLS.size()) {
-        menu.addItem(new WatchUi.MenuItem(players[i], null, PLAYER_SLOT_SYMBOLS[i], {}));
+        menu.addItem(players[i], PLAYER_SLOT_SYMBOLS[i]);
         i += 1;
     }
-    menu.addItem(new WatchUi.MenuItem(placeholderLabel, null, placeholderId, {}));
+    menu.addItem(placeholderLabel, placeholderId);
     return menu;
 }
 

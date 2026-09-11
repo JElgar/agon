@@ -41,6 +41,7 @@ import {
   canManageMatch,
   isMatchOwner,
   isParticipant,
+  matchPlayerTotalLabel,
   memberAvatarUrl,
   memberInviteToken,
   memberName,
@@ -350,6 +351,11 @@ function MatchDetail({
               ) : (
                 <div className="shrink-0 px-3 text-center text-xs text-muted-foreground">
                   vs
+                  {showPlayerCounts && (
+                    <p className="mt-0.5 text-[9px] text-nowrap">
+                      {matchPlayerTotalLabel(match)}
+                    </p>
+                  )}
                 </div>
               )}
               <div className="flex min-w-0 flex-1 flex-row-reverse items-center gap-2 text-right">

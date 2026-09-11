@@ -1,9 +1,10 @@
 //! Inline handler: generate notifications from social events.
 //!
 //! Triggered by newly-created social edges: a follow, a match like, a match
-//! comment, an invitation, or a score submission. For each we synthesise a
-//! `NotificationRecord` for the target user and write it via the DAO (which
-//! bumps the unread badge atomically).
+//! comment, an invitation, a roster join (match player / team member), or a
+//! score submission. For each we synthesise a `NotificationRecord` for the
+//! target user and write it via the DAO (which bumps the unread badge
+//! atomically).
 //!
 //! **Idempotency**: notification ids are **deterministic**, derived from the
 //! source item's keys (`notif-<kind>-<...>`). Combined with the guarded,
@@ -17,8 +18,8 @@
 use agon_core::dao::Dao;
 use agon_core::dao::keys::{Pk, Sk};
 use agon_core::dao::records::{
-    InvitationContextRecord, InvitationRecord, MatchRecord, NotificationKindRecord,
-    NotificationRecord, ScoreSubmissionRecord,
+    InvitationContextRecord, InvitationRecord, MatchPlayerRecord, MatchRecord,
+    NotificationKindRecord, NotificationRecord, ScoreSubmissionRecord, TeamMemberRecord,
 };
 
 use crate::error::{WorkerError, WorkerResult};
@@ -52,6 +53,19 @@ pub async fn handle(dao: &Dao, ev: &ChangeEvent, now: &str) -> WorkerResult<()> 
     // existing match) both count — see `notify_team_join_sides`.
     if let (Pk::Match(_), Sk::Meta) = (&ev.pk, &ev.sk) {
         return notify_team_join_sides(dao, ev, now).await;
+    }
+
+    // A match roster row, likewise: INSERT (added directly, or self-served in
+    // via a join link / team self-join) and MODIFY (a pending invitation on
+    // that row transitioning to accepted) both count — see
+    // `notify_player_joined`.
+    if let (Pk::Match(match_id), Sk::Player(player_id)) = (&ev.pk, &ev.sk) {
+        return notify_player_joined(dao, ev, match_id, player_id, now).await;
+    }
+
+    // The team counterpart of the above.
+    if let (Pk::Team(team_id), Sk::Member(membership_id)) = (&ev.pk, &ev.sk) {
+        return notify_team_member_joined(dao, ev, team_id, membership_id, now).await;
     }
 
     // Every other notification is generated only on the creation of the edge.
@@ -459,6 +473,180 @@ async fn notify_team_match_joinable(
                 team_name: team_agg.team.name.clone(),
                 match_id: match_rec.id.clone(),
                 match_name: match_rec.name.clone(),
+            },
+        };
+        dao.create_notification(&notif).await?;
+    }
+    Ok(())
+}
+
+/// A match roster row changed: notify the match's other participants that a
+/// new player joined. Two shapes of "joined" reach here:
+///
+/// - **INSERT with no invitation attached** — the player is on the roster
+///   immediately: an organizer's direct add, a join-link, or team self-join
+///   (`Api::join_match`). Notify right away.
+/// - **MODIFY where the row's embedded invitation transitions
+///   `pending → accepted`** — the player was invited and just accepted
+///   (`Dao::accept_invitation_tx`). Notify, but the inviter is never a
+///   recipient: they already got `InvitationAccepted` off the invitation's
+///   own stream event for this same acceptance, and a `PlayerJoined` on top
+///   would just restate it.
+///
+/// An **INSERT with a pending invitation attached** is the invite being sent
+/// (the roster row exists, pre-accepted-looking, from the moment the invite
+/// goes out — see `build_invited_player`), not a join yet — skipped; the
+/// invitee's own `MatchInvitation` notification already covers that moment.
+///
+/// A row with no linked user (`user_id: None`, an unlinked external added by
+/// display name) has no one to attribute the join to — skipped.
+async fn notify_player_joined(
+    dao: &Dao,
+    ev: &ChangeEvent,
+    match_id: &str,
+    player_id: &str,
+    now: &str,
+) -> WorkerResult<()> {
+    if ev.kind == ChangeKind::Remove {
+        return Ok(());
+    }
+    let Some(new) = ev.new_record::<MatchPlayerRecord>() else {
+        return Ok(());
+    };
+    let Some(joiner_user_id) = new.user_id.clone() else {
+        return Ok(());
+    };
+
+    let exclude_inviter = match ev.kind {
+        ChangeKind::Insert => {
+            if new.invitation.is_some() {
+                return Ok(());
+            }
+            None
+        }
+        ChangeKind::Modify => {
+            let Some(inv) = &new.invitation else {
+                return Ok(());
+            };
+            if inv.status != "accepted" {
+                return Ok(());
+            }
+            // Only fire on the transition into "accepted" — not on a modify
+            // of an already-accepted row (e.g. an unrelated field rewrite /
+            // the saga's idempotent re-link replaying).
+            let was_accepted = ev
+                .old_record::<MatchPlayerRecord>()
+                .and_then(|old| old.invitation)
+                .is_some_and(|old_inv| old_inv.status == "accepted");
+            if was_accepted {
+                return Ok(());
+            }
+            Some(inv.invited_by_user_id.clone())
+        }
+        ChangeKind::Remove => unreachable!("handled above"),
+    };
+
+    let Some(agg) = dao.get_match(match_id).await? else {
+        return Ok(());
+    };
+
+    let mut recipients: std::collections::BTreeSet<String> =
+        participant_user_ids(&agg, &joiner_user_id)
+            .into_iter()
+            .collect();
+    if let Some(inviter) = &exclude_inviter {
+        recipients.remove(inviter);
+    }
+
+    for user_id in recipients {
+        let notif = NotificationRecord {
+            id: format!("notif-playerjoined-{match_id}-{player_id}-{user_id}"),
+            user_id,
+            is_read: false,
+            created_at: now.to_string(),
+            kind: NotificationKindRecord::PlayerJoined {
+                actor_user_id: joiner_user_id.clone(),
+                match_id: match_id.to_string(),
+                match_name: agg.match_.name.clone(),
+            },
+        };
+        dao.create_notification(&notif).await?;
+    }
+    Ok(())
+}
+
+/// The team counterpart of [`notify_player_joined`]: a team membership row
+/// changed, notify the team's other members that a new member joined. Same
+/// INSERT (ad-hoc add, `Api::add_team_members`) vs MODIFY (invitation
+/// `pending → accepted`, `Dao::accept_invitation_tx`) split, and the same
+/// inviter exclusion on the MODIFY case.
+async fn notify_team_member_joined(
+    dao: &Dao,
+    ev: &ChangeEvent,
+    team_id: &str,
+    membership_id: &str,
+    now: &str,
+) -> WorkerResult<()> {
+    if ev.kind == ChangeKind::Remove {
+        return Ok(());
+    }
+    let Some(new) = ev.new_record::<TeamMemberRecord>() else {
+        return Ok(());
+    };
+    let Some(joiner_user_id) = new.user_id.clone() else {
+        return Ok(());
+    };
+
+    let exclude_inviter = match ev.kind {
+        ChangeKind::Insert => {
+            if new.invitation.is_some() {
+                return Ok(());
+            }
+            None
+        }
+        ChangeKind::Modify => {
+            let Some(inv) = &new.invitation else {
+                return Ok(());
+            };
+            if inv.status != "accepted" {
+                return Ok(());
+            }
+            let was_accepted = ev
+                .old_record::<TeamMemberRecord>()
+                .and_then(|old| old.invitation)
+                .is_some_and(|old_inv| old_inv.status == "accepted");
+            if was_accepted {
+                return Ok(());
+            }
+            Some(inv.invited_by_user_id.clone())
+        }
+        ChangeKind::Remove => unreachable!("handled above"),
+    };
+
+    let Some(agg) = dao.get_team(team_id).await? else {
+        return Ok(());
+    };
+
+    let mut recipients: std::collections::BTreeSet<String> = agg
+        .members
+        .iter()
+        .filter_map(|m| m.user_id.clone())
+        .filter(|uid| *uid != joiner_user_id)
+        .collect();
+    if let Some(inviter) = &exclude_inviter {
+        recipients.remove(inviter);
+    }
+
+    for user_id in recipients {
+        let notif = NotificationRecord {
+            id: format!("notif-teammemberjoined-{team_id}-{membership_id}-{user_id}"),
+            user_id,
+            is_read: false,
+            created_at: now.to_string(),
+            kind: NotificationKindRecord::TeamMemberJoined {
+                actor_user_id: joiner_user_id.clone(),
+                team_id: team_id.to_string(),
+                team_name: agg.team.name.clone(),
             },
         };
         dao.create_notification(&notif).await?;

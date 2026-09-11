@@ -51,6 +51,10 @@ pub enum NotificationKind {
     /// A team you belong to may now join a match directly on one of its
     /// sides (`MatchSide.team_join_enabled`) — no invite or link needed.
     TeamMatchJoinable(TeamMatchJoinableNotification),
+    /// A new player joined a match you're in.
+    PlayerJoined(PlayerJoinedNotification),
+    /// Someone joined a team you're a member of.
+    TeamMemberJoined(TeamMemberJoinedNotification),
 }
 
 #[derive(Object)]
@@ -160,6 +164,24 @@ pub struct TeamMatchJoinableNotification {
     pub match_id: String,
     /// Display label so the row renders without fetching the match.
     pub match_name: String,
+}
+
+#[derive(Object)]
+pub struct PlayerJoinedNotification {
+    /// The player who joined.
+    pub joined_by: UserProfile,
+    pub match_id: String,
+    /// Display label so the row renders without fetching the match.
+    pub match_name: String,
+}
+
+#[derive(Object)]
+pub struct TeamMemberJoinedNotification {
+    /// The member who joined.
+    pub joined_by: UserProfile,
+    pub team_id: String,
+    /// Display label so the row renders without fetching the team.
+    pub team_name: String,
 }
 
 /// One page of notifications. `next_cursor` absent => end.

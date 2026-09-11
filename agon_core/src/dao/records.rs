@@ -1226,6 +1226,26 @@ pub enum NotificationKindRecord {
         match_id: String,
         match_name: String,
     },
+    /// A new player joined a match you're in — added directly by an
+    /// organizer, self-served (join link or team self-join), or their
+    /// invitation just got accepted. `actor_user_id` is the player who
+    /// joined.
+    ///
+    /// When the join was an invitation being accepted, the inviter is never a
+    /// recipient here — they already got `InvitationAccepted` for that same
+    /// event, and this would just restate it.
+    PlayerJoined {
+        actor_user_id: String,
+        match_id: String,
+        match_name: String,
+    },
+    /// The team counterpart of `PlayerJoined`: someone joined a team you're a
+    /// member of. Same actor/exclusion rules.
+    TeamMemberJoined {
+        actor_user_id: String,
+        team_id: String,
+        team_name: String,
+    },
 }
 
 /// The client platform a registered push token belongs to. Distinguishes how

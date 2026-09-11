@@ -165,31 +165,43 @@ watch fetch "matches I can score" from the API itself and pick from a list
 
 ## What's left to build
 
-Backend (this session): done — pairing endpoints, device-signing
-infrastructure, unit tests (`agon_service/src/auth.rs`,
-`agon_core::dao::device_pairing`), this doc. Not yet run through
-`make generate-schema` (needs `openapi-generator-cli`, not available in
-this sandbox) — run that once to regenerate `schema.json` and
+Backend: done — pairing endpoints, device-signing infrastructure, unit
+tests (`agon_service/src/auth.rs`, `agon_core::dao::device_pairing`). Not
+yet run through `make generate-schema` (needs `openapi-generator-cli`, not
+available in this sandbox) — run that once to regenerate `schema.json` and
 `openapi_client` before wiring a UI "pair a device" screen into `agon_ui`
 against the generated client types.
 
+Watch app: scaffolded, under `garmin_app/` — a Connect IQ (Monkey C)
+project covering pairing (via App Settings), goal + period-marker live
+scoring with an offline-safe queue against `POST /matches/:id/live/events`,
+and a concurrent `ActivityRecording.Session`. **Not yet compiled or run**
+— this sandbox has no Connect IQ SDK, so it's written against
+`agon_service`'s actual JSON shapes (checked directly against the Rust
+source) but not compiler-verified. See `garmin_app/README.md` for what it
+covers, what it deliberately doesn't (cards/substitutions — need a
+roster-fetch + player picker), and exactly what "getting it building"
+means from here.
+
 Still to do, roughly in order:
 
-1. **A "pair a device" screen in `agon_ui`** calling
-   `POST /devices/pairing-codes` and showing the code + a countdown.
-2. **The Connect IQ watch app itself** — new Garmin Connect IQ SDK project
-   (Monkey C), starting from a Watch App template: pairing-code settings
-   field, `ActivityRecording.Session`, the scoring button grid, the local
-   event queue + flush loop against `POST /matches/:id/live/events`.
-   Developed/tested in the Connect IQ simulator first, then on a real
-   compatible device (anything with `ActivityRecording` + `Communications`
-   web-request support — most WiFi-capable Forerunner/Fenix/Epix models).
-3. **Device-scoped tokens** (the v1 limitation flagged above) — a `scope`
+1. **Actually build and run `garmin_app/`** against a real Connect IQ SDK
+   — install the SDK, register an app id, fix whatever the compiler flags
+   (expected — see above), and validate in the simulator, then on a real
+   WiFi-capable device.
+2. **A "pair a device" screen in `agon_ui`** calling
+   `POST /devices/pairing-codes` and showing the code + a countdown — the
+   only way to actually get a code today is calling the endpoint directly.
+3. **Fetch and render the real score** (`GET /matches/:id/score`) on the
+   watch instead of `ScoringView`'s session-local tally.
+4. **Device-scoped tokens** (the v1 limitation flagged above) — a `scope`
    claim plus enforcement in sensitive handlers, before this goes anywhere
    near a non-trivial number of real users' watches.
-4. **A "manage paired devices" screen** — list + revoke, once there's
+5. **A "manage paired devices" screen** — list + revoke, once there's
    more than one code path creating `AUTH#device:*` guards to manage.
-5. **Phone-relay transport** (Option B above) for watches without direct
+6. **Cards and substitutions** on the watch, once there's a roster
+   fetch + player picker to attribute them to.
+7. **Phone-relay transport** (Option B above) for watches without direct
    WiFi/LTE.
-6. **Provision the device-signing key via `agon_infra`** instead of a
+8. **Provision the device-signing key via `agon_infra`** instead of a
    hand-set env var, mirroring the existing CloudFront signing-key pattern.

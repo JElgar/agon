@@ -30,9 +30,12 @@ class agonApp extends Application.AppBase {
 
     // Return the initial view of your application here: a sport picker
     // (only football is wired up today — see SportMenuDelegate), not the
-    // scoring screen directly.
+    // scoring screen directly. Titled explicitly so a single-item menu
+    // still reads as "pick one of these", not a bare, unlabeled screen.
     function getInitialView() as [Views] or [Views, InputDelegates] {
-        return [ new Rez.Menus.SportMenu(), new SportMenuDelegate() ];
+        var sportMenu = new Rez.Menus.SportMenu();
+        sportMenu.setTitle("Select sport");
+        return [ sportMenu, new SportMenuDelegate() ];
     }
 
 }

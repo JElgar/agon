@@ -1,6 +1,0 @@
-# Connect IQ build config. See:
-# https://developer.garmin.com/connect-iq/monkey-c/monkey-jungle-files/
-project.manifest = manifest.xml
-
-base.sourcePath = source
-base.resourcePath = resources

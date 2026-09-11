@@ -172,28 +172,28 @@ available in this sandbox) — run that once to regenerate `schema.json` and
 `openapi_client` before wiring a UI "pair a device" screen into `agon_ui`
 against the generated client types.
 
-Watch app: scaffolded, under `garmin_app/` — a Connect IQ (Monkey C)
-project covering pairing (via App Settings), goal + period-marker live
-scoring with an offline-safe queue against `POST /matches/:id/live/events`,
-and a concurrent `ActivityRecording.Session`. **Not yet compiled or run**
-— this sandbox has no Connect IQ SDK, so it's written against
-`agon_service`'s actual JSON shapes (checked directly against the Rust
-source) but not compiler-verified. See `garmin_app/README.md` for what it
-covers, what it deliberately doesn't (cards/substitutions — need a
-roster-fetch + player picker), and exactly what "getting it building"
-means from here.
+Watch app: a real Connect IQ (Monkey C) project, `agon_garmin_app/`,
+created via the SDK's own Project Wizard and building/running in the
+simulator. Currently covers goal + period-marker scoring (via an on-watch
+menu) and a concurrent `ActivityRecording.Session`, both compiler-verified
+— no pairing, no real network calls yet: `MockApiClient` just logs what
+would be sent instead of calling `agon_service`. A now-superseded
+hand-written scaffold (`garmin_app/`, written before a real SDK install
+was available to compile against) has been removed in favor of this one.
 
 Still to do, roughly in order:
 
-1. **Actually build and run `garmin_app/`** against a real Connect IQ SDK
-   — install the SDK, register an app id, fix whatever the compiler flags
-   (expected — see above), and validate in the simulator, then on a real
-   WiFi-capable device.
+1. **Wire `MockApiClient` up to the real API** — pairing (via App
+   Settings, claiming a code from `POST /devices/pairing-codes`) and an
+   offline-safe queue against `POST /matches/:id/live/events`, replacing
+   the mock with real `Communications.makeWebRequest` calls. `FootballScore`
+   and the UI shouldn't need to change for this — see `MockApiClient`'s
+   doc comment.
 2. **A "pair a device" screen in `agon_ui`** calling
    `POST /devices/pairing-codes` and showing the code + a countdown — the
    only way to actually get a code today is calling the endpoint directly.
 3. **Fetch and render the real score** (`GET /matches/:id/score`) on the
-   watch instead of `ScoringView`'s session-local tally.
+   watch instead of `FootballScore`'s session-local tally.
 4. **Device-scoped tokens** (the v1 limitation flagged above) — a `scope`
    claim plus enforcement in sensitive handlers, before this goes anywhere
    near a non-trivial number of real users' watches.

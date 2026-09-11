@@ -57,6 +57,7 @@ import { MatchFormatCard } from '@/components/agon/MatchFormatCard'
 import { MatchJoinSettingsEditor } from '@/components/agon/MatchJoinSettingsEditor'
 import { MatchJoinLinksDialog } from '@/components/agon/MatchJoinLinksDialog'
 import { TeamJoinBanner } from '@/components/agon/TeamJoinBanner'
+import { JoinLinkBanner } from '@/components/agon/JoinLinkBanner'
 import { MatchResultEditor } from '@/components/agon/MatchResultEditor'
 import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
@@ -484,6 +485,10 @@ function MatchDetail({
       {/* An accepted member of a team on one of this match's sides, not yet
           on the roster themselves — join directly, no invite/link needed. */}
       {!cancelled && <TeamJoinBanner match={match} />}
+
+      {/* A join link the viewer previewed for this exact match but hasn't
+          used yet (see `lib/joinLinkMemory`) — stays actionable here too. */}
+      {!cancelled && <JoinLinkBanner match={match} />}
 
       {/* Rosters, one column per side — or the drag-to-reassign/remove editor
           in place of it, for a participant reconciling the line-up. */}

@@ -28,6 +28,18 @@ import Toybox.WatchUi;
 //! usually the score one) but every append after that keeps conflicting
 //! forever, because the *other* request — the one that would have
 //! corrected `_lastSeq` — never got to run its callback at all.
+//!
+//! A second, related bug survived serializing the requests: on a
+//! conflict, the dropped event was never retried, and firing a score
+//! refresh right when the conflict was detected (rather than after
+//! resolving it) meant that refresh could land *before* anything fixed
+//! `_lastSeq`, showing a score that still didn't include whatever this
+//! device just tried to record. On a real device this looked like the
+//! score flicking up (the optimistic local tally) then immediately back
+//! down (that premature refresh) every time a goal was recorded while
+//! out of sync — see `_pendingEvent`/`onSeqForRetry`, which now retries
+//! the event itself once the seq is corrected, and defers the score
+//! refresh until that retry (or giving up on it) actually resolves.
 class LiveApiClient {
 
     var _matchId as String?;
@@ -38,6 +50,22 @@ class LiveApiClient {
     //! each append response's own returned `last_seq`.
     var _lastSeq as Number;
     var _apiClient as MatchApiClient;
+
+    //! The most recent goal/period event this device tried to append but
+    //! got rejected with a 409 conflict — see `onAppendResponse`/
+    //! `onSeqForRetry`. Retried exactly once, after `_lastSeq` is fixed;
+    //! `null` once there's nothing pending a retry (never sent, already
+    //! succeeded, or the retry itself has already been fired). Recording
+    //! a second goal/period while this is still pending (very tight
+    //! timing — the wearer would need to get through the whole side ->
+    //! scorer -> assist flow again before the first retry lands) would
+    //! overwrite this and lose the first event's retry; not handled,
+    //! same "basics only" scope as the rest of this class.
+    var _pendingEvent as Dictionary?;
+    //! True while `sendAppend` is (re-)sending `_pendingEvent` as a
+    //! retry from `onSeqForRetry`, rather than a fresh call from
+    //! `recordGoal`/`recordPeriod` — see `onAppendResponse`'s use of it.
+    var _isRetryInFlight as Boolean;
 
     //! Requests not yet started: `{"url"=>.., "params"=>.., "options"=>..,
     //! "callback"=>..}` dictionaries, oldest first. See the class doc
@@ -54,6 +82,8 @@ class LiveApiClient {
         _matchId = null;
         _lastSeq = 0;
         _apiClient = new MatchApiClient();
+        _pendingEvent = null;
+        _isRetryInFlight = false;
         _pendingRequests = [];
         _requestInFlight = false;
         _currentCallback = null;
@@ -200,6 +230,18 @@ class LiveApiClient {
             // there's nothing better to do than skip the request.
             return;
         }
+        // Recorded so onAppendResponse can retry this exact event once
+        // (see onSeqForRetry) if it comes back as a conflict — a fresh
+        // call from recordGoal/recordPeriod always overwrites whatever
+        // was pending (see the field's own doc comment on that).
+        _pendingEvent = event;
+        sendAppend(event);
+    }
+
+    //! The actual POST — split out from `append` so `onSeqForRetry` can
+    //! resend the same event after a conflict without re-deciding
+    //! whether it should be tracked for retry (it already is).
+    function sendAppend(event as Dictionary) as Void {
         var body = {
             "expected_last_seq" => _lastSeq,
             "events" => [
@@ -219,36 +261,83 @@ class LiveApiClient {
     }
 
     function onAppendResponse(responseCode as Number, data as Dictionary or String or Null) as Void {
+        // Cleared up front — every branch below either finishes the
+        // conflict-recovery saga this flag tracks, or was never part of
+        // one to begin with.
+        var wasRetry = _isRetryInFlight;
+        _isRetryInFlight = false;
+
         if (responseCode == 200 && data != null) {
             var dict = data as Dictionary;
             var seq = dict.get("last_seq");
             if (seq != null) {
                 _lastSeq = seq as Number;
             }
+            _pendingEvent = null;
+            // A fresh (non-retry) success needs no extra refresh — the
+            // optimistic local tally FootballScore already applied is
+            // correct. A retry's success is different: onSeqForRetry's
+            // refreshScore (see below) already ran and would have shown
+            // a stale score missing this now-committed event, so surface
+            // the real one immediately instead of waiting up to 5s for
+            // the next poll tick.
+            if (wasRetry) {
+                refreshScore();
+            }
             return;
         }
         if (responseCode == 409 && _matchId != null) {
             // Another writer moved the log on since we last synced (or
             // this device just hasn't seeded expected_last_seq correctly
-            // yet). Re-fetch the real tip so the *next* action succeeds —
-            // this specific event is simply dropped rather than retried,
-            // matching the app's existing "basics only" scope (no offline
-            // queue yet — see docs/garmin-live-scoring.md) — and refresh
-            // the on-screen score too, since a conflict means whatever
-            // just happened elsewhere is exactly the kind of update the
-            // local tally alone would otherwise never learn about.
+            // yet). Re-fetch the real tip — onSeqForRetry retries
+            // _pendingEvent once that's back (can't retry immediately,
+            // the corrected seq isn't known yet), or refreshes the score
+            // itself if there's nothing left to retry (see its own doc
+            // comment). Deliberately NOT refreshing the score here too,
+            // even though a conflict means something else happened
+            // server-side — firing it in parallel with the retry let it
+            // resolve first and apply a score that doesn't include the
+            // event this device is about to successfully commit,
+            // visible on a real device as the score flicking up (the
+            // optimistic local tally) then immediately back down (that
+            // stale refresh) even though the goal *did* end up recorded.
             var url = API_BASE_URL + "/matches/" + (_matchId as String) + "/live/seq";
             var options = {
                 :method => Communications.HTTP_REQUEST_METHOD_GET,
                 :headers => { "Authorization" => "Bearer " + DeviceAuth.getAccessToken() },
                 :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
             };
-            enqueueRequest(url, null, options, method(:onSeq));
-            refreshScore();
+            enqueueRequest(url, null, options, method(:onSeqForRetry));
+            return;
         }
         // Any other outcome (network error, 403 not-an-admin, ...): there's
         // no on-watch error UI for this yet, so it's silently dropped —
         // same "basics only" scope as above.
+        _pendingEvent = null;
+        if (wasRetry) {
+            refreshScore();
+        }
+    }
+
+    //! Same as `onSeq`, plus either retries `_pendingEvent` now that
+    //! `_lastSeq` is correct, or — once there's nothing left to retry —
+    //! refreshes the score, which `onAppendResponse` deliberately doesn't
+    //! do itself (see its own doc comment on why). Clears `_pendingEvent`
+    //! before retrying, so if the retry itself comes back as a conflict,
+    //! `onAppendResponse` re-syncs `_lastSeq` again but lands back here
+    //! with nothing left to retry — bounding this to exactly one retry
+    //! per event rather than potentially looping forever against a match
+    //! under heavy concurrent writes.
+    function onSeqForRetry(responseCode as Number, data as Dictionary or String or Null) as Void {
+        onSeq(responseCode, data);
+        if (_pendingEvent != null) {
+            var event = _pendingEvent as Dictionary;
+            _pendingEvent = null;
+            _isRetryInFlight = true;
+            sendAppend(event);
+        } else {
+            refreshScore();
+        }
     }
 
     //! Poll the server's authoritative score (`GET /matches/:id/score`)

@@ -287,9 +287,15 @@ instead. `LiveApiClient` (replacing `MockApiClient`) is what
 `FootballScore` actually posts to: `POST /matches/:id/live/events` for
 goals and period markers, seeded with the real `expected_last_seq` from
 `GET /matches/:id/live/seq` the moment a match is picked, and re-fetched
-on a `409 Conflict` before the *next* action (this prototype has no
-offline queue yet, so a conflicting event is dropped, not retried — see
-"what's left to build"). `FootballScore`'s own call shape into the api
+on a `409 Conflict`, which then retries the conflicting event itself
+once with the corrected seq (see `onSeqForRetry`) rather than dropping
+it — this prototype still has no real offline queue (a second event
+recorded while the first's retry is in flight overwrites it — see
+"what's left to build"), and every `Communications.makeWebRequest` call
+in this class is funneled through a small request queue
+(`enqueueRequest`/`pumpQueue`) rather than fired directly, after
+concurrent score-poll/append/conflict-recovery requests were found to
+silently clobber each other's callbacks on a real device. `FootballScore`'s own call shape into the api
 client is unchanged from `MockApiClient`'s, per that class's original
 design; only what the client does with it changed.
 
@@ -329,11 +335,16 @@ Still to do, roughly in order:
    through `monkeybrains.jar` yet (pairing has, on a real fr955).
 2. ~~Wire `MockApiClient` up to the real API~~ — done: `LiveApiClient`
    posts real `POST /matches/:id/live/events` calls (goals and period
-   markers), seeded from `GET /matches/:id/live/seq`. No offline queue
-   yet, though — a `409 Conflict` (another writer moved the log on) just
-   re-syncs the seq for next time and drops the conflicting event, rather
-   than diffing and retrying it. Worth building once this sees real
-   flaky-connectivity use.
+   markers), seeded from `GET /matches/:id/live/seq`. A `409 Conflict`
+   (another writer moved the log on) re-syncs the seq and retries the
+   same event once (`onSeqForRetry`) rather than dropping it outright —
+   confirmed necessary from a real device: without the retry, the score
+   visibly flicked up (the local optimistic tally) then immediately back
+   down (the server's score, still missing the goal, arriving via the
+   poll timer) every time a device recorded a goal while out of sync.
+   Still no real offline queue — a second event recorded while the first
+   one's retry is in flight overwrites it — worth building once this
+   sees real flaky-connectivity use.
 3. ~~The `agon_ui` confirm page~~ — done: `PairDevicePage` (`/pair`,
    reading `?code=` or offering manual entry) calls
    `POST /devices/pairing-codes/:code/confirm` and reuses the existing

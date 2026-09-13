@@ -312,8 +312,21 @@ Still to do, roughly in order:
    fetch + player picker to attribute them to.
 8. **Phone-relay transport** (Option B above) for watches without direct
    WiFi/LTE.
-9. **Provision the device-signing key via `agon_infra`** instead of a
-   hand-set env var, mirroring the existing CloudFront signing-key pattern.
+9. ~~Provision the device-signing key via `agon_infra`~~ — done, but as a
+   config-based keypair (`agonDeviceJwtPrivateKey`/`agonDeviceJwks`,
+   `config.requireSecret`/`config.get`), mirroring the existing
+   `agonTestJwtPrivateKey`/`agonStaticJwks` test-signing-key pattern rather
+   than the CloudFront one: unlike CloudFront's signed URLs, nothing here
+   needs an external cloud resource registered against the public key, just
+   `agon_service` itself trusting/minting with it — the same shape as the
+   test key's problem, not the CloudFront one's. Generated with the same
+   `openssl ecparam`/`pkcs8` recipe as `local/agon-device-key.pem`; the
+   private half was handed to @jamesnelgar directly (never printed to any
+   transcript) rather than committed anywhere, since — unlike the test
+   key — this one actually needs to stay secret. Still needs
+   `pulumi config set --secret agonDeviceJwtPrivateKey ...` and
+   `pulumi config set agonDeviceJwks ...` run against the staging stack,
+   then a redeploy, before it takes effect there.
 10. **Rate-limit the pairing/confirm/qr endpoints** — flagged during
     design (see the security-comparison discussion): none of them have any
     throttling today, which matters most for `POST /devices/pair` (an

@@ -3,6 +3,15 @@ import Toybox.Application;
 import Toybox.Math;
 import Toybox.System;
 
+//! File-scope, not class-scope: a `const` inside a class isn't reachable
+//! from that class's own `static function`s, neither bare nor as
+//! `PairingCode.ALPHABET` (real compiler errors on both forms — see
+//! DeviceAuth.mc's doc comment for the exact messages). Same pattern
+//! GoalFlow.mc's `PLAYER_SLOT_SYMBOLS` already uses successfully.
+const PAIRING_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+const PAIRING_CODE_LENGTH = 6;
+const PAIRING_CODE_STORAGE_KEY = "pairing_code";
+
 //! Generates and persists the short, human-typeable pairing code the watch
 //! displays (as a QR code — see PairingApiClient/PairingView — plus this
 //! bare string as a scan-fails fallback). Matches the backend's own scheme
@@ -18,21 +27,11 @@ import Toybox.System;
 //! code someone's about to type in.
 class PairingCode {
 
-    const ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
-    const CODE_LENGTH = 6;
-
-    const STORAGE_KEY_CODE = "pairing_code";
-
     //! The current code, generating and persisting a new one on first call
     //! (or after a previous `regenerate()`/PairingView give-up has cleared
     //! it — see PairingView.CODE_LIFETIME_MS).
     static function getOrCreate() as String {
-        // Bare `STORAGE_KEY_CODE`/`CODE_LENGTH`/`ALPHABET` don't resolve in
-        // a static function — no `self`, so an unqualified class const only
-        // resolves inside instance methods. Real compiler error: "Cannot
-        // find symbol ':STORAGE_KEY_CODE' on type 'self'". Every reference
-        // below is qualified with the class name instead.
-        var existing = Application.Storage.getValue(PairingCode.STORAGE_KEY_CODE);
+        var existing = Application.Storage.getValue(PAIRING_CODE_STORAGE_KEY);
         if (existing != null) {
             return existing as String;
         }
@@ -48,11 +47,11 @@ class PairingCode {
         // from the same millisecond would repeat a sequence.
         Math.srand(System.getTimer());
         var code = "";
-        for (var i = 0; i < PairingCode.CODE_LENGTH; i += 1) {
-            var index = Math.rand() % PairingCode.ALPHABET.length();
-            code += PairingCode.ALPHABET.substring(index, index + 1);
+        for (var i = 0; i < PAIRING_CODE_LENGTH; i += 1) {
+            var index = Math.rand() % PAIRING_CODE_ALPHABET.length();
+            code += PAIRING_CODE_ALPHABET.substring(index, index + 1);
         }
-        Application.Storage.setValue(PairingCode.STORAGE_KEY_CODE, code);
+        Application.Storage.setValue(PAIRING_CODE_STORAGE_KEY, code);
         return code;
     }
 }

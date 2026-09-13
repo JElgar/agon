@@ -850,6 +850,21 @@ const awsSecret = new k8s.core.v1.Secret("aws-credentials", {
 //   pulumi config set --secret agonTestJwtPrivateKey "$(cat test_ec_pkcs8.pem)"
 export const agonTestJwtPrivateKey = config.requireSecret("agonTestJwtPrivateKey");
 
+// Device pairing (Garmin watch, ...) — same shape as the test key above, but
+// this keypair is what the *service itself* uses at runtime (unlike the test
+// key, which only a CI job signs with): `DeviceTokenSigner` mints device
+// tokens with the private half, and `JwtVerifier` trusts them back via the
+// public half in `AGON_DEVICE_JWKS` — see agon_service/src/auth.rs and
+// docs/garmin-live-scoring.md. `requireSecret` (not `getSecret`) is
+// deliberate: `DeviceTokenSigner::from_env()` already treats an unset
+// private key as "pairing simply isn't available on this deployment" rather
+// than an error, but once a stack means to offer pairing at all, failing
+// `pulumi up` on a half-configured keypair (JWKS set, private key
+// forgotten, or vice versa) beats silently deploying it broken.
+//   pulumi config set agonDeviceJwks '{"keys":[...]}'
+//   pulumi config set --secret agonDeviceJwtPrivateKey "$(cat device_ec_pkcs8.pem)"
+export const agonDeviceJwtPrivateKey = config.requireSecret("agonDeviceJwtPrivateKey");
+
 // ── UI e2e test account ──────────────────────────────────────────────────────
 // The fixed Supabase user the UI e2e suite (agon_ui/e2e) logs in as through the
 // real login form — a real Supabase account, not a locally-trusted key, so it
@@ -1668,6 +1683,20 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 							{
 								name: "AGON_STATIC_JWKS",
 								value: config.get("agonStaticJwks"),
+							},
+							// Device pairing (Garmin watch, ...) — see the
+							// agonDeviceJwtPrivateKey config declaration above and
+							// agon_service/src/auth.rs's DeviceTokenSigner. Unlike the
+							// test key above, the service itself holds the private half
+							// (to mint device tokens), not just the public one (to
+							// verify them).
+							{
+								name: "AGON_DEVICE_JWT_PRIVATE_KEY",
+								value: agonDeviceJwtPrivateKey,
+							},
+							{
+								name: "AGON_DEVICE_JWKS",
+								value: config.get("agonDeviceJwks"),
 							},
 							{
 								name: "MEILI_URL",

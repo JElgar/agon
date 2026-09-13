@@ -33,17 +33,22 @@ class MatchApiClient {
         Communications.makeWebRequest(url, null, options, callback);
     }
 
-    //! `GET /matches?participant=<userId>&match_type=football&limit=10` —
-    //! the picker's list. Football only, and only a handful (matching
-    //! `MATCH_SLOT_SYMBOLS`'s own 10-item cap — see MatchPickerView),
-    //! since a 5-button watch has no useful way to search or page through
-    //! more.
+    //! `GET /matches?participant=<userId>&match_type=football&limit=3` —
+    //! the picker's list. Football only, and deliberately small: each
+    //! `SearchMatch` item carries description/photos/side rosters/social
+    //! counts, and a `limit=10` response tripped
+    //! `Communications.NETWORK_RESPONSE_TOO_LARGE` (response code -402,
+    //! confirmed from a real simulator run — that's a
+    //! `Communications`-layer error, not an HTTP status). A 5-button
+    //! watch has no useful way to search or page through more than a
+    //! couple anyway, so this trims the request rather than trying to
+    //! ask the server for a slimmer shape.
     function fetchMatches(userId as String, callback as Method) as Void {
         var url = API_BASE_URL + "/matches";
         var params = {
             "participant" => userId,
             "match_type" => "football",
-            "limit" => "10"
+            "limit" => "3"
         };
         var options = {
             :method => Communications.HTTP_REQUEST_METHOD_GET,

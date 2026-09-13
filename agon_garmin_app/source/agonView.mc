@@ -1,10 +1,21 @@
 import Toybox.Graphics;
 import Toybox.WatchUi;
+import Toybox.Timer;
 
 class agonView extends WatchUi.View {
 
+    //! How often to poll the server's authoritative score while this
+    //! screen is visible — the only way this device's own local tally
+    //! (only ever updated by its *own* recordGoal/setPeriod calls) learns
+    //! about a goal or period marker another device recorded. See
+    //! `LiveApiClient.refreshScore`'s doc comment.
+    const POLL_INTERVAL_MS = 5000;
+
+    var _pollTimer as Timer.Timer or Null;
+
     function initialize() {
         View.initialize();
+        _pollTimer = null;
     }
 
     // Drawn manually in onUpdate below — a score line + a period label
@@ -17,6 +28,13 @@ class agonView extends WatchUi.View {
     // the state of this View and prepare it to be shown. This includes
     // loading resources into memory.
     function onShow() as Void {
+        getApp().liveApiClient.refreshScore();
+        _pollTimer = new Timer.Timer();
+        _pollTimer.start(method(:onPollTick), POLL_INTERVAL_MS, true);
+    }
+
+    function onPollTick() as Void {
+        getApp().liveApiClient.refreshScore();
     }
 
     // Update the view
@@ -51,6 +69,10 @@ class agonView extends WatchUi.View {
     // state of this View here. This includes freeing resources from
     // memory.
     function onHide() as Void {
+        if (_pollTimer != null) {
+            _pollTimer.stop();
+            _pollTimer = null;
+        }
     }
 
 }

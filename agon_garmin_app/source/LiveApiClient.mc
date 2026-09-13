@@ -3,6 +3,7 @@ import Toybox.Communications;
 import Toybox.Time;
 import Toybox.Time.Gregorian;
 import Toybox.System;
+import Toybox.WatchUi;
 
 //! Posts real live-scoring events for the currently-picked match (see
 //! MatchContext/MatchPickerView) — replaces MockApiClient now that
@@ -39,6 +40,10 @@ class LiveApiClient {
             :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
         };
         Communications.makeWebRequest(url, null, options, method(:onSeq));
+        // Load whatever's already been scored (by this device on a
+        // previous visit, or another device entirely) rather than
+        // starting the screen from a misleading 0-0.
+        refreshScore();
     }
 
     function onSeq(responseCode as Number, data as Dictionary or String or Null) as Void {
@@ -151,7 +156,10 @@ class LiveApiClient {
             // yet). Re-fetch the real tip so the *next* action succeeds —
             // this specific event is simply dropped rather than retried,
             // matching the app's existing "basics only" scope (no offline
-            // queue yet — see docs/garmin-live-scoring.md).
+            // queue yet — see docs/garmin-live-scoring.md) — and refresh
+            // the on-screen score too, since a conflict means whatever
+            // just happened elsewhere is exactly the kind of update the
+            // local tally alone would otherwise never learn about.
             var url = API_BASE_URL + "/matches/" + (_matchId as String) + "/live/seq";
             var options = {
                 :method => Communications.HTTP_REQUEST_METHOD_GET,
@@ -159,10 +167,84 @@ class LiveApiClient {
                 :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
             };
             Communications.makeWebRequest(url, null, options, method(:onSeq));
+            refreshScore();
         }
         // Any other outcome (network error, 403 not-an-admin, ...): there's
         // no on-watch error UI for this yet, so it's silently dropped —
         // same "basics only" scope as above.
+    }
+
+    //! Poll the server's authoritative score (`GET /matches/:id/score`)
+    //! and apply it onto `FootballScore` (`applyServerState`) — the local
+    //! tally otherwise only ever reflects *this* device's own
+    //! recordGoal/setPeriod calls, so another device recording something
+    //! would otherwise never reach the screen. Called from `agonView`'s
+    //! poll timer while the score screen is visible, plus once from
+    //! `setMatch` and once on every append conflict (see above).
+    function refreshScore() as Void {
+        if (_matchId == null) {
+            return;
+        }
+        var url = API_BASE_URL + "/matches/" + (_matchId as String) + "/score";
+        var options = {
+            :method => Communications.HTTP_REQUEST_METHOD_GET,
+            :headers => { "Authorization" => "Bearer " + DeviceAuth.getAccessToken() },
+            :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
+        };
+        Communications.makeWebRequest(url, null, options, method(:onScore));
+    }
+
+    function onScore(responseCode as Number, data as Dictionary or String or Null) as Void {
+        if (responseCode != 200 || data == null) {
+            // 404 (no score recorded yet — a brand new match) or a
+            // network error: nothing to apply, leave the current tally
+            // as-is rather than resetting it to 0-0.
+            return;
+        }
+        var score = data as Dictionary;
+        var homeGoals = getApp().score.homeGoals;
+        var awayGoals = getApp().score.awayGoals;
+        var tally = score.get("score");
+        if (tally != null) {
+            var tallyDict = tally as Dictionary;
+            var home = tallyDict.get(getApp().matchContext.side0Id);
+            var away = tallyDict.get(getApp().matchContext.side1Id);
+            if (home != null) {
+                homeGoals = home as Number;
+            }
+            if (away != null) {
+                awayGoals = away as Number;
+            }
+        }
+        getApp().score.applyServerState(homeGoals, awayGoals, periodFromScore(score));
+        WatchUi.requestUpdate();
+    }
+
+    //! `null` if the score has no period marker yet, or one this app
+    //! doesn't recognize (extra time, penalties — not offered on this
+    //! app's menu, see `periodWireValue`'s doc comment).
+    function periodFromScore(score as Dictionary) as Number? {
+        var period = score.get("period");
+        if (period == null) {
+            return null;
+        }
+        return periodFromWireValue(period as String);
+    }
+
+    function periodFromWireValue(value as String) as Number? {
+        if (value.equals("kick_off")) {
+            return FootballScore.PERIOD_KICK_OFF;
+        }
+        if (value.equals("half_time")) {
+            return FootballScore.PERIOD_HALF_TIME;
+        }
+        if (value.equals("second_half_kick_off")) {
+            return FootballScore.PERIOD_SECOND_HALF;
+        }
+        if (value.equals("full_time")) {
+            return FootballScore.PERIOD_FULL_TIME;
+        }
+        return null;
     }
 }
 

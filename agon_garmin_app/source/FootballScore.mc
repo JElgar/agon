@@ -51,6 +51,24 @@ class FootballScore {
         _apiClient.recordPeriod(newPeriod);
     }
 
+    //! Overwrite this tally with the server's authoritative one — called
+    //! by `LiveApiClient.refreshScore()` when polling
+    //! `GET /matches/:id/score`, the only way this device learns about a
+    //! goal or period marker some *other* device recorded (recordGoal/
+    //! setPeriod above only ever reflect this device's own actions).
+    //! `newPeriod` is `null` when the server hasn't seen a period marker
+    //! at all yet, or sent a wire value this app doesn't recognize
+    //! (extra time, penalties — not offered on this app's menu) — either
+    //! way, leaving `period` as this device's own last-known value is
+    //! safer than guessing.
+    function applyServerState(newHomeGoals as Number, newAwayGoals as Number, newPeriod as Number?) as Void {
+        homeGoals = newHomeGoals;
+        awayGoals = newAwayGoals;
+        if (newPeriod != null) {
+            period = newPeriod;
+        }
+    }
+
     //! Short, on-watch label for the current period.
     function periodLabel() as String {
         if (period == PERIOD_NOT_STARTED) {

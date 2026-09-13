@@ -345,8 +345,17 @@ Still to do, roughly in order:
    `npm run build` all pass; not yet exercised against a real confirm
    (needs the watch side actually running, or a manual `curl`, to produce
    a real code to confirm).
-4. **Fetch and render the real score** (`GET /matches/:id/score`) on the
-   watch instead of `FootballScore`'s session-local tally.
+4. ~~Fetch and render the real score~~ — done: `LiveApiClient.refreshScore`
+   polls `GET /matches/:id/score` and applies it onto `FootballScore`
+   (`applyServerState`) — otherwise the local tally only ever reflected
+   *this* device's own `recordGoal`/`setPeriod` calls, so another device
+   scoring the same match had no way to reach the screen. Called once
+   when a match is picked (`setMatch`), on every 5s while `agonView` is
+   visible (a `Timer`, same pattern as `PairingView`'s poll loop), and
+   once more on an append `409 Conflict` (the one case this device
+   already knows something changed elsewhere). Still local-tally-first in
+   one sense: a fetch failure or an in-flight period between polls just
+   leaves the last-known value on screen rather than resetting to 0-0.
 5. ~~Device-scoped tokens~~ — done: `device_scope`/`check_scope` (see
    above). The residual gap flagged there (a handful of read-only
    endpoints not checking scope at all) is real follow-up, not a full

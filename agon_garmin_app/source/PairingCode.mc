@@ -27,7 +27,12 @@ class PairingCode {
     //! (or after a previous `regenerate()`/PairingView give-up has cleared
     //! it — see PairingView.CODE_LIFETIME_MS).
     static function getOrCreate() as String {
-        var existing = Application.Storage.getValue(STORAGE_KEY_CODE);
+        // Bare `STORAGE_KEY_CODE`/`CODE_LENGTH`/`ALPHABET` don't resolve in
+        // a static function — no `self`, so an unqualified class const only
+        // resolves inside instance methods. Real compiler error: "Cannot
+        // find symbol ':STORAGE_KEY_CODE' on type 'self'". Every reference
+        // below is qualified with the class name instead.
+        var existing = Application.Storage.getValue(PairingCode.STORAGE_KEY_CODE);
         if (existing != null) {
             return existing as String;
         }
@@ -43,11 +48,11 @@ class PairingCode {
         // from the same millisecond would repeat a sequence.
         Math.srand(System.getTimer());
         var code = "";
-        for (var i = 0; i < CODE_LENGTH; i += 1) {
-            var index = Math.rand() % ALPHABET.length();
-            code += ALPHABET.substring(index, index + 1);
+        for (var i = 0; i < PairingCode.CODE_LENGTH; i += 1) {
+            var index = Math.rand() % PairingCode.ALPHABET.length();
+            code += PairingCode.ALPHABET.substring(index, index + 1);
         }
-        Application.Storage.setValue(STORAGE_KEY_CODE, code);
+        Application.Storage.setValue(PairingCode.STORAGE_KEY_CODE, code);
         return code;
     }
 }

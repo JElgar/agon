@@ -13,10 +13,14 @@ class DeviceAuth {
     const STORAGE_KEY_ACCESS_TOKEN = "device_access_token";
 
     static function getAccessToken() as String or Null {
-        return Application.Storage.getValue(STORAGE_KEY_ACCESS_TOKEN);
+        // A bare `STORAGE_KEY_ACCESS_TOKEN` doesn't resolve here — there's
+        // no `self` in a static function, so an unqualified class const
+        // only resolves inside instance methods. Real compiler error:
+        // "Cannot find symbol ':STORAGE_KEY_ACCESS_TOKEN' on type 'self'".
+        return Application.Storage.getValue(DeviceAuth.STORAGE_KEY_ACCESS_TOKEN);
     }
 
     static function setAccessToken(token as String) as Void {
-        Application.Storage.setValue(STORAGE_KEY_ACCESS_TOKEN, token);
+        Application.Storage.setValue(DeviceAuth.STORAGE_KEY_ACCESS_TOKEN, token);
     }
 }

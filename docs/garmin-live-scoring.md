@@ -246,18 +246,33 @@ the expected "nobody's confirmed it yet" steady state; `400` (confirmed
 code already claimed/expired) or the client's own give-up timeout
 (`CODE_LIFETIME_MS`, comfortably under the server's confirmed-code TTL)
 regenerates a fresh code; `503` means pairing isn't configured on this
-deployment. `PairingDelegate.onSelect` lets the wearer force a
-regenerate manually (e.g. if the QR image failed to load).
+deployment. `PairingDelegate.onSelect` toggles a plain-text screen (the
+pairing site + the code, large) over the QR — useful whenever the QR is
+hard to scan, or to just read/type the code instead; `onMenu` forces a
+manual regenerate (e.g. if the QR image failed to load), a secondary
+action since it depends on a gesture not every device offers.
 
 `PairingApiClient.API_BASE_URL` is a hardcoded constant
-(`http://localhost:7000`, reachable because the simulator proxies
-`Communications` calls through the desktop it runs on) rather than a real
-App Setting (`resources/settings/*.xml`) — there's no deployed instance to
-point at yet, and hand-writing that resource XML with no compiler
-available in this sandbox to check it against wasn't worth the risk for a
-prototype. Make it configurable (a real App Setting, editable from the
-Garmin Connect Mobile companion settings screen — see below) once there's
-a real URL to point at.
+(`https://agon.staging.get-agon.com/api` — the `/api` matters: that's
+`agon-api-ingress` publishing `agon_service`'s own `/`-mounted routes, same
+convention `agon_ui`'s dev proxy and `make test-staging` both use, not a
+path `agon_service` itself knows about) rather than a real App Setting
+(`resources/settings/*.xml`) — hand-writing that resource XML with no
+compiler available in this sandbox to check it against wasn't worth the
+risk for a prototype. For local dev instead, point it at
+`http://localhost:7000` (no `/api` — a local `agon_service` has no ingress
+in front of it) and run `make run`; the simulator proxies `Communications`
+calls through the desktop it runs on, so `localhost` reaches it directly.
+Make it configurable (a real App Setting, editable from the Garmin Connect
+Mobile companion settings screen — see below) once switching between the
+two is more than a one-line edit.
+
+Pointing at staging gets the QR image and `confirm` working, but the final
+`POST /devices/pair` claim will `503 NotConfigured` there until item 9
+below (provisioning `AGON_DEVICE_JWT_PRIVATE_KEY`/`AGON_DEVICE_JWKS` on the
+staging deployment) is actually done — `agon_infra/index.ts` doesn't wire
+either into the service yet, so `DeviceTokenSigner::from_env()` comes back
+`None` on staging today.
 
 Still to do, roughly in order:
 
@@ -297,8 +312,21 @@ Still to do, roughly in order:
    fetch + player picker to attribute them to.
 8. **Phone-relay transport** (Option B above) for watches without direct
    WiFi/LTE.
-9. **Provision the device-signing key via `agon_infra`** instead of a
-   hand-set env var, mirroring the existing CloudFront signing-key pattern.
+9. ~~Provision the device-signing key via `agon_infra`~~ — done, but as a
+   config-based keypair (`agonDeviceJwtPrivateKey`/`agonDeviceJwks`,
+   `config.requireSecret`/`config.get`), mirroring the existing
+   `agonTestJwtPrivateKey`/`agonStaticJwks` test-signing-key pattern rather
+   than the CloudFront one: unlike CloudFront's signed URLs, nothing here
+   needs an external cloud resource registered against the public key, just
+   `agon_service` itself trusting/minting with it — the same shape as the
+   test key's problem, not the CloudFront one's. Generated with the same
+   `openssl ecparam`/`pkcs8` recipe as `local/agon-device-key.pem`; the
+   private half was handed to @jamesnelgar directly (never printed to any
+   transcript) rather than committed anywhere, since — unlike the test
+   key — this one actually needs to stay secret. Still needs
+   `pulumi config set --secret agonDeviceJwtPrivateKey ...` and
+   `pulumi config set agonDeviceJwks ...` run against the staging stack,
+   then a redeploy, before it takes effect there.
 10. **Rate-limit the pairing/confirm/qr endpoints** — flagged during
     design (see the security-comparison discussion): none of them have any
     throttling today, which matters most for `POST /devices/pair` (an

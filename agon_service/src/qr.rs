@@ -58,10 +58,15 @@ pub fn render_pairing_qr(
 /// that would ever see it).
 fn render_qr_png(data: &str) -> Option<Vec<u8>> {
     let qr = QrCode::new(data.as_bytes()).ok()?;
-    // 6x6 pixels per module: legible to a phone camera at arm's length
-    // without producing a needlessly large PNG for the watch's own radio
-    // (or a phone relaying it) to fetch.
-    let image = qr.render::<Luma<u8>>().module_dimensions(6, 6).build();
+    // 4x4 pixels per module — still generously legible to a phone camera at
+    // arm's length, but a real pairing URL (~50 bytes, version-4/33
+    // modules) at 6x6 rendered 246x246px: on a ~260px round watch face
+    // that's the QR alone filling the entire screen edge to edge, with no
+    // room left to draw the code/status text PairingView draws underneath
+    // it (confirmed on a real fr955 build — the QR was there, the code
+    // text wasn't). 4x4 renders the same QR at 164x164, leaving comfortable
+    // room on every device in this app's product list.
+    let image = qr.render::<Luma<u8>>().module_dimensions(4, 4).build();
 
     let mut png_bytes = Vec::new();
     PngEncoder::new(&mut png_bytes)

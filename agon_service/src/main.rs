@@ -15,7 +15,7 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use poem::http::Uri;
 use poem::{Endpoint, IntoResponse, Response};
 use poem::{
-    EndpointExt, Error, Request, Result, Route, Server,
+    EndpointExt, Error, Request, Result, Route, Server, get,
     http::StatusCode,
     listener::TcpListener,
     middleware::{Cors, Tracing},
@@ -103,6 +103,10 @@ use notification::{
 // see the actual match/invite instead of a generic "Agon" card. See its own
 // doc comment for why this can't be done from `agon_ui` (a client-only SPA).
 mod share;
+
+// Plain (non-OpenAPI) device-pairing QR code image — see its own doc
+// comment for why this can't be a typed `#[oai(...)]` endpoint.
+mod qr;
 
 #[derive(SecurityScheme)]
 #[oai(
@@ -1660,28 +1664,37 @@ enum UnregisterDeviceResponse {
     NotFound(PlainText<String>),
 }
 
-/// How long a device-pairing code stays valid. Short — it's meant to be
-/// generated on one screen and typed into the device within the same
-/// sitting, not saved for later (see `POST /devices/pairing-codes`).
+/// How long a confirmed-but-not-yet-claimed device-pairing code stays
+/// valid, once someone actually confirms it (see
+/// `POST /devices/pairing-codes/:code/confirm`) — *not* from whenever the
+/// device first generated/displayed the code, since nothing about it
+/// exists server-side until confirmation happens (see
+/// `agon_core::dao::device_pairing`'s doc comment). This bounds the gap
+/// between "confirmed" and "the device actually comes back to claim it"
+/// (e.g. it was switched off right after being scanned) — it isn't what
+/// limits how long the device's own QR/code stays displayable, which the
+/// device enforces itself by giving up and generating a fresh one.
 const DEVICE_PAIRING_CODE_TTL: chrono::Duration = chrono::Duration::minutes(10);
 
-#[derive(Object)]
-struct DevicePairingCode {
-    /// A short, human-typeable one-time code — see `POST /devices/pair`.
-    code: String,
-    expires_at: chrono::DateTime<chrono::Utc>,
-}
-
 #[derive(ApiResponse)]
-enum CreateDevicePairingCodeResponse {
-    #[oai(status = 201)]
-    Created(Json<DevicePairingCode>),
+enum ConfirmDevicePairingResponse {
+    #[oai(status = 204)]
+    Confirmed,
+
+    /// This code has already been confirmed — by this caller or someone
+    /// else — or the code is malformed. Single-use, same as the final
+    /// claim step; the device should generate a fresh code and restart
+    /// pairing if it sees a device-side error corresponding to this.
+    #[oai(status = 409)]
+    AlreadyUsed(PlainText<String>),
 }
 
 #[derive(Object)]
 struct PairDeviceInput {
-    /// The pairing code shown to the caller by an already-authenticated
-    /// client (phone/web) via `POST /devices/pairing-codes`.
+    /// The pairing code the device itself generated and displayed (as a
+    /// QR code + human-typeable fallback) — see
+    /// `POST /devices/pairing-codes/:code/confirm`, which is what actually
+    /// attaches a user to it.
     code: String,
 }
 
@@ -1698,9 +1711,18 @@ enum PairDeviceResponse {
     #[oai(status = 200)]
     Paired(Json<PairDeviceOutput>),
 
-    /// The code doesn't exist, was already used, or has expired. These
-    /// aren't distinguished — a device has no useful way to act differently
-    /// on each, the human just generates a fresh code and retypes it.
+    /// Nobody has confirmed this code yet — not an error, the code simply
+    /// doesn't exist as a server-side record until
+    /// `POST /devices/pairing-codes/:code/confirm` creates it. The device
+    /// should keep polling (with its own give-up timeout) rather than
+    /// treat this as failure.
+    #[oai(status = 202)]
+    Pending,
+
+    /// The code was confirmed and then already claimed by an earlier
+    /// request, or has expired since being confirmed. Terminal, unlike
+    /// `Pending` — the device should generate a fresh code and restart
+    /// pairing rather than keep polling this one.
     #[oai(status = 400)]
     InvalidCode(PlainText<String>),
 
@@ -6150,58 +6172,60 @@ impl Api {
         }
     }
 
-    /// Mint a short-lived, single-use code an already-authenticated client
-    /// can hand to a device with no practical login UI of its own — a
-    /// Garmin watch, typed in via its companion phone app — to pair it to
-    /// this account. See `POST /devices/pair`, which claims the code.
-    #[oai(path = "/devices/pairing-codes", method = "post")]
-    async fn create_device_pairing_code(
+    /// Confirm a device-pairing code the device itself generated and is
+    /// displaying (as a QR code — see `qr::render_pairing_qr` — plus a
+    /// human-typeable fallback). This is what actually creates the pairing
+    /// record for the first time, attaching the caller's account to a code
+    /// that until now existed only on the device's own screen. See
+    /// `POST /devices/pair`, which the device polls to notice this
+    /// happened and claim its credential.
+    #[oai(path = "/devices/pairing-codes/:code/confirm", method = "post")]
+    async fn confirm_device_pairing(
         &self,
         Data(dao): Data<&dao::Dao>,
         AuthSchema(jwt_data): AuthSchema,
-    ) -> Result<CreateDevicePairingCodeResponse> {
+        Path(code): Path<String>,
+    ) -> Result<ConfirmDevicePairingResponse> {
         let uid = self.require_uid(dao, &jwt_data).await?;
-        info!("Creating device pairing code for {uid}");
+        let code = code.trim().to_uppercase();
+        if code.is_empty() || code.len() > 32 {
+            return Ok(ConfirmDevicePairingResponse::AlreadyUsed(PlainText(
+                "invalid pairing code".into(),
+            )));
+        }
+        info!("Confirming device pairing code for {uid}");
 
         let now = chrono::Utc::now();
-        let expires_at = now + DEVICE_PAIRING_CODE_TTL;
-        let created_at = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        let expires_at_str = expires_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let pairing = dao::records::DevicePairingRecord {
+            code: code.clone(),
+            user_id: uid,
+            device_sub: format!("device:{}", new_id()),
+            created_at: now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            expires_at: (now + DEVICE_PAIRING_CODE_TTL)
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            claimed_at: None,
+        };
 
-        // Retry on the (astronomically unlikely) chance of a code collision —
-        // same pattern as any other random-id generator in this DAO.
-        const MAX_ATTEMPTS: u32 = 5;
-        let mut last_err = None;
-        for _ in 0..MAX_ATTEMPTS {
-            let code = new_pairing_code();
-            let pairing = dao::records::DevicePairingRecord {
-                code: code.clone(),
-                user_id: uid.clone(),
-                device_sub: format!("device:{}", new_id()),
-                created_at: created_at.clone(),
-                expires_at: expires_at_str.clone(),
-                claimed_at: None,
-            };
-            match dao.create_device_pairing_code(&pairing).await {
-                Ok(()) => {
-                    return Ok(CreateDevicePairingCodeResponse::Created(Json(
-                        DevicePairingCode { code, expires_at },
-                    )));
-                }
-                Err(e @ dao::DaoError::Conflict(_)) => last_err = Some(e),
-                Err(e) => return Err(dao_internal(e)),
-            }
+        match dao.create_device_pairing_code(&pairing).await {
+            Ok(()) => Ok(ConfirmDevicePairingResponse::Confirmed),
+            // Someone (this caller retrying, or someone else) already
+            // confirmed this exact code — single-use, same spirit as the
+            // final claim step's own guard.
+            Err(dao::DaoError::Conflict(_)) => Ok(ConfirmDevicePairingResponse::AlreadyUsed(
+                PlainText("this code has already been confirmed".into()),
+            )),
+            Err(e) => Err(dao_internal(e)),
         }
-        Err(dao_internal(last_err.expect(
-            "loop only exits via return, or after setting last_err on every iteration",
-        )))
     }
 
     /// Exchange a pairing code for a long-lived device credential. Called by
     /// the device itself, unauthenticated — no bearer token to send yet,
     /// since the whole point of pairing is a device with no practical way to
     /// log in on its own. This and signup are the only endpoints that don't
-    /// take `AuthSchema`.
+    /// take `AuthSchema`. Meant to be polled: nothing exists server-side for
+    /// a freshly-generated code until someone confirms it (see
+    /// `confirm_device_pairing`), so an unconfirmed code is expected to
+    /// come back `Pending`, not an error.
     #[oai(path = "/devices/pair", method = "post")]
     async fn pair_device(
         &self,
@@ -6231,11 +6255,14 @@ impl Api {
                     access_token,
                 })))
             }
-            Err(dao::DaoError::NotFound(_)) | Err(dao::DaoError::Conflict(_)) => {
-                Ok(PairDeviceResponse::InvalidCode(PlainText(
-                    "invalid or expired pairing code".into(),
-                )))
-            }
+            // No record exists yet — nobody's confirmed this code. Keep
+            // polling; this is the expected steady state, not a failure.
+            Err(dao::DaoError::NotFound(_)) => Ok(PairDeviceResponse::Pending),
+            // A record exists but is already claimed or has expired since
+            // being confirmed — terminal, unlike the above.
+            Err(dao::DaoError::Conflict(_)) => Ok(PairDeviceResponse::InvalidCode(PlainText(
+                "pairing code already used or expired".into(),
+            ))),
             Err(e) => Err(dao_internal(e)),
         }
     }
@@ -8166,18 +8193,11 @@ fn new_id() -> String {
     BASE64_URL_SAFE_NO_PAD.encode(bytes)
 }
 
-/// Generate a device-pairing code: 6 characters from a 32-symbol alphabet
-/// that drops visually ambiguous characters (`0`/`O`, `1`/`I`/`L`) — the
-/// whole point is a person reading it off one screen and typing it into a
-/// device with no real keyboard. See `POST /devices/pairing-codes`.
-fn new_pairing_code() -> String {
-    use rand::Rng;
-    const ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
-    let mut rng = rand::rng();
-    (0..6)
-        .map(|_| ALPHABET[rng.random_range(0..ALPHABET.len())] as char)
-        .collect()
-}
+// Device-pairing codes are generated by the device itself now (Monkey C,
+// on the watch — see docs/garmin-live-scoring.md), not minted here; the
+// server never sees one until it's confirmed. A 6-character, 32-symbol
+// alphabet dropping visually ambiguous characters (`0`/`O`, `1`/`I`/`L`)
+// is still the scheme to match on that side.
 
 /// A mock confirmed score submission with one confirm response.
 fn mock_score_submission() -> ScoreSubmission {
@@ -8725,6 +8745,14 @@ async fn main() {
             let device_signer = auth::DeviceTokenSigner::from_env();
 
             let app = Route::new()
+                // A specific, named route always outranks a nested "/"
+                // catch-all in poem's router regardless of registration
+                // order (see share.rs's own routing comment), so this is
+                // safe to register alongside api_service's own "/" nest.
+                .at(
+                    "/devices/pairing-codes/:code/qr.png",
+                    get(qr::render_pairing_qr),
+                )
                 .nest("/", api_service)
                 .nest("/docs", ui)
                 .nest("/share", share::routes())

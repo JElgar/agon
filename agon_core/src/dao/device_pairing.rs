@@ -3,17 +3,28 @@
 //! initially) to a user's account, without the device ever handling the
 //! user's real credentials.
 //!
-//! Flow: the already-authenticated client (phone/web) mints a short-lived,
-//! single-use code (`create_device_pairing_code`) and shows it to the user;
-//! the device submits that code once (`claim_device_pairing_code`), which
-//! atomically marks the code used and reserves the device's own auth
-//! identity — an `AUTH#<device_sub>` guard mapping straight to the code's
-//! owning user id, exactly like a real login provider's `sub` (see
-//! `keys::Pk::AuthGuard`'s doc comment). Every existing
-//! `require_uid`/`get_user_id_by_sub` path resolves a device token with no
-//! changes: the device is simply another identity on the same account. The
-//! service layer (`agon_service::auth::DeviceTokenSigner`) then mints a
-//! long-lived JWT for that `device_sub`.
+//! Flow (device-initiated, QR-first — see `docs/garmin-live-scoring.md`):
+//! the device itself generates a short, human-typeable code and displays it
+//! (as a QR code, with the bare code as a scan-fails fallback) — nothing
+//! server-side exists yet at this point, `create_device_pairing_code`
+//! hasn't been called. Someone scans/types it into `agon_ui`'s pairing
+//! page and, once logged in, confirms it; *that* is what calls
+//! `create_device_pairing_code` for the first time, writing a fully
+//! populated record (code, the confirming user's id, a freshly reserved
+//! `device_sub`) in one shot — there's no separate "pending, no owner yet"
+//! state to represent, since nothing is persisted before a user is known.
+//! The device, meanwhile, has been polling `claim_device_pairing_code`
+//! with its code the whole time; before confirmation that's a `NotFound`
+//! (expected — the device's own poll loop treats it as "keep waiting", not
+//! an error), and after confirmation it succeeds: atomically marks the
+//! code used and creates the device's own auth identity — an
+//! `AUTH#<device_sub>` guard mapping straight to the code's owning user id,
+//! exactly like a real login provider's `sub` (see `keys::Pk::AuthGuard`'s
+//! doc comment). Every existing `require_uid`/`get_user_id_by_sub` path
+//! resolves a device token with no changes: the device is simply another
+//! identity on the same account. The service layer
+//! (`agon_service::auth::DeviceTokenSigner`) then mints a long-lived JWT
+//! for that `device_sub`.
 //!
 //! There is no DynamoDB TTL on the pairing-code item (the table has none
 //! configured — see `docs/dynamodb-design.md`), so an expired, never-claimed
@@ -35,9 +46,13 @@ use super::user::TYPE_AUTH_GUARD;
 pub const TYPE_DEVICE_PAIRING: &str = "device_pairing";
 
 impl Dao {
-    /// Create a pairing code. `Conflict` if the (randomly generated) code
-    /// already exists — the caller should retry with a fresh code, same
-    /// pattern as any other id-collision guard in this DAO.
+    /// Create a pairing record — the device-generated code confirmed for
+    /// the first time (see this module's doc comment). `Conflict` if the
+    /// code already exists, meaning it's already been confirmed by this
+    /// caller or someone else; unlike most id-collision guards in this DAO,
+    /// the caller can't just retry with a different code, since the code
+    /// isn't this caller's to change — it belongs to whichever device is
+    /// displaying it.
     #[tracing::instrument(skip(self, pairing), fields(code = %pairing.code))]
     pub async fn create_device_pairing_code(&self, pairing: &DevicePairingRecord) -> DaoResult<()> {
         let item = to_item(

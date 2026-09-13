@@ -29,3 +29,8 @@ jsonwebtoken = "9.3.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 clap = { version = "4.5.37", features = ["derive"] }
 cron = "0.15.0"
+# Device-pairing QR code (see qr.rs): `qrcode` builds the module matrix,
+# `image` encodes it to PNG bytes for the watch's Communications.makeImageRequest
+# to fetch and decode.
+qrcode = { version = "0.14", default-features = false, features = ["image"] }
+image = { version = "0.25", default-features = false, features = ["png"] }

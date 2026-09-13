@@ -49,32 +49,76 @@ Options considered:
    long-lived API key an ordinary user has to copy correctly by hand is
    exactly the kind of thing that leaks into a screenshot or a support
    message; a short one-time code is safer and just as easy to type.
-3. **Pairing code, minted by an already-logged-in client and claimed once
-   by the device.** This is what phones do to link a TV app, a smart
-   speaker, a CLI tool, etc. — chosen approach. It never exposes the user's
-   real credentials to the device, and the thing being typed is short-lived
-   and single-use rather than a durable secret.
+3. **Pairing code, originated by the device and confirmed by an
+   already-logged-in client.** Chosen approach — but see below for the two
+   different directions this can flow, and why the device-originated one
+   won out. Either way, it never exposes the user's real credentials to
+   the device, and the thing being typed/scanned is short-lived and
+   single-use rather than a durable secret.
 
-### What's built: `POST /devices/pairing-codes` + `POST /devices/pair`
+### What's built: device-originated, QR-first pairing
 
-- `POST /devices/pairing-codes` (normal bearer auth, called from the
-  already-logged-in web/mobile app) mints a 6-character, human-typeable code
-  (`agon_service::new_pairing_code`, a 32-symbol alphabet with visually
-  ambiguous characters dropped) valid for 10 minutes, tied to the caller.
-- `POST /devices/pair` (**no** bearer token — the device has none yet) takes
-  that code and, on success, returns a long-lived `access_token` the watch
-  stores and sends as a normal `Authorization: Bearer` header on every
-  request from then on — the exact same header every other client uses.
+The device (not an already-logged-in phone/web client) starts pairing:
 
-Under the hood (`agon_core::dao::device_pairing`), claiming a code doesn't
-create some special "device session" concept — it reserves a synthetic auth
-identity (`device_sub`, shaped like `device:<id>`) and gives it its own
-`AUTH#<device_sub>` guard mapping to the same internal user id the code's
-owner already has. That's the same guard shape every real login already
-uses (`AUTH#<sub>`, see `agon_core::dao::keys::Pk::AuthGuard`) — a device is
-just a second identity on the same account, exactly like linking a second
-OAuth provider would be. `require_uid` and everything built on it needed
-*zero* changes to support this.
+- The watch generates its own short, human-typeable code locally (6
+  characters, the same 32-symbol alphabet the backend used to generate —
+  visually ambiguous characters dropped — before code generation moved to
+  the device; not yet implemented, see "What's left to build" below) and
+  displays it two ways: a QR code (fetched from `GET
+  /devices/pairing-codes/:code/qr.png`, a pure rendering endpoint — no
+  auth, no database access at all, see `agon_service/src/qr.rs`) encoding
+  a link to `agon_ui`'s pairing page, and the bare code as a scan-fails
+  fallback.
+- Someone scans (or types the code into) `agon_ui`'s `/pair` page, logs in
+  if needed, and confirms — this calls `POST
+  /devices/pairing-codes/:code/confirm` (bearer auth, the logged-in
+  user's own session), which is the **first** point anything gets written
+  to the database: it creates the pairing record in full (code, the
+  confirming user's id, a freshly reserved `device_sub`) in one shot.
+  There's no separate "pending, no owner yet" state — nothing exists
+  before confirmation.
+- The watch, meanwhile, has been polling `POST /devices/pair` with its
+  code the whole time. Before confirmation that comes back `202 Pending`
+  (expected — not an error, just "nobody's confirmed this yet"); once
+  confirmed, it succeeds and returns a long-lived `access_token`, which
+  the watch stores and sends as a normal `Authorization: Bearer` header on
+  every request from then on — the exact same header every other client
+  uses.
+
+This is the opposite direction from the more obvious "already-logged-in
+phone mints a code, watch types it in" design, and it's opposite on
+purpose: that version needs the code typed into the watch (via Garmin
+Connect Mobile's per-app settings, since the watch itself has no
+keyboard), which is real friction and — with no camera on a watch — has no
+path to a QR-scan shortcut at all. Flipping it so the watch originates the
+code is what makes "show a QR code" possible in the first place, since
+now it's the watch's own screen displaying something to be scanned, not
+receiving something already decided elsewhere.
+
+**Security trade-off vs. the phone-mints/watch-types design**: entropy and
+exposure window are unaffected by which side generates the code — a
+6-character code is equally guessable (or not) regardless of who picked
+it, so that's not a reason to favor either direction. What *does* differ
+is the failure mode if someone else's guess wins the race: in the
+phone-mints direction, an attacker's device would end up bound to the
+*victim's real account* (full impersonation); here, an attacker who
+confirms first only binds the *victim's watch* to the *attacker's own*
+account (the victim's real account is never touched — just misdirected
+data, not compromised access). The new direction does introduce one thing
+the old one didn't have: the code is now visible on a screen worn in
+public (a watch), whereas the old code only ever appeared in a phone's own
+settings UI. Net assessment: a modest improvement, not a free one — worth
+rate-limiting `POST /devices/pair` regardless (see "What's left to build").
+
+Under the hood (`agon_core::dao::device_pairing`), confirming a code
+doesn't create some special "device session" concept — it reserves a
+synthetic auth identity (`device_sub`, shaped like `device:<id>`) and
+gives it its own `AUTH#<device_sub>` guard mapping to the confirming
+user's internal id. That's the same guard shape every real login already
+uses (`AUTH#<sub>`, see `agon_core::dao::keys::Pk::AuthGuard`) — a device
+is just a second identity on the same account, exactly like linking a
+second OAuth provider would be. `require_uid` and everything built on it
+needed *zero* changes to support this.
 
 The returned token is a real ES256 JWT, signed by a dedicated key
 (`agon_service::auth::DeviceTokenSigner`, `AGON_DEVICE_JWT_PRIVATE_KEY` /
@@ -165,31 +209,100 @@ watch fetch "matches I can score" from the API itself and pick from a list
 
 ## What's left to build
 
-Backend (this session): done — pairing endpoints, device-signing
-infrastructure, unit tests (`agon_service/src/auth.rs`,
-`agon_core::dao::device_pairing`), this doc. Not yet run through
+Backend: done — the device-originated/QR-first pairing endpoints
+(`GET /devices/pairing-codes/:code/qr.png`,
+`POST /devices/pairing-codes/:code/confirm`, and the updated
+`POST /devices/pair`), device-signing infrastructure, unit tests
+(`agon_service/src/auth.rs`, `agon_service/src/qr.rs`,
+`agon_core::dao::device_pairing`). Not yet run through
 `make generate-schema` (needs `openapi-generator-cli`, not available in
 this sandbox) — run that once to regenerate `schema.json` and
-`openapi_client` before wiring a UI "pair a device" screen into `agon_ui`
-against the generated client types.
+`openapi_client` before wiring the `agon_ui` confirm page against the
+generated client types.
+
+Watch app: a real Connect IQ (Monkey C) project, `agon_garmin_app/`,
+created via the SDK's own Project Wizard and building/running in the
+simulator. Covers goal + period-marker scoring (via an on-watch menu) and
+a concurrent `ActivityRecording.Session`, plus the pairing screen itself —
+all compiler-verified against real API signatures except pairing, which
+hasn't been run through the actual `monkeybrains.jar` yet (verified by
+reading the official docs for every API used instead — see the file
+headers). `MockApiClient` still just logs what would be sent for scoring
+events instead of calling `agon_service`; pairing is the one thing that
+now makes real network calls. A now-superseded hand-written scaffold
+(`garmin_app/`, written before a real SDK install was available to compile
+against) has been removed in favor of this one.
+
+What the watch side does: `agonApp.getInitialView()` checks
+`DeviceAuth.getAccessToken()` (`Application.Storage`) and shows
+`PairingView` instead of the sport picker whenever there's no token yet.
+`PairingView` generates a code (`PairingCode` — same 6-char, 32-symbol
+alphabet as the server), fetches its QR via
+`Communications.makeImageRequest` (falling back to drawing the bare code
+as text if that fails or is still loading), and polls
+`POST /devices/pair` (`PairingApiClient`) every few seconds: `200` stores
+the token (`agonApp.onPaired`) and switches to the sport picker; `202` is
+the expected "nobody's confirmed it yet" steady state; `400` (confirmed
+code already claimed/expired) or the client's own give-up timeout
+(`CODE_LIFETIME_MS`, comfortably under the server's confirmed-code TTL)
+regenerates a fresh code; `503` means pairing isn't configured on this
+deployment. `PairingDelegate.onSelect` lets the wearer force a
+regenerate manually (e.g. if the QR image failed to load).
+
+`PairingApiClient.API_BASE_URL` is a hardcoded constant
+(`http://localhost:7000`, reachable because the simulator proxies
+`Communications` calls through the desktop it runs on) rather than a real
+App Setting (`resources/settings/*.xml`) — there's no deployed instance to
+point at yet, and hand-writing that resource XML with no compiler
+available in this sandbox to check it against wasn't worth the risk for a
+prototype. Make it configurable (a real App Setting, editable from the
+Garmin Connect Mobile companion settings screen — see below) once there's
+a real URL to point at.
 
 Still to do, roughly in order:
 
-1. **A "pair a device" screen in `agon_ui`** calling
-   `POST /devices/pairing-codes` and showing the code + a countdown.
-2. **The Connect IQ watch app itself** — new Garmin Connect IQ SDK project
-   (Monkey C), starting from a Watch App template: pairing-code settings
-   field, `ActivityRecording.Session`, the scoring button grid, the local
-   event queue + flush loop against `POST /matches/:id/live/events`.
-   Developed/tested in the Connect IQ simulator first, then on a real
-   compatible device (anything with `ActivityRecording` + `Communications`
-   web-request support — most WiFi-capable Forerunner/Fenix/Epix models).
-3. **Device-scoped tokens** (the v1 limitation flagged above) — a `scope`
+1. **Build the watch app in the actual Connect IQ simulator** and fix
+   whatever the real compiler flags — every pairing-specific API
+   (`Communications.makeWebRequest`/`makeImageRequest`,
+   `Application.Storage`, `Timer.Timer`, `Dc.drawBitmap`,
+   `Graphics.BitmapReference.getWidth/getHeight`, `Math.rand`/`srand`) was
+   checked against the official docs while writing this, the same
+   discipline that caught the `Menu`-vs-`Menu2` and `SPORT_GENERIC`
+   mistakes earlier — but nothing here has been run through
+   `monkeybrains.jar` yet.
+2. **Wire `MockApiClient` up to the real API** for scoring — an
+   offline-safe queue against `POST /matches/:id/live/events`, replacing
+   the mock with real `Communications.makeWebRequest` calls now that
+   pairing actually produces a token to send. `FootballScore` and the UI
+   shouldn't need to change for this — see `MockApiClient`'s doc comment.
+3. ~~The `agon_ui` confirm page~~ — done: `PairDevicePage` (`/pair`,
+   reading `?code=` or offering manual entry) calls
+   `POST /devices/pairing-codes/:code/confirm` and reuses the existing
+   "log in, then return to this deep link" mechanism (`pendingInvite.ts`,
+   extended with a `pair` kind alongside the existing `invite`/`join`
+   ones — same idea as the match-join-link flow, just a query-string route
+   instead of a path param since that's the URL shape the watch's QR code
+   and fallback text actually show). `npx tsc --noEmit`, eslint, and a full
+   `npm run build` all pass; not yet exercised against a real confirm
+   (needs the watch side actually running, or a manual `curl`, to produce
+   a real code to confirm).
+4. **Fetch and render the real score** (`GET /matches/:id/score`) on the
+   watch instead of `FootballScore`'s session-local tally.
+5. **Device-scoped tokens** (the v1 limitation flagged above) — a `scope`
    claim plus enforcement in sensitive handlers, before this goes anywhere
    near a non-trivial number of real users' watches.
-4. **A "manage paired devices" screen** — list + revoke, once there's
+6. **A "manage paired devices" screen** — list + revoke, once there's
    more than one code path creating `AUTH#device:*` guards to manage.
-5. **Phone-relay transport** (Option B above) for watches without direct
+7. **Cards and substitutions** on the watch, once there's a roster
+   fetch + player picker to attribute them to.
+8. **Phone-relay transport** (Option B above) for watches without direct
    WiFi/LTE.
-6. **Provision the device-signing key via `agon_infra`** instead of a
+9. **Provision the device-signing key via `agon_infra`** instead of a
    hand-set env var, mirroring the existing CloudFront signing-key pattern.
+10. **Rate-limit the pairing/confirm/qr endpoints** — flagged during
+    design (see the security-comparison discussion): none of them have any
+    throttling today, which matters most for `POST /devices/pair` (an
+    unauthenticated, guessable-code-shaped surface).
+11. **Make `apiBaseUrl` a real App Setting** instead of
+    `PairingApiClient`'s hardcoded constant, once there's an actual
+    deployed URL worth pointing a real watch at.

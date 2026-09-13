@@ -35,7 +35,7 @@ use tracing::{error, info};
 use agon_core::dao;
 // JWT verification (asymmetric; Supabase JWKS + static test key).
 mod auth;
-use auth::{DeviceTokenSigner, JwtClaims, JwtVerifier};
+use auth::{DeviceTokenSigner, JwtClaims, JwtVerifier, SCOPE_LIVE_SCORING};
 // Boundary mapping between API models and DAO records.
 mod mapping;
 use mapping::{
@@ -1732,6 +1732,38 @@ enum PairDeviceResponse {
     NotConfigured(PlainText<String>),
 }
 
+/// One device paired to the caller's account — see `dao::paired_device`.
+#[derive(Object)]
+struct PairedDeviceInfo {
+    /// The device's own auth identity (`device:<id>`) — what
+    /// `DELETE /devices/paired/:device_sub` takes to revoke it.
+    device_sub: String,
+    /// When this device was paired: its first successful
+    /// `POST /devices/pair`, not when the pairing code was confirmed in
+    /// the browser (see `dao::device_pairing`'s doc comment on that
+    /// distinction).
+    paired_at: String,
+}
+
+#[derive(ApiResponse)]
+enum ListPairedDevicesResponse {
+    #[oai(status = 200)]
+    Devices(Json<Vec<PairedDeviceInfo>>),
+}
+
+#[derive(ApiResponse)]
+enum RevokePairedDeviceResponse {
+    /// The device's guard is gone; any token already minted for it will no
+    /// longer resolve to a user.
+    #[oai(status = 204)]
+    Ok,
+
+    /// This device isn't paired to the caller's account — already revoked,
+    /// never was, or belongs to someone else.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
 #[derive(ApiResponse)]
 enum GetMatchScoreResponse {
     #[oai(status = 200)]
@@ -2072,7 +2104,34 @@ impl Api {
     /// keys off — never the raw `sub`, so the auth provider can change without
     /// touching stored data. Returns 401 if the `sub` maps to no user (i.e. the
     /// caller is authenticated but hasn't completed signup via `POST /users`).
+    ///
+    /// Requires a *full* credential — a paired device's `device_scope`d token
+    /// (see `auth::DeviceTokenSigner`) is rejected here with a 403, same as
+    /// every endpoint except the handful a device actually needs (those call
+    /// `require_uid_scoped` instead). This is the default specifically so a
+    /// new endpoint is closed to devices unless someone deliberately opens
+    /// it, not the other way around.
     async fn require_uid(&self, dao: &dao::Dao, jwt: &JwtClaims) -> Result<String> {
+        check_scope(jwt, None)?;
+        dao.get_user_id_by_sub(&jwt.sub)
+            .await
+            .map_err(dao_internal)?
+            .ok_or_else(|| Error::from_string("user not found", StatusCode::UNAUTHORIZED))
+    }
+
+    /// Same as `require_uid`, but also accepts a token whose `device_scope`
+    /// is exactly `allowed_scope` — for the small set of endpoints a paired
+    /// device is actually meant to call (see `check_scope`). A full,
+    /// unscoped credential still passes too, same as `require_uid` — this
+    /// only ever *widens* what's accepted, never narrows it below a normal
+    /// login.
+    async fn require_uid_scoped(
+        &self,
+        dao: &dao::Dao,
+        jwt: &JwtClaims,
+        allowed_scope: &str,
+    ) -> Result<String> {
+        check_scope(jwt, Some(allowed_scope))?;
         dao.get_user_id_by_sub(&jwt.sub)
             .await
             .map_err(dao_internal)?
@@ -2085,6 +2144,13 @@ impl Api {
         Data(dao): Data<&dao::Dao>,
         AuthSchema(jwt_data): AuthSchema,
     ) -> Result<GetUserResponse> {
+        // Scoped (not just an unchecked AuthSchema, which is what this
+        // handler had before): a paired device needs its own account's
+        // internal user id (to then call GET /matches?participant=<id> for
+        // its match picker — see docs/garmin-live-scoring.md), and this is
+        // the only endpoint that hands that back for "whoever this token
+        // belongs to" rather than needing the id already in hand.
+        check_scope(&jwt_data, Some(SCOPE_LIVE_SCORING))?;
         info!("Getting current user");
         // Resolve sub -> internal id. A caller who hasn't signed up yet maps to
         // nothing → 404 (the existing contract for /users/me).
@@ -2275,6 +2341,12 @@ impl Api {
         AuthSchema(jwt_data): AuthSchema,
         input: Json<CreateUserInput>,
     ) -> Result<CreateUserResponse> {
+        // A device token has no email claim (see DeviceTokenSigner::mint),
+        // so this already fails validation below either way — checked
+        // explicitly regardless, for the same reason every other endpoint
+        // is closed by default: signup should never be something a paired
+        // device's credential can even attempt.
+        check_scope(&jwt_data, None)?;
         info!("Creating user");
         let input = input.0;
         // Identity comes entirely from the verified JWT: `sub` is the id, `email`
@@ -2552,7 +2624,11 @@ impl Api {
         Query(limit): Query<Option<u32>>,
     ) -> Result<ListMatchesResponse> {
         info!("Searching matches");
-        let caller_uid = self.require_uid(dao, &jwt_data).await?;
+        // Scoped (not just require_uid) so a paired device can list matches
+        // to pick which one to score — see docs/garmin-live-scoring.md.
+        let caller_uid = self
+            .require_uid_scoped(dao, &jwt_data, SCOPE_LIVE_SCORING)
+            .await?;
 
         // Match discovery is served by the search index (Meilisearch), NOT
         // DynamoDB — it supports arbitrary combinations of text / participant /
@@ -3081,7 +3157,11 @@ impl Api {
         Path(match_id): Path<String>,
     ) -> Result<GetMatchResponse> {
         info!("Getting match {match_id}");
-        let uid = self.require_uid(dao, &jwt_data).await?;
+        // Scoped (not just require_uid) so a paired device can look up
+        // match details for its picker — see docs/garmin-live-scoring.md.
+        let uid = self
+            .require_uid_scoped(dao, &jwt_data, SCOPE_LIVE_SCORING)
+            .await?;
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
             None => {
@@ -3639,9 +3719,14 @@ impl Api {
     async fn get_match_score(
         &self,
         Data(dao): Data<&dao::Dao>,
-        AuthSchema(_jwt_data): AuthSchema,
+        AuthSchema(jwt_data): AuthSchema,
         Path(match_id): Path<String>,
     ) -> Result<GetMatchScoreResponse> {
+        // This handler never needed require_uid's uid resolution (no
+        // per-caller permission check — see the doc comment above), so it's
+        // the one live-scoring endpoint that checks scope directly rather
+        // than through require_uid_scoped.
+        check_scope(&jwt_data, Some(SCOPE_LIVE_SCORING))?;
         info!("Getting score for match {match_id}");
 
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
@@ -3814,7 +3899,11 @@ impl Api {
         Path(match_id): Path<String>,
         input: Json<AppendLiveEventsInput>,
     ) -> Result<AppendLiveEventsResponse> {
-        let uid = self.require_uid(dao, &jwt_data).await?;
+        // The one endpoint device pairing exists for — scoped so a paired
+        // watch can actually call it (see docs/garmin-live-scoring.md).
+        let uid = self
+            .require_uid_scoped(dao, &jwt_data, SCOPE_LIVE_SCORING)
+            .await?;
         let input = input.0;
         info!(
             "Appending {} live event(s) to match {match_id} from seq {}",
@@ -4043,9 +4132,12 @@ impl Api {
     async fn get_live_seq(
         &self,
         Data(dao): Data<&dao::Dao>,
-        AuthSchema(_jwt_data): AuthSchema,
+        AuthSchema(jwt_data): AuthSchema,
         Path(match_id): Path<String>,
     ) -> Result<GetLiveSeqResponse> {
+        // Scoped: exactly what a paired device seeds expected_last_seq
+        // from before its first append (see the doc comment above).
+        check_scope(&jwt_data, Some(SCOPE_LIVE_SCORING))?;
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
             None => {
@@ -4124,7 +4216,10 @@ impl Api {
         Path(match_id): Path<String>,
         Path(seq): Path<u32>,
     ) -> Result<DeleteLiveEventResponse> {
-        let uid = self.require_uid(dao, &jwt_data).await?;
+        // Scoped, same as append_live_events — undo is still live scoring.
+        let uid = self
+            .require_uid_scoped(dao, &jwt_data, SCOPE_LIVE_SCORING)
+            .await?;
         info!("Deleting live event {seq} on match {match_id}");
 
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
@@ -6267,6 +6362,55 @@ impl Api {
         }
     }
 
+    /// List the devices paired to the caller's account (see
+    /// `dao::paired_device`) — the "manage paired devices" screen's data
+    /// source. Full access only (`require_uid`, not `require_uid_scoped`):
+    /// a paired device's own live-scoring-scoped token can't call this,
+    /// only the real, logged-in account owner can see/manage what's
+    /// paired to them.
+    #[oai(path = "/devices/paired", method = "get")]
+    async fn list_paired_devices(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+    ) -> Result<ListPairedDevicesResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        info!("Listing paired devices for {uid}");
+        let records = dao.list_paired_devices(&uid).await.map_err(dao_internal)?;
+        let devices = records
+            .into_iter()
+            .map(|r| PairedDeviceInfo {
+                device_sub: r.device_sub,
+                paired_at: r.paired_at,
+            })
+            .collect();
+        Ok(ListPairedDevicesResponse::Devices(Json(devices)))
+    }
+
+    /// Revoke a paired device — deletes its `AUTH#<device_sub>` guard
+    /// along with its `PairedDeviceRecord`, atomically, so any
+    /// already-minted device token for it stops resolving to a user the
+    /// instant this returns (no separate blocklist — see
+    /// `dao::paired_device::revoke_paired_device`). Full access only, same
+    /// reasoning as `list_paired_devices`.
+    #[oai(path = "/devices/paired/:device_sub", method = "delete")]
+    async fn revoke_paired_device(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(device_sub): Path<String>,
+    ) -> Result<RevokePairedDeviceResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        info!("Revoking paired device {device_sub} for {uid}");
+        match dao.revoke_paired_device(&uid, &device_sub).await {
+            Ok(()) => Ok(RevokePairedDeviceResponse::Ok),
+            Err(dao::DaoError::NotFound(_)) => Ok(RevokePairedDeviceResponse::NotFound(PlainText(
+                "device not paired to this account".into(),
+            ))),
+            Err(e) => Err(dao_internal(e)),
+        }
+    }
+
     #[oai(path = "/invitations/:invitation_id", method = "get")]
     async fn get_invitation(
         &self,
@@ -8181,6 +8325,70 @@ fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+/// Checks a caller's token against what an endpoint requires, via
+/// `JwtClaims::device_scope` (see its own doc comment). `allowed_scope:
+/// None` means the endpoint needs a full, unscoped credential — a normal
+/// login — and rejects any scoped one outright; `allowed_scope: Some(s)`
+/// additionally accepts a token scoped to exactly `s`. An unscoped token
+/// always passes either way: it can do anything a scoped one can, plus
+/// more, so there's nothing for scope to narrow. Used by
+/// `require_uid`/`require_uid_scoped` (the usual call sites) and directly
+/// by the couple of handlers — `get_match_score` among them — that don't
+/// otherwise need `require_uid`'s uid resolution at all.
+fn check_scope(jwt: &JwtClaims, allowed_scope: Option<&str>) -> Result<()> {
+    match &jwt.device_scope {
+        None => Ok(()),
+        Some(s) if allowed_scope == Some(s.as_str()) => Ok(()),
+        Some(s) => Err(Error::from_string(
+            format!("this credential is scoped to `{s}` and cannot call this endpoint"),
+            StatusCode::FORBIDDEN,
+        )),
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    fn claims(device_scope: Option<&str>) -> JwtClaims {
+        JwtClaims {
+            sub: "device:abc".into(),
+            exp: 9_999_999_999,
+            iss: None,
+            aud: None,
+            role: None,
+            email: None,
+            device_scope: device_scope.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn an_unscoped_token_passes_any_check() {
+        let jwt = claims(None);
+        assert!(check_scope(&jwt, None).is_ok());
+        assert!(check_scope(&jwt, Some(SCOPE_LIVE_SCORING)).is_ok());
+        assert!(check_scope(&jwt, Some("something-else")).is_ok());
+    }
+
+    #[test]
+    fn a_scoped_token_is_rejected_by_a_full_access_check() {
+        let jwt = claims(Some(SCOPE_LIVE_SCORING));
+        assert!(check_scope(&jwt, None).is_err());
+    }
+
+    #[test]
+    fn a_scoped_token_passes_a_matching_scoped_check() {
+        let jwt = claims(Some(SCOPE_LIVE_SCORING));
+        assert!(check_scope(&jwt, Some(SCOPE_LIVE_SCORING)).is_ok());
+    }
+
+    #[test]
+    fn a_scoped_token_is_rejected_by_a_different_scope() {
+        let jwt = claims(Some(SCOPE_LIVE_SCORING));
+        assert!(check_scope(&jwt, Some("something-else")).is_err());
+    }
+}
+
 /// Generate a new opaque id (base64url of random bytes).
 fn new_id() -> String {
     use rand::RngCore;
@@ -8803,6 +9011,7 @@ async fn main() {
                 aud: Some(audience),
                 role: None,
                 email,
+                device_scope: None,
             };
 
             let mut header = Header::new(Algorithm::ES256);

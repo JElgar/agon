@@ -34,6 +34,7 @@ pub mod live_score_ops;
 pub mod match_ops;
 pub mod match_social;
 pub mod notification;
+pub mod paired_device;
 pub mod stats;
 pub mod team;
 pub mod user;

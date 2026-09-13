@@ -128,23 +128,39 @@ trusts that key exactly like it trusts Supabase's JWKS or the test key, so
 verifying a device token needed no new code path either — see
 `agon_service/src/auth.rs`.
 
-**Known v1 limitation, deliberately not fixed yet**: the minted token is a
-full, undifferentiated account credential. `JwtClaims` carries no
-scope/device marker, so a paired watch can call *any* endpoint the account
-owner can, not just live-scoring ones — and there's no revocation endpoint
-(cutting one off means deleting its `AUTH#<device_sub>` guard item by hand).
-Properly scoping this — a `scope` claim plus a check in sensitive handlers,
-plus a "manage paired devices" UI — is real follow-up work, not something
-to gloss over. It's an acceptable prototype cut because the actual
-capability being delegated (append live-scoring events for matches the
-account can already score) is low-stakes compared to, say, payment or
-account-deletion endpoints — but it should be tightened before this ships
-to real users' watches.
+**Formerly a v1 limitation, now fixed**: the minted token used to be a
+full, undifferentiated account credential — `JwtClaims` carried no
+scope/device marker, so a paired watch could call *any* endpoint the
+account owner could. `JwtClaims` now carries `device_scope` (`None` for
+every real login; `"live_scoring"` for a device token —
+`DeviceTokenSigner::mint`), and `main.rs::check_scope` enforces it:
+`require_uid` (the default nearly every handler already calls) rejects any
+scoped token outright, and only the handful of endpoints a paired watch
+actually needs (`GET /users/me`, `GET /matches`, `GET /matches/:id`,
+`GET /matches/:id/live/seq`, `POST /matches/:id/live/events`,
+`DELETE /matches/:id/live/events/:seq`) call the new
+`require_uid_scoped(..., SCOPE_LIVE_SCORING)` instead, which additionally
+accepts that one scope. Revocation exists too now — see "manage paired
+devices" below. **Residual gap**: a handful of read-only endpoints
+(`list_match_likes`/`list_match_comments`/`search_teams`/
+`list_team_members`/`get_invitation`/`list_score_submissions`/
+`list_live_events`/`get_asset`) call `AuthSchema` directly without going
+through `require_uid`/`check_scope` at all — same "any authenticated
+token" pattern they already had before scope existed, just now that also
+includes a device token. Lower stakes than the write paths (no per-caller
+permission logic on any of them to begin with), but worth closing
+properly rather than leaving implicit.
 
-Also not done yet: provisioning the device-signing key via `agon_infra`
-(Pulumi) the way `agon_infra/index.ts` already does for the CloudFront
-signing key (`assetSigningKey`) — right now it's an env var you set by
-hand, fine for a prototype, not fine for a real deployment.
+**Manage paired devices**: `dao::paired_device` (`PairedDeviceRecord`,
+`USER#<uid>`/`PAIREDDEV#<device_sub>`) is written alongside the
+`AUTH#<device_sub>` guard the moment a pairing is claimed.
+`GET /devices/paired` lists them, `DELETE /devices/paired/:device_sub`
+revokes one — deletes the record and the guard atomically, so an
+already-minted token stops resolving immediately, no blocklist needed.
+Both are full-access only (`require_uid`, not the scoped variant): a
+device can't manage its own pairing, only the real logged-in account
+owner can. `agon_ui`'s `PairedDevicesPage` (`/devices`, linked from the
+profile page's Account section) is the UI for this.
 
 ## Architecture options for the watch app itself
 
@@ -197,15 +213,18 @@ and posts live updates to a service does exactly this).
 
 ### Match selection + auth on the device
 
-Two small pieces of setup state the watch needs, beyond the paired
-`access_token`: which match it's scoring. For a v1 prototype, both are
-simplest to enter the same way pairing itself does — through the Connect IQ
-app's **companion phone settings** (Garmin Connect Mobile lets a paired
-Connect IQ app expose a settings screen with text fields, edited from the
-phone's own keyboard rather than the watch's buttons): one field for the
-pairing code, one for the match id. A later version could instead have the
-watch fetch "matches I can score" from the API itself and pick from a list
-— nicer, but not needed to prove the concept.
+Built as an in-watch picker fetching from the API directly, not the
+companion-phone-settings approach floated earlier in this doc's first
+draft (a settings screen with a hand-typed match id) — nicer for the
+wearer, and the picker's two lookups (`GET /users/me` for the account's
+own id, `GET /matches?participant=<id>&match_type=football&limit=10` for
+the list) were already endpoints the API needed to expose for other
+reasons. Selecting a sport ("Football") on launch goes to
+`MatchPickerView` instead of straight to the score screen; picking a
+match there fetches its full roster (`GET /matches/:id`) into
+`MatchContext` (real `side_id`s and player ids — see below) before
+finally handing off to the score screen. See "What the watch side does"
+below for the exact flow.
 
 ## What's left to build
 
@@ -221,17 +240,17 @@ this sandbox) — run that once to regenerate `schema.json` and
 generated client types.
 
 Watch app: a real Connect IQ (Monkey C) project, `agon_garmin_app/`,
-created via the SDK's own Project Wizard and building/running in the
-simulator. Covers goal + period-marker scoring (via an on-watch menu) and
-a concurrent `ActivityRecording.Session`, plus the pairing screen itself —
-all compiler-verified against real API signatures except pairing, which
-hasn't been run through the actual `monkeybrains.jar` yet (verified by
-reading the official docs for every API used instead — see the file
-headers). `MockApiClient` still just logs what would be sent for scoring
-events instead of calling `agon_service`; pairing is the one thing that
-now makes real network calls. A now-superseded hand-written scaffold
-(`garmin_app/`, written before a real SDK install was available to compile
-against) has been removed in favor of this one.
+created via the SDK's own Project Wizard, with the pairing screen
+compiler-verified on a real device (fr955 simulator) and everything since
+(match picking, real live-scoring calls) checked against the official API
+docs the same way but not yet run through the real `monkeybrains.jar` —
+see the file headers for exactly which signatures were verified.
+`MockApiClient`/`MockRoster` are gone, replaced by `LiveApiClient`/
+`MatchApiClient`/`MatchContext` (real network calls, real `side_id`/player
+ids) — pairing is no longer the only thing that talks to the real API. A
+now-superseded hand-written scaffold (`garmin_app/`, written before a real
+SDK install was available to compile against) was removed early on in
+favor of this one.
 
 What the watch side does: `agonApp.getInitialView()` checks
 `DeviceAuth.getAccessToken()` (`Application.Storage`) and shows
@@ -252,7 +271,31 @@ hard to scan, or to just read/type the code instead; `onMenu` forces a
 manual regenerate (e.g. if the QR image failed to load), a secondary
 action since it depends on a gesture not every device offers.
 
-`PairingApiClient.API_BASE_URL` is a hardcoded constant
+Once paired, picking "Football" on the sport menu goes to
+`MatchPickerView`: it resolves the account's own id
+(`MatchApiClient.fetchMyUserId`, `GET /users/me`), lists that account's
+football matches (`fetchMatches`, `GET /matches?participant=...`) as a
+plain-text loading/empty/error state that hands off to a real
+`WatchUi.Menu` the moment matches actually load, and — once one's picked
+— fetches its full roster (`fetchMatch`, `GET /matches/:id`) into
+`MatchContext` before finally `switchToView`ing to the score screen.
+`MatchContext` holds the two sides' real ids/names and each side's real
+player roster (id + display name, resolved from the match's `Member`
+union the same way `agon_ui` does), replacing the old `MockRoster`'s fake
+fixed names — `GoalFlow.mc`'s side/scorer/assist menus now read from it
+instead. `LiveApiClient` (replacing `MockApiClient`) is what
+`FootballScore` actually posts to: `POST /matches/:id/live/events` for
+goals and period markers, seeded with the real `expected_last_seq` from
+`GET /matches/:id/live/seq` the moment a match is picked, and re-fetched
+on a `409 Conflict` before the *next* action (this prototype has no
+offline queue yet, so a conflicting event is dropped, not retried — see
+"what's left to build"). `FootballScore`'s own call shape into the api
+client is unchanged from `MockApiClient`'s, per that class's original
+design; only what the client does with it changed.
+
+`API_BASE_URL` (`ApiConfig.mc`, shared by `PairingApiClient`/
+`MatchApiClient`/`LiveApiClient` — file-scope, not a per-class constant,
+so there's exactly one place to change it) is a hardcoded constant
 (`https://agon.staging.get-agon.com/api` — the `/api` matters: that's
 `agon-api-ingress` publishing `agon_service`'s own `/`-mounted routes, same
 convention `agon_ui`'s dev proxy and `make test-staging` both use, not a
@@ -277,19 +320,20 @@ either into the service yet, so `DeviceTokenSigner::from_env()` comes back
 Still to do, roughly in order:
 
 1. **Build the watch app in the actual Connect IQ simulator** and fix
-   whatever the real compiler flags — every pairing-specific API
-   (`Communications.makeWebRequest`/`makeImageRequest`,
-   `Application.Storage`, `Timer.Timer`, `Dc.drawBitmap`,
-   `Graphics.BitmapReference.getWidth/getHeight`, `Math.rand`/`srand`) was
-   checked against the official docs while writing this, the same
-   discipline that caught the `Menu`-vs-`Menu2` and `SPORT_GENERIC`
-   mistakes earlier — but nothing here has been run through
-   `monkeybrains.jar` yet.
-2. **Wire `MockApiClient` up to the real API** for scoring — an
-   offline-safe queue against `POST /matches/:id/live/events`, replacing
-   the mock with real `Communications.makeWebRequest` calls now that
-   pairing actually produces a token to send. `FootballScore` and the UI
-   shouldn't need to change for this — see `MockApiClient`'s doc comment.
+   whatever the real compiler flags — every API used (pairing, match
+   picking, live scoring alike) was checked against the official docs
+   while writing this, the same discipline that caught the `Menu`-vs-
+   `Menu2`/`SPORT_GENERIC` mistakes early on and the class-`const`-in-a-
+   `static function` one later (see `DeviceAuth.mc`'s doc comment) — but
+   the match-picker/live-scoring code specifically hasn't been run
+   through `monkeybrains.jar` yet (pairing has, on a real fr955).
+2. ~~Wire `MockApiClient` up to the real API~~ — done: `LiveApiClient`
+   posts real `POST /matches/:id/live/events` calls (goals and period
+   markers), seeded from `GET /matches/:id/live/seq`. No offline queue
+   yet, though — a `409 Conflict` (another writer moved the log on) just
+   re-syncs the seq for next time and drops the conflicting event, rather
+   than diffing and retrying it. Worth building once this sees real
+   flaky-connectivity use.
 3. ~~The `agon_ui` confirm page~~ — done: `PairDevicePage` (`/pair`,
    reading `?code=` or offering manual entry) calls
    `POST /devices/pairing-codes/:code/confirm` and reuses the existing
@@ -303,13 +347,16 @@ Still to do, roughly in order:
    a real code to confirm).
 4. **Fetch and render the real score** (`GET /matches/:id/score`) on the
    watch instead of `FootballScore`'s session-local tally.
-5. **Device-scoped tokens** (the v1 limitation flagged above) — a `scope`
-   claim plus enforcement in sensitive handlers, before this goes anywhere
-   near a non-trivial number of real users' watches.
-6. **A "manage paired devices" screen** — list + revoke, once there's
-   more than one code path creating `AUTH#device:*` guards to manage.
-7. **Cards and substitutions** on the watch, once there's a roster
-   fetch + player picker to attribute them to.
+5. ~~Device-scoped tokens~~ — done: `device_scope`/`check_scope` (see
+   above). The residual gap flagged there (a handful of read-only
+   endpoints not checking scope at all) is real follow-up, not a full
+   close-out.
+6. ~~A "manage paired devices" screen~~ — done: `GET`/`DELETE
+   /devices/paired/:device_sub` plus `agon_ui`'s `PairedDevicesPage` (see
+   above).
+7. **Cards and substitutions** on the watch, once there's a player picker
+   for them — `MatchContext`'s roster (added for goals) already has the
+   ids these would need too.
 8. **Phone-relay transport** (Option B above) for watches without direct
    WiFi/LTE.
 9. ~~Provision the device-signing key via `agon_infra`~~ — done, but as a

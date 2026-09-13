@@ -5,9 +5,10 @@ import Toybox.WatchUi;
 //! (optionally) who assisted — three chained screens rather than one,
 //! since a 5-button watch can't usefully show "side + scorer + assist" as
 //! a single list. Built programmatically (not a menu.xml resource)
-//! because the scorer/assist lists come from `MockRoster` today and a
-//! real per-match roster fetch tomorrow — neither is knowable at
-//! resource-compile time the way a fixed menu.xml is.
+//! because the side names and scorer/assist rosters come from
+//! `MatchContext` (the picked match's real data — see MatchPickerView),
+//! which isn't knowable at resource-compile time the way a fixed menu.xml
+//! is.
 //!
 //! Each step uses `WatchUi.switchToView` (not `pushView`) to move to the
 //! next one, and the final step `switchToView`s back to `agonView`. The
@@ -20,25 +21,31 @@ import Toybox.WatchUi;
 //! the (already working) mechanism `SportMenuDelegate` uses to get from
 //! the sport picker into the score screen in the first place.
 //!
-//! Item ids are fixed symbols (`:player_0`.. `:player_4`, `:unknown`,
-//! `:none`) rather than the player's own name, so `onMenuItem`'s
-//! signature can stay a plain `Symbol` — matching
-//! `WatchUi.MenuInputDelegate` exactly — with the symbol resolved back to
-//! a name via `MockRoster`'s array index.
+//! Item ids are fixed symbols (`:player_0`.. `:player_17`, `:unknown`,
+//! `:none`) rather than the player's own id, so `onMenuItem`'s signature
+//! can stay a plain `Symbol` — matching `WatchUi.MenuInputDelegate`
+//! exactly — with the symbol resolved back to a player id via
+//! `MatchContext`'s array index. 18 slots comfortably covers a real
+//! matchday squad (starting XI plus subs).
 
-const PLAYER_SLOT_SYMBOLS = [:player_0, :player_1, :player_2, :player_3, :player_4];
+const PLAYER_SLOT_SYMBOLS = [
+    :player_0, :player_1, :player_2, :player_3, :player_4, :player_5,
+    :player_6, :player_7, :player_8, :player_9, :player_10, :player_11,
+    :player_12, :player_13, :player_14, :player_15, :player_16, :player_17
+];
 
 //! `null` for `:unknown`/`:none` (the "skip this" placeholder both the
-//! scorer and assist menus use), otherwise the resolved player name.
+//! scorer and assist menus use), otherwise the resolved player id.
 function resolvePlayerSlot(side as Symbol, item as Symbol) as String? {
     if (item == :unknown || item == :none) {
         return null;
     }
-    var players = MockRoster.playersFor(side);
+    var players = getApp().matchContext.playersFor(side);
     var i = 0;
     while (i < PLAYER_SLOT_SYMBOLS.size()) {
         if (PLAYER_SLOT_SYMBOLS[i] == item && i < players.size()) {
-            return players[i];
+            var player = players[i] as Dictionary;
+            return player.get("id") as String;
         }
         i += 1;
     }
@@ -48,8 +55,8 @@ function resolvePlayerSlot(side as Symbol, item as Symbol) as String? {
 function buildSideMenu() as WatchUi.Menu {
     var menu = new WatchUi.Menu();
     menu.setTitle("Goal");
-    menu.addItem("Home", :home);
-    menu.addItem("Away", :away);
+    menu.addItem(getApp().matchContext.sideNameFor(:home), :home);
+    menu.addItem(getApp().matchContext.sideNameFor(:away), :away);
     return menu;
 }
 
@@ -61,7 +68,7 @@ function buildSideMenu() as WatchUi.Menu {
 //! "skip" would be an undiscoverable, screen-dependent shortcut; an
 //! explicit trailing list item needs no explanation.
 //!
-//! `excludePlayerName` drops one name from the list — used so the assist
+//! `excludePlayerId` drops one player from the list — used so the assist
 //! menu can't offer the same player who was just picked as scorer (a
 //! player can't assist their own goal). `null` shows the full roster, as
 //! the scorer menu always does (nothing to exclude yet).
@@ -70,18 +77,20 @@ function buildPlayerMenu(
     side as Symbol,
     placeholderLabel as String,
     placeholderId as Symbol,
-    excludePlayerName as String?
+    excludePlayerId as String?
 ) as WatchUi.Menu {
     var menu = new WatchUi.Menu();
     menu.setTitle(title);
-    var players = MockRoster.playersFor(side);
+    var players = getApp().matchContext.playersFor(side);
     var i = 0;
     while (i < players.size() && i < PLAYER_SLOT_SYMBOLS.size()) {
-        if (excludePlayerName == null || !players[i].equals(excludePlayerName)) {
+        var player = players[i] as Dictionary;
+        var id = player.get("id") as String;
+        if (excludePlayerId == null || !id.equals(excludePlayerId)) {
             // Slot symbols are index-based, not list-position-based, so
             // skipping an entry here just leaves a gap — resolvePlayerSlot
             // still maps the remaining ones back to the right player.
-            menu.addItem(players[i], PLAYER_SLOT_SYMBOLS[i]);
+            menu.addItem(player.get("name") as String, PLAYER_SLOT_SYMBOLS[i]);
         }
         i += 1;
     }

@@ -6,11 +6,23 @@ class agonApp extends Application.AppBase {
 
     var activityRecorder as ActivityRecorder;
     var score as FootballScore;
+    //! The real side/roster data for whatever match MatchPickerView picks
+    //! — empty (default side names, no players) until then. Read by
+    //! GoalFlow/LiveApiClient once scoring actually starts.
+    var matchContext as MatchContext;
+    //! Posts FootballScore's events to the real API — created up front
+    //! (like `score`/`matchContext`) so `score`'s constructor always has
+    //! something to call, but inert (`recordGoal`/`recordPeriod` no-op)
+    //! until MatchPickerView calls `setMatch` once a match is actually
+    //! chosen.
+    var liveApiClient as LiveApiClient;
 
     function initialize() {
         AppBase.initialize();
         activityRecorder = new ActivityRecorder();
-        score = new FootballScore(new MockApiClient());
+        matchContext = new MatchContext();
+        liveApiClient = new LiveApiClient();
+        score = new FootballScore(liveApiClient);
     }
 
     // onStart() is called on application start up

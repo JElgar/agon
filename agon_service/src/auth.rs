@@ -29,6 +29,17 @@ use tracing::{info, warn};
 /// Claims we read off a verified token. `sub` is the identity-provider subject
 /// (mapped to an internal user id downstream); `email` is the trusted email
 /// source for signup (never taken from request bodies).
+///
+/// `device_scope` is `None` for every real login (Supabase or the static test
+/// key) — it only exists on a token `DeviceTokenSigner` mints for a paired
+/// device, restricting what that credential can do (see
+/// `main.rs::check_scope`, `require_uid`/`require_uid_scoped`). Deliberately
+/// not the generic OAuth `scope` claim name/shape (a space-separated list) —
+/// this is a single, Agon-specific restriction, not a set of grants, and a
+/// distinct name sidesteps any chance of colliding with a real IdP token
+/// that happens to carry its own `scope` claim. `#[serde(default)]` so a
+/// real login token (which never has this field at all) still deserializes
+/// as `None` rather than failing to parse.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct JwtClaims {
     pub sub: String,
@@ -37,7 +48,16 @@ pub struct JwtClaims {
     pub aud: Option<String>,
     pub role: Option<String>,
     pub email: Option<String>,
+    #[serde(default)]
+    pub device_scope: Option<String>,
 }
+
+/// The one scope a paired device's token ever carries today — narrows it to
+/// exactly the live-scoring endpoints a watch needs (see
+/// `main.rs::check_scope` and its call sites). Not an extensible set of
+/// grants (yet): a single restriction, matching the one thing device
+/// pairing exists for so far.
+pub const SCOPE_LIVE_SCORING: &str = "live_scoring";
 
 /// Verifies bearer tokens against the trusted key sources. Cheap to clone
 /// (shares one inner instance); inject once via `.data(..)`.
@@ -282,6 +302,7 @@ impl DeviceTokenSigner {
             aud: Some(self.audience.clone()),
             role: None,
             email: None,
+            device_scope: Some(SCOPE_LIVE_SCORING.to_string()),
         };
 
         let mut header = Header::new(Algorithm::ES256);
@@ -337,6 +358,7 @@ yuPC5L8ZcNr/wsPZHrn9SKPfMfhIiE9Ay0nj+7bSFLz3QafZDk6t6fbR\n\
             aud: aud.map(str::to_string),
             role: None,
             email: Some("user-1@example.com".into()),
+            device_scope: None,
         }
     }
 

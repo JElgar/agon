@@ -1,11 +1,12 @@
 import Toybox.Lang;
 
 //! In-memory football score state for this session: goal tally per side
-//! plus the current match period. Every change is echoed to a
-//! `MockApiClient` (see its doc comment) — not persisted anywhere yet, and
-//! not the server's `Score` (`GET /matches/:id/score`), which will be the
-//! real source of truth once this talks to `agon_service` for real. This
-//! is deliberately just "local state + a menu to change it" — the basics.
+//! plus the current match period. Every change is posted to `LiveApiClient`
+//! (real `POST /matches/:id/live/events` calls now, once a match has been
+//! picked — see MatchPickerView) — this tally itself isn't persisted or
+//! read back from anywhere; the server's `Score` (`GET /matches/:id/score`)
+//! is the real source of truth. This is deliberately just "local state + a
+//! menu to change it" — the basics.
 class FootballScore {
 
     enum {
@@ -20,18 +21,18 @@ class FootballScore {
     var awayGoals as Number;
     var period as Number;
 
-    var _apiClient as MockApiClient;
+    var _apiClient as LiveApiClient;
 
-    function initialize(apiClient as MockApiClient) {
+    function initialize(apiClient as LiveApiClient) {
         homeGoals = 0;
         awayGoals = 0;
         period = PERIOD_NOT_STARTED;
         _apiClient = apiClient;
     }
 
-    //! `scorer`/`assist` are `null` when skipped (the on-watch flow's
-    //! "Unknown"/"No assist" options — see GoalFlow.mc) — a goal doesn't
-    //! require picking a player, same as the backend's
+    //! `scorer`/`assist` are player ids, `null` when skipped (the on-watch
+    //! flow's "Unknown"/"No assist" options — see GoalFlow.mc) — a goal
+    //! doesn't require picking a player, same as the backend's
     //! `FootballGoalEvent.scorer_player_id`/`assist_player_id` being
     //! optional.
     function recordGoal(side as Symbol, scorer as String?, assist as String?) as Void {
@@ -45,11 +46,12 @@ class FootballScore {
 
     function setPeriod(newPeriod as Number) as Void {
         period = newPeriod;
-        _apiClient.recordPeriod(periodLabel());
+        // The period Number itself, not periodLabel()'s display text —
+        // LiveApiClient maps it to the wire value the server expects.
+        _apiClient.recordPeriod(newPeriod);
     }
 
-    //! Short, on-watch label for the current period — also what gets
-    //! logged to the mock API client, so the two never disagree.
+    //! Short, on-watch label for the current period.
     function periodLabel() as String {
         if (period == PERIOD_NOT_STARTED) {
             return "Not started";

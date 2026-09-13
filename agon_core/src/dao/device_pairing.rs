@@ -40,7 +40,8 @@ use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, from_item, s, to_item};
 use super::keys::{Pk, Sk};
-use super::records::{AuthGuardRecord, DevicePairingRecord};
+use super::paired_device::TYPE_PAIRED_DEVICE;
+use super::records::{AuthGuardRecord, DevicePairingRecord, PairedDeviceRecord};
 use super::user::TYPE_AUTH_GUARD;
 
 pub const TYPE_DEVICE_PAIRING: &str = "device_pairing";
@@ -103,9 +104,11 @@ impl Dao {
         }
     }
 
-    /// Claim a pairing code: atomically marks it claimed and creates the
+    /// Claim a pairing code: atomically marks it claimed, creates the
     /// `AUTH#<device_sub>` guard mapping its reserved device identity to the
-    /// code's owning user. Returns the claimed record (notably its
+    /// code's owning user, and writes a `PairedDeviceRecord` under that
+    /// user so it shows up in the "manage paired devices" list (see
+    /// `dao::paired_device`). Returns the claimed record (notably its
     /// `device_sub`, for the caller to mint a device token) on success.
     ///
     /// `NotFound` if the code doesn't exist; `Conflict` if it's already been
@@ -162,11 +165,34 @@ impl Dao {
             .build()
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
 
+        let paired_device_item = to_item(
+            &Pk::User(pairing.user_id.clone()),
+            &Sk::PairedDevice(pairing.device_sub.clone()),
+            TYPE_PAIRED_DEVICE,
+            &PairedDeviceRecord {
+                user_id: pairing.user_id.clone(),
+                device_sub: pairing.device_sub.clone(),
+                paired_at: now.to_string(),
+            },
+        )?;
+        let create_paired_device = Put::builder()
+            .table_name(self.table())
+            .set_item(Some(paired_device_item))
+            .condition_expression("attribute_not_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
         let result = self
             .client
             .transact_write_items()
             .transact_items(TransactWriteItem::builder().update(claim_code).build())
             .transact_items(TransactWriteItem::builder().put(create_auth_guard).build())
+            .transact_items(
+                TransactWriteItem::builder()
+                    .put(create_paired_device)
+                    .build(),
+            )
             .send()
             .await;
 

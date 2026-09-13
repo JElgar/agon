@@ -1280,6 +1280,23 @@ pub struct DeviceRecord {
     pub created_at: String,
 }
 
+/// `USER#<uid>` / `PAIREDDEV#<device_sub>` — a device paired to this account
+/// via `dao::device_pairing` (a Garmin watch, initially). Written once,
+/// alongside the `AUTH#<device_sub>` guard, when a pairing code is claimed;
+/// exists purely so the account owner can see what's paired and revoke it —
+/// see `dao::paired_device`. Not the credential itself (that's the auth
+/// guard); this is just the human-facing record of it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PairedDeviceRecord {
+    pub user_id: String,
+    pub device_sub: String,
+    /// When the pairing was claimed (the device's first successful
+    /// `POST /devices/pair`, not when the code was confirmed in the
+    /// browser — see `dao::device_pairing`'s doc comment on that
+    /// distinction).
+    pub paired_at: String,
+}
+
 /// `ASSET#<assetId>` / `#META` — an uploadable asset.
 ///
 /// `status` is "pending" | "uploaded" | "failed". `url` is set once uploaded.

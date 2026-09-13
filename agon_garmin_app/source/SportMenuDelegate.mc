@@ -7,8 +7,8 @@ import Toybox.WatchUi;
 //! football has agonView/agonDelegate.
 //!
 //! `switchToView` (not `pushView`) — there's no "back to sport picker"
-//! once you're scoring a match, so this replaces the view stack rather
-//! than layering on top of it.
+//! once you're picking a match to score, so this replaces the view stack
+//! rather than layering on top of it.
 class SportMenuDelegate extends WatchUi.MenuInputDelegate {
 
     function initialize() {
@@ -17,7 +17,15 @@ class SportMenuDelegate extends WatchUi.MenuInputDelegate {
 
     function onMenuItem(item as Symbol) as Void {
         if (item == :football) {
-            WatchUi.switchToView(new agonView(), new agonDelegate(), WatchUi.SLIDE_LEFT);
+            // MatchPickerView, not straight to agonView — the score
+            // screen needs a real match (side/roster data — see
+            // MatchContext) before there's anything to score.
+            var pickerView = new MatchPickerView();
+            WatchUi.switchToView(
+                pickerView,
+                new MatchPickerDelegate(pickerView),
+                WatchUi.SLIDE_LEFT
+            );
         }
     }
 }

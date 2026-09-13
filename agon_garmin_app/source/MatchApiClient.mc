@@ -1,0 +1,71 @@
+import Toybox.Lang;
+import Toybox.Communications;
+
+//! Authenticated calls the watch makes once paired, to pick a match to
+//! score: resolving the account's own id (`GET /users/me`), listing
+//! matches it can pick from (`GET /matches`), and loading one match's
+//! full roster (`GET /matches/:id`) — see MatchPickerView. Kept separate
+//! from `PairingApiClient` (unauthenticated, runs before there's any
+//! token to send) and `LiveApiClient` (posts live-scoring events) even
+//! though all three ultimately hit the same `agon_service` — each has a
+//! distinct auth/lifecycle shape.
+//!
+//! All three endpoints here are scoped `live_scoring` on the server (see
+//! `agon_service::main::check_scope`), so the device's own access token
+//! (not just any bearer token) is what makes these calls succeed.
+class MatchApiClient {
+
+    //! Same base URL as `PairingApiClient` — see its own doc comment on
+    //! the `/api` prefix and the local-dev alternative.
+    const API_BASE_URL = "https://agon.staging.get-agon.com/api";
+
+    //! `GET /users/me` — resolves the paired account's own internal user
+    //! id, needed to filter `GET /matches` to "matches I'm on". `callback`
+    //! is invoked as `(responseCode as Number, data as Dictionary or
+    //! String or Null)`.
+    function fetchMyUserId(callback as Method) as Void {
+        var url = API_BASE_URL + "/users/me";
+        var options = {
+            :method => Communications.HTTP_REQUEST_METHOD_GET,
+            :headers => authHeaders(),
+            :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
+        };
+        Communications.makeWebRequest(url, null, options, callback);
+    }
+
+    //! `GET /matches?participant=<userId>&match_type=football&limit=10` —
+    //! the picker's list. Football only, and only a handful (matching
+    //! `MATCH_SLOT_SYMBOLS`'s own 10-item cap — see MatchPickerView),
+    //! since a 5-button watch has no useful way to search or page through
+    //! more.
+    function fetchMatches(userId as String, callback as Method) as Void {
+        var url = API_BASE_URL + "/matches";
+        var params = {
+            "participant" => userId,
+            "match_type" => "football",
+            "limit" => "10"
+        };
+        var options = {
+            :method => Communications.HTTP_REQUEST_METHOD_GET,
+            :headers => authHeaders(),
+            :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
+        };
+        Communications.makeWebRequest(url, params, options, callback);
+    }
+
+    //! `GET /matches/:id` — the full match, for its sides + player roster
+    //! (`MatchContext.populateFrom`).
+    function fetchMatch(matchId as String, callback as Method) as Void {
+        var url = API_BASE_URL + "/matches/" + matchId;
+        var options = {
+            :method => Communications.HTTP_REQUEST_METHOD_GET,
+            :headers => authHeaders(),
+            :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
+        };
+        Communications.makeWebRequest(url, null, options, callback);
+    }
+
+    function authHeaders() as Dictionary {
+        return { "Authorization" => "Bearer " + DeviceAuth.getAccessToken() };
+    }
+}

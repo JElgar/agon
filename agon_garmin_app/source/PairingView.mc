@@ -135,6 +135,13 @@ class PairingView extends WatchUi.View {
     }
 
     function onQrImage(responseCode as Number, image as WatchUi.BitmapResource or Graphics.BitmapReference or Null) as Void {
+        // Temporary: the QR image is silently absent whenever this isn't
+        // 200 (see the fallback-text comment below), which makes a real
+        // failure indistinguishable from "still loading" on-watch. Logging
+        // it surfaces the actual responseCode in the simulator's Console
+        // (a negative BLE_*/NETWORK_* constant, or a real HTTP status like
+        // 404/500) instead of guessing blind.
+        System.println("[pairing] QR fetch responseCode=" + responseCode);
         if (responseCode == 200 && image != null) {
             _qrImage = image;
             // getWidth/getHeight are a Graphics.BitmapReference thing
@@ -161,6 +168,10 @@ class PairingView extends WatchUi.View {
     }
 
     function onPairResponse(responseCode as Number, data as Dictionary or String or Null) as Void {
+        // Temporary — see the matching comment in onQrImage: 202 and every
+        // network-layer failure both render as "Waiting for phone.", so
+        // logging the real code is the only way to tell them apart.
+        System.println("[pairing] pair() responseCode=" + responseCode);
         if (responseCode == 200 && data != null) {
             // The server only ever sends a JSON object for 200 (see
             // PairDeviceOutput) — cast rather than branch on `data`'s

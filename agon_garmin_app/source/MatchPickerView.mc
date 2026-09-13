@@ -1,6 +1,7 @@
 import Toybox.Lang;
 import Toybox.WatchUi;
 import Toybox.Graphics;
+import Toybox.System;
 
 //! Shown after picking "Football" on the sport menu, before the score
 //! screen — lets the wearer pick which of their matches to actually
@@ -67,12 +68,20 @@ function resolveMatchSlot(item as Symbol, matches as Array) as String? {
 class MatchPickerView extends WatchUi.View {
 
     var _apiClient as MatchApiClient;
-    var _statusText as String;
+    //! Two lines, not one — a single `drawText` with a long sentence
+    //! ("Couldn't load matches. Select to retry.") ran off the edge of a
+    //! real round screen (confirmed from a screenshot); `Dc.drawText`
+    //! doesn't wrap on its own (same lesson as `PairingView`'s fallback
+    //! text). `_statusLine2` is "" for the loading state, which just
+    //! skips drawing that line.
+    var _statusLine1 as String;
+    var _statusLine2 as String;
 
     function initialize() {
         View.initialize();
         _apiClient = new MatchApiClient();
-        _statusText = "Loading matches...";
+        _statusLine1 = "Loading matches...";
+        _statusLine2 = "";
     }
 
     function onLayout(dc as Dc) as Void {
@@ -85,11 +94,20 @@ class MatchPickerView extends WatchUi.View {
     function onUpdate(dc as Dc) as Void {
         dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_BLACK);
         dc.clear();
+        var centerX = dc.getWidth() / 2;
+        var centerY = dc.getHeight() / 2;
         dc.drawText(
-            dc.getWidth() / 2, dc.getHeight() / 2, Graphics.FONT_SMALL,
-            _statusText,
+            centerX, centerY - 15, Graphics.FONT_XTINY,
+            _statusLine1,
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER
         );
+        if (_statusLine2.length() > 0) {
+            dc.drawText(
+                centerX, centerY + 15, Graphics.FONT_XTINY,
+                _statusLine2,
+                Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER
+            );
+        }
     }
 
     //! Exposed so `MatchPickerDelegate.onSelect` can retry from the
@@ -98,13 +116,23 @@ class MatchPickerView extends WatchUi.View {
         loadMatches();
     }
 
-    function loadMatches() as Void {
-        _statusText = "Loading matches...";
+    function setStatus(line1 as String, line2 as String) as Void {
+        _statusLine1 = line1;
+        _statusLine2 = line2;
         WatchUi.requestUpdate();
+    }
+
+    function loadMatches() as Void {
+        setStatus("Loading matches...", "");
         _apiClient.fetchMyUserId(method(:onUserId));
     }
 
     function onUserId(responseCode as Number, data as Dictionary or String or Null) as Void {
+        // Temporary — see PairingView's matching comment: this and
+        // onMatches/onMatchDetails collapse every failure into the same
+        // on-screen message, so the real cause (a network error code vs.
+        // a real HTTP status) is only visible in this log.
+        System.println("[match-picker] /users/me responseCode=" + responseCode);
         if (responseCode == 200 && data != null) {
             var dict = data as Dictionary;
             var profile = dict.get("profile");
@@ -116,11 +144,11 @@ class MatchPickerView extends WatchUi.View {
                 }
             }
         }
-        _statusText = "Couldn't load matches. Select to retry.";
-        WatchUi.requestUpdate();
+        setStatus("Couldn't load matches.", "Select to retry.");
     }
 
     function onMatches(responseCode as Number, data as Dictionary or String or Null) as Void {
+        System.println("[match-picker] /matches responseCode=" + responseCode);
         if (responseCode == 200 && data != null) {
             var dict = data as Dictionary;
             var items = dict.get("items");
@@ -134,13 +162,11 @@ class MatchPickerView extends WatchUi.View {
                     );
                     return;
                 }
-                _statusText = "No matches found. Select to retry.";
-                WatchUi.requestUpdate();
+                setStatus("No matches found.", "Select to retry.");
                 return;
             }
         }
-        _statusText = "Couldn't load matches. Select to retry.";
-        WatchUi.requestUpdate();
+        setStatus("Couldn't load matches.", "Select to retry.");
     }
 }
 

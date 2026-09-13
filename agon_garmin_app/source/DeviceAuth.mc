@@ -6,8 +6,8 @@ import Toybox.Application;
 //! function) and not even as `DeviceAuth.STORAGE_KEY_ACCESS_TOKEN` (real
 //! compiler errors on both: "Cannot find symbol ':STORAGE_KEY_ACCESS_TOKEN'
 //! on type 'self'", then "...on type '$.DeviceAuth'"). File-scope consts
-//! (outside any class) don't have this problem — same pattern GoalFlow.mc's
-//! `PLAYER_SLOT_SYMBOLS` already uses successfully.
+//! (outside any class) don't have this problem — same pattern
+//! MatchPickerView.mc's `MAX_MATCH_ITEMS` already uses successfully.
 const DEVICE_AUTH_STORAGE_KEY_ACCESS_TOKEN = "device_access_token";
 
 //! Persists the device's own access token — the credential

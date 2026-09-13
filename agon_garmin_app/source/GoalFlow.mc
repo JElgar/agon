@@ -12,51 +12,39 @@ import Toybox.WatchUi;
 //!
 //! Each step uses `WatchUi.switchToView` (not `pushView`) to move to the
 //! next one, and the final step `switchToView`s back to `agonView`. The
-//! first version of this chained `pushView`s instead, assuming each
-//! `WatchUi.Menu` would pop itself on selection and land the flow back
-//! where it started once the last one did the same — confirmed wrong on
-//! a real device: it oscillated between the scorer and assist screens
-//! instead. `switchToView` sidesteps the question entirely by replacing
-//! the whole view stack outright at every step, which is also exactly
-//! the (already working) mechanism `SportMenuDelegate` uses to get from
-//! the sport picker into the score screen in the first place.
+//! first version of this chained `pushView`s instead, assuming each menu
+//! would pop itself on selection and land the flow back where it started
+//! once the last one did the same — confirmed wrong on a real device: it
+//! oscillated between the scorer and assist screens instead.
+//! `switchToView` sidesteps the question entirely by replacing the whole
+//! view stack outright at every step, which is also exactly the (already
+//! working) mechanism `SportMenuDelegate` uses to get from the sport
+//! picker into the score screen in the first place.
 //!
-//! Item ids are fixed symbols (`:player_0`.. `:player_17`, `:unknown`,
-//! `:none`) rather than the player's own id, so `onMenuItem`'s signature
-//! can stay a plain `Symbol` — matching `WatchUi.MenuInputDelegate`
-//! exactly — with the symbol resolved back to a player id via
-//! `MatchContext`'s array index. 18 slots comfortably covers a real
-//! matchday squad (starting XI plus subs).
+//! Uses `WatchUi.Menu2` (not the legacy `WatchUi.Menu` this flow used
+//! originally) — `Menu2` is the round-display-aware widget (see
+//! `MatchPickerView.mc`'s doc comment for the screenshot-confirmed
+//! clipping the legacy `Menu` caused there); a long player name here
+//! would hit the same bezel-clipping bug. It's also why the old
+//! `PLAYER_SLOT_SYMBOLS`/`resolvePlayerSlot` index-based indirection is
+//! gone: unlike the legacy `Menu`, a `Menu2` `MenuItem` takes any
+//! `Object` as its id, so a player's own real id can be used directly —
+//! `:unknown`/`:none` sentinel symbols still stand in for "skip this".
 
-const PLAYER_SLOT_SYMBOLS = [
-    :player_0, :player_1, :player_2, :player_3, :player_4, :player_5,
-    :player_6, :player_7, :player_8, :player_9, :player_10, :player_11,
-    :player_12, :player_13, :player_14, :player_15, :player_16, :player_17
-];
-
-//! `null` for `:unknown`/`:none` (the "skip this" placeholder both the
-//! scorer and assist menus use), otherwise the resolved player id.
-function resolvePlayerSlot(side as Symbol, item as Symbol) as String? {
-    if (item == :unknown || item == :none) {
+//! `null` if `id` is the "skip this" placeholder sentinel (`:unknown` on
+//! the scorer menu, `:none` on the assist menu — see `buildPlayerMenu`),
+//! otherwise the real player id a `MenuItem` carries directly.
+function playerIdFromSelection(id as Object?, placeholder as Symbol) as String? {
+    if (id == null || id == placeholder) {
         return null;
     }
-    var players = getApp().matchContext.playersFor(side);
-    var i = 0;
-    while (i < PLAYER_SLOT_SYMBOLS.size()) {
-        if (PLAYER_SLOT_SYMBOLS[i] == item && i < players.size()) {
-            var player = players[i] as Dictionary;
-            return player.get("id") as String;
-        }
-        i += 1;
-    }
-    return null;
+    return id as String;
 }
 
-function buildSideMenu() as WatchUi.Menu {
-    var menu = new WatchUi.Menu();
-    menu.setTitle("Goal");
-    menu.addItem(getApp().matchContext.sideNameFor(:home), :home);
-    menu.addItem(getApp().matchContext.sideNameFor(:away), :away);
+function buildSideMenu() as WatchUi.Menu2 {
+    var menu = new WatchUi.Menu2({ :title => "Goal" });
+    menu.addItem(new WatchUi.MenuItem(getApp().matchContext.sideNameFor(:home), null, :home, {}));
+    menu.addItem(new WatchUi.MenuItem(getApp().matchContext.sideNameFor(:away), null, :away, {}));
     return menu;
 }
 
@@ -78,54 +66,51 @@ function buildPlayerMenu(
     placeholderLabel as String,
     placeholderId as Symbol,
     excludePlayerId as String?
-) as WatchUi.Menu {
-    var menu = new WatchUi.Menu();
-    menu.setTitle(title);
+) as WatchUi.Menu2 {
+    var menu = new WatchUi.Menu2({ :title => title });
     var players = getApp().matchContext.playersFor(side);
     var i = 0;
-    while (i < players.size() && i < PLAYER_SLOT_SYMBOLS.size()) {
+    while (i < players.size()) {
         var player = players[i] as Dictionary;
         var id = player.get("id") as String;
         if (excludePlayerId == null || !id.equals(excludePlayerId)) {
-            // Slot symbols are index-based, not list-position-based, so
-            // skipping an entry here just leaves a gap — resolvePlayerSlot
-            // still maps the remaining ones back to the right player.
-            menu.addItem(player.get("name") as String, PLAYER_SLOT_SYMBOLS[i]);
+            menu.addItem(new WatchUi.MenuItem(player.get("name") as String, null, id, {}));
         }
         i += 1;
     }
-    menu.addItem(placeholderLabel, placeholderId);
+    menu.addItem(new WatchUi.MenuItem(placeholderLabel, null, placeholderId, {}));
     return menu;
 }
 
-class GoalSideMenuDelegate extends WatchUi.MenuInputDelegate {
+class GoalSideMenuDelegate extends WatchUi.Menu2InputDelegate {
 
     function initialize() {
-        MenuInputDelegate.initialize();
+        Menu2InputDelegate.initialize();
     }
 
-    function onMenuItem(item as Symbol) as Void {
-        // item is :home or :away — that symbol IS the side value the rest
-        // of the flow needs, no resolving required.
+    function onSelect(item as WatchUi.MenuItem) as Void {
+        // The id IS :home or :away — that's the side value the rest of
+        // the flow needs, no resolving required.
+        var side = item.getId() as Symbol;
         WatchUi.switchToView(
-            buildPlayerMenu("Scorer", item, "Unknown", :unknown, null),
-            new GoalScorerMenuDelegate(item),
+            buildPlayerMenu("Scorer", side, "Unknown", :unknown, null),
+            new GoalScorerMenuDelegate(side),
             WatchUi.SLIDE_UP
         );
     }
 }
 
-class GoalScorerMenuDelegate extends WatchUi.MenuInputDelegate {
+class GoalScorerMenuDelegate extends WatchUi.Menu2InputDelegate {
 
     var _side as Symbol;
 
     function initialize(side as Symbol) {
-        MenuInputDelegate.initialize();
+        Menu2InputDelegate.initialize();
         _side = side;
     }
 
-    function onMenuItem(item as Symbol) as Void {
-        var scorer = resolvePlayerSlot(_side, item);
+    function onSelect(item as WatchUi.MenuItem) as Void {
+        var scorer = playerIdFromSelection(item.getId(), :unknown);
         WatchUi.switchToView(
             // Exclude the scorer — a player can't assist their own goal.
             // scorer is null when they were left "Unknown", in which case
@@ -137,19 +122,19 @@ class GoalScorerMenuDelegate extends WatchUi.MenuInputDelegate {
     }
 }
 
-class GoalAssistMenuDelegate extends WatchUi.MenuInputDelegate {
+class GoalAssistMenuDelegate extends WatchUi.Menu2InputDelegate {
 
     var _side as Symbol;
     var _scorer as String?;
 
     function initialize(side as Symbol, scorer as String?) {
-        MenuInputDelegate.initialize();
+        Menu2InputDelegate.initialize();
         _side = side;
         _scorer = scorer;
     }
 
-    function onMenuItem(item as Symbol) as Void {
-        var assist = resolvePlayerSlot(_side, item);
+    function onSelect(item as WatchUi.MenuItem) as Void {
+        var assist = playerIdFromSelection(item.getId(), :none);
         getApp().score.recordGoal(_side, _scorer, assist);
         // Back to the score screen — a fresh agonView/agonDelegate is
         // fine, it reads app.score straight from the singleton app on

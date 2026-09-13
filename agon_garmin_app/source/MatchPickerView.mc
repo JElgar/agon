@@ -10,16 +10,17 @@ import Toybox.System;
 //! `WatchUi.Menu2` (`buildMatchMenu`/`MatchMenuDelegate`) rather than
 //! rendering the list itself.
 //!
-//! Uses `Menu2`, not the legacy `WatchUi.Menu` every other menu in this
-//! app still uses (`agonMenuDelegate`, `GoalFlow`) — `Menu2` is the
+//! Uses `WatchUi.Menu2`, not the legacy `WatchUi.Menu` this — and every
+//! other menu in this app — originally used. `Menu2` is the
 //! round-display-aware widget (title and item text both stay clear of
 //! the bezel); the legacy `Menu` clipped both a long match name and even
 //! the "Select match" title itself against the edge of a real round
-//! screen (confirmed from a screenshot). It's also why this file no
-//! longer needs `GoalFlow.mc`'s `PLAYER_SLOT_SYMBOLS` slot-symbol
-//! indirection trick — unlike the legacy `Menu`, a `Menu2` `MenuItem`
-//! takes any `Object` as its id, so a match's own string id can be used
-//! directly.
+//! screen (confirmed from a screenshot), which is what motivated
+//! switching every menu in the app over (see `agonMenuDelegate.mc`,
+//! `GoalFlow.mc`). It's also why this file needs no slot-symbol
+//! indirection trick the way the legacy `Menu` forced — unlike it, a
+//! `Menu2` `MenuItem` takes any `Object` as its id, so a match's own
+//! string id can be used directly.
 const MAX_MATCH_ITEMS = 10;
 
 //! Extract up to `MAX_MATCH_ITEMS` `{"id" => .., "name" => ..}` entries

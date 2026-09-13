@@ -7,7 +7,7 @@ import Toybox.System;
 //! from that class's own `static function`s, neither bare nor as
 //! `PairingCode.ALPHABET` (real compiler errors on both forms — see
 //! DeviceAuth.mc's doc comment for the exact messages). Same pattern
-//! GoalFlow.mc's `PLAYER_SLOT_SYMBOLS` already uses successfully.
+//! MatchPickerView.mc's `MAX_MATCH_ITEMS` already uses successfully.
 const PAIRING_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 const PAIRING_CODE_LENGTH = 6;
 const PAIRING_CODE_STORAGE_KEY = "pairing_code";

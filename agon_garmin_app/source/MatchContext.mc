@@ -149,16 +149,27 @@ class MatchContext {
         if (id == null) {
             return null;
         }
-        var type = memberDict.get("type");
-        var name as Object? = null;
-        if (type != null && (type as String).equals("User")) {
-            name = memberDict.get("name");
-        } else {
-            name = memberDict.get("display_name");
-        }
+        var name = memberName(memberDict);
         if (name == null) {
             name = "Player";
         }
         return { "id" => id, "name" => name };
+    }
+
+    //! The display name out of a `member` Dictionary — `name` for a linked
+    //! account, `display_name` for an external (no-account) player. A
+    //! plain function (not inlined into `playerEntry`) so `name`'s local
+    //! type is inferred from this function's own declared return type
+    //! rather than from a bare `null` literal — Monkey C doesn't allow
+    //! explicit `as Type` annotations on local variables at all ("Local
+    //! variable types are inferred" — a real compiler error hit while
+    //! writing this), so a local that starts out possibly-null needs to
+    //! infer that from somewhere with a real declared type.
+    function memberName(member as Dictionary) as Object? {
+        var type = member.get("type");
+        if (type != null && (type as String).equals("User")) {
+            return member.get("name");
+        }
+        return member.get("display_name");
     }
 }

@@ -35,6 +35,7 @@ import { FollowListPage } from '@/pages/FollowListPage'
 import { SportStatsPage } from '@/pages/SportStatsPage'
 import { AcceptInvitePage } from '@/pages/AcceptInvitePage'
 import { JoinMatchPage } from '@/pages/JoinMatchPage'
+import { PairDevicePage } from '@/pages/PairDevicePage'
 import { TeamsPage } from '@/pages/TeamsPage'
 import { TeamPage } from '@/pages/TeamPage'
 import {
@@ -111,6 +112,7 @@ function AppShell({ email, onSignOut }: { email: string; onSignOut: () => void }
           <Route path="/invitations" element={<ComingSoon title="Invitations" />} />
           <Route path="/invite/:token" element={<AcceptInvitePage />} />
           <Route path="/join/:token" element={<JoinMatchPage />} />
+          <Route path="/pair" element={<PairDevicePage />} />
           <Route path="/search" element={<UserSearchPage />} />
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="/profile/stats/:sport" element={<SportStatsPage />} />
@@ -136,40 +138,54 @@ function AppShell({ email, onSignOut }: { email: string; onSignOut: () => void }
 
 /**
  * Where "/" (and unknown paths) land. Normally the feed — but if the visitor
- * arrived via an invite or join link, the token was stashed before login (and
- * survives the OAuth redirect back to the app origin, which drops the path).
- * Once signed in with a profile, send them to accept/join it —
- * `AcceptInvitePage`/`JoinMatchPage` each clear the token once they've
- * consumed it.
+ * arrived via an invite, join, or pairing link, the token/code was stashed
+ * before login (and survives the OAuth redirect back to the app origin,
+ * which drops the path). Once signed in with a profile, send them to
+ * accept/join/pair it — `AcceptInvitePage`/`JoinMatchPage`/`PairDevicePage`
+ * each clear the pending entry once they've consumed it.
  */
 function HomeRedirect() {
   const pending = getPendingInvite()
-  return (
-    <Navigate
-      to={pending ? `/${pending.kind}/${pending.token}` : '/feed'}
-      replace
-    />
-  )
+  return <Navigate to={pending ? pendingLinkPath(pending) : '/feed'} replace />
+}
+
+/** The route a pending invite/join/pair entry resolves to. `pair` is a
+ *  query-string route (`/pair?code=...`, matching the URL the watch's QR
+ *  code/fallback text actually shows), unlike `invite`/`join`'s path-param
+ *  routes. */
+function pendingLinkPath(pending: PendingInvite): string {
+  if (pending.kind === 'pair') {
+    return `/pair?code=${encodeURIComponent(pending.token)}`
+  }
+  return `/${pending.kind}/${pending.token}`
 }
 
 /** Extract a pending link (kind + token) from an `/invite/:token` or
- *  `/join/:token` pathname, else null. */
-function pendingLinkFromPath(pathname: string): PendingInvite | null {
-  const match = pathname.match(/^\/(invite|join)\/([^/]+)/)
-  if (!match) return null
-  return { kind: match[1] as PendingInvite['kind'], token: decodeURIComponent(match[2]) }
+ *  `/join/:token` pathname, or a pairing code from `/pair?code=...` — else
+ *  null. */
+function pendingLinkFromPath(pathname: string, search: string): PendingInvite | null {
+  const linkMatch = pathname.match(/^\/(invite|join)\/([^/]+)/)
+  if (linkMatch) {
+    return { kind: linkMatch[1] as PendingInvite['kind'], token: decodeURIComponent(linkMatch[2]) }
+  }
+  if (pathname === '/pair') {
+    const code = new URLSearchParams(search).get('code')
+    if (code) return { kind: 'pair', token: code }
+  }
+  return null
 }
 
 /**
- * Persist an invite/join token from `/invite/:token` or `/join/:token` the
- * moment it's seen, before the auth gate can swallow the route. Reads the
- * pathname directly (not `useParams`) so it fires even on the logged-out
- * screen, which renders no `<Routes>`. Lets the token survive login —
- * including OAuth, which redirects back to the app origin and loses the path.
+ * Persist an invite/join token or pairing code from `/invite/:token`,
+ * `/join/:token`, or `/pair?code=...` the moment it's seen, before the auth
+ * gate can swallow the route. Reads the location directly (not
+ * `useParams`/`useSearchParams`) so it fires even on the logged-out screen,
+ * which renders no `<Routes>`. Lets it survive login — including OAuth,
+ * which redirects back to the app origin and loses the path.
  */
 function usePendingLinkCapture(): PendingInvite | null {
   const location = useLocation()
-  const pending = pendingLinkFromPath(location.pathname)
+  const pending = pendingLinkFromPath(location.pathname, location.search)
   const kind = pending?.kind
   const token = pending?.token
   useEffect(() => {

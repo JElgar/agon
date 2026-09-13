@@ -1,19 +1,22 @@
 /**
- * A pending invite or join-link token, persisted across the auth round-trip.
+ * A pending invite, join-link, or device-pairing code, persisted across the
+ * auth round-trip.
  *
- * When someone opens an invite link (`/invite/:token`) or a join link
- * (`/join/:token`) they may not be signed in yet. Login — especially OAuth,
- * which redirects back to the app origin and drops the path — would
- * otherwise lose the token. We stash it (with which kind of link it was) in
- * localStorage on landing, then consume it once the user is signed in with a
- * profile.
+ * When someone opens an invite link (`/invite/:token`), a join link
+ * (`/join/:token`), or a device-pairing link (`/pair?code=...`, scanned from
+ * a Garmin watch's QR code — see docs/garmin-live-scoring.md) they may not
+ * be signed in yet. Login — especially OAuth, which redirects back to the
+ * app origin and drops the path — would otherwise lose the token/code. We
+ * stash it (with which kind of link it was) in localStorage on landing, then
+ * consume it once the user is signed in with a profile.
  */
 const KEY = 'agon-pending-invite'
 
-export type PendingInviteKind = 'invite' | 'join'
+export type PendingInviteKind = 'invite' | 'join' | 'pair'
 
 export interface PendingInvite {
   kind: PendingInviteKind
+  /** The invite/join token, or (for `kind: 'pair'`) the pairing code. */
   token: string
 }
 
@@ -36,7 +39,7 @@ export function getPendingInvite(): PendingInvite | null {
       parsed !== null &&
       'kind' in parsed &&
       'token' in parsed &&
-      (parsed.kind === 'invite' || parsed.kind === 'join') &&
+      (parsed.kind === 'invite' || parsed.kind === 'join' || parsed.kind === 'pair') &&
       typeof parsed.token === 'string'
     ) {
       return parsed as PendingInvite

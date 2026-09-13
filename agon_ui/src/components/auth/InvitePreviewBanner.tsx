@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Swords, Users } from 'lucide-react'
+import { Swords, Users, Watch } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import type { PendingInviteKind } from '@/lib/pendingInvite'
@@ -9,11 +9,14 @@ type InvitationContext = components['schemas']['InvitationContext']
 type JoinLinkPreview = components['schemas']['JoinLinkPreview']
 
 /**
- * Shown above the login form when the visitor arrived via an invite or join
- * link, so they understand why they're signing in. Uses the public by-token
- * preview endpoints, so it works before authentication. Renders nothing if
- * the token doesn't resolve (invalid/expired/revoked) — the login form still
- * stands on its own.
+ * Shown above the login form when the visitor arrived via an invite, join,
+ * or device-pairing link, so they understand why they're signing in. Invite
+ * and join links preview via their public by-token endpoints, so they work
+ * before authentication; a pairing code has no such preview (nothing about
+ * it exists server-side until it's confirmed — see
+ * `agon_core::dao::device_pairing`), so that one's just a static banner.
+ * Renders nothing for invite/join if the token doesn't resolve
+ * (invalid/expired/revoked) — the login form still stands on its own.
  */
 export function InvitePreviewBanner({
   kind,
@@ -22,7 +25,12 @@ export function InvitePreviewBanner({
   kind: PendingInviteKind
   token: string
 }) {
+  if (kind === 'pair') return <PairPreview />
   return kind === 'join' ? <JoinPreview token={token} /> : <InvitationPreview token={token} />
+}
+
+function PairPreview() {
+  return <Banner icon={Watch}>Pair a Garmin watch with your account</Banner>
 }
 
 function InvitationPreview({ token }: { token: string }) {

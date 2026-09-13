@@ -246,8 +246,11 @@ the expected "nobody's confirmed it yet" steady state; `400` (confirmed
 code already claimed/expired) or the client's own give-up timeout
 (`CODE_LIFETIME_MS`, comfortably under the server's confirmed-code TTL)
 regenerates a fresh code; `503` means pairing isn't configured on this
-deployment. `PairingDelegate.onSelect` lets the wearer force a
-regenerate manually (e.g. if the QR image failed to load).
+deployment. `PairingDelegate.onSelect` toggles a plain-text screen (the
+pairing site + the code, large) over the QR — useful whenever the QR is
+hard to scan, or to just read/type the code instead; `onMenu` forces a
+manual regenerate (e.g. if the QR image failed to load), a secondary
+action since it depends on a gesture not every device offers.
 
 `PairingApiClient.API_BASE_URL` is a hardcoded constant
 (`https://agon.staging.get-agon.com/api` — the `/api` matters: that's

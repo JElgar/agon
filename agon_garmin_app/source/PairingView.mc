@@ -33,6 +33,11 @@ class PairingView extends WatchUi.View {
     var _statusText as String;
     var _pollTimer as Timer.Timer or Null;
     var _codeStartedAt as Number;
+    //! Select toggles this — see PairingDelegate.onSelect. Forces the
+    //! plain-text code screen even once the QR has loaded, for anyone who'd
+    //! rather read/type the code than scan (or whose QR renders too big for
+    //! their particular screen to also fit the code text below it).
+    var _showHelp as Boolean;
 
     function initialize() {
         View.initialize();
@@ -44,6 +49,7 @@ class PairingView extends WatchUi.View {
         _statusText = "Waiting for phone...";
         _pollTimer = null;
         _codeStartedAt = 0;
+        _showHelp = false;
     }
 
     function onLayout(dc as Dc) as Void {
@@ -68,7 +74,7 @@ class PairingView extends WatchUi.View {
 
         var centerX = dc.getWidth() / 2;
 
-        if (_qrImage != null) {
+        if (_qrImage != null && !_showHelp) {
             dc.drawBitmap(centerX - _qrWidth / 2, 8, _qrImage);
             dc.drawText(
                 centerX, 8 + _qrHeight + 6, Graphics.FONT_SMALL,
@@ -76,10 +82,11 @@ class PairingView extends WatchUi.View {
                 Graphics.TEXT_JUSTIFY_CENTER
             );
         } else {
-            // QR still loading, or failed to load — the bare code is
-            // always enough to pair on its own (agon_ui's /pair page
-            // takes typed-in codes too), so this is a fully functional
-            // fallback, not just an error state.
+            // Either the QR is still loading/failed, or `_showHelp` forced
+            // this screen deliberately (select — see PairingDelegate) — the
+            // bare code is always enough to pair on its own (agon_ui's
+            // /pair page takes typed-in codes too), so this is a fully
+            // functional screen either way, not just an error fallback.
             // Two separate drawText calls, not one string with an
             // embedded newline — Dc.drawText doesn't wrap/interpret line
             // breaks, it just draws whatever string it's given on one
@@ -106,6 +113,13 @@ class PairingView extends WatchUi.View {
             _statusText,
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER
         );
+    }
+
+    //! Flip between the QR screen and the plain-text code/URL screen — see
+    //! `_showHelp`'s own doc comment. Called from PairingDelegate.onSelect.
+    function toggleHelp() as Void {
+        _showHelp = !_showHelp;
+        WatchUi.requestUpdate();
     }
 
     //! Generate a fresh code, request its QR image, and reset the give-up

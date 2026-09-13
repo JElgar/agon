@@ -15,7 +15,7 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use poem::http::Uri;
 use poem::{Endpoint, IntoResponse, Response};
 use poem::{
-    EndpointExt, Error, Request, Result, Route, Server,
+    EndpointExt, Error, Request, Result, Route, Server, get,
     http::StatusCode,
     listener::TcpListener,
     middleware::{Cors, Tracing},
@@ -35,7 +35,7 @@ use tracing::{error, info};
 use agon_core::dao;
 // JWT verification (asymmetric; Supabase JWKS + static test key).
 mod auth;
-use auth::{JwtClaims, JwtVerifier};
+use auth::{DeviceTokenSigner, JwtClaims, JwtVerifier};
 // Boundary mapping between API models and DAO records.
 mod mapping;
 use mapping::{
@@ -103,6 +103,10 @@ use notification::{
 // see the actual match/invite instead of a generic "Agon" card. See its own
 // doc comment for why this can't be done from `agon_ui` (a client-only SPA).
 mod share;
+
+// Plain (non-OpenAPI) device-pairing QR code image — see its own doc
+// comment for why this can't be a typed `#[oai(...)]` endpoint.
+mod qr;
 
 #[derive(SecurityScheme)]
 #[oai(
@@ -1658,6 +1662,74 @@ enum UnregisterDeviceResponse {
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
+}
+
+/// How long a confirmed-but-not-yet-claimed device-pairing code stays
+/// valid, once someone actually confirms it (see
+/// `POST /devices/pairing-codes/:code/confirm`) — *not* from whenever the
+/// device first generated/displayed the code, since nothing about it
+/// exists server-side until confirmation happens (see
+/// `agon_core::dao::device_pairing`'s doc comment). This bounds the gap
+/// between "confirmed" and "the device actually comes back to claim it"
+/// (e.g. it was switched off right after being scanned) — it isn't what
+/// limits how long the device's own QR/code stays displayable, which the
+/// device enforces itself by giving up and generating a fresh one.
+const DEVICE_PAIRING_CODE_TTL: chrono::Duration = chrono::Duration::minutes(10);
+
+#[derive(ApiResponse)]
+enum ConfirmDevicePairingResponse {
+    #[oai(status = 204)]
+    Confirmed,
+
+    /// This code has already been confirmed — by this caller or someone
+    /// else — or the code is malformed. Single-use, same as the final
+    /// claim step; the device should generate a fresh code and restart
+    /// pairing if it sees a device-side error corresponding to this.
+    #[oai(status = 409)]
+    AlreadyUsed(PlainText<String>),
+}
+
+#[derive(Object)]
+struct PairDeviceInput {
+    /// The pairing code the device itself generated and displayed (as a
+    /// QR code + human-typeable fallback) — see
+    /// `POST /devices/pairing-codes/:code/confirm`, which is what actually
+    /// attaches a user to it.
+    code: String,
+}
+
+#[derive(Object)]
+struct PairDeviceOutput {
+    /// A long-lived bearer credential this device should send as
+    /// `Authorization: Bearer <access_token>` on every subsequent request —
+    /// the same header, and the same `AuthSchema`, as a normal user session.
+    access_token: String,
+}
+
+#[derive(ApiResponse)]
+enum PairDeviceResponse {
+    #[oai(status = 200)]
+    Paired(Json<PairDeviceOutput>),
+
+    /// Nobody has confirmed this code yet — not an error, the code simply
+    /// doesn't exist as a server-side record until
+    /// `POST /devices/pairing-codes/:code/confirm` creates it. The device
+    /// should keep polling (with its own give-up timeout) rather than
+    /// treat this as failure.
+    #[oai(status = 202)]
+    Pending,
+
+    /// The code was confirmed and then already claimed by an earlier
+    /// request, or has expired since being confirmed. Terminal, unlike
+    /// `Pending` — the device should generate a fresh code and restart
+    /// pairing rather than keep polling this one.
+    #[oai(status = 400)]
+    InvalidCode(PlainText<String>),
+
+    /// Device pairing isn't configured on this deployment (no
+    /// `AGON_DEVICE_JWT_PRIVATE_KEY` — see `DeviceTokenSigner::from_env`).
+    #[oai(status = 503)]
+    NotConfigured(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -6100,6 +6172,101 @@ impl Api {
         }
     }
 
+    /// Confirm a device-pairing code the device itself generated and is
+    /// displaying (as a QR code — see `qr::render_pairing_qr` — plus a
+    /// human-typeable fallback). This is what actually creates the pairing
+    /// record for the first time, attaching the caller's account to a code
+    /// that until now existed only on the device's own screen. See
+    /// `POST /devices/pair`, which the device polls to notice this
+    /// happened and claim its credential.
+    #[oai(path = "/devices/pairing-codes/:code/confirm", method = "post")]
+    async fn confirm_device_pairing(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(code): Path<String>,
+    ) -> Result<ConfirmDevicePairingResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let code = code.trim().to_uppercase();
+        if code.is_empty() || code.len() > 32 {
+            return Ok(ConfirmDevicePairingResponse::AlreadyUsed(PlainText(
+                "invalid pairing code".into(),
+            )));
+        }
+        info!("Confirming device pairing code for {uid}");
+
+        let now = chrono::Utc::now();
+        let pairing = dao::records::DevicePairingRecord {
+            code: code.clone(),
+            user_id: uid,
+            device_sub: format!("device:{}", new_id()),
+            created_at: now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            expires_at: (now + DEVICE_PAIRING_CODE_TTL)
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            claimed_at: None,
+        };
+
+        match dao.create_device_pairing_code(&pairing).await {
+            Ok(()) => Ok(ConfirmDevicePairingResponse::Confirmed),
+            // Someone (this caller retrying, or someone else) already
+            // confirmed this exact code — single-use, same spirit as the
+            // final claim step's own guard.
+            Err(dao::DaoError::Conflict(_)) => Ok(ConfirmDevicePairingResponse::AlreadyUsed(
+                PlainText("this code has already been confirmed".into()),
+            )),
+            Err(e) => Err(dao_internal(e)),
+        }
+    }
+
+    /// Exchange a pairing code for a long-lived device credential. Called by
+    /// the device itself, unauthenticated — no bearer token to send yet,
+    /// since the whole point of pairing is a device with no practical way to
+    /// log in on its own. This and signup are the only endpoints that don't
+    /// take `AuthSchema`. Meant to be polled: nothing exists server-side for
+    /// a freshly-generated code until someone confirms it (see
+    /// `confirm_device_pairing`), so an unconfirmed code is expected to
+    /// come back `Pending`, not an error.
+    #[oai(path = "/devices/pair", method = "post")]
+    async fn pair_device(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        Data(device_signer): Data<&Option<DeviceTokenSigner>>,
+        input: Json<PairDeviceInput>,
+    ) -> Result<PairDeviceResponse> {
+        let Some(signer) = device_signer else {
+            return Ok(PairDeviceResponse::NotConfigured(PlainText(
+                "device pairing is not configured on this deployment".into(),
+            )));
+        };
+
+        let code = input.code.trim().to_uppercase();
+        let now = now_iso();
+
+        match dao.claim_device_pairing_code(&code, &now).await {
+            Ok(pairing) => {
+                let access_token = signer.mint(&pairing.device_sub).map_err(|e| {
+                    error!("failed to mint device token: {}", e.0);
+                    Error::from_string(
+                        "failed to mint device token",
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                    )
+                })?;
+                Ok(PairDeviceResponse::Paired(Json(PairDeviceOutput {
+                    access_token,
+                })))
+            }
+            // No record exists yet — nobody's confirmed this code. Keep
+            // polling; this is the expected steady state, not a failure.
+            Err(dao::DaoError::NotFound(_)) => Ok(PairDeviceResponse::Pending),
+            // A record exists but is already claimed or has expired since
+            // being confirmed — terminal, unlike the above.
+            Err(dao::DaoError::Conflict(_)) => Ok(PairDeviceResponse::InvalidCode(PlainText(
+                "pairing code already used or expired".into(),
+            ))),
+            Err(e) => Err(dao_internal(e)),
+        }
+    }
+
     #[oai(path = "/invitations/:invitation_id", method = "get")]
     async fn get_invitation(
         &self,
@@ -8026,6 +8193,12 @@ fn new_id() -> String {
     BASE64_URL_SAFE_NO_PAD.encode(bytes)
 }
 
+// Device-pairing codes are generated by the device itself now (Monkey C,
+// on the watch — see docs/garmin-live-scoring.md), not minted here; the
+// server never sees one until it's confirmed. A 6-character, 32-symbol
+// alphabet dropping visually ambiguous characters (`0`/`O`, `1`/`I`/`L`)
+// is still the scheme to match on that side.
+
 /// A mock confirmed score submission with one confirm response.
 fn mock_score_submission() -> ScoreSubmission {
     ScoreSubmission {
@@ -8565,7 +8738,21 @@ async fn main() {
             // static test key (integration tests / local). Built once, shared.
             let verifier = auth::JwtVerifier::from_env();
 
+            // Device-pairing token signer (Garmin, ...) — `None` when
+            // AGON_DEVICE_JWT_PRIVATE_KEY isn't configured, in which case
+            // `POST /devices/pair` reports the feature as unavailable rather
+            // than failing to start. See `DeviceTokenSigner`.
+            let device_signer = auth::DeviceTokenSigner::from_env();
+
             let app = Route::new()
+                // A specific, named route always outranks a nested "/"
+                // catch-all in poem's router regardless of registration
+                // order (see share.rs's own routing comment), so this is
+                // safe to register alongside api_service's own "/" nest.
+                .at(
+                    "/devices/pairing-codes/:code/qr.png",
+                    get(qr::render_pairing_qr),
+                )
                 .nest("/", api_service)
                 .nest("/docs", ui)
                 .nest("/share", share::routes())
@@ -8573,6 +8760,7 @@ async fn main() {
                 .data(dao)
                 .data(search)
                 .data(verifier)
+                .data(device_signer)
                 .data(assets)
                 .data(ui_base_url)
                 .around(log_middleware)

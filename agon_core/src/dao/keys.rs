@@ -205,6 +205,14 @@ pub enum Sk {
     /// — the FCM registration token is itself the key value, so re-registering
     /// the same token is a natural upsert (no separate id layer needed).
     Device(String),
+    /// A device paired via `dao::device_pairing` (a Garmin watch, initially),
+    /// in the user partition. `PAIREDDEV#<device_sub>` — distinct from
+    /// `Device` above (an unrelated, older feature: FCM push-notification
+    /// tokens) even though both live under the same `USER#<uid>` partition;
+    /// this one exists purely for the "manage paired devices" UI (list +
+    /// revoke). The actual credential is `AUTH#<device_sub>`
+    /// (`Pk::AuthGuard`) — revoking deletes both together.
+    PairedDevice(String),
     /// Records what a match contributed to one participant's per-sport stats
     /// (`{ played, won }`), in the match's partition. `STATCONTRIB#<userId>`.
     /// The async stats reconciler diffs the desired contribution (from the
@@ -243,6 +251,7 @@ impl Sk {
             Sk::Reply(_) => "REPLY",
             Sk::Notification(_) => "NOTIF",
             Sk::Device(_) => "DEVICE",
+            Sk::PairedDevice(_) => "PAIREDDEV",
             Sk::StatContribution(_) => "STATCONTRIB",
             Sk::Feed { .. } => "FEED",
         }
@@ -267,6 +276,11 @@ impl Sk {
     /// Lists a user's registered devices: `DEVICE#`.
     pub fn device_prefix() -> String {
         format!("{}{DELIMITER}", Sk::Device(String::new()).prefix())
+    }
+
+    /// Lists a user's paired devices: `PAIREDDEV#`.
+    pub fn paired_device_prefix() -> String {
+        format!("{}{DELIMITER}", Sk::PairedDevice(String::new()).prefix())
     }
 
     /// Lists a team's members: `MEMBER#`.
@@ -333,6 +347,7 @@ impl fmt::Display for Sk {
             | Sk::Reply(v)
             | Sk::Notification(v)
             | Sk::Device(v)
+            | Sk::PairedDevice(v)
             | Sk::StatContribution(v) => write!(f, "{}{}{}", self.prefix(), DELIMITER, v),
 
             // Zero-padded so lexicographic order matches numeric seq order.
@@ -391,6 +406,7 @@ impl FromStr for Sk {
             "REPLY" => Ok(Sk::Reply(rest.into())),
             "NOTIF" => Ok(Sk::Notification(rest.into())),
             "DEVICE" => Ok(Sk::Device(rest.into())),
+            "PAIREDDEV" => Ok(Sk::PairedDevice(rest.into())),
             "STATCONTRIB" => Ok(Sk::StatContribution(rest.into())),
             "FEED" => {
                 let (starts_at, match_id) = two(rest)?;
@@ -478,6 +494,10 @@ mod tests {
         sk_roundtrip(Sk::Reply("r1".into()), "REPLY#r1");
         sk_roundtrip(Sk::Notification("n1".into()), "NOTIF#n1");
         sk_roundtrip(Sk::Device("token-abc".into()), "DEVICE#token-abc");
+        sk_roundtrip(
+            Sk::PairedDevice("device:abc123".into()),
+            "PAIREDDEV#device:abc123",
+        );
         sk_roundtrip(Sk::StatContribution("u4".into()), "STATCONTRIB#u4");
     }
 
@@ -528,6 +548,7 @@ mod tests {
         assert_eq!(Sk::live_event_prefix(), "LIVEEVT#");
         assert_eq!(Sk::stat_contribution_prefix(), "STATCONTRIB#");
         assert_eq!(Sk::feed_prefix(), "FEED#");
+        assert_eq!(Sk::paired_device_prefix(), "PAIREDDEV#");
     }
 
     #[test]
@@ -550,6 +571,7 @@ mod tests {
             Sk::live_event_prefix(),
             Sk::stat_contribution_prefix(),
             Sk::feed_prefix(),
+            Sk::paired_device_prefix(),
             "SCORESUB#".to_string(),
         ];
         for (i, a) in prefixes.iter().enumerate() {

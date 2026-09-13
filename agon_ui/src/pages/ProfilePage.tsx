@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ChevronRight, LogOut, Pencil, Users } from 'lucide-react'
+import { ChevronRight, LogOut, Pencil, Users, Watch } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { ProfileHeader } from '@/components/agon/ProfileHeader'
@@ -168,6 +168,11 @@ function AccountSettings() {
         <span className="text-sm text-muted-foreground">Appearance</span>
         <ThemeToggle />
       </div>
+      <Button variant="outline" className="w-full justify-start gap-2" asChild>
+        <Link to="/devices">
+          <Watch className="size-4" /> Paired devices
+        </Link>
+      </Button>
       <Button variant="outline" className="w-full gap-2" onClick={signOut}>
         <LogOut className="size-4" /> Sign out
       </Button>

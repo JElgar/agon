@@ -7,26 +7,29 @@ import Toybox.System;
 //! screen — lets the wearer pick which of their matches to actually
 //! score. This is a plain text status View (loading / empty / error);
 //! once matches actually load it immediately hands off to a real
-//! `WatchUi.Menu` (`buildMatchMenu`/`MatchMenuDelegate`) rather than
+//! `WatchUi.Menu2` (`buildMatchMenu`/`MatchMenuDelegate`) rather than
 //! rendering the list itself.
 //!
-//! Item ids are fixed symbols (`:match_0`.. `:match_9`), the same
-//! index-indirection trick `GoalFlow.mc`'s `PLAYER_SLOT_SYMBOLS` uses —
-//! Monkey C has no way to mint a `Symbol` from a string at runtime, so a
-//! `Menu` item id can't just be the match's own id.
-const MATCH_SLOT_SYMBOLS = [
-    :match_0, :match_1, :match_2, :match_3, :match_4,
-    :match_5, :match_6, :match_7, :match_8, :match_9
-];
+//! Uses `Menu2`, not the legacy `WatchUi.Menu` every other menu in this
+//! app still uses (`agonMenuDelegate`, `GoalFlow`) — `Menu2` is the
+//! round-display-aware widget (title and item text both stay clear of
+//! the bezel); the legacy `Menu` clipped both a long match name and even
+//! the "Select match" title itself against the edge of a real round
+//! screen (confirmed from a screenshot). It's also why this file no
+//! longer needs `GoalFlow.mc`'s `PLAYER_SLOT_SYMBOLS` slot-symbol
+//! indirection trick — unlike the legacy `Menu`, a `Menu2` `MenuItem`
+//! takes any `Object` as its id, so a match's own string id can be used
+//! directly.
+const MAX_MATCH_ITEMS = 10;
 
-//! Extract up to `MATCH_SLOT_SYMBOLS.size()` `{"id" => .., "name" => ..}`
-//! entries from a `GET /matches` response's `items` array. A blank
-//! `name` (a match created without one) falls back to a placeholder —
-//! an empty menu label would otherwise be unselectable-looking.
+//! Extract up to `MAX_MATCH_ITEMS` `{"id" => .., "name" => ..}` entries
+//! from a `GET /matches` response's `items` array. A blank `name` (a
+//! match created without one) falls back to a placeholder — an empty
+//! menu label would otherwise be unselectable-looking.
 function buildMatchList(items as Array) as Array {
     var matches = [];
     var i = 0;
-    while (i < items.size() && i < MATCH_SLOT_SYMBOLS.size()) {
+    while (i < items.size() && i < MAX_MATCH_ITEMS) {
         var item = items[i] as Dictionary;
         var id = item.get("id");
         if (id != null) {
@@ -41,28 +44,15 @@ function buildMatchList(items as Array) as Array {
     return matches;
 }
 
-function buildMatchMenu(matches as Array) as WatchUi.Menu {
-    var menu = new WatchUi.Menu();
-    menu.setTitle("Select match");
+function buildMatchMenu(matches as Array) as WatchUi.Menu2 {
+    var menu = new WatchUi.Menu2({ :title => "Select match" });
     var i = 0;
     while (i < matches.size()) {
         var match = matches[i] as Dictionary;
-        menu.addItem(match.get("name") as String, MATCH_SLOT_SYMBOLS[i]);
+        menu.addItem(new WatchUi.MenuItem(match.get("name") as String, null, match.get("id") as String, {}));
         i += 1;
     }
     return menu;
-}
-
-function resolveMatchSlot(item as Symbol, matches as Array) as String? {
-    var i = 0;
-    while (i < MATCH_SLOT_SYMBOLS.size()) {
-        if (MATCH_SLOT_SYMBOLS[i] == item && i < matches.size()) {
-            var match = matches[i] as Dictionary;
-            return match.get("id") as String;
-        }
-        i += 1;
-    }
-    return null;
 }
 
 class MatchPickerView extends WatchUi.View {
@@ -157,7 +147,7 @@ class MatchPickerView extends WatchUi.View {
                 if (matches.size() > 0) {
                     WatchUi.switchToView(
                         buildMatchMenu(matches),
-                        new MatchMenuDelegate(matches),
+                        new MatchMenuDelegate(),
                         WatchUi.SLIDE_UP
                     );
                     return;
@@ -189,26 +179,26 @@ class MatchPickerDelegate extends WatchUi.BehaviorDelegate {
     }
 }
 
-//! Input handling for the real match list (`buildMatchMenu`) — resolves
-//! the selection back to a match id, fetches that match's full roster,
-//! and hands off to the score screen once it's loaded.
-class MatchMenuDelegate extends WatchUi.MenuInputDelegate {
+//! Input handling for the real match list (`buildMatchMenu`) — reads the
+//! selected match id directly off the `MenuItem` (see `buildMatchMenu`;
+//! `Menu2` needs no slot-symbol resolution the way the legacy `Menu`
+//! did), fetches that match's full roster, and hands off to the score
+//! screen once it's loaded.
+class MatchMenuDelegate extends WatchUi.Menu2InputDelegate {
 
-    var _matches as Array;
     var _apiClient as MatchApiClient;
 
-    function initialize(matches as Array) {
-        MenuInputDelegate.initialize();
-        _matches = matches;
+    function initialize() {
+        Menu2InputDelegate.initialize();
         _apiClient = new MatchApiClient();
     }
 
-    function onMenuItem(item as Symbol) as Void {
-        var matchId = resolveMatchSlot(item, _matches);
+    function onSelect(item as WatchUi.MenuItem) as Void {
+        var matchId = item.getId();
         if (matchId == null) {
             return;
         }
-        _apiClient.fetchMatch(matchId, method(:onMatchDetails));
+        _apiClient.fetchMatch(matchId as String, method(:onMatchDetails));
     }
 
     function onMatchDetails(responseCode as Number, data as Dictionary or String or Null) as Void {

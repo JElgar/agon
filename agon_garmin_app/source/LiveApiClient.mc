@@ -11,6 +11,23 @@ import Toybox.WatchUi;
 //! `FootballScore`'s own call shape into this is unchanged from
 //! MockApiClient's, per that class's own original doc comment — only
 //! what happens inside changed.
+//!
+//! Every `Communications.makeWebRequest` call in this class goes through
+//! `enqueueRequest`/`pumpQueue` rather than being fired directly: Garmin's
+//! own guidance is to keep at most one request outstanding at a time (see
+//! https://forums.garmin.com/developer/connect-iq/f/discussion/268658/ —
+//! the system technically tolerates a couple more, but a second request
+//! fired before the first's callback returns can silently clobber it).
+//! This class has three independent triggers that can otherwise overlap
+//! this way — `agonView`'s 5s poll timer (`refreshScore`), a wearer's own
+//! goal/period action (`append`), and conflict recovery firing both a
+//! `/live/seq` re-fetch and `refreshScore` back-to-back — and the
+//! resulting dropped/overwritten callback was exactly the bug where a
+//! device recovers from one `expected_last_seq` conflict (the score
+//! looks right again, since whichever of the two requests survived was
+//! usually the score one) but every append after that keeps conflicting
+//! forever, because the *other* request — the one that would have
+//! corrected `_lastSeq` — never got to run its callback at all.
 class LiveApiClient {
 
     var _matchId as String?;
@@ -22,10 +39,69 @@ class LiveApiClient {
     var _lastSeq as Number;
     var _apiClient as MatchApiClient;
 
+    //! Requests not yet started: `{"url"=>.., "params"=>.., "options"=>..,
+    //! "callback"=>..}` dictionaries, oldest first. See the class doc
+    //! comment above.
+    var _pendingRequests as Array;
+    var _requestInFlight as Boolean;
+    //! The real callback for whichever request is currently in flight —
+    //! every actual `Communications.makeWebRequest` call in this class
+    //! uses `onQueuedResponse` as ITS callback, which then invokes this
+    //! one and starts the next queued request.
+    var _currentCallback as Method?;
+
     function initialize() {
         _matchId = null;
         _lastSeq = 0;
         _apiClient = new MatchApiClient();
+        _pendingRequests = [];
+        _requestInFlight = false;
+        _currentCallback = null;
+    }
+
+    //! Queue a web request instead of calling `Communications.
+    //! makeWebRequest` directly — see the class doc comment.
+    function enqueueRequest(url as String, params as Dictionary?, options as Dictionary, callback as Method) as Void {
+        _pendingRequests = _pendingRequests.add({
+            "url" => url,
+            "params" => params,
+            "options" => options,
+            "callback" => callback
+        });
+        pumpQueue();
+    }
+
+    //! Starts the next queued request, if nothing is already in flight.
+    //! Called after every enqueue and after every request completes
+    //! (`onQueuedResponse`), so a request added while another is running
+    //! doesn't get lost — it just waits for that call.
+    function pumpQueue() as Void {
+        if (_requestInFlight || _pendingRequests.size() == 0) {
+            return;
+        }
+        var next = _pendingRequests[0] as Dictionary;
+        _pendingRequests = _pendingRequests.slice(1, null);
+        _requestInFlight = true;
+        _currentCallback = next.get("callback") as Method;
+        Communications.makeWebRequest(
+            next.get("url") as String,
+            next.get("params") as Dictionary or Null,
+            next.get("options") as Dictionary,
+            method(:onQueuedResponse)
+        );
+    }
+
+    function onQueuedResponse(responseCode as Number, data as Dictionary or String or Null) as Void {
+        var callback = _currentCallback;
+        _requestInFlight = false;
+        _currentCallback = null;
+        if (callback != null) {
+            callback.invoke(responseCode, data);
+        }
+        // In case the callback above didn't itself enqueue anything (so
+        // nothing already re-triggered this) but the queue isn't empty —
+        // e.g. something was enqueued while this request was in flight.
+        pumpQueue();
     }
 
     //! Start scoring `matchId` — called once, from MatchPickerView, right
@@ -39,10 +115,11 @@ class LiveApiClient {
             :headers => { "Authorization" => "Bearer " + DeviceAuth.getAccessToken() },
             :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
         };
-        Communications.makeWebRequest(url, null, options, method(:onSeq));
+        enqueueRequest(url, null, options, method(:onSeq));
         // Load whatever's already been scored (by this device on a
         // previous visit, or another device entirely) rather than
-        // starting the screen from a misleading 0-0.
+        // starting the screen from a misleading 0-0. Queued right behind
+        // the seq fetch above rather than fired alongside it.
         refreshScore();
     }
 
@@ -138,7 +215,7 @@ class LiveApiClient {
             },
             :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
         };
-        Communications.makeWebRequest(url, body, options, method(:onAppendResponse));
+        enqueueRequest(url, body, options, method(:onAppendResponse));
     }
 
     function onAppendResponse(responseCode as Number, data as Dictionary or String or Null) as Void {
@@ -166,7 +243,7 @@ class LiveApiClient {
                 :headers => { "Authorization" => "Bearer " + DeviceAuth.getAccessToken() },
                 :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
             };
-            Communications.makeWebRequest(url, null, options, method(:onSeq));
+            enqueueRequest(url, null, options, method(:onSeq));
             refreshScore();
         }
         // Any other outcome (network error, 403 not-an-admin, ...): there's
@@ -191,7 +268,7 @@ class LiveApiClient {
             :headers => { "Authorization" => "Bearer " + DeviceAuth.getAccessToken() },
             :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
         };
-        Communications.makeWebRequest(url, null, options, method(:onScore));
+        enqueueRequest(url, null, options, method(:onScore));
     }
 
     function onScore(responseCode as Number, data as Dictionary or String or Null) as Void {

@@ -250,14 +250,26 @@ deployment. `PairingDelegate.onSelect` lets the wearer force a
 regenerate manually (e.g. if the QR image failed to load).
 
 `PairingApiClient.API_BASE_URL` is a hardcoded constant
-(`http://localhost:7000`, reachable because the simulator proxies
-`Communications` calls through the desktop it runs on) rather than a real
-App Setting (`resources/settings/*.xml`) — there's no deployed instance to
-point at yet, and hand-writing that resource XML with no compiler
-available in this sandbox to check it against wasn't worth the risk for a
-prototype. Make it configurable (a real App Setting, editable from the
-Garmin Connect Mobile companion settings screen — see below) once there's
-a real URL to point at.
+(`https://agon.staging.get-agon.com/api` — the `/api` matters: that's
+`agon-api-ingress` publishing `agon_service`'s own `/`-mounted routes, same
+convention `agon_ui`'s dev proxy and `make test-staging` both use, not a
+path `agon_service` itself knows about) rather than a real App Setting
+(`resources/settings/*.xml`) — hand-writing that resource XML with no
+compiler available in this sandbox to check it against wasn't worth the
+risk for a prototype. For local dev instead, point it at
+`http://localhost:7000` (no `/api` — a local `agon_service` has no ingress
+in front of it) and run `make run`; the simulator proxies `Communications`
+calls through the desktop it runs on, so `localhost` reaches it directly.
+Make it configurable (a real App Setting, editable from the Garmin Connect
+Mobile companion settings screen — see below) once switching between the
+two is more than a one-line edit.
+
+Pointing at staging gets the QR image and `confirm` working, but the final
+`POST /devices/pair` claim will `503 NotConfigured` there until item 9
+below (provisioning `AGON_DEVICE_JWT_PRIVATE_KEY`/`AGON_DEVICE_JWKS` on the
+staging deployment) is actually done — `agon_infra/index.ts` doesn't wire
+either into the service yet, so `DeviceTokenSigner::from_env()` comes back
+`None` on staging today.
 
 Still to do, roughly in order:
 

@@ -9,16 +9,24 @@ import Toybox.Communications;
 //! device credential onto the watch at all.
 //!
 //! `API_BASE_URL` is a hardcoded constant for now rather than a real App
-//! Setting (`resources/settings/*.xml`) — there's no deployed instance to
-//! point at yet, and hand-writing that resource XML with no compiler
-//! available to check it against isn't worth the risk for a prototype.
-//! Revisit once there's a real URL worth making user-configurable.
+//! Setting (`resources/settings/*.xml`) — hand-writing that resource XML
+//! with no compiler available to check it against isn't worth the risk for
+//! a prototype. Revisit once this needs to point at more than one
+//! environment from the same build.
 class PairingApiClient {
 
-    //! Local dev default: the Connect IQ simulator's network requests are
-    //! proxied through the desktop it runs on, so this reaches an
-    //! `agon_service` started with `make run` on the same machine.
-    const API_BASE_URL = "http://localhost:7000";
+    //! `agon_service` mounts routes at `/` — every deployed environment
+    //! (staging included) fronts it with an ingress that publishes that
+    //! under `/api` and strips the prefix before it reaches the service
+    //! (see `agon-api-ingress` in `agon_infra/index.ts`, and the same
+    //! `/api` convention `agon_ui`'s dev proxy and `make test-staging` both
+    //! use) — hence the `/api` here despite `agon_service`'s own routes
+    //! never mentioning it. For local dev instead, point this at
+    //! `http://localhost:7000` (no `/api` — a local `agon_service` has no
+    //! ingress in front of it) and run `make run`; the Connect IQ
+    //! simulator's network requests are proxied through the desktop it
+    //! runs on, so `localhost` reaches it directly.
+    const API_BASE_URL = "https://agon.staging.get-agon.com/api";
 
     //! Fetch the QR code PNG for `code` (see `qr::render_pairing_qr` on
     //! the server). `callback` is invoked as

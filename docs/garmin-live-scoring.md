@@ -144,11 +144,13 @@ accepts that one scope. Revocation exists too now — see "manage paired
 devices" below. **Residual gap**: a handful of read-only endpoints
 (`list_match_likes`/`list_match_comments`/`search_teams`/
 `list_team_members`/`get_invitation`/`list_score_submissions`/
-`list_live_events`/`get_asset`) call `AuthSchema` directly without going
-through `require_uid`/`check_scope` at all — same "any authenticated
-token" pattern they already had before scope existed, just now that also
-includes a device token. Lower stakes than the write paths (no per-caller
-permission logic on any of them to begin with), but worth closing
+`get_asset`) call `AuthSchema` directly without going through
+`require_uid`/`check_scope` at all — same "any authenticated token"
+pattern they already had before scope existed, just now that also
+includes a device token. (`list_live_events` used to be on this list
+too — closed once the watch app's own undo feature needed it, see
+below.) Lower stakes than the write paths (no per-caller permission
+logic on any of them to begin with), but worth closing
 properly rather than leaving implicit.
 
 **Manage paired devices**: `dao::paired_device` (`PairedDeviceRecord`,
@@ -186,10 +188,19 @@ event queue and API calls, just swaps the transport.
 
 The watch app's lifecycle:
 
-1. On start, open an `ActivityRecording.Session` (sport `SOCCER` if the SDK
-   exposes it for the device, else `GENERIC`) exactly like any workout app
-   — this is what makes the session show up as a normal recorded activity
-   in Garmin Connect afterwards, independent of anything scoring-related.
+1. An `ActivityRecording.Session` (sport `SOCCER`) records exactly like
+   any workout app's — this is what makes it show up as a normal recorded
+   activity in Garmin Connect afterwards. Kick-off starts it on every watch
+   that has the match open at that moment, whichever device recorded the
+   kick-off (a remote one is picked up by the next 5s score poll, with a
+   buzz). A watch that opens a match already under way doesn't auto-start;
+   its wearer uses the main menu's Start activity item. Until it's
+   recording (and whenever it's paused), both match pages draw a thick red
+   ring around the screen edge (`RecordingRing.mc`). The GPS is switched on
+   separately, continuously, as soon as a match is opened
+   (`ActivityRecorder.enableGps`) — a `Session` never turns it on by itself,
+   and the first real-match recordings, made before that call existed,
+   saved a distance far short of what was actually covered.
 2. Show the scoring UI (score header + Goal/Card/Sub/Period buttons) as the
    foreground view for the rest of the match.
 3. Each button tap appends one `FootballLiveEvent` to a local queue
@@ -201,13 +212,17 @@ The watch app's lifecycle:
    accepted `seq`, one batch call, which is precisely what
    `AppendLiveEventsInput` was built for (see its doc comment in
    `agon_service/src/live_score/mod.rs`).
-5. Stopping the activity recording (end of match) is independent of
-   scoring — a ref can keep the recording running through a match that's
-   already been marked full-time on the score side, or vice versa.
+5. Pausing, resuming and finishing the activity recording are independent
+   of scoring — a ref can keep the recording running through a match that's
+   already been marked full-time on the score side, or vice versa. The menu
+   item toggles Start/Pause/Resume; End match asks Save or Discard (Discard
+   confirmed a second time) and then exits the app, posting nothing to the
+   live score (`EndMatchFlow.mc`).
 
 Recording and the HTTP calls don't compete for the same resource in any way
-that needs special handling — `ActivityRecording` owns the GPS/HR sensors,
-`Communications` owns the radio; Connect IQ runs both concurrently in
+that needs special handling — `Position`/`ActivityRecording` own the GPS/HR
+sensors (the GPS only once `Position.enableLocationEvents` turns it on, see
+step 1), `Communications` owns the radio; Connect IQ runs both concurrently in
 plenty of existing third-party apps (any app that both records a workout
 and posts live updates to a service does exactly this).
 
@@ -287,11 +302,77 @@ instead. `LiveApiClient` (replacing `MockApiClient`) is what
 `FootballScore` actually posts to: `POST /matches/:id/live/events` for
 goals and period markers, seeded with the real `expected_last_seq` from
 `GET /matches/:id/live/seq` the moment a match is picked, and re-fetched
-on a `409 Conflict` before the *next* action (this prototype has no
-offline queue yet, so a conflicting event is dropped, not retried — see
-"what's left to build"). `FootballScore`'s own call shape into the api
+on a `409 Conflict`, which then retries the conflicting event itself
+once with the corrected seq (see `onSeqForRetry`) rather than dropping
+it — this prototype still has no real offline queue (a second event
+recorded while the first's retry is in flight overwrites it — see
+"what's left to build"), and every `Communications.makeWebRequest` call
+in this class is funneled through a small request queue
+(`enqueueRequest`/`pumpQueue`) rather than fired directly, after
+concurrent score-poll/append/conflict-recovery requests were found to
+silently clobber each other's callbacks on a real device. `FootballScore`'s own call shape into the api
 client is unchanged from `MockApiClient`'s, per that class's original
-design; only what the client does with it changed.
+design; only what the client does with it changed. `refreshSeq`
+(alongside `refreshScore`, on the same poll timer in `agonView`) keeps
+`_lastSeq` current proactively too, not just reactively after a
+conflict — another device's undo bumps the counter exactly the same way
+an append does (see `Dao::delete_live_event`'s doc comment on the
+backend), and this device has no other way to learn about it before
+its own next attempt.
+
+**A second, deeper bug behind all of the above**: even with every fix
+described so far, a real conflict *still* never actually reached
+`onAppendResponse` as `409` — it came back as `Communications.
+NETWORK_RESPONSE_TOO_LARGE`'s sibling, `-400`/
+`INVALID_HTTP_BODY_IN_NETWORK_RESPONSE`, confirmed from a real device's
+`System.println` trace. Root cause: `Communications.makeWebRequest`
+checks the response's actual `Content-Type` header against the
+`:responseType` the caller requested, and refuses to deliver the real
+HTTP status at all when they don't match — every error response on
+`POST /matches/:id/live/events` (and the other endpoints a paired
+device calls) was `PlainText` (`text/plain`) while the device requests
+JSON, for every non-2xx outcome including `409 Conflict`. Fixed by
+introducing `ErrorMessage` (a one-field `Json` wrapper) and switching
+every error variant on the endpoints a device can reach
+(`GetUserResponse`, `ListMatchesResponse`, `GetMatchResponse`,
+`GetLiveSeqResponse`, `AppendLiveEventsResponse`,
+`DeleteLiveEventResponse`, `GetMatchScoreResponse`, and — added
+alongside undo below — `ListLiveEventsResponse`) from
+`PlainText<String>` to it — see `ErrorMessage`'s own doc comment on
+`agon_service::main`. **Not fixed**: `check_scope`'s own rejection (and
+any other generic `poem::Error` a handler propagates via `?` rather
+than a named response variant) still renders as `text/plain` by Poem's
+own default, so an expired/invalid/wrong-scope token would still hit
+this same masking on any of these endpoints; and every *other*
+`PlainText` response elsewhere in the API has the identical latent bug,
+just not yet reachable by any current device client.
+
+**Undo** (`LiveApiClient.undoLast`, `DELETE /matches/:id/live/events/
+:seq`) needed its own sequence-counter care, separate from
+`_lastSeq`/`expected_last_seq`: an append never creates a gap, so
+`_lastSeq` doubles as the log's real physical tip right after one, but
+an undo bumps the counter *past* the deleted event (see
+`Dao::delete_live_event`'s doc comment on the backend) — so `_lastSeq`
+and the physical tip permanently disagree from that point until the
+next append re-aligns them. `agon_ui`'s own `useUndoTargetSeq` hook
+documents this trap in detail and was the reference for getting it
+right here too: a separate `_undoTargetSeq`, seeded (`refreshUndoTargetSeq`)
+by draining `GET /matches/:id/live/events` and taking the highest `seq`
+actually present — never by trusting `/live/seq`'s raw counter, which
+counts deletes too. Re-derived whenever this device (re-)learns
+`/live/seq` from scratch (`setMatch`, or a conflict retry) rather than
+assumed to still agree, and again after this device's own undo, since
+that same gap-creating bump applies to it too. Exposed as an "Undo
+last" item on the main menu, shown only once `canUndo()` is true (a
+real seq is known) — matching `agon_ui`'s own `UndoLastEventButton`
+hiding outright rather than disabling. Two things `agon_ui` does that
+this doesn't: a confirmation dialog before undoing (deliberately
+skipped — a menu item is already two button presses of friction), and
+retrying against a corrected seq on failure (deliberately never done —
+unlike an append conflict, where retrying resends the exact same
+intended write, retrying a delete against a since-moved tip would
+delete a *different*, unintended event; a failed undo just re-syncs
+state for next time instead).
 
 `API_BASE_URL` (`ApiConfig.mc`, shared by `PairingApiClient`/
 `MatchApiClient`/`LiveApiClient` — file-scope, not a per-class constant,
@@ -329,11 +410,16 @@ Still to do, roughly in order:
    through `monkeybrains.jar` yet (pairing has, on a real fr955).
 2. ~~Wire `MockApiClient` up to the real API~~ — done: `LiveApiClient`
    posts real `POST /matches/:id/live/events` calls (goals and period
-   markers), seeded from `GET /matches/:id/live/seq`. No offline queue
-   yet, though — a `409 Conflict` (another writer moved the log on) just
-   re-syncs the seq for next time and drops the conflicting event, rather
-   than diffing and retrying it. Worth building once this sees real
-   flaky-connectivity use.
+   markers), seeded from `GET /matches/:id/live/seq`. A `409 Conflict`
+   (another writer moved the log on) re-syncs the seq and retries the
+   same event once (`onSeqForRetry`) rather than dropping it outright —
+   confirmed necessary from a real device: without the retry, the score
+   visibly flicked up (the local optimistic tally) then immediately back
+   down (the server's score, still missing the goal, arriving via the
+   poll timer) every time a device recorded a goal while out of sync.
+   Still no real offline queue — a second event recorded while the first
+   one's retry is in flight overwrites it — worth building once this
+   sees real flaky-connectivity use.
 3. ~~The `agon_ui` confirm page~~ — done: `PairDevicePage` (`/pair`,
    reading `?code=` or offering manual entry) calls
    `POST /devices/pairing-codes/:code/confirm` and reuses the existing
@@ -345,8 +431,17 @@ Still to do, roughly in order:
    `npm run build` all pass; not yet exercised against a real confirm
    (needs the watch side actually running, or a manual `curl`, to produce
    a real code to confirm).
-4. **Fetch and render the real score** (`GET /matches/:id/score`) on the
-   watch instead of `FootballScore`'s session-local tally.
+4. ~~Fetch and render the real score~~ — done: `LiveApiClient.refreshScore`
+   polls `GET /matches/:id/score` and applies it onto `FootballScore`
+   (`applyServerState`) — otherwise the local tally only ever reflected
+   *this* device's own `recordGoal`/`setPeriod` calls, so another device
+   scoring the same match had no way to reach the screen. Called once
+   when a match is picked (`setMatch`), on every 5s while `agonView` is
+   visible (a `Timer`, same pattern as `PairingView`'s poll loop), and
+   once more on an append `409 Conflict` (the one case this device
+   already knows something changed elsewhere). Still local-tally-first in
+   one sense: a fetch failure or an in-flight period between polls just
+   leaves the last-known value on screen rather than resetting to 0-0.
 5. ~~Device-scoped tokens~~ — done: `device_scope`/`check_scope` (see
    above). The residual gap flagged there (a handful of read-only
    endpoints not checking scope at all) is real follow-up, not a full
@@ -374,10 +469,71 @@ Still to do, roughly in order:
    `pulumi config set --secret agonDeviceJwtPrivateKey ...` and
    `pulumi config set agonDeviceJwks ...` run against the staging stack,
    then a redeploy, before it takes effect there.
-10. **Rate-limit the pairing/confirm/qr endpoints** — flagged during
+10. ~~An activity stats screen~~ — done: `ActivityStatsView` (the second
+    match page, paged to with up/down from the score screen like a native
+    activity's data screens — it replaced an "Activity stats" menu item,
+    and polls the score every 5s the same as the score screen), showing the score,
+    current-half time (`ActivityRecorder.currentHalfTimerTimeMs`, marked
+    at each kick-off — separate from the whole match's own `timerTime`,
+    shown smaller underneath it), distance, and heart rate, via
+    `Activity.getActivityInfo()`. No calories (dropped — not useful
+    enough to earn a line on a small screen already showing five things).
+    No prebuilt widget for this exists to reuse — `WatchUi.
+    SimpleDataField`/`DataField` are locked to the separate `datafield`
+    app type and aren't usable from a `watchApp`-type project like this
+    one — so it's hand-drawn the same way the score screen is, at the
+    once-a-second cadence a real data field's own `compute()` runs at.
+    Redrawn as a boxed 2x2 grid (half time/total time/distance/HR, each
+    its own field with divider lines) under a small score/period header,
+    the same gridded-fields look a stock Garmin running/multisport
+    activity's own data screens use, rather than the original single
+    column of five centered lines — the quarter-screen box each field
+    gets now can afford a much bigger value than that could. Time fields
+    use `Graphics.FONT_NUMBER_MILD` (a number font — only has digit/colon
+    glyphs); distance/HR keep a regular text font since their values
+    carry a unit suffix a number font can't render.
+    Real `Session.addLap()` boundaries at half-time/second-half
+    kick-off/full-time (`ActivityRecorder.markLap`) can't drive this live
+    clock either, for the same underlying reason: checked `Activity.
+    Info`'s full field list and there's no live "current lap time"
+    exposed at all — a lap split only ever shows up later, as the saved
+    activity's own per-half pace/HR/distance breakdown once viewed in
+    Garmin Connect. Real value, just a separate one from the live clock,
+    which keeps its own baseline instead (see `markHalfStart`'s doc
+    comment) — so both exist, doing two different jobs.
+11. **Rate-limit the pairing/confirm/qr endpoints** — flagged during
     design (see the security-comparison discussion): none of them have any
     throttling today, which matters most for `POST /devices/pair` (an
     unauthenticated, guessable-code-shaped surface).
-11. **Make `apiBaseUrl` a real App Setting** instead of
+12. **Make `apiBaseUrl` a real App Setting** instead of
     `PairingApiClient`'s hardcoded constant, once there's an actual
     deployed URL worth pointing a real watch at.
+13. **Laps and `ActivityStatsView`'s own half clock only follow this
+    watch's own period taps.** `markLap`/`markHalfStart` run from the main
+    menu's period items, not from `FootballScore.applyServerState`, so a
+    watch that's recording while *another* device records half-time/
+    second-half kick-off gets no lap splits, and `ActivityStatsView`'s
+    current-half reading (still `ActivityRecorder.currentHalfTimerTimeMs`,
+    a device-local clock) never resets (kick-off itself is handled — see
+    `ActivityRecorder.startForKickOff`). More visible now that recording
+    and scoring are separate: opening a match someone else is scoring is
+    a supported flow. The score screen's own current-half clock doesn't
+    have this problem anymore — see item 14 — but the FIT lap splits and
+    `ActivityStatsView`'s reading still do. Fix: mark laps on any observed
+    period transition, taking care that undo's period rollback doesn't add
+    a spurious one; `ActivityStatsView` could also just switch onto the
+    same server-sourced value item 14 added, rather than fixing its own
+    local one.
+14. ~~A current-half clock that doesn't depend on this device's own
+    recording~~ — done, on the score screen only:
+    `FootballScore.currentHalfStartedAt` (`LiveApiClient.
+    currentHalfStartMoment`, parsed from the server's own `Score.
+    period_times` — the same timestamps `period_times` in the backend's
+    `FootballScore` struct already carried, just not read by the watch
+    before now) drives `agonView`'s current-half clock, ticking once a
+    second (`agonView.POLL_INTERVAL_MS`, split from the 5s server-poll
+    cadence the same way `ActivityStatsView` already does) independent of
+    `ActivityRecorder`'s local half-tracking — correct even for a watch
+    that opened a match someone else is scoring, or isn't recording an
+    activity at all. `ActivityStatsView` still shows its own, separately
+    derived current-half reading — see item 13's now-narrowed scope.

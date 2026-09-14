@@ -15,9 +15,14 @@ import Toybox.Lang;
 class ActivityRecorder {
 
     var _session as ActivityRecording.Session?;
+    //! `Activity.Info.timerTime` (ms) at the moment the current half
+    //! started — see `markHalfStart`/`currentHalfTimerTimeMs`. `0` before
+    //! any half has started, matching `timerTime`'s own baseline.
+    var _halfStartTimerTimeMs as Number;
 
     function initialize() {
         _session = null;
+        _halfStartTimerTimeMs = 0;
     }
 
     function isRecording() as Boolean {
@@ -38,6 +43,33 @@ class ActivityRecorder {
             :sport => Activity.SPORT_SOCCER,
         });
         _session.start();
+    }
+
+    //! Call once at the start of each half (kick-off, second-half
+    //! kick-off) — separate from `start`, which is a no-op the second
+    //! time (the underlying session is already running by then) and so
+    //! can't itself mark where a new half's clock should start counting
+    //! from. Used by `ActivityStatsView`'s "current half" time, which
+    //! would otherwise just be the whole match's `timerTime`.
+    function markHalfStart() as Void {
+        var info = Activity.getActivityInfo();
+        if (info.timerTime != null) {
+            _halfStartTimerTimeMs = info.timerTime as Number;
+        }
+    }
+
+    //! Elapsed timer time (ms) since `markHalfStart` was last called —
+    //! `null` if `Activity.Info.timerTime` itself is (no active session
+    //! yet). Doesn't reset again at half-time; there's no explicit pause
+    //! in this app, so the underlying timer — and this along with it —
+    //! just keeps counting through the break until the next kick-off
+    //! calls `markHalfStart` again.
+    function currentHalfTimerTimeMs() as Number? {
+        var info = Activity.getActivityInfo();
+        if (info.timerTime == null) {
+            return null;
+        }
+        return (info.timerTime as Number) - _halfStartTimerTimeMs;
     }
 
     //! Stop and save the recorded activity (e.g. full-time, or the app

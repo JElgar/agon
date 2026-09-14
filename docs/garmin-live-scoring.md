@@ -427,18 +427,21 @@ Still to do, roughly in order:
    `pulumi config set agonDeviceJwks ...` run against the staging stack,
    then a redeploy, before it takes effect there.
 10. ~~An activity stats screen~~ — done: `ActivityStatsView` (reached via
-    a new "Activity stats" item on the main menu), showing the underlying
-    `ActivityRecording.Session`'s own live duration/distance/heart
-    rate/calories via `Activity.getActivityInfo()`. No prebuilt widget
-    for this exists to reuse — `WatchUi.SimpleDataField`/`DataField` are
-    locked to the separate `datafield` app type and aren't usable from a
-    `watchApp`-type project like this one — so it's hand-drawn the same
-    way the score screen is, at the once-a-second cadence a real data
-    field's own `compute()` runs at.
-10. **Rate-limit the pairing/confirm/qr endpoints** — flagged during
+    a new "Activity stats" item on the main menu), showing the score,
+    current-half time (`ActivityRecorder.currentHalfTimerTimeMs`, marked
+    at each kick-off — separate from the whole match's own `timerTime`,
+    shown smaller underneath it), distance, and heart rate, via
+    `Activity.getActivityInfo()`. No calories (dropped — not useful
+    enough to earn a line on a small screen already showing five things).
+    No prebuilt widget for this exists to reuse — `WatchUi.
+    SimpleDataField`/`DataField` are locked to the separate `datafield`
+    app type and aren't usable from a `watchApp`-type project like this
+    one — so it's hand-drawn the same way the score screen is, at the
+    once-a-second cadence a real data field's own `compute()` runs at.
+11. **Rate-limit the pairing/confirm/qr endpoints** — flagged during
     design (see the security-comparison discussion): none of them have any
     throttling today, which matters most for `POST /devices/pair` (an
     unauthenticated, guessable-code-shaped surface).
-11. **Make `apiBaseUrl` a real App Setting** instead of
+12. **Make `apiBaseUrl` a real App Setting** instead of
     `PairingApiClient`'s hardcoded constant, once there's an actual
     deployed URL worth pointing a real watch at.

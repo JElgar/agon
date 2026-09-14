@@ -6,9 +6,10 @@ import Toybox.System;
 import Toybox.Timer;
 
 //! Shows the underlying Garmin activity recording's own live stats
-//! (duration, distance, heart rate, calories) alongside the football
-//! score — reached from the main menu (see `agonMenuDelegate.mc`),
-//! pushed on top of `agonView` the same way that menu itself is.
+//! (current-half time, total time, distance, heart rate) alongside the
+//! football score — reached from the main menu (see
+//! `agonMenuDelegate.mc`), pushed on top of `agonView` the same way that
+//! menu itself is.
 //!
 //! There's no prebuilt "activity data" widget to reuse here: `Toybox.
 //! WatchUi.SimpleDataField`/`DataField` — Garmin's own classes for
@@ -73,26 +74,44 @@ class ActivityStatsView extends WatchUi.View {
         var centerX = dc.getWidth() / 2;
         var centerY = dc.getHeight() / 2;
 
+        // Score first, small — agonView is the primary place to read it,
+        // this is just "while I'm here".
         dc.drawText(
-            centerX, centerY - 45, Graphics.FONT_NUMBER_MEDIUM,
-            durationLabel(info.timerTime),
+            centerX, centerY - 70, Graphics.FONT_XTINY,
+            scoreLabel(),
+            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER
+        );
+        // Current-half time is the primary stat on this screen — a
+        // running "how long has this half been going" clock, not the
+        // whole match's timerTime (see ActivityRecorder.
+        // currentHalfTimerTimeMs's own doc comment).
+        dc.drawText(
+            centerX, centerY - 30, Graphics.FONT_NUMBER_MEDIUM,
+            durationLabel(getApp().activityRecorder.currentHalfTimerTimeMs()),
+            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER
+        );
+        // Total match time, small — secondary to the current-half clock
+        // above, not the other way around.
+        dc.drawText(
+            centerX, centerY + 5, Graphics.FONT_XTINY,
+            "Total " + durationLabel(info.timerTime),
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER
         );
         dc.drawText(
-            centerX, centerY, Graphics.FONT_SMALL,
+            centerX, centerY + 35, Graphics.FONT_SMALL,
             distanceLabel(info.elapsedDistance),
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER
         );
         dc.drawText(
-            centerX, centerY + 30, Graphics.FONT_SMALL,
+            centerX, centerY + 62, Graphics.FONT_XTINY,
             heartRateLabel(info.currentHeartRate),
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER
         );
-        dc.drawText(
-            centerX, centerY + 55, Graphics.FONT_XTINY,
-            caloriesLabel(info.calories),
-            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER
-        );
+    }
+
+    function scoreLabel() as String {
+        var score = getApp().score;
+        return score.homeGoals.toString() + " - " + score.awayGoals.toString();
     }
 
     //! `null` (no GPS fix / timer not actually ticking yet) shows as
@@ -134,13 +153,6 @@ class ActivityStatsView extends WatchUi.View {
             return "-- bpm";
         }
         return (currentHeartRate as Number).toString() + " bpm";
-    }
-
-    function caloriesLabel(calories as Number?) as String {
-        if (calories == null) {
-            return "-- kcal";
-        }
-        return (calories as Number).toString() + " kcal";
     }
 }
 

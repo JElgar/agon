@@ -77,12 +77,14 @@ class agonMenuDelegate extends WatchUi.Menu2InputDelegate {
             // already recording, so this is safe even if kick-off gets
             // logged more than once.
             app.activityRecorder.start();
+            app.activityRecorder.markHalfStart();
             app.score.setPeriod(FootballScore.PERIOD_KICK_OFF);
         } else if (item == :period_half_time) {
             app.score.setPeriod(FootballScore.PERIOD_HALF_TIME);
         } else if (item == :period_second_half) {
             // Also "starts a half" — same idempotent start() as kick-off.
             app.activityRecorder.start();
+            app.activityRecorder.markHalfStart();
             app.score.setPeriod(FootballScore.PERIOD_SECOND_HALF);
         } else if (item == :period_full_time) {
             app.score.setPeriod(FootballScore.PERIOD_FULL_TIME);

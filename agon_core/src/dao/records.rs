@@ -439,11 +439,16 @@ pub struct MatchRecord {
     /// `side_id` was always optional).
     #[serde(default = "default_true")]
     pub allow_unassigned: bool,
-    /// Total roster size (every side plus unassigned), maintained atomically
-    /// alongside each side's own `player_count` — see `Dao::join_match_tx`
-    /// and `MatchAggregate::effective_max_players` for how it's used to
-    /// enforce the derived overall cap. `#[serde(default)]` for records
-    /// written before this field existed.
+    /// How many players take a spot on the match — every side plus
+    /// unassigned, counting only `MatchPlayerRecord::occupies_slot` players
+    /// (pending and declined invitees hold no spot). Kept alongside each
+    /// side's own `player_count`: `ADD`ed atomically as a spot is taken
+    /// (`Dao::join_match_tx`, `Dao::accept_invitation_tx`), and recomputed
+    /// from the roster by `Dao::refresh_side_roster_previews` — the only thing
+    /// that brings it back down after a removal. See
+    /// `MatchAggregate::effective_max_players` for how it enforces the derived
+    /// overall cap. `#[serde(default)]` for records written before this field
+    /// existed.
     #[serde(default)]
     pub total_player_count: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -583,7 +588,10 @@ pub struct MatchSideRecord {
     /// opt-in for team self-join. Meaningless without a `team_id`.
     #[serde(default)]
     pub team_join_enabled: bool,
-    /// Total players currently on this side. Denormalized alongside
+    /// How many players currently take a spot on this side
+    /// (`MatchPlayerRecord::occupies_slot`) — the number `max_players` caps.
+    /// Pending and declined invitees placed on the side aren't counted,
+    /// though they do still appear in `roster_preview`. Denormalized alongside
     /// `roster_preview` (kept in sync on every roster-changing write — see
     /// `Dao::refresh_side_roster_previews`) so the feed can decide "show
     /// players" vs "show team" without a live players query.
@@ -640,6 +648,32 @@ pub struct MatchPlayerRecord {
     /// themselves — via a join link or team self-join.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub joined_via: Option<JoinSourceRecord>,
+}
+
+impl MatchPlayerRecord {
+    /// Whether this player takes one of the match's spots: they're *in* —
+    /// added by an organiser or self-served via a join link/team (no
+    /// invitation), or an invitee who has accepted. A pending or declined
+    /// invite takes nothing; sending an invite doesn't reserve a spot.
+    ///
+    /// The single definition behind `MatchRecord::total_player_count`,
+    /// `MatchSideRecord::player_count`, `create_match`'s cap validation *and*
+    /// the stats reconciler's "played" test — "takes a spot" and "counted as
+    /// having played" are the same fact, so anything that should stop a
+    /// player occupying a spot (e.g. a future waitlist) belongs here, and
+    /// both follow at once. Those used to be separate copies, and the counts'
+    /// copy had drifted to "every roster row", which is how a declined invite
+    /// came to hold a spot forever.
+    ///
+    /// Deliberately *not* what `caller_match_membership` (permissions,
+    /// `viewer_role`, leaving) tests, even though today the two agree: being
+    /// on the roster and occupying a spot are different questions, and are
+    /// expected to diverge.
+    pub fn occupies_slot(&self) -> bool {
+        self.invitation
+            .as_ref()
+            .is_none_or(|inv| inv.status == "accepted")
+    }
 }
 
 /// A player's authority on a match. Kept as its own type rather than reusing
@@ -1580,6 +1614,40 @@ pub struct StatContributionRecord {
 mod tests {
     use super::*;
     use aws_sdk_dynamodb::types::AttributeValue;
+
+    /// `occupies_slot` is the one rule for who takes a spot (and who counts as
+    /// having played): in with no invitation, or an accepted invitee — never a
+    /// pending or declined one. The bug behind it: the counts included every
+    /// roster row, so a declined invite held its spot forever.
+    #[test]
+    fn occupies_slot_counts_only_players_who_are_in() {
+        let player = |status: Option<&str>| MatchPlayerRecord {
+            player_id: "p".into(),
+            user_id: Some("u".into()),
+            display_name: None,
+            side_id: None,
+            is_member_of_team: None,
+            invitation: status.map(|status| EmbeddedInvitationRecord {
+                id: "inv".into(),
+                status: status.into(),
+                invited_by_user_id: "host".into(),
+                invited_at: "2026-09-14T00:00:00Z".into(),
+                responded_at: None,
+                kind: InvitationKindRecord::User {
+                    invited_user_id: "u".into(),
+                },
+            }),
+            role: MatchPlayerRole::Player,
+            joined_via: None,
+        };
+        assert!(
+            player(None).occupies_slot(),
+            "added by an organiser or self-joined"
+        );
+        assert!(player(Some("accepted")).occupies_slot());
+        assert!(!player(Some("pending")).occupies_slot());
+        assert!(!player(Some("declined")).occupies_slot());
+    }
 
     /// `Simple`/`Sets` `entries` round-trip through the side_id-keyed map
     /// shape. (Data written before this shape landed no longer needs

@@ -6594,6 +6594,311 @@ async fn overall_capacity_is_derived_from_every_sides_cap() {
     assert_status_with_content(rejected, reqwest::StatusCode::CONFLICT, "match is full");
 }
 
+/// The match-wide headcount as *stored* (`MatchRecord::total_player_count`) —
+/// the counter the join capacity check trusts — read off the join link's
+/// public preview. Unlike `Match.sides[].player_count` this isn't recomputed
+/// from the roster at read time, so it's what catches the stored count
+/// drifting from who's actually in.
+async fn stored_total_player_count(token: &str) -> i32 {
+    let config = Configuration {
+        base_path: std::env::var("AGON_SERVICE_URL").expect("AGON_SERVICE_URL must be set"),
+        ..Default::default()
+    };
+    join_links_by_token_token_get(&config, token)
+        .await
+        .expect("join link preview")
+        .total_player_count
+}
+
+/// A side's `player_count` on a `Match` response.
+fn side_player_count(match_: &models::Match, side_id: &str) -> i32 {
+    match_
+        .sides
+        .iter()
+        .find(|s| s.id == side_id)
+        .expect("side on match")
+        .player_count
+}
+
+/// Join `match_id` through a join link as `config`'s user, letting the link's
+/// scope pick the side.
+async fn join_via_link(
+    config: &Configuration,
+    match_id: &str,
+    token: &str,
+) -> Result<models::Match, openapi::apis::Error<MatchesMatchIdJoinPostError>> {
+    matches_match_id_join_post(
+        config,
+        match_id,
+        models::JoinMatchInput {
+            token: Some(token.to_string()),
+            side_id: None,
+        },
+    )
+    .await
+}
+
+/// `config`'s own invitation id for `match_id`, found in their inbox.
+async fn match_invitation_id(config: &Configuration, match_id: &str) -> String {
+    let inbox = users_me_invitations_get(config, None, None, None)
+        .await
+        .expect("inbox");
+    inbox
+        .items
+        .iter()
+        .find(|i| {
+            matches!(&*i.context, models::InvitationContext::Match(ctx) if ctx.match_id == match_id)
+        })
+        .expect("match invitation in inbox")
+        .invitation
+        .id
+        .clone()
+}
+
+async fn respond_to_invitation(
+    config: &Configuration,
+    invitation_id: &str,
+    response: models::InvitationResponse,
+) {
+    invitations_invitation_id_respond_post(
+        config,
+        invitation_id,
+        models::RespondToInvitationInput {
+            response,
+            side_id: None,
+        },
+    )
+    .await
+    .expect("respond to invitation");
+}
+
+/// A declined invite never held a spot, so it can't block a join link. Side
+/// "b" is capped at 1 with one invitee on it, who declines. Guards the bug
+/// where both `create_match` and `refresh_side_roster_previews` counted every
+/// roster row — pending and declined invitees included — so the side read
+/// "full" forever and the join link said so.
+#[tokio::test]
+async fn a_declined_invite_does_not_take_a_spot() {
+    let (owner_config, _owner) = new_user().await;
+    let (invitee_config, invitee) = new_user().await;
+    let mut input = joinable_match_input(None, None, Some(1));
+    input.invites = vec![invite_users("b", &[&invitee.profile.id])];
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("create match");
+    let side_b = side_id_for_user(&created, &invitee.profile.id);
+    let link = matches_match_id_join_links_post(
+        &owner_config,
+        &created.id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(sides_scope(vec![side_b.clone()])),
+        },
+    )
+    .await
+    .expect("create join link");
+
+    let invitation_id = match_invitation_id(&invitee_config, &created.id).await;
+    respond_to_invitation(
+        &invitee_config,
+        &invitation_id,
+        models::InvitationResponse::Declined,
+    )
+    .await;
+    assert_eq!(
+        stored_total_player_count(&link.token).await,
+        1,
+        "only the creator takes a spot"
+    );
+
+    let (joiner_config, _joiner) = new_user().await;
+    let joined = join_via_link(&joiner_config, &created.id, &link.token)
+        .await
+        .expect("the declined invitee's side still has its spot free");
+    assert_eq!(
+        side_player_count(&joined, &side_b),
+        1,
+        "side b counts the joiner, not the declined invitee"
+    );
+    assert_eq!(stored_total_player_count(&link.token).await, 2);
+}
+
+/// Pending invites don't reserve spots (first come, first served), so an
+/// organiser may invite more people than a side has room for — only whoever
+/// is actually in counts against the cap. Guards `create_match` rejecting
+/// the invite list outright ("over its max_players") because it counted
+/// invitees as occupants, and the stored count doing the same.
+#[tokio::test]
+async fn pending_invites_do_not_take_spots_so_a_side_can_invite_past_its_cap() {
+    let (owner_config, _owner) = new_user().await;
+    let (_first_config, first_invitee) = new_user().await;
+    let (_second_config, second_invitee) = new_user().await;
+    let mut input = joinable_match_input(None, None, Some(1));
+    input.invites = vec![invite_users(
+        "b",
+        &[&first_invitee.profile.id, &second_invitee.profile.id],
+    )];
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("inviting more people than side b's cap is allowed");
+    let side_b = side_id_for_user(&created, &first_invitee.profile.id);
+    assert_eq!(
+        side_player_count(&created, &side_b),
+        0,
+        "pending invitees don't count toward the side"
+    );
+
+    let link = matches_match_id_join_links_post(
+        &owner_config,
+        &created.id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(sides_scope(vec![side_b.clone()])),
+        },
+    )
+    .await
+    .expect("create join link");
+    assert_eq!(
+        stored_total_player_count(&link.token).await,
+        1,
+        "only the creator takes a spot"
+    );
+
+    let (joiner_config, _joiner) = new_user().await;
+    join_via_link(&joiner_config, &created.id, &link.token)
+        .await
+        .expect("side b's only spot is still free despite two pending invites");
+
+    // The cap still holds once the spot is genuinely taken.
+    let (late_config, _late) = new_user().await;
+    let rejected = join_via_link(&late_config, &created.id, &link.token).await;
+    assert_status_with_content(rejected, reqwest::StatusCode::CONFLICT, "side is full");
+}
+
+/// Leaving, or being removed by an organiser, gives the spot back. Both sides
+/// are capped at 1 so the match-wide cap (2) is in play: the bug was that
+/// `total_player_count` was only ever `ADD`ed — nothing decremented it — so a
+/// match that had once been full stayed "full" however many people left.
+#[tokio::test]
+async fn leaving_or_being_removed_frees_the_spot() {
+    let (owner_config, owner) = new_user().await;
+    let created = matches_post(&owner_config, joinable_match_input(None, Some(1), Some(1)))
+        .await
+        .expect("create match");
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+    let link = matches_match_id_join_links_post(
+        &owner_config,
+        &created.id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(sides_scope(vec![other_side_id(&created, &side_a)])),
+        },
+    )
+    .await
+    .expect("create join link");
+
+    let (leaver_config, _leaver) = new_user().await;
+    join_via_link(&leaver_config, &created.id, &link.token)
+        .await
+        .expect("fills the last spot");
+    assert_eq!(stored_total_player_count(&link.token).await, 2);
+
+    matches_match_id_leave_post(&leaver_config, &created.id)
+        .await
+        .expect("leave");
+    assert_eq!(
+        stored_total_player_count(&link.token).await,
+        1,
+        "leaving gives the spot back"
+    );
+
+    let (removed_config, removed) = new_user().await;
+    let joined = join_via_link(&removed_config, &created.id, &link.token)
+        .await
+        .expect("takes the spot the leaver freed");
+    matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            removed_player_ids: Some(vec![player_id_for_user(&joined, &removed.profile.id)]),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("organiser removes the player");
+    assert_eq!(
+        stored_total_player_count(&link.token).await,
+        1,
+        "removal gives the spot back"
+    );
+
+    let (next_config, _next) = new_user().await;
+    join_via_link(&next_config, &created.id, &link.token)
+        .await
+        .expect("takes the spot the removed player freed");
+}
+
+/// Accepting an invite takes a spot the moment it's accepted — counted in the
+/// accept transaction itself, not left to the async saga's recount — and
+/// accepting the same invite again takes nothing more. With side "b" capped
+/// at 2 and one invitee on it, a double-counted accept would leave room for
+/// nobody else.
+#[tokio::test]
+async fn accepting_an_invite_takes_exactly_one_spot() {
+    let (owner_config, _owner) = new_user().await;
+    let (invitee_config, invitee) = new_user().await;
+    let mut input = joinable_match_input(None, Some(1), Some(2));
+    input.invites = vec![invite_users("b", &[&invitee.profile.id])];
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("create match");
+    let side_b = side_id_for_user(&created, &invitee.profile.id);
+    let link = matches_match_id_join_links_post(
+        &owner_config,
+        &created.id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(sides_scope(vec![side_b])),
+        },
+    )
+    .await
+    .expect("create join link");
+    assert_eq!(
+        stored_total_player_count(&link.token).await,
+        1,
+        "a pending invite doesn't take a spot"
+    );
+
+    let invitation_id = match_invitation_id(&invitee_config, &created.id).await;
+    respond_to_invitation(
+        &invitee_config,
+        &invitation_id,
+        models::InvitationResponse::Accepted,
+    )
+    .await;
+    assert_eq!(
+        stored_total_player_count(&link.token).await,
+        2,
+        "accepting takes the spot synchronously"
+    );
+
+    respond_to_invitation(
+        &invitee_config,
+        &invitation_id,
+        models::InvitationResponse::Accepted,
+    )
+    .await;
+    assert_eq!(
+        stored_total_player_count(&link.token).await,
+        2,
+        "accepting the same invite again doesn't take a second spot"
+    );
+
+    let (joiner_config, _joiner) = new_user().await;
+    join_via_link(&joiner_config, &created.id, &link.token)
+        .await
+        .expect("side b's second spot is still free");
+    let (late_config, _late) = new_user().await;
+    let rejected = join_via_link(&late_config, &created.id, &link.token).await;
+    assert_status_with_content(rejected, reqwest::StatusCode::CONFLICT, "match is full");
+}
+
 #[tokio::test]
 async fn a_self_served_participant_cannot_invite_or_manage_join_settings() {
     let (owner_config, owner) = new_user().await;

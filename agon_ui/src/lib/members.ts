@@ -341,17 +341,28 @@ export function sidePlayerCountLabel(side: MatchSide | undefined): string {
   return `${count} ${count === 1 ? 'player' : 'players'}`
 }
 
+/** Whether a player takes one of the match's spots: added or self-joined (no
+ *  invitation), or an accepted invitee — never a pending or declined one, since
+ *  an invite doesn't reserve a spot. Mirrors the server's
+ *  `MatchPlayerRecord::occupies_slot`, the rule behind `MatchSide.player_count`
+ *  and the join cap, so a total built from this agrees with them. */
+function occupiesSlot(player: MatchPlayer): boolean {
+  const invitation = player.member.invitation
+  return !invitation || invitation.status === 'accepted'
+}
+
 /** "12/20 players" (capped) or "12 players" (uncapped) — the match's overall
  *  headcount, alongside the per-side counts from `sidePlayerCountLabel`.
- *  Unlike those, this counts everyone on the match (`match.players`),
- *  including anyone not yet assigned to a side — there's no per-side
- *  equivalent for the unassigned, so this is the only place their headcount
- *  shows at all. The cap only shows once every side has one set (there's no
- *  overall ceiling to report while any side is uncapped) — mirrors
- *  `Match.allow_unassigned`'s neighboring doc comment on the match's overall
- *  cap being the sum of its sides' caps. */
+ *  Unlike those, this counts across the whole match, including anyone not
+ *  yet assigned to a side — there's no per-side equivalent for the
+ *  unassigned, so this is the only place their headcount shows at all. Like
+ *  them, it counts only players who take a spot (`occupiesSlot`), not
+ *  everyone on `match.players`. The cap only shows once every side has one
+ *  set (there's no overall ceiling to report while any side is uncapped) —
+ *  mirrors `Match.allow_unassigned`'s neighboring doc comment on the match's
+ *  overall cap being the sum of its sides' caps. */
 export function matchPlayerTotalLabel(match: Match): string {
-  const count = match.players.length
+  const count = match.players.filter(occupiesSlot).length
   const caps = match.sides.map((s) => s.max_players)
   const cap = caps.every((c) => c != null)
     ? caps.reduce<number>((sum, c) => sum + (c ?? 0), 0)

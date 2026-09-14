@@ -9,14 +9,16 @@ import {
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   ChevronLeft,
+  Crown,
   LogOut,
   MailOpen,
+  MoreVertical,
   Pencil,
   ShieldMinus,
   ShieldPlus,
   Trash2,
+  UserMinus,
   UserPlus,
-  X,
 } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
@@ -26,10 +28,18 @@ import { EditTeamDialog } from '@/components/agon/EditTeamDialog'
 import { InviteToTeamDialog } from '@/components/agon/InviteToTeamDialog'
 import { DeleteTeamDialog } from '@/components/agon/DeleteTeamDialog'
 import { LeaveTeamDialog } from '@/components/agon/LeaveTeamDialog'
+import { PromoteToOwnerDialog } from '@/components/agon/PromoteToOwnerDialog'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
 import { InvitePromptDialog } from '@/components/agon/InvitePromptDialog'
 import { MatchCard } from '@/components/agon/MatchCard'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { useInvitePrompt } from '@/hooks/useInvitePrompt'
 import {
@@ -228,6 +238,7 @@ export function TeamPage() {
           currentUserId={currentUserId}
           teamId={team.id}
           canManage={canManage}
+          viewerIsOwner={isOwner}
         />
       </section>
 
@@ -384,11 +395,21 @@ interface MembersProps {
   /** Whether the viewer is the team's owner or an admin — gates the
    *  remove/promote/demote controls on each row. */
   canManage: boolean
+  /** Whether the viewer is specifically the owner — gates the "Promote to
+   *  owner" item, which only the current owner may use. */
+  viewerIsOwner: boolean
 }
 
 /** The member list: loading / error / empty states, else the rows plus a
  *  "Load more" button — same pagination pattern as `FollowListPage`. */
-function Members({ query, members, currentUserId, teamId, canManage }: MembersProps) {
+function Members({
+  query,
+  members,
+  currentUserId,
+  teamId,
+  canManage,
+  viewerIsOwner,
+}: MembersProps) {
   if (query.isLoading) {
     return (
       <ul className="flex flex-col overflow-hidden rounded-xl border bg-card">
@@ -426,6 +447,7 @@ function Members({ query, members, currentUserId, teamId, canManage }: MembersPr
               currentUserId={currentUserId}
               teamId={teamId}
               canManage={canManage}
+              viewerIsOwner={viewerIsOwner}
             />
           </li>
         ))}
@@ -446,27 +468,33 @@ function Members({ query, members, currentUserId, teamId, canManage }: MembersPr
 
 /** One row in the member list: avatar, name, role, a pending-invite badge for
  *  someone who hasn't accepted yet, and — for an owner/admin viewer, on
- *  anyone but the team's owner — a promote/demote toggle and a remove
- *  button. Owns its own mutations (mirrors `TeamFollowButton`), invalidating
- *  the members list on success. */
+ *  anyone but the team's owner — a "…" menu of labeled actions (promote,
+ *  demote, remove, and — owner only — transfer ownership) rather than a row
+ *  of bare icon buttons, so what each one does doesn't depend on guessing
+ *  at an icon. Owns its own mutations (mirrors `TeamFollowButton`),
+ *  invalidating the members list on success. */
 function MemberRow({
   member,
   currentUserId,
   teamId,
   canManage,
+  viewerIsOwner,
 }: {
   member: TeamMember
   currentUserId?: string
   teamId: string
   canManage: boolean
+  viewerIsOwner: boolean
 }) {
   const queryClient = useQueryClient()
+  const [promoteToOwnerOpen, setPromoteToOwnerOpen] = useState(false)
   const isYou = member.member.type === 'User' && member.member.user_id === currentUserId
   const pending = member.member.invitation?.status === 'pending'
   // The owner's role is permanent — the server rejects changing or removing
   // it regardless of caller, so there's nothing for these controls to do on
   // that row even for another owner-equivalent caller (there's only ever one).
   const isOwnerRow = member.role === 'owner'
+  const name = memberName(member.member)
 
   const invalidateMembers = () =>
     queryClient.invalidateQueries({ queryKey: ['team-members', teamId] })
@@ -493,17 +521,20 @@ function MemberRow({
   })
 
   const busy = roleMutation.isPending || removeMutation.isPending
+  // Ownership can only transfer to someone who has actually accepted — the
+  // server rejects a pending invitee (see `transfer_team_ownership`).
+  const canPromoteToOwner = viewerIsOwner && !pending
 
   return (
     <div className="flex items-center gap-3 px-4 py-3">
       <Avatar
-        name={memberName(member.member)}
+        name={name}
         imageUrl={memberAvatarUrl(member.member)}
         size="lg"
         ring={isYou ? 'you' : 'none'}
       />
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-medium">{memberName(member.member)}</div>
+        <div className="truncate text-sm font-medium">{name}</div>
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <span className="capitalize">{member.role}</span>
           {isYou && <span className="text-primary">· you</span>}
@@ -512,36 +543,66 @@ function MemberRow({
       </div>
 
       {canManage && !isOwnerRow && (
-        <div className="flex shrink-0 items-center gap-1">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-8"
-            disabled={busy}
-            aria-label={member.role === 'admin' ? 'Make member' : 'Make admin'}
-            title={member.role === 'admin' ? 'Make member' : 'Make admin'}
-            onClick={() =>
-              roleMutation.mutate(member.role === 'admin' ? 'member' : 'admin')
-            }
-          >
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-8 shrink-0"
+              disabled={busy}
+              aria-label={`Manage ${name}`}
+            >
+              <MoreVertical className="size-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent>
             {member.role === 'admin' ? (
-              <ShieldMinus className="size-4" />
+              <DropdownMenuItem
+                disabled={busy}
+                onSelect={() => roleMutation.mutate('member')}
+              >
+                <ShieldMinus />
+                Demote to member
+              </DropdownMenuItem>
             ) : (
-              <ShieldPlus className="size-4" />
+              <DropdownMenuItem
+                disabled={busy}
+                onSelect={() => roleMutation.mutate('admin')}
+              >
+                <ShieldPlus />
+                Promote to admin
+              </DropdownMenuItem>
             )}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-8 text-destructive"
-            disabled={busy}
-            aria-label={`Remove ${memberName(member.member)}`}
-            title="Remove from team"
-            onClick={() => removeMutation.mutate()}
-          >
-            <X className="size-4" />
-          </Button>
-        </div>
+            {canPromoteToOwner && (
+              <DropdownMenuItem
+                disabled={busy}
+                onSelect={() => setPromoteToOwnerOpen(true)}
+              >
+                <Crown />
+                Promote to owner
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              variant="destructive"
+              disabled={busy}
+              onSelect={() => removeMutation.mutate()}
+            >
+              <UserMinus />
+              Remove from team
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+
+      {canPromoteToOwner && (
+        <PromoteToOwnerDialog
+          teamId={teamId}
+          memberId={member.member.id}
+          memberName={name}
+          open={promoteToOwnerOpen}
+          onOpenChange={setPromoteToOwnerOpen}
+        />
       )}
     </div>
   )

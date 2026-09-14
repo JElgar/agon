@@ -426,6 +426,15 @@ Still to do, roughly in order:
    `pulumi config set --secret agonDeviceJwtPrivateKey ...` and
    `pulumi config set agonDeviceJwks ...` run against the staging stack,
    then a redeploy, before it takes effect there.
+10. ~~An activity stats screen~~ — done: `ActivityStatsView` (reached via
+    a new "Activity stats" item on the main menu), showing the underlying
+    `ActivityRecording.Session`'s own live duration/distance/heart
+    rate/calories via `Activity.getActivityInfo()`. No prebuilt widget
+    for this exists to reuse — `WatchUi.SimpleDataField`/`DataField` are
+    locked to the separate `datafield` app type and aren't usable from a
+    `watchApp`-type project like this one — so it's hand-drawn the same
+    way the score screen is, at the once-a-second cadence a real data
+    field's own `compute()` runs at.
 10. **Rate-limit the pairing/confirm/qr endpoints** — flagged during
     design (see the security-comparison discussion): none of them have any
     throttling today, which matters most for `POST /devices/pair` (an

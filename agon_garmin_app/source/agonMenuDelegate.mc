@@ -33,6 +33,11 @@ function buildMainMenu() as WatchUi.Menu2 {
     }
     // PERIOD_FULL_TIME: nothing sport-specific left to record.
 
+    // Always available, regardless of period — worth checking even
+    // before kick-off (GPS lock, say), and there's no reason to hide it
+    // once recording's started either.
+    menu.addItem(new WatchUi.MenuItem("Activity stats", null, :activity_stats, {}));
+
     // Always available, regardless of period — a safety valve to stop
     // and save the recording whatever state the match is in.
     menu.addItem(new WatchUi.MenuItem("End match (save activity)", null, :end_match, {}));
@@ -56,6 +61,14 @@ class agonMenuDelegate extends WatchUi.Menu2InputDelegate {
             // it) outright, so — unlike every branch below — this one
             // needs no explicit popView.
             WatchUi.switchToView(buildSideMenu(), new GoalSideMenuDelegate(), WatchUi.SLIDE_UP);
+            return;
+        } else if (item == :activity_stats) {
+            // Pushed on top of this still-open menu (not popped first) —
+            // Back from the stats screen (ActivityStatsDelegate's default
+            // BehaviorDelegate handling, no override needed) lands back
+            // on the menu, and Back again on agonView, same nesting
+            // agonDelegate.openMenu already layers this menu on top of.
+            WatchUi.pushView(new ActivityStatsView(), new ActivityStatsDelegate(), WatchUi.SLIDE_LEFT);
             return;
         } else if (item == :period_kick_off) {
             // The first "start of half" event this match sees is what

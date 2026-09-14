@@ -81,7 +81,9 @@ function sideName(side: MatchSide | undefined, fallback: string): string {
 
 // Roster tab ids for the mobile tablist — side A/B use these fixed ids
 // rather than the sides' own (possibly absent) `id`s so the tablist always
-// has something stable to key off; unassigned players get a third tab.
+// has something stable to key off; unassigned players get a further tab,
+// and "All" (the default) always leads.
+const ROSTER_TAB_ALL = '__all__'
 const ROSTER_TAB_A = '__side_a__'
 const ROSTER_TAB_B = '__side_b__'
 const ROSTER_TAB_UNASSIGNED = '__unassigned__'
@@ -149,10 +151,10 @@ function MatchDetail({
   const [editingRoster, setEditingRoster] = useState(false)
   const [inviting, setInviting] = useState(false)
   // Which roster tab is open on mobile — side-by-side columns (`sm:` and up)
-  // ignore this entirely. Defaults to the first side; reset below if it ever
-  // points at a tab that's no longer showing (e.g. the last unassigned
-  // player was placed on a side).
-  const [rosterTab, setRosterTab] = useState<string>(ROSTER_TAB_A)
+  // ignore this entirely. Defaults to "All"; reset below if it ever points
+  // at a tab that's no longer showing (e.g. the last unassigned player was
+  // placed on a side).
+  const [rosterTab, setRosterTab] = useState<string>(ROSTER_TAB_ALL)
 
   // Owner or admin only, mirroring the server's `caller_is_match_admin` — an
   // ordinary player is read-only on the match itself; `LeaveMatch` below is
@@ -921,9 +923,10 @@ function LeaveMatch({ match, isOwner }: { match: Match; isOwner: boolean }) {
  * Rosters, side by side on a screen wide enough for it (`sm:` and up) — a
  * phone-width column pair squeezes both names down too far to read, so
  * below that breakpoint this switches to one roster at a time behind a
- * tablist: a tab per side, plus "Unassigned" whenever anyone hasn't been
- * placed on a side yet (the side-by-side layout has no room to show them
- * at all, so the tab is the only place they're visible).
+ * tablist: "All" (the default) first, then a tab per side, plus
+ * "Unassigned" whenever anyone hasn't been placed on a side yet (the
+ * side-by-side layout has no room to show them at all, so the tab is the
+ * only place they're visible).
  */
 function RosterTabs({
   matchId,
@@ -949,6 +952,7 @@ function RosterTabs({
   iAmOwner: boolean
 }) {
   const tabs = [
+    { id: ROSTER_TAB_ALL, title: 'All', players: [...playersA, ...playersB, ...unassigned] },
     { id: ROSTER_TAB_A, title: nameA, players: playersA },
     { id: ROSTER_TAB_B, title: nameB, players: playersB },
     ...(unassigned.length > 0
@@ -956,7 +960,7 @@ function RosterTabs({
       : []),
   ]
   // The unassigned tab can disappear out from under an active selection
-  // (last unassigned player got placed on a side) — fall back to side A
+  // (last unassigned player got placed on a side) — fall back to "All"
   // rather than rendering nothing.
   const active = tabs.find((t) => t.id === activeTab) ?? tabs[0]
 
@@ -967,7 +971,7 @@ function RosterTabs({
         aria-label="Roster"
         className={cn(
           'mb-2 grid gap-1 rounded-lg bg-muted p-1 sm:hidden',
-          tabs.length === 3 ? 'grid-cols-3' : 'grid-cols-2',
+          tabs.length === 4 ? 'grid-cols-4' : 'grid-cols-3',
         )}
       >
         {tabs.map((t) => (

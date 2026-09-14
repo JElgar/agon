@@ -80,13 +80,25 @@ class agonMenuDelegate extends WatchUi.Menu2InputDelegate {
             app.activityRecorder.markHalfStart();
             app.score.setPeriod(FootballScore.PERIOD_KICK_OFF);
         } else if (item == :period_half_time) {
+            // Closes the first-half lap and opens a new one for the
+            // break — see ActivityRecorder.markLap's doc comment.
+            app.activityRecorder.markLap();
             app.score.setPeriod(FootballScore.PERIOD_HALF_TIME);
         } else if (item == :period_second_half) {
             // Also "starts a half" — same idempotent start() as kick-off.
             app.activityRecorder.start();
+            // Closes the half-time-break lap and opens the second-half
+            // one, same as markHalfStart resets the live clock's own
+            // baseline right below.
+            app.activityRecorder.markLap();
             app.activityRecorder.markHalfStart();
             app.score.setPeriod(FootballScore.PERIOD_SECOND_HALF);
         } else if (item == :period_full_time) {
+            // Closes the second-half lap explicitly, rather than leaving
+            // it to whatever stop()/save() do implicitly whenever the
+            // recording actually ends (immediately, if :end_match is
+            // picked next, or later).
+            app.activityRecorder.markLap();
             app.score.setPeriod(FootballScore.PERIOD_FULL_TIME);
         } else if (item == :end_match) {
             // Explicit early stop — onStop() also calls this when the app

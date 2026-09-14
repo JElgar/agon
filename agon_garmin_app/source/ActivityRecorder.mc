@@ -51,10 +51,32 @@ class ActivityRecorder {
     //! can't itself mark where a new half's clock should start counting
     //! from. Used by `ActivityStatsView`'s "current half" time, which
     //! would otherwise just be the whole match's `timerTime`.
+    //!
+    //! This is a *separate* concept from `markLap` below, not a
+    //! replacement for it: `Activity.Info` has no live "current lap
+    //! time" field at all (checked the full field list — nothing like
+    //! it exists), so a real `Session` lap boundary alone can't drive
+    //! this on-screen clock; it only ever shows up later, as a split, in
+    //! the saved activity. This keeps its own baseline instead.
     function markHalfStart() as Void {
         var info = Activity.getActivityInfo();
         if (info.timerTime != null) {
             _halfStartTimerTimeMs = info.timerTime as Number;
+        }
+    }
+
+    //! Mark a real lap boundary in the recording (`Session.addLap`) —
+    //! called at half-time, second-half kick-off, and full-time (not
+    //! kick-off itself: the session's own start is already the first
+    //! lap's start, nothing to close yet) so the *saved* activity splits
+    //! into "first half"/"half-time break"/"second half" laps, each with
+    //! its own real pace/HR/distance splits, once viewed in Garmin
+    //! Connect. Purely a FIT-file concern — see `markHalfStart`'s doc
+    //! comment on why this can't also drive the live on-screen clock. A
+    //! no-op if nothing is recording yet.
+    function markLap() as Void {
+        if (_session != null && _session.isRecording()) {
+            _session.addLap();
         }
     }
 

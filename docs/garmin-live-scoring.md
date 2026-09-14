@@ -438,6 +438,15 @@ Still to do, roughly in order:
     app type and aren't usable from a `watchApp`-type project like this
     one — so it's hand-drawn the same way the score screen is, at the
     once-a-second cadence a real data field's own `compute()` runs at.
+    Real `Session.addLap()` boundaries at half-time/second-half
+    kick-off/full-time (`ActivityRecorder.markLap`) can't drive this live
+    clock either, for the same underlying reason: checked `Activity.
+    Info`'s full field list and there's no live "current lap time"
+    exposed at all — a lap split only ever shows up later, as the saved
+    activity's own per-half pace/HR/distance breakdown once viewed in
+    Garmin Connect. Real value, just a separate one from the live clock,
+    which keeps its own baseline instead (see `markHalfStart`'s doc
+    comment) — so both exist, doing two different jobs.
 11. **Rate-limit the pairing/confirm/qr endpoints** — flagged during
     design (see the security-comparison discussion): none of them have any
     throttling today, which matters most for `POST /devices/pair` (an

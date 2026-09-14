@@ -2,6 +2,7 @@ import Toybox.Activity;
 import Toybox.ActivityRecording;
 import Toybox.Attention;
 import Toybox.Lang;
+import Toybox.Position;
 import Toybox.System;
 
 //! Wraps a normal `ActivityRecording.Session` so the wearer's own activity
@@ -18,6 +19,14 @@ import Toybox.System;
 //! happens; a watch that opens a match already under way shows the red
 //! ring (RecordingRing.mc) until its wearer starts recording by hand.
 //!
+//! The GPS is a separate switch again (`enableGps`). A `Session` records
+//! whichever sensors are already on and never turns the GPS on itself,
+//! and the manifest's `Positioning` permission doesn't either — Garmin's
+//! own RecordSample enables location events alongside its session for
+//! exactly this reason. Without that call a match still "records", but
+//! with no proper GPS track: the saved distance comes out far short of
+//! what the wearer actually covered.
+//!
 //! Sport is `Activity.SPORT_SOCCER` — `ActivityRecording.SPORT_GENERIC`
 //! (what this used before a real build caught it) is deprecated in favor
 //! of the `Activity.Sport` constants, and there's a real soccer/football
@@ -29,10 +38,81 @@ class ActivityRecorder {
     //! started — see `markHalfStart`/`currentHalfTimerTimeMs`. `0` before
     //! any half has started, matching `timerTime`'s own baseline.
     var _halfStartTimerTimeMs as Number;
+    //! Whether `enableGps` has turned location events on — so repeat calls
+    //! (every match opened, every `start`) don't re-request them.
+    var _gpsEnabled as Boolean;
 
     function initialize() {
         _session = null;
         _halfStartTimerTimeMs = 0;
+        _gpsEnabled = false;
+    }
+
+    //! Turn the GPS on, continuously, until `disableGps`. Called the moment
+    //! a match is opened (`MatchMenuDelegate.onMatchDetails`), not only
+    //! when recording starts, so the watch usually has a fix by kick-off
+    //! rather than spending the first minute of the match acquiring one;
+    //! `start` calls it too, as a backstop. Only the first call does
+    //! anything.
+    //!
+    //! Asks for the most accurate satellite configuration the watch
+    //! supports — see `bestGpsConfiguration`.
+    function enableGps() as Void {
+        if (_gpsEnabled) {
+            return;
+        }
+        var configuration = bestGpsConfiguration();
+        if (configuration != null) {
+            Position.enableLocationEvents({
+                :acquisitionType => Position.LOCATION_CONTINUOUS,
+                :configuration => configuration,
+            }, method(:onPosition));
+        } else {
+            Position.enableLocationEvents(Position.LOCATION_CONTINUOUS, method(:onPosition));
+        }
+        _gpsEnabled = true;
+    }
+
+    //! Multi-band first, then all-systems L1, then plain GPS — the fallback
+    //! order of Garmin's own `Position.enableLocationEvents` example.
+    //! Football is mostly short bursts and sharp turns, exactly the
+    //! movement a less accurate fix smooths away (and under-counts
+    //! distance on), so it's worth the extra battery for one match.
+    //! `null` means none are supported, and `enableGps` falls back to
+    //! plain continuous location events. `Position has` guards the query
+    //! itself rather than trusting `minApiLevel` alone: a watch missing it
+    //! would otherwise crash the moment a match is opened.
+    function bestGpsConfiguration() as Position.Configuration? {
+        if (!(Position has :hasConfigurationSupport)) {
+            return null;
+        }
+        if (Position.hasConfigurationSupport(Position.CONFIGURATION_GPS_GLONASS_GALILEO_BEIDOU_L1_L5)) {
+            return Position.CONFIGURATION_GPS_GLONASS_GALILEO_BEIDOU_L1_L5;
+        }
+        if (Position.hasConfigurationSupport(Position.CONFIGURATION_GPS_GLONASS_GALILEO_BEIDOU_L1)) {
+            return Position.CONFIGURATION_GPS_GLONASS_GALILEO_BEIDOU_L1;
+        }
+        if (Position.hasConfigurationSupport(Position.CONFIGURATION_GPS)) {
+            return Position.CONFIGURATION_GPS;
+        }
+        return null;
+    }
+
+    //! Nothing to do with each fix here: the `Session` records it on its
+    //! own, and `ActivityStatsView` reads distance back from
+    //! `Activity.getActivityInfo()`. Passed as the listener anyway, empty,
+    //! the same as Garmin's RecordSample does.
+    function onPosition(info as Position.Info) as Void {
+    }
+
+    //! Turn the GPS back off (`agonApp.onStop`, after the activity has been
+    //! saved). A no-op if it was never turned on.
+    function disableGps() as Void {
+        if (!_gpsEnabled) {
+            return;
+        }
+        Position.enableLocationEvents(Position.LOCATION_DISABLE, null);
+        _gpsEnabled = false;
     }
 
     //! `true` only while the timer is actually running — `false` before
@@ -61,6 +141,8 @@ class ActivityRecorder {
     //! bare sport name — see that method's doc comment on why the score
     //! can't be included here too.
     function start(name as String) as Void {
+        // Normally already on since the match was opened — see enableGps.
+        enableGps();
         if (_session != null) {
             if (!_session.isRecording()) {
                 _session.start();

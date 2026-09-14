@@ -39,6 +39,7 @@ class agonApp extends Application.AppBase {
         // unsaved. A no-op after End match, which has already saved or
         // discarded it.
         activityRecorder.stopAndSave();
+        activityRecorder.disableGps();
     }
 
     // Return the initial view of your application here. No stored device

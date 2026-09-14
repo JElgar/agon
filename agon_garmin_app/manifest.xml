@@ -102,8 +102,9 @@
             palette to update permissions.
         -->
         <iq:permissions>
-            <!-- Needed for ActivityRecording's session to actually capture
-                 a GPS track, not just HR/time. -->
+            <!-- Needed for ActivityRecorder.enableGps to turn the GPS on.
+                 The permission alone doesn't — without that call the
+                 session records no real GPS track, just HR/time. -->
             <iq:uses-permission id="Positioning"/>
             <!-- Required for ActivityRecording.createSession/Session itself
                  (confirmed via a real build: "Permission 'Fit' required

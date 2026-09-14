@@ -133,7 +133,9 @@ export function InvitationResponseDialog({
           </DialogTitle>
           <DialogDescription>
             {isAccept
-              ? "You'll be added to the roster."
+              ? matchId
+                ? "You'll be added to the roster, or to the waitlist if the game is already full."
+                : "You'll be added to the roster."
               : "You are declining this invite — you won't be added."}
           </DialogDescription>
         </DialogHeader>

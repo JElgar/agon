@@ -58,6 +58,26 @@ pub(crate) fn is_transaction_conditional_failure(err: &SdkError<TransactWriteIte
     }
 }
 
+/// Whether the transact-item at `index` (0-based, matching the order items
+/// were added via `transact_items`) failed its own `ConditionExpression`, for
+/// a cancelled `TransactWriteItems`. `false` for any other kind of failure
+/// (network, throttling, ...) — those should propagate as real errors, not
+/// get misread as "the condition failed". For a transaction with more than
+/// one guard, this is how a caller tells *which* fact changed without acting
+/// on a separate, possibly stale read of it.
+pub(crate) fn item_condition_failed(err: &SdkError<TransactWriteItemsError>, index: usize) -> bool {
+    match err {
+        SdkError::ServiceError(se) => match se.err() {
+            TransactWriteItemsError::TransactionCanceledException(e) => {
+                e.cancellation_reasons().get(index).and_then(|r| r.code())
+                    == Some("ConditionalCheckFailed")
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 // Re-exported for the API layer once wired in; unused within the crate for now.
 #[allow(unused_imports)]
 pub use client::Dao;

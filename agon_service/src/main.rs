@@ -80,8 +80,9 @@ mod membership;
 use membership::{
     AddInvitationsInput, CreateJoinLinkInput, Invitation, InvitationContext, InvitationDetail,
     InvitationKind, InvitationMatchContext, InvitationStatus, JoinLink, JoinLinkPreview,
-    JoinMatchInput, MatchPlayerRole, Member, RespondByTokenInput, RespondToInvitationInput,
-    TokenInvitation, TransferMatchOwnershipInput, UserInvitation, UserMember,
+    JoinMatchInput, MatchPlayerRole, Member, MoveInWaitlistedPlayerInput, RespondByTokenInput,
+    RespondToInvitationInput, TokenInvitation, TransferMatchOwnershipInput, UserInvitation,
+    UserMember,
 };
 
 mod team;
@@ -429,7 +430,9 @@ struct MatchSide {
     /// How many players currently take a spot on this side — the number
     /// `max_players` caps: players added or self-joined with no invitation,
     /// and accepted invitees, but not pending or declined invitees (who are
-    /// still on `roster_preview`/`Match.players`, holding no spot). Unlike
+    /// still on `roster_preview`/`Match.players`, holding no spot), nor anyone
+    /// waiting for this side on the waitlist (`MatchPlayer.waitlisted_at` —
+    /// on `Match.players`, but not in `roster_preview` either). Unlike
     /// `roster_preview`, always present regardless of roster size, so callers
     /// can show "4/10" (with `max_players`) even once there are too many
     /// players to list by name.
@@ -479,6 +482,16 @@ struct MatchPlayer {
     /// This player's authority on the match — includes who owns it (see
     /// `MatchPlayerRole::Owner`).
     role: MatchPlayerRole,
+    /// When this player went onto the match's waitlist, if they're on it:
+    /// they tried to get in (a join, or accepting an invite) while the match
+    /// or their side was full. They're on the roster (they can leave, and get
+    /// a `viewer_role`) but hold no spot: they aren't counted in
+    /// `MatchSide.player_count`, aren't in a side's `roster_preview`, and
+    /// aren't credited as having played. `side_id` is the side they asked
+    /// for. A match admin moves them in with `POST
+    /// /matches/:match_id/waitlist/move-in`; nobody is moved in automatically.
+    /// Order the waitlist by this, earliest first. `None` for everyone else.
+    waitlisted_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Match score. Tagged union so each sport's scoring shape is modelled
@@ -2030,8 +2043,17 @@ enum GetJoinLinkPreviewResponse {
 
 #[derive(ApiResponse)]
 enum JoinMatchResponse {
+    /// Joined: the caller has a spot.
     #[oai(status = 200)]
     Match(Json<Match>),
+
+    /// The match, or the side joined, was full, so the caller is on its
+    /// waitlist instead (see `MatchPlayer.waitlisted_at`): on the roster, but
+    /// holding no spot until a match admin moves them in. Not an error, but a
+    /// different status from joining, so a client can't mistake one for the
+    /// other.
+    #[oai(status = 202)]
+    Waitlisted(Json<Match>),
 
     #[oai(status = 400)]
     ValidationError(PlainText<String>),
@@ -2039,8 +2061,8 @@ enum JoinMatchResponse {
     #[oai(status = 404)]
     NotFound(PlainText<String>),
 
-    /// The match or the targeted side is full, or the caller is already on
-    /// the roster.
+    /// The caller is already on the roster, the waitlist included. (A full
+    /// match isn't a conflict: the caller is waitlisted instead.)
     #[oai(status = 409)]
     Conflict(PlainText<String>),
 }
@@ -2082,6 +2104,31 @@ enum LeaveMatchResponse {
 }
 
 #[derive(ApiResponse)]
+enum MoveInWaitlistedPlayerResponse {
+    /// The player now holds a spot.
+    #[oai(status = 204)]
+    Ok,
+
+    /// The player isn't on the waitlist (already in, or never waiting), or
+    /// their place on it changed while this was being handled.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    /// No such match, or no such player on it.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+
+    /// No free spot: the match, or the side the player is waiting for, is
+    /// full. Raise its cap, or wait for someone to leave.
+    #[oai(status = 409)]
+    Conflict(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
 enum GetInvitationResponse {
     #[oai(status = 200)]
     Invitation(Json<InvitationDetail>),
@@ -2094,6 +2141,12 @@ enum GetInvitationResponse {
 enum RespondToInvitationResponse {
     #[oai(status = 200)]
     Invitation(Json<Invitation>),
+
+    /// Accepted into a full match: the invitation is accepted, but the caller
+    /// is on the match's waitlist rather than in a spot (see
+    /// `MatchPlayer.waitlisted_at`).
+    #[oai(status = 202)]
+    Waitlisted(Json<Invitation>),
 
     /// The invitation does not exist.
     #[oai(status = 404)]
@@ -2108,6 +2161,12 @@ enum RespondToInvitationResponse {
 enum RespondByTokenResponse {
     #[oai(status = 200)]
     Invitation(Json<Invitation>),
+
+    /// Accepted into a full match: the invitation is accepted, but the caller
+    /// is on the match's waitlist rather than in a spot (see
+    /// `MatchPlayer.waitlisted_at`).
+    #[oai(status = 202)]
+    Waitlisted(Json<Invitation>),
 
     /// No invitation matches the supplied token.
     #[oai(status = 404)]
@@ -2973,6 +3032,7 @@ impl Api {
                 // for that case — see `MatchRecord`'s doc comment on it).
                 role: dao::records::MatchPlayerRole::Owner,
                 joined_via: None,
+                waitlisted_at: None,
             });
         }
         for invite in &input.invites {
@@ -3692,6 +3752,9 @@ impl Api {
                     invitation: None,
                     role: dao::records::MatchPlayerRole::Player,
                     joined_via: None,
+                    // Uncapped, as organiser adds always have been: moving
+                    // someone in off the waitlist is what needs a free spot.
+                    waitlisted_at: None,
                 };
                 dao.put_match_player(&match_id, &player)
                     .await
@@ -5809,7 +5872,9 @@ impl Api {
     ///
     /// Join a match — via a join link's token, or (omitting `token`)
     /// team-roster self-join, resolved via `caller_team_join_sides`. Both
-    /// branches share this same capacity-checked primitive from here on.
+    /// branches share this same capacity-checked primitive from here on. If
+    /// the match or the side is full, the caller goes on the match's waitlist
+    /// (202) rather than being turned away.
     #[oai(path = "/matches/:match_id/join", method = "post")]
     async fn join_match(
         &self,
@@ -5895,47 +5960,12 @@ impl Api {
             Err(msg) => return Ok(JoinMatchResponse::ValidationError(PlainText(msg))),
         };
 
-        // Capacity, checked here for a precise error; `Dao::join_match_tx`
-        // re-checks atomically as the last-moment race guard (its own doc
-        // comment covers why the split).
-        //
-        // A "full" verdict from the stored counts is recounted before it's
-        // believed. Counts that drifted high — written before pending invites
-        // stopped counting, or before leaving gave a spot back — make a match
-        // look full, and a match that looks full gets no more roster writes
-        // to heal it: it would turn every joiner away for good. The recount is
-        // only paid on this path, and the re-check uses the counts it just
-        // stored rather than reading them back (which could see stale ones).
-        let effective_max = agg.effective_max_players();
-        let target_side = target_side_id
-            .as_ref()
-            .and_then(|sid| agg.sides.iter().find(|s| &s.side_id == sid));
-        let target_side_max = target_side.and_then(|s| s.max_players);
-        let mut full = capacity_conflict(
-            effective_max,
-            agg.match_.total_player_count,
-            target_side_max,
-            target_side.map(|s| s.player_count),
-        );
-        if full.is_some()
-            && let Some(counts) = dao
-                .refresh_side_roster_previews(&match_id)
-                .await
-                .map_err(dao_internal)?
-        {
-            full = capacity_conflict(
-                effective_max,
-                counts.total_player_count,
-                target_side_max,
-                target_side_id
-                    .as_ref()
-                    .and_then(|sid| counts.side_player_counts.get(sid).copied()),
-            );
-        }
-        if let Some(reason) = full {
-            return Ok(JoinMatchResponse::Conflict(PlainText(reason.into())));
-        }
-
+        // Capacity is decided by `Dao::join_match_tx` itself, atomically: a
+        // spot if its cap guard passes, the waitlist if not. No pre-check
+        // here, deliberately: see that method. It also recounts before
+        // believing "full", so a match whose stored counts drifted high
+        // doesn't waitlist people it has room for.
+        let caps = dao::match_ops::SlotCaps::for_side(&agg, target_side_id.as_deref());
         let player = dao::records::MatchPlayerRecord {
             player_id: new_id(),
             user_id: Some(uid.clone()),
@@ -5945,21 +5975,12 @@ impl Api {
             invitation: None,
             role: dao::records::MatchPlayerRole::Player,
             joined_via: Some(joined_via),
+            waitlisted_at: None,
         };
-
-        dao.join_match_tx(
-            &match_id,
-            &player,
-            target_side.and_then(|s| s.max_players),
-            effective_max,
-            &agg.match_.starts_at,
-            &now_iso(),
-        )
-        .await
-        .map_err(|e| match e {
-            dao::DaoError::Conflict(_) => Error::from_string("match is full", StatusCode::CONFLICT),
-            other => dao_internal(other),
-        })?;
+        let outcome = dao
+            .join_match_tx(&match_id, &player, &caps, &agg.match_.starts_at, &now_iso())
+            .await
+            .map_err(dao_internal)?;
 
         dao.refresh_side_roster_previews(&match_id)
             .await
@@ -5974,7 +5995,10 @@ impl Api {
         m.viewer_role = caller_match_role(&agg.players, &uid).map(match_player_role_from_record);
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m, &uid).await?;
-        Ok(JoinMatchResponse::Match(Json(m)))
+        Ok(match outcome {
+            dao::match_ops::SlotOutcome::Occupied => JoinMatchResponse::Match(Json(m)),
+            dao::match_ops::SlotOutcome::Waitlisted => JoinMatchResponse::Waitlisted(Json(m)),
+        })
     }
 
     /// Transfer match ownership.
@@ -6081,6 +6105,82 @@ impl Api {
             .await
             .map_err(dao_internal)?;
         Ok(LeaveMatchResponse::Ok)
+    }
+
+    /// Move a player in off the waitlist.
+    ///
+    /// Move a waitlisted player (see `MatchPlayer.waitlisted_at`) into a spot.
+    /// Match admins only (`caller_is_match_admin`), the tier that manages the
+    /// roster. Moving someone in is always an organiser's call: nobody comes
+    /// off the waitlist by themselves when a spot frees up.
+    ///
+    /// Needs a free spot on the match, and on the side the player is waiting
+    /// for if that side is capped, checked atomically with the move
+    /// (`Dao::move_in_waitlisted_player`) so two moves can't both take the
+    /// last one. There's no way past a cap here: raise the cap first (`PATCH
+    /// /matches/:match_id`). Deliberately so, since a cap is usually the
+    /// number a pitch or court was booked for. Adding someone directly is a
+    /// different thing, and `added_players` on that same `PATCH` still does
+    /// it uncapped, as it always has.
+    #[oai(path = "/matches/:match_id/waitlist/move-in", method = "post")]
+    async fn move_in_waitlisted_player(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        input: Json<MoveInWaitlistedPlayerInput>,
+    ) -> Result<MoveInWaitlistedPlayerResponse> {
+        info!("Moving a player in off match {match_id}'s waitlist");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let input = input.0;
+
+        let Some(agg) = dao.get_match(&match_id).await.map_err(dao_internal)? else {
+            return Ok(MoveInWaitlistedPlayerResponse::NotFound(PlainText(
+                "match not found".into(),
+            )));
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(MoveInWaitlistedPlayerResponse::Forbidden(PlainText(
+                "only the match's owner or an admin can move players in off the waitlist".into(),
+            )));
+        }
+        let Some(player) = agg.players.iter().find(|p| p.player_id == input.player_id) else {
+            return Ok(MoveInWaitlistedPlayerResponse::NotFound(PlainText(
+                "player not found".into(),
+            )));
+        };
+        if player.waitlisted_at.is_none() {
+            return Ok(MoveInWaitlistedPlayerResponse::ValidationError(PlainText(
+                "that player isn't on the waitlist".into(),
+            )));
+        }
+
+        let caps = dao::match_ops::SlotCaps::for_side(&agg, player.side_id.as_deref());
+        match dao
+            .move_in_waitlisted_player(&match_id, player, &caps)
+            .await
+        {
+            Ok(()) => {}
+            Err(dao::DaoError::Conflict(_)) => {
+                return Ok(MoveInWaitlistedPlayerResponse::Conflict(PlainText(
+                    "no free spot: the match, or the side they're waiting for, is full".into(),
+                )));
+            }
+            // Moved in by someone else, gone, or put on another side since
+            // the read above.
+            Err(dao::DaoError::NotFound(_)) => {
+                return Ok(MoveInWaitlistedPlayerResponse::ValidationError(PlainText(
+                    "that player's place on the waitlist just changed; reload and try again".into(),
+                )));
+            }
+            Err(e) => return Err(dao_internal(e)),
+        }
+        // The spot is counted already; this puts them in their side's roster
+        // preview, which leaves the waitlisted out.
+        dao.refresh_side_roster_previews(&match_id)
+            .await
+            .map_err(dao_internal)?;
+        Ok(MoveInWaitlistedPlayerResponse::Ok)
     }
 
     #[oai(path = "/teams/:team_id/invitations", method = "post")]
@@ -6608,20 +6708,25 @@ impl Api {
         }
 
         let responded_at = now_iso();
+        let mut waitlisted = false;
         let status = match input.0.response {
             // Accept synchronously and atomically: bind the accepter to the
             // invitation, link the roster entry, and (match) write the accepter's
-            // own feed row so the game is on their feed immediately. Follower
-            // fan-out + notification happen async off the resulting stream event.
+            // own feed row so the game is on their feed immediately, and take
+            // their spot, or put them on the waitlist if the match is full
+            // (still accepted, answered 202). Follower fan-out + notification
+            // happen async off the resulting stream event.
             membership::InvitationResponse::Accepted => {
-                dao.accept_invitation_tx(&invitation_id, &uid, &responded_at, &responded_at)
+                waitlisted = dao
+                    .accept_invitation_tx(&invitation_id, &uid, &responded_at, &responded_at)
                     .await
                     .map_err(|e| match e {
                         dao::DaoError::NotFound(_) => {
                             Error::from_string("not found", StatusCode::NOT_FOUND)
                         }
                         other => dao_internal(other),
-                    })?;
+                    })?
+                    .waitlisted;
                 "accepted"
             }
             membership::InvitationResponse::Declined => {
@@ -6646,7 +6751,11 @@ impl Api {
         let mut invitation = invitation_from_record(&rec);
         invitation.status = invitation_status_from_str(status);
         invitation.responded_at = Some(mapping::parse_ts(&responded_at));
-        Ok(RespondToInvitationResponse::Invitation(Json(invitation)))
+        Ok(if waitlisted {
+            RespondToInvitationResponse::Waitlisted(Json(invitation))
+        } else {
+            RespondToInvitationResponse::Invitation(Json(invitation))
+        })
     }
 
     #[oai(path = "/invitations/respond-by-token", method = "post")]
@@ -6679,19 +6788,24 @@ impl Api {
         };
 
         let responded_at = now_iso();
+        let mut waitlisted = false;
         let status = match input.response {
             // Accept synchronously: bind this account onto the (previously
             // userless) token invitation, link the roster entry, and write the
-            // accepter's own feed row. Follower fan-out follows async.
+            // accepter's own feed row, taking their spot or, into a full match,
+            // a place on the waitlist (answered 202). Follower fan-out follows
+            // async.
             membership::InvitationResponse::Accepted => {
-                dao.accept_invitation_tx(&rec.id, &uid, &responded_at, &responded_at)
+                waitlisted = dao
+                    .accept_invitation_tx(&rec.id, &uid, &responded_at, &responded_at)
                     .await
                     .map_err(|e| match e {
                         dao::DaoError::NotFound(_) => {
                             Error::from_string("not found", StatusCode::NOT_FOUND)
                         }
                         other => dao_internal(other),
-                    })?;
+                    })?
+                    .waitlisted;
                 "accepted"
             }
             membership::InvitationResponse::Declined => {
@@ -6716,7 +6830,11 @@ impl Api {
         let mut invitation = invitation_from_record(&rec);
         invitation.status = invitation_status_from_str(status);
         invitation.responded_at = Some(mapping::parse_ts(&responded_at));
-        Ok(RespondByTokenResponse::Invitation(Json(invitation)))
+        Ok(if waitlisted {
+            RespondByTokenResponse::Waitlisted(Json(invitation))
+        } else {
+            RespondByTokenResponse::Invitation(Json(invitation))
+        })
     }
 
     #[oai(path = "/users/:user_id/follow", method = "post")]
@@ -7028,7 +7146,12 @@ impl Api {
             let on_side: Vec<&MatchPlayer> = m
                 .players
                 .iter()
-                .filter(|p| p.side_id.as_deref() == Some(side.id.as_str()))
+                // Not the waitlisted: they asked for this side but aren't on
+                // it, so they're no more its players (or its name) than they
+                // are in the stored `MatchSideRecord::roster_preview`.
+                .filter(|p| {
+                    p.side_id.as_deref() == Some(side.id.as_str()) && p.waitlisted_at.is_none()
+                })
                 .collect();
             let sole_player_name = match on_side.as_slice() {
                 [p] => Some(match &p.member {
@@ -7728,30 +7851,8 @@ fn player_occupies_slot(player: &MatchPlayer) -> bool {
         Member::User(u) => u.invitation.as_ref(),
         Member::External(e) => e.invitation.as_ref(),
     };
-    invitation.is_none_or(|inv| matches!(inv.status, membership::InvitationStatus::Accepted))
-}
-
-/// Why a join would go over capacity, if it would: the match-wide cap first,
-/// then the target side's (`side_player_count` is `None` when joining
-/// unassigned). Pure, so `join_match` can put the same question to both the
-/// stored counts and a fresh recount of them.
-fn capacity_conflict(
-    total_max: Option<u32>,
-    total_player_count: u64,
-    side_max: Option<u32>,
-    side_player_count: Option<u32>,
-) -> Option<&'static str> {
-    if let Some(max) = total_max
-        && total_player_count >= max as u64
-    {
-        return Some("this match is full");
-    }
-    if let (Some(max), Some(count)) = (side_max, side_player_count)
-        && count >= max
-    {
-        return Some("that side is full");
-    }
-    None
+    player.waitlisted_at.is_none()
+        && invitation.is_none_or(|inv| matches!(inv.status, membership::InvitationStatus::Accepted))
 }
 
 /// The caller's own membership on a team, if they're an accepted member —
@@ -8026,6 +8127,7 @@ fn build_invited_player(
         invitation: Some(embedded),
         role: dao::records::MatchPlayerRole::Player,
         joined_via: None,
+        waitlisted_at: None,
     };
 
     let invitation = dao::records::InvitationRecord {
@@ -8382,6 +8484,7 @@ fn mock_match(id: String) -> Match {
                 side_id: Some(String::from("side_red")),
                 is_member_of_team: Some(true),
                 role: MatchPlayerRole::Owner,
+                waitlisted_at: None,
             },
             MatchPlayer {
                 member: Member::User(UserMember {
@@ -8394,6 +8497,7 @@ fn mock_match(id: String) -> Match {
                 side_id: Some(String::from("side_red")),
                 is_member_of_team: Some(true),
                 role: MatchPlayerRole::Player,
+                waitlisted_at: None,
             },
             MatchPlayer {
                 member: Member::User(UserMember {
@@ -8406,6 +8510,7 @@ fn mock_match(id: String) -> Match {
                 side_id: Some(String::from("side_blue")),
                 is_member_of_team: Some(true),
                 role: MatchPlayerRole::Player,
+                waitlisted_at: None,
             },
         ],
         confirmed_score: Some(ConfirmedScore {

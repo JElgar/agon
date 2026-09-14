@@ -648,31 +648,51 @@ pub struct MatchPlayerRecord {
     /// themselves — via a join link or team self-join.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub joined_via: Option<JoinSourceRecord>,
+    /// When this player went onto the match's waitlist, if they're on it:
+    /// they tried to get in (a join, or accepting an invite) while the match
+    /// or their side was full, so they're on the roster but hold no spot
+    /// until a match admin moves them in, which clears it. `side_id` keeps the
+    /// side they asked for. One field is both the flag and the waitlist's
+    /// order (earliest first), which is display-only: moving in is manual.
+    ///
+    /// A roster state rather than an invitation status because a self-serve
+    /// joiner has no invitation to carry one, and an accepted invite that was
+    /// waitlisted still has to read as accepted, so the invitee isn't asked
+    /// again. `#[serde(default)]` for players written before the waitlist
+    /// existed, none of whom are on one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waitlisted_at: Option<String>,
 }
 
 impl MatchPlayerRecord {
     /// Whether this player takes one of the match's spots: they're *in* —
     /// added by an organiser or self-served via a join link/team (no
-    /// invitation), or an invitee who has accepted. A pending or declined
-    /// invite takes nothing; sending an invite doesn't reserve a spot.
+    /// invitation), or an invitee who has accepted — and not waiting on the
+    /// waitlist (`waitlisted_at`). A pending or declined invite takes nothing;
+    /// sending an invite doesn't reserve a spot.
     ///
     /// The single definition behind `MatchRecord::total_player_count`,
     /// `MatchSideRecord::player_count`, `create_match`'s cap validation *and*
     /// the stats reconciler's "played" test — "takes a spot" and "counted as
     /// having played" are the same fact, so anything that should stop a
-    /// player occupying a spot (e.g. a future waitlist) belongs here, and
-    /// both follow at once. Those used to be separate copies, and the counts'
-    /// copy had drifted to "every roster row", which is how a declined invite
-    /// came to hold a spot forever.
+    /// player occupying a spot belongs here, and both follow at once (the
+    /// waitlist is the first such thing: someone still waiting didn't play).
+    /// Those used to be separate copies, and the counts' copy had drifted to
+    /// "every roster row", which is how a declined invite came to hold a spot
+    /// forever. Two API-side mirrors must change with it: `agon_service`'s
+    /// `player_occupies_slot` and `agon_ui`'s `occupiesSlot`.
     ///
     /// Deliberately *not* what `caller_match_membership` (permissions,
-    /// `viewer_role`, leaving) tests, even though today the two agree: being
-    /// on the roster and occupying a spot are different questions, and are
-    /// expected to diverge.
+    /// `viewer_role`, leaving) tests. Being on the roster and occupying a spot
+    /// are different questions, and the waitlist is where they diverge: a
+    /// waitlisted player is on the roster, so they can leave it (and a second
+    /// join is "already on the roster"), without holding a spot.
     pub fn occupies_slot(&self) -> bool {
-        self.invitation
-            .as_ref()
-            .is_none_or(|inv| inv.status == "accepted")
+        self.waitlisted_at.is_none()
+            && self
+                .invitation
+                .as_ref()
+                .is_none_or(|inv| inv.status == "accepted")
     }
 }
 
@@ -1617,7 +1637,8 @@ mod tests {
 
     /// `occupies_slot` is the one rule for who takes a spot (and who counts as
     /// having played): in with no invitation, or an accepted invitee — never a
-    /// pending or declined one. The bug behind it: the counts included every
+    /// pending or declined one, and never anyone still on the waitlist,
+    /// however they got there. The bug behind it: the counts included every
     /// roster row, so a declined invite held its spot forever.
     #[test]
     fn occupies_slot_counts_only_players_who_are_in() {
@@ -1639,6 +1660,11 @@ mod tests {
             }),
             role: MatchPlayerRole::Player,
             joined_via: None,
+            waitlisted_at: None,
+        };
+        let waitlisted = |status: Option<&str>| MatchPlayerRecord {
+            waitlisted_at: Some("2026-09-14T00:00:00Z".into()),
+            ..player(status)
         };
         assert!(
             player(None).occupies_slot(),
@@ -1647,6 +1673,14 @@ mod tests {
         assert!(player(Some("accepted")).occupies_slot());
         assert!(!player(Some("pending")).occupies_slot());
         assert!(!player(Some("declined")).occupies_slot());
+        assert!(
+            !waitlisted(None).occupies_slot(),
+            "joined a full match: on the waitlist"
+        );
+        assert!(
+            !waitlisted(Some("accepted")).occupies_slot(),
+            "accepted into a full match: on the waitlist"
+        );
     }
 
     /// `Simple`/`Sets` `entries` round-trip through the side_id-keyed map

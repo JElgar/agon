@@ -256,3 +256,10 @@ pub struct TransferMatchOwnershipInput {
     /// to hand the `Owner` role to. Must already be an accepted player.
     pub player_id: String,
 }
+
+#[derive(Object)]
+pub struct MoveInWaitlistedPlayerInput {
+    /// The waitlisted player to move into a spot (by stable player id, as
+    /// seen on `MatchPlayer.member.id`).
+    pub player_id: String,
+}

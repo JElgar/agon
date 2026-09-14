@@ -257,7 +257,7 @@ export function JoinMatchPage() {
       )}
       {join.data === 'conflict' && (
         <p className="mb-3 text-sm text-destructive">
-          This game (or side) is full, or you're already on the roster.
+          You're already on this game's roster.
         </p>
       )}
 

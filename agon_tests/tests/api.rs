@@ -6535,8 +6535,9 @@ async fn side_capacity_is_enforced() {
     .await
     .expect("first join fills the side's only slot");
 
-    let (second_config, _second) = new_user().await;
-    let rejected = matches_match_id_join_post(
+    // Past the cap, a join goes on the waitlist rather than into a spot.
+    let (second_config, second) = new_user().await;
+    let waitlisted = matches_match_id_join_post(
         &second_config,
         &created.id,
         models::JoinMatchInput {
@@ -6544,8 +6545,12 @@ async fn side_capacity_is_enforced() {
             side_id: None,
         },
     )
-    .await;
-    assert_status_with_content(rejected, reqwest::StatusCode::CONFLICT, "side is full");
+    .await
+    .expect("a full side waitlists the joiner rather than turning them away");
+    assert!(
+        is_waitlisted(&waitlisted, &second.profile.id),
+        "the side's only spot is taken, so no spot for the second joiner"
+    );
 }
 
 /// The overall cap is derived, not stored: with both sides capped at 1
@@ -6581,8 +6586,8 @@ async fn overall_capacity_is_derived_from_every_sides_cap() {
     .await
     .expect("second overall player, exactly at the derived cap of 2");
 
-    let (second_config, _second) = new_user().await;
-    let rejected = matches_match_id_join_post(
+    let (second_config, second) = new_user().await;
+    let waitlisted = matches_match_id_join_post(
         &second_config,
         &created.id,
         models::JoinMatchInput {
@@ -6590,8 +6595,12 @@ async fn overall_capacity_is_derived_from_every_sides_cap() {
             side_id: None,
         },
     )
-    .await;
-    assert_status_with_content(rejected, reqwest::StatusCode::CONFLICT, "match is full");
+    .await
+    .expect("a full match waitlists the joiner rather than turning them away");
+    assert!(
+        is_waitlisted(&waitlisted, &second.profile.id),
+        "the derived cap of 2 is reached, so no spot for the second joiner"
+    );
 }
 
 /// The match-wide headcount as *stored* (`MatchRecord::total_player_count`) —
@@ -6618,6 +6627,17 @@ fn side_player_count(match_: &models::Match, side_id: &str) -> i32 {
         .find(|s| s.id == side_id)
         .expect("side on match")
         .player_count
+}
+
+/// Whether a linked user is on `match_`'s waitlist (`MatchPlayer.waitlisted_at`).
+fn is_waitlisted(match_: &models::Match, user_id: &str) -> bool {
+    match_
+        .players
+        .iter()
+        .find(|p| matches!(&*p.member, models::Member::User(u) if u.user_id == user_id))
+        .expect("player with that user id")
+        .waitlisted_at
+        .is_some()
 }
 
 /// Join `match_id` through a join link as `config`'s user, letting the link's
@@ -6768,9 +6788,14 @@ async fn pending_invites_do_not_take_spots_so_a_side_can_invite_past_its_cap() {
         .expect("side b's only spot is still free despite two pending invites");
 
     // The cap still holds once the spot is genuinely taken.
-    let (late_config, _late) = new_user().await;
-    let rejected = join_via_link(&late_config, &created.id, &link.token).await;
-    assert_status_with_content(rejected, reqwest::StatusCode::CONFLICT, "side is full");
+    let (late_config, late) = new_user().await;
+    let waitlisted = join_via_link(&late_config, &created.id, &link.token)
+        .await
+        .expect("a full side waitlists rather than rejects");
+    assert!(
+        is_waitlisted(&waitlisted, &late.profile.id),
+        "no spot for the late joiner"
+    );
 }
 
 /// Leaving, or being removed by an organiser, gives the spot back. Both sides
@@ -6894,9 +6919,351 @@ async fn accepting_an_invite_takes_exactly_one_spot() {
     join_via_link(&joiner_config, &created.id, &link.token)
         .await
         .expect("side b's second spot is still free");
-    let (late_config, _late) = new_user().await;
-    let rejected = join_via_link(&late_config, &created.id, &link.token).await;
-    assert_status_with_content(rejected, reqwest::StatusCode::CONFLICT, "match is full");
+    let (late_config, late) = new_user().await;
+    let waitlisted = join_via_link(&late_config, &created.id, &link.token)
+        .await
+        .expect("a full match waitlists rather than rejects");
+    assert!(
+        is_waitlisted(&waitlisted, &late.profile.id),
+        "no spot for the late joiner"
+    );
+}
+
+/// A join that finds its side full goes on the waitlist instead of being
+/// turned away. It's on the roster (it gets a role, so it can leave, and a
+/// second join is "already on the roster") but holds no spot: neither the
+/// side's count nor the stored total moves. Guards `join_match` answering a
+/// full match with a 409, and the waitlist leaking into the counts it's
+/// meant to stay out of.
+#[tokio::test]
+async fn joining_a_full_side_puts_you_on_the_waitlist() {
+    let (owner_config, owner) = new_user().await;
+    let created = matches_post(&owner_config, joinable_match_input(None, None, Some(1)))
+        .await
+        .expect("create match");
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+    let side_b = other_side_id(&created, &side_a);
+    let link = matches_match_id_join_links_post(
+        &owner_config,
+        &created.id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(sides_scope(vec![side_b.clone()])),
+        },
+    )
+    .await
+    .expect("create join link");
+    let (first_config, _first) = new_user().await;
+    join_via_link(&first_config, &created.id, &link.token)
+        .await
+        .expect("fills side b's only spot");
+
+    let (waiting_config, waiting) = new_user().await;
+    let joined = join_via_link(&waiting_config, &created.id, &link.token)
+        .await
+        .expect("a full side waitlists, it doesn't reject");
+    assert!(is_waitlisted(&joined, &waiting.profile.id));
+    assert_eq!(
+        side_id_for_user(&joined, &waiting.profile.id),
+        side_b,
+        "keeps the side they asked for"
+    );
+    assert_eq!(
+        side_player_count(&joined, &side_b),
+        1,
+        "the waitlisted joiner doesn't count toward the side"
+    );
+    assert_eq!(
+        stored_total_player_count(&link.token).await,
+        2,
+        "nor toward the stored total"
+    );
+    assert_eq!(
+        joined.viewer_role,
+        Some(models::MatchPlayerRole::Player),
+        "on the roster, so they can leave"
+    );
+
+    let again = join_via_link(&waiting_config, &created.id, &link.token).await;
+    assert_status_with_content(
+        again,
+        reqwest::StatusCode::CONFLICT,
+        "already on this match's roster",
+    );
+}
+
+/// Accepting an invite into a full match still accepts it (the invitee said
+/// yes; leaving it pending would keep asking them) but puts them on the
+/// waitlist without counting them, and accepting again changes nothing.
+/// Guards accept's `ADD` having no cap guard, which let an accepted invite
+/// take a match past its cap.
+#[tokio::test]
+async fn accepting_an_invite_into_a_full_match_waitlists_you() {
+    let (owner_config, _owner) = new_user().await;
+    let (invitee_config, invitee) = new_user().await;
+    let mut input = joinable_match_input(None, Some(1), Some(1));
+    input.invites = vec![invite_users("b", &[&invitee.profile.id])];
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("create match");
+    let side_b = side_id_for_user(&created, &invitee.profile.id);
+    let link = matches_match_id_join_links_post(
+        &owner_config,
+        &created.id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(sides_scope(vec![side_b.clone()])),
+        },
+    )
+    .await
+    .expect("create join link");
+    let (joiner_config, _joiner) = new_user().await;
+    join_via_link(&joiner_config, &created.id, &link.token)
+        .await
+        .expect("a joiner takes side b's spot before the invitee answers");
+    assert_eq!(
+        stored_total_player_count(&link.token).await,
+        2,
+        "the match is full"
+    );
+
+    let invitation_id = match_invitation_id(&invitee_config, &created.id).await;
+    for attempt in ["accepting", "accepting again"] {
+        respond_to_invitation(
+            &invitee_config,
+            &invitation_id,
+            models::InvitationResponse::Accepted,
+        )
+        .await;
+        let after = matches_match_id_get(&owner_config, &created.id)
+            .await
+            .expect("get match");
+        assert!(
+            is_waitlisted(&after, &invitee.profile.id),
+            "{attempt}: on the waitlist"
+        );
+        let accepted = after.players.iter().any(|p| {
+            matches!(&*p.member, models::Member::User(u)
+            if u.user_id == invitee.profile.id
+                && u.invitation.as_ref().is_some_and(|inv| {
+                    matches!(inv.status, models::InvitationStatus::Accepted)
+                }))
+        });
+        assert!(
+            accepted,
+            "{attempt}: the invite is accepted, not left pending"
+        );
+        assert_eq!(
+            side_player_count(&after, &side_b),
+            1,
+            "{attempt}: side b still counts only the joiner"
+        );
+        assert_eq!(
+            stored_total_player_count(&link.token).await,
+            2,
+            "{attempt}: nothing counted"
+        );
+    }
+}
+
+/// Someone still on the waitlist when the result is confirmed didn't play, so
+/// the match isn't credited to them, while the invitee who got the spot is,
+/// by the same reconcile. Guards the stats reconciler's "played" test
+/// (`occupies_slot`) crediting everyone on the roster.
+#[tokio::test]
+async fn a_waitlisted_player_is_not_credited_as_having_played() {
+    let (owner_config, _owner) = new_user().await;
+    let (player_config, player) = new_user().await;
+    let (waiting_config, waiting) = new_user().await;
+    let mut input = completed_match(vec![invite_users(
+        "b",
+        &[&player.profile.id, &waiting.profile.id],
+    )]);
+    input.sides[1].max_players = Some(1);
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("create match");
+    accept_match_invitation(&player_config, &created.id).await;
+    accept_match_invitation(&waiting_config, &created.id).await;
+    let after = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match");
+    assert!(
+        !is_waitlisted(&after, &player.profile.id),
+        "the first to accept takes side b's spot"
+    );
+    assert!(
+        is_waitlisted(&after, &waiting.profile.id),
+        "the second waits"
+    );
+
+    let submission_id = created
+        .pending_score
+        .as_ref()
+        .expect("pending score at create time")
+        .submission_id
+        .clone();
+    matches_match_id_score_submissions_submission_id_respond_post(
+        &player_config,
+        &created.id,
+        &submission_id,
+        models::RespondToScoreInput {
+            response: models::ScoreResponseKind::Confirm,
+        },
+    )
+    .await
+    .expect("confirm score");
+
+    assert_matches_played_reaches(&player_config, models::MatchType::Tennis, 1, "player").await;
+    // The same reconcile decides both; a short settle means a wrongly credited
+    // row written a moment after the player's can't slip past the check.
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    assert_eq!(
+        my_matches_played(&waiting_config, models::MatchType::Tennis).await,
+        0,
+        "still on the waitlist, so they didn't play"
+    );
+}
+
+/// Moving someone in off the waitlist needs a free spot, checked atomically:
+/// while the match is full it's refused with a 409 and nothing is counted;
+/// once a player leaves, the same move takes the freed spot and counts it, and
+/// doing it again finds nobody waiting. Guards a move-in that ignores the cap
+/// (quietly overbooking a pitch) or doesn't count the spot it takes.
+#[tokio::test]
+async fn moving_someone_in_off_the_waitlist_needs_a_free_spot() {
+    let (owner_config, owner) = new_user().await;
+    let created = matches_post(&owner_config, joinable_match_input(None, Some(1), Some(1)))
+        .await
+        .expect("create match");
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+    let side_b = other_side_id(&created, &side_a);
+    let link = matches_match_id_join_links_post(
+        &owner_config,
+        &created.id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(sides_scope(vec![side_b.clone()])),
+        },
+    )
+    .await
+    .expect("create join link");
+    let (leaver_config, _leaver) = new_user().await;
+    join_via_link(&leaver_config, &created.id, &link.token)
+        .await
+        .expect("fills side b");
+    let (waiting_config, waiting) = new_user().await;
+    let joined = join_via_link(&waiting_config, &created.id, &link.token)
+        .await
+        .expect("waitlisted");
+    let move_in = || {
+        matches_match_id_waitlist_move_in_post(
+            &owner_config,
+            &created.id,
+            models::MoveInWaitlistedPlayerInput {
+                player_id: player_id_for_user(&joined, &waiting.profile.id),
+            },
+        )
+    };
+
+    assert_status_with_content(
+        move_in().await,
+        reqwest::StatusCode::CONFLICT,
+        "no free spot",
+    );
+    assert_eq!(
+        stored_total_player_count(&link.token).await,
+        2,
+        "a refused move-in counts nothing"
+    );
+
+    matches_match_id_leave_post(&leaver_config, &created.id)
+        .await
+        .expect("leave");
+    move_in().await.expect("moves into the freed spot");
+    let after = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match");
+    assert!(
+        !is_waitlisted(&after, &waiting.profile.id),
+        "off the waitlist"
+    );
+    assert_eq!(side_player_count(&after, &side_b), 1, "counted on side b");
+    assert_eq!(
+        stored_total_player_count(&link.token).await,
+        2,
+        "and in the stored total"
+    );
+
+    assert_status_with_content(
+        move_in().await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "isn't on the waitlist",
+    );
+}
+
+/// Moving someone in is a match admin's call. With a spot free, a plain player
+/// on the match is refused, and so is the waitlisted player moving themselves
+/// in; the owner then can. Guards the endpoint skipping
+/// `caller_is_match_admin`.
+#[tokio::test]
+async fn only_a_match_admin_can_move_someone_in_off_the_waitlist() {
+    let (owner_config, owner) = new_user().await;
+    let created = matches_post(&owner_config, joinable_match_input(None, None, Some(1)))
+        .await
+        .expect("create match");
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+    let side_b = other_side_id(&created, &side_a);
+    let link_for = |side_id: String| {
+        matches_match_id_join_links_post(
+            &owner_config,
+            &created.id,
+            models::CreateJoinLinkInput {
+                scope: Box::new(sides_scope(vec![side_id])),
+            },
+        )
+    };
+    let link_a = link_for(side_a).await.expect("side a join link");
+    let link_b = link_for(side_b).await.expect("side b join link");
+
+    let (plain_config, _plain) = new_user().await;
+    join_via_link(&plain_config, &created.id, &link_a.token)
+        .await
+        .expect("a plain player on side a");
+    let (leaver_config, _leaver) = new_user().await;
+    join_via_link(&leaver_config, &created.id, &link_b.token)
+        .await
+        .expect("fills side b");
+    let (waiting_config, waiting) = new_user().await;
+    let joined = join_via_link(&waiting_config, &created.id, &link_b.token)
+        .await
+        .expect("waitlisted");
+    matches_match_id_leave_post(&leaver_config, &created.id)
+        .await
+        .expect("frees side b's spot");
+    let waiting_player_id = player_id_for_user(&joined, &waiting.profile.id);
+    let move_in_input = || models::MoveInWaitlistedPlayerInput {
+        player_id: waiting_player_id.clone(),
+    };
+
+    for (config, who) in [
+        (&plain_config, "a plain player"),
+        (&waiting_config, "the waitlisted player"),
+    ] {
+        assert_status_with_content(
+            matches_match_id_waitlist_move_in_post(config, &created.id, move_in_input()).await,
+            reqwest::StatusCode::FORBIDDEN,
+            "only the match's owner or an admin",
+        );
+        let after = matches_match_id_get(&owner_config, &created.id)
+            .await
+            .expect("get match");
+        assert!(
+            is_waitlisted(&after, &waiting.profile.id),
+            "{who} can't move them in"
+        );
+    }
+
+    matches_match_id_waitlist_move_in_post(&owner_config, &created.id, move_in_input())
+        .await
+        .expect("the owner can, into the free spot");
 }
 
 #[tokio::test]

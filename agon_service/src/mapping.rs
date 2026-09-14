@@ -909,6 +909,7 @@ pub fn match_player_from_record(rec: &MatchPlayerRecord) -> MatchPlayer {
         side_id: rec.side_id.clone(),
         is_member_of_team: rec.is_member_of_team,
         role: match_player_role_from_record(rec.role),
+        waitlisted_at: rec.waitlisted_at.as_deref().map(parse_ts),
     }
 }
 

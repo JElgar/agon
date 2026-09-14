@@ -20,6 +20,12 @@ class FootballScore {
     var homeGoals as Number;
     var awayGoals as Number;
     var period as Number;
+    //! `false` until this device has learnt the server's score state for
+    //! the match at least once — a real score, or a 404 meaning nothing's
+    //! been recorded yet (`markNoServerScore`). `applyServerState`'s return
+    //! value needs it to tell "already under way when this watch opened
+    //! the match" apart from "kicked off while it was open".
+    var hasServerState as Boolean;
 
     var _apiClient as LiveApiClient;
 
@@ -27,6 +33,7 @@ class FootballScore {
         homeGoals = 0;
         awayGoals = 0;
         period = PERIOD_NOT_STARTED;
+        hasServerState = false;
         _apiClient = apiClient;
     }
 
@@ -61,12 +68,35 @@ class FootballScore {
     //! (extra time, penalties — not offered on this app's menu) — either
     //! way, leaving `period` as this device's own last-known value is
     //! safer than guessing.
-    function applyServerState(newHomeGoals as Number, newAwayGoals as Number, newPeriod as Number?) as Void {
+    //!
+    //! Returns `true` when this update is the match kicking off while this
+    //! watch had it open: the period moved out of not-started (to anything
+    //! but full-time) *after* the server's state had already been seen
+    //! once. The first update never counts — a match already under way
+    //! when the watch opened it shows the red ring instead, and the wearer
+    //! starts their activity by hand. See `ActivityRecorder.startForKickOff`.
+    function applyServerState(newHomeGoals as Number, newAwayGoals as Number, newPeriod as Number?) as Boolean {
+        var previousPeriod = period;
         homeGoals = newHomeGoals;
         awayGoals = newAwayGoals;
         if (newPeriod != null) {
             period = newPeriod;
         }
+        var kickedOffWhileOpen = hasServerState
+            && previousPeriod == PERIOD_NOT_STARTED
+            && period != PERIOD_NOT_STARTED
+            && period != PERIOD_FULL_TIME;
+        hasServerState = true;
+        return kickedOffWhileOpen;
+    }
+
+    //! The server has no score for this match yet (`GET /matches/:id/score`
+    //! 404s until the first live event) — which still counts as learning
+    //! its state: not started. Without this, a brand-new match's first
+    //! real score (its kick-off) would be mistaken for the state on
+    //! opening, and wouldn't auto-start anyone's activity.
+    function markNoServerScore() as Void {
+        hasServerState = true;
     }
 
     //! Same shape as `applyServerState`, but for `LiveApiClient.undoLast`

@@ -1,4 +1,5 @@
 import Toybox.Lang;
+import Toybox.System;
 import Toybox.WatchUi;
 
 //! Built dynamically (not from a menu.xml resource — see
@@ -18,7 +19,16 @@ import Toybox.WatchUi;
 //! doesn't quietly reintroduce the bug).
 function buildMainMenu() as WatchUi.Menu2 {
     var period = getApp().score.period;
+    var recorder = getApp().activityRecorder;
     var menu = new WatchUi.Menu2({ :title => "Menu" });
+
+    // Not recording (never started, or paused) is exactly when the red
+    // ring is showing — so its fix goes first, as the item already
+    // highlighted when the menu opens. While recording it drops below the
+    // scoring items instead, keeping Goal one press away.
+    if (!recorder.isRecording()) {
+        menu.addItem(activityMenuItem(recorder));
+    }
 
     if (period == FootballScore.PERIOD_NOT_STARTED) {
         menu.addItem(new WatchUi.MenuItem("Kick-off", null, :period_kick_off, {}));
@@ -33,10 +43,9 @@ function buildMainMenu() as WatchUi.Menu2 {
     }
     // PERIOD_FULL_TIME: nothing sport-specific left to record.
 
-    // Always available, regardless of period — worth checking even
-    // before kick-off (GPS lock, say), and there's no reason to hide it
-    // once recording's started either.
-    menu.addItem(new WatchUi.MenuItem("Activity stats", null, :activity_stats, {}));
+    if (recorder.isRecording()) {
+        menu.addItem(activityMenuItem(recorder));
+    }
 
     // Only offered once LiveApiClient actually has a real seq to send —
     // see its own canUndo()/doc comment. Absent rather than disabled
@@ -47,10 +56,31 @@ function buildMainMenu() as WatchUi.Menu2 {
         menu.addItem(new WatchUi.MenuItem("Undo last", null, :undo_last, {}));
     }
 
-    // Always available, regardless of period — a safety valve to stop
-    // and save the recording whatever state the match is in.
-    menu.addItem(new WatchUi.MenuItem("End match (save activity)", null, :end_match, {}));
+    // Always available, regardless of period — whatever state the match
+    // is in, the wearer can finish their activity (see EndMatchFlow.mc).
+    menu.addItem(new WatchUi.MenuItem("End match", null, :end_match, {}));
     return menu;
+}
+
+//! Start / Pause / Resume — one item whose label and action follow the
+//! recording's own state, like a native Garmin activity's start/stop
+//! button. Handled as `:activity_toggle` in `agonMenuDelegate.onSelect`.
+function activityMenuItem(recorder as ActivityRecorder) as WatchUi.MenuItem {
+    var label = "Start activity";
+    if (recorder.isRecording()) {
+        label = "Pause activity";
+    } else if (recorder.hasSession()) {
+        label = "Resume activity";
+    }
+    return new WatchUi.MenuItem(label, null, :activity_toggle, {});
+}
+
+//! Opens the main menu on top of whichever match page is showing — the
+//! score screen (`agonDelegate`) or the activity stats screen
+//! (`ActivityStatsDelegate`). Both open it the same way, and the menu
+//! pops back to whichever one it came from.
+function openMainMenu() as Void {
+    WatchUi.pushView(buildMainMenu(), new agonMenuDelegate(), WatchUi.SLIDE_UP);
 }
 
 class agonMenuDelegate extends WatchUi.Menu2InputDelegate {
@@ -71,23 +101,19 @@ class agonMenuDelegate extends WatchUi.Menu2InputDelegate {
             // needs no explicit popView.
             WatchUi.switchToView(buildSideMenu(), new GoalSideMenuDelegate(), WatchUi.SLIDE_UP);
             return;
-        } else if (item == :activity_stats) {
-            // Pushed on top of this still-open menu (not popped first) —
-            // Back from the stats screen (ActivityStatsDelegate's default
-            // BehaviorDelegate handling, no override needed) lands back
-            // on the menu, and Back again on agonView, same nesting
-            // agonDelegate.openMenu already layers this menu on top of.
-            WatchUi.pushView(new ActivityStatsView(), new ActivityStatsDelegate(), WatchUi.SLIDE_LEFT);
-            return;
+        } else if (item == :activity_toggle) {
+            if (app.activityRecorder.isRecording()) {
+                app.activityRecorder.pause();
+            } else {
+                // matchContext is already populated by now (MatchPickerView,
+                // before this menu is reachable at all).
+                app.activityRecorder.start(app.matchContext.matchName());
+            }
         } else if (item == :period_kick_off) {
-            // The first "start of half" event this match sees is what
-            // actually starts activity recording — not app launch, see
-            // agonApp.onStart. ActivityRecorder.start() is a no-op if
-            // already recording, so this is safe even if kick-off gets
-            // logged more than once. matchContext is already populated by
-            // now (MatchPickerView, before this menu is reachable at all).
-            app.activityRecorder.start(app.matchContext.matchName());
-            app.activityRecorder.markHalfStart();
+            // Starts this wearer's activity (and resets the half clock) —
+            // the same thing every other watch with this match open does
+            // once its next score poll sees this kick-off.
+            app.activityRecorder.startForKickOff(app.matchContext.matchName());
             app.score.setPeriod(FootballScore.PERIOD_KICK_OFF);
         } else if (item == :period_half_time) {
             // Closes the first-half lap and opens a new one for the
@@ -95,10 +121,6 @@ class agonMenuDelegate extends WatchUi.Menu2InputDelegate {
             app.activityRecorder.markLap();
             app.score.setPeriod(FootballScore.PERIOD_HALF_TIME);
         } else if (item == :period_second_half) {
-            // Also "starts a half" — same idempotent start() as kick-off
-            // (the name is only actually used the first time; see
-            // ActivityRecorder.start's doc comment).
-            app.activityRecorder.start(app.matchContext.matchName());
             // Closes the half-time-break lap and opens the second-half
             // one, same as markHalfStart resets the live clock's own
             // baseline right below.
@@ -113,10 +135,17 @@ class agonMenuDelegate extends WatchUi.Menu2InputDelegate {
             app.activityRecorder.markLap();
             app.score.setPeriod(FootballScore.PERIOD_FULL_TIME);
         } else if (item == :end_match) {
-            // Explicit early stop — onStop() also calls this when the app
-            // closes, so leaving the app is never required just to save
-            // the recording.
-            app.activityRecorder.stopAndSave();
+            if (app.activityRecorder.hasSession()) {
+                // Save/Discard choice, replacing this menu (same as :goal
+                // above) so Back from it cancels to the match page rather
+                // than reopening this menu.
+                WatchUi.switchToView(buildEndMatchMenu(), new EndMatchMenuDelegate(), WatchUi.SLIDE_UP);
+            } else {
+                // No activity was ever started — nothing to save or
+                // discard, so just leave.
+                System.exit();
+            }
+            return;
         } else if (item == :undo_last) {
             // Fire-and-forget, same as recordGoal/recordPeriod — see
             // LiveApiClient.undoLast's own doc comment on why this has
@@ -126,13 +155,13 @@ class agonMenuDelegate extends WatchUi.Menu2InputDelegate {
 
         // Unlike the legacy WatchUi.Menu (which popped itself once
         // onMenuItem returned), Menu2's onSelect doesn't dismiss anything
-        // on its own. This menu was pushed on top of agonView (see
-        // agonDelegate.openMenu), so every branch that falls through to
-        // here has to pop back to it explicitly.
+        // on its own. This menu was pushed on top of a match page (see
+        // openMainMenu), so every branch that falls through to here has
+        // to pop back to it explicitly.
         WatchUi.popView(WatchUi.SLIDE_DOWN);
 
-        // The score screen reads app.score fresh every onUpdate rather
-        // than being told what changed — just ask it to redraw.
+        // The match pages read app state fresh every onUpdate rather than
+        // being told what changed — just ask for a redraw.
         WatchUi.requestUpdate();
     }
 

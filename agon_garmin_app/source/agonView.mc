@@ -45,6 +45,7 @@ class agonView extends WatchUi.View {
     function onUpdate(dc as Dc) as Void {
         dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_BLACK);
         dc.clear();
+        drawNotRecordingRing(dc);
 
         var score = getApp().score;
         var centerX = dc.getWidth() / 2;

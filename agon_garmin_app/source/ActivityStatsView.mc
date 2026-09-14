@@ -7,9 +7,9 @@ import Toybox.Timer;
 
 //! Shows the underlying Garmin activity recording's own live stats
 //! (current-half time, total time, distance, heart rate) alongside the
-//! football score — reached from the main menu (see
-//! `agonMenuDelegate.mc`), pushed on top of `agonView` the same way that
-//! menu itself is.
+//! football score — the second match page, paged to with up/down from
+//! the score screen (see `agonDelegate.onNextPage`), the way a native
+//! Garmin activity cycles its data screens.
 //!
 //! There's no prebuilt "activity data" widget to reuse here: `Toybox.
 //! WatchUi.SimpleDataField`/`DataField` — Garmin's own classes for
@@ -28,22 +28,38 @@ class ActivityStatsView extends WatchUi.View {
     //! not be redrawn any faster than a human can read them.
     const POLL_INTERVAL_MS = 1000;
 
+    //! Every this many ticks (so every 5s, `agonView.POLL_INTERVAL_MS`'s
+    //! cadence) also poll the server's score and seq. This is a full match
+    //! page now, not a brief detour off the menu, so it can stay up for a
+    //! whole half — and without polling, the score shown here and the
+    //! period-driven menu items would go stale while it does.
+    const SERVER_POLL_EVERY_TICKS = 5;
+
     var _pollTimer as Timer.Timer?;
+    var _tickCount as Number;
 
     function initialize() {
         View.initialize();
         _pollTimer = null;
+        _tickCount = 0;
     }
 
     function onLayout(dc as Dc) as Void {
     }
 
     function onShow() as Void {
+        getApp().liveApiClient.refreshScore();
+        _tickCount = 0;
         _pollTimer = new Timer.Timer();
         _pollTimer.start(method(:onPollTick), POLL_INTERVAL_MS, true);
     }
 
     function onPollTick() as Void {
+        _tickCount += 1;
+        if (_tickCount % SERVER_POLL_EVERY_TICKS == 0) {
+            getApp().liveApiClient.refreshScore();
+            getApp().liveApiClient.refreshSeq();
+        }
         WatchUi.requestUpdate();
     }
 
@@ -57,14 +73,16 @@ class ActivityStatsView extends WatchUi.View {
     function onUpdate(dc as Dc) as Void {
         dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_BLACK);
         dc.clear();
+        drawNotRecordingRing(dc);
 
-        if (!getApp().activityRecorder.isRecording()) {
-            // Kick-off (or second-half kick-off) is what actually starts
-            // the underlying recording (see ActivityRecorder.start's own
-            // doc comment) — before that there's nothing real to show.
+        if (!getApp().activityRecorder.hasSession()) {
+            // Nothing's been recorded to show until the activity starts —
+            // at kick-off, or from the menu (see ActivityRecorder).
+            // A paused activity falls through instead: its stats are real,
+            // just frozen, and the red ring already says it's paused.
             dc.drawText(
                 dc.getWidth() / 2, dc.getHeight() / 2, Graphics.FONT_XTINY,
-                "Not recording yet",
+                "Activity not started",
                 Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER
             );
             return;
@@ -156,13 +174,33 @@ class ActivityStatsView extends WatchUi.View {
     }
 }
 
-//! Back returns to the still-open main menu this view was pushed on top
-//! of (see `agonMenuDelegate.mc`'s `:activity_stats` handling) — the
-//! default `BehaviorDelegate.onBack` every other pushed-on-top screen in
-//! this app relies on already does exactly that, no override needed.
+//! Same controls as the score screen's `agonDelegate`: up/down pages back
+//! to it, and menu/select open the same main menu. Back isn't overridden
+//! — both pages sit at the same depth in the view stack, so it does the
+//! same thing from here as from the score screen.
 class ActivityStatsDelegate extends WatchUi.BehaviorDelegate {
 
     function initialize() {
         BehaviorDelegate.initialize();
+    }
+
+    function onMenu() as Boolean {
+        openMainMenu();
+        return true;
+    }
+
+    function onSelect() as Boolean {
+        openMainMenu();
+        return true;
+    }
+
+    function onNextPage() as Boolean {
+        WatchUi.switchToView(new agonView(), new agonDelegate(), WatchUi.SLIDE_UP);
+        return true;
+    }
+
+    function onPreviousPage() as Boolean {
+        WatchUi.switchToView(new agonView(), new agonDelegate(), WatchUi.SLIDE_DOWN);
+        return true;
     }
 }

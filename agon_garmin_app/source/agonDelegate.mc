@@ -8,7 +8,7 @@ class agonDelegate extends WatchUi.BehaviorDelegate {
     }
 
     function onMenu() as Boolean {
-        openMenu();
+        openMainMenu();
         return true;
     }
 
@@ -20,15 +20,23 @@ class agonDelegate extends WatchUi.BehaviorDelegate {
     // have no button-based "menu" gesture at all, so this is the one way
     // in that's guaranteed to exist everywhere.
     function onSelect() as Boolean {
-        openMenu();
+        openMainMenu();
         return true;
     }
 
-    function openMenu() as Void {
-        // Built dynamically from the match's current period — see
-        // agonMenuDelegate.buildMainMenu — not the (now unused)
-        // resources/menus/menu.xml resource.
-        WatchUi.pushView(buildMainMenu(), new agonMenuDelegate(), WatchUi.SLIDE_UP);
+    //! Down/up (or a swipe, on touchscreens) pages to the activity stats
+    //! screen, the same gesture that cycles a native Garmin activity's
+    //! data screens. With only two pages, next and previous both go to
+    //! the other one. `switchToView` keeps both pages at the same depth
+    //! in the view stack, so Back behaves identically on either.
+    function onNextPage() as Boolean {
+        WatchUi.switchToView(new ActivityStatsView(), new ActivityStatsDelegate(), WatchUi.SLIDE_UP);
+        return true;
+    }
+
+    function onPreviousPage() as Boolean {
+        WatchUi.switchToView(new ActivityStatsView(), new ActivityStatsDelegate(), WatchUi.SLIDE_DOWN);
+        return true;
     }
 
 }

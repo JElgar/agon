@@ -588,9 +588,15 @@ class LiveApiClient {
 
     function onScore(responseCode as Number, data as Dictionary or String or Null) as Void {
         System.println("[live-api] onScore responseCode=" + responseCode);
+        if (responseCode == 404) {
+            // No live events yet — the match hasn't kicked off. Nothing to
+            // apply onto the tally, but it does tell this device the
+            // match's state (see FootballScore.markNoServerScore).
+            getApp().score.markNoServerScore();
+            return;
+        }
         if (responseCode != 200 || data == null) {
-            // 404 (no score recorded yet — a brand new match) or a
-            // network error: nothing to apply, leave the current tally
+            // A network error: nothing to apply, leave the current tally
             // as-is rather than resetting it to 0-0.
             return;
         }
@@ -609,7 +615,11 @@ class LiveApiClient {
                 awayGoals = away as Number;
             }
         }
-        getApp().score.applyServerState(homeGoals, awayGoals, periodFromScore(score));
+        if (getApp().score.applyServerState(homeGoals, awayGoals, periodFromScore(score))) {
+            // Another device kicked off while this watch had the match
+            // open — start this wearer's activity too.
+            getApp().activityRecorder.startForKickOff(getApp().matchContext.matchName());
+        }
         WatchUi.requestUpdate();
     }
 

@@ -188,10 +188,15 @@ event queue and API calls, just swaps the transport.
 
 The watch app's lifecycle:
 
-1. On start, open an `ActivityRecording.Session` (sport `SOCCER` if the SDK
-   exposes it for the device, else `GENERIC`) exactly like any workout app
-   — this is what makes the session show up as a normal recorded activity
-   in Garmin Connect afterwards, independent of anything scoring-related.
+1. An `ActivityRecording.Session` (sport `SOCCER`) records exactly like
+   any workout app's — this is what makes it show up as a normal recorded
+   activity in Garmin Connect afterwards. Kick-off starts it on every watch
+   that has the match open at that moment, whichever device recorded the
+   kick-off (a remote one is picked up by the next 5s score poll, with a
+   buzz). A watch that opens a match already under way doesn't auto-start;
+   its wearer uses the main menu's Start activity item. Until it's
+   recording (and whenever it's paused), both match pages draw a thick red
+   ring around the screen edge (`RecordingRing.mc`).
 2. Show the scoring UI (score header + Goal/Card/Sub/Period buttons) as the
    foreground view for the rest of the match.
 3. Each button tap appends one `FootballLiveEvent` to a local queue
@@ -203,9 +208,12 @@ The watch app's lifecycle:
    accepted `seq`, one batch call, which is precisely what
    `AppendLiveEventsInput` was built for (see its doc comment in
    `agon_service/src/live_score/mod.rs`).
-5. Stopping the activity recording (end of match) is independent of
-   scoring — a ref can keep the recording running through a match that's
-   already been marked full-time on the score side, or vice versa.
+5. Pausing, resuming and finishing the activity recording are independent
+   of scoring — a ref can keep the recording running through a match that's
+   already been marked full-time on the score side, or vice versa. The menu
+   item toggles Start/Pause/Resume; End match asks Save or Discard (Discard
+   confirmed a second time) and then exits the app, posting nothing to the
+   live score (`EndMatchFlow.mc`).
 
 Recording and the HTTP calls don't compete for the same resource in any way
 that needs special handling — `ActivityRecording` owns the GPS/HR sensors,
@@ -456,8 +464,10 @@ Still to do, roughly in order:
    `pulumi config set --secret agonDeviceJwtPrivateKey ...` and
    `pulumi config set agonDeviceJwks ...` run against the staging stack,
    then a redeploy, before it takes effect there.
-10. ~~An activity stats screen~~ — done: `ActivityStatsView` (reached via
-    a new "Activity stats" item on the main menu), showing the score,
+10. ~~An activity stats screen~~ — done: `ActivityStatsView` (the second
+    match page, paged to with up/down from the score screen like a native
+    activity's data screens — it replaced an "Activity stats" menu item,
+    and polls the score every 5s the same as the score screen), showing the score,
     current-half time (`ActivityRecorder.currentHalfTimerTimeMs`, marked
     at each kick-off — separate from the whole match's own `timerTime`,
     shown smaller underneath it), distance, and heart rate, via
@@ -484,3 +494,12 @@ Still to do, roughly in order:
 12. **Make `apiBaseUrl` a real App Setting** instead of
     `PairingApiClient`'s hardcoded constant, once there's an actual
     deployed URL worth pointing a real watch at.
+13. **Laps and the half clock only follow this watch's own period taps.**
+    `markLap`/`markHalfStart` run from the main menu's period items, not
+    from `FootballScore.applyServerState`, so a watch that's recording
+    while *another* device records half-time/second-half kick-off gets no
+    lap splits and a half clock that never resets (kick-off itself is
+    handled — see `ActivityRecorder.startForKickOff`). More visible now that recording
+    and scoring are separate: opening a match someone else is scoring is
+    a supported flow. Fix: mark laps on any observed period transition,
+    taking care that undo's period rollback doesn't add a spurious one.

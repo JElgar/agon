@@ -1,12 +1,22 @@
 import Toybox.Activity;
 import Toybox.ActivityRecording;
+import Toybox.Attention;
 import Toybox.Lang;
+import Toybox.System;
 
 //! Wraps a normal `ActivityRecording.Session` so the wearer's own activity
 //! (GPS/HR) records exactly like any other Garmin workout, entirely
 //! independent of the scoring menu elsewhere in this app — see
 //! docs/garmin-live-scoring.md's "Recording + scoring, concurrently"
 //! section.
+//!
+//! Recording is its own control, not a side effect of scoring: the main
+//! menu's Start/Pause/Resume activity item drives `start`/`pause`, and the
+//! End match flow (EndMatchFlow.mc) finishes it with `stopAndSave` or
+//! `stopAndDiscard`. The one automatic start is kick-off
+//! (`startForKickOff`), on every watch that has the match open when it
+//! happens; a watch that opens a match already under way shows the red
+//! ring (RecordingRing.mc) until its wearer starts recording by hand.
 //!
 //! Sport is `Activity.SPORT_SOCCER` — `ActivityRecording.SPORT_GENERIC`
 //! (what this used before a real build caught it) is deprecated in favor
@@ -25,16 +35,27 @@ class ActivityRecorder {
         _halfStartTimerTimeMs = 0;
     }
 
+    //! `true` only while the timer is actually running — `false` before
+    //! the first `start` and while paused. What the red not-recording ring
+    //! (RecordingRing.mc) keys off.
     function isRecording() as Boolean {
         return _session != null && _session.isRecording();
     }
 
-    //! Start (or resume, if already started) recording. Safe to call more
-    //! than once — a second call while already recording is a no-op, and
+    //! `true` once an activity has been started this match, whether it's
+    //! recording or paused right now — `false` again once `stopAndSave`/
+    //! `stopAndDiscard` has finished it. The broader check `isRecording`
+    //! isn't: "is there anything to pause, resume, save or discard".
+    function hasSession() as Boolean {
+        return _session != null;
+    }
+
+    //! Start the activity, or resume it if paused. Safe to call more than
+    //! once — a second call while already recording is a no-op, and
     //! `name` is only used the first time: it names the underlying
     //! `Session` at creation (`ActivityRecording.createSession` has no
-    //! rename-after-the-fact call), so a second-half `start()` passing a
-    //! different string wouldn't rename anything anyway. Callers pass
+    //! rename-after-the-fact call), so a resume passing a different string
+    //! wouldn't rename anything anyway. Callers pass
     //! `MatchContext.matchName()` so the recorded activity's title in
     //! Garmin Connect is the actual fixture ("Home vs Away") rather than a
     //! bare sport name — see that method's doc comment on why the score
@@ -51,6 +72,36 @@ class ActivityRecorder {
             :sport => Activity.SPORT_SOCCER,
         });
         _session.start();
+    }
+
+    //! Kick-off starts the activity on every watch that has the match open
+    //! at that moment — whether this wearer pressed Kick-off
+    //! (`agonMenuDelegate`) or another device did and this one saw it on
+    //! its next score poll (`LiveApiClient.onScore`). Resumes a paused
+    //! activity and leaves a running one alone, like `start`, and resets
+    //! the half clock either way, since this *is* the first half starting.
+    //! Buzzes when it actually starts (or resumes) recording, so a wearer
+    //! whose watch started on its own knows it has.
+    //!
+    //! Second-half kick-off deliberately doesn't do this: someone who
+    //! paused at half-time may have meant to stay paused (subbed off, say).
+    function startForKickOff(name as String) as Void {
+        var wasRecording = isRecording();
+        start(name);
+        markHalfStart();
+        if (!wasRecording && (Attention has :vibrate) && System.getDeviceSettings().vibrateOn) {
+            Attention.vibrate([new Attention.VibeProfile(75, 500)]);
+        }
+    }
+
+    //! Pause a running activity — `Session.stop` halts the timer but keeps
+    //! the session (and everything recorded so far) open, so `start`
+    //! resumes the same activity rather than beginning a new one. A no-op
+    //! if nothing is recording.
+    function pause() as Void {
+        if (_session != null && _session.isRecording()) {
+            _session.stop();
+        }
     }
 
     //! Call once at the start of each half (kick-off, second-half
@@ -81,7 +132,7 @@ class ActivityRecorder {
     //! its own real pace/HR/distance splits, once viewed in Garmin
     //! Connect. Purely a FIT-file concern — see `markHalfStart`'s doc
     //! comment on why this can't also drive the live on-screen clock. A
-    //! no-op if nothing is recording yet.
+    //! no-op if nothing is recording (not started yet, or paused).
     function markLap() as Void {
         if (_session != null && _session.isRecording()) {
             _session.addLap();
@@ -90,10 +141,10 @@ class ActivityRecorder {
 
     //! Elapsed timer time (ms) since `markHalfStart` was last called —
     //! `null` if `Activity.Info.timerTime` itself is (no active session
-    //! yet). Doesn't reset again at half-time; there's no explicit pause
-    //! in this app, so the underlying timer — and this along with it —
-    //! just keeps counting through the break until the next kick-off
-    //! calls `markHalfStart` again.
+    //! yet). Doesn't reset at half-time: it keeps counting through the
+    //! break until the next kick-off calls `markHalfStart` again, unless
+    //! the wearer pauses the activity (`timerTime` itself stops while
+    //! paused, so this does too).
     function currentHalfTimerTimeMs() as Number? {
         var info = Activity.getActivityInfo();
         if (info.timerTime == null) {
@@ -102,9 +153,9 @@ class ActivityRecorder {
         return (info.timerTime as Number) - _halfStartTimerTimeMs;
     }
 
-    //! Stop and save the recorded activity (e.g. full-time, or the app
-    //! closing). Does nothing if there's no session — calling this before
-    //! `start` is a no-op, not an error.
+    //! Stop and save the recorded activity (End match's "Save activity",
+    //! or the app closing). Does nothing if there's no session — calling
+    //! this before `start` is a no-op, not an error.
     function stopAndSave() as Void {
         if (_session == null) {
             return;
@@ -113,6 +164,20 @@ class ActivityRecorder {
             _session.stop();
         }
         _session.save();
+        _session = null;
+    }
+
+    //! Stop and throw the recorded activity away (End match's "Discard
+    //! activity", once confirmed — see EndMatchFlow.mc). A no-op without
+    //! a session, same as `stopAndSave`.
+    function stopAndDiscard() as Void {
+        if (_session == null) {
+            return;
+        }
+        if (_session.isRecording()) {
+            _session.stop();
+        }
+        _session.discard();
         _session = null;
     }
 }

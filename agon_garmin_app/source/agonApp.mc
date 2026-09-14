@@ -27,16 +27,17 @@ class agonApp extends Application.AppBase {
 
     // onStart() is called on application start up
     function onStart(state as Dictionary?) as Void {
-        // Recording is *not* started here — it starts when the wearer
-        // records the first "start of half" event (kick-off / second-half
-        // kick-off), not the moment the app happens to open. See
-        // agonMenuDelegate's period handling.
+        // Recording is *not* started here — kick-off starts it on every
+        // watch with the match open, and otherwise the wearer starts it
+        // from the main menu. See ActivityRecorder.startForKickOff.
     }
 
     // onStop() is called when your application is exiting
     function onStop(state as Dictionary?) as Void {
-        // Safety net if the app is closed mid-match without an explicit
-        // "End match" — never leaves a recording running unsaved.
+        // Safety net if the app is closed mid-match without going through
+        // End match — never leaves a recording (running or paused)
+        // unsaved. A no-op after End match, which has already saved or
+        // discarded it.
         activityRecorder.stopAndSave();
     }
 

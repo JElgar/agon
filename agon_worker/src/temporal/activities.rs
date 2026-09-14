@@ -177,10 +177,12 @@ impl AgonActivities {
             .map_err(activity_err)
     }
 
-    /// Refresh every side's cached roster preview from the match's current
-    /// player collection. Idempotent. Used by the accept saga — linking an
-    /// invitee can flip a cached preview entry from external to a real user
-    /// (see `Dao::refresh_side_roster_previews`).
+    /// Refresh every side's cached roster preview, and the match's headcounts,
+    /// from its current player collection. Idempotent — a recount, not an
+    /// increment, so it can't count the accepted player a second time after
+    /// the synchronous accept already did. Used by the accept saga — linking
+    /// an invitee can flip a cached preview entry from external to a real
+    /// user (see `Dao::refresh_side_roster_previews`).
     #[activity]
     pub async fn refresh_side_roster_previews(
         self: std::sync::Arc<Self>,
@@ -190,6 +192,7 @@ impl AgonActivities {
         self.dao
             .refresh_side_roster_previews(&match_id)
             .await
+            .map(|_counts| ())
             .map_err(activity_err)
     }
 }

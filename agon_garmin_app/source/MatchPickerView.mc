@@ -23,6 +23,13 @@ import Toybox.System;
 //! string id can be used directly.
 const MAX_MATCH_ITEMS = 10;
 
+//! `MenuItem` id for the "More matches..." sentinel `buildMatchMenu` adds
+//! as the last row whenever the page just loaded left a `next_cursor` —
+//! a Symbol so it can never collide with a real match's (`String`) id.
+//! Selecting it is how the wearer pages past the first 3 matches — see
+//! `MatchMenuDelegate.onSelect`/`onMoreMatches`.
+const LOAD_MORE_ID = :match_picker_load_more;
+
 //! Extract up to `MAX_MATCH_ITEMS` `{"id" => .., "name" => ..}` entries
 //! from a `GET /matches` response's `items` array. A blank `name` (a
 //! match created without one) falls back to a placeholder — an empty
@@ -45,13 +52,21 @@ function buildMatchList(items as Array) as Array {
     return matches;
 }
 
-function buildMatchMenu(matches as Array) as WatchUi.Menu2 {
+//! Builds the match-picker menu from every match loaded so far (the
+//! first page, plus any further pages appended via the "More matches..."
+//! sentinel). `hasMore` — whether the page that produced `matches` came
+//! back with a `next_cursor` — controls whether that sentinel is
+//! appended as the last row.
+function buildMatchMenu(matches as Array, hasMore as Boolean) as WatchUi.Menu2 {
     var menu = new WatchUi.Menu2({ :title => "Select match" });
     var i = 0;
     while (i < matches.size()) {
         var match = matches[i] as Dictionary;
         menu.addItem(new WatchUi.MenuItem(match.get("name") as String, null, match.get("id") as String, {}));
         i += 1;
+    }
+    if (hasMore) {
+        menu.addItem(new WatchUi.MenuItem("More matches...", null, LOAD_MORE_ID, {}));
     }
     return menu;
 }
@@ -67,12 +82,17 @@ class MatchPickerView extends WatchUi.View {
     //! skips drawing that line.
     var _statusLine1 as String;
     var _statusLine2 as String;
+    //! Set once `onUserId` resolves, so `onMatches` can hand it to
+    //! `MatchMenuDelegate` — every later page fetch (via the "More
+    //! matches..." sentinel) reuses it rather than re-resolving `/users/me`.
+    var _userId as String?;
 
     function initialize() {
         View.initialize();
         _apiClient = new MatchApiClient();
         _statusLine1 = "Loading matches...";
         _statusLine2 = "";
+        _userId = null;
     }
 
     function onLayout(dc as Dc) as Void {
@@ -130,7 +150,8 @@ class MatchPickerView extends WatchUi.View {
             if (profile != null) {
                 var id = (profile as Dictionary).get("id");
                 if (id != null) {
-                    _apiClient.fetchMatches(id as String, method(:onMatches));
+                    _userId = id as String;
+                    _apiClient.fetchMatches(_userId as String, null, method(:onMatches));
                     return;
                 }
             }
@@ -146,9 +167,10 @@ class MatchPickerView extends WatchUi.View {
             if (items != null) {
                 var matches = buildMatchList(items as Array);
                 if (matches.size() > 0) {
+                    var nextCursor = dict.get("next_cursor") as String or Null;
                     WatchUi.switchToView(
-                        buildMatchMenu(matches),
-                        new MatchMenuDelegate(),
+                        buildMatchMenu(matches, nextCursor != null),
+                        new MatchMenuDelegate(matches, _userId as String, nextCursor),
                         WatchUi.SLIDE_UP
                     );
                     return;
@@ -185,21 +207,67 @@ class MatchPickerDelegate extends WatchUi.BehaviorDelegate {
 //! `Menu2` needs no slot-symbol resolution the way the legacy `Menu`
 //! did), fetches that match's full roster, and hands off to the score
 //! screen once it's loaded.
+//!
+//! Also owns paging: `_matches` is every match loaded so far (across all
+//! pages) and `_nextCursor` is the cursor for the page after that, so
+//! selecting the "More matches..." sentinel (`LOAD_MORE_ID`) can fetch
+//! the next `limit=3` page and rebuild the menu from the combined list —
+//! see `onMoreMatches`.
 class MatchMenuDelegate extends WatchUi.Menu2InputDelegate {
 
     var _apiClient as MatchApiClient;
+    var _matches as Array;
+    var _userId as String;
+    var _nextCursor as String?;
 
-    function initialize() {
+    function initialize(matches as Array, userId as String, nextCursor as String?) {
         Menu2InputDelegate.initialize();
         _apiClient = new MatchApiClient();
+        _matches = matches;
+        _userId = userId;
+        _nextCursor = nextCursor;
     }
 
     function onSelect(item as WatchUi.MenuItem) as Void {
-        var matchId = item.getId();
-        if (matchId == null) {
+        var id = item.getId();
+        if (id == null) {
             return;
         }
-        _apiClient.fetchMatch(matchId as String, method(:onMatchDetails));
+        if (id == LOAD_MORE_ID) {
+            _apiClient.fetchMatches(_userId, _nextCursor, method(:onMoreMatches));
+            return;
+        }
+        _apiClient.fetchMatch(id as String, method(:onMatchDetails));
+    }
+
+    //! Response to selecting "More matches...": fetches the next page
+    //! after `_nextCursor`, appends it to `_matches`, and switches to a
+    //! freshly built menu (`buildMatchMenu`) covering every match loaded
+    //! so far, with a new sentinel appended if the server says there's
+    //! still more. On failure this just leaves the current menu — and its
+    //! sentinel — in place, so selecting it again retries.
+    function onMoreMatches(responseCode as Number, data as Dictionary or String or Null) as Void {
+        System.println("[match-picker] /matches (more) responseCode=" + responseCode);
+        if (responseCode != 200 || data == null) {
+            return;
+        }
+        var dict = data as Dictionary;
+        var items = dict.get("items");
+        if (items == null) {
+            return;
+        }
+        var newMatches = buildMatchList(items as Array);
+        var i = 0;
+        while (i < newMatches.size()) {
+            _matches = _matches.add(newMatches[i]);
+            i += 1;
+        }
+        _nextCursor = dict.get("next_cursor") as String or Null;
+        WatchUi.switchToView(
+            buildMatchMenu(_matches, _nextCursor != null),
+            new MatchMenuDelegate(_matches, _userId, _nextCursor),
+            WatchUi.SLIDE_UP
+        );
     }
 
     function onMatchDetails(responseCode as Number, data as Dictionary or String or Null) as Void {

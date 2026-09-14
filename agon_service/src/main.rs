@@ -1865,8 +1865,12 @@ enum ListLiveEventsResponse {
     #[oai(status = 200)]
     Events(Json<LiveEventPage>),
 
+    /// See `ErrorMessage`'s doc comment on why this is JSON, not the
+    /// `PlainText` every other 404 in this file uses — the watch app's
+    /// own undo feature now depends on this endpoint (see
+    /// `docs/garmin-live-scoring.md`), same as the six it already called.
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -4212,22 +4216,28 @@ impl Api {
     async fn list_live_events(
         &self,
         Data(dao): Data<&dao::Dao>,
-        AuthSchema(_jwt_data): AuthSchema,
+        AuthSchema(jwt_data): AuthSchema,
         Path(match_id): Path<String>,
         /// Opaque cursor from the previous page's `next_cursor`. Omit for the first page.
         Query(cursor): Query<Option<String>>,
         /// Maximum number of items to return (defaults to 20, capped at 50).
         Query(limit): Query<Option<u32>>,
     ) -> Result<ListLiveEventsResponse> {
+        // Scoped, same as the rest of the live-scoring surface a paired
+        // device can reach — the watch app's own undo feature drains
+        // this to find the log's real physical tip (see
+        // docs/garmin-live-scoring.md), the same reason `agon_ui`'s own
+        // undo button already needs it.
+        check_scope(&jwt_data, Some(SCOPE_LIVE_SCORING))?;
         if dao
             .get_match(&match_id)
             .await
             .map_err(dao_internal)?
             .is_none()
         {
-            return Ok(ListLiveEventsResponse::NotFound(PlainText(
-                "match not found".into(),
-            )));
+            return Ok(ListLiveEventsResponse::NotFound(Json(ErrorMessage {
+                message: "match not found".into(),
+            })));
         }
 
         let page = dao

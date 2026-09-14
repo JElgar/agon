@@ -40,6 +40,24 @@ import Toybox.WatchUi;
 //! out of sync — see `_pendingEvent`/`onSeqForRetry`, which now retries
 //! the event itself once the seq is corrected, and defers the score
 //! refresh until that retry (or giving up on it) actually resolves.
+//!
+//! `undoLast` deletes the log's current tip (`DELETE /matches/:id/
+//! live/events/:seq`) — the only correction the backend supports (see
+//! `delete_live_event`'s doc comment on the server: anything but the
+//! real tip 400s). The seq to send is tracked separately from
+//! `_lastSeq`: an append never creates a gap, so `_lastSeq` doubles as
+//! the physical tip right after one, but an *undo* bumps the counter
+//! past the deleted event (see `Dao::delete_live_event`'s own doc
+//! comment) — from that point on `_lastSeq` and the real tip disagree
+//! until the next append re-aligns them. `agon_ui`'s own
+//! `useUndoTargetSeq` hook documents this exact trap in detail and
+//! solves it the same way this class does: track the physical tip
+//! (`_undoTargetSeq`) completely separately, seeded (`refreshUndoTargetSeq`)
+//! by draining `GET /matches/:id/live/events` and taking the highest
+//! `seq` actually there, never by trusting `/live/seq`'s raw counter.
+//! Whenever this device *does* directly observe its own successful
+//! append or undo, that response's own `last_seq` is still safe to
+//! trust for whichever of the two fields it corresponds to.
 class LiveApiClient {
 
     var _matchId as String?;
@@ -67,6 +85,18 @@ class LiveApiClient {
     //! `recordGoal`/`recordPeriod` — see `onAppendResponse`'s use of it.
     var _isRetryInFlight as Boolean;
 
+    //! The log's real physical tip — what `undoLast` sends `DELETE
+    //! .../live/events/:seq` at. `null` whenever it isn't currently
+    //! known (never derived yet, or invalidated after this device's own
+    //! undo/a stale-tip rejection) — `canUndo()` is false in that case,
+    //! rather than risk sending a guessed seq. See the class doc comment
+    //! on why this is never seeded from `_lastSeq`/`/live/seq` directly.
+    var _undoTargetSeq as Number?;
+    //! Running highest `seq` seen while `refreshUndoTargetSeq` drains
+    //! the event log page by page — meaningless once that finishes
+    //! (`_undoTargetSeq` holds the real answer from then on).
+    var _undoDrainMaxSeq as Number;
+
     //! Requests not yet started: `{"url"=>.., "params"=>.., "options"=>..,
     //! "callback"=>..}` dictionaries, oldest first. See the class doc
     //! comment above.
@@ -84,6 +114,8 @@ class LiveApiClient {
         _apiClient = new MatchApiClient();
         _pendingEvent = null;
         _isRetryInFlight = false;
+        _undoTargetSeq = null;
+        _undoDrainMaxSeq = 0;
         _pendingRequests = [];
         _requestInFlight = false;
         _currentCallback = null;
@@ -139,6 +171,7 @@ class LiveApiClient {
     function setMatch(matchId as String) as Void {
         _matchId = matchId;
         _lastSeq = 0;
+        _undoTargetSeq = null;
         refreshSeq();
         // Load whatever's already been scored (by this device on a
         // previous visit, or another device entirely) rather than
@@ -176,6 +209,13 @@ class LiveApiClient {
             if (seq != null) {
                 _lastSeq = seq as Number;
             }
+            // /live/seq's counter is never safe to reuse as the undo
+            // target directly (see the class doc comment) — every time
+            // this device (re-)learns it, from setMatch or a conflict
+            // retry alike, re-derive the real physical tip from scratch
+            // rather than assume the two still agree.
+            _undoTargetSeq = null;
+            refreshUndoTargetSeq();
         }
         // Any failure just leaves _lastSeq at 0 — the very first append
         // then either succeeds (the match genuinely has no prior events)
@@ -369,6 +409,161 @@ class LiveApiClient {
         } else {
             refreshScore();
         }
+    }
+
+    //! Re-derive `_undoTargetSeq` by draining `GET /matches/:id/
+    //! live/events` from the start and taking the highest `seq` actually
+    //! there (0 if the match has no events at all) — see the class doc
+    //! comment on why this, not `/live/seq`'s own counter, is the only
+    //! safe source for it. Cheap in practice: a football match's whole
+    //! log (goals + period markers) is a handful of small items, almost
+    //! always one page.
+    function refreshUndoTargetSeq() as Void {
+        if (_matchId == null) {
+            return;
+        }
+        _undoDrainMaxSeq = 0;
+        fetchLiveEventsPage(null);
+    }
+
+    function fetchLiveEventsPage(cursor as String?) as Void {
+        var url = API_BASE_URL + "/matches/" + (_matchId as String) + "/live/events";
+        var params = { "limit" => "20" };
+        if (cursor != null) {
+            params.put("cursor", cursor);
+        }
+        var options = {
+            :method => Communications.HTTP_REQUEST_METHOD_GET,
+            :headers => { "Authorization" => "Bearer " + DeviceAuth.getAccessToken() },
+            :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
+        };
+        enqueueRequest(url, params, options, method(:onLiveEventsPage));
+    }
+
+    function onLiveEventsPage(responseCode as Number, data as Dictionary or String or Null) as Void {
+        if (responseCode != 200 || data == null) {
+            // Leave _undoTargetSeq at null (unknown) — canUndo() stays
+            // false rather than risk a guessed seq. Picked back up
+            // whenever something next calls refreshUndoTargetSeq.
+            return;
+        }
+        var dict = data as Dictionary;
+        var items = dict.get("items");
+        if (items != null) {
+            var itemsArray = items as Array;
+            var i = 0;
+            while (i < itemsArray.size()) {
+                var item = itemsArray[i] as Dictionary;
+                var seq = item.get("seq");
+                if (seq != null && (seq as Number) > _undoDrainMaxSeq) {
+                    _undoDrainMaxSeq = seq as Number;
+                }
+                i += 1;
+            }
+        }
+        var nextCursor = dict.get("next_cursor");
+        if (nextCursor != null) {
+            fetchLiveEventsPage(nextCursor as String);
+            return;
+        }
+        _undoTargetSeq = _undoDrainMaxSeq;
+    }
+
+    //! Whether `undoLast` has a real seq to send — `false` while it's
+    //! still being derived (e.g. right after `setMatch`) or once nothing
+    //! has ever been recorded yet, same as `agon_ui`'s own
+    //! `UndoLastEventButton` treating a `0`/`undefined` seq as "nothing
+    //! to undo".
+    function canUndo() as Boolean {
+        return _undoTargetSeq != null && (_undoTargetSeq as Number) > 0;
+    }
+
+    //! Undo the log's current tip (`DELETE /matches/:id/live/events/
+    //! :seq`) — the only correction the backend supports; anything but
+    //! the real tip 400s (see `delete_live_event`'s doc comment on the
+    //! server). Fire-and-forget, same convention as `recordGoal`/
+    //! `recordPeriod` — `agonMenuDelegate` calls this and just asks for
+    //! a redraw, no confirmation step (unlike `agon_ui`'s own confirm
+    //! dialog — a deliberate simplification here, not an oversight).
+    //!
+    //! Unlike an append conflict, a failed undo is never safely
+    //! retryable with a "corrected" seq: retrying an *append* after a
+    //! conflict resends the exact same intended write, but retrying a
+    //! *delete* against a since-moved tip would delete a different,
+    //! unintended event. So `onUndoResponse` only ever re-syncs state on
+    //! failure — it never retries the delete itself.
+    function undoLast() as Void {
+        if (_matchId == null || !canUndo()) {
+            return;
+        }
+        var url = API_BASE_URL + "/matches/" + (_matchId as String) +
+            "/live/events/" + (_undoTargetSeq as Number).toString();
+        var options = {
+            :method => Communications.HTTP_REQUEST_METHOD_DELETE,
+            :headers => { "Authorization" => "Bearer " + DeviceAuth.getAccessToken() },
+            :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
+        };
+        enqueueRequest(url, null, options, method(:onUndoResponse));
+    }
+
+    function onUndoResponse(responseCode as Number, data as Dictionary or String or Null) as Void {
+        if (responseCode == 200 && data != null) {
+            var dict = data as Dictionary;
+            var seq = dict.get("last_seq");
+            if (seq != null) {
+                _lastSeq = seq as Number;
+            }
+
+            var homeGoals = getApp().score.homeGoals;
+            var awayGoals = getApp().score.awayGoals;
+            var scoreObj = dict.get("score");
+            var period = undoPeriodFromScoreObj(scoreObj);
+            if (scoreObj != null) {
+                var score = scoreObj as Dictionary;
+                var tally = score.get("score");
+                if (tally != null) {
+                    var tallyDict = tally as Dictionary;
+                    var home = tallyDict.get(getApp().matchContext.side0Id);
+                    var away = tallyDict.get(getApp().matchContext.side1Id);
+                    if (home != null) {
+                        homeGoals = home as Number;
+                    }
+                    if (away != null) {
+                        awayGoals = away as Number;
+                    }
+                }
+            }
+            getApp().score.applyUndoState(homeGoals, awayGoals, period);
+            WatchUi.requestUpdate();
+
+            // The deleted event's own seq is gone, and _lastSeq above
+            // now points past it (see Dao::delete_live_event's doc
+            // comment on the backend) — nothing safely tells us the new
+            // physical tip without a fresh drain.
+            _undoTargetSeq = null;
+            refreshUndoTargetSeq();
+            return;
+        }
+        // 400 ("only the most recently recorded event can be undone" —
+        // this device's tracked target wasn't actually the tip anymore,
+        // another writer moved it) or any other failure: this specific
+        // undo attempt is simply dropped — see this method's own doc
+        // comment on why a delete can't safely be retried the way an
+        // append conflict can. Re-sync everything for next time.
+        refreshSeq();
+        refreshUndoTargetSeq();
+        refreshScore();
+    }
+
+    //! `scoreObj` is a `LiveScoreSnapshot`'s `score` field (`dict.
+    //! get("score")`) — `null` only if a 200 response is somehow missing
+    //! it entirely (shouldn't happen; `dict.get` just never guarantees
+    //! non-null either way).
+    function undoPeriodFromScoreObj(scoreObj as Object?) as Number? {
+        if (scoreObj == null) {
+            return null;
+        }
+        return periodFromScore(scoreObj as Dictionary);
     }
 
     //! Poll the server's authoritative score (`GET /matches/:id/score`)

@@ -144,11 +144,13 @@ accepts that one scope. Revocation exists too now — see "manage paired
 devices" below. **Residual gap**: a handful of read-only endpoints
 (`list_match_likes`/`list_match_comments`/`search_teams`/
 `list_team_members`/`get_invitation`/`list_score_submissions`/
-`list_live_events`/`get_asset`) call `AuthSchema` directly without going
-through `require_uid`/`check_scope` at all — same "any authenticated
-token" pattern they already had before scope existed, just now that also
-includes a device token. Lower stakes than the write paths (no per-caller
-permission logic on any of them to begin with), but worth closing
+`get_asset`) call `AuthSchema` directly without going through
+`require_uid`/`check_scope` at all — same "any authenticated token"
+pattern they already had before scope existed, just now that also
+includes a device token. (`list_live_events` used to be on this list
+too — closed once the watch app's own undo feature needed it, see
+below.) Lower stakes than the write paths (no per-caller permission
+logic on any of them to begin with), but worth closing
 properly rather than leaving implicit.
 
 **Manage paired devices**: `dao::paired_device` (`PairedDeviceRecord`,
@@ -318,10 +320,11 @@ HTTP status at all when they don't match — every error response on
 device calls) was `PlainText` (`text/plain`) while the device requests
 JSON, for every non-2xx outcome including `409 Conflict`. Fixed by
 introducing `ErrorMessage` (a one-field `Json` wrapper) and switching
-every error variant on the six endpoints a device can reach
+every error variant on the endpoints a device can reach
 (`GetUserResponse`, `ListMatchesResponse`, `GetMatchResponse`,
 `GetLiveSeqResponse`, `AppendLiveEventsResponse`,
-`DeleteLiveEventResponse`, plus `GetMatchScoreResponse`) from
+`DeleteLiveEventResponse`, `GetMatchScoreResponse`, and — added
+alongside undo below — `ListLiveEventsResponse`) from
 `PlainText<String>` to it — see `ErrorMessage`'s own doc comment on
 `agon_service::main`. **Not fixed**: `check_scope`'s own rejection (and
 any other generic `poem::Error` a handler propagates via `?` rather
@@ -330,6 +333,33 @@ own default, so an expired/invalid/wrong-scope token would still hit
 this same masking on any of these endpoints; and every *other*
 `PlainText` response elsewhere in the API has the identical latent bug,
 just not yet reachable by any current device client.
+
+**Undo** (`LiveApiClient.undoLast`, `DELETE /matches/:id/live/events/
+:seq`) needed its own sequence-counter care, separate from
+`_lastSeq`/`expected_last_seq`: an append never creates a gap, so
+`_lastSeq` doubles as the log's real physical tip right after one, but
+an undo bumps the counter *past* the deleted event (see
+`Dao::delete_live_event`'s doc comment on the backend) — so `_lastSeq`
+and the physical tip permanently disagree from that point until the
+next append re-aligns them. `agon_ui`'s own `useUndoTargetSeq` hook
+documents this trap in detail and was the reference for getting it
+right here too: a separate `_undoTargetSeq`, seeded (`refreshUndoTargetSeq`)
+by draining `GET /matches/:id/live/events` and taking the highest `seq`
+actually present — never by trusting `/live/seq`'s raw counter, which
+counts deletes too. Re-derived whenever this device (re-)learns
+`/live/seq` from scratch (`setMatch`, or a conflict retry) rather than
+assumed to still agree, and again after this device's own undo, since
+that same gap-creating bump applies to it too. Exposed as an "Undo
+last" item on the main menu, shown only once `canUndo()` is true (a
+real seq is known) — matching `agon_ui`'s own `UndoLastEventButton`
+hiding outright rather than disabling. Two things `agon_ui` does that
+this doesn't: a confirmation dialog before undoing (deliberately
+skipped — a menu item is already two button presses of friction), and
+retrying against a corrected seq on failure (deliberately never done —
+unlike an append conflict, where retrying resends the exact same
+intended write, retrying a delete against a since-moved tip would
+delete a *different*, unintended event; a failed undo just re-syncs
+state for next time instead).
 
 `API_BASE_URL` (`ApiConfig.mc`, shared by `PairingApiClient`/
 `MatchApiClient`/`LiveApiClient` — file-scope, not a per-class constant,

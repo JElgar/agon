@@ -69,6 +69,21 @@ class FootballScore {
         }
     }
 
+    //! Same shape as `applyServerState`, but for `LiveApiClient.undoLast`
+    //! specifically — unlike that one, `newPeriod == null` here IS
+    //! trusted, as `PERIOD_NOT_STARTED`. Safe only because undo's own
+    //! caller guarantees this: it never undoes anything but the last
+    //! event *this device itself* just appended (see `LiveApiClient`'s
+    //! own doc comment on why), so a `null` period back from the server
+    //! unambiguously means "the period marker that was just undone was
+    //! the log's only one" — not the extra-time/penalties ambiguity
+    //! `applyServerState` has to hedge against when polling.
+    function applyUndoState(newHomeGoals as Number, newAwayGoals as Number, newPeriod as Number?) as Void {
+        homeGoals = newHomeGoals;
+        awayGoals = newAwayGoals;
+        period = (newPeriod != null) ? (newPeriod as Number) : PERIOD_NOT_STARTED;
+    }
+
     //! Short, on-watch label for the current period.
     function periodLabel() as String {
         if (period == PERIOD_NOT_STARTED) {

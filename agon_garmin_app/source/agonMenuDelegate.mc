@@ -38,6 +38,15 @@ function buildMainMenu() as WatchUi.Menu2 {
     // once recording's started either.
     menu.addItem(new WatchUi.MenuItem("Activity stats", null, :activity_stats, {}));
 
+    // Only offered once LiveApiClient actually has a real seq to send —
+    // see its own canUndo()/doc comment. Absent rather than disabled
+    // while that's still being derived (e.g. right after picking this
+    // match) or once nothing's been recorded yet, same as agon_ui's own
+    // UndoLastEventButton hiding itself outright rather than graying out.
+    if (getApp().liveApiClient.canUndo()) {
+        menu.addItem(new WatchUi.MenuItem("Undo last", null, :undo_last, {}));
+    }
+
     // Always available, regardless of period — a safety valve to stop
     // and save the recording whatever state the match is in.
     menu.addItem(new WatchUi.MenuItem("End match (save activity)", null, :end_match, {}));
@@ -105,6 +114,11 @@ class agonMenuDelegate extends WatchUi.Menu2InputDelegate {
             // closes, so leaving the app is never required just to save
             // the recording.
             app.activityRecorder.stopAndSave();
+        } else if (item == :undo_last) {
+            // Fire-and-forget, same as recordGoal/recordPeriod — see
+            // LiveApiClient.undoLast's own doc comment on why this has
+            // no confirmation step and no retry on failure.
+            app.liveApiClient.undoLast();
         }
 
         // Unlike the legacy WatchUi.Menu (which popped itself once

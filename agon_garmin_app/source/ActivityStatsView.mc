@@ -11,6 +11,13 @@ import Toybox.Timer;
 //! the score screen (see `agonDelegate.onNextPage`), the way a native
 //! Garmin activity cycles its data screens.
 //!
+//! Laid out as a boxed 2x2 grid with thin divider lines under a small
+//! score/period header — the same "gridded fields" look a stock Garmin
+//! running/multisport activity's own data screens use, rather than this
+//! view's original single column of centered lines. A quarter of the
+//! content area per field means each one can afford a much bigger value
+//! than five lines stacked on one screen ever could.
+//!
 //! There's no prebuilt "activity data" widget to reuse here: `Toybox.
 //! WatchUi.SimpleDataField`/`DataField` — Garmin's own classes for
 //! exactly this — are locked to the separate `datafield` app type
@@ -34,6 +41,18 @@ class ActivityStatsView extends WatchUi.View {
     //! whole half — and without polling, the score shown here and the
     //! period-driven menu items would go stale while it does.
     const SERVER_POLL_EVERY_TICKS = 5;
+
+    //! Fraction of the screen's shorter side the boxed content area
+    //! occupies on a round/semi-round watch, so every corner of the 2x2
+    //! grid below stays clear of the bezel — the same inscribed-square
+    //! idea `drawNotRecordingRing` already applies to the ring drawn on
+    //! top of this. Unused on a rectangular watch — see `contentBounds`.
+    const ROUND_CONTENT_FRACTION = 0.74;
+    //! The margin kept clear of a rectangular screen's own edges instead.
+    const RECT_CONTENT_MARGIN = 14;
+    //! Fraction of the content area's height given to the score/period
+    //! header above the stat grid.
+    const HEADER_FRACTION = 0.24;
 
     var _pollTimer as Timer.Timer?;
     var _tickCount as Number;
@@ -89,40 +108,123 @@ class ActivityStatsView extends WatchUi.View {
         }
 
         var info = Activity.getActivityInfo();
-        var centerX = dc.getWidth() / 2;
-        var centerY = dc.getHeight() / 2;
+        var bounds = contentBounds(dc);
+        var x = bounds[0];
+        var y = bounds[1];
+        var w = bounds[2];
+        var h = bounds[3];
+        var headerHeight = (h * HEADER_FRACTION).toNumber();
+        var gridY = y + headerHeight;
+        var gridHeight = h - headerHeight;
 
-        // Score first, small — agonView is the primary place to read it,
-        // this is just "while I'm here".
+        drawHeader(dc, x, y, w, headerHeight);
+
+        dc.setColor(Graphics.COLOR_DK_GRAY, Graphics.COLOR_TRANSPARENT);
+        dc.drawLine(x, gridY, x + w, gridY);
+        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
+
+        drawStatGrid(dc, x, gridY, w, gridHeight, info);
+    }
+
+    //! Top-left + size ([x, y, width, height]) of the square/rect the
+    //! header and stat grid draw inside — inset clear of the bezel on a
+    //! round watch (`ROUND_CONTENT_FRACTION`), or just a fixed margin on a
+    //! rectangular one. Mirrors the same `screenShape` check
+    //! `drawNotRecordingRing` makes right before this runs.
+    function contentBounds(dc as Dc) as Array<Number> {
+        var width = dc.getWidth();
+        var height = dc.getHeight();
+        if (System.getDeviceSettings().screenShape == System.SCREEN_SHAPE_RECTANGLE) {
+            var m = RECT_CONTENT_MARGIN;
+            return [m, m, width - 2 * m, height - 2 * m];
+        }
+        var shorterSide = width;
+        if (height < shorterSide) {
+            shorterSide = height;
+        }
+        var side = (shorterSide * ROUND_CONTENT_FRACTION).toNumber();
+        return [(width - side) / 2, (height - side) / 2, side, side];
+    }
+
+    //! Score first, then period, both small — `agonView` is the primary
+    //! place to read either, this is just "while I'm here".
+    function drawHeader(dc as Dc, x as Number, y as Number, w as Number, h as Number) as Void {
+        var cx = x + w / 2;
+        var scoreY = y + (h * 30) / 100;
+        var periodY = y + (h * 75) / 100;
+
+        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
         dc.drawText(
-            centerX, centerY - 70, Graphics.FONT_XTINY,
-            scoreLabel(),
+            cx, scoreY, Graphics.FONT_XTINY, scoreLabel(),
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER
         );
-        // Current-half time is the primary stat on this screen — a
-        // running "how long has this half been going" clock, not the
-        // whole match's timerTime (see ActivityRecorder.
-        // currentHalfTimerTimeMs's own doc comment).
+        dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
         dc.drawText(
-            centerX, centerY - 30, Graphics.FONT_NUMBER_MEDIUM,
-            durationLabel(getApp().activityRecorder.currentHalfTimerTimeMs()),
+            cx, periodY, Graphics.FONT_XTINY, getApp().score.periodLabel(),
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER
         );
-        // Total match time, small — secondary to the current-half clock
-        // above, not the other way around.
+    }
+
+    //! The four boxed fields: current-half time, total time, distance and
+    //! heart rate — divided by grid lines the same way a stock Garmin
+    //! data screen's own fields are. Order is reading order: time (this
+    //! screen's original primary stat) top, effort/distance bottom.
+    function drawStatGrid(dc as Dc, x as Number, y as Number, w as Number, h as Number, info as Activity.Info) as Void {
+        var halfW = w / 2;
+        var halfH = h / 2;
+        var rightW = w - halfW;
+        var bottomH = h - halfH;
+
+        dc.setColor(Graphics.COLOR_DK_GRAY, Graphics.COLOR_TRANSPARENT);
+        dc.drawLine(x, y + halfH, x + w, y + halfH);
+        dc.drawLine(x + halfW, y, x + halfW, y + h);
+
+        drawTimeBox(dc, x, y, halfW, halfH, "HALF", durationLabel(getApp().activityRecorder.currentHalfTimerTimeMs()));
+        drawTimeBox(dc, x + halfW, y, rightW, halfH, "TOTAL", durationLabel(info.timerTime));
+        drawTextBox(dc, x, y + halfH, halfW, bottomH, "DIST", distanceLabel(info.elapsedDistance));
+        drawTextBox(dc, x + halfW, y + halfH, rightW, bottomH, "HR", heartRateLabel(info.currentHeartRate));
+    }
+
+    //! A boxed field whose value is pure digits/colon (mm:ss) — safe to
+    //! render in a number font (`Graphics.FONT_NUMBER_MILD`), which reads
+    //! much bigger and bolder than a regular text font at the same box
+    //! size, the same "hero number" look a native activity's time/
+    //! distance fields use.
+    function drawTimeBox(dc as Dc, x as Number, y as Number, w as Number, h as Number, label as String, value as String) as Void {
+        drawBoxLabel(dc, x, y, w, h, label);
+        var cx = x + w / 2;
+        var valueY = y + (h * 65) / 100;
+        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
         dc.drawText(
-            centerX, centerY + 5, Graphics.FONT_XTINY,
-            "Total " + durationLabel(info.timerTime),
+            cx, valueY, Graphics.FONT_NUMBER_MILD, value,
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER
         );
+    }
+
+    //! A boxed field whose value has real letters in it (a unit suffix —
+    //! "km"/"mi"/"bpm"). Garmin's number fonts only have glyphs for
+    //! digits/colon/decimal point, so these two need a regular text font
+    //! instead — same reason this view's very first version used
+    //! `FONT_SMALL`/`FONT_XTINY` rather than a number font for these.
+    function drawTextBox(dc as Dc, x as Number, y as Number, w as Number, h as Number, label as String, value as String) as Void {
+        drawBoxLabel(dc, x, y, w, h, label);
+        var cx = x + w / 2;
+        var valueY = y + (h * 65) / 100;
+        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
         dc.drawText(
-            centerX, centerY + 35, Graphics.FONT_SMALL,
-            distanceLabel(info.elapsedDistance),
+            cx, valueY, Graphics.FONT_MEDIUM, value,
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER
         );
+    }
+
+    //! The small caps label near the top of a boxed field — shared by
+    //! `drawTimeBox`/`drawTextBox` so both draw it identically.
+    function drawBoxLabel(dc as Dc, x as Number, y as Number, w as Number, h as Number, label as String) as Void {
+        var cx = x + w / 2;
+        var labelY = y + (h * 24) / 100;
+        dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
         dc.drawText(
-            centerX, centerY + 62, Graphics.FONT_XTINY,
-            heartRateLabel(info.currentHeartRate),
+            cx, labelY, Graphics.FONT_XTINY, label,
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER
         );
     }

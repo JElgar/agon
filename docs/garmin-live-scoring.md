@@ -483,6 +483,15 @@ Still to do, roughly in order:
     app type and aren't usable from a `watchApp`-type project like this
     one — so it's hand-drawn the same way the score screen is, at the
     once-a-second cadence a real data field's own `compute()` runs at.
+    Redrawn as a boxed 2x2 grid (half time/total time/distance/HR, each
+    its own field with divider lines) under a small score/period header,
+    the same gridded-fields look a stock Garmin running/multisport
+    activity's own data screens use, rather than the original single
+    column of five centered lines — the quarter-screen box each field
+    gets now can afford a much bigger value than that could. Time fields
+    use `Graphics.FONT_NUMBER_MILD` (a number font — only has digit/colon
+    glyphs); distance/HR keep a regular text font since their values
+    carry a unit suffix a number font can't render.
     Real `Session.addLap()` boundaries at half-time/second-half
     kick-off/full-time (`ActivityRecorder.markLap`) can't drive this live
     clock either, for the same underlying reason: checked `Activity.

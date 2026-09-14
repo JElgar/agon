@@ -6,6 +6,7 @@ import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { RevokeDeviceDialog } from '@/components/agon/RevokeDeviceDialog'
 import { relativeTime } from '@/lib/datetime'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type PairedDeviceInfo = components['schemas']['PairedDeviceInfo']
 
@@ -24,7 +25,7 @@ export function PairedDevicesPage() {
     queryKey: ['paired-devices'],
     queryFn: async (): Promise<PairedDeviceInfo[]> => {
       const { data, error } = await fetchClient.GET('/devices/paired')
-      if (error || !data) throw new Error('Failed to load paired devices')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load paired devices'))
       return data
     },
   })

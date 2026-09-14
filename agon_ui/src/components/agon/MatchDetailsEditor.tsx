@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { isoToDateTimeLocal } from '@/lib/datetime'
 import { MultiImageUploadField } from '@/components/agon/MultiImageUploadField'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -98,7 +99,7 @@ export function MatchDetailsEditor({
         params: { path: { match_id: match.id } },
         body,
       })
-      if (error) throw new Error('Failed to save changes')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to save changes'))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })

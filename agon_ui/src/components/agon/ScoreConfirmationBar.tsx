@@ -5,6 +5,7 @@ import { fetchClient } from '@/lib/api-client'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { confirmationState } from '@/lib/confirmation'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type Match = components['schemas']['Match']
 type FeedMatch = components['schemas']['FeedMatch']
@@ -53,7 +54,7 @@ export function ScoreConfirmationBar({
           body: { response },
         },
       )
-      if (error || !data) throw new Error('Failed to respond to the score')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to respond to the score'))
       return data
     },
     onSuccess: () => {

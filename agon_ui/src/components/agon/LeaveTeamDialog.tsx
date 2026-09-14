@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { memberName, memberAvatarUrl } from '@/lib/members'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type TeamMember = components['schemas']['TeamMember']
 type TeamRole = components['schemas']['TeamRole']
@@ -62,7 +63,7 @@ export function LeaveTeamDialog({
       const { error } = await fetchClient.POST('/teams/{team_id}/leave', {
         params: { path: { team_id: teamId } },
       })
-      if (error) throw new Error('Could not leave team')
+      if (error) throw new Error(apiErrorMessage(error, 'Could not leave team'))
     },
     onSuccess: () => {
       invalidate()
@@ -80,11 +81,11 @@ export function LeaveTeamDialog({
           body: { member_id: newOwnerMembershipId },
         },
       )
-      if (transferError) throw new Error('Could not transfer ownership')
+      if (transferError) throw new Error(apiErrorMessage(transferError, 'Could not transfer ownership'))
       const { error: leaveError } = await fetchClient.POST('/teams/{team_id}/leave', {
         params: { path: { team_id: teamId } },
       })
-      if (leaveError) throw new Error('Ownership transferred, but leaving failed — try again')
+      if (leaveError) throw new Error(apiErrorMessage(leaveError, 'Ownership transferred, but leaving failed — try again'))
     },
     onSuccess: () => {
       invalidate()

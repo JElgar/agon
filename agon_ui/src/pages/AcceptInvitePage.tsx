@@ -7,6 +7,7 @@ import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { clearPendingInvite } from '@/lib/pendingInvite'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type InvitationDetail = components['schemas']['InvitationDetail']
 // The generated `context`/`kind` types erase the discriminant; cast to the real
@@ -42,7 +43,7 @@ export function AcceptInvitePage() {
         '/invitations/by-token/{token}',
         { params: { path: { token: token! } } },
       )
-      if (error || !data) throw new Error('invite-not-found')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'invite-not-found'))
       return data
     },
   })
@@ -54,7 +55,7 @@ export function AcceptInvitePage() {
       const { error } = await fetchClient.POST('/invitations/respond-by-token', {
         body: { invite_token: token!, response },
       })
-      if (error) throw new Error('Failed to respond to invitation')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to respond to invitation'))
     },
   })
 

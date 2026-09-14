@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { InfiniteData } from '@tanstack/react-query'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type Match = components['schemas']['Match']
 type MatchSocial = components['schemas']['MatchSocial']
@@ -78,7 +79,7 @@ export function useToggleLike(match: Pick<Match, 'id' | 'social'>) {
         : await fetchClient.DELETE('/matches/{match_id}/likes', {
             params: { path: { match_id: match.id } },
           })
-      if (error) throw new Error('Failed to update like')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to update like'))
     },
     onMutate: async (nextLiked) => {
       // Patch every query in the cache — patchLiked no-ops on non-match data.

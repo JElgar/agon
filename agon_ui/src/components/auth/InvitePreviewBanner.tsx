@@ -3,6 +3,7 @@ import { Swords, Users, Watch } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import type { PendingInviteKind } from '@/lib/pendingInvite'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type InvitationDetail = components['schemas']['InvitationDetail']
 type InvitationContext = components['schemas']['InvitationContext']
@@ -42,7 +43,7 @@ function InvitationPreview({ token }: { token: string }) {
         '/invitations/by-token/{token}',
         { params: { path: { token } } },
       )
-      if (error || !data) throw new Error('invite-not-found')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'invite-not-found'))
       return data
     },
   })
@@ -70,7 +71,7 @@ function JoinPreview({ token }: { token: string }) {
       const { data, error } = await fetchClient.GET('/join-links/by-token/{token}', {
         params: { path: { token } },
       })
-      if (error || !data) throw new Error('join-link-not-found')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'join-link-not-found'))
       return data
     },
   })

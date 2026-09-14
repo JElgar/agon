@@ -44,6 +44,7 @@ import {
   sidePlayerCountLabel,
   sideTeamHint,
 } from '@/lib/members'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type Match = components['schemas']['Match']
 type FeedMatch = components['schemas']['FeedMatch']
@@ -96,7 +97,7 @@ function InviteResponseBar({
           body: { response },
         },
       )
-      if (error) throw new Error('Failed to respond to invitation')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to respond to invitation'))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })

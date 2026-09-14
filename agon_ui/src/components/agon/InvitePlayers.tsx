@@ -8,6 +8,7 @@ import {
   PlayerSideEditor,
   type TaggedPlayer,
 } from '@/components/agon/PlayerSideEditor'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type Match = components['schemas']['Match']
 
@@ -65,7 +66,7 @@ export function InvitePlayers({
           },
         },
       )
-      if (error) throw new Error('Failed to send invitations')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to send invitations'))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })

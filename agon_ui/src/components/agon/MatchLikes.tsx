@@ -11,6 +11,7 @@ import {
 } from '@/components/ui/dialog'
 import { UserCard } from './UserCard'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type UserPage = components['schemas']['UserPage']
 
@@ -61,7 +62,7 @@ export function LikedByLine({
           query: { limit: SUMMARY_NAMES },
         },
       })
-      if (error || !data) throw new Error('Failed to load likes')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load likes'))
       return data
     },
   })
@@ -107,7 +108,7 @@ function MatchLikesDialog({
           query: { cursor: pageParam, limit: PAGE_SIZE },
         },
       })
-      if (error || !data) throw new Error('Failed to load likes')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load likes'))
       return data
     },
     getNextPageParam: (last) => last.next_cursor,

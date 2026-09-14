@@ -15,6 +15,7 @@ import {
   isFirebaseConfigured,
   vapidKey,
 } from '@/lib/firebase'
+import { apiErrorMessage } from '@/lib/api-error'
 
 /**
  * Whether this device has (or is getting) a registered FCM token.
@@ -75,7 +76,7 @@ async function postDevice(token: string): Promise<void> {
   const { error } = await fetchClient.POST('/devices', {
     body: { push_token: token, platform: 'web' },
   })
-  if (error) throw new Error('Failed to register this device for push notifications')
+  if (error) throw new Error(apiErrorMessage(error, 'Failed to register this device for push notifications'))
 }
 
 async function unregisterDevice(token: string): Promise<void> {

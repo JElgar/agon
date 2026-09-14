@@ -14,6 +14,7 @@ import {
   type FootballFormat,
   type NetballFormat,
 } from '@/lib/matchFormat'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type Match = components['schemas']['Match']
 
@@ -100,7 +101,7 @@ export function MatchFormatCard({
                 : { sport: 'Football', ...footballDraft },
         },
       })
-      if (error) throw new Error('Failed to save the match format')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to save the match format'))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })

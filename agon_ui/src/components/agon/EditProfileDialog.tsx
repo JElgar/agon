@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/dialog'
 import { ImageUploadField } from './ImageUploadField'
 import { joinName, splitName } from '@/lib/names'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type UserProfile = components['schemas']['UserProfile']
 
@@ -51,7 +52,7 @@ export function EditProfileDialog({ profile, children }: EditProfileDialogProps)
       const body: components['schemas']['UpdateUserInput'] = { name: joinName(firstName, lastName) }
       if (assetId) body.profile_image_asset_id = assetId
       const { error: patchErr } = await fetchClient.PATCH('/users/me', { body })
-      if (patchErr) throw new Error('Could not save your profile')
+      if (patchErr) throw new Error(apiErrorMessage(patchErr, 'Could not save your profile'))
       // Refresh the profile views (own + by-id) so the change shows immediately.
       await queryClient.invalidateQueries({ queryKey: ['profile'] })
       setOpen(false)

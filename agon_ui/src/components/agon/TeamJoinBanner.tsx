@@ -4,6 +4,7 @@ import { Users } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type Match = components['schemas']['Match']
 
@@ -38,7 +39,7 @@ export function TeamJoinBanner({ match }: { match: Match }) {
         body: { side_id: effectiveSideId },
       })
       if (response.status === 409) return 'conflict'
-      if (error) throw new Error('Failed to join')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to join'))
       return 'joined'
     },
     onSuccess: (result) => {

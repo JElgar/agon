@@ -10,6 +10,7 @@ import {
   DialogFooter,
   DialogTrigger,
 } from '@/components/ui/dialog'
+import { apiErrorMessage } from '@/lib/api-error'
 
 export interface RevokeDeviceDialogProps {
   deviceSub: string
@@ -32,7 +33,7 @@ export function RevokeDeviceDialog({ deviceSub, children }: RevokeDeviceDialogPr
       const { error } = await fetchClient.DELETE('/devices/paired/{device_sub}', {
         params: { path: { device_sub: deviceSub } },
       })
-      if (error) throw new Error('Could not revoke device')
+      if (error) throw new Error(apiErrorMessage(error, 'Could not revoke device'))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['paired-devices'] })

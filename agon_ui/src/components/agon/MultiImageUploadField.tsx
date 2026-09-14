@@ -18,6 +18,7 @@ import { CSS } from '@dnd-kit/utilities'
 import { cn } from '@/lib/utils'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type UploadPurpose = components['schemas']['UploadPurpose']
 
@@ -292,7 +293,7 @@ async function pollUntilUploaded(assetId: string): Promise<void> {
     const { data, error } = await fetchClient.GET('/assets/{asset_id}', {
       params: { path: { asset_id: assetId } },
     })
-    if (error || !data) throw new Error('Could not check upload status')
+    if (error || !data) throw new Error(apiErrorMessage(error, 'Could not check upload status'))
     if (data.status === 'uploaded') return
     if (data.status === 'failed') throw new Error('The upload was rejected')
     if (Date.now() > deadline) throw new Error('Upload timed out — try again')

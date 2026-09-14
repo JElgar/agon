@@ -15,6 +15,7 @@ import {
   saveTrackPrefs,
   type TrackPrefs,
 } from '@/lib/liveScore'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type Match = components['schemas']['Match']
 
@@ -75,7 +76,7 @@ export function LiveScoringSetupPage() {
       const { data, error } = await fetchClient.GET('/matches/{match_id}', {
         params: { path: { match_id: matchId! } },
       })
-      if (error || !data) throw new Error('Failed to load match')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load match'))
       return data
     },
   })

@@ -12,6 +12,7 @@ import { cn } from '@/lib/utils'
 import { relativeTime } from '@/lib/datetime'
 import { Avatar } from '@/components/agon/Avatar'
 import { Button } from '@/components/ui/button'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type Comment = components['schemas']['Comment']
 type CommentPage = components['schemas']['CommentPage']
@@ -46,7 +47,7 @@ export function MatchComments({
           },
         },
       )
-      if (error || !data) throw new Error('Failed to load comments')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load comments'))
       return data
     },
     getNextPageParam: (last) => last.next_cursor,
@@ -130,7 +131,7 @@ function CommentThread({
           },
         },
       )
-      if (error || !data) throw new Error('Failed to load replies')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load replies'))
       return data
     },
     getNextPageParam: (last) => last.next_cursor,
@@ -324,7 +325,7 @@ function CommentComposer({
             body: { text: body },
           },
         )
-        if (error) throw new Error('Failed to edit comment')
+        if (error) throw new Error(apiErrorMessage(error, 'Failed to edit comment'))
       } else {
         const { error } = await fetchClient.POST(
           '/matches/{match_id}/comments',
@@ -333,7 +334,7 @@ function CommentComposer({
             body: { text: body, parent_id: parentId },
           },
         )
-        if (error) throw new Error('Failed to post comment')
+        if (error) throw new Error(apiErrorMessage(error, 'Failed to post comment'))
       }
     },
     onSuccess: () => {
@@ -417,7 +418,7 @@ function DeleteComment({
           params: { path: { match_id: matchId, comment_id: comment.id } },
         },
       )
-      if (error) throw new Error('Failed to delete comment')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to delete comment'))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['comments', matchId] })

@@ -11,6 +11,7 @@ import {
   usePendingMatches,
   prunePendingMatches,
 } from '@/hooks/usePendingMatches'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type FeedPageData = components['schemas']['FeedPage']
 type FeedMatch = components['schemas']['FeedMatch']
@@ -43,7 +44,7 @@ export function FeedPage() {
           query: { cursor: pageParam, limit: PAGE_SIZE },
         },
       })
-      if (error || !data) throw new Error('Failed to load feed')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load feed'))
       return data
     },
     getNextPageParam: (lastPage) => lastPage.next_cursor,

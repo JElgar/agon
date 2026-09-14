@@ -19,6 +19,7 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Avatar } from './Avatar'
 import { memberAvatarUrl, memberName, playerId } from '@/lib/members'
+import { apiErrorMessage } from '@/lib/api-error'
 
 /** "Alice", "Alice and Bob", or "Alice, Bob and Charlie" — for the removal
  *  confirmation's "you're removing …" sentence. */
@@ -139,7 +140,7 @@ export function MatchRosterEditor({
         params: { path: { match_id: match.id } },
         body,
       })
-      if (error) throw new Error('Failed to save the roster')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to save the roster'))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })

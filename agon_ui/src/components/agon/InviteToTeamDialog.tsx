@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/dialog'
 import { PlayerSideEditor, type TaggedPlayer } from './PlayerSideEditor'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
+import { apiErrorMessage } from '@/lib/api-error'
 
 export interface InviteToTeamDialogProps {
   teamId: string
@@ -59,7 +60,7 @@ export function InviteToTeamDialog({
         params: { path: { team_id: teamId } },
         body,
       })
-      if (error) throw new Error('Could not send invites')
+      if (error) throw new Error(apiErrorMessage(error, 'Could not send invites'))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['team-members', teamId] })

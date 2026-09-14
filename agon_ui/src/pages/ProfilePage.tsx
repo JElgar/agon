@@ -14,6 +14,7 @@ import { ThemeToggle } from '@/components/ThemeToggle'
 import { useAuth } from '@/hooks/useAuth'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { sportEntries } from '@/lib/stats'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type UserProfile = components['schemas']['UserProfile']
 type SearchMatch = components['schemas']['SearchMatch']
@@ -47,11 +48,11 @@ export function ProfilePage() {
         const { data, error } = await fetchClient.GET('/users/{user_id}', {
           params: { path: { user_id: userId } },
         })
-        if (error || !data) throw new Error('Failed to load profile')
+        if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load profile'))
         return data
       }
       const { data, error } = await fetchClient.GET('/users/me')
-      if (error || !data) throw new Error('Failed to load profile')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load profile'))
       return data.profile
     },
   })
@@ -65,7 +66,7 @@ export function ProfilePage() {
       const { data, error } = await fetchClient.GET('/matches', {
         params: { query: { participant: profileId, limit: RECENT_LIMIT } },
       })
-      if (error || !data) throw new Error('Failed to load recent activity')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load recent activity'))
       return data.items
     },
   })

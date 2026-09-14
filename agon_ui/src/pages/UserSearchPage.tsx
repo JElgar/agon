@@ -7,6 +7,7 @@ import { UserCard } from '@/components/agon/UserCard'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type UserProfile = components['schemas']['UserProfile']
 
@@ -36,7 +37,7 @@ export function UserSearchPage() {
       const { data, error } = await fetchClient.GET('/users/search', {
         params: { query: { q: debounced } },
       })
-      if (error || !data) throw new Error('Failed to search users')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to search users'))
       return data
     },
   })

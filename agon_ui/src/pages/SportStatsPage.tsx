@@ -15,6 +15,7 @@ import { formatOvers } from '@/lib/cricketScore'
 import { StatInfo } from '@/components/agon/StatInfo'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { cn } from '@/lib/utils'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type BestBowlingFigures = components['schemas']['BestBowlingFigures']
 
@@ -59,11 +60,11 @@ export function SportStatsPage() {
         const { data, error } = await fetchClient.GET('/users/{user_id}', {
           params: { path: { user_id: userId } },
         })
-        if (error || !data) throw new Error('Failed to load profile')
+        if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load profile'))
         return data
       }
       const { data, error } = await fetchClient.GET('/users/me')
-      if (error || !data) throw new Error('Failed to load profile')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load profile'))
       return data.profile
     },
   })
@@ -80,7 +81,7 @@ export function SportStatsPage() {
           query: { participant: profileId, match_type: matchType, limit: FETCH_LIMIT },
         },
       })
-      if (error || !data) throw new Error('Failed to load matches')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load matches'))
       return data.items
     },
   })

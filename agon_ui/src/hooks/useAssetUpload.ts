@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type UploadPurpose = components['schemas']['UploadPurpose']
 type Asset = components['schemas']['Asset']
@@ -112,7 +113,7 @@ async function pollUntilUploaded(
     const { data, error } = await fetchClient.GET('/assets/{asset_id}', {
       params: { path: { asset_id: assetId } },
     })
-    if (error || !data) throw new Error('Could not check upload status')
+    if (error || !data) throw new Error(apiErrorMessage(error, 'Could not check upload status'))
     if (data.status === 'uploaded') return data
     if (data.status === 'failed') throw new Error('The upload was rejected')
     if (Date.now() > deadline) {

@@ -6,6 +6,7 @@ import type { components } from '@/types/api'
 import { UserCard } from '@/components/agon/UserCard'
 import { Button } from '@/components/ui/button'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type UserPage = components['schemas']['UserPage']
 
@@ -35,7 +36,7 @@ export function FollowListPage({ mode }: { mode: FollowListMode }) {
       const { data, error } = await fetchClient.GET('/users/{user_id}', {
         params: { path: { user_id: userId! } },
       })
-      if (error || !data) throw new Error('Failed to load profile')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load profile'))
       return data
     },
   })
@@ -51,7 +52,7 @@ export function FollowListPage({ mode }: { mode: FollowListMode }) {
         mode === 'followers'
           ? await fetchClient.GET('/users/{user_id}/followers', { params })
           : await fetchClient.GET('/users/{user_id}/following', { params })
-      if (error || !data) throw new Error('Failed to load list')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load list'))
       return data
     },
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,

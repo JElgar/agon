@@ -5,6 +5,7 @@ import type { components } from '@/types/api'
 import { CreateTeamDialog } from '@/components/agon/CreateTeamDialog'
 import { TeamCard } from '@/components/agon/TeamCard'
 import { Button } from '@/components/ui/button'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type TeamPage = components['schemas']['TeamPage']
 
@@ -25,7 +26,7 @@ export function TeamsPage() {
       const { data, error } = await fetchClient.GET('/users/me/teams', {
         params: { query: { cursor: pageParam, limit: PAGE_SIZE } },
       })
-      if (error || !data) throw new Error('Failed to load teams')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load teams'))
       return data
     },
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,

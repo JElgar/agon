@@ -14,6 +14,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { CopyInviteButton } from './CopyInviteButton'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type Match = components['schemas']['Match']
 type JoinLink = components['schemas']['JoinLink']
@@ -93,7 +94,7 @@ export function MatchJoinLinksDialog({
       const { data, error } = await fetchClient.GET('/matches/{match_id}/join-links', {
         params: { path: { match_id: match.id } },
       })
-      if (error || !data) throw new Error('Failed to load join links')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load join links'))
       return data
     },
   })
@@ -104,7 +105,7 @@ export function MatchJoinLinksDialog({
         params: { path: { match_id: match.id } },
         body: { scope: scopeInputFor(form) },
       })
-      if (error) throw new Error('Could not create join link')
+      if (error) throw new Error(apiErrorMessage(error, 'Could not create join link'))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: linksKey })
@@ -118,7 +119,7 @@ export function MatchJoinLinksDialog({
         '/matches/{match_id}/join-links/{join_link_id}',
         { params: { path: { match_id: match.id, join_link_id: joinLinkId } } },
       )
-      if (error) throw new Error('Could not revoke join link')
+      if (error) throw new Error(apiErrorMessage(error, 'Could not revoke join link'))
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: linksKey }),
   })

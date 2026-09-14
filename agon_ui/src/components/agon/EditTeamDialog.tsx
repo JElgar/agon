@@ -14,6 +14,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { ImageUploadField } from './ImageUploadField'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type Team = components['schemas']['Team']
 
@@ -49,7 +50,7 @@ export function EditTeamDialog({ team, children }: EditTeamDialogProps) {
         params: { path: { team_id: team.id } },
         body,
       })
-      if (patchErr) throw new Error('Could not save this team')
+      if (patchErr) throw new Error(apiErrorMessage(patchErr, 'Could not save this team'))
       await queryClient.invalidateQueries({ queryKey: ['team', team.id] })
       await queryClient.invalidateQueries({ queryKey: ['my-teams'] })
       setOpen(false)

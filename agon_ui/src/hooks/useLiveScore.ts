@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { matchScoreQueryKey } from './useMatchScore'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type LiveEvent = components['schemas']['LiveEvent']
 type NewLiveEventInput = components['schemas']['NewLiveEventInput']
@@ -170,7 +171,7 @@ function useAppendLiveEvent<T extends { kind: string }>(
           events: [input],
         },
       })
-      if (error || !data) throw new Error('Failed to record event')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to record event'))
       return data
     },
     onSuccess: (data) => {
@@ -223,14 +224,11 @@ export function useUndoLastLiveEvent(matchId: string) {
 
   return useMutation({
     mutationFn: async (seq: number) => {
-      const { data, error, response } = await fetchClient.DELETE(
+      const { data, error } = await fetchClient.DELETE(
         '/matches/{match_id}/live/events/{seq}',
         { params: { path: { match_id: matchId, seq } } },
       )
-      if (response.status === 400) {
-        throw new Error('Only the most recently recorded event can be undone')
-      }
-      if (error || !data) throw new Error('Failed to undo that event')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to undo that event'))
       return data
     },
     onSuccess: (data) => {

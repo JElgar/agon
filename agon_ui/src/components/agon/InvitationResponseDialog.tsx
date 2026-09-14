@@ -17,6 +17,7 @@ import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { confirmationState } from '@/lib/confirmation'
 import { displayScore, headlineBySide, headlineLabel } from '@/lib/score'
 import { cricketScoreFrom, formatOvers, sideNameFor } from '@/lib/cricketScore'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type InvitationResponse = components['schemas']['InvitationResponse']
 type Match = components['schemas']['Match']
@@ -76,7 +77,7 @@ export function InvitationResponseDialog({
       const { data, error } = await fetchClient.GET('/matches/{match_id}', {
         params: { path: { match_id: matchId! } },
       })
-      if (error || !data) throw new Error('Failed to load match')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load match'))
       return data
     },
   })

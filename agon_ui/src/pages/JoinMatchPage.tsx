@@ -12,6 +12,7 @@ import { relativeTime, scheduledDateTime } from '@/lib/datetime'
 import { sidePlayerCountLabel, sideTeamHint } from '@/lib/members'
 import { Avatar } from '@/components/agon/Avatar'
 import { SportBadge } from '@/components/agon/SportBadge'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type JoinLinkPreview = components['schemas']['JoinLinkPreview']
 type Match = components['schemas']['Match']
@@ -50,7 +51,7 @@ export function JoinMatchPage() {
       const { data, error } = await fetchClient.GET('/join-links/by-token/{token}', {
         params: { path: { token: token! } },
       })
-      if (error || !data) throw new Error('join-link-not-found')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'join-link-not-found'))
       return data
     },
   })
@@ -71,7 +72,7 @@ export function JoinMatchPage() {
       const { data, error } = await fetchClient.GET('/matches/{match_id}', {
         params: { path: { match_id: matchId! } },
       })
-      if (error || !data) throw new Error('Failed to load match')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load match'))
       return data
     },
   })
@@ -119,7 +120,7 @@ export function JoinMatchPage() {
         body: { token: token!, side_id: effectiveSideId },
       })
       if (response.status === 409) return 'conflict'
-      if (error) throw new Error('Failed to join')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to join'))
       return 'joined'
     },
     onSuccess: (result) => {

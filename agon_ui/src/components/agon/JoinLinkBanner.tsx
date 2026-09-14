@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { joinChoiceFor, sidesFor } from '@/lib/joinLink'
 import { forgetJoinLink, getRememberedJoinLink } from '@/lib/joinLinkMemory'
 import { sidePlayerCountLabel } from '@/lib/members'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type Match = components['schemas']['Match']
 type JoinLinkPreview = components['schemas']['JoinLinkPreview']
@@ -36,7 +37,7 @@ export function JoinLinkBanner({ match }: { match: Match }) {
       const { data, error } = await fetchClient.GET('/join-links/by-token/{token}', {
         params: { path: { token: token! } },
       })
-      if (error || !data) throw new Error('join-link-not-found')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'join-link-not-found'))
       return data
     },
   })
@@ -60,7 +61,7 @@ export function JoinLinkBanner({ match }: { match: Match }) {
         body: { token: token!, side_id: effectiveSideId },
       })
       if (response.status === 409) return 'conflict'
-      if (error) throw new Error('Failed to join')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to join'))
       return 'joined'
     },
     onSuccess: (result) => {

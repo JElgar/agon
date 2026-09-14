@@ -5,6 +5,7 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type Match = components['schemas']['Match']
 
@@ -69,7 +70,7 @@ export function MatchJoinSettingsEditor({
           }),
         },
       })
-      if (error) throw new Error('Failed to save join settings')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to save join settings'))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })

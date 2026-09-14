@@ -1264,24 +1264,13 @@ struct TeamMemberPage {
     next_cursor: Option<String>,
 }
 
-/// JSON-wrapped error body, used instead of `PlainText<String>` on every
-/// non-2xx response of the endpoints a paired device (the Garmin watch
-/// app) calls. `Communications.makeWebRequest` checks the actual
-/// response `Content-Type` header against the `:responseType` the device
-/// requested, and — confirmed from a real device — refuses to deliver
-/// the real HTTP status at all when they don't match: a `PlainText`
-/// (`text/plain`) error body on an endpoint requested as JSON came back
-/// as a synthetic `-400`/`INVALID_HTTP_BODY_IN_NETWORK_RESPONSE`
-/// instead of the real `409`/`403`/`404`/etc., which the device has no
-/// way to distinguish or react to (see docs/garmin-live-scoring.md).
-/// Scoped to just the watch-facing endpoints for now — the same masking
-/// would apply to any other endpoint's `PlainText` error body too, but
-/// only these six are reachable with `device_scope` set (`check_scope`),
-/// and a broader switch is a bigger, separate change (also: `check_scope`
-/// itself, and any other generic `poem::Error` a handler propagates via
-/// `?` rather than a named response variant, still renders as
-/// `text/plain` by Poem's own default and isn't covered by this either —
-/// see docs/garmin-live-scoring.md's residual-gap note).
+/// JSON-wrapped error body: `{"message": "..."}`. The default shape for
+/// every non-2xx response across the API — a client (the Garmin watch app
+/// among them) can rely on every error, not just success bodies, being
+/// JSON. A generic `poem::Error` a handler propagates via `?` rather than
+/// a named response variant (auth/scope rejection, an unhandled DAO
+/// failure) isn't a typed `ErrorMessage`, but is still normalized to this
+/// same shape on the wire — see `json_errors` below.
 #[derive(Object)]
 struct ErrorMessage {
     message: String,
@@ -1302,7 +1291,7 @@ enum GetUserProfileResponse {
     User(Json<UserProfile>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1311,7 +1300,7 @@ enum CreateUserResponse {
     User(Json<User>),
 
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1320,7 +1309,7 @@ enum UpdateUserResponse {
     User(Json<User>),
 
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1330,7 +1319,7 @@ enum CreateAssetResponse {
 
     /// The content type isn't allowed for the requested purpose.
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1339,7 +1328,7 @@ enum GetAssetResponse {
     Asset(Json<Asset>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1348,14 +1337,14 @@ enum UpdateTeamResponse {
     Team(Json<Team>),
 
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 
     /// The caller is neither the team's owner nor an admin.
     #[oai(status = 403)]
-    Forbidden(PlainText<String>),
+    Forbidden(Json<ErrorMessage>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1366,10 +1355,10 @@ enum RemoveTeamMemberResponse {
     /// The caller is neither the team's owner nor an admin, or the target is
     /// the team's owner (never removable — see the endpoint's doc comment).
     #[oai(status = 403)]
-    Forbidden(PlainText<String>),
+    Forbidden(Json<ErrorMessage>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1380,10 +1369,10 @@ enum DeleteTeamResponse {
 
     /// The caller is not the team's owner.
     #[oai(status = 403)]
-    Forbidden(PlainText<String>),
+    Forbidden(Json<ErrorMessage>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1394,11 +1383,11 @@ enum UpdateTeamMemberRoleResponse {
     /// The caller is neither the team's owner nor an admin, or the target is
     /// the team's owner (role is permanent — see the endpoint's doc comment).
     #[oai(status = 403)]
-    Forbidden(PlainText<String>),
+    Forbidden(Json<ErrorMessage>),
 
     /// The team, or the membership within it, doesn't exist.
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1410,11 +1399,11 @@ enum LeaveTeamResponse {
     /// The caller is the team's owner — they must transfer ownership (`POST
     /// /teams/:team_id/transfer-ownership`) before they can leave.
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 
     /// The team doesn't exist, or the caller isn't a member of it.
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1427,15 +1416,15 @@ enum TransferTeamOwnershipResponse {
     /// pending invitee, say — ownership can only go to someone who's
     /// actually joined).
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 
     /// The caller is not the team's owner.
     #[oai(status = 403)]
-    Forbidden(PlainText<String>),
+    Forbidden(Json<ErrorMessage>),
 
     /// The team, or the target membership, doesn't exist.
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1445,11 +1434,11 @@ enum RevokeInvitationResponse {
     Ok,
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 
     /// The caller is not allowed to revoke this invitation.
     #[oai(status = 403)]
-    Forbidden(PlainText<String>),
+    Forbidden(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1458,7 +1447,7 @@ enum SearchUsersResponse {
     Users(Json<Vec<UserProfile>>),
 
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1467,7 +1456,7 @@ enum GetFeedResponse {
     Feed(Json<FeedPage>),
 
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1475,8 +1464,6 @@ enum GetMatchResponse {
     #[oai(status = 200)]
     Match(Json<Match>),
 
-    /// See `ErrorMessage`'s doc comment on why this is JSON, not the
-    /// `PlainText` every other 404 in this file uses.
     #[oai(status = 404)]
     NotFound(Json<ErrorMessage>),
 }
@@ -1486,8 +1473,6 @@ enum ListMatchesResponse {
     #[oai(status = 200)]
     Matches(Json<MatchPage>),
 
-    /// See `ErrorMessage`'s doc comment on why this is JSON, not the
-    /// `PlainText` every other 400 in this file uses.
     #[oai(status = 400)]
     ValidationError(Json<ErrorMessage>),
 }
@@ -1498,7 +1483,7 @@ enum CreateMatchResponse {
     Match(Json<Match>),
 
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1507,20 +1492,20 @@ enum UpdateMatchResponse {
     Match(Json<Match>),
 
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 
     /// The caller is not a participant in this match, so may not edit it.
     #[oai(status = 403)]
-    Forbidden(PlainText<String>),
+    Forbidden(Json<ErrorMessage>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 
     /// The submitted `score` doesn't match what the server derives from the
     /// match's own persisted live detail. Refresh and resubmit, or set
     /// `override_live_score` to submit it anyway.
     #[oai(status = 409)]
-    Conflict(PlainText<String>),
+    Conflict(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1531,10 +1516,10 @@ enum SubmitScoreResponse {
     /// The score is invalid (e.g. references a player without a side, or the
     /// match is Scheduled/Cancelled and cannot be scored).
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1543,12 +1528,12 @@ enum RespondToScoreResponse {
     Submission(Json<ScoreSubmission>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 
     /// The caller is not a participant of the side they are responding for, or
     /// the submission has already been superseded.
     #[oai(status = 403)]
-    Forbidden(PlainText<String>),
+    Forbidden(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1557,7 +1542,7 @@ enum ListScoreSubmissionsResponse {
     Submissions(Json<Vec<ScoreSubmission>>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 /// Result of liking/unliking a match.
@@ -1568,7 +1553,7 @@ enum LikeResponse {
     Ok,
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1577,7 +1562,7 @@ enum ListLikesResponse {
     Users(Json<UserPage>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1586,7 +1571,7 @@ enum ListCommentsResponse {
     Comments(Json<CommentPage>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1595,10 +1580,10 @@ enum CreateCommentResponse {
     Comment(Json<Comment>),
 
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1607,14 +1592,14 @@ enum UpdateCommentResponse {
     Comment(Json<Comment>),
 
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 
     /// The caller is not the comment's author.
     #[oai(status = 403)]
-    Forbidden(PlainText<String>),
+    Forbidden(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1623,11 +1608,11 @@ enum DeleteCommentResponse {
     Ok,
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 
     /// The caller is not the comment's author.
     #[oai(status = 403)]
-    Forbidden(PlainText<String>),
+    Forbidden(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1648,7 +1633,7 @@ enum MarkNotificationReadResponse {
     Ok,
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 /// The client platform a registered push token belongs to.
@@ -1679,7 +1664,7 @@ enum RegisterDeviceResponse {
 
     /// The user already has the maximum number of registered devices.
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1688,7 +1673,7 @@ enum UnregisterDeviceResponse {
     Ok,
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 /// How long a confirmed-but-not-yet-claimed device-pairing code stays
@@ -1713,7 +1698,7 @@ enum ConfirmDevicePairingResponse {
     /// claim step; the device should generate a fresh code and restart
     /// pairing if it sees a device-side error corresponding to this.
     #[oai(status = 409)]
-    AlreadyUsed(PlainText<String>),
+    AlreadyUsed(Json<ErrorMessage>),
 }
 
 #[derive(Object)]
@@ -1751,12 +1736,12 @@ enum PairDeviceResponse {
     /// `Pending` — the device should generate a fresh code and restart
     /// pairing rather than keep polling this one.
     #[oai(status = 400)]
-    InvalidCode(PlainText<String>),
+    InvalidCode(Json<ErrorMessage>),
 
     /// Device pairing isn't configured on this deployment (no
     /// `AGON_DEVICE_JWT_PRIVATE_KEY` — see `DeviceTokenSigner::from_env`).
     #[oai(status = 503)]
-    NotConfigured(PlainText<String>),
+    NotConfigured(Json<ErrorMessage>),
 }
 
 /// One device paired to the caller's account — see `dao::paired_device`.
@@ -1788,7 +1773,7 @@ enum RevokePairedDeviceResponse {
     /// This device isn't paired to the caller's account — already revoked,
     /// never was, or belongs to someone else.
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1796,9 +1781,7 @@ enum GetMatchScoreResponse {
     #[oai(status = 200)]
     Score(Json<Score>),
 
-    /// The match exists but has no score recorded. See `ErrorMessage`'s
-    /// doc comment on why this is JSON, not the `PlainText` every other
-    /// 404 in this file uses.
+    /// The match exists but has no score recorded.
     #[oai(status = 404)]
     NotFound(Json<ErrorMessage>),
 }
@@ -1808,10 +1791,6 @@ enum AppendLiveEventsResponse {
     #[oai(status = 200)]
     Ok(Json<LiveScoreSnapshot>),
 
-    /// See `ErrorMessage`'s doc comment on why every error variant on
-    /// this response is JSON, not the `PlainText` most others in this
-    /// file use — this is the endpoint whose masked `Conflict` (below)
-    /// was actually observed breaking the watch app on a real device.
     #[oai(status = 400)]
     ValidationError(Json<ErrorMessage>),
 
@@ -1854,8 +1833,6 @@ enum GetLiveSeqResponse {
     #[oai(status = 200)]
     Ok(Json<LiveSeq>),
 
-    /// See `ErrorMessage`'s doc comment on why this is JSON, not the
-    /// `PlainText` every other 404 in this file uses.
     #[oai(status = 404)]
     NotFound(Json<ErrorMessage>),
 }
@@ -1866,7 +1843,7 @@ enum ListLiveEventsResponse {
     Events(Json<LiveEventPage>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1875,10 +1852,9 @@ enum DeleteLiveEventResponse {
     #[oai(status = 200)]
     Ok(Json<LiveScoreSnapshot>),
 
-    /// See `ErrorMessage`'s doc comment on why every error variant on
-    /// this response is JSON — this is scoped the same way as
-    /// `AppendLiveEventsResponse` (`SCOPE_LIVE_SCORING`), even though no
-    /// current client (the watch app included) calls it yet.
+    /// Scoped the same way as `AppendLiveEventsResponse`
+    /// (`SCOPE_LIVE_SCORING`), even though no current client (the watch
+    /// app included) calls it yet.
     #[oai(status = 400)]
     ValidationError(Json<ErrorMessage>),
 
@@ -1899,11 +1875,11 @@ enum AmendLiveEventResponse {
     Ok(Json<LiveScoreSnapshot>),
 
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 
     /// Either the match or that specific seq doesn't exist.
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1912,7 +1888,7 @@ enum CreateTeamResponse {
     Team(Json<Team>),
 
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1927,7 +1903,7 @@ enum GetTeamResponse {
     Team(Json<Team>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1936,7 +1912,7 @@ enum ListTeamMembersResponse {
     Members(Json<TeamMemberPage>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1946,10 +1922,10 @@ enum AddTeamMembersResponse {
 
     /// The caller is neither the team's owner nor an admin.
     #[oai(status = 403)]
-    Forbidden(PlainText<String>),
+    Forbidden(Json<ErrorMessage>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1959,11 +1935,11 @@ enum AddInvitationsResponse {
 
     /// The caller is not a participant in this match, so may not invite others.
     #[oai(status = 403)]
-    Forbidden(PlainText<String>),
+    Forbidden(Json<ErrorMessage>),
 
     /// The team or match being invited to was not found.
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1978,14 +1954,14 @@ enum CreateJoinLinkResponse {
     JoinLink(Json<JoinLink>),
 
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 
     /// Only a match admin may create a join link.
     #[oai(status = 403)]
-    Forbidden(PlainText<String>),
+    Forbidden(Json<ErrorMessage>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1995,10 +1971,10 @@ enum ListJoinLinksResponse {
 
     /// Only a match admin may list this match's join links.
     #[oai(status = 403)]
-    Forbidden(PlainText<String>),
+    Forbidden(Json<ErrorMessage>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -2008,10 +1984,10 @@ enum RevokeJoinLinkResponse {
 
     /// Only a match admin may revoke this join link.
     #[oai(status = 403)]
-    Forbidden(PlainText<String>),
+    Forbidden(Json<ErrorMessage>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -2021,7 +1997,7 @@ enum GetJoinLinkPreviewResponse {
 
     /// No such link, or it's been revoked.
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -2030,15 +2006,15 @@ enum JoinMatchResponse {
     Match(Json<Match>),
 
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 
     /// The match or the targeted side is full, or the caller is already on
     /// the roster.
     #[oai(status = 409)]
-    Conflict(PlainText<String>),
+    Conflict(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -2051,14 +2027,14 @@ enum TransferMatchOwnershipResponse {
     /// pending invitee, say — ownership can only go to someone who's
     /// actually joined).
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 
     /// The caller is not the match's owner.
     #[oai(status = 403)]
-    Forbidden(PlainText<String>),
+    Forbidden(Json<ErrorMessage>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -2070,11 +2046,11 @@ enum LeaveMatchResponse {
     /// The caller is the match's owner — they must transfer ownership (`POST
     /// /matches/:match_id/transfer-ownership`) before they can leave.
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 
     /// The match doesn't exist, or the caller isn't an accepted player on it.
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -2083,7 +2059,7 @@ enum GetInvitationResponse {
     Invitation(Json<InvitationDetail>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -2093,11 +2069,11 @@ enum RespondToInvitationResponse {
 
     /// The invitation does not exist.
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 
     /// The caller is not the user this invitation targets.
     #[oai(status = 403)]
-    Forbidden(PlainText<String>),
+    Forbidden(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -2107,7 +2083,7 @@ enum RespondByTokenResponse {
 
     /// No invitation matches the supplied token.
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 /// Result of a follow/unfollow action.
@@ -2119,7 +2095,7 @@ enum FollowResponse {
 
     /// The user or team being followed was not found.
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -2128,7 +2104,7 @@ enum ListFollowsResponse {
     Users(Json<UserPage>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[OpenApi]
@@ -2241,7 +2217,9 @@ impl Api {
                 match resolve_asset_urls(dao, &uid, "profile_image", ids).await? {
                     Ok(resolved) => Some(resolved.into_iter().next().map(|(_, url)| url)),
                     Err(msg) => {
-                        return Ok(UpdateUserResponse::ValidationError(PlainText(msg)));
+                        return Ok(UpdateUserResponse::ValidationError(Json(ErrorMessage {
+                            message: msg,
+                        })));
                     }
                 }
             }
@@ -2288,18 +2266,18 @@ impl Api {
 
         // Validate the content type against the purpose (images only for now).
         if !input.content_type.starts_with("image/") {
-            return Ok(CreateAssetResponse::ValidationError(PlainText(
-                "content_type not allowed for this purpose".into(),
-            )));
+            return Ok(CreateAssetResponse::ValidationError(Json(ErrorMessage {
+                message: "content_type not allowed for this purpose".into(),
+            })));
         }
 
         // Enforce a size limit up front: the declared length must be positive and
         // within the max. It's baked into the presigned PUT below, so S3 also
         // rejects an upload whose actual size differs from what was declared.
         if input.content_length <= 0 || input.content_length > MAX_UPLOAD_BYTES {
-            return Ok(CreateAssetResponse::ValidationError(PlainText(format!(
-                "content_length must be between 1 and {MAX_UPLOAD_BYTES} bytes"
-            ))));
+            return Ok(CreateAssetResponse::ValidationError(Json(ErrorMessage {
+                message: format!("content_length must be between 1 and {MAX_UPLOAD_BYTES} bytes"),
+            })));
         }
 
         let id = new_id();
@@ -2338,9 +2316,9 @@ impl Api {
             Some(record) => Ok(GetAssetResponse::Asset(Json(
                 asset_from_record(assets, &record).await,
             ))),
-            None => Ok(GetAssetResponse::NotFound(PlainText(
-                "asset not found".into(),
-            ))),
+            None => Ok(GetAssetResponse::NotFound(Json(ErrorMessage {
+                message: "asset not found".into(),
+            }))),
         }
     }
 
@@ -2355,9 +2333,9 @@ impl Api {
         let record = match dao.get_user(&user_id).await.map_err(dao_internal)? {
             Some(r) => r,
             None => {
-                return Ok(GetUserProfileResponse::NotFound(PlainText(
-                    "user not found".into(),
-                )));
+                return Ok(GetUserProfileResponse::NotFound(Json(ErrorMessage {
+                    message: "user not found".into(),
+                })));
             }
         };
         let caller_uid = self.require_uid(dao, &jwt_data).await?;
@@ -2394,9 +2372,9 @@ impl Api {
         let email = match jwt_data.email.clone() {
             Some(email) => email,
             None => {
-                return Ok(CreateUserResponse::ValidationError(PlainText(
-                    "authentication token has no email claim".into(),
-                )));
+                return Ok(CreateUserResponse::ValidationError(Json(ErrorMessage {
+                    message: "authentication token has no email claim".into(),
+                })));
             }
         };
         // The internal id is freshly minted and stable — it is NOT the JWT `sub`.
@@ -2416,9 +2394,9 @@ impl Api {
         match dao.create_user(&jwt_data.sub, &record).await {
             Ok(()) => {}
             Err(dao::DaoError::Conflict(_)) => {
-                return Ok(CreateUserResponse::ValidationError(PlainText(
-                    "a user with that email or subject already exists".into(),
-                )));
+                return Ok(CreateUserResponse::ValidationError(Json(ErrorMessage {
+                    message: "a user with that email or subject already exists".into(),
+                })));
             }
             Err(e) => return Err(dao_internal(e)),
         }
@@ -2488,9 +2466,9 @@ impl Api {
         if let (Some(from), Some(to)) = (from, to)
             && from > to
         {
-            return Ok(GetFeedResponse::ValidationError(PlainText(
-                "`from` must be before `to`".to_string(),
-            )));
+            return Ok(GetFeedResponse::ValidationError(Json(ErrorMessage {
+                message: "`from` must be before `to`".to_string(),
+            })));
         }
 
         // Read the caller's fan-out feed partition (UFEED#<caller>), newest
@@ -2500,9 +2478,9 @@ impl Api {
         let page = match dao.list_feed(&uid, cursor.as_deref(), limit).await {
             Ok(p) => p,
             Err(dao::DaoError::Malformed(_)) => {
-                return Ok(GetFeedResponse::ValidationError(PlainText(
-                    "Invalid cursor".to_string(),
-                )));
+                return Ok(GetFeedResponse::ValidationError(Json(ErrorMessage {
+                    message: "Invalid cursor".to_string(),
+                })));
             }
             Err(e) => return Err(dao_internal(e)),
         };
@@ -2835,14 +2813,18 @@ impl Api {
                     .into_iter()
                     .map(|(asset_id, url)| dao::records::HeaderPhotoRecord { asset_id, url })
                     .collect::<Vec<_>>(),
-                Err(msg) => return Ok(CreateMatchResponse::ValidationError(PlainText(msg))),
+                Err(msg) => {
+                    return Ok(CreateMatchResponse::ValidationError(Json(ErrorMessage {
+                        message: msg,
+                    })));
+                }
             };
 
         // A match needs at least two sides for a score to be meaningful.
         if input.sides.len() < 2 {
-            return Ok(CreateMatchResponse::ValidationError(PlainText(
-                "a match must have at least two sides".to_string(),
-            )));
+            return Ok(CreateMatchResponse::ValidationError(Json(ErrorMessage {
+                message: "a match must have at least two sides".to_string(),
+            })));
         }
 
         // A side's name normally comes from its team, so a client-supplied
@@ -2859,10 +2841,12 @@ impl Api {
                 .iter()
                 .any(|other| other.client_id != side.client_id && other.team_id == side.team_id);
             if !team_shared {
-                return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
-                    "side `{}` can't have both a name and a team unless another side shares that team",
-                    side.client_id
-                ))));
+                return Ok(CreateMatchResponse::ValidationError(Json(ErrorMessage {
+                    message: format!(
+                        "side `{}` can't have both a name and a team unless another side shares that team",
+                        side.client_id
+                    ),
+                })));
             }
         }
 
@@ -2871,10 +2855,12 @@ impl Api {
         if let Some(fmt) = &input.format {
             let tag = match_format_sport_tag(fmt);
             if tag != match_type_tag(&input.match_type) {
-                return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
-                    "format is for `{tag}` but match is `{}`",
-                    match_type_tag(&input.match_type)
-                ))));
+                return Ok(CreateMatchResponse::ValidationError(Json(ErrorMessage {
+                    message: format!(
+                        "format is for `{tag}` but match is `{}`",
+                        match_type_tag(&input.match_type)
+                    ),
+                })));
             }
         }
 
@@ -2886,14 +2872,14 @@ impl Api {
         let now_ts = chrono::Utc::now();
         if input.score.is_some() {
             if input.starts_at > now_ts {
-                return Ok(CreateMatchResponse::ValidationError(PlainText(
-                    "a completed match's time must be in the past".to_string(),
-                )));
+                return Ok(CreateMatchResponse::ValidationError(Json(ErrorMessage {
+                    message: "a completed match's time must be in the past".to_string(),
+                })));
             }
         } else if input.starts_at <= now_ts {
-            return Ok(CreateMatchResponse::ValidationError(PlainText(
-                "a scheduled match's time must be in the future".to_string(),
-            )));
+            return Ok(CreateMatchResponse::ValidationError(Json(ErrorMessage {
+                message: "a scheduled match's time must be in the future".to_string(),
+            })));
         }
 
         let now = now_iso();
@@ -2948,9 +2934,9 @@ impl Api {
         let mut creator_side_id: Option<String> = None;
         if let Some(client_id) = &input.creator_side_client_id {
             let Some(side_id) = side_ids.get(client_id).cloned() else {
-                return Ok(CreateMatchResponse::ValidationError(PlainText(
-                    "creator_side_client_id references an unknown side".into(),
-                )));
+                return Ok(CreateMatchResponse::ValidationError(Json(ErrorMessage {
+                    message: "creator_side_client_id references an unknown side".into(),
+                })));
             };
             let player_id = new_id();
             creator_player_id = Some(player_id.clone());
@@ -3017,10 +3003,12 @@ impl Api {
                 .iter()
                 .any(|p| p.side_id.as_deref() == Some(side_id.as_str()));
             if !has_players && side.team_id.is_none() && side.name.is_none() {
-                return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
-                    "side `{}` has no players, so it needs a name or a team",
-                    side.client_id
-                ))));
+                return Ok(CreateMatchResponse::ValidationError(Json(ErrorMessage {
+                    message: format!(
+                        "side `{}` has no players, so it needs a name or a team",
+                        side.client_id
+                    ),
+                })));
             }
             if let Some(max) = side.max_players {
                 let count = player_records
@@ -3028,10 +3016,12 @@ impl Api {
                     .filter(|p| p.side_id.as_deref() == Some(side_id.as_str()))
                     .count() as u32;
                 if count > max {
-                    return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
-                        "side `{}` has {count} players, over its max_players of {max}",
-                        side.client_id
-                    ))));
+                    return Ok(CreateMatchResponse::ValidationError(Json(ErrorMessage {
+                        message: format!(
+                            "side `{}` has {count} players, over its max_players of {max}",
+                            side.client_id
+                        ),
+                    })));
                 }
             }
         }
@@ -3052,9 +3042,9 @@ impl Api {
                         .and_then(|c| side_ids.get(c).cloned()),
                 ),
                 None => {
-                    return Ok(CreateMatchResponse::ValidationError(PlainText(
-                        "score references an unknown side or player".into(),
-                    )));
+                    return Ok(CreateMatchResponse::ValidationError(Json(ErrorMessage {
+                        message: "score references an unknown side or player".into(),
+                    })));
                 }
             },
             None => (None, None),
@@ -3081,11 +3071,11 @@ impl Api {
                 let (Some(player_id), Some(side_id)) =
                     (creator_player_id.clone(), creator_side_id.clone())
                 else {
-                    return Ok(CreateMatchResponse::ValidationError(PlainText(
-                        "a score can only be submitted by a participant; set \
+                    return Ok(CreateMatchResponse::ValidationError(Json(ErrorMessage {
+                        message: "a score can only be submitted by a participant; set \
                          creator_side_client_id to record the result"
                             .into(),
-                    )));
+                    })));
                 };
                 let submission_id = new_id();
                 let confirmation = dao::records::ScoreConfirmationRecord {
@@ -3154,7 +3144,9 @@ impl Api {
         match dao.create_match(&match_record, &player_records).await {
             Ok(()) => {}
             Err(dao::DaoError::Conflict(msg)) => {
-                return Ok(CreateMatchResponse::ValidationError(PlainText(msg)));
+                return Ok(CreateMatchResponse::ValidationError(Json(ErrorMessage {
+                    message: msg,
+                })));
             }
             Err(e) => return Err(dao_internal(e)),
         }
@@ -3243,9 +3235,9 @@ impl Api {
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
             None => {
-                return Ok(UpdateMatchResponse::NotFound(PlainText(
-                    "match not found".into(),
-                )));
+                return Ok(UpdateMatchResponse::NotFound(Json(ErrorMessage {
+                    message: "match not found".into(),
+                })));
             }
         };
 
@@ -3255,9 +3247,9 @@ impl Api {
         // the one action left to them (see `caller_is_match_admin`'s doc
         // comment for exactly who qualifies as an admin here).
         if !caller_is_match_admin(dao, &agg, &uid).await? {
-            return Ok(UpdateMatchResponse::Forbidden(PlainText(
-                "only a match admin can edit this match".into(),
-            )));
+            return Ok(UpdateMatchResponse::Forbidden(Json(ErrorMessage {
+                message: "only a match admin can edit this match".into(),
+            })));
         }
 
         // A lowered cap can't drop below the side's current roster — reject
@@ -3266,18 +3258,19 @@ impl Api {
             Some(updates) => {
                 for u in updates {
                     let Some(side) = agg.sides.iter().find(|s| s.side_id == u.side_id) else {
-                        return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
-                            "side `{}` is not part of this match",
-                            u.side_id
-                        ))));
+                        return Ok(UpdateMatchResponse::ValidationError(Json(ErrorMessage {
+                            message: format!("side `{}` is not part of this match", u.side_id),
+                        })));
                     };
                     if let Some(max) = u.max_players
                         && side.player_count > max
                     {
-                        return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
-                            "side `{}` already has {} players, over the requested max_players of {max}",
-                            u.side_id, side.player_count
-                        ))));
+                        return Ok(UpdateMatchResponse::ValidationError(Json(ErrorMessage {
+                            message: format!(
+                                "side `{}` already has {} players, over the requested max_players of {max}",
+                                u.side_id, side.player_count
+                            ),
+                        })));
                     }
                 }
                 updates
@@ -3294,18 +3287,20 @@ impl Api {
             // or a submitted score both move it to `in_progress`/`completed`)
             // or once the match is complete.
             if agg.match_.status != "scheduled" {
-                return Ok(UpdateMatchResponse::ValidationError(PlainText(
-                    "match format cannot be changed once scoring has started".into(),
-                )));
+                return Ok(UpdateMatchResponse::ValidationError(Json(ErrorMessage {
+                    message: "match format cannot be changed once scoring has started".into(),
+                })));
             }
 
             // A supplied format must be for this match's own sport.
             let tag = match_format_sport_tag(fmt);
             if tag != agg.match_.match_type {
-                return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
-                    "format is for `{tag}` but match is `{}`",
-                    agg.match_.match_type
-                ))));
+                return Ok(UpdateMatchResponse::ValidationError(Json(ErrorMessage {
+                    message: format!(
+                        "format is for `{tag}` but match is `{}`",
+                        agg.match_.match_type
+                    ),
+                })));
             }
         }
 
@@ -3325,7 +3320,11 @@ impl Api {
                         .map(|(asset_id, url)| dao::records::HeaderPhotoRecord { asset_id, url })
                         .collect(),
                 ),
-                Err(msg) => return Ok(UpdateMatchResponse::ValidationError(PlainText(msg))),
+                Err(msg) => {
+                    return Ok(UpdateMatchResponse::ValidationError(Json(ErrorMessage {
+                        message: msg,
+                    })));
+                }
             },
             None => None,
         };
@@ -3337,9 +3336,9 @@ impl Api {
             .map(match_status_str)
             .unwrap_or(agg.match_.status.as_str());
         if resulting_status == "cancelled" && input.score.is_some() {
-            return Ok(UpdateMatchResponse::ValidationError(PlainText(
-                "a cancelled match cannot be scored".into(),
-            )));
+            return Ok(UpdateMatchResponse::ValidationError(Json(ErrorMessage {
+                message: "a cancelled match cannot be scored".into(),
+            })));
         }
 
         // Set of valid side ids on this match, to validate score references.
@@ -3353,21 +3352,22 @@ impl Api {
         if let Some(renames) = &input.side_names {
             for rename in renames {
                 let Some(side) = agg.sides.iter().find(|s| s.side_id == rename.side_id) else {
-                    return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
-                        "side `{}` is not part of this match",
-                        rename.side_id
-                    ))));
+                    return Ok(UpdateMatchResponse::ValidationError(Json(ErrorMessage {
+                        message: format!("side `{}` is not part of this match", rename.side_id),
+                    })));
                 };
                 if let (Some(team_id), Some(_)) = (&side.team_id, &rename.name) {
                     let team_shared = agg.sides.iter().any(|other| {
                         other.side_id != side.side_id && other.team_id.as_deref() == Some(team_id)
                     });
                     if !team_shared {
-                        return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
-                            "side `{}` can't have both a name and a team unless another side \
+                        return Ok(UpdateMatchResponse::ValidationError(Json(ErrorMessage {
+                            message: format!(
+                                "side `{}` can't have both a name and a team unless another side \
                              shares that team",
-                            rename.side_id
-                        ))));
+                                rename.side_id
+                            ),
+                        })));
                     }
                 }
             }
@@ -3434,10 +3434,12 @@ impl Api {
                     .map(|r| r.name.clone())
                     .unwrap_or_else(|| side.name.clone());
                 if side.team_id.is_none() && effective_name.is_none() {
-                    return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
-                        "side `{}` would have no players, so it needs a name or a team",
-                        side.side_id
-                    ))));
+                    return Ok(UpdateMatchResponse::ValidationError(Json(ErrorMessage {
+                        message: format!(
+                            "side `{}` would have no players, so it needs a name or a team",
+                            side.side_id
+                        ),
+                    })));
                 }
             }
         }
@@ -3482,11 +3484,11 @@ impl Api {
                 && score_to_record(client_score) != score_to_record(&derived_score)
                 && !input.override_live_score.unwrap_or(false)
             {
-                return Ok(UpdateMatchResponse::Conflict(PlainText(
-                    "the submitted score doesn't match the match's live result — refresh \
+                return Ok(UpdateMatchResponse::Conflict(Json(ErrorMessage {
+                    message: "the submitted score doesn't match the match's live result — refresh \
                      and resubmit, or set override_live_score to submit it anyway"
                         .into(),
-                )));
+                })));
             }
         }
         let effective_score = input.score.as_ref();
@@ -3501,9 +3503,9 @@ impl Api {
             && agg.match_.confirmed_score.is_none()
             && agg.match_.pending_score.is_none()
         {
-            return Ok(UpdateMatchResponse::ValidationError(PlainText(
-                "a completed match needs a score".into(),
-            )));
+            return Ok(UpdateMatchResponse::ValidationError(Json(ErrorMessage {
+                message: "a completed match needs a score".into(),
+            })));
         }
 
         // A supplied score creates a new submission only when it differs from
@@ -3533,9 +3535,9 @@ impl Api {
                 Score::Netball(s) => s.score.keys().map(|k| k.as_str()).collect(),
             };
             if score_sides.iter().any(|sid| !valid_sides.contains(sid)) {
-                return Ok(UpdateMatchResponse::ValidationError(PlainText(
-                    "score references a side that is not part of this match".into(),
-                )));
+                return Ok(UpdateMatchResponse::ValidationError(Json(ErrorMessage {
+                    message: "score references a side that is not part of this match".into(),
+                })));
             }
 
             let new_record = score_to_record(score);
@@ -3561,11 +3563,11 @@ impl Api {
                 }) {
                     Some(pair) => pair,
                     None => {
-                        return Ok(UpdateMatchResponse::ValidationError(PlainText(
-                            "a score can only be submitted by a participant assigned \
+                        return Ok(UpdateMatchResponse::ValidationError(Json(ErrorMessage {
+                            message: "a score can only be submitted by a participant assigned \
                              to a side"
                                 .into(),
-                        )));
+                        })));
                     }
                 };
 
@@ -3729,9 +3731,9 @@ impl Api {
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
             None => {
-                return Ok(UpdateMatchResponse::NotFound(PlainText(
-                    "match not found".into(),
-                )));
+                return Ok(UpdateMatchResponse::NotFound(Json(ErrorMessage {
+                    message: "match not found".into(),
+                })));
             }
         };
         let i_liked = dao
@@ -4225,9 +4227,9 @@ impl Api {
             .map_err(dao_internal)?
             .is_none()
         {
-            return Ok(ListLiveEventsResponse::NotFound(PlainText(
-                "match not found".into(),
-            )));
+            return Ok(ListLiveEventsResponse::NotFound(Json(ErrorMessage {
+                message: "match not found".into(),
+            })));
         }
 
         let page = dao
@@ -4347,10 +4349,13 @@ impl Api {
     ) -> Result<AmendLiveEventResponse> {
         self.require_uid(dao, &jwt_data).await?;
         let _ = (match_id, seq, input);
-        Ok(AmendLiveEventResponse::ValidationError(PlainText(
-            "amending a live event in place isn't supported; delete and re-append instead \
+        Ok(AmendLiveEventResponse::ValidationError(Json(
+            ErrorMessage {
+                message:
+                    "amending a live event in place isn't supported; delete and re-append instead \
              (only the most recently recorded event can be deleted)"
-                .into(),
+                        .into(),
+            },
         )))
     }
 
@@ -4431,9 +4436,9 @@ impl Api {
             .map_err(dao_internal)?
             .is_none()
         {
-            return Ok(ListScoreSubmissionsResponse::NotFound(PlainText(
-                "match not found".into(),
-            )));
+            return Ok(ListScoreSubmissionsResponse::NotFound(Json(ErrorMessage {
+                message: "match not found".into(),
+            })));
         }
 
         // Full history (newest first). The endpoint is not paginated, so drain
@@ -4478,9 +4483,9 @@ impl Api {
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
             None => {
-                return Ok(RespondToScoreResponse::NotFound(PlainText(
-                    "match not found".into(),
-                )));
+                return Ok(RespondToScoreResponse::NotFound(Json(ErrorMessage {
+                    message: "match not found".into(),
+                })));
             }
         };
         // Caller's player row (by linked user id), and the side they're on.
@@ -4495,9 +4500,9 @@ impl Api {
         }) {
             Some(pair) => pair,
             None => {
-                return Ok(RespondToScoreResponse::Forbidden(PlainText(
-                    "only an assigned participant may respond to the score".into(),
-                )));
+                return Ok(RespondToScoreResponse::Forbidden(Json(ErrorMessage {
+                    message: "only an assigned participant may respond to the score".into(),
+                })));
             }
         };
 
@@ -4508,16 +4513,16 @@ impl Api {
         {
             Some(s) => s,
             None => {
-                return Ok(RespondToScoreResponse::NotFound(PlainText(
-                    "score submission not found".into(),
-                )));
+                return Ok(RespondToScoreResponse::NotFound(Json(ErrorMessage {
+                    message: "score submission not found".into(),
+                })));
             }
         };
         // Can only respond to a pending submission.
         if submission.status != "pending" {
-            return Ok(RespondToScoreResponse::Forbidden(PlainText(
-                "this submission is no longer pending".into(),
-            )));
+            return Ok(RespondToScoreResponse::Forbidden(Json(ErrorMessage {
+                message: "this submission is no longer pending".into(),
+            })));
         }
 
         let now = now_iso();
@@ -4707,9 +4712,9 @@ impl Api {
         let input = input.0;
         let uid = self.require_uid(dao, &jwt_data).await?;
         if input.text.trim().is_empty() {
-            return Ok(CreateCommentResponse::ValidationError(PlainText(
-                "comment text must not be empty".into(),
-            )));
+            return Ok(CreateCommentResponse::ValidationError(Json(ErrorMessage {
+                message: "comment text must not be empty".into(),
+            })));
         }
 
         let record = dao::records::CommentRecord {
@@ -4743,13 +4748,13 @@ impl Api {
                     .map_err(dao_internal)?
                     .is_some()
                 {
-                    return Ok(CreateCommentResponse::ValidationError(PlainText(
-                        "cannot reply to a reply".into(),
-                    )));
+                    return Ok(CreateCommentResponse::ValidationError(Json(ErrorMessage {
+                        message: "cannot reply to a reply".into(),
+                    })));
                 }
-                return Ok(CreateCommentResponse::NotFound(PlainText(
-                    "parent comment not found".into(),
-                )));
+                return Ok(CreateCommentResponse::NotFound(Json(ErrorMessage {
+                    message: "parent comment not found".into(),
+                })));
             }
             dao.create_reply(&record).await.map_err(dao_internal)?;
         } else {
@@ -4803,9 +4808,9 @@ impl Api {
         let input = input.0;
         let uid = self.require_uid(dao, &jwt_data).await?;
         if input.text.trim().is_empty() {
-            return Ok(UpdateCommentResponse::ValidationError(PlainText(
-                "comment text must not be empty".into(),
-            )));
+            return Ok(UpdateCommentResponse::ValidationError(Json(ErrorMessage {
+                message: "comment text must not be empty".into(),
+            })));
         }
 
         let existing = match dao
@@ -4815,15 +4820,15 @@ impl Api {
         {
             Some(c) => c,
             None => {
-                return Ok(UpdateCommentResponse::NotFound(PlainText(
-                    "comment not found".into(),
-                )));
+                return Ok(UpdateCommentResponse::NotFound(Json(ErrorMessage {
+                    message: "comment not found".into(),
+                })));
             }
         };
         if existing.author_user_id.as_deref() != Some(uid.as_str()) {
-            return Ok(UpdateCommentResponse::Forbidden(PlainText(
-                "only the author can edit this comment".into(),
-            )));
+            return Ok(UpdateCommentResponse::Forbidden(Json(ErrorMessage {
+                message: "only the author can edit this comment".into(),
+            })));
         }
 
         let edited_at = now_iso();
@@ -4857,15 +4862,15 @@ impl Api {
         {
             Some(c) => c,
             None => {
-                return Ok(DeleteCommentResponse::NotFound(PlainText(
-                    "comment not found".into(),
-                )));
+                return Ok(DeleteCommentResponse::NotFound(Json(ErrorMessage {
+                    message: "comment not found".into(),
+                })));
             }
         };
         if existing.author_user_id.as_deref() != Some(uid.as_str()) {
-            return Ok(DeleteCommentResponse::Forbidden(PlainText(
-                "only the author can delete this comment".into(),
-            )));
+            return Ok(DeleteCommentResponse::Forbidden(Json(ErrorMessage {
+                message: "only the author can delete this comment".into(),
+            })));
         }
 
         // Tombstone if it has replies (keep the thread); hard-delete otherwise.
@@ -4879,9 +4884,9 @@ impl Api {
                 // Deleted by a concurrent request between the check above and
                 // here.
                 Err(dao::DaoError::NotFound(_)) => {
-                    return Ok(DeleteCommentResponse::NotFound(PlainText(
-                        "comment not found".into(),
-                    )));
+                    return Ok(DeleteCommentResponse::NotFound(Json(ErrorMessage {
+                        message: "comment not found".into(),
+                    })));
                 }
                 Err(e) => return Err(dao_internal(e)),
             }
@@ -4994,7 +4999,9 @@ impl Api {
                 match resolve_asset_urls(dao, &uid, "team_logo", ids).await? {
                     Ok(resolved) => resolved.into_iter().next().map(|(_, url)| url),
                     Err(msg) => {
-                        return Ok(CreateTeamResponse::ValidationError(PlainText(msg)));
+                        return Ok(CreateTeamResponse::ValidationError(Json(ErrorMessage {
+                            message: msg,
+                        })));
                     }
                 }
             }
@@ -5025,7 +5032,9 @@ impl Api {
         match dao.create_team(&team, &creator).await {
             Ok(()) => {}
             Err(dao::DaoError::Conflict(msg)) => {
-                return Ok(CreateTeamResponse::ValidationError(PlainText(msg)));
+                return Ok(CreateTeamResponse::ValidationError(Json(ErrorMessage {
+                    message: msg,
+                })));
             }
             Err(e) => return Err(dao_internal(e)),
         }
@@ -5078,9 +5087,9 @@ impl Api {
                     is_followed_by_me,
                 ))))
             }
-            None => Ok(GetTeamResponse::NotFound(PlainText(
-                "team not found".into(),
-            ))),
+            None => Ok(GetTeamResponse::NotFound(Json(ErrorMessage {
+                message: "team not found".into(),
+            }))),
         }
     }
 
@@ -5109,9 +5118,9 @@ impl Api {
             .map_err(dao_internal)?
             .is_none()
         {
-            return Ok(ListTeamMembersResponse::NotFound(PlainText(
-                "team not found".into(),
-            )));
+            return Ok(ListTeamMembersResponse::NotFound(Json(ErrorMessage {
+                message: "team not found".into(),
+            })));
         }
         let page = dao
             .list_team_members(&team_id, cursor.as_deref(), page_limit(limit))
@@ -5145,14 +5154,14 @@ impl Api {
         // serves the response too (members are no longer embedded, see
         // `Team`'s doc comment, so there's nothing else to re-fetch).
         let Some(agg) = dao.get_team(&team_id).await.map_err(dao_internal)? else {
-            return Ok(AddTeamMembersResponse::NotFound(PlainText(
-                "team not found".into(),
-            )));
+            return Ok(AddTeamMembersResponse::NotFound(Json(ErrorMessage {
+                message: "team not found".into(),
+            })));
         };
         if !caller_can_manage_team(&agg, &uid) {
-            return Ok(AddTeamMembersResponse::Forbidden(PlainText(
-                "only the team's owner or an admin can add members".into(),
-            )));
+            return Ok(AddTeamMembersResponse::Forbidden(Json(ErrorMessage {
+                message: "only the team's owner or an admin can add members".into(),
+            })));
         }
 
         // Add each user as a Member (no invitation — ad-hoc add).
@@ -5190,14 +5199,14 @@ impl Api {
         let uid = self.require_uid(dao, &jwt_data).await?;
 
         let Some(agg) = dao.get_team(&team_id).await.map_err(dao_internal)? else {
-            return Ok(UpdateTeamResponse::NotFound(PlainText(
-                "team not found".into(),
-            )));
+            return Ok(UpdateTeamResponse::NotFound(Json(ErrorMessage {
+                message: "team not found".into(),
+            })));
         };
         if !caller_can_manage_team(&agg, &uid) {
-            return Ok(UpdateTeamResponse::Forbidden(PlainText(
-                "only the team's owner or an admin can update it".into(),
-            )));
+            return Ok(UpdateTeamResponse::Forbidden(Json(ErrorMessage {
+                message: "only the team's owner or an admin can update it".into(),
+            })));
         }
 
         // Some(Some(url)) = set a new logo; Some(None) is never produced here
@@ -5209,7 +5218,9 @@ impl Api {
                 match resolve_asset_urls(dao, &uid, "team_logo", ids).await? {
                     Ok(resolved) => Some(resolved.into_iter().next().map(|(_, url)| url)),
                     Err(msg) => {
-                        return Ok(UpdateTeamResponse::ValidationError(PlainText(msg)));
+                        return Ok(UpdateTeamResponse::ValidationError(Json(ErrorMessage {
+                            message: msg,
+                        })));
                     }
                 }
             }
@@ -5226,9 +5237,9 @@ impl Api {
         {
             Ok(()) => {}
             Err(dao::DaoError::NotFound(_)) => {
-                return Ok(UpdateTeamResponse::NotFound(PlainText(
-                    "team not found".into(),
-                )));
+                return Ok(UpdateTeamResponse::NotFound(Json(ErrorMessage {
+                    message: "team not found".into(),
+                })));
             }
             Err(e) => return Err(dao_internal(e)),
         }
@@ -5236,9 +5247,9 @@ impl Api {
             Some(meta) => Ok(UpdateTeamResponse::Team(Json(team_from_records(
                 &meta, false,
             )))),
-            None => Ok(UpdateTeamResponse::NotFound(PlainText(
-                "team not found".into(),
-            ))),
+            None => Ok(UpdateTeamResponse::NotFound(Json(ErrorMessage {
+                message: "team not found".into(),
+            }))),
         }
     }
 
@@ -5257,14 +5268,14 @@ impl Api {
         // Keep the aggregate — removing a member doesn't change the meta, so
         // `agg.team` serves the response too.
         let Some(agg) = dao.get_team(&team_id).await.map_err(dao_internal)? else {
-            return Ok(RemoveTeamMemberResponse::NotFound(PlainText(
-                "team not found".into(),
-            )));
+            return Ok(RemoveTeamMemberResponse::NotFound(Json(ErrorMessage {
+                message: "team not found".into(),
+            })));
         };
         if !caller_can_manage_team(&agg, &uid) {
-            return Ok(RemoveTeamMemberResponse::Forbidden(PlainText(
-                "only the team's owner or an admin can remove members".into(),
-            )));
+            return Ok(RemoveTeamMemberResponse::Forbidden(Json(ErrorMessage {
+                message: "only the team's owner or an admin can remove members".into(),
+            })));
         }
         // The owner can never be removed via this endpoint — an admin
         // kicking the owner (or the owner kicking themselves) would leave
@@ -5276,17 +5287,17 @@ impl Api {
             .iter()
             .any(|m| m.membership_id == member_id && m.role == "owner")
         {
-            return Ok(RemoveTeamMemberResponse::Forbidden(PlainText(
-                "the team's owner can't be removed".into(),
-            )));
+            return Ok(RemoveTeamMemberResponse::Forbidden(Json(ErrorMessage {
+                message: "the team's owner can't be removed".into(),
+            })));
         }
 
         match dao.remove_team_member(&team_id, &member_id).await {
             Ok(()) => {}
             Err(dao::DaoError::NotFound(_)) => {
-                return Ok(RemoveTeamMemberResponse::NotFound(PlainText(
-                    "member not found".into(),
-                )));
+                return Ok(RemoveTeamMemberResponse::NotFound(Json(ErrorMessage {
+                    message: "member not found".into(),
+                })));
             }
             Err(e) => return Err(dao_internal(e)),
         }
@@ -5314,23 +5325,27 @@ impl Api {
         let uid = self.require_uid(dao, &jwt_data).await?;
 
         let Some(agg) = dao.get_team(&team_id).await.map_err(dao_internal)? else {
-            return Ok(UpdateTeamMemberRoleResponse::NotFound(PlainText(
-                "team not found".into(),
-            )));
+            return Ok(UpdateTeamMemberRoleResponse::NotFound(Json(ErrorMessage {
+                message: "team not found".into(),
+            })));
         };
         if !caller_can_manage_team(&agg, &uid) {
-            return Ok(UpdateTeamMemberRoleResponse::Forbidden(PlainText(
-                "only the team's owner or an admin can change a member's role".into(),
+            return Ok(UpdateTeamMemberRoleResponse::Forbidden(Json(
+                ErrorMessage {
+                    message: "only the team's owner or an admin can change a member's role".into(),
+                },
             )));
         }
         let Some(target) = agg.members.iter().find(|m| m.membership_id == member_id) else {
-            return Ok(UpdateTeamMemberRoleResponse::NotFound(PlainText(
-                "member not found".into(),
-            )));
+            return Ok(UpdateTeamMemberRoleResponse::NotFound(Json(ErrorMessage {
+                message: "member not found".into(),
+            })));
         };
         if target.role == "owner" {
-            return Ok(UpdateTeamMemberRoleResponse::Forbidden(PlainText(
-                "the team's owner's role can't be changed".into(),
+            return Ok(UpdateTeamMemberRoleResponse::Forbidden(Json(
+                ErrorMessage {
+                    message: "the team's owner's role can't be changed".into(),
+                },
             )));
         }
 
@@ -5356,14 +5371,14 @@ impl Api {
         let uid = self.require_uid(dao, &jwt_data).await?;
 
         let Some(agg) = dao.get_team(&team_id).await.map_err(dao_internal)? else {
-            return Ok(DeleteTeamResponse::NotFound(PlainText(
-                "team not found".into(),
-            )));
+            return Ok(DeleteTeamResponse::NotFound(Json(ErrorMessage {
+                message: "team not found".into(),
+            })));
         };
         if !caller_is_team_owner(&agg, &uid) {
-            return Ok(DeleteTeamResponse::Forbidden(PlainText(
-                "only the team's owner can delete it".into(),
-            )));
+            return Ok(DeleteTeamResponse::Forbidden(Json(ErrorMessage {
+                message: "only the team's owner can delete it".into(),
+            })));
         }
 
         dao.delete_team(&team_id).await.map_err(dao_internal)?;
@@ -5389,19 +5404,19 @@ impl Api {
         let uid = self.require_uid(dao, &jwt_data).await?;
 
         let Some(agg) = dao.get_team(&team_id).await.map_err(dao_internal)? else {
-            return Ok(LeaveTeamResponse::NotFound(PlainText(
-                "team not found".into(),
-            )));
+            return Ok(LeaveTeamResponse::NotFound(Json(ErrorMessage {
+                message: "team not found".into(),
+            })));
         };
         let Some(membership) = caller_team_membership(&agg, &uid) else {
-            return Ok(LeaveTeamResponse::NotFound(PlainText(
-                "you're not a member of this team".into(),
-            )));
+            return Ok(LeaveTeamResponse::NotFound(Json(ErrorMessage {
+                message: "you're not a member of this team".into(),
+            })));
         };
         if membership.role == "owner" {
-            return Ok(LeaveTeamResponse::ValidationError(PlainText(
-                "transfer ownership to someone else before leaving".into(),
-            )));
+            return Ok(LeaveTeamResponse::ValidationError(Json(ErrorMessage {
+                message: "transfer ownership to someone else before leaving".into(),
+            })));
         }
 
         dao.remove_team_member(&team_id, &membership.membership_id)
@@ -5430,13 +5445,17 @@ impl Api {
         let uid = self.require_uid(dao, &jwt_data).await?;
 
         let Some(agg) = dao.get_team(&team_id).await.map_err(dao_internal)? else {
-            return Ok(TransferTeamOwnershipResponse::NotFound(PlainText(
-                "team not found".into(),
+            return Ok(TransferTeamOwnershipResponse::NotFound(Json(
+                ErrorMessage {
+                    message: "team not found".into(),
+                },
             )));
         };
         if !caller_is_team_owner(&agg, &uid) {
-            return Ok(TransferTeamOwnershipResponse::Forbidden(PlainText(
-                "only the team's owner can transfer ownership".into(),
+            return Ok(TransferTeamOwnershipResponse::Forbidden(Json(
+                ErrorMessage {
+                    message: "only the team's owner can transfer ownership".into(),
+                },
             )));
         }
         // Always `Some` here — `caller_is_team_owner` already confirmed it.
@@ -5446,13 +5465,17 @@ impl Api {
             .iter()
             .find(|m| m.membership_id == input.member_id)
         else {
-            return Ok(TransferTeamOwnershipResponse::NotFound(PlainText(
-                "member not found".into(),
+            return Ok(TransferTeamOwnershipResponse::NotFound(Json(
+                ErrorMessage {
+                    message: "member not found".into(),
+                },
             )));
         };
         if to.membership_id == from.membership_id {
-            return Ok(TransferTeamOwnershipResponse::ValidationError(PlainText(
-                "already the owner".into(),
+            return Ok(TransferTeamOwnershipResponse::ValidationError(Json(
+                ErrorMessage {
+                    message: "already the owner".into(),
+                },
             )));
         }
         let to_is_accepted = to.user_id.is_some()
@@ -5461,8 +5484,10 @@ impl Api {
                 .as_ref()
                 .is_none_or(|inv| inv.status == "accepted");
         if !to_is_accepted {
-            return Ok(TransferTeamOwnershipResponse::ValidationError(PlainText(
-                "ownership can only go to an accepted member".into(),
+            return Ok(TransferTeamOwnershipResponse::ValidationError(Json(
+                ErrorMessage {
+                    message: "ownership can only go to an accepted member".into(),
+                },
             )));
         }
 
@@ -5488,26 +5513,26 @@ impl Api {
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
             None => {
-                return Ok(AddInvitationsResponse::NotFound(PlainText(
-                    "match not found".into(),
-                )));
+                return Ok(AddInvitationsResponse::NotFound(Json(ErrorMessage {
+                    message: "match not found".into(),
+                })));
             }
         };
 
         // Only a match admin may invite others.
         if !caller_is_match_admin(dao, &agg, &uid).await? {
-            return Ok(AddInvitationsResponse::Forbidden(PlainText(
-                "only a match admin can invite people to this match".into(),
-            )));
+            return Ok(AddInvitationsResponse::Forbidden(Json(ErrorMessage {
+                message: "only a match admin can invite people to this match".into(),
+            })));
         }
 
         // If a side was named, it must be one of this match's sides.
         if let Some(side_id) = &input.side_id
             && !agg.sides.iter().any(|s| &s.side_id == side_id)
         {
-            return Ok(AddInvitationsResponse::NotFound(PlainText(
-                "side is not part of this match".into(),
-            )));
+            return Ok(AddInvitationsResponse::NotFound(Json(ErrorMessage {
+                message: "side is not part of this match".into(),
+            })));
         }
 
         // Each invitee gets both a roster slot (with an embedded invitation) and
@@ -5600,16 +5625,16 @@ impl Api {
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
             None => {
-                return Ok(CreateJoinLinkResponse::NotFound(PlainText(
-                    "match not found".into(),
-                )));
+                return Ok(CreateJoinLinkResponse::NotFound(Json(ErrorMessage {
+                    message: "match not found".into(),
+                })));
             }
         };
 
         if !caller_is_match_admin(dao, &agg, &uid).await? {
-            return Ok(CreateJoinLinkResponse::Forbidden(PlainText(
-                "only a match admin can create a join link".into(),
-            )));
+            return Ok(CreateJoinLinkResponse::Forbidden(Json(ErrorMessage {
+                message: "only a match admin can create a join link".into(),
+            })));
         }
 
         if let Some(ids) = &input.scope.side_ids {
@@ -5617,9 +5642,11 @@ impl Api {
                 .iter()
                 .find(|sid| !agg.sides.iter().any(|s| &s.side_id == *sid))
             {
-                return Ok(CreateJoinLinkResponse::ValidationError(PlainText(format!(
-                    "side `{bad}` is not part of this match"
-                ))));
+                return Ok(CreateJoinLinkResponse::ValidationError(Json(
+                    ErrorMessage {
+                        message: format!("side `{bad}` is not part of this match"),
+                    },
+                )));
             }
             // An empty list means "no side is allowed" (force-unassigned —
             // see `JoinLinkScope`'s doc comment); without unassigned also
@@ -5629,11 +5656,11 @@ impl Api {
             // it truthfully but the match's own `allow_unassigned` caps away
             // would be just as dead-on-arrival, silently.
             if ids.is_empty() && !(input.scope.allow_unassigned && agg.match_.allow_unassigned) {
-                return Ok(CreateJoinLinkResponse::ValidationError(PlainText(
+                return Ok(CreateJoinLinkResponse::ValidationError(Json(ErrorMessage { message:
                     "this link would never be joinable — allow at least one side, or unassigned \
                      (the match itself must also allow unassigned)"
                         .into(),
-                )));
+                 })));
             }
         }
 
@@ -5670,15 +5697,15 @@ impl Api {
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
             None => {
-                return Ok(ListJoinLinksResponse::NotFound(PlainText(
-                    "match not found".into(),
-                )));
+                return Ok(ListJoinLinksResponse::NotFound(Json(ErrorMessage {
+                    message: "match not found".into(),
+                })));
             }
         };
         if !caller_is_match_admin(dao, &agg, &uid).await? {
-            return Ok(ListJoinLinksResponse::Forbidden(PlainText(
-                "only a match admin can list this match's join links".into(),
-            )));
+            return Ok(ListJoinLinksResponse::Forbidden(Json(ErrorMessage {
+                message: "only a match admin can list this match's join links".into(),
+            })));
         }
 
         // A single page is plenty — a match realistically has a handful of
@@ -5713,15 +5740,15 @@ impl Api {
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
             None => {
-                return Ok(RevokeJoinLinkResponse::NotFound(PlainText(
-                    "match not found".into(),
-                )));
+                return Ok(RevokeJoinLinkResponse::NotFound(Json(ErrorMessage {
+                    message: "match not found".into(),
+                })));
             }
         };
         if !caller_is_match_admin(dao, &agg, &uid).await? {
-            return Ok(RevokeJoinLinkResponse::Forbidden(PlainText(
-                "only a match admin can revoke this match's join links".into(),
-            )));
+            return Ok(RevokeJoinLinkResponse::Forbidden(Json(ErrorMessage {
+                message: "only a match admin can revoke this match's join links".into(),
+            })));
         }
 
         match dao
@@ -5732,9 +5759,9 @@ impl Api {
             Some(link) if matches!(&link.context, dao::records::InvitationContextRecord::Match { match_id: m, .. } if m == &match_id) =>
                 {}
             _ => {
-                return Ok(RevokeJoinLinkResponse::NotFound(PlainText(
-                    "join link not found".into(),
-                )));
+                return Ok(RevokeJoinLinkResponse::NotFound(Json(ErrorMessage {
+                    message: "join link not found".into(),
+                })));
             }
         }
 
@@ -5768,9 +5795,9 @@ impl Api {
         {
             Some(l) if l.revoked_at.is_none() => l,
             _ => {
-                return Ok(GetJoinLinkPreviewResponse::NotFound(PlainText(
-                    "no join link matches that token".into(),
-                )));
+                return Ok(GetJoinLinkPreviewResponse::NotFound(Json(ErrorMessage {
+                    message: "no join link matches that token".into(),
+                })));
             }
         };
         let dao::records::InvitationContextRecord::Match {
@@ -5778,14 +5805,14 @@ impl Api {
             match_name,
         } = &link.context
         else {
-            return Ok(GetJoinLinkPreviewResponse::NotFound(PlainText(
-                "no join link matches that token".into(),
-            )));
+            return Ok(GetJoinLinkPreviewResponse::NotFound(Json(ErrorMessage {
+                message: "no join link matches that token".into(),
+            })));
         };
         let Some(agg) = dao.get_match(match_id).await.map_err(dao_internal)? else {
-            return Ok(GetJoinLinkPreviewResponse::NotFound(PlainText(
-                "no join link matches that token".into(),
-            )));
+            return Ok(GetJoinLinkPreviewResponse::NotFound(Json(ErrorMessage {
+                message: "no join link matches that token".into(),
+            })));
         };
 
         Ok(GetJoinLinkPreviewResponse::Preview(Json(JoinLinkPreview {
@@ -5819,16 +5846,16 @@ impl Api {
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
             None => {
-                return Ok(JoinMatchResponse::NotFound(PlainText(
-                    "match not found".into(),
-                )));
+                return Ok(JoinMatchResponse::NotFound(Json(ErrorMessage {
+                    message: "match not found".into(),
+                })));
             }
         };
 
         if caller_is_participant(&agg.players, &uid) {
-            return Ok(JoinMatchResponse::Conflict(PlainText(
-                "you're already on this match's roster".into(),
-            )));
+            return Ok(JoinMatchResponse::Conflict(Json(ErrorMessage {
+                message: "you're already on this match's roster".into(),
+            })));
         }
 
         // Two ways in: a join-link token, or (no token) team self-join —
@@ -5845,18 +5872,18 @@ impl Api {
                 {
                     Some(l) if l.revoked_at.is_none() => l,
                     _ => {
-                        return Ok(JoinMatchResponse::NotFound(PlainText(
-                            "join link not found".into(),
-                        )));
+                        return Ok(JoinMatchResponse::NotFound(Json(ErrorMessage {
+                            message: "join link not found".into(),
+                        })));
                     }
                 };
                 match &link.context {
                     dao::records::InvitationContextRecord::Match { match_id: m, .. }
                         if m == &match_id => {}
                     _ => {
-                        return Ok(JoinMatchResponse::NotFound(PlainText(
-                            "join link not found".into(),
-                        )));
+                        return Ok(JoinMatchResponse::NotFound(Json(ErrorMessage {
+                            message: "join link not found".into(),
+                        })));
                     }
                 }
                 let scope = join_scope_from_link(&link, agg.match_.allow_unassigned);
@@ -5868,11 +5895,12 @@ impl Api {
             None => {
                 let eligible = caller_team_join_sides(dao, &agg, &uid).await?;
                 if eligible.is_empty() {
-                    return Ok(JoinMatchResponse::ValidationError(PlainText(
-                        "you're not eligible to join this match directly — ask for a join link \
+                    return Ok(JoinMatchResponse::ValidationError(Json(ErrorMessage {
+                        message:
+                            "you're not eligible to join this match directly — ask for a join link \
                          or invite instead"
-                            .into(),
-                    )));
+                                .into(),
+                    })));
                 }
                 let scope = JoinScope {
                     allowed_side_ids: Some(eligible),
@@ -5885,7 +5913,11 @@ impl Api {
         let target_side_id = match resolve_join_target(&scope, input.side_id.as_deref(), &agg.sides)
         {
             Ok(t) => t,
-            Err(msg) => return Ok(JoinMatchResponse::ValidationError(PlainText(msg))),
+            Err(msg) => {
+                return Ok(JoinMatchResponse::ValidationError(Json(ErrorMessage {
+                    message: msg,
+                })));
+            }
         };
 
         // Capacity, checked here for a precise error; `Dao::join_match_tx`
@@ -5895,9 +5927,9 @@ impl Api {
         if let Some(max) = effective_max
             && agg.match_.total_player_count >= max as u64
         {
-            return Ok(JoinMatchResponse::Conflict(PlainText(
-                "this match is full".into(),
-            )));
+            return Ok(JoinMatchResponse::Conflict(Json(ErrorMessage {
+                message: "this match is full".into(),
+            })));
         }
         let target_side = target_side_id
             .as_ref()
@@ -5906,9 +5938,9 @@ impl Api {
             && let Some(max) = side.max_players
             && side.player_count >= max
         {
-            return Ok(JoinMatchResponse::Conflict(PlainText(
-                "that side is full".into(),
-            )));
+            return Ok(JoinMatchResponse::Conflict(Json(ErrorMessage {
+                message: "that side is full".into(),
+            })));
         }
 
         let player = dao::records::MatchPlayerRecord {
@@ -5941,9 +5973,9 @@ impl Api {
             .map_err(dao_internal)?;
 
         let Some(agg) = dao.get_match(&match_id).await.map_err(dao_internal)? else {
-            return Ok(JoinMatchResponse::NotFound(PlainText(
-                "match not found".into(),
-            )));
+            return Ok(JoinMatchResponse::NotFound(Json(ErrorMessage {
+                message: "match not found".into(),
+            })));
         };
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, false);
         m.viewer_role = caller_match_role(&agg.players, &uid).map(match_player_role_from_record);
@@ -5973,27 +6005,35 @@ impl Api {
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
             None => {
-                return Ok(TransferMatchOwnershipResponse::NotFound(PlainText(
-                    "match not found".into(),
+                return Ok(TransferMatchOwnershipResponse::NotFound(Json(
+                    ErrorMessage {
+                        message: "match not found".into(),
+                    },
                 )));
             }
         };
         if !caller_is_match_owner(&agg, &uid) {
-            return Ok(TransferMatchOwnershipResponse::Forbidden(PlainText(
-                "only the current owner can transfer ownership".into(),
+            return Ok(TransferMatchOwnershipResponse::Forbidden(Json(
+                ErrorMessage {
+                    message: "only the current owner can transfer ownership".into(),
+                },
             )));
         }
         // Always `Some` here — `caller_is_match_owner` already confirmed it.
         let from =
             caller_match_membership(&agg.players, &uid).expect("caller is the owner, just checked");
         let Some(to) = agg.players.iter().find(|p| p.player_id == input.player_id) else {
-            return Ok(TransferMatchOwnershipResponse::NotFound(PlainText(
-                "player not found".into(),
+            return Ok(TransferMatchOwnershipResponse::NotFound(Json(
+                ErrorMessage {
+                    message: "player not found".into(),
+                },
             )));
         };
         if to.player_id == from.player_id {
-            return Ok(TransferMatchOwnershipResponse::ValidationError(PlainText(
-                "already the owner".into(),
+            return Ok(TransferMatchOwnershipResponse::ValidationError(Json(
+                ErrorMessage {
+                    message: "already the owner".into(),
+                },
             )));
         }
         let to_is_accepted = to.user_id.is_some()
@@ -6002,8 +6042,10 @@ impl Api {
                 .as_ref()
                 .is_none_or(|inv| inv.status == "accepted");
         if !to_is_accepted {
-            return Ok(TransferMatchOwnershipResponse::ValidationError(PlainText(
-                "ownership can only go to an accepted player".into(),
+            return Ok(TransferMatchOwnershipResponse::ValidationError(Json(
+                ErrorMessage {
+                    message: "ownership can only go to an accepted player".into(),
+                },
             )));
         }
 
@@ -6034,19 +6076,19 @@ impl Api {
         let uid = self.require_uid(dao, &jwt_data).await?;
 
         let Some(agg) = dao.get_match(&match_id).await.map_err(dao_internal)? else {
-            return Ok(LeaveMatchResponse::NotFound(PlainText(
-                "match not found".into(),
-            )));
+            return Ok(LeaveMatchResponse::NotFound(Json(ErrorMessage {
+                message: "match not found".into(),
+            })));
         };
         let Some(player) = caller_match_membership(&agg.players, &uid) else {
-            return Ok(LeaveMatchResponse::NotFound(PlainText(
-                "you're not a player on this match".into(),
-            )));
+            return Ok(LeaveMatchResponse::NotFound(Json(ErrorMessage {
+                message: "you're not a player on this match".into(),
+            })));
         };
         if player.role == dao::records::MatchPlayerRole::Owner {
-            return Ok(LeaveMatchResponse::ValidationError(PlainText(
-                "transfer ownership to someone else before leaving".into(),
-            )));
+            return Ok(LeaveMatchResponse::ValidationError(Json(ErrorMessage {
+                message: "transfer ownership to someone else before leaving".into(),
+            })));
         }
 
         dao.remove_match_players(&match_id, std::slice::from_ref(&player.player_id))
@@ -6071,15 +6113,15 @@ impl Api {
         let agg = match dao.get_team(&team_id).await.map_err(dao_internal)? {
             Some(agg) => agg,
             None => {
-                return Ok(AddInvitationsResponse::NotFound(PlainText(
-                    "team not found".into(),
-                )));
+                return Ok(AddInvitationsResponse::NotFound(Json(ErrorMessage {
+                    message: "team not found".into(),
+                })));
             }
         };
         if !caller_can_manage_team(&agg, &uid) {
-            return Ok(AddInvitationsResponse::Forbidden(PlainText(
-                "only the team's owner or an admin can invite people".into(),
-            )));
+            return Ok(AddInvitationsResponse::Forbidden(Json(ErrorMessage {
+                message: "only the team's owner or an admin can invite people".into(),
+            })));
         }
         let role = input
             .role
@@ -6295,9 +6337,9 @@ impl Api {
             .await
         {
             Ok(()) => Ok(RegisterDeviceResponse::Ok),
-            Err(dao::DaoError::Conflict(msg)) => {
-                Ok(RegisterDeviceResponse::ValidationError(PlainText(msg)))
-            }
+            Err(dao::DaoError::Conflict(msg)) => Ok(RegisterDeviceResponse::ValidationError(Json(
+                ErrorMessage { message: msg },
+            ))),
             Err(e) => Err(dao_internal(e)),
         }
     }
@@ -6313,9 +6355,11 @@ impl Api {
         info!("Unregistering device for {uid}");
         match dao.delete_device(&uid, &input.push_token).await {
             Ok(()) => Ok(UnregisterDeviceResponse::Ok),
-            Err(dao::DaoError::NotFound(_)) => Ok(UnregisterDeviceResponse::NotFound(PlainText(
-                "device not registered".into(),
-            ))),
+            Err(dao::DaoError::NotFound(_)) => {
+                Ok(UnregisterDeviceResponse::NotFound(Json(ErrorMessage {
+                    message: "device not registered".into(),
+                })))
+            }
             Err(e) => Err(dao_internal(e)),
         }
     }
@@ -6337,8 +6381,10 @@ impl Api {
         let uid = self.require_uid(dao, &jwt_data).await?;
         let code = code.trim().to_uppercase();
         if code.is_empty() || code.len() > 32 {
-            return Ok(ConfirmDevicePairingResponse::AlreadyUsed(PlainText(
-                "invalid pairing code".into(),
+            return Ok(ConfirmDevicePairingResponse::AlreadyUsed(Json(
+                ErrorMessage {
+                    message: "invalid pairing code".into(),
+                },
             )));
         }
         info!("Confirming device pairing code for {uid}");
@@ -6359,9 +6405,11 @@ impl Api {
             // Someone (this caller retrying, or someone else) already
             // confirmed this exact code — single-use, same spirit as the
             // final claim step's own guard.
-            Err(dao::DaoError::Conflict(_)) => Ok(ConfirmDevicePairingResponse::AlreadyUsed(
-                PlainText("this code has already been confirmed".into()),
-            )),
+            Err(dao::DaoError::Conflict(_)) => Ok(ConfirmDevicePairingResponse::AlreadyUsed(Json(
+                ErrorMessage {
+                    message: "this code has already been confirmed".into(),
+                },
+            ))),
             Err(e) => Err(dao_internal(e)),
         }
     }
@@ -6382,9 +6430,9 @@ impl Api {
         input: Json<PairDeviceInput>,
     ) -> Result<PairDeviceResponse> {
         let Some(signer) = device_signer else {
-            return Ok(PairDeviceResponse::NotConfigured(PlainText(
-                "device pairing is not configured on this deployment".into(),
-            )));
+            return Ok(PairDeviceResponse::NotConfigured(Json(ErrorMessage {
+                message: "device pairing is not configured on this deployment".into(),
+            })));
         };
 
         let code = input.code.trim().to_uppercase();
@@ -6408,9 +6456,11 @@ impl Api {
             Err(dao::DaoError::NotFound(_)) => Ok(PairDeviceResponse::Pending),
             // A record exists but is already claimed or has expired since
             // being confirmed — terminal, unlike the above.
-            Err(dao::DaoError::Conflict(_)) => Ok(PairDeviceResponse::InvalidCode(PlainText(
-                "pairing code already used or expired".into(),
-            ))),
+            Err(dao::DaoError::Conflict(_)) => {
+                Ok(PairDeviceResponse::InvalidCode(Json(ErrorMessage {
+                    message: "pairing code already used or expired".into(),
+                })))
+            }
             Err(e) => Err(dao_internal(e)),
         }
     }
@@ -6457,9 +6507,11 @@ impl Api {
         info!("Revoking paired device {device_sub} for {uid}");
         match dao.revoke_paired_device(&uid, &device_sub).await {
             Ok(()) => Ok(RevokePairedDeviceResponse::Ok),
-            Err(dao::DaoError::NotFound(_)) => Ok(RevokePairedDeviceResponse::NotFound(PlainText(
-                "device not paired to this account".into(),
-            ))),
+            Err(dao::DaoError::NotFound(_)) => {
+                Ok(RevokePairedDeviceResponse::NotFound(Json(ErrorMessage {
+                    message: "device not paired to this account".into(),
+                })))
+            }
             Err(e) => Err(dao_internal(e)),
         }
     }
@@ -6480,9 +6532,9 @@ impl Api {
             Some(rec) => Ok(GetInvitationResponse::Invitation(Json(
                 invitation_detail_from_record(&rec),
             ))),
-            None => Ok(GetInvitationResponse::NotFound(PlainText(
-                "invitation not found".into(),
-            ))),
+            None => Ok(GetInvitationResponse::NotFound(Json(ErrorMessage {
+                message: "invitation not found".into(),
+            }))),
         }
     }
 
@@ -6507,9 +6559,9 @@ impl Api {
             Some(rec) => Ok(GetInvitationResponse::Invitation(Json(
                 invitation_detail_from_record(&rec),
             ))),
-            None => Ok(GetInvitationResponse::NotFound(PlainText(
-                "invitation not found".into(),
-            ))),
+            None => Ok(GetInvitationResponse::NotFound(Json(ErrorMessage {
+                message: "invitation not found".into(),
+            }))),
         }
     }
 
@@ -6528,23 +6580,25 @@ impl Api {
             .map_err(dao_internal)?
         {
             None => {
-                return Ok(RevokeInvitationResponse::NotFound(PlainText(
-                    "invitation not found".into(),
-                )));
+                return Ok(RevokeInvitationResponse::NotFound(Json(ErrorMessage {
+                    message: "invitation not found".into(),
+                })));
             }
             Some(rec) if rec.invited_by_user_id != uid => {
-                return Ok(RevokeInvitationResponse::Forbidden(PlainText(
-                    "only the inviter can revoke this invitation".into(),
-                )));
+                return Ok(RevokeInvitationResponse::Forbidden(Json(ErrorMessage {
+                    message: "only the inviter can revoke this invitation".into(),
+                })));
             }
             Some(_) => {}
         }
         match dao.delete_invitation(&invitation_id).await {
             Ok(()) => Ok(RevokeInvitationResponse::Ok),
             // Revoked by a concurrent request between the check above and here.
-            Err(dao::DaoError::NotFound(_)) => Ok(RevokeInvitationResponse::NotFound(PlainText(
-                "invitation not found".into(),
-            ))),
+            Err(dao::DaoError::NotFound(_)) => {
+                Ok(RevokeInvitationResponse::NotFound(Json(ErrorMessage {
+                    message: "invitation not found".into(),
+                })))
+            }
             Err(e) => Err(dao_internal(e)),
         }
     }
@@ -6570,16 +6624,16 @@ impl Api {
         {
             Some(r) => r,
             None => {
-                return Ok(RespondToInvitationResponse::NotFound(PlainText(
-                    "invitation not found".into(),
-                )));
+                return Ok(RespondToInvitationResponse::NotFound(Json(ErrorMessage {
+                    message: "invitation not found".into(),
+                })));
             }
         };
         // Only the targeted user may respond (user-kind invitation).
         if rec.invited_user_id.as_deref() != Some(uid.as_str()) {
-            return Ok(RespondToInvitationResponse::Forbidden(PlainText(
-                "this invitation is not addressed to you".into(),
-            )));
+            return Ok(RespondToInvitationResponse::Forbidden(Json(ErrorMessage {
+                message: "this invitation is not addressed to you".into(),
+            })));
         }
 
         let responded_at = now_iso();
@@ -6647,9 +6701,9 @@ impl Api {
         {
             Some(r) => r,
             None => {
-                return Ok(RespondByTokenResponse::NotFound(PlainText(
-                    "no invitation matches that token".into(),
-                )));
+                return Ok(RespondByTokenResponse::NotFound(Json(ErrorMessage {
+                    message: "no invitation matches that token".into(),
+                })));
             }
         };
 
@@ -6705,7 +6759,9 @@ impl Api {
         info!("User {uid} following user {user_id}");
         match dao.follow_user(&uid, &user_id, &now_iso()).await {
             Ok(()) => Ok(FollowResponse::Ok),
-            Err(dao::DaoError::Conflict(msg)) => Ok(FollowResponse::NotFound(PlainText(msg))),
+            Err(dao::DaoError::Conflict(msg)) => Ok(FollowResponse::NotFound(Json(ErrorMessage {
+                message: msg,
+            }))),
             Err(e) => Err(dao_internal(e)),
         }
     }
@@ -8923,6 +8979,41 @@ async fn log_middleware<E: Endpoint>(next: E, req: Request) -> Result<Response> 
     result
 }
 
+/// Normalizes every non-2xx response from the API into the same
+/// `{"message": "..."}` shape `ErrorMessage` uses on the wire, including
+/// ones that never went through a named `ApiResponse` variant at all — an
+/// auth/scope rejection (`jwt_checker`, `check_scope`), an unhandled DAO
+/// failure (`dao_internal`), or anything else a handler propagates via
+/// `?` — which Poem otherwise renders as a bare `text/plain` body by
+/// default. A response that's already JSON (every named `ApiResponse`
+/// error variant, and every 2xx response) is left untouched. Wrapped only
+/// around `api_service` below, not the plain HTML/image routes
+/// (`share`/`qr`), which intentionally aren't JSON.
+async fn json_errors<E: Endpoint>(next: E, req: Request) -> Result<Response> {
+    let resp = match next.call(req).await {
+        Ok(resp) => resp.into_response(),
+        Err(err) => err.into_response(),
+    };
+    if !resp.status().is_client_error() && !resp.status().is_server_error() {
+        return Ok(resp);
+    }
+    if resp
+        .content_type()
+        .is_some_and(|ct| ct.starts_with("application/json"))
+    {
+        return Ok(resp);
+    }
+    let status = resp.status();
+    let message = resp
+        .into_body()
+        .into_string()
+        .await
+        .unwrap_or_else(|_| status.canonical_reason().unwrap_or("error").to_string());
+    Ok(Json(ErrorMessage { message })
+        .with_status(status)
+        .into_response())
+}
+
 #[tokio::main]
 async fn main() {
     // Held for the process lifetime; dropping it flushes the OTLP batch
@@ -9014,7 +9105,7 @@ async fn main() {
                     "/devices/pairing-codes/:code/qr.png",
                     get(qr::render_pairing_qr),
                 )
-                .nest("/", api_service)
+                .nest("/", api_service.around(json_errors))
                 .nest("/docs", ui)
                 .nest("/share", share::routes())
                 .with(cors)

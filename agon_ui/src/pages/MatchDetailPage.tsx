@@ -68,6 +68,7 @@ import { useToggleLike } from '@/hooks/useToggleLike'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
 import { InvitePromptDialog } from '@/components/agon/InvitePromptDialog'
 import { useInvitePrompt } from '@/hooks/useInvitePrompt'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -100,7 +101,7 @@ export function MatchDetailPage() {
       const { data, error } = await fetchClient.GET('/matches/{match_id}', {
         params: { path: { match_id: matchId! } },
       })
-      if (error || !data) throw new Error('Failed to load match')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load match'))
       return data
     },
   })
@@ -665,7 +666,7 @@ function InviteBanner({
           body: { response },
         },
       )
-      if (error) throw new Error('Failed to respond to invitation')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to respond to invitation'))
     },
     // Optimistically flip the viewer's invitation status in the match cache so
     // the banner (and the "You're invited" badge) disappear immediately, without
@@ -776,7 +777,7 @@ function CancelMatch({ match }: { match: Match }) {
         params: { path: { match_id: match.id } },
         body: { status: 'cancelled' },
       })
-      if (error) throw new Error('Failed to cancel the match')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to cancel the match'))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })
@@ -846,7 +847,7 @@ function LeaveMatch({ match, isOwner }: { match: Match; isOwner: boolean }) {
       const { error } = await fetchClient.POST('/matches/{match_id}/leave', {
         params: { path: { match_id: match.id } },
       })
-      if (error) throw new Error('Failed to leave the match')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to leave the match'))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })
@@ -1038,7 +1039,7 @@ function SideRoster({
         params: { path: { match_id: matchId } },
         body: { player_id: playerId },
       })
-      if (error) throw new Error('Failed to transfer ownership')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to transfer ownership'))
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['match', matchId] }),
   })

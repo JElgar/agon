@@ -6,6 +6,7 @@ import type { components } from '@/types/api'
 import { Avatar } from './Avatar'
 import { TeamPicker } from './TeamPicker'
 import { Combobox, ComboboxContent, ComboboxInput, ComboboxItem, ComboboxList } from '@/components/ui/combobox'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type UserProfile = components['schemas']['UserProfile']
 type TeamListItem = components['schemas']['TeamListItem']
@@ -95,7 +96,7 @@ export function PlayerSideEditor({
       const { data, error } = await fetchClient.GET('/users/search', {
         params: { query: { q: debounced } },
       })
-      if (error || !data) throw new Error('Search failed')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Search failed'))
       return data
     },
   })

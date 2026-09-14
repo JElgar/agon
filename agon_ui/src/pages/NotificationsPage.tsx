@@ -21,6 +21,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
 import { PushNotificationsBanner } from '@/components/agon/PushNotificationsBanner'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type NotificationPage = components['schemas']['NotificationPage']
 type Notification = components['schemas']['Notification']
@@ -50,7 +51,7 @@ export function NotificationsPage() {
       const { data, error } = await fetchClient.GET('/notifications', {
         params: { query: { cursor: pageParam, limit: PAGE_SIZE } },
       })
-      if (error || !data) throw new Error('Failed to load notifications')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load notifications'))
       return data
     },
     getNextPageParam: (lastPage) => lastPage.next_cursor,
@@ -65,7 +66,7 @@ export function NotificationsPage() {
   const markAllRead = useMutation({
     mutationFn: async () => {
       const { error } = await fetchClient.POST('/notifications/read')
-      if (error) throw new Error('Failed to mark all read')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to mark all read'))
     },
     onSuccess: refreshNotifications,
   })
@@ -76,7 +77,7 @@ export function NotificationsPage() {
         '/notifications/{notification_id}/read',
         { params: { path: { notification_id: id } } },
       )
-      if (error) throw new Error('Failed to mark read')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to mark read'))
     },
     onSuccess: refreshNotifications,
   })
@@ -93,7 +94,7 @@ export function NotificationsPage() {
           body: { response: input.response },
         },
       )
-      if (error) throw new Error('Failed to respond to invitation')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to respond to invitation'))
     },
     onSuccess: refreshNotifications,
   })

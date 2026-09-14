@@ -10,6 +10,7 @@ import {
   DialogFooter,
   DialogTrigger,
 } from '@/components/ui/dialog'
+import { apiErrorMessage } from '@/lib/api-error'
 
 export interface DeleteTeamDialogProps {
   teamId: string
@@ -39,7 +40,7 @@ export function DeleteTeamDialog({
       const { error } = await fetchClient.DELETE('/teams/{team_id}', {
         params: { path: { team_id: teamId } },
       })
-      if (error) throw new Error('Could not delete team')
+      if (error) throw new Error(apiErrorMessage(error, 'Could not delete team'))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['my-teams'] })

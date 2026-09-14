@@ -17,6 +17,7 @@ import {
 import { ImageUploadField } from './ImageUploadField'
 import { PlayerSideEditor, type TaggedPlayer } from './PlayerSideEditor'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type Team = components['schemas']['Team']
 
@@ -63,7 +64,7 @@ export function CreateTeamDialog({ children, onCreated }: CreateTeamDialogProps)
         invited_role: inviteAsAdmin ? 'admin' : undefined,
       }
       const { data, error } = await fetchClient.POST('/teams', { body })
-      if (error || !data) throw new Error('Could not create team')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Could not create team'))
       return data
     },
     onSuccess: (team) => {

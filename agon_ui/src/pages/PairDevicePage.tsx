@@ -6,6 +6,7 @@ import { fetchClient } from '@/lib/api-client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { clearPendingInvite } from '@/lib/pendingInvite'
+import { apiErrorMessage } from '@/lib/api-error'
 
 /**
  * The device-pairing confirmation screen. Reached either by scanning a
@@ -47,7 +48,7 @@ export function PairDevicePage() {
         { params: { path: { code } } },
       )
       if (response.status === 409) return 'invalid'
-      if (error) throw new Error('Failed to confirm pairing code')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to confirm pairing code'))
       return 'confirmed'
     },
   })

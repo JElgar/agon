@@ -10,6 +10,7 @@ import { CricketScoreFields } from '@/components/agon/CricketScoreFields'
 import { NetballScoreFields } from '@/components/agon/NetballScoreFields'
 import { displayScore, headlineBySide } from '@/lib/score'
 import { cricketProgressFromScore, matchTotalsBySide } from '@/lib/cricketScore'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type Match = components['schemas']['Match']
 type UpdateMatchInput = components['schemas']['UpdateMatchInput']
@@ -207,7 +208,7 @@ export function MatchResultEditor({
         setConflict(data ?? null)
         return 'conflict'
       }
-      if (error) throw new Error('Failed to save the result')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to save the result'))
       return 'saved'
     },
     onSuccess: (result) => {

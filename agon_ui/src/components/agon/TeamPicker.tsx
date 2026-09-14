@@ -14,6 +14,7 @@ import {
   ComboboxLabel,
   ComboboxList,
 } from '@/components/ui/combobox'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type TeamListItem = components['schemas']['TeamListItem']
 
@@ -77,7 +78,7 @@ export function TeamPicker({ team, onChange, placeholder = 'Link a team…' }: T
         const { data, error } = await fetchClient.GET('/users/me/teams', {
           params: { query: { cursor, limit: MY_TEAMS_PAGE_LIMIT } },
         })
-        if (error || !data) throw new Error('Failed to load teams')
+        if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load teams'))
         items.push(...data.items)
         if (!data.next_cursor) break
         cursor = data.next_cursor
@@ -94,7 +95,7 @@ export function TeamPicker({ team, onChange, placeholder = 'Link a team…' }: T
       const { data, error } = await fetchClient.GET('/teams/search', {
         params: { query: { q: debounced } },
       })
-      if (error || !data) throw new Error('Search failed')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Search failed'))
       return data.items
     },
   })

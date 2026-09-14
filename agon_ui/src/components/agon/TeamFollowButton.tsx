@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchClient } from '@/lib/api-client'
 import { Button, type ButtonProps } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { apiErrorMessage } from '@/lib/api-error'
 
 export interface TeamFollowButtonProps
   extends Omit<ButtonProps, 'onClick' | 'variant' | 'children'> {
@@ -42,7 +43,7 @@ export function TeamFollowButton({
       const { error } = next
         ? await fetchClient.POST('/teams/{team_id}/follow', options)
         : await fetchClient.DELETE('/teams/{team_id}/follow', options)
-      if (error) throw new Error('Failed to update follow')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to update follow'))
     },
     onMutate: (next: boolean) => {
       const previous = following

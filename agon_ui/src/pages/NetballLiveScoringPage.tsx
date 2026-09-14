@@ -36,6 +36,7 @@ import {
   type NetballScore,
   type NetballScoringMethod,
 } from '@/lib/netballScore'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type Match = components['schemas']['Match']
 type UpdateMatchInput = components['schemas']['UpdateMatchInput']
@@ -184,7 +185,7 @@ function useFinishNetballMatch(match: Match) {
         await queryClient.refetchQueries({ queryKey: matchScoreQueryKey(match.id) })
         throw new Error('The live score just changed — check the updated score above, then finish again')
       }
-      if (error) throw new Error('Failed to finish the match')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to finish the match'))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })

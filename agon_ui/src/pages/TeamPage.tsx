@@ -38,6 +38,7 @@ import {
   myPendingTeamInvitation,
   withTeamMemberInvitationStatus,
 } from '@/lib/members'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type Team = components['schemas']['Team']
 type TeamMember = components['schemas']['TeamMember']
@@ -73,7 +74,7 @@ export function TeamPage() {
       const { data, error } = await fetchClient.GET('/teams/{team_id}', {
         params: { path: { team_id: teamId! } },
       })
-      if (error || !data) throw new Error('Failed to load team')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load team'))
       return data
     },
   })
@@ -95,7 +96,7 @@ export function TeamPage() {
           query: { cursor: pageParam, limit: MEMBER_PAGE_SIZE },
         },
       })
-      if (error || !data) throw new Error('Failed to load members')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load members'))
       return data
     },
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
@@ -108,7 +109,7 @@ export function TeamPage() {
       const { data, error } = await fetchClient.GET('/matches', {
         params: { query: { team_id: [teamId!], limit: RECENT_LIMIT } },
       })
-      if (error || !data) throw new Error('Failed to load recent matches')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load recent matches'))
       return data.items
     },
   })
@@ -280,7 +281,7 @@ function TeamInviteBanner({
           body: { response },
         },
       )
-      if (error) throw new Error('Failed to respond to invitation')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to respond to invitation'))
     },
     // Optimistically flip the viewer's invitation status across every fetched
     // page of the member list, so the banner/badge disappear immediately.
@@ -477,7 +478,7 @@ function MemberRow({
         params: { path: { team_id: teamId, member_id: member.member.id } },
         body: { role },
       })
-      if (error) throw new Error('Failed to update role')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to update role'))
     },
     onSuccess: invalidateMembers,
   })
@@ -487,7 +488,7 @@ function MemberRow({
       const { error } = await fetchClient.DELETE('/teams/{team_id}/members/{member_id}', {
         params: { path: { team_id: teamId, member_id: member.member.id } },
       })
-      if (error) throw new Error('Failed to remove member')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to remove member'))
     },
     onSuccess: invalidateMembers,
   })

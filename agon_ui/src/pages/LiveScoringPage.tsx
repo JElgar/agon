@@ -30,6 +30,7 @@ import {
   shootoutScoreFor,
   type ClockPhase,
 } from '@/lib/liveScore'
+import { apiErrorMessage } from '@/lib/api-error'
 
 type Match = components['schemas']['Match']
 type UpdateMatchInput = components['schemas']['UpdateMatchInput']
@@ -57,7 +58,7 @@ export function LiveScoringPage() {
       const { data, error } = await fetchClient.GET('/matches/{match_id}', {
         params: { path: { match_id: matchId! } },
       })
-      if (error || !data) throw new Error('Failed to load match')
+      if (error || !data) throw new Error(apiErrorMessage(error, 'Failed to load match'))
       return data
     },
   })
@@ -147,7 +148,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
         await queryClient.refetchQueries({ queryKey: matchScoreQueryKey(match.id) })
         throw new Error('The live score just changed — check the updated score above, then finish again')
       }
-      if (error) throw new Error('Failed to finish the match')
+      if (error) throw new Error(apiErrorMessage(error, 'Failed to finish the match'))
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })

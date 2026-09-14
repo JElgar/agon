@@ -47,6 +47,15 @@ function buildMainMenu() as WatchUi.Menu2 {
         menu.addItem(activityMenuItem(recorder));
     }
 
+    // Always offered — MatchContext's player roster is only ever loaded
+    // once, when the match is first picked (MatchMenuDelegate.
+    // onMatchDetails), so a sub added to the match afterwards otherwise
+    // never reaches GoalFlow's scorer/assist menus for the rest of the
+    // session without asking for it again. See LiveApiClient.
+    // refreshRoster's own doc comment on why this isn't just polled
+    // alongside the score.
+    menu.addItem(new WatchUi.MenuItem("Refresh players", null, :refresh_roster, {}));
+
     // Only offered once LiveApiClient actually has a real seq to send —
     // see its own canUndo()/doc comment. Absent rather than disabled
     // while that's still being derived (e.g. right after picking this
@@ -151,6 +160,12 @@ class agonMenuDelegate extends WatchUi.Menu2InputDelegate {
             // LiveApiClient.undoLast's own doc comment on why this has
             // no confirmation step and no retry on failure.
             app.liveApiClient.undoLast();
+        } else if (item == :refresh_roster) {
+            // Fire-and-forget too — a buzz on success (LiveApiClient.
+            // onRoster) is the only feedback; there's no on-watch error
+            // state to show if it fails, same "basics only" scope as
+            // undo above.
+            app.liveApiClient.refreshRoster();
         }
 
         // Unlike the legacy WatchUi.Menu (which popped itself once

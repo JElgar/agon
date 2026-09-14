@@ -84,8 +84,9 @@ class agonMenuDelegate extends WatchUi.Menu2InputDelegate {
             // actually starts activity recording — not app launch, see
             // agonApp.onStart. ActivityRecorder.start() is a no-op if
             // already recording, so this is safe even if kick-off gets
-            // logged more than once.
-            app.activityRecorder.start();
+            // logged more than once. matchContext is already populated by
+            // now (MatchPickerView, before this menu is reachable at all).
+            app.activityRecorder.start(app.matchContext.matchName());
             app.activityRecorder.markHalfStart();
             app.score.setPeriod(FootballScore.PERIOD_KICK_OFF);
         } else if (item == :period_half_time) {
@@ -94,8 +95,10 @@ class agonMenuDelegate extends WatchUi.Menu2InputDelegate {
             app.activityRecorder.markLap();
             app.score.setPeriod(FootballScore.PERIOD_HALF_TIME);
         } else if (item == :period_second_half) {
-            // Also "starts a half" — same idempotent start() as kick-off.
-            app.activityRecorder.start();
+            // Also "starts a half" — same idempotent start() as kick-off
+            // (the name is only actually used the first time; see
+            // ActivityRecorder.start's doc comment).
+            app.activityRecorder.start(app.matchContext.matchName());
             // Closes the half-time-break lap and opens the second-half
             // one, same as markHalfStart resets the live clock's own
             // baseline right below.

@@ -94,6 +94,16 @@ class MatchContext {
         return side1Name;
     }
 
+    //! "<side0> vs <side1>" — used as the recorded activity's name
+    //! (`ActivityRecorder.start`) so a match's Garmin Connect (and, once
+    //! synced, Strava) title reads as the actual fixture rather than a
+    //! bare "Football". Falls back to the `Home`/`Away` defaults from
+    //! `initialize` if called before `populateFrom` — still a sensible
+    //! title, just not this match's real side names.
+    function matchName() as String {
+        return side0Name + " vs " + side1Name;
+    }
+
     function populateSide(side as Dictionary, isFirst as Boolean) as Void {
         var id = side.get("id");
         var name = side.get("name");

@@ -30,8 +30,16 @@ class ActivityRecorder {
     }
 
     //! Start (or resume, if already started) recording. Safe to call more
-    //! than once — a second call while already recording is a no-op.
-    function start() as Void {
+    //! than once — a second call while already recording is a no-op, and
+    //! `name` is only used the first time: it names the underlying
+    //! `Session` at creation (`ActivityRecording.createSession` has no
+    //! rename-after-the-fact call), so a second-half `start()` passing a
+    //! different string wouldn't rename anything anyway. Callers pass
+    //! `MatchContext.matchName()` so the recorded activity's title in
+    //! Garmin Connect is the actual fixture ("Home vs Away") rather than a
+    //! bare sport name — see that method's doc comment on why the score
+    //! can't be included here too.
+    function start(name as String) as Void {
         if (_session != null) {
             if (!_session.isRecording()) {
                 _session.start();
@@ -39,7 +47,7 @@ class ActivityRecorder {
             return;
         }
         _session = ActivityRecording.createSession({
-            :name => "Football",
+            :name => name,
             :sport => Activity.SPORT_SOCCER,
         });
         _session.start();

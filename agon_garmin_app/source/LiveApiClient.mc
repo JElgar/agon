@@ -1,3 +1,4 @@
+import Toybox.Attention;
 import Toybox.Lang;
 import Toybox.Communications;
 import Toybox.Time;
@@ -634,6 +635,52 @@ class LiveApiClient {
             getApp().activityRecorder.startForKickOff(getApp().matchContext.matchName());
         }
         WatchUi.requestUpdate();
+    }
+
+    //! Re-fetch `GET /matches/:id` and repopulate `MatchContext`'s sides
+    //! and player rosters from it — `MatchContext.populateFrom` otherwise
+    //! only ever runs once, when `MatchMenuDelegate.onMatchDetails` first
+    //! picks the match, so anyone joining/leaving the roster afterwards
+    //! (a late sub added to the match) would never show up in
+    //! `GoalFlow`'s scorer/assist menus for the rest of the session
+    //! without this. Wired to a "Refresh players" main-menu item
+    //! (`agonMenuDelegate`) rather than polled automatically —
+    //! roster changes are rare enough mid-match that a poll every few
+    //! seconds isn't worth the extra network traffic the score/seq polls
+    //! already generate.
+    //!
+    //! Goes through `enqueueRequest` like every other call in this class
+    //! — a bare `Communications.makeWebRequest` here could race the
+    //! score-poll timer's own queued requests (see the class doc comment).
+    function refreshRoster() as Void {
+        if (_matchId == null) {
+            return;
+        }
+        var url = API_BASE_URL + "/matches/" + (_matchId as String);
+        var options = {
+            :method => Communications.HTTP_REQUEST_METHOD_GET,
+            :headers => { "Authorization" => "Bearer " + DeviceAuth.getAccessToken() },
+            :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
+        };
+        enqueueRequest(url, null, options, method(:onRoster));
+    }
+
+    function onRoster(responseCode as Number, data as Dictionary or String or Null) as Void {
+        System.println("[live-api] onRoster responseCode=" + responseCode);
+        if (responseCode != 200 || data == null) {
+            // No on-watch error UI for this yet (same "basics only" scope
+            // as the rest of this class) — the roster just stays as it
+            // was, and the wearer can select the menu item again to retry.
+            return;
+        }
+        getApp().matchContext.populateFrom(data as Dictionary);
+        // Confirms the refresh actually landed — there's otherwise no
+        // visible change on screen if the roster hadn't in fact changed.
+        // Same guarded pattern as ActivityRecorder.startForKickOff's own
+        // buzz.
+        if ((Attention has :vibrate) && System.getDeviceSettings().vibrateOn) {
+            Attention.vibrate([new Attention.VibeProfile(50, 250)]);
+        }
     }
 
     //! `null` if the score has no period marker yet, or one this app

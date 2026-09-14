@@ -38,6 +38,9 @@ export function mySideId(
     const mine = match.players.find(
       (p) => p.member.type === 'User' && p.member.user_id === currentUserId,
     )
+    // Someone on the waitlist only asked for their side; they aren't playing
+    // for it, so there's no score of theirs to confirm or dispute.
+    if (mine?.waitlisted_at != null) return undefined
     return mine?.side_id
   }
   if ('viewer_side_id' in match) {

@@ -49,10 +49,14 @@ pub const ROSTER_PREVIEW_CAP: usize = 4;
 /// `roster_preview` is a display of who's been placed on the side, pending
 /// invitees included, exactly as before: narrowing it would change what feed
 /// cards show, a separate call from getting the count right.
+///
+/// A waitlisted player is in neither. Their `side_id` is the side they asked
+/// for, not one they're on, so they'd be wrong in a side's preview (or, via
+/// `Api::resolve_side_names`, as the name of a side they aren't playing for).
 fn side_roster(side_id: &str, players: &[MatchPlayerRecord]) -> (u32, Vec<SideRosterMemberRecord>) {
     let on_side: Vec<&MatchPlayerRecord> = players
         .iter()
-        .filter(|p| p.side_id.as_deref() == Some(side_id))
+        .filter(|p| p.side_id.as_deref() == Some(side_id) && p.waitlisted_at.is_none())
         .collect();
     let player_count = on_side.iter().filter(|p| p.occupies_slot()).count() as u32;
     let roster_preview = if on_side.len() <= ROSTER_PREVIEW_CAP {
@@ -86,8 +90,8 @@ const ROSTER_RECOUNT_ATTEMPTS: u32 = 5;
 
 /// A match's headcounts as [`Dao::refresh_side_roster_previews`] just
 /// recomputed and stored them. Returned so a caller acting on the fresh counts
-/// (`join_match` re-checking capacity) needn't read them back — a read that,
-/// being eventually consistent, could still see the old ones.
+/// ([`Dao::recount_has_room`], re-checking capacity) needn't read them back — a
+/// read that, being eventually consistent, could still see the old ones.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RosterCounts {
     pub total_player_count: u64,
@@ -198,12 +202,111 @@ fn sorted_sides(sides: &HashMap<String, MatchSideRecord>) -> Vec<MatchSideRecord
 /// The match's overall roster cap, derived from its sides' own caps rather
 /// than stored separately: if *every* side has `max_players` set, the sum of
 /// them; otherwise uncapped (`None`). The unassigned pool counts toward this
-/// but has no cap of its own — enforced by `Dao::join_match_tx`.
+/// but has no cap of its own — enforced by [`take_slot_update`].
 pub fn effective_max_players(sides: &[MatchSideRecord]) -> Option<u32> {
     sides
         .iter()
         .map(|s| s.max_players)
         .try_fold(0u32, |total, max| Some(total + max?))
+}
+
+/// What a join or an invite accept did about the player's spot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotOutcome {
+    /// They took a spot, counted in the match's headcounts.
+    Occupied,
+    /// The match or their side was full, so they're on the roster with
+    /// `MatchPlayerRecord::waitlisted_at` set, and nothing was counted.
+    Waitlisted,
+}
+
+/// The caps a write that takes a spot is guarded on (see
+/// [`take_slot_update`]), resolved by the caller from a just-read
+/// [`MatchAggregate`] via [`SlotCaps::for_side`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SlotCaps {
+    /// The side whose `player_count` the spot counts toward: `None` for an
+    /// unassigned player, and for a side the match doesn't have.
+    pub side_id: Option<String>,
+    /// That side's `max_players`.
+    pub side_max_players: Option<u32>,
+    /// The match's [`effective_max_players`].
+    pub total_max_players: Option<u32>,
+}
+
+impl SlotCaps {
+    /// The caps for a spot on `side_id` (`None` = unassigned). A side id the
+    /// match doesn't have counts as unassigned: a roster row can carry one
+    /// (`update_match`'s `side_assignments` doesn't validate it), and an `ADD`
+    /// to a missing `sides.<id>` is an invalid document path that would cancel
+    /// the whole transaction.
+    pub fn for_side(agg: &MatchAggregate, side_id: Option<&str>) -> Self {
+        let side = side_id.and_then(|sid| agg.sides.iter().find(|s| s.side_id == sid));
+        SlotCaps {
+            side_id: side.map(|s| s.side_id.clone()),
+            side_max_players: side.and_then(|s| s.max_players),
+            total_max_players: agg.effective_max_players(),
+        }
+    }
+
+    /// Whether `counts` leave room for one more player under these caps. The
+    /// same question [`take_slot_update`]'s guard asks of the stored counters,
+    /// put to a fresh recount instead (see [`Dao::recount_has_room`]).
+    fn has_room(&self, counts: &RosterCounts) -> bool {
+        let total_has_room = self
+            .total_max_players
+            .is_none_or(|max| counts.total_player_count < u64::from(max));
+        let side_has_room = match (&self.side_id, self.side_max_players) {
+            (Some(side_id), Some(max)) => {
+                counts.side_player_counts.get(side_id).copied().unwrap_or(0) < max
+            }
+            _ => true,
+        };
+        total_has_room && side_has_room
+    }
+}
+
+/// The meta-item update that takes one spot: `ADD` 1 to `total_player_count`,
+/// and to `caps.side_id`'s `player_count` when there is one. Conditioned on
+/// the match existing, so one deleted since the read isn't re-created as a
+/// bare counter stub, and on every cap in `caps` still having room.
+///
+/// The one builder behind every write that takes a spot (a join, an invite
+/// accept, moving someone in off the waitlist), so none of them can take a
+/// match over its cap. Accepting an invite used to build its own `ADD` with no
+/// cap check, and could.
+pub(super) fn take_slot_update(table: &str, match_id: &str, caps: &SlotCaps) -> DaoResult<Update> {
+    let mut names = HashMap::from([("#pk".to_string(), ATTR_PK.to_string())]);
+    let mut values = HashMap::from([(":one".to_string(), AttributeValue::N("1".into()))]);
+    // A single `ADD` section, comma-separated — DynamoDB rejects an
+    // `UpdateExpression` with more than one `ADD` keyword.
+    let mut add_clauses = vec!["total_player_count :one"];
+    let mut conditions = vec!["attribute_exists(#pk)"];
+    if let Some(max) = caps.total_max_players {
+        conditions
+            .push("(attribute_not_exists(total_player_count) OR total_player_count < :totalmax)");
+        values.insert(":totalmax".into(), AttributeValue::N(max.to_string()));
+    }
+    if let Some(side_id) = &caps.side_id {
+        names.insert("#sid".into(), side_id.clone());
+        add_clauses.push("sides.#sid.player_count :one");
+        if let Some(max) = caps.side_max_players {
+            conditions.push(
+                "(attribute_not_exists(sides.#sid.max_players) OR sides.#sid.player_count < :sidemax)",
+            );
+            values.insert(":sidemax".into(), AttributeValue::N(max.to_string()));
+        }
+    }
+    Update::builder()
+        .table_name(table)
+        .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+        .key(ATTR_SK, s(Sk::Meta.to_string()))
+        .update_expression(format!("ADD {}", add_clauses.join(", ")))
+        .condition_expression(conditions.join(" AND "))
+        .set_expression_attribute_names(Some(names))
+        .set_expression_attribute_values(Some(values))
+        .build()
+        .map_err(|e| DaoError::Dynamo(e.to_string()))
 }
 
 /// A match plus its sides and players, assembled from one collection query.
@@ -877,110 +980,259 @@ impl Dao {
         }
     }
 
-    /// Join a match: insert `player` (fully built by the caller — `side_id`,
-    /// `role`, `joined_via` already set) and atomically bump the roster
-    /// counters it consumes, conditioned on the caps the caller already
-    /// resolved from a just-read [`MatchAggregate`]: `side_max_players` for
-    /// `player.side_id`'s side (ignored when `player.side_id` is `None`) and
-    /// `total_max_players` for the match's overall
-    /// [`effective_max_players`]. Also writes the joiner's own feed row (same
-    /// as `create_match`/`accept_invitation_tx`) so the match shows up on
-    /// their feed immediately.
+    /// Join a match: put `player` (fully built by the caller — `side_id`,
+    /// `role`, `joined_via` set, `waitlisted_at` not) into a spot if there's
+    /// one, or onto the waitlist if the match or their side is full. Either way
+    /// this also writes the joiner's own feed row (same as
+    /// `create_match`/`accept_invitation_tx`), so the match shows up on their
+    /// feed straight away: a waitlisted joiner is on the roster too, waiting on
+    /// a game they want to follow.
     ///
-    /// `Conflict` if a cap has been reached since the caller last read it (or
-    /// the match has since disappeared) — the caller is expected to have
-    /// already ruled out the common cases (full, already a player) from its
-    /// own read, so this is a last-moment race guard, not the primary check.
-    #[tracing::instrument(skip(self, player), fields(match_id, player_id = %player.player_id))]
+    /// **Capacity is decided by the write, not by a read.** The player row goes
+    /// in with a cap-guarded `ADD` to the headcounts ([`take_slot_update`],
+    /// guarded on `caps`, which the caller resolves from a just-read
+    /// [`MatchAggregate`]). If the guard fails, the match is recounted
+    /// ([`Self::recount_has_room`]) and a spot that turns up is tried for once
+    /// more. Otherwise the player is written with `waitlisted_at` set and
+    /// nothing counted.
+    ///
+    /// There's deliberately no "is it full?" check before any of this. There
+    /// used to be one, which turned joiners away with a 409, and this guard was
+    /// only its last-moment race backstop. Now that full means the waitlist
+    /// rather than an error, a join that loses the race for the last spot and a
+    /// join into a match that was already full should land in the same place,
+    /// so they take the same path.
+    #[tracing::instrument(skip(self, player, caps), fields(player_id = %player.player_id))]
     pub async fn join_match_tx(
         &self,
         match_id: &str,
         player: &MatchPlayerRecord,
-        side_max_players: Option<u32>,
-        total_max_players: Option<u32>,
+        caps: &SlotCaps,
         starts_at: &str,
         now: &str,
-    ) -> DaoResult<()> {
-        let put_player = Put::builder()
+    ) -> DaoResult<SlotOutcome> {
+        if self
+            .try_join_into_slot(match_id, player, caps, starts_at, now)
+            .await?
+            || (self.recount_has_room(match_id, caps).await?
+                && self
+                    .try_join_into_slot(match_id, player, caps, starts_at, now)
+                    .await?)
+        {
+            return Ok(SlotOutcome::Occupied);
+        }
+
+        let waitlisted = MatchPlayerRecord {
+            waitlisted_at: Some(now.to_string()),
+            ..player.clone()
+        };
+        let mut tx = self.client.transact_write_items().transact_items(
+            TransactWriteItem::builder()
+                .put(self.new_match_player_put(match_id, &waitlisted)?)
+                .build(),
+        );
+        if let Some(feed_put) = self.joiner_feed_put(match_id, player, starts_at, now)? {
+            tx = tx.transact_items(TransactWriteItem::builder().put(feed_put).build());
+        }
+        match tx.send().await {
+            Ok(_) => Ok(SlotOutcome::Waitlisted),
+            Err(e) if super::is_transaction_conditional_failure(&e) => {
+                Err(duplicate_player(match_id, player))
+            }
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// One attempt at a spot for [`Self::join_match_tx`]: the player row, the
+    /// cap-guarded `ADD` and the joiner's feed row, in one transaction.
+    /// `Ok(false)` if the cap guard failed, and nothing was written.
+    async fn try_join_into_slot(
+        &self,
+        match_id: &str,
+        player: &MatchPlayerRecord,
+        caps: &SlotCaps,
+        starts_at: &str,
+        now: &str,
+    ) -> DaoResult<bool> {
+        let mut tx = self
+            .client
+            .transact_write_items()
+            .transact_items(
+                TransactWriteItem::builder()
+                    .put(self.new_match_player_put(match_id, player)?)
+                    .build(),
+            )
+            .transact_items(
+                TransactWriteItem::builder()
+                    .update(take_slot_update(self.table(), match_id, caps)?)
+                    .build(),
+            );
+        if let Some(feed_put) = self.joiner_feed_put(match_id, player, starts_at, now)? {
+            tx = tx.transact_items(TransactWriteItem::builder().put(feed_put).build());
+        }
+        match tx.send().await {
+            Ok(_) => Ok(true),
+            Err(e) if super::item_condition_failed(&e, 1) => Ok(false),
+            Err(e) if super::is_transaction_conditional_failure(&e) => {
+                Err(duplicate_player(match_id, player))
+            }
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// A new roster row, guarded on not overwriting one. The player id is
+    /// freshly minted, so only a collision could trip it.
+    fn new_match_player_put(&self, match_id: &str, player: &MatchPlayerRecord) -> DaoResult<Put> {
+        Put::builder()
             .table_name(self.table())
             .set_item(Some(self.match_player_item(match_id, player)?))
             .condition_expression("attribute_not_exists(#pk)")
             .expression_attribute_names("#pk", ATTR_PK)
             .build()
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+            .map_err(|e| DaoError::Dynamo(e.to_string()))
+    }
 
-        let mut names: std::collections::HashMap<String, String> = Default::default();
-        let mut values: std::collections::HashMap<String, AttributeValue> = Default::default();
-        names.insert("#pk".into(), ATTR_PK.into());
-        values.insert(":one".into(), AttributeValue::N("1".into()));
+    /// A joiner's own feed row, if they're a linked user (see
+    /// [`Self::join_match_tx`]).
+    fn joiner_feed_put(
+        &self,
+        match_id: &str,
+        player: &MatchPlayerRecord,
+        starts_at: &str,
+        now: &str,
+    ) -> DaoResult<Option<Put>> {
+        let Some(uid) = &player.user_id else {
+            return Ok(None);
+        };
+        let feed_item = self.feed_item(
+            uid,
+            match_id,
+            starts_at,
+            now,
+            &AudienceMember {
+                viewer_side_id: player.side_id.clone(),
+                ..Default::default()
+            },
+        )?;
+        Put::builder()
+            .table_name(self.table())
+            .set_item(Some(feed_item))
+            .build()
+            .map(Some)
+            .map_err(|e| DaoError::Dynamo(e.to_string()))
+    }
 
-        // A single `ADD` section, comma-separated — DynamoDB rejects an
-        // `UpdateExpression` with more than one `ADD` keyword.
-        let mut add_clauses = vec!["total_player_count :one".to_string()];
-        let mut conditions: Vec<String> = vec!["attribute_exists(#pk)".into()];
-        if let Some(max) = total_max_players {
-            conditions.push(
-                "(attribute_not_exists(total_player_count) OR total_player_count < :totalmax)"
-                    .into(),
-            );
-            values.insert(":totalmax".into(), AttributeValue::N(max.to_string()));
+    /// Move a waitlisted player into a spot: an organiser's manual move off the
+    /// waitlist. In one transaction, clear `player`'s `waitlisted_at` and take
+    /// the spot with the same cap-guarded `ADD` as a join ([`take_slot_update`],
+    /// on `caps`). A free spot is required, so this never takes a match past
+    /// its cap: an organiser who wants more players raises a cap first. As with
+    /// a join, a failed cap guard is recounted before it's believed
+    /// ([`Self::recount_has_room`]).
+    ///
+    /// The row write is an `UpdateItem` (`REMOVE waitlisted_at`), so it can't
+    /// undo a concurrent change to the row's other fields. It's guarded on the
+    /// player still waiting, so a double tap (or two admins at once) counts the
+    /// spot once, and on their `side_id` still being the one read, since that's
+    /// the side `caps` counts the spot to. The reverse isn't guarded: a
+    /// whole-row rewrite built from a read taken before the move (the accept
+    /// saga's re-link, `update_match`'s side reassignment) can put
+    /// `waitlisted_at` back. Each of those recounts straight afterwards, so the
+    /// counts still match the rows and the player just shows as waiting again.
+    /// Guarding every whole-row writer against a race that needs an organiser
+    /// to act within the same second wasn't worth it.
+    ///
+    /// `NotFound` if `player` is no longer waiting as read (already moved in,
+    /// gone, or put on another side); `Conflict` if there's no free spot.
+    #[tracing::instrument(skip(self, player, caps), fields(player_id = %player.player_id))]
+    pub async fn move_in_waitlisted_player(
+        &self,
+        match_id: &str,
+        player: &MatchPlayerRecord,
+        caps: &SlotCaps,
+    ) -> DaoResult<()> {
+        if self.try_move_into_slot(match_id, player, caps).await?
+            || (self.recount_has_room(match_id, caps).await?
+                && self.try_move_into_slot(match_id, player, caps).await?)
+        {
+            return Ok(());
         }
-        if let Some(side_id) = &player.side_id {
-            names.insert("#sid".into(), side_id.clone());
-            add_clauses.push("sides.#sid.player_count :one".to_string());
-            if let Some(max) = side_max_players {
-                conditions.push(
-                    "(attribute_not_exists(sides.#sid.max_players) OR sides.#sid.player_count < :sidemax)"
-                        .into(),
-                );
-                values.insert(":sidemax".into(), AttributeValue::N(max.to_string()));
-            }
-        }
-        let update_expr = format!("ADD {}", add_clauses.join(", "));
+        Err(DaoError::Conflict(format!(
+            "match {match_id} has no free spot"
+        )))
+    }
 
-        let update_meta = Update::builder()
+    /// One attempt at [`Self::move_in_waitlisted_player`]. `Ok(false)` if the
+    /// cap guard failed, and nothing was written.
+    async fn try_move_into_slot(
+        &self,
+        match_id: &str,
+        player: &MatchPlayerRecord,
+        caps: &SlotCaps,
+    ) -> DaoResult<bool> {
+        let leave_waitlist = Update::builder()
             .table_name(self.table())
             .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
-            .key("SK", s(Sk::Meta.to_string()))
-            .update_expression(update_expr)
-            .condition_expression(conditions.join(" AND "))
-            .set_expression_attribute_names(Some(names))
-            .set_expression_attribute_values(Some(values))
-            .build()
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+            .key(ATTR_SK, s(Sk::Player(player.player_id.clone()).to_string()))
+            .update_expression("REMOVE waitlisted_at")
+            .expression_attribute_names("#pk", ATTR_PK);
+        let leave_waitlist = match &player.side_id {
+            Some(side_id) => leave_waitlist
+                .condition_expression(
+                    "attribute_exists(#pk) AND attribute_exists(waitlisted_at) AND side_id = :sid",
+                )
+                .expression_attribute_values(":sid", s(side_id)),
+            None => leave_waitlist.condition_expression(
+                "attribute_exists(#pk) AND attribute_exists(waitlisted_at) \
+                 AND attribute_not_exists(side_id)",
+            ),
+        }
+        .build()
+        .map_err(|e| DaoError::Dynamo(e.to_string()))?;
 
-        let mut tx = self
+        let result = self
             .client
             .transact_write_items()
-            .transact_items(TransactWriteItem::builder().put(put_player).build())
-            .transact_items(TransactWriteItem::builder().update(update_meta).build());
-
-        if let Some(uid) = &player.user_id {
-            let feed_item = self.feed_item(
-                uid,
-                match_id,
-                starts_at,
-                now,
-                &AudienceMember {
-                    viewer_side_id: player.side_id.clone(),
-                    ..Default::default()
-                },
-            )?;
-            let feed_put = Put::builder()
-                .table_name(self.table())
-                .set_item(Some(feed_item))
-                .build()
-                .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-            tx = tx.transact_items(TransactWriteItem::builder().put(feed_put).build());
-        }
-
-        match tx.send().await {
-            Ok(_) => Ok(()),
-            Err(e) if super::is_transaction_conditional_failure(&e) => Err(DaoError::Conflict(
-                "match is full, or you're already on the roster".into(),
-            )),
+            .transact_items(TransactWriteItem::builder().update(leave_waitlist).build())
+            .transact_items(
+                TransactWriteItem::builder()
+                    .update(take_slot_update(self.table(), match_id, caps)?)
+                    .build(),
+            )
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(true),
+            // Checked first: a player who's no longer waiting has nothing to
+            // move in, whether or not there's room.
+            Err(e) if super::item_condition_failed(&e, 0) => Err(DaoError::NotFound(format!(
+                "waitlisted player {} in match {match_id}",
+                player.player_id
+            ))),
+            Err(e) if super::item_condition_failed(&e, 1) => Ok(false),
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
+    }
+
+    /// Recount the match's headcounts (healing any drift — see
+    /// [`Self::refresh_side_roster_previews`]) and say whether the fresh
+    /// counts leave room under `caps`. `false` if the match is gone.
+    ///
+    /// What every write that takes a spot does when its cap guard fails,
+    /// before believing it. Stored counts that drifted high (written before
+    /// pending invites stopped counting, or before leaving gave a spot back)
+    /// fail the guard exactly as a full match does, and a match that only
+    /// *looks* full gets no other roster writes that would heal it: without
+    /// this it would waitlist every joiner and refuse every move-in for good.
+    pub(super) async fn recount_has_room(
+        &self,
+        match_id: &str,
+        caps: &SlotCaps,
+    ) -> DaoResult<bool> {
+        Ok(self
+            .refresh_side_roster_previews(match_id)
+            .await?
+            .is_some_and(|counts| caps.has_room(&counts)))
     }
 
     /// Add or update a single match player (roster reconciliation / late adds).
@@ -1050,12 +1302,14 @@ impl Dao {
     ///
     /// Because it recounts rather than adjusts, this is also what heals a
     /// count that has drifted from the roster (e.g. one written before pending
-    /// invites stopped counting) — `join_match` runs it before turning a
-    /// joiner away as "full", since a match that only *looks* full gets no
-    /// other roster writes that would heal it.
+    /// invites stopped counting) — every write that takes a spot runs it when
+    /// its cap guard fails, before waitlisting or refusing anyone
+    /// ([`Self::recount_has_room`]), since a match that only *looks* full gets
+    /// no other roster writes that would heal it.
     ///
     /// **Concurrency.** The same counters are `ADD`ed, atomically and
-    /// cap-guarded, by `Dao::join_match_tx` and `Dao::accept_invitation_tx`. A
+    /// cap-guarded, by `Dao::join_match_tx`, `Dao::accept_invitation_tx` and
+    /// `Dao::move_in_waitlisted_player`. A
     /// `SET` computed from a read taken before one of those commits would
     /// silently overwrite it — un-counting a player who just got in, and
     /// letting the cap be exceeded. So the `SET` is conditioned on every
@@ -1217,6 +1471,16 @@ fn to_attr<T: serde::Serialize>(value: &T) -> DaoResult<AttributeValue> {
     Ok(serde_dynamo::to_attribute_value(value)?)
 }
 
+/// A join's roster row collided with an existing one. Its player id is freshly
+/// minted, so this shouldn't happen; "already on the roster" is caught by the
+/// caller's own read, before a row is ever built.
+fn duplicate_player(match_id: &str, player: &MatchPlayerRecord) -> DaoError {
+    DaoError::Conflict(format!(
+        "match {match_id} already has a player {}",
+        player.player_id
+    ))
+}
+
 fn is_update_conditional_failure(err: &SdkError<UpdateItemError>) -> bool {
     matches!(
         err,
@@ -1281,6 +1545,7 @@ mod tests {
             }),
             role: Default::default(),
             joined_via: None,
+            waitlisted_at: None,
         }
     }
 
@@ -1361,6 +1626,99 @@ mod tests {
         assert_eq!(
             legacy.condition_expression,
             "attribute_exists(#pk) AND attribute_not_exists(total_player_count)"
+        );
+    }
+
+    /// A waitlisted player asked for a side but isn't on it: they're left out
+    /// of its `player_count`, the match total *and* its `roster_preview`, even
+    /// though their row carries the side's id. Guards the waitlist quietly
+    /// filling a side (or showing on it) with people who aren't playing.
+    #[test]
+    fn a_waitlisted_player_is_not_counted_or_previewed_on_the_side_they_asked_for() {
+        let waiting = MatchPlayerRecord {
+            waitlisted_at: Some("2026-09-14T00:00:00Z".into()),
+            ..player("waiting", Some("b"), None)
+        };
+        let players = [player("in", Some("b"), None), waiting];
+        let write = recount_write(&stored(Some(2), &[("b", Some(2))]), &players).unwrap();
+        assert_eq!(
+            write.counts,
+            RosterCounts {
+                total_player_count: 1,
+                side_player_counts: HashMap::from([("b".to_string(), 1)]),
+            }
+        );
+        let (_, preview_b) = side_roster("b", &players);
+        let previewed: Vec<&str> = preview_b.iter().map(|p| p.player_id.as_str()).collect();
+        assert_eq!(previewed, ["in"]);
+    }
+
+    /// Every write that takes a spot (join, accept, move-in) builds its `ADD`
+    /// here, so this guard is what keeps all three under the caps. Accepting
+    /// an invite used to `ADD` with no cap condition at all, so an accept could
+    /// take a match past its cap.
+    #[test]
+    fn taking_a_spot_is_guarded_on_every_cap() {
+        let capped = take_slot_update(
+            "agon",
+            "m",
+            &SlotCaps {
+                side_id: Some("b".into()),
+                side_max_players: Some(3),
+                total_max_players: Some(6),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            capped.update_expression(),
+            "ADD total_player_count :one, sides.#sid.player_count :one"
+        );
+        assert_eq!(
+            capped.condition_expression(),
+            Some(
+                "attribute_exists(#pk) \
+                 AND (attribute_not_exists(total_player_count) OR total_player_count < :totalmax) \
+                 AND (attribute_not_exists(sides.#sid.max_players) OR sides.#sid.player_count < :sidemax)"
+            )
+        );
+        let values = capped.expression_attribute_values().unwrap();
+        assert_eq!(values[":totalmax"], AttributeValue::N("6".into()));
+        assert_eq!(values[":sidemax"], AttributeValue::N("3".into()));
+
+        let uncapped = take_slot_update("agon", "m", &SlotCaps::default()).unwrap();
+        assert_eq!(uncapped.update_expression(), "ADD total_player_count :one");
+        assert_eq!(
+            uncapped.condition_expression(),
+            Some("attribute_exists(#pk)")
+        );
+    }
+
+    /// After a failed cap guard, the recount's fresh counts decide between
+    /// another try for a spot and the waitlist (or a move-in's "no free
+    /// spot"), under the same caps the guard used: the match total, and the
+    /// side's own when the spot is on a capped side.
+    #[test]
+    fn has_room_checks_the_match_and_the_sides_cap() {
+        let counts = RosterCounts {
+            total_player_count: 3,
+            side_player_counts: HashMap::from([("a".to_string(), 2), ("b".to_string(), 1)]),
+        };
+        let caps = |side: Option<&str>, side_max: Option<u32>, total_max: Option<u32>| SlotCaps {
+            side_id: side.map(Into::into),
+            side_max_players: side_max,
+            total_max_players: total_max,
+        };
+        assert!(caps(None, None, None).has_room(&counts), "uncapped");
+        assert!(caps(None, None, Some(4)).has_room(&counts));
+        assert!(!caps(None, None, Some(3)).has_room(&counts), "match full");
+        assert!(caps(Some("b"), Some(2), Some(4)).has_room(&counts));
+        assert!(
+            !caps(Some("a"), Some(2), Some(4)).has_room(&counts),
+            "side a full, though the match isn't"
+        );
+        assert!(
+            !caps(Some("b"), Some(2), Some(3)).has_room(&counts),
+            "side b has room, but the match doesn't"
         );
     }
 }

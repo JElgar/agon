@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { CalendarClock, ChevronLeft, Flame, Link2, MailOpen, Pencil, Radio, ShieldPlus, UserPlus } from 'lucide-react'
+import { CalendarClock, ChevronLeft, Flame, Hourglass, Link2, MailOpen, Pencil, Radio, ShieldPlus, UserPlus } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
@@ -40,7 +40,9 @@ import {
 import {
   canManageMatch,
   isMatchOwner,
+  isOnWaitlist,
   isParticipant,
+  isWaitlisted,
   matchPlayerTotalLabel,
   memberAvatarUrl,
   memberInviteToken,
@@ -48,8 +50,10 @@ import {
   myPendingInvitation,
   mySideId,
   orderSidesForViewer,
+  playerId,
   sidePlayerCountLabel,
   sideTeamHint,
+  waitlistedPlayers,
   withInvitationStatus,
 } from '@/lib/members'
 import { CopyInviteButton } from '@/components/agon/CopyInviteButton'
@@ -496,8 +500,15 @@ function MatchDetail({
           used yet (see `lib/joinLinkMemory`) — stays actionable here too. */}
       {!cancelled && <JoinLinkBanner match={match} />}
 
+      {/* Whichever way in the viewer tried — a join link, team self-join or
+          accepting an invite — a full game put them on the waitlist, and
+          those banners vanish once they're on the roster, so this says so. */}
+      {!cancelled && isOnWaitlist(match, currentUserId) && <WaitlistBanner />}
+
       {/* Rosters, one column per side — or the drag-to-reassign/remove editor
-          in place of it, for a participant reconciling the line-up. */}
+          in place of it, for a participant reconciling the line-up. Anyone on
+          the waitlist is left out of the sides (their `side_id` is only the
+          side they asked for) and listed in `Waitlist` below instead. */}
       {editingRoster ? (
         <MatchRosterEditor match={match} onDone={() => setEditingRoster(false)} />
       ) : (
@@ -518,10 +529,10 @@ function MatchDetail({
             matchId={match.id}
             nameA={nameA}
             nameB={nameB}
-            playersA={match.players.filter((p) => p.side_id === sideA?.id)}
-            playersB={match.players.filter((p) => p.side_id === sideB?.id)}
+            playersA={match.players.filter((p) => !isWaitlisted(p) && p.side_id === sideA?.id)}
+            playersB={match.players.filter((p) => !isWaitlisted(p) && p.side_id === sideB?.id)}
             unassigned={match.players.filter(
-              (p) => p.side_id !== sideA?.id && p.side_id !== sideB?.id,
+              (p) => !isWaitlisted(p) && p.side_id !== sideA?.id && p.side_id !== sideB?.id,
             )}
             activeTab={rosterTab}
             onTabChange={setRosterTab}
@@ -530,6 +541,8 @@ function MatchDetail({
           />
         </div>
       )}
+
+      <Waitlist match={match} canMoveIn={canEdit && !cancelled} />
 
       {/* Cricket scorecard: run progression + per-player batting/bowling,
           once there's per-innings detail recorded (live-scored or entered
@@ -913,6 +926,104 @@ function LeaveMatch({ match, isOwner }: { match: Match; isOwner: boolean }) {
           Stay in match
         </Button>
       </div>
+    </div>
+  )
+}
+
+/**
+ * "You're on the waitlist", for a viewer who tried to get into this match
+ * while it (or the side they wanted) was full. Holds no action: leaving works
+ * as it does for any player (`LeaveMatch`), and moving in is the organiser's
+ * call (`Waitlist`).
+ */
+function WaitlistBanner() {
+  return (
+    <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
+      <div className="flex items-start gap-3">
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+          <Hourglass className="size-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium">You're on the waitlist</p>
+          <p className="text-xs text-muted-foreground">
+            This game is full. An organiser can move you in if a spot opens up.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The match's waitlist, longest-waiting first (`waitlistedPlayers`), with the
+ * side each person asked for. Renders nothing when nobody is waiting. Match
+ * admins get "Move in" (`POST /matches/:match_id/waitlist/move-in`), which
+ * needs a free spot: when there isn't one the server answers 409 and this
+ * says so, rather than taking the game past its cap. Nobody is moved in
+ * automatically, so the order is only a guide.
+ */
+function Waitlist({ match, canMoveIn }: { match: Match; canMoveIn: boolean }) {
+  const queryClient = useQueryClient()
+  const waiting = waitlistedPlayers(match)
+
+  const moveIn = useMutation({
+    mutationFn: async (id: string): Promise<'moved' | 'no-spot'> => {
+      const { error, response } = await fetchClient.POST('/matches/{match_id}/waitlist/move-in', {
+        params: { path: { match_id: match.id } },
+        body: { player_id: id },
+      })
+      if (response.status === 409) return 'no-spot'
+      if (error) throw new Error('Failed to move player in')
+      return 'moved'
+    },
+    onSuccess: (result) => {
+      if (result === 'no-spot') return
+      queryClient.invalidateQueries({ queryKey: ['match', match.id] })
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
+    },
+  })
+
+  if (waiting.length === 0) return null
+
+  return (
+    <div className="rounded-xl border bg-card p-3">
+      <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+        Waitlist
+      </p>
+      <div className="flex flex-col gap-1.5">
+        {waiting.map((p) => {
+          const name = memberName(p.member)
+          const askedFor = match.sides.find((s) => s.id === p.side_id)?.name?.trim()
+          return (
+            <div key={playerId(p)} className="flex items-center gap-2">
+              <Avatar name={name} imageUrl={memberAvatarUrl(p.member)} size="md" />
+              <span className="min-w-0 flex-1 truncate text-sm">
+                {name}
+                {askedFor && <span className="text-xs text-muted-foreground"> · {askedFor}</span>}
+              </span>
+              {canMoveIn && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2 text-xs"
+                  disabled={moveIn.isPending}
+                  onClick={() => moveIn.mutate(playerId(p))}
+                >
+                  Move in
+                </Button>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      {moveIn.data === 'no-spot' && (
+        <p className="mt-2 text-xs text-destructive">
+          No free spot. Raise the player cap, or wait for someone to leave.
+        </p>
+      )}
+      {moveIn.isError && (
+        <p className="mt-2 text-xs text-destructive">Couldn't move them in. Try again.</p>
+      )}
     </div>
   )
 }

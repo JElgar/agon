@@ -15,8 +15,6 @@
 //! — there's no read-then-write gap for two concurrent registrations to race
 //! through, unlike a separate "count, then decide" step would have.
 
-use aws_sdk_dynamodb::error::SdkError;
-use aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError;
 use aws_sdk_dynamodb::types::{AttributeValue, Delete, Put, TransactWriteItem, Update};
 
 use super::client::Dao;
@@ -84,7 +82,7 @@ impl Dao {
 
         match result {
             Ok(_) => Ok(()),
-            Err(e) if item_condition_failed(&e, 0) => {
+            Err(e) if super::item_condition_failed(&e, 0) => {
                 // The device item already existed — this is a refresh, not a
                 // new registration. Plain upsert, counter untouched.
                 self.client
@@ -96,7 +94,7 @@ impl Dao {
                     .map_err(|e| DaoError::Dynamo(e.to_string()))?;
                 Ok(())
             }
-            Err(e) if item_condition_failed(&e, 1) => Err(DaoError::Conflict(format!(
+            Err(e) if super::item_condition_failed(&e, 1) => Err(DaoError::Conflict(format!(
                 "user {user_id} already has the maximum of {MAX_DEVICES_PER_USER} registered devices"
             ))),
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
@@ -196,22 +194,4 @@ fn device_count_delta(table: &str, user_id: &str, delta: i64) -> DaoResult<Updat
         .expression_attribute_values(":d", AttributeValue::N(delta.to_string()))
         .build()
         .map_err(|e| DaoError::Dynamo(e.to_string()))
-}
-
-/// Whether the transact-item at `index` (0-based, matching the order items
-/// were added via `transact_items`) failed its own `ConditionExpression`, for
-/// a cancelled `TransactWriteItems`. `false` for any other kind of failure
-/// (network, throttling, ...) — those should propagate as real errors, not
-/// get misread as "the condition failed".
-fn item_condition_failed(err: &SdkError<TransactWriteItemsError>, index: usize) -> bool {
-    match err {
-        SdkError::ServiceError(se) => match se.err() {
-            TransactWriteItemsError::TransactionCanceledException(e) => {
-                e.cancellation_reasons().get(index).and_then(|r| r.code())
-                    == Some("ConditionalCheckFailed")
-            }
-            _ => false,
-        },
-        _ => false,
-    }
 }

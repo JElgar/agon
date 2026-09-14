@@ -343,12 +343,41 @@ export function sidePlayerCountLabel(side: MatchSide | undefined): string {
 
 /** Whether a player takes one of the match's spots: added or self-joined (no
  *  invitation), or an accepted invitee — never a pending or declined one, since
- *  an invite doesn't reserve a spot. Mirrors the server's
- *  `MatchPlayerRecord::occupies_slot`, the rule behind `MatchSide.player_count`
- *  and the join cap, so a total built from this agrees with them. */
+ *  an invite doesn't reserve a spot, and never anyone on the waitlist
+ *  (`isWaitlisted`). Mirrors the server's `MatchPlayerRecord::occupies_slot`,
+ *  the rule behind `MatchSide.player_count` and the join cap, so a total built
+ *  from this agrees with them. */
 function occupiesSlot(player: MatchPlayer): boolean {
+  if (isWaitlisted(player)) return false
   const invitation = player.member.invitation
   return !invitation || invitation.status === 'accepted'
+}
+
+/** Whether a player is on the match's waitlist: they tried to get in (a join,
+ *  or accepting an invite) while the match or their side was full, so they're
+ *  on the roster without a spot until a match admin moves them in. Their
+ *  `side_id` is the side they asked for, not one they're playing on, so they
+ *  belong in the waitlist rather than a side's roster. See
+ *  `MatchPlayer.waitlisted_at`. */
+export function isWaitlisted(player: MatchPlayer): boolean {
+  return player.waitlisted_at != null
+}
+
+/** The match's waitlist, longest-waiting first. Display order only: moving
+ *  someone in is an organiser's choice, not a queue. Compared as dates rather
+ *  than strings, since the server's timestamps don't all carry the same number
+ *  of fractional-second digits. */
+export function waitlistedPlayers(match: Match): MatchPlayer[] {
+  const waitedSince = (p: MatchPlayer) => Date.parse(p.waitlisted_at ?? '')
+  return match.players.filter(isWaitlisted).sort((a, b) => waitedSince(a) - waitedSince(b))
+}
+
+/** Whether the viewer is themselves on the match's waitlist (`isWaitlisted`). */
+export function isOnWaitlist(match: Match, currentUserId: string | undefined): boolean {
+  if (!currentUserId) return false
+  return match.players.some(
+    (p) => p.member.type === 'User' && p.member.user_id === currentUserId && isWaitlisted(p),
+  )
 }
 
 /** "12/20 players" (capped) or "12 players" (uncapped) — the match's overall
@@ -394,12 +423,14 @@ export function initials(name: string | undefined | null): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
 }
 
-/** The players assigned to a given side. */
+/** The players assigned to a given side. Not anyone on the waitlist: their
+ *  `side_id` is only the side they asked for, so they aren't playing for it
+ *  (and mustn't be offered as a scorer, batter or bowler for it). */
 export function playersOnSide(
   players: MatchPlayer[],
   side: MatchSide,
 ): MatchPlayer[] {
-  return players.filter((p) => p.side_id === side.id)
+  return players.filter((p) => !isWaitlisted(p) && p.side_id === side.id)
 }
 
 /** The stable member id for a player, used to key rows and match score events. */

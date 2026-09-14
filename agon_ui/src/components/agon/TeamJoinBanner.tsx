@@ -94,7 +94,7 @@ export function TeamJoinBanner({ match }: { match: Match }) {
           )}
           {join.data === 'conflict' && (
             <p className="mt-2 text-xs text-destructive">
-              This game (or side) is full, or you're already on the roster.
+              You're already on this game's roster.
             </p>
           )}
 

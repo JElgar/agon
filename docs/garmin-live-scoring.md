@@ -494,12 +494,32 @@ Still to do, roughly in order:
 12. **Make `apiBaseUrl` a real App Setting** instead of
     `PairingApiClient`'s hardcoded constant, once there's an actual
     deployed URL worth pointing a real watch at.
-13. **Laps and the half clock only follow this watch's own period taps.**
-    `markLap`/`markHalfStart` run from the main menu's period items, not
-    from `FootballScore.applyServerState`, so a watch that's recording
-    while *another* device records half-time/second-half kick-off gets no
-    lap splits and a half clock that never resets (kick-off itself is
-    handled — see `ActivityRecorder.startForKickOff`). More visible now that recording
+13. **Laps and `ActivityStatsView`'s own half clock only follow this
+    watch's own period taps.** `markLap`/`markHalfStart` run from the main
+    menu's period items, not from `FootballScore.applyServerState`, so a
+    watch that's recording while *another* device records half-time/
+    second-half kick-off gets no lap splits, and `ActivityStatsView`'s
+    current-half reading (still `ActivityRecorder.currentHalfTimerTimeMs`,
+    a device-local clock) never resets (kick-off itself is handled — see
+    `ActivityRecorder.startForKickOff`). More visible now that recording
     and scoring are separate: opening a match someone else is scoring is
-    a supported flow. Fix: mark laps on any observed period transition,
-    taking care that undo's period rollback doesn't add a spurious one.
+    a supported flow. The score screen's own current-half clock doesn't
+    have this problem anymore — see item 14 — but the FIT lap splits and
+    `ActivityStatsView`'s reading still do. Fix: mark laps on any observed
+    period transition, taking care that undo's period rollback doesn't add
+    a spurious one; `ActivityStatsView` could also just switch onto the
+    same server-sourced value item 14 added, rather than fixing its own
+    local one.
+14. ~~A current-half clock that doesn't depend on this device's own
+    recording~~ — done, on the score screen only:
+    `FootballScore.currentHalfStartedAt` (`LiveApiClient.
+    currentHalfStartMoment`, parsed from the server's own `Score.
+    period_times` — the same timestamps `period_times` in the backend's
+    `FootballScore` struct already carried, just not read by the watch
+    before now) drives `agonView`'s current-half clock, ticking once a
+    second (`agonView.POLL_INTERVAL_MS`, split from the 5s server-poll
+    cadence the same way `ActivityStatsView` already does) independent of
+    `ActivityRecorder`'s local half-tracking — correct even for a watch
+    that opened a match someone else is scoring, or isn't recording an
+    activity at all. `ActivityStatsView` still shows its own, separately
+    derived current-half reading — see item 13's now-narrowed scope.

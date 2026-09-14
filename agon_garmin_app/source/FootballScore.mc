@@ -1,4 +1,5 @@
 import Toybox.Lang;
+import Toybox.Time;
 
 //! In-memory football score state for this session: goal tally per side
 //! plus the current match period. Every change is posted to `LiveApiClient`
@@ -26,6 +27,11 @@ class FootballScore {
     //! value needs it to tell "already under way when this watch opened
     //! the match" apart from "kicked off while it was open".
     var hasServerState as Boolean;
+    //! The wall-clock start of the currently-running half, per the
+    //! server's `period_times` (`LiveApiClient.currentHalfStartMoment`) —
+    //! `null` whenever there's no half currently running. See
+    //! `currentHalfElapsedSeconds`, which is what actually reads this.
+    var currentHalfStartedAt as Time.Moment?;
 
     var _apiClient as LiveApiClient;
 
@@ -34,6 +40,7 @@ class FootballScore {
         awayGoals = 0;
         period = PERIOD_NOT_STARTED;
         hasServerState = false;
+        currentHalfStartedAt = null;
         _apiClient = apiClient;
     }
 
@@ -75,13 +82,20 @@ class FootballScore {
     //! once. The first update never counts — a match already under way
     //! when the watch opened it shows the red ring instead, and the wearer
     //! starts their activity by hand. See `ActivityRecorder.startForKickOff`.
-    function applyServerState(newHomeGoals as Number, newAwayGoals as Number, newPeriod as Number?) as Boolean {
+    //!
+    //! `newCurrentHalfStartedAt` overwrites `currentHalfStartedAt`
+    //! unconditionally (unlike `newPeriod`, which a `null` leaves alone) —
+    //! it's already `null` exactly when there's no half running, straight
+    //! from `LiveApiClient.currentHalfStartMoment`, so there's no separate
+    //! "unknown, don't touch it" case to preserve here.
+    function applyServerState(newHomeGoals as Number, newAwayGoals as Number, newPeriod as Number?, newCurrentHalfStartedAt as Time.Moment?) as Boolean {
         var previousPeriod = period;
         homeGoals = newHomeGoals;
         awayGoals = newAwayGoals;
         if (newPeriod != null) {
             period = newPeriod;
         }
+        currentHalfStartedAt = newCurrentHalfStartedAt;
         var kickedOffWhileOpen = hasServerState
             && previousPeriod == PERIOD_NOT_STARTED
             && period != PERIOD_NOT_STARTED
@@ -108,10 +122,26 @@ class FootballScore {
     //! unambiguously means "the period marker that was just undone was
     //! the log's only one" — not the extra-time/penalties ambiguity
     //! `applyServerState` has to hedge against when polling.
-    function applyUndoState(newHomeGoals as Number, newAwayGoals as Number, newPeriod as Number?) as Void {
+    function applyUndoState(newHomeGoals as Number, newAwayGoals as Number, newPeriod as Number?, newCurrentHalfStartedAt as Time.Moment?) as Void {
         homeGoals = newHomeGoals;
         awayGoals = newAwayGoals;
         period = (newPeriod != null) ? (newPeriod as Number) : PERIOD_NOT_STARTED;
+        currentHalfStartedAt = newCurrentHalfStartedAt;
+    }
+
+    //! Seconds elapsed in the current half, per `currentHalfStartedAt` —
+    //! `null` when there's no half currently running (not started,
+    //! half-time, full-time) or the server hasn't reported one yet. Can
+    //! come back slightly negative right at kick-off (this device's own
+    //! clock a touch behind the server's, or the two disagreeing by a
+    //! second) — not clamped here; `formatDuration` (the only caller)
+    //! guards against that instead.
+    function currentHalfElapsedSeconds() as Number? {
+        if (currentHalfStartedAt == null) {
+            return null;
+        }
+        var elapsed = Time.now().subtract(currentHalfStartedAt as Time.Moment);
+        return elapsed.value();
     }
 
     //! Short, on-watch label for the current period.

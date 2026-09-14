@@ -518,6 +518,7 @@ class LiveApiClient {
             var awayGoals = getApp().score.awayGoals;
             var scoreObj = dict.get("score");
             var period = undoPeriodFromScoreObj(scoreObj);
+            var currentHalfStartedAt = undoCurrentHalfStartMoment(scoreObj, period);
             if (scoreObj != null) {
                 var score = scoreObj as Dictionary;
                 var tally = score.get("score");
@@ -533,7 +534,7 @@ class LiveApiClient {
                     }
                 }
             }
-            getApp().score.applyUndoState(homeGoals, awayGoals, period);
+            getApp().score.applyUndoState(homeGoals, awayGoals, period, currentHalfStartedAt);
             WatchUi.requestUpdate();
 
             // The deleted event's own seq is gone, and _lastSeq above
@@ -564,6 +565,16 @@ class LiveApiClient {
             return null;
         }
         return periodFromScore(scoreObj as Dictionary);
+    }
+
+    //! Same shape as `undoPeriodFromScoreObj` — `scoreObj` typed `Object?`
+    //! rather than `Dictionary?` for the same reason (a raw JSON value,
+    //! not yet cast), guarding `currentHalfStartMoment` the same way.
+    function undoCurrentHalfStartMoment(scoreObj as Object?, period as Number?) as Time.Moment? {
+        if (scoreObj == null) {
+            return null;
+        }
+        return currentHalfStartMoment(scoreObj as Dictionary, period);
     }
 
     //! Poll the server's authoritative score (`GET /matches/:id/score`)
@@ -615,7 +626,9 @@ class LiveApiClient {
                 awayGoals = away as Number;
             }
         }
-        if (getApp().score.applyServerState(homeGoals, awayGoals, periodFromScore(score))) {
+        var period = periodFromScore(score);
+        var currentHalfStartedAt = currentHalfStartMoment(score, period);
+        if (getApp().score.applyServerState(homeGoals, awayGoals, period, currentHalfStartedAt)) {
             // Another device kicked off while this watch had the match
             // open — start this wearer's activity too.
             getApp().activityRecorder.startForKickOff(getApp().matchContext.matchName());
@@ -669,4 +682,91 @@ function nowIso() as String {
             info.sec.format("%02d")
         ]
     );
+}
+
+//! The inverse of `nowIso` — parses an RFC-3339 / ISO-8601 UTC timestamp
+//! (e.g. `agon_service`'s `FootballScore.period_times` entries, same wire
+//! shape `nowIso` produces) back into a `Time.Moment`. Only reads the
+//! first 19 characters (date + `HH:MM:SS`); any fractional-seconds suffix
+//! chrono's serializer adds (`.123`, `.123456789`, ...) is ignored, since
+//! nothing here needs sub-second precision. `null` for anything shorter
+//! than that or structurally unparseable (a malformed field shouldn't
+//! happen against a real API response, but this parses arbitrary JSON, so
+//! it's not assumed — same caution as `MatchContext.playerEntry`).
+//!
+//! `Gregorian.moment`'s own options dictionary is documented as expecting
+//! its `:year`/.../`:second` fields in UTC, matching `nowIso`'s own
+//! `utcInfo`-sourced fields above — no timezone conversion needed either
+//! way.
+function parseIso(iso as String) as Time.Moment? {
+    if (iso.length() < 19) {
+        return null;
+    }
+    var year = iso.substring(0, 4).toNumber();
+    var month = iso.substring(5, 7).toNumber();
+    var day = iso.substring(8, 10).toNumber();
+    var hour = iso.substring(11, 13).toNumber();
+    var minute = iso.substring(14, 16).toNumber();
+    var second = iso.substring(17, 19).toNumber();
+    if (year == null || month == null || day == null || hour == null || minute == null || second == null) {
+        return null;
+    }
+    return Gregorian.moment({
+        :year => year,
+        :month => month,
+        :day => day,
+        :hour => hour,
+        :minute => minute,
+        :second => second,
+    });
+}
+
+//! "kick_off"/"second_half_kick_off" — the `period_times` key of whichever
+//! half `period` says is currently running — `null` for any other period
+//! (not started, half-time, full-time, or unrecognized), same as
+//! `currentHalfStartMoment`'s own doc comment below. Split out (rather
+//! than a local `var key = null; ...` inside that function) so `key`
+//! there infers its type from this function's own declared `String?`
+//! return type — a bare `null` literal doesn't give a local variable
+//! enough to infer from (see `MatchContext.memberName`'s doc comment for
+//! the same pattern, hit the same way).
+function currentHalfPeriodKey(period as Number?) as String? {
+    if (period == FootballScore.PERIOD_KICK_OFF) {
+        return "kick_off";
+    }
+    if (period == FootballScore.PERIOD_SECOND_HALF) {
+        return "second_half_kick_off";
+    }
+    return null;
+}
+
+//! The wall-clock start of whichever half is *currently running*, per the
+//! server's own `period_times` — `period_times["kick_off"]` during the
+//! first half, `period_times["second_half_kick_off"]` during the second,
+//! `null` any other time (not started, half-time, full-time, or an
+//! unrecognized period like extra time/penalties — same periods
+//! `periodWireValue` offers, nothing more). Deliberately reads this off
+//! the server's own timestamp rather than this device's local
+//! `ActivityRecorder` clock — that's this device's own recording, which
+//! only tracks the halves *this watch* tapped through (see
+//! docs/garmin-live-scoring.md's "still to fix" #13) — so this stays
+//! correct even on a watch that opened a match someone else is scoring,
+//! or isn't recording an activity at all. `score` is a `Score`'s own
+//! wire shape — either `GET /matches/:id/score`'s body directly, or a
+//! `LiveScoreSnapshot`'s nested `score` field (undo's response), both the
+//! same shape.
+function currentHalfStartMoment(score as Dictionary, period as Number?) as Time.Moment? {
+    var key = currentHalfPeriodKey(period);
+    if (key == null) {
+        return null;
+    }
+    var periodTimes = score.get("period_times");
+    if (periodTimes == null) {
+        return null;
+    }
+    var iso = (periodTimes as Dictionary).get(key);
+    if (iso == null) {
+        return null;
+    }
+    return parseIso(iso as String);
 }

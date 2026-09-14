@@ -139,18 +139,34 @@ class LiveApiClient {
     function setMatch(matchId as String) as Void {
         _matchId = matchId;
         _lastSeq = 0;
-        var url = API_BASE_URL + "/matches/" + matchId + "/live/seq";
+        refreshSeq();
+        // Load whatever's already been scored (by this device on a
+        // previous visit, or another device entirely) rather than
+        // starting the screen from a misleading 0-0. Queued right behind
+        // the seq fetch above rather than fired alongside it.
+        refreshScore();
+    }
+
+    //! Re-fetch `GET /matches/:id/live/seq` and update `_lastSeq` from it
+    //! (`onSeq`) — called from `setMatch`, and from `agonView`'s poll
+    //! timer alongside `refreshScore` so `_lastSeq` stays current
+    //! proactively rather than only reactively (on the next append's own
+    //! conflict). Without this, *any* other client's append or undo
+    //! (either bumps `live_seq` — see `Dao::delete_live_event`'s doc
+    //! comment on the backend) between two of this device's own appends
+    //! would predictably conflict once and need a retry to recover, even
+    //! though the poll timer was already running the whole time.
+    function refreshSeq() as Void {
+        if (_matchId == null) {
+            return;
+        }
+        var url = API_BASE_URL + "/matches/" + (_matchId as String) + "/live/seq";
         var options = {
             :method => Communications.HTTP_REQUEST_METHOD_GET,
             :headers => { "Authorization" => "Bearer " + DeviceAuth.getAccessToken() },
             :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
         };
         enqueueRequest(url, null, options, method(:onSeq));
-        // Load whatever's already been scored (by this device on a
-        // previous visit, or another device entirely) rather than
-        // starting the screen from a misleading 0-0. Queued right behind
-        // the seq fetch above rather than fired alongside it.
-        refreshScore();
     }
 
     function onSeq(responseCode as Number, data as Dictionary or String or Null) as Void {

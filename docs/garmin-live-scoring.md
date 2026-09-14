@@ -297,7 +297,39 @@ in this class is funneled through a small request queue
 concurrent score-poll/append/conflict-recovery requests were found to
 silently clobber each other's callbacks on a real device. `FootballScore`'s own call shape into the api
 client is unchanged from `MockApiClient`'s, per that class's original
-design; only what the client does with it changed.
+design; only what the client does with it changed. `refreshSeq`
+(alongside `refreshScore`, on the same poll timer in `agonView`) keeps
+`_lastSeq` current proactively too, not just reactively after a
+conflict — another device's undo bumps the counter exactly the same way
+an append does (see `Dao::delete_live_event`'s doc comment on the
+backend), and this device has no other way to learn about it before
+its own next attempt.
+
+**A second, deeper bug behind all of the above**: even with every fix
+described so far, a real conflict *still* never actually reached
+`onAppendResponse` as `409` — it came back as `Communications.
+NETWORK_RESPONSE_TOO_LARGE`'s sibling, `-400`/
+`INVALID_HTTP_BODY_IN_NETWORK_RESPONSE`, confirmed from a real device's
+`System.println` trace. Root cause: `Communications.makeWebRequest`
+checks the response's actual `Content-Type` header against the
+`:responseType` the caller requested, and refuses to deliver the real
+HTTP status at all when they don't match — every error response on
+`POST /matches/:id/live/events` (and the other endpoints a paired
+device calls) was `PlainText` (`text/plain`) while the device requests
+JSON, for every non-2xx outcome including `409 Conflict`. Fixed by
+introducing `ErrorMessage` (a one-field `Json` wrapper) and switching
+every error variant on the six endpoints a device can reach
+(`GetUserResponse`, `ListMatchesResponse`, `GetMatchResponse`,
+`GetLiveSeqResponse`, `AppendLiveEventsResponse`,
+`DeleteLiveEventResponse`, plus `GetMatchScoreResponse`) from
+`PlainText<String>` to it — see `ErrorMessage`'s own doc comment on
+`agon_service::main`. **Not fixed**: `check_scope`'s own rejection (and
+any other generic `poem::Error` a handler propagates via `?` rather
+than a named response variant) still renders as `text/plain` by Poem's
+own default, so an expired/invalid/wrong-scope token would still hit
+this same masking on any of these endpoints; and every *other*
+`PlainText` response elsewhere in the API has the identical latent bug,
+just not yet reachable by any current device client.
 
 `API_BASE_URL` (`ApiConfig.mc`, shared by `PairingApiClient`/
 `MatchApiClient`/`LiveApiClient` — file-scope, not a per-class constant,

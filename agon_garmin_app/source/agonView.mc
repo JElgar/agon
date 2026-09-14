@@ -35,6 +35,10 @@ class agonView extends WatchUi.View {
 
     function onPollTick() as Void {
         getApp().liveApiClient.refreshScore();
+        // Keeps _lastSeq current proactively (another device's append or
+        // undo) rather than only reactively, on this device's own next
+        // append conflicting — see LiveApiClient.refreshSeq's doc comment.
+        getApp().liveApiClient.refreshSeq();
     }
 
     // Update the view

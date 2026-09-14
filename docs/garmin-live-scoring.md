@@ -528,3 +528,20 @@ Still to do, roughly in order:
     that opened a match someone else is scoring, or isn't recording an
     activity at all. `ActivityStatsView` still shows its own, separately
     derived current-half reading — see item 13's now-narrowed scope.
+15. ~~Stale roster after a match is picked~~ — done: `MatchContext.
+    populateFrom` only ever ran once, from `MatchMenuDelegate.
+    onMatchDetails` when the match was first picked, so a player added to
+    the match afterwards (a late sub, say) never showed up in `GoalFlow`'s
+    scorer/assist menus for the rest of the session. `LiveApiClient.
+    refreshRoster` re-fetches `GET /matches/:id` and repopulates
+    `MatchContext` from it, wired to a "Refresh players" main-menu item
+    (`agonMenuDelegate`) rather than polled automatically — roster
+    changes are rare enough mid-match that a poll every few seconds isn't
+    worth the extra traffic the score/seq polls already generate. Goes
+    through the same request queue every other `LiveApiClient` call uses
+    (see the class doc comment) rather than a bare `Communications.
+    makeWebRequest`, so it can't race the score-poll timer's own queued
+    requests. A short buzz on success is the only feedback (same guarded
+    `Attention.vibrate` pattern as `ActivityRecorder.startForKickOff`) —
+    there's no on-watch error UI for a failed refresh, same "basics only"
+    scope as `undoLast`.

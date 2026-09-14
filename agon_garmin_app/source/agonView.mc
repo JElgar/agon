@@ -1,4 +1,5 @@
 import Toybox.Graphics;
+import Toybox.Lang;
 import Toybox.WatchUi;
 import Toybox.Timer;
 

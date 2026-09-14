@@ -1264,13 +1264,36 @@ struct TeamMemberPage {
     next_cursor: Option<String>,
 }
 
+/// JSON-wrapped error body, used instead of `PlainText<String>` on every
+/// non-2xx response of the endpoints a paired device (the Garmin watch
+/// app) calls. `Communications.makeWebRequest` checks the actual
+/// response `Content-Type` header against the `:responseType` the device
+/// requested, and — confirmed from a real device — refuses to deliver
+/// the real HTTP status at all when they don't match: a `PlainText`
+/// (`text/plain`) error body on an endpoint requested as JSON came back
+/// as a synthetic `-400`/`INVALID_HTTP_BODY_IN_NETWORK_RESPONSE`
+/// instead of the real `409`/`403`/`404`/etc., which the device has no
+/// way to distinguish or react to (see docs/garmin-live-scoring.md).
+/// Scoped to just the watch-facing endpoints for now — the same masking
+/// would apply to any other endpoint's `PlainText` error body too, but
+/// only these six are reachable with `device_scope` set (`check_scope`),
+/// and a broader switch is a bigger, separate change (also: `check_scope`
+/// itself, and any other generic `poem::Error` a handler propagates via
+/// `?` rather than a named response variant, still renders as
+/// `text/plain` by Poem's own default and isn't covered by this either —
+/// see docs/garmin-live-scoring.md's residual-gap note).
+#[derive(Object)]
+struct ErrorMessage {
+    message: String,
+}
+
 #[derive(ApiResponse)]
 enum GetUserResponse {
     #[oai(status = 200)]
     User(Json<User>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1452,8 +1475,10 @@ enum GetMatchResponse {
     #[oai(status = 200)]
     Match(Json<Match>),
 
+    /// See `ErrorMessage`'s doc comment on why this is JSON, not the
+    /// `PlainText` every other 404 in this file uses.
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1461,8 +1486,10 @@ enum ListMatchesResponse {
     #[oai(status = 200)]
     Matches(Json<MatchPage>),
 
+    /// See `ErrorMessage`'s doc comment on why this is JSON, not the
+    /// `PlainText` every other 400 in this file uses.
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1769,9 +1796,11 @@ enum GetMatchScoreResponse {
     #[oai(status = 200)]
     Score(Json<Score>),
 
-    /// The match exists but has no score recorded.
+    /// The match exists but has no score recorded. See `ErrorMessage`'s
+    /// doc comment on why this is JSON, not the `PlainText` every other
+    /// 404 in this file uses.
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1779,21 +1808,25 @@ enum AppendLiveEventsResponse {
     #[oai(status = 200)]
     Ok(Json<LiveScoreSnapshot>),
 
+    /// See `ErrorMessage`'s doc comment on why every error variant on
+    /// this response is JSON, not the `PlainText` most others in this
+    /// file use — this is the endpoint whose masked `Conflict` (below)
+    /// was actually observed breaking the watch app on a real device.
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 
     /// Only a participant may record live events for a match.
     #[oai(status = 403)]
-    Forbidden(PlainText<String>),
+    Forbidden(Json<ErrorMessage>),
 
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 
     /// `expected_last_seq` doesn't match the match's current log tip —
     /// another device advanced it, or this is a stale retry. The caller
     /// should re-fetch the log/state and reconcile before retrying.
     #[oai(status = 409)]
-    Conflict(PlainText<String>),
+    Conflict(Json<ErrorMessage>),
 }
 
 /// One page of a match's live event log, oldest first. `next_cursor` absent
@@ -1821,8 +1854,10 @@ enum GetLiveSeqResponse {
     #[oai(status = 200)]
     Ok(Json<LiveSeq>),
 
+    /// See `ErrorMessage`'s doc comment on why this is JSON, not the
+    /// `PlainText` every other 404 in this file uses.
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -1840,16 +1875,20 @@ enum DeleteLiveEventResponse {
     #[oai(status = 200)]
     Ok(Json<LiveScoreSnapshot>),
 
+    /// See `ErrorMessage`'s doc comment on why every error variant on
+    /// this response is JSON — this is scoped the same way as
+    /// `AppendLiveEventsResponse` (`SCOPE_LIVE_SCORING`), even though no
+    /// current client (the watch app included) calls it yet.
     #[oai(status = 400)]
-    ValidationError(PlainText<String>),
+    ValidationError(Json<ErrorMessage>),
 
     /// The caller is not a match admin.
     #[oai(status = 403)]
-    Forbidden(PlainText<String>),
+    Forbidden(Json<ErrorMessage>),
 
     /// Either the match or that specific seq doesn't exist.
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -2161,17 +2200,17 @@ impl Api {
         {
             Some(id) => id,
             None => {
-                return Ok(GetUserResponse::NotFound(PlainText(
-                    "user not found".into(),
-                )));
+                return Ok(GetUserResponse::NotFound(Json(ErrorMessage {
+                    message: "user not found".into(),
+                })));
             }
         };
         let record = match dao.get_user(&uid).await.map_err(dao_internal)? {
             Some(r) => r,
             None => {
-                return Ok(GetUserResponse::NotFound(PlainText(
-                    "user not found".into(),
-                )));
+                return Ok(GetUserResponse::NotFound(Json(ErrorMessage {
+                    message: "user not found".into(),
+                })));
             }
         };
         // Own profile: not "followed by me".
@@ -2640,17 +2679,17 @@ impl Api {
         if let (Some(from), Some(to)) = (from, to)
             && from > to
         {
-            return Ok(ListMatchesResponse::ValidationError(PlainText(
-                "`from` must be before `to`".to_string(),
-            )));
+            return Ok(ListMatchesResponse::ValidationError(Json(ErrorMessage {
+                message: "`from` must be before `to`".to_string(),
+            })));
         }
 
         let offset = match search_offset(cursor.as_deref()) {
             Ok(o) => o,
             Err(()) => {
-                return Ok(ListMatchesResponse::ValidationError(PlainText(
-                    "Invalid cursor".to_string(),
-                )));
+                return Ok(ListMatchesResponse::ValidationError(Json(ErrorMessage {
+                    message: "Invalid cursor".to_string(),
+                })));
             }
         };
 
@@ -3165,9 +3204,9 @@ impl Api {
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
             None => {
-                return Ok(GetMatchResponse::NotFound(PlainText(
-                    "match not found".into(),
-                )));
+                return Ok(GetMatchResponse::NotFound(Json(ErrorMessage {
+                    message: "match not found".into(),
+                })));
             }
         };
         let i_liked = dao
@@ -3732,9 +3771,9 @@ impl Api {
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
             None => {
-                return Ok(GetMatchScoreResponse::NotFound(PlainText(
-                    "match not found".into(),
-                )));
+                return Ok(GetMatchScoreResponse::NotFound(Json(ErrorMessage {
+                    message: "match not found".into(),
+                })));
             }
         };
         let sport = agg.match_.match_type.as_str();
@@ -3756,15 +3795,15 @@ impl Api {
                     .await
                     .map_err(dao_internal)?;
                 if records.is_empty() {
-                    return Ok(GetMatchScoreResponse::NotFound(PlainText(
-                        "match has no score".into(),
-                    )));
+                    return Ok(GetMatchScoreResponse::NotFound(Json(ErrorMessage {
+                        message: "match has no score".into(),
+                    })));
                 }
                 let Some(score) = derive_live_score(sport, &records, agg.match_.format.as_ref())
                 else {
-                    return Ok(GetMatchScoreResponse::NotFound(PlainText(
-                        "match has no score".into(),
-                    )));
+                    return Ok(GetMatchScoreResponse::NotFound(Json(ErrorMessage {
+                        message: "match has no score".into(),
+                    })));
                 };
                 // `agg.match_.live_seq`, not `max(records.seq)` — see
                 // `derive_live_snapshot`'s doc comment for why the latter can
@@ -3912,27 +3951,31 @@ impl Api {
         );
 
         if input.events.is_empty() {
-            return Ok(AppendLiveEventsResponse::ValidationError(PlainText(
-                "events must not be empty".into(),
+            return Ok(AppendLiveEventsResponse::ValidationError(Json(
+                ErrorMessage {
+                    message: "events must not be empty".into(),
+                },
             )));
         }
         if input.events.len() > dao::live_score_ops::MAX_LIVE_EVENTS_PER_BATCH {
-            return Ok(AppendLiveEventsResponse::ValidationError(PlainText(
-                format!(
-                    "batch of {} exceeds the {}-event limit per request; split larger \
-                     offline backlogs into multiple calls",
-                    input.events.len(),
-                    dao::live_score_ops::MAX_LIVE_EVENTS_PER_BATCH
-                ),
+            return Ok(AppendLiveEventsResponse::ValidationError(Json(
+                ErrorMessage {
+                    message: format!(
+                        "batch of {} exceeds the {}-event limit per request; split larger \
+                         offline backlogs into multiple calls",
+                        input.events.len(),
+                        dao::live_score_ops::MAX_LIVE_EVENTS_PER_BATCH
+                    ),
+                },
             )));
         }
 
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
             None => {
-                return Ok(AppendLiveEventsResponse::NotFound(PlainText(
-                    "match not found".into(),
-                )));
+                return Ok(AppendLiveEventsResponse::NotFound(Json(ErrorMessage {
+                    message: "match not found".into(),
+                })));
             }
         };
 
@@ -3941,9 +3984,9 @@ impl Api {
         // these events fold into, so a non-admin writing them isn't just
         // noise, it's data someone else's confirmation would vouch for.
         if !caller_is_match_admin(dao, &agg, &uid).await? {
-            return Ok(AppendLiveEventsResponse::Forbidden(PlainText(
-                "only a match admin can record live events for this match".into(),
-            )));
+            return Ok(AppendLiveEventsResponse::Forbidden(Json(ErrorMessage {
+                message: "only a match admin can record live events for this match".into(),
+            })));
         }
 
         let sport = agg.match_.match_type.clone();
@@ -3954,8 +3997,10 @@ impl Api {
         for (i, e) in input.events.iter().enumerate() {
             let tag = mapping::live_event_sport_tag(&e.event);
             if tag != sport {
-                return Ok(AppendLiveEventsResponse::ValidationError(PlainText(
-                    format!("event {i} has sport `{tag}` but match is `{sport}`"),
+                return Ok(AppendLiveEventsResponse::ValidationError(Json(
+                    ErrorMessage {
+                        message: format!("event {i} has sport `{tag}` but match is `{sport}`"),
+                    },
                 )));
             }
         }
@@ -3973,7 +4018,9 @@ impl Api {
         {
             Ok(new_last_seq) => new_last_seq,
             Err(dao::DaoError::Conflict(msg)) => {
-                return Ok(AppendLiveEventsResponse::Conflict(PlainText(msg)));
+                return Ok(AppendLiveEventsResponse::Conflict(Json(ErrorMessage {
+                    message: msg,
+                })));
             }
             Err(e) => return Err(dao_internal(e)),
         };
@@ -4030,8 +4077,10 @@ impl Api {
 
         match snapshot {
             Some(snapshot) => Ok(AppendLiveEventsResponse::Ok(Json(snapshot))),
-            None => Ok(AppendLiveEventsResponse::ValidationError(PlainText(
-                format!("sport `{sport}` does not support live scoring"),
+            None => Ok(AppendLiveEventsResponse::ValidationError(Json(
+                ErrorMessage {
+                    message: format!("sport `{sport}` does not support live scoring"),
+                },
             ))),
         }
     }
@@ -4141,9 +4190,9 @@ impl Api {
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
             None => {
-                return Ok(GetLiveSeqResponse::NotFound(PlainText(
-                    "match not found".into(),
-                )));
+                return Ok(GetLiveSeqResponse::NotFound(Json(ErrorMessage {
+                    message: "match not found".into(),
+                })));
             }
         };
         Ok(GetLiveSeqResponse::Ok(Json(LiveSeq {
@@ -4225,29 +4274,31 @@ impl Api {
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
             None => {
-                return Ok(DeleteLiveEventResponse::NotFound(PlainText(
-                    "match not found".into(),
-                )));
+                return Ok(DeleteLiveEventResponse::NotFound(Json(ErrorMessage {
+                    message: "match not found".into(),
+                })));
             }
         };
 
         // Same gate as recording the event in the first place.
         if !caller_is_match_admin(dao, &agg, &uid).await? {
-            return Ok(DeleteLiveEventResponse::Forbidden(PlainText(
-                "only a match admin can undo a live event for this match".into(),
-            )));
+            return Ok(DeleteLiveEventResponse::Forbidden(Json(ErrorMessage {
+                message: "only a match admin can undo a live event for this match".into(),
+            })));
         }
 
         let new_tip = match dao.delete_live_event(&match_id, seq).await {
             Ok(new_tip) => new_tip,
             Err(dao::DaoError::NotFound(_)) => {
-                return Ok(DeleteLiveEventResponse::NotFound(PlainText(
-                    "live event not found".into(),
-                )));
+                return Ok(DeleteLiveEventResponse::NotFound(Json(ErrorMessage {
+                    message: "live event not found".into(),
+                })));
             }
             Err(dao::DaoError::Conflict(_)) => {
-                return Ok(DeleteLiveEventResponse::ValidationError(PlainText(
-                    "only the most recently recorded event can be undone".into(),
+                return Ok(DeleteLiveEventResponse::ValidationError(Json(
+                    ErrorMessage {
+                        message: "only the most recently recorded event can be undone".into(),
+                    },
                 )));
             }
             Err(e) => return Err(dao_internal(e)),
@@ -4267,11 +4318,13 @@ impl Api {
             .await?
         {
             Some(snapshot) => Ok(DeleteLiveEventResponse::Ok(Json(snapshot))),
-            None => Ok(DeleteLiveEventResponse::ValidationError(PlainText(
-                format!(
-                    "sport `{}` does not support live scoring",
-                    agg.match_.match_type
-                ),
+            None => Ok(DeleteLiveEventResponse::ValidationError(Json(
+                ErrorMessage {
+                    message: format!(
+                        "sport `{}` does not support live scoring",
+                        agg.match_.match_type
+                    ),
+                },
             ))),
         }
     }

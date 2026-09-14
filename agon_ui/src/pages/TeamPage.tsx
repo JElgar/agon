@@ -584,7 +584,7 @@ function MemberRow({
             )}
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              variant="destructive"
+              className="text-destructive focus:bg-destructive/10 focus:text-destructive"
               disabled={busy}
               onSelect={() => removeMutation.mutate()}
             >

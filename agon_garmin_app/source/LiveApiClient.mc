@@ -261,6 +261,16 @@ class LiveApiClient {
     }
 
     function onAppendResponse(responseCode as Number, data as Dictionary or String or Null) as Void {
+        // Temporary — see MatchPickerView's matching comment. Traces the
+        // conflict-retry path end to end: which attempt this is, what
+        // came back, and what _lastSeq/_pendingEvent looked like when it
+        // did.
+        System.println(
+            "[live-api] onAppendResponse responseCode=" + responseCode +
+            " wasRetry=" + _isRetryInFlight +
+            " lastSeq=" + _lastSeq +
+            " pendingEvent=" + (_pendingEvent != null)
+        );
         // Cleared up front — every branch below either finishes the
         // conflict-recovery saga this flag tracks, or was never part of
         // one to begin with.
@@ -330,6 +340,11 @@ class LiveApiClient {
     //! under heavy concurrent writes.
     function onSeqForRetry(responseCode as Number, data as Dictionary or String or Null) as Void {
         onSeq(responseCode, data);
+        System.println(
+            "[live-api] onSeqForRetry responseCode=" + responseCode +
+            " correctedLastSeq=" + _lastSeq +
+            " pendingEvent=" + (_pendingEvent != null)
+        );
         if (_pendingEvent != null) {
             var event = _pendingEvent as Dictionary;
             _pendingEvent = null;
@@ -361,6 +376,7 @@ class LiveApiClient {
     }
 
     function onScore(responseCode as Number, data as Dictionary or String or Null) as Void {
+        System.println("[live-api] onScore responseCode=" + responseCode);
         if (responseCode != 200 || data == null) {
             // 404 (no score recorded yet — a brand new match) or a
             // network error: nothing to apply, leave the current tally

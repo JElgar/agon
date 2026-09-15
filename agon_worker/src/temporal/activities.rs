@@ -188,6 +188,13 @@ impl AgonActivities {
             live_seq: 0,
             live_tip_seq: None,
             format: None,
+            // A series occurrence is always friendly. `SeriesRecord` has no
+            // `ranked` of its own, and generation puts *other* people's
+            // players into spots without asking them — which is the one thing
+            // a rating needs (see `rating_consent`). An organiser can switch a
+            // single occurrence to ranked afterwards, which asks everyone in
+            // it. A ranked *series* needs its own consent design first.
+            ranked: false,
             created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         };
 

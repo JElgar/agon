@@ -56,33 +56,40 @@ pub enum ScoreRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         awaiting_next_innings: Option<bool>,
     },
-    Football {
-        /// Goal tally, keyed by side id. `#[serde(default)]` because this
-        /// field didn't exist before the tally was embedded here — a record
-        /// written in that gap has no `score` to fall back to, so it
-        /// deserializes as an empty tally rather than 500ing.
-        #[serde(default)]
-        score: HashMap<String, u32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        goals: Option<Vec<FootballGoalEventRecord>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        cards: Option<Vec<FootballCardEventRecord>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        substitutions: Option<Vec<FootballSubstitutionEventRecord>>,
-        /// The most recent period marker seen, if any.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        period: Option<FootballPeriodRecord>,
-        /// When each period marker was recorded, keyed by kind.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        period_times: Option<HashMap<FootballPeriodRecord, String>>,
-        /// Every penalty-shootout kick recorded, in order taken.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        penalty_shootout: Option<Vec<FootballPenaltyShootoutKickRecord>>,
-        /// Running shootout tally (kicks scored, not taken), keyed by side id.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        penalty_shootout_score: Option<HashMap<String, u32>>,
-    },
+    Football(FootballScoreRecord),
     Netball(NetballScoreRecord),
+}
+
+/// Football's `ScoreRecord` shape — see `NetballScoreRecord`'s doc comment
+/// for why this is a standalone type rather than an inline enum-variant
+/// struct: wire-identical to the inline shape it replaced, guarded by
+/// `agon_core/tests/football_score_record_roundtrip.rs`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FootballScoreRecord {
+    /// Goal tally, keyed by side id. `#[serde(default)]` because this
+    /// field didn't exist before the tally was embedded here — a record
+    /// written in that gap has no `score` to fall back to, so it
+    /// deserializes as an empty tally rather than 500ing.
+    #[serde(default)]
+    pub score: HashMap<String, u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goals: Option<Vec<FootballGoalEventRecord>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cards: Option<Vec<FootballCardEventRecord>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub substitutions: Option<Vec<FootballSubstitutionEventRecord>>,
+    /// The most recent period marker seen, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period: Option<FootballPeriodRecord>,
+    /// When each period marker was recorded, keyed by kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period_times: Option<HashMap<FootballPeriodRecord, String>>,
+    /// Every penalty-shootout kick recorded, in order taken.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub penalty_shootout: Option<Vec<FootballPenaltyShootoutKickRecord>>,
+    /// Running shootout tally (kicks scored, not taken), keyed by side id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub penalty_shootout_score: Option<HashMap<String, u32>>,
 }
 
 /// Netball's `ScoreRecord` shape — pulled out to its own type (rather than an
@@ -1650,7 +1657,7 @@ mod tests {
         ]));
         let rec: ScoreRecord = serde_dynamo::from_attribute_value(score_av).unwrap();
         match rec {
-            ScoreRecord::Football { score, .. } => assert!(score.is_empty()),
+            ScoreRecord::Football(rec) => assert!(rec.score.is_empty()),
             _ => panic!("expected football"),
         }
     }

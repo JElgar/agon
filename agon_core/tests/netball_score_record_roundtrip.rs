@@ -36,13 +36,15 @@
 //! Guarded on `AWS_ENDPOINT_URL` being set, so a plain `cargo test --workspace`
 //! run (no local stack, no env override) never risks touching a real table.
 
+mod common;
+
 use std::collections::HashMap;
 
-use agon_core::dao::Dao;
 use agon_core::dao::records::{
     MatchScoreRecord, NetballFoulEventRecord, NetballFoulKindRecord, NetballGoalEventRecord,
     NetballPeriodRecord, NetballPositionRecord, NetballScoreRecord, ScoreRecord,
 };
+use common::{TestEnv, local_env};
 
 #[tokio::test]
 async fn netball_score_record_round_trips_through_dynamodb() {
@@ -234,93 +236,3 @@ async fn pre_refactor_netball_score_json_still_deserializes() {
     assert_eq!(fetched.last_seq, Some(3));
 }
 
-/// A `Dao` plus the raw `Client`/table name it was built from — the raw
-/// client is only for this test file's own low-level `PutItem` calls (e.g.
-/// writing a hand-built legacy JSON shape); `Dao` itself deliberately doesn't
-/// expose its internal client.
-struct TestEnv {
-    dao: Dao,
-    client: aws_sdk_dynamodb::Client,
-    table: String,
-}
-
-/// Connects to `AWS_ENDPOINT_URL` and makes sure the `agon` table exists
-/// (mirrors `local/dynamodb/create-table.sh`'s schema so this needs no
-/// separate script or `aws` CLI — just a reachable DynamoDB endpoint).
-/// Returns `None` (rather than panicking) when `AWS_ENDPOINT_URL` isn't set,
-/// so this test is a no-op skip — never an accidental hit on a real table —
-/// outside an explicit local run.
-async fn local_env() -> Option<TestEnv> {
-    if std::env::var("AWS_ENDPOINT_URL").is_err() {
-        return None;
-    }
-    let table = std::env::var("AGON_TABLE_NAME").unwrap_or_else(|_| "agon".to_string());
-    let config = aws_config::load_from_env().await;
-    let client = aws_sdk_dynamodb::Client::new(&config);
-    ensure_table_exists(&client, &table).await;
-    Some(TestEnv {
-        dao: Dao::new(client.clone(), table.clone()),
-        client,
-        table,
-    })
-}
-
-async fn ensure_table_exists(client: &aws_sdk_dynamodb::Client, table: &str) {
-    use aws_sdk_dynamodb::types::{
-        AttributeDefinition, GlobalSecondaryIndex, KeySchemaElement, KeyType,
-        Projection, ProjectionType, ScalarAttributeType,
-    };
-
-    if client.describe_table().table_name(table).send().await.is_ok() {
-        return;
-    }
-
-    let attr = |name: &str| {
-        AttributeDefinition::builder()
-            .attribute_name(name)
-            .attribute_type(ScalarAttributeType::S)
-            .build()
-            .unwrap()
-    };
-    let key = |name: &str, kind: KeyType| {
-        KeySchemaElement::builder()
-            .attribute_name(name)
-            .key_type(kind)
-            .build()
-            .unwrap()
-    };
-    let gsi = |index: &str, pk: &str, sk: &str| {
-        GlobalSecondaryIndex::builder()
-            .index_name(index)
-            .key_schema(key(pk, KeyType::Hash))
-            .key_schema(key(sk, KeyType::Range))
-            .projection(
-                Projection::builder()
-                    .projection_type(ProjectionType::All)
-                    .build(),
-            )
-            .build()
-            .unwrap()
-    };
-
-    client
-        .create_table()
-        .table_name(table)
-        .attribute_definitions(attr("PK"))
-        .attribute_definitions(attr("SK"))
-        .attribute_definitions(attr("GSI1PK"))
-        .attribute_definitions(attr("GSI1SK"))
-        .attribute_definitions(attr("GSI2PK"))
-        .attribute_definitions(attr("GSI2SK"))
-        .attribute_definitions(attr("GSI3PK"))
-        .attribute_definitions(attr("GSI3SK"))
-        .key_schema(key("PK", KeyType::Hash))
-        .key_schema(key("SK", KeyType::Range))
-        .global_secondary_indexes(gsi("GSI1", "GSI1PK", "GSI1SK"))
-        .global_secondary_indexes(gsi("GSI2", "GSI2PK", "GSI2SK"))
-        .global_secondary_indexes(gsi("GSI3", "GSI3PK", "GSI3SK"))
-        .billing_mode(aws_sdk_dynamodb::types::BillingMode::PayPerRequest)
-        .send()
-        .await
-        .expect("create table for local test run");
-}

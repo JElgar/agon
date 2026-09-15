@@ -12,20 +12,16 @@ use crate::detailed_score::cricket::{
     CricketDeliveryWicket, CricketDismissal, CricketDismissalKind, CricketExtraKind, CricketExtras,
     CricketFallOfWicket, NextBallContext, Overs, balls_to_overs,
 };
-use crate::detailed_score::football::{
-    FootballCardColor, FootballCardEvent, FootballGoalEvent, FootballPenaltyShootoutKick,
-    FootballPeriod, FootballSubstitutionEvent,
-};
 use crate::live_score::{
     LiveEvent, LiveEventInput, NewLiveEventInput,
     cricket::{
         CricketInningsEndEvent, CricketInningsStartEvent, CricketLiveEvent, CricketRetireEvent,
         InningsEndReason,
     },
-    football::{FootballLiveEvent, FootballPeriodEvent},
+    football::FootballLiveEvent,
     netball::NetballLiveEvent,
 };
-use crate::match_format::{CricketFormat, FootballFormat, MatchFormat};
+use crate::match_format::{CricketFormat, MatchFormat};
 use crate::membership::{
     ExternalMember, Invitation, InvitationContext, InvitationKind, InvitationMatchContext,
     InvitationStatus, InvitationTeamContext, JoinLink, JoinLinkScope, MatchPlayerRole, Member,
@@ -56,10 +52,7 @@ use agon_core::dao::records::{
     CricketFormatRecord, CricketInningsEndEventRecord, CricketInningsStartEventRecord,
     CricketLiveEventRecord, CricketRetireEventRecord, CricketScoreInningsRecord,
     CricketStatsRecord, DevicePlatform as DevicePlatformRecord, EmbeddedInvitationRecord,
-    FootballCardColorRecord, FootballCardEventRecord, FootballFormatRecord,
-    FootballGoalEventRecord, FootballLiveEventRecord, FootballPenaltyShootoutKickRecord,
-    FootballPeriodEventRecord, FootballPeriodRecord, FootballStatsRecord,
-    FootballSubstitutionEventRecord, GenericSportStatsRecord, InningsEndReasonRecord,
+    FootballStatsRecord, GenericSportStatsRecord, InningsEndReasonRecord,
     InvitationContextRecord, InvitationKindRecord, InvitationRecord, JoinLinkRecord,
     JoinLinkScopeRecord, LiveEventPayloadRecord, LiveEventRecord, MatchFormatRecord,
     MatchLikeRecord, MatchPlayerRecord, MatchPlayerRole as MatchPlayerRoleRecord, MatchRecord,
@@ -296,46 +289,7 @@ pub fn score_from_record(rec: &ScoreRecord) -> Score {
             // (see `CricketScore::players`' doc comment).
             players: std::collections::HashMap::new(),
         }),
-        ScoreRecord::Football {
-            score,
-            goals,
-            cards,
-            substitutions,
-            period,
-            period_times,
-            penalty_shootout,
-            penalty_shootout_score,
-        } => Score::Football(FootballScore {
-            score: score.clone(),
-            goals: goals
-                .as_ref()
-                .map(|gs| gs.iter().map(football_goal_event_from_record).collect()),
-            cards: cards
-                .as_ref()
-                .map(|cs| cs.iter().map(football_card_event_from_record).collect()),
-            substitutions: substitutions.as_ref().map(|subs| {
-                subs.iter()
-                    .map(football_substitution_event_from_record)
-                    .collect()
-            }),
-            period: period.as_ref().map(football_period_from_record),
-            period_times: period_times.as_ref().map(|pts| {
-                pts.iter()
-                    .map(|(p, t)| (football_period_from_record(p), parse_ts(t)))
-                    .collect()
-            }),
-            penalty_shootout: penalty_shootout.as_ref().map(|ks| {
-                ks.iter()
-                    .map(|k| FootballPenaltyShootoutKick {
-                        side_id: k.side_id.clone(),
-                        scored: k.scored,
-                    })
-                    .collect()
-            }),
-            penalty_shootout_score: penalty_shootout_score.clone(),
-            // Not stored — `Api::hydrate_score_players` fills this afterward.
-            players: std::collections::HashMap::new(),
-        }),
+        ScoreRecord::Football(rec) => Score::Football(crate::sports::football::score_from_record(rec)),
         ScoreRecord::Netball(rec) => Score::Netball(crate::sports::netball::score_from_record(rec)),
     }
 }
@@ -528,42 +482,7 @@ pub fn score_to_record(score: &Score) -> ScoreRecord {
                 .map(next_ball_context_to_record),
             awaiting_next_innings: s.awaiting_next_innings,
         },
-        Score::Football(s) => ScoreRecord::Football {
-            score: s.score.clone(),
-            goals: s
-                .goals
-                .as_ref()
-                .map(|gs| gs.iter().map(football_goal_event_to_record).collect()),
-            cards: s
-                .cards
-                .as_ref()
-                .map(|cs| cs.iter().map(football_card_event_to_record).collect()),
-            substitutions: s.substitutions.as_ref().map(|subs| {
-                subs.iter()
-                    .map(football_substitution_event_to_record)
-                    .collect()
-            }),
-            period: s.period.as_ref().map(football_period_to_record),
-            period_times: s.period_times.as_ref().map(|pts| {
-                pts.iter()
-                    .map(|(p, t)| {
-                        (
-                            football_period_to_record(p),
-                            t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                        )
-                    })
-                    .collect()
-            }),
-            penalty_shootout: s.penalty_shootout.as_ref().map(|ks| {
-                ks.iter()
-                    .map(|k| FootballPenaltyShootoutKickRecord {
-                        side_id: k.side_id.clone(),
-                        scored: k.scored,
-                    })
-                    .collect()
-            }),
-            penalty_shootout_score: s.penalty_shootout_score.clone(),
-        },
+        Score::Football(s) => ScoreRecord::Football(crate::sports::football::score_to_record(s)),
         Score::Netball(s) => ScoreRecord::Netball(crate::sports::netball::score_to_record(s)),
     }
 }
@@ -1232,13 +1151,7 @@ pub fn match_score_from_record(rec: &MatchScoreRecord) -> Score {
 
 pub fn match_format_to_record(fmt: &MatchFormat) -> MatchFormatRecord {
     match fmt {
-        MatchFormat::Football(f) => MatchFormatRecord::Football(FootballFormatRecord {
-            half_length_minutes: f.half_length_minutes,
-            num_halves: f.num_halves,
-            extra_time: f.extra_time,
-            extra_time_half_length_minutes: f.extra_time_half_length_minutes,
-            penalties: f.penalties,
-        }),
+        MatchFormat::Football(f) => MatchFormatRecord::Football(crate::sports::football::format_to_record(f)),
         MatchFormat::Cricket(f) => MatchFormatRecord::Cricket(CricketFormatRecord {
             overs_per_innings: f.overs_per_innings,
             innings_per_side: f.innings_per_side,
@@ -1257,13 +1170,7 @@ pub fn match_format_to_record(fmt: &MatchFormat) -> MatchFormatRecord {
 /// is a typed DAO enum, not JSON, so there's no parse step that can fail.
 pub fn match_format_from_record(rec: &MatchFormatRecord) -> MatchFormat {
     match rec {
-        MatchFormatRecord::Football(f) => MatchFormat::Football(FootballFormat {
-            half_length_minutes: f.half_length_minutes,
-            num_halves: f.num_halves,
-            extra_time: f.extra_time,
-            extra_time_half_length_minutes: f.extra_time_half_length_minutes,
-            penalties: f.penalties,
-        }),
+        MatchFormatRecord::Football(f) => MatchFormat::Football(crate::sports::football::format_from_record(f)),
         MatchFormatRecord::Cricket(f) => MatchFormat::Cricket(CricketFormat {
             overs_per_innings: f.overs_per_innings,
             innings_per_side: f.innings_per_side,
@@ -1311,7 +1218,7 @@ pub fn live_event_sport_tag(event: &LiveEventInput) -> &'static str {
 pub fn live_event_input_to_record(event: &LiveEventInput) -> LiveEventPayloadRecord {
     match event {
         LiveEventInput::Football(f) => {
-            LiveEventPayloadRecord::Football(football_live_event_to_record(f))
+            LiveEventPayloadRecord::Football(crate::sports::football::live_event_to_record(f))
         }
         LiveEventInput::Cricket(c) => {
             LiveEventPayloadRecord::Cricket(cricket_live_event_to_record(c))
@@ -1325,7 +1232,7 @@ pub fn live_event_input_to_record(event: &LiveEventInput) -> LiveEventPayloadRec
 pub fn live_event_payload_from_record(rec: &LiveEventPayloadRecord) -> LiveEventInput {
     match rec {
         LiveEventPayloadRecord::Football(f) => {
-            LiveEventInput::Football(football_live_event_from_record(f))
+            LiveEventInput::Football(crate::sports::football::live_event_from_record(f))
         }
         LiveEventPayloadRecord::Cricket(c) => {
             LiveEventInput::Cricket(cricket_live_event_from_record(c))
@@ -1336,178 +1243,9 @@ pub fn live_event_payload_from_record(rec: &LiveEventPayloadRecord) -> LiveEvent
     }
 }
 
-// ---- Football ---------------------------------------------------------
-
-/// Shared by the live-event mapping below and `score_to_record`'s `Football`
-/// arm — both carry the same `FootballGoalEvent`/`FootballGoalEventRecord`
-/// shape.
-fn football_goal_event_to_record(g: &FootballGoalEvent) -> FootballGoalEventRecord {
-    FootballGoalEventRecord {
-        side_id: g.side_id.clone(),
-        scorer_player_id: g.scorer_player_id.clone(),
-        assist_player_id: g.assist_player_id.clone(),
-        own_goal: g.own_goal,
-        penalty: g.penalty,
-        minute: g.minute,
-        occurred_at: g
-            .occurred_at
-            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
-    }
-}
-
-fn football_goal_event_from_record(rec: &FootballGoalEventRecord) -> FootballGoalEvent {
-    FootballGoalEvent {
-        side_id: rec.side_id.clone(),
-        scorer_player_id: rec.scorer_player_id.clone(),
-        assist_player_id: rec.assist_player_id.clone(),
-        own_goal: rec.own_goal,
-        penalty: rec.penalty,
-        minute: rec.minute,
-        occurred_at: parse_ts_opt(&rec.occurred_at),
-    }
-}
-
-/// Shared by the live-event mapping below and `score_to_record`'s `Football`
-/// arm, same reasoning as `football_goal_event_to_record`.
-fn football_card_event_to_record(c: &FootballCardEvent) -> FootballCardEventRecord {
-    FootballCardEventRecord {
-        side_id: c.side_id.clone(),
-        player_id: c.player_id.clone(),
-        color: match c.color {
-            FootballCardColor::Yellow => FootballCardColorRecord::Yellow,
-            FootballCardColor::Red => FootballCardColorRecord::Red,
-        },
-        minute: c.minute,
-        occurred_at: c
-            .occurred_at
-            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
-    }
-}
-
-fn football_card_event_from_record(rec: &FootballCardEventRecord) -> FootballCardEvent {
-    FootballCardEvent {
-        side_id: rec.side_id.clone(),
-        player_id: rec.player_id.clone(),
-        color: match rec.color {
-            FootballCardColorRecord::Yellow => FootballCardColor::Yellow,
-            FootballCardColorRecord::Red => FootballCardColor::Red,
-        },
-        minute: rec.minute,
-        occurred_at: parse_ts_opt(&rec.occurred_at),
-    }
-}
-
-fn football_substitution_event_to_record(
-    s: &FootballSubstitutionEvent,
-) -> FootballSubstitutionEventRecord {
-    FootballSubstitutionEventRecord {
-        side_id: s.side_id.clone(),
-        player_in_id: s.player_in_id.clone(),
-        player_out_id: s.player_out_id.clone(),
-        minute: s.minute,
-        occurred_at: s
-            .occurred_at
-            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
-    }
-}
-
-fn football_substitution_event_from_record(
-    rec: &FootballSubstitutionEventRecord,
-) -> FootballSubstitutionEvent {
-    FootballSubstitutionEvent {
-        side_id: rec.side_id.clone(),
-        player_in_id: rec.player_in_id.clone(),
-        player_out_id: rec.player_out_id.clone(),
-        minute: rec.minute,
-        occurred_at: parse_ts_opt(&rec.occurred_at),
-    }
-}
-
-/// Shared by the live-event mapping below and `score_to_record`'s `Football`
-/// arm (`period`/`period_times`' map keys) — both need the same
-/// `FootballPeriod`/`FootballPeriodRecord` correspondence.
-fn football_period_to_record(period: &FootballPeriod) -> FootballPeriodRecord {
-    match period {
-        FootballPeriod::KickOff => FootballPeriodRecord::KickOff,
-        FootballPeriod::HalfTime => FootballPeriodRecord::HalfTime,
-        FootballPeriod::SecondHalfKickOff => FootballPeriodRecord::SecondHalfKickOff,
-        FootballPeriod::FullTime => FootballPeriodRecord::FullTime,
-        FootballPeriod::ExtraTimeKickOff => FootballPeriodRecord::ExtraTimeKickOff,
-        FootballPeriod::ExtraTimeHalfTime => FootballPeriodRecord::ExtraTimeHalfTime,
-        FootballPeriod::ExtraTimeSecondHalfKickOff => {
-            FootballPeriodRecord::ExtraTimeSecondHalfKickOff
-        }
-        FootballPeriod::ExtraTimeFullTime => FootballPeriodRecord::ExtraTimeFullTime,
-        FootballPeriod::PenaltiesComplete => FootballPeriodRecord::PenaltiesComplete,
-    }
-}
-
-fn football_period_from_record(rec: &FootballPeriodRecord) -> FootballPeriod {
-    match rec {
-        FootballPeriodRecord::KickOff => FootballPeriod::KickOff,
-        FootballPeriodRecord::HalfTime => FootballPeriod::HalfTime,
-        FootballPeriodRecord::SecondHalfKickOff => FootballPeriod::SecondHalfKickOff,
-        FootballPeriodRecord::FullTime => FootballPeriod::FullTime,
-        FootballPeriodRecord::ExtraTimeKickOff => FootballPeriod::ExtraTimeKickOff,
-        FootballPeriodRecord::ExtraTimeHalfTime => FootballPeriod::ExtraTimeHalfTime,
-        FootballPeriodRecord::ExtraTimeSecondHalfKickOff => {
-            FootballPeriod::ExtraTimeSecondHalfKickOff
-        }
-        FootballPeriodRecord::ExtraTimeFullTime => FootballPeriod::ExtraTimeFullTime,
-        FootballPeriodRecord::PenaltiesComplete => FootballPeriod::PenaltiesComplete,
-    }
-}
-
-fn football_live_event_to_record(event: &FootballLiveEvent) -> FootballLiveEventRecord {
-    match event {
-        FootballLiveEvent::Goal(g) => {
-            FootballLiveEventRecord::Goal(football_goal_event_to_record(g))
-        }
-        FootballLiveEvent::Card(c) => {
-            FootballLiveEventRecord::Card(football_card_event_to_record(c))
-        }
-        FootballLiveEvent::Substitution(s) => {
-            FootballLiveEventRecord::Substitution(football_substitution_event_to_record(s))
-        }
-        FootballLiveEvent::Period(p) => {
-            FootballLiveEventRecord::Period(FootballPeriodEventRecord {
-                period: football_period_to_record(&p.period),
-            })
-        }
-        FootballLiveEvent::PenaltyShootoutKick(k) => {
-            FootballLiveEventRecord::PenaltyShootoutKick(FootballPenaltyShootoutKickRecord {
-                side_id: k.side_id.clone(),
-                scored: k.scored,
-            })
-        }
-    }
-}
-
-fn football_live_event_from_record(rec: &FootballLiveEventRecord) -> FootballLiveEvent {
-    match rec {
-        FootballLiveEventRecord::Goal(g) => {
-            FootballLiveEvent::Goal(football_goal_event_from_record(g))
-        }
-        FootballLiveEventRecord::Card(c) => {
-            FootballLiveEvent::Card(football_card_event_from_record(c))
-        }
-        FootballLiveEventRecord::Substitution(s) => {
-            FootballLiveEvent::Substitution(football_substitution_event_from_record(s))
-        }
-        FootballLiveEventRecord::Period(p) => FootballLiveEvent::Period(FootballPeriodEvent {
-            period: football_period_from_record(&p.period),
-        }),
-        FootballLiveEventRecord::PenaltyShootoutKick(k) => {
-            FootballLiveEvent::PenaltyShootoutKick(FootballPenaltyShootoutKick {
-                side_id: k.side_id.clone(),
-                scored: k.scored,
-            })
-        }
-    }
-}
-
-// Netball's API<->DAO mapping (score/format/live-event) has moved to
-// `crate::sports::netball` — see that module's doc comment.
+// Football's and netball's API<->DAO mapping (score/format/live-event) have
+// moved to `crate::sports::football`/`crate::sports::netball` — see their
+// module doc comments.
 
 // ---- Cricket ------------------------------------------------------------
 
@@ -1757,9 +1495,10 @@ pub fn derive_live_score(
             let events: Vec<(chrono::DateTime<chrono::Utc>, FootballLiveEvent)> = records
                 .iter()
                 .filter_map(|r| match &r.payload {
-                    LiveEventPayloadRecord::Football(f) => {
-                        Some((parse_ts(&r.occurred_at), football_live_event_from_record(f)))
-                    }
+                    LiveEventPayloadRecord::Football(f) => Some((
+                        parse_ts(&r.occurred_at),
+                        crate::sports::football::live_event_from_record(f),
+                    )),
                     LiveEventPayloadRecord::Cricket(_) | LiveEventPayloadRecord::Netball(_) => None,
                 })
                 .collect();
@@ -1996,11 +1735,16 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+    use crate::detailed_score::football::{
+        FootballCardColor, FootballCardEvent, FootballGoalEvent, FootballPenaltyShootoutKick,
+        FootballPeriod, FootballSubstitutionEvent,
+    };
     use crate::detailed_score::netball::{
         NetballFoulEvent, NetballFoulKind, NetballGoalEvent, NetballPeriod, NetballPosition,
     };
+    use crate::live_score::football::FootballPeriodEvent;
     use crate::live_score::netball::NetballPeriodEvent;
-    use crate::match_format::NetballFormat;
+    use crate::match_format::{FootballFormat, NetballFormat};
     use poem_openapi::types::ToJSON;
 
     /// Round-tripping through the DAO mirror must reproduce the same wire

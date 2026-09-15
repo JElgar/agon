@@ -8,4 +8,6 @@ pub mod dao;
 pub mod error;
 pub mod push;
 pub mod search;
+pub mod sport;
+pub mod sports;
 pub mod telemetry;

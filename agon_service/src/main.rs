@@ -38,6 +38,9 @@ mod auth;
 use auth::{DeviceTokenSigner, JwtClaims, JwtVerifier, SCOPE_LIVE_SCORING};
 // Boundary mapping between API models and DAO records.
 mod mapping;
+// Per-sport API<->DAO mapping, colocated one module per sport — see its own
+// doc comment. Sports not yet migrated here still live inline in `mapping`.
+mod sports;
 use mapping::{
     assignable_team_role_str, comment_from_record, dao_internal, deleted_user_profile,
     derive_live_score, device_platform_to_record, feed_match_from_records,

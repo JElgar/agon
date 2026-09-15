@@ -26,6 +26,8 @@ use agon_core::dao::records::{
     CricketDismissalKindRecord, MatchFormatRecord, OversRecord, ScoreRecord,
 };
 use agon_core::dao::stats::{BowlingSpell, MatchContribution, MatchOutcome};
+use agon_core::sport::{SportContribution, SportRecord};
+use agon_core::sports::netball::NetballRecord;
 
 /// Legal deliveries per over when a match hasn't configured a format (or
 /// configured a non-cricket one) — the standard rule.
@@ -162,18 +164,6 @@ pub async fn reconcile_match_stats(dao: &Dao, match_id: &str) -> WorkerResult<()
     Ok(())
 }
 
-/// A player's box-score contribution for one match's confirmed score: every
-/// counter that feeds their lifetime totals, the subset worth a personal-best
-/// record, and (cricket only) their bowling figures in this match. Empty for
-/// a sport with no per-player box score to derive any of this from, or when
-/// `player_id` didn't feature at all (e.g. an accepted invitee who didn't
-/// bat/bowl/score).
-struct SportContribution {
-    counters: HashMap<String, u64>,
-    best_candidates: HashMap<String, u64>,
-    bowling_spell: Option<BowlingSpell>,
-}
-
 fn sport_contribution(
     sport: &str,
     score: &ScoreRecord,
@@ -183,11 +173,8 @@ fn sport_contribution(
     match sport {
         "cricket" => cricket_contribution(score, player_id, balls_per_over),
         "football" => football_contribution(score, player_id),
-        _ => SportContribution {
-            counters: HashMap::new(),
-            best_candidates: HashMap::new(),
-            bowling_spell: None,
-        },
+        "netball" => NetballRecord::contribution(score, player_id, balls_per_over),
+        _ => SportContribution::default(),
     }
 }
 

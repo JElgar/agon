@@ -82,27 +82,38 @@ pub enum ScoreRecord {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         penalty_shootout_score: Option<HashMap<String, u32>>,
     },
-    Netball {
-        /// Goal tally, keyed by side id.
-        #[serde(default)]
-        score: HashMap<String, u32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        goals: Option<Vec<NetballGoalEventRecord>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        fouls: Option<Vec<NetballFoulEventRecord>>,
-        /// The most recent period marker seen, if any.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        period: Option<NetballPeriodRecord>,
-        /// When each period marker was recorded, keyed by kind.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        period_times: Option<HashMap<NetballPeriodRecord, String>>,
-        /// The score as of each quarter-end marker, keyed by kind — the
-        /// *only* source of the score for a quarter-only-scored match. See
-        /// `agon_service::live_score::netball::NetballPeriodEvent::score`'s
-        /// doc comment.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        period_scores: Option<HashMap<NetballPeriodRecord, HashMap<String, u32>>>,
-    },
+    Netball(NetballScoreRecord),
+}
+
+/// Netball's `ScoreRecord` shape — pulled out to its own type (rather than an
+/// inline enum-variant struct, like `Cricket`/`Football` above still are) as
+/// the first sport migrated onto the `agon_core::sport::SportRecord` /
+/// `agon_service::sport::SportApi` trait pair (see the project's sport-setup
+/// refactor design notes). Wire-identical to the inline shape it replaced —
+/// serde's internally-tagged representation serializes a newtype-around-a-
+/// struct the same as a struct-variant with the same fields — guarded by
+/// `agon_core/tests/netball_score_record_roundtrip.rs`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NetballScoreRecord {
+    /// Goal tally, keyed by side id.
+    #[serde(default)]
+    pub score: HashMap<String, u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goals: Option<Vec<NetballGoalEventRecord>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fouls: Option<Vec<NetballFoulEventRecord>>,
+    /// The most recent period marker seen, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period: Option<NetballPeriodRecord>,
+    /// When each period marker was recorded, keyed by kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period_times: Option<HashMap<NetballPeriodRecord, String>>,
+    /// The score as of each quarter-end marker, keyed by kind — the
+    /// *only* source of the score for a quarter-only-scored match. See
+    /// `agon_service::live_score::netball::NetballPeriodEvent::score`'s
+    /// doc comment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period_scores: Option<HashMap<NetballPeriodRecord, HashMap<String, u32>>>,
 }
 
 /// One innings' final totals, as stored on a match's confirmed/pending

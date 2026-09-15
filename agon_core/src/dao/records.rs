@@ -598,6 +598,28 @@ pub struct MatchRecord {
     /// configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<MatchFormatRecord>,
+    /// Whether this match counts towards its players' ratings; `false` is a
+    /// friendly. The organiser's explicit choice — omitted at creation means
+    /// friendly (see `CreateMatchInput::ranked` for why, and why creation is
+    /// unconstrained).
+    ///
+    /// `#[serde(default)]` → `false` for matches written before ratings
+    /// existed, and it has to stay `false` whatever the product default ever
+    /// becomes. Ratings are computed from a match's `#META` stream image, and
+    /// that item is rewritten by far more than an edit: every like and every
+    /// comment `ADD`s a counter on it. A `true` default would enrol the whole
+    /// back catalogue into the ladders, one old match per like, rating
+    /// players who never opted in — when opting in is the one thing a rating
+    /// requires. Please don't "fix" this to match a create-time default.
+    ///
+    /// A ranked match always has a rating ladder (`rating::ladder_for_tag` on
+    /// `match_type`), so sport `other` is never ranked. The API enforces that
+    /// rather than this record, and it can't be undone later because nothing
+    /// changes `match_type` after creation. The flag locks against *change*
+    /// once a score is submitted, the match starts, or it leaves `scheduled` —
+    /// see `ranked_lock_reason` in `agon_service`'s mapping.
+    #[serde(default)]
+    pub ranked: bool,
     pub created_at: String,
 }
 
@@ -2017,6 +2039,35 @@ mod tests {
             ScoreRecord::Football { score, .. } => assert!(score.is_empty()),
             _ => panic!("expected football"),
         }
+    }
+
+    /// A match written before ratings existed has no `ranked` attribute, and
+    /// must read back as a friendly. Guards `MatchRecord::ranked`'s serde
+    /// default against being "aligned" with some create-time default: every
+    /// like or comment rewrites `#META`, so a `true` here would enrol the old
+    /// match into its ladder on its next like, rating players who never opted
+    /// in.
+    #[test]
+    fn a_match_written_before_ratings_reads_back_as_friendly() {
+        let meta = AttributeValue::M(HashMap::from([
+            ("id".to_string(), AttributeValue::S("m1".into())),
+            ("name".to_string(), AttributeValue::S("Tuesday".into())),
+            ("description".to_string(), AttributeValue::S(String::new())),
+            ("match_type".to_string(), AttributeValue::S("tennis".into())),
+            ("status".to_string(), AttributeValue::S("completed".into())),
+            (
+                "starts_at".to_string(),
+                AttributeValue::S("2025-01-01T18:00:00.000Z".into()),
+            ),
+            ("sides".to_string(), AttributeValue::M(HashMap::new())),
+            ("like_count".to_string(), AttributeValue::N("4".into())),
+            (
+                "created_at".to_string(),
+                AttributeValue::S("2025-01-01T00:00:00.000Z".into()),
+            ),
+        ]));
+        let rec: MatchRecord = serde_dynamo::from_attribute_value(meta).unwrap();
+        assert!(!rec.ranked);
     }
 
     /// `stats.<sport>` is only ever populated with the counters that have

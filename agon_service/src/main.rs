@@ -41,15 +41,16 @@ mod mapping;
 use mapping::{
     assignable_team_role_str, comment_from_record, dao_internal, deleted_user_profile,
     derive_live_score, device_platform_to_record, feed_match_from_records, has_roster_identity,
-    invitation_detail_from_record, invitation_from_record, invitation_status_from_str,
-    invitation_status_str, join_link_from_record, join_link_scope_from_record,
-    join_link_scope_to_record, live_event_from_record, location_to_record, match_format_sport_tag,
-    match_format_to_record, match_from_records, match_player_role_from_record,
-    match_player_role_to_record, match_score_from_record, match_score_to_record, match_status_str,
-    match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
+    invitation_context_match_id, invitation_detail_from_record, invitation_from_record,
+    invitation_status_from_str, invitation_status_str, join_link_from_record,
+    join_link_scope_from_record, join_link_scope_to_record, live_event_from_record,
+    location_to_record, match_format_sport_tag, match_format_to_record, match_from_records,
+    match_player_role_from_record, match_player_role_to_record, match_score_from_record,
+    match_score_to_record, match_status_str, match_type_tag, new_live_event_to_dao,
+    notification_actor_id, notification_from_record, ranked_lock_reason_for_update, rating_ladder,
     roster_preview_player, score_submission_from_record, score_to_record,
     search_match_from_records, team_from_records, team_list_item_from_record,
-    team_member_from_record, user_profile_from_record,
+    team_member_from_record, unrankable_sport_reason, user_profile_from_record,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -816,6 +817,16 @@ struct Match {
     /// every other `Match`-returning response, not because it doesn't
     /// apply, just because nothing reads it there.
     viewer_team_join_side_ids: Option<Vec<String>>,
+    /// Whether this match counts towards its players' ratings; `false` is a
+    /// friendly, which is what every match is unless its organiser chose
+    /// ranked. Can only change until the result could be known — see
+    /// `UpdateMatchInput.ranked`.
+    ranked: bool,
+    /// The rating ladder this match's result counts towards, e.g. `"tennis"`
+    /// — `Some` exactly when `ranked`. Ladders are per sport and this is
+    /// derived from `match_type` on every read, so a client never maps sports
+    /// to ladders itself.
+    rating_ladder: Option<String>,
 }
 
 /// Social engagement summary for a match. Counts plus whether the requesting
@@ -1090,6 +1101,33 @@ struct CreateMatchInput {
     /// Whether a self-serve joiner may ever land unassigned. Omit for the
     /// default (`true`) — see `Match.allow_unassigned`'s doc comment.
     allow_unassigned: Option<bool>,
+    /// Whether the result should count towards everyone's rating. Omit for a
+    /// friendly, the default. Refused (400) for a sport with no rating ladder
+    /// (`other`).
+    ///
+    /// Friendly by default because ratings are opt-in, per sport, and a
+    /// ranked match needs everyone playing in it to have opted in. Ranked by
+    /// default would put that requirement in front of most games, which are
+    /// casual; ranked is the organiser's explicit choice instead.
+    ///
+    /// **Creation is deliberately unconstrained, including for a match that
+    /// has already been played.** This endpoint accepts a completed match with
+    /// a score and a past start time, so somebody logging last night's game
+    /// picks this flag knowing how it went. The lock on
+    /// `UpdateMatchInput.ranked` doesn't cover that and couldn't: logging after
+    /// the fact has no moment "before the result was knowable", and refusing
+    /// to rate results logged afterwards would refuse most amateur sport — the
+    /// ladders' whole input.
+    ///
+    /// What limits it is confirmation, not this field: nothing is rated
+    /// without a confirmed score, so every other side has agreed to the result.
+    /// The gap that leaves is real and known — the opponent confirms the
+    /// **score**, never the **flag**, so a creator could log their wins ranked
+    /// and their losses friendly. The principled fix is making `ranked` part
+    /// of what the other side confirms, which changes the confirmation flow
+    /// rather than restricting creation, and isn't worth building before
+    /// anyone is seen doing it.
+    ranked: Option<bool>,
 }
 
 /// The organiser's one-stop update for a match: edit metadata, reconcile the
@@ -1179,6 +1217,37 @@ struct UpdateMatchInput {
     /// team and no name above 2 (it needs a name first). Same admin gate as
     /// `allow_unassigned`.
     side_join_settings: Option<Vec<SetSideJoinSettingsInput>>,
+    /// Switch the match between ranked and friendly — **only while nobody
+    /// could know the result yet**. Refused (400), not ignored, once a score
+    /// has been submitted (even one later disputed), the start time has
+    /// passed, or the match has left `scheduled`; refused at any time for
+    /// switching on a sport with no rating ladder (`other`).
+    ///
+    /// The lock is a correctness requirement, not a nicety: without it you
+    /// could log a game, see that you won, and only *then* put it on the
+    /// ladder. It's judged against the match as stored **and** the state this
+    /// request would leave it in, because either alone is exploitable in one
+    /// call: stored-only lets `{ score, ranked: false }` through on a
+    /// not-yet-started match and then records the result, while resulting-only
+    /// lets a request push `starts_at` back into the future to unlock a match
+    /// that has already been played. So a PATCH that submits a score, moves
+    /// the status on, or backdates the start time can't also change this flag
+    /// — change the flag first, on its own.
+    ///
+    /// Re-sending the value the match already has is always accepted, locked
+    /// or not: a client that PATCHes its whole edit form mustn't be refused
+    /// for mentioning a flag it isn't changing.
+    ///
+    /// This constrains *changing* the flag only. Choosing it at creation is
+    /// unconstrained even for an already-played match; see
+    /// `CreateMatchInput.ranked` for why, and for what limits it instead.
+    ranked: Option<bool>,
+    // Note: no `match_type`. A match's sport is fixed at creation, and a
+    // ranked match relies on that: a new sport would move its result to
+    // another ladder, or off the ladders altogether. A sport edit, if one is
+    // ever added, needs the two checks `ranked` gets in `update_match` —
+    // refused on a ranked match while `ranked_lock_reason_for_update` says it
+    // is locked, and refused for a ladderless sport whenever it is ranked.
 }
 
 #[derive(Object)]
@@ -3188,6 +3257,16 @@ impl Api {
             }
         }
 
+        // Ranked needs a ladder to rate into, and a sport without one
+        // (`other`, deliberately — see `rating::ladder_for`) would make a
+        // ranked match nothing ever rates. There is no lock to check here, and
+        // none to add: see `CreateMatchInput::ranked`.
+        if input.ranked == Some(true)
+            && let Some(reason) = unrankable_sport_reason(match_type_tag(&input.match_type))
+        {
+            return Ok(CreateMatchResponse::ValidationError(PlainText(reason)));
+        }
+
         // The `starts_at` time must be consistent with whether a result is being
         // recorded: a match created with a score is already played (Completed),
         // so it must have started in the past; one without a score is upcoming
@@ -3457,6 +3536,14 @@ impl Api {
             live_seq: 0,
             live_tip_seq: None,
             format: input.format.as_ref().map(match_format_to_record),
+            // Friendly unless the organiser asked for ranked. Unconstrained on
+            // purpose, even for an already-played match (a score and a past
+            // `starts_at`) whose creator picks this knowing the result: there
+            // is no earlier moment to have picked it at, and refusing to rate
+            // after-the-fact results would refuse most amateur sport.
+            // `CreateMatchInput::ranked` has the full argument, including the
+            // gap confirmation doesn't close.
+            ranked: input.ranked.unwrap_or(false),
             created_at: now.clone(),
         };
 
@@ -3618,6 +3705,49 @@ impl Api {
             }
         }
 
+        // The state this request would leave the match in, needed by both the
+        // ranked lock just below and the score validation further down —
+        // computed once so the two can't disagree about what this PATCH does.
+        let resulting_status = input
+            .status
+            .as_ref()
+            .map(match_status_str)
+            .unwrap_or(agg.match_.status.as_str());
+        let resulting_starts_at = input
+            .starts_at
+            .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+
+        // Only a genuine *change* of `ranked` is judged. Re-sending the flag
+        // the match already has is a no-op, so a client PATCHing its whole
+        // edit form keeps working once the match has been played.
+        let ranked_change = input.ranked.filter(|r| *r != agg.match_.ranked);
+        if ranked_change == Some(true)
+            && let Some(reason) = unrankable_sport_reason(&agg.match_.match_type)
+        {
+            return Ok(UpdateMatchResponse::ValidationError(PlainText(reason)));
+        }
+        // Ranked/friendly locks once the result could be known — see
+        // `ranked_lock_reason_for_update` for the rule, and for why it is
+        // judged against the stored record *and* this request's resulting
+        // state rather than either alone. Refused rather than ignored: a
+        // caller who asked to put a played match on the ladder needs to be
+        // told it didn't happen. Checked before anything below writes.
+        if ranked_change.is_some()
+            && let Some(reason) = ranked_lock_reason_for_update(
+                &agg.match_,
+                resulting_status,
+                resulting_starts_at
+                    .as_deref()
+                    .unwrap_or(&agg.match_.starts_at),
+                input.score.is_some(),
+                chrono::Utc::now(),
+            )
+        {
+            return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                "a match can no longer be changed between ranked and friendly: {reason}"
+            ))));
+        }
+
         // Resolve any replacement header images to asset id + stored URL
         // (must be uploaded, owned by the caller, `match_header` purpose).
         // `None` = leave unchanged. The caller sends the *complete* desired
@@ -3640,11 +3770,6 @@ impl Api {
         };
 
         // A cancelled match can't be scored.
-        let resulting_status = input
-            .status
-            .as_ref()
-            .map(match_status_str)
-            .unwrap_or(agg.match_.status.as_str());
         if resulting_status == "cancelled" && input.score.is_some() {
             return Ok(UpdateMatchResponse::ValidationError(PlainText(
                 "a cancelled match cannot be scored".into(),
@@ -4033,15 +4158,13 @@ impl Api {
             input.name.as_deref(),
             input.description.as_deref(),
             status_override,
-            input
-                .starts_at
-                .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
-                .as_deref(),
+            resulting_starts_at.as_deref(),
             None,
             pending_score.map(Some),
             header_photos,
             input.format.as_ref().map(match_format_to_record),
             input.location.as_ref().map(location_to_record),
+            ranked_change,
             &side_name_updates,
             &side_colour_updates,
         )
@@ -4440,6 +4563,7 @@ impl Api {
                 None,
                 None,
                 Some("in_progress"),
+                None,
                 None,
                 None,
                 None,
@@ -4960,6 +5084,7 @@ impl Api {
                     None,
                     None,
                     None,
+                    None,
                     &[],
                     &[],
                 )
@@ -5016,6 +5141,7 @@ impl Api {
                         None,
                         Some(confirmed),
                         Some(None),
+                        None,
                         None,
                         None,
                         None,
@@ -5987,6 +6113,7 @@ impl Api {
                 None,
                 None,
                 None,
+                None,
                 &[],
                 &[],
             )
@@ -6214,6 +6341,8 @@ impl Api {
             scope: join_link_scope_from_record(&link.scope),
             total_player_count: agg.match_.total_player_count as u32,
             max_players: agg.effective_max_players(),
+            ranked: agg.match_.ranked,
+            rating_ladder: rating_ladder(&agg.match_),
         })))
     }
 
@@ -6954,10 +7083,23 @@ impl Api {
             .list_user_invitations(&uid, status_str, cursor.as_deref(), page_limit(limit))
             .await
             .map_err(dao_internal)?;
+        // One batched read for the matches this page's invitations point at,
+        // so each match context says whether the match is ranked as of now —
+        // see `invitation_context_from_record`.
+        let match_ids: Vec<String> = page
+            .items
+            .iter()
+            .filter_map(|rec| invitation_context_match_id(&rec.context))
+            .map(str::to_owned)
+            .collect();
+        let matches = dao
+            .batch_get_match_metas(&match_ids)
+            .await
+            .map_err(dao_internal)?;
         let items = page
             .items
             .iter()
-            .map(invitation_detail_from_record)
+            .map(|rec| invitation_detail_from_record(rec, &matches))
             .collect();
         Ok(ListInvitationsResponse::Invitations(Json(InvitationPage {
             items,
@@ -6995,6 +7137,26 @@ impl Api {
             .await
             .map_err(dao_internal)?;
 
+        // Likewise one batched read for the matches behind accepted-invitation
+        // notifications: their context says whether the match is ranked, read
+        // from the match as it is now (see `invitation_context_from_record`).
+        // No request at all on a page without any.
+        let match_ids: Vec<String> = page
+            .items
+            .iter()
+            .filter_map(|rec| match &rec.kind {
+                dao::records::NotificationKindRecord::InvitationAccepted { context, .. } => {
+                    invitation_context_match_id(context)
+                }
+                _ => None,
+            })
+            .map(str::to_owned)
+            .collect();
+        let matches = dao
+            .batch_get_match_metas(&match_ids)
+            .await
+            .map_err(dao_internal)?;
+
         let mut items = Vec::with_capacity(page.items.len());
         for rec in page.items {
             // A notification outlives its actor by design (see
@@ -7006,7 +7168,7 @@ impl Api {
                 Some(record) => user_profile_from_record(record, false),
                 None => deleted_user_profile(actor_id),
             };
-            items.push(notification_from_record(&rec, actor));
+            items.push(notification_from_record(&rec, actor, &matches));
         }
 
         Ok(ListNotificationsResponse::Notifications(Json(
@@ -7266,7 +7428,7 @@ impl Api {
             .map_err(dao_internal)?
         {
             Some(rec) => Ok(GetInvitationResponse::Invitation(Json(
-                invitation_detail_from_record(&rec),
+                invitation_detail(dao, &rec).await?,
             ))),
             None => Ok(GetInvitationResponse::NotFound(PlainText(
                 "invitation not found".into(),
@@ -7293,7 +7455,7 @@ impl Api {
             .map_err(dao_internal)?
         {
             Some(rec) => Ok(GetInvitationResponse::Invitation(Json(
-                invitation_detail_from_record(&rec),
+                invitation_detail(dao, &rec).await?,
             ))),
             None => Ok(GetInvitationResponse::NotFound(PlainText(
                 "invitation not found".into(),
@@ -8956,6 +9118,26 @@ fn asset_status_from_str(s: &str) -> AssetStatus {
     }
 }
 
+/// One standalone invitation as its API `InvitationDetail`, with a match
+/// context resolved against the match's current record — see
+/// `mapping::invitation_context_from_record` for why that is read at response
+/// time. One extra read for a match invitation, none for a team invitation
+/// (an empty batch sends no request).
+async fn invitation_detail(
+    dao: &dao::Dao,
+    rec: &dao::records::InvitationRecord,
+) -> Result<InvitationDetail> {
+    let match_ids: Vec<String> = invitation_context_match_id(&rec.context)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let matches = dao
+        .batch_get_match_metas(&match_ids)
+        .await
+        .map_err(dao_internal)?;
+    Ok(invitation_detail_from_record(rec, &matches))
+}
+
 /// Build the API `Asset` from a stored record. Pending assets get a freshly
 /// generated S3 presigned PUT (short-lived, so regenerated on each read — that is
 /// the upload-retry mechanism); uploaded assets carry their serving `url` and no
@@ -9244,6 +9426,8 @@ fn mock_match(id: String) -> Match {
         allow_unassigned: true,
         viewer_role: Some(MatchPlayerRole::Owner),
         viewer_team_join_side_ids: None,
+        ranked: true,
+        rating_ladder: Some(String::from("football")),
     }
 }
 
@@ -9421,6 +9605,8 @@ fn mock_invitation_detail() -> InvitationDetail {
         context: InvitationContext::Match(InvitationMatchContext {
             match_id: String::from("match_123"),
             match_name: String::from("Sunday League 5-a-side"),
+            ranked: true,
+            rating_ladder: Some(String::from("football")),
         }),
     }
 }
@@ -9463,6 +9649,8 @@ fn mock_notifications() -> Vec<Notification> {
                 context: InvitationContext::Match(InvitationMatchContext {
                     match_id: String::from("match_123"),
                     match_name: String::from("Tennis vs Raj"),
+                    ranked: false,
+                    rating_ladder: None,
                 }),
             }),
         },

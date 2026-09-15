@@ -5,6 +5,7 @@ import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { DateTimePicker } from '@/components/ui/date-time-picker'
 import { isoToDateTimeLocal } from '@/lib/datetime'
 import { MultiImageUploadField } from '@/components/agon/MultiImageUploadField'
 
@@ -145,11 +146,10 @@ export function MatchDetailsEditor({
         <Label htmlFor="match-starts" className="text-xs text-muted-foreground">
           When
         </Label>
-        <Input
+        <DateTimePicker
           id="match-starts"
-          type="datetime-local"
           value={startsAt}
-          onChange={(e) => setStartsAt(e.target.value)}
+          onChange={setStartsAt}
           className="mt-1"
         />
         {timeError && (

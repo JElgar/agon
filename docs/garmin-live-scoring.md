@@ -196,7 +196,11 @@ The watch app's lifecycle:
    buzz). A watch that opens a match already under way doesn't auto-start;
    its wearer uses the main menu's Start activity item. Until it's
    recording (and whenever it's paused), both match pages draw a thick red
-   ring around the screen edge (`RecordingRing.mc`).
+   ring around the screen edge (`RecordingRing.mc`). The GPS is switched on
+   separately, continuously, as soon as a match is opened
+   (`ActivityRecorder.enableGps`) — a `Session` never turns it on by itself,
+   and the first real-match recordings, made before that call existed,
+   saved a distance far short of what was actually covered.
 2. Show the scoring UI (score header + Goal/Card/Sub/Period buttons) as the
    foreground view for the rest of the match.
 3. Each button tap appends one `FootballLiveEvent` to a local queue
@@ -216,8 +220,9 @@ The watch app's lifecycle:
    live score (`EndMatchFlow.mc`).
 
 Recording and the HTTP calls don't compete for the same resource in any way
-that needs special handling — `ActivityRecording` owns the GPS/HR sensors,
-`Communications` owns the radio; Connect IQ runs both concurrently in
+that needs special handling — `Position`/`ActivityRecording` own the GPS/HR
+sensors (the GPS only once `Position.enableLocationEvents` turns it on, see
+step 1), `Communications` owns the radio; Connect IQ runs both concurrently in
 plenty of existing third-party apps (any app that both records a workout
 and posts live updates to a service does exactly this).
 

@@ -275,6 +275,9 @@ class MatchMenuDelegate extends WatchUi.Menu2InputDelegate {
             var match = data as Dictionary;
             getApp().matchContext.populateFrom(match);
             getApp().liveApiClient.setMatch(getApp().matchContext.matchId);
+            // Start acquiring a GPS fix now, while the wearer waits for
+            // kick-off — see ActivityRecorder.enableGps.
+            getApp().activityRecorder.enableGps();
             WatchUi.switchToView(new agonView(), new agonDelegate(), WatchUi.SLIDE_LEFT);
             return;
         }

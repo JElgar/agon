@@ -273,6 +273,11 @@ class MatchMenuDelegate extends WatchUi.Menu2InputDelegate {
     function onMatchDetails(responseCode as Number, data as Dictionary or String or Null) as Void {
         if (responseCode == 200 && data != null) {
             var match = data as Dictionary;
+            // Before populateFrom, so its own orientSides call has
+            // something to orient by — see MatchContext.myUserId's doc
+            // comment on why this is set once here rather than passed
+            // into populateFrom itself.
+            getApp().matchContext.setMyUserId(_userId);
             getApp().matchContext.populateFrom(match);
             getApp().liveApiClient.setMatch(getApp().matchContext.matchId);
             // Start acquiring a GPS fix now, while the wearer waits for

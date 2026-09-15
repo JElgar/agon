@@ -8,10 +8,13 @@ import Toybox.Lang;
 //! MockRoster's display-only fake names.
 //!
 //! `side0`/`side1` map onto GoalFlow's existing `:home`/`:away` Symbol
-//! convention purely as a stable "first/second side" UI label —
-//! `Match.sides` has no actual home/away concept, so this is just array
-//! position (`sides[0]`/`sides[1]`), not a meaningful distinction on the
-//! server side.
+//! convention as the on-screen left/right side — `Match.sides` has no
+//! actual home/away concept on the server side, so `populateFrom` starts
+//! from array position (`sides[0]`/`sides[1]`) and then re-orients
+//! (`orientSides`) so the viewer's own side, if they're a player on this
+//! match, ends up on the left/`side0` — scoring for "your side" should
+//! read left-to-right the way the wearer expects, not however the server
+//! happened to order `sides`.
 //!
 //! An instance held on `agonApp` (`getApp().matchContext`), not a
 //! `module`/`static`-anything: this needs plain mutable state written
@@ -29,6 +32,13 @@ class MatchContext {
     //! Each entry is a Dictionary{"id" => String, "name" => String}.
     var side0Players as Array;
     var side1Players as Array;
+    //! The viewer's own internal user id (`GET /users/me`, resolved once
+    //! by `MatchPickerView` before a match is even picked) — `null` until
+    //! `setMyUserId` is called. Kept here, not just passed into
+    //! `populateFrom` directly, so a *later* `populateFrom` (a mid-match
+    //! roster refresh, `LiveApiClient.refreshRoster`) re-orients the same
+    //! way without every caller needing to thread the id through again.
+    var myUserId as String?;
 
     function initialize() {
         matchId = "";
@@ -38,6 +48,15 @@ class MatchContext {
         side1Name = "Away";
         side0Players = [];
         side1Players = [];
+        myUserId = null;
+    }
+
+    //! Set once, by `MatchMenuDelegate.onMatchDetails`, right before the
+    //! first `populateFrom` for whichever match was just picked — see
+    //! `myUserId`'s own doc comment on why this is separate from
+    //! `populateFrom` itself.
+    function setMyUserId(userId as String) as Void {
+        myUserId = userId;
     }
 
     //! Parse a `GET /matches/:id` response body into this context. Assumes
@@ -71,6 +90,51 @@ class MatchContext {
                 i += 1;
             }
         }
+
+        orientSides();
+    }
+
+    //! Swaps side0/side1 (id, name, and players together) so the viewer's
+    //! own side — if `myUserId` is set *and* actually a player on this
+    //! match — ends up on the left/`side0`, regardless of which one the
+    //! server happened to list first. A no-op (positional order stands)
+    //! when `myUserId` isn't known yet, or isn't on either side — e.g.
+    //! scoring a match the wearer isn't playing in.
+    function orientSides() as Void {
+        if (myUserId == null) {
+            return;
+        }
+        if (isPlayerOnSide1(myUserId as String)) {
+            swapSides();
+        }
+    }
+
+    //! `true` only if `userId` is on side1 specifically — side0 (already
+    //! on the left, nothing to do) and "not a player on this match at
+    //! all" both fall through to `false`, and `orientSides` treats both
+    //! the same way: no swap.
+    function isPlayerOnSide1(userId as String) as Boolean {
+        var i = 0;
+        while (i < side1Players.size()) {
+            var player = side1Players[i] as Dictionary;
+            if ((player.get("id") as String).equals(userId)) {
+                return true;
+            }
+            i += 1;
+        }
+        return false;
+    }
+
+    function swapSides() as Void {
+        var tmpId = side0Id;
+        var tmpName = side0Name;
+        var tmpPlayers = side0Players;
+        side0Id = side1Id;
+        side0Name = side1Name;
+        side0Players = side1Players;
+        side1Id = tmpId;
+        side1Name = tmpName;
+        side1Players = tmpPlayers;
     }
 
     function playersFor(side as Symbol) as Array {

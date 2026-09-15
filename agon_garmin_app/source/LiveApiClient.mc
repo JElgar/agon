@@ -628,11 +628,20 @@ class LiveApiClient {
             }
         }
         var period = periodFromScore(score);
+        var periodWire = rawPeriodWire(score);
         var currentHalfStartedAt = currentHalfStartMoment(score, period);
-        if (getApp().score.applyServerState(homeGoals, awayGoals, period, currentHalfStartedAt)) {
-            // Another device kicked off while this watch had the match
-            // open — start this wearer's activity too.
+        var action = getApp().score.applyServerState(homeGoals, awayGoals, period, periodWire, currentHalfStartedAt);
+        if (action == :start) {
+            // Another watch (or this one, on its own next poll after a
+            // local tap) started a half while this device had the match
+            // open — start/resume this wearer's activity too, same as
+            // kick-off already did before other period transitions
+            // propagated this way.
             getApp().activityRecorder.startForKickOff(getApp().matchContext.matchName());
+        } else if (action == :pause) {
+            // Same idea, for a half-time break — every watch pauses
+            // together rather than only whichever one tapped it.
+            getApp().activityRecorder.pause();
         }
         WatchUi.requestUpdate();
     }
@@ -692,6 +701,22 @@ class LiveApiClient {
             return null;
         }
         return periodFromWireValue(period as String);
+    }
+
+    //! The server's raw wire period string (`score.get("period")`),
+    //! *before* `periodFromWireValue`'s mapping loses anything this app's
+    //! own menu doesn't offer buttons for (extra time, penalties). This is
+    //! what `FootballScore.applyServerState` actually compares transitions
+    //! against (`recordingActionForPeriodWire`), so an extra-time marker
+    //! recorded by another client (agon_ui supports it) still starts/
+    //! pauses this watch's recording correctly even though `period` above
+    //! stays `null` for it. `null` if the score has no period marker yet.
+    function rawPeriodWire(score as Dictionary) as String? {
+        var wire = score.get("period");
+        if (wire == null) {
+            return null;
+        }
+        return wire as String;
     }
 
     function periodFromWireValue(value as String) as Number? {
@@ -766,6 +791,39 @@ function parseIso(iso as String) as Time.Moment? {
         :minute => minute,
         :second => second,
     });
+}
+
+//! The `ActivityRecorder` action a transition *to* `wireValue` implies —
+//! `:start` for the kickoff of any half (normal or extra time — every
+//! `*kick_off` variant `FootballPeriod` has), `:pause` for any half-time
+//! break (`half_time`, `extra_time_half_time`), `null` for anything
+//! terminal (`full_time`, `extra_time_full_time`, `penalties_complete`) or
+//! unrecognized. Ending the recording stays a deliberate, separate wearer
+//! choice (`EndMatchFlow.mc`'s Save/Discard) regardless of period — a
+//! terminal marker not auto-pausing here is deliberate too, since
+//! `full_time` doesn't necessarily mean the match is over (it might go to
+//! extra time) and there's nothing to gain by interrupting the recording
+//! on a guess.
+//!
+//! Keyed off the raw wire string rather than `FootballScore.PERIOD_*`
+//! (`periodFromWireValue`) on purpose — that enum only covers the four
+//! periods this app's own menu can *record*, but another client (agon_ui
+//! supports extra time for football) can still mark any of these on a
+//! match this watch is only *watching*, and the recording should react
+//! the same way regardless of which client drove the marker or whether
+//! this app offers a button for it.
+function recordingActionForPeriodWire(wireValue as String?) as Symbol? {
+    if (wireValue == null) {
+        return null;
+    }
+    if (wireValue.equals("kick_off") || wireValue.equals("second_half_kick_off") ||
+        wireValue.equals("extra_time_kick_off") || wireValue.equals("extra_time_second_half_kick_off")) {
+        return :start;
+    }
+    if (wireValue.equals("half_time") || wireValue.equals("extra_time_half_time")) {
+        return :pause;
+    }
+    return null;
 }
 
 //! "kick_off"/"second_half_kick_off" — the `period_times` key of whichever

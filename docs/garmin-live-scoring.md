@@ -190,17 +190,26 @@ The watch app's lifecycle:
 
 1. An `ActivityRecording.Session` (sport `SOCCER`) records exactly like
    any workout app's — this is what makes it show up as a normal recorded
-   activity in Garmin Connect afterwards. Kick-off starts it on every watch
-   that has the match open at that moment, whichever device recorded the
-   kick-off (a remote one is picked up by the next 5s score poll, with a
-   buzz). A watch that opens a match already under way doesn't auto-start;
-   its wearer uses the main menu's Start activity item. Until it's
-   recording (and whenever it's paused), both match pages draw a thick red
-   ring around the screen edge (`RecordingRing.mc`). The GPS is switched on
-   separately, continuously, as soon as a match is opened
-   (`ActivityRecorder.enableGps`) — a `Session` never turns it on by itself,
-   and the first real-match recordings, made before that call existed,
-   saved a distance far short of what was actually covered.
+   activity in Garmin Connect afterwards. Every period transition drives it
+   automatically, on every watch that has the match open at that moment,
+   whichever device recorded the transition (a remote one is picked up by
+   the next 5s score poll): the kickoff of any half — normal or extra time
+   — starts/resumes it (with a buzz), a half-time break — normal or extra
+   time — pauses it (`LiveApiClient.recordingActionForPeriodWire`; this
+   app's own menu only offers buttons for the four normal-time periods, but
+   the mapping is keyed off the server's raw period string, so an
+   extra-time marker recorded by another client, e.g. `agon_ui`, still
+   drives it correctly). A watch that opens a match already under way
+   doesn't auto-start or auto-pause off the period it finds the match
+   already in — only an *observed* transition does that; its wearer uses
+   the main menu's Start/Pause/Resume activity item by hand instead. Until
+   it's recording (and whenever it's paused, automatically or by hand),
+   both match pages draw a thick red ring around the screen edge
+   (`RecordingRing.mc`). The GPS is switched on separately, continuously,
+   as soon as a match is opened (`ActivityRecorder.enableGps`) — a
+   `Session` never turns it on by itself, and the first real-match
+   recordings, made before that call existed, saved a distance far short
+   of what was actually covered.
 2. Show the scoring UI (score header + Goal/Card/Sub/Period buttons) as the
    foreground view for the rest of the match.
 3. Each button tap appends one `FootballLiveEvent` to a local queue
@@ -212,12 +221,17 @@ The watch app's lifecycle:
    accepted `seq`, one batch call, which is precisely what
    `AppendLiveEventsInput` was built for (see its doc comment in
    `agon_service/src/live_score/mod.rs`).
-5. Pausing, resuming and finishing the activity recording are independent
-   of scoring — a ref can keep the recording running through a match that's
-   already been marked full-time on the score side, or vice versa. The menu
-   item toggles Start/Pause/Resume; End match asks Save or Discard (Discard
-   confirmed a second time) and then exits the app, posting nothing to the
-   live score (`EndMatchFlow.mc`).
+5. Finishing the activity recording is independent of scoring — a ref can
+   keep the recording running through a match that's already been marked
+   full-time on the score side, or vice versa; nothing about period
+   transitions ever stops it (see step 1's terminal-marker note). End match
+   asks Save or Discard (Discard confirmed a second time) and then exits
+   the app, posting nothing to the live score (`EndMatchFlow.mc`). Pausing
+   and resuming aren't fully independent of scoring any more, though — step
+   1's automatic half-start/half-time pause moved them there — but the menu
+   item still toggles Start/Pause/Resume by hand on top of that, for
+   whenever the automatic behavior isn't what a wearer wants (subbed off
+   mid-half, say).
 
 Recording and the HTTP calls don't compete for the same resource in any way
 that needs special handling — `Position`/`ActivityRecording` own the GPS/HR
@@ -554,3 +568,22 @@ Still to do, roughly in order:
     `Attention.vibrate` pattern as `ActivityRecorder.startForKickOff`) —
     there's no on-watch error UI for a failed refresh, same "basics only"
     scope as `undoLast`.
+16. ~~Only kick-off propagated to every watch — half-time/second-half
+    (and extra time) didn't~~ — done: `FootballScore.applyServerState`
+    now returns a `:start`/`:pause`/`null` recording action for *any*
+    observed period transition (`LiveApiClient.
+    recordingActionForPeriodWire`), not just the match's own kick-off —
+    every kickoff (normal or extra time) starts/resumes, every half-time
+    break (normal or extra time) pauses, applied both on this device's own
+    local tap (`agonMenuDelegate`, immediately — no longer waiting for the
+    next poll) and on every other watch's next score poll
+    (`LiveApiClient.onScore`), same propagation kick-off alone used to get.
+    Keyed off the server's raw period wire string rather than
+    `FootballScore.PERIOD_*` specifically so an extra-time marker recorded
+    by another client (`agon_ui` supports it) still drives this watch's
+    recording correctly even though this app's own menu has no buttons for
+    entering extra time itself — that gap (a watch can't *score* extra
+    time, and its on-screen period label stays stale during it) is
+    unchanged, deliberately out of scope here. `markLap`'s own propagation
+    (item 13) is also unchanged — this is the recording start/pause state
+    only, not the FIT lap boundaries.

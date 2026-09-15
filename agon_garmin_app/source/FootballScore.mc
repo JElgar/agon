@@ -32,6 +32,15 @@ class FootballScore {
     //! `null` whenever there's no half currently running. See
     //! `currentHalfElapsedSeconds`, which is what actually reads this.
     var currentHalfStartedAt as Time.Moment?;
+    //! The server's raw wire period string (`score.get("period")`) as of
+    //! the last update — unlike `period` above (which only recognizes the
+    //! four periods this app's own menu can record, and leaves a `null`
+    //! wire value alone rather than guess), this tracks *any* period the
+    //! server reports, extra time included, purely so `applyServerState`
+    //! can tell a genuine transition apart from a repeated poll of the
+    //! same period. See `recordingActionForPeriodWire`, which is what
+    //! actually reads this.
+    var periodWire as String?;
 
     var _apiClient as LiveApiClient;
 
@@ -41,6 +50,7 @@ class FootballScore {
         period = PERIOD_NOT_STARTED;
         hasServerState = false;
         currentHalfStartedAt = null;
+        periodWire = null;
         _apiClient = apiClient;
     }
 
@@ -76,32 +86,50 @@ class FootballScore {
     //! way, leaving `period` as this device's own last-known value is
     //! safer than guessing.
     //!
-    //! Returns `true` when this update is the match kicking off while this
-    //! watch had it open: the period moved out of not-started (to anything
-    //! but full-time) *after* the server's state had already been seen
-    //! once. The first update never counts — a match already under way
-    //! when the watch opened it shows the red ring instead, and the wearer
-    //! starts their activity by hand. See `ActivityRecorder.startForKickOff`.
+    //! Returns the recording action this update implies — `:start` for the
+    //! kickoff of any half (normal or extra time), `:pause` for any
+    //! half-time break (normal or extra time), `null` for anything else
+    //! (no period marker, a terminal one like full-time, or a repeated
+    //! poll of a period already seen). Callers apply it onto
+    //! `ActivityRecorder` themselves (`LiveApiClient.onScore`) — same
+    //! "every watch with this match open reacts the same way" idea the
+    //! old kick-off-only version of this method already had, generalized
+    //! to every period transition rather than just the first one.
+    //!
+    //! Never fires on the very first update (`!hasServerState`) — a match
+    //! already under way (or already at half-time) when the watch opened
+    //! it shows the red ring instead, and the wearer starts/resumes their
+    //! activity by hand — nor when `newPeriodWire` repeats whatever was
+    //! last seen (most polls: nothing changed). See
+    //! `recordingActionForPeriodWire` for the wire-value -> action mapping
+    //! itself, and `periodWire`'s own doc comment for why this compares
+    //! against the raw wire string rather than `period`.
     //!
     //! `newCurrentHalfStartedAt` overwrites `currentHalfStartedAt`
     //! unconditionally (unlike `newPeriod`, which a `null` leaves alone) —
     //! it's already `null` exactly when there's no half running, straight
     //! from `LiveApiClient.currentHalfStartMoment`, so there's no separate
     //! "unknown, don't touch it" case to preserve here.
-    function applyServerState(newHomeGoals as Number, newAwayGoals as Number, newPeriod as Number?, newCurrentHalfStartedAt as Time.Moment?) as Boolean {
-        var previousPeriod = period;
+    function applyServerState(newHomeGoals as Number, newAwayGoals as Number, newPeriod as Number?, newPeriodWire as String?, newCurrentHalfStartedAt as Time.Moment?) as Symbol? {
+        var previousPeriodWire = periodWire;
         homeGoals = newHomeGoals;
         awayGoals = newAwayGoals;
         if (newPeriod != null) {
             period = newPeriod;
         }
         currentHalfStartedAt = newCurrentHalfStartedAt;
-        var kickedOffWhileOpen = hasServerState
-            && previousPeriod == PERIOD_NOT_STARTED
-            && period != PERIOD_NOT_STARTED
-            && period != PERIOD_FULL_TIME;
+
+        var periodChanged = hasServerState
+            && newPeriodWire != null
+            && !(newPeriodWire.equals(previousPeriodWire));
+        if (newPeriodWire != null) {
+            periodWire = newPeriodWire;
+        }
         hasServerState = true;
-        return kickedOffWhileOpen;
+        if (!periodChanged) {
+            return null;
+        }
+        return recordingActionForPeriodWire(newPeriodWire);
     }
 
     //! The server has no score for this match yet (`GET /matches/:id/score`
@@ -122,11 +150,23 @@ class FootballScore {
     //! unambiguously means "the period marker that was just undone was
     //! the log's only one" — not the extra-time/penalties ambiguity
     //! `applyServerState` has to hedge against when polling.
+    //! Doesn't return a recording action the way `applyServerState` does
+    //! — undo only ever reflects *this* device's own most recent action
+    //! (see `LiveApiClient`'s own doc comment on why), so this device
+    //! already applied whatever pause/start effect that action implied
+    //! directly, synchronously, when the wearer originally tapped it
+    //! (`agonMenuDelegate`); undoing it doesn't reverse that here. Still
+    //! updates `periodWire` (from the now-current `period`, via
+    //! `_apiClient.periodWireValue` — `null` for `PERIOD_NOT_STARTED`,
+    //! same as everywhere else that function is used) so a *later*
+    //! `applyServerState` transition is compared against the right
+    //! baseline rather than one this undo just made stale.
     function applyUndoState(newHomeGoals as Number, newAwayGoals as Number, newPeriod as Number?, newCurrentHalfStartedAt as Time.Moment?) as Void {
         homeGoals = newHomeGoals;
         awayGoals = newAwayGoals;
         period = (newPeriod != null) ? (newPeriod as Number) : PERIOD_NOT_STARTED;
         currentHalfStartedAt = newCurrentHalfStartedAt;
+        periodWire = (newPeriod != null) ? _apiClient.periodWireValue(newPeriod as Number) : null;
     }
 
     //! Seconds elapsed in the current half, per `currentHalfStartedAt` —

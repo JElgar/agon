@@ -125,16 +125,29 @@ class agonMenuDelegate extends WatchUi.Menu2InputDelegate {
             app.activityRecorder.startForKickOff(app.matchContext.matchName());
             app.score.setPeriod(FootballScore.PERIOD_KICK_OFF);
         } else if (item == :period_half_time) {
-            // Closes the first-half lap and opens a new one for the
-            // break — see ActivityRecorder.markLap's doc comment.
+            // markLap before pause, deliberately — it's a no-op once the
+            // session isn't recording (see its own doc comment), so
+            // pausing first would silently skip closing the first-half
+            // lap. Then pauses this wearer's activity immediately, rather
+            // than waiting for this device's own next score poll to
+            // notice — the same thing every other watch with this match
+            // open does once its next poll sees this half-time marker
+            // (LiveApiClient.onScore).
             app.activityRecorder.markLap();
+            app.activityRecorder.pause();
             app.score.setPeriod(FootballScore.PERIOD_HALF_TIME);
         } else if (item == :period_second_half) {
-            // Closes the half-time-break lap and opens the second-half
-            // one, same as markHalfStart resets the live clock's own
-            // baseline right below.
+            // Resumes (or starts) this wearer's activity immediately, same
+            // idea as kick-off/half-time above — every watch with this
+            // match open follows via its own next poll. Before markLap,
+            // deliberately — half-time now pauses (see above), and markLap
+            // is a no-op while paused, so this has to resume recording
+            // first or the half-time-break lap would never close.
+            // startForKickOff already calls markHalfStart itself
+            // (resetting the live clock's own baseline), so nothing else
+            // needed here besides markLap.
+            app.activityRecorder.startForKickOff(app.matchContext.matchName());
             app.activityRecorder.markLap();
-            app.activityRecorder.markHalfStart();
             app.score.setPeriod(FootballScore.PERIOD_SECOND_HALF);
         } else if (item == :period_full_time) {
             // Closes the second-half lap explicitly, rather than leaving

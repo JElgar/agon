@@ -12,12 +12,22 @@ import Toybox.System;
 //! section.
 //!
 //! Recording is its own control, not a side effect of scoring: the main
-//! menu's Start/Pause/Resume activity item drives `start`/`pause`, and the
-//! End match flow (EndMatchFlow.mc) finishes it with `stopAndSave` or
-//! `stopAndDiscard`. The one automatic start is kick-off
-//! (`startForKickOff`), on every watch that has the match open when it
-//! happens; a watch that opens a match already under way shows the red
-//! ring (RecordingRing.mc) until its wearer starts recording by hand.
+//! menu's Start/Pause/Resume activity item drives `start`/`pause` by hand,
+//! and the End match flow (EndMatchFlow.mc) finishes it with `stopAndSave`
+//! or `stopAndDiscard` — always a deliberate wearer choice, on this device
+//! alone. Every *period* transition, though, drives it automatically on
+//! every watch that has the match open when the transition happens,
+//! whichever device recorded it: the kickoff of any half (`startForKickOff`
+//! — normal or extra time) starts/resumes, a half-time break (normal or
+//! extra time) pauses — see `LiveApiClient.recordingActionForPeriodWire`
+//! for the exact mapping, applied both on this device's own local tap
+//! (`agonMenuDelegate`, immediately) and on every watch's next score poll
+//! (`LiveApiClient.onScore`). A terminal marker (full-time, ...) doesn't
+//! touch recording at all — see that function's own doc comment on why. A
+//! watch that opens a match already under way shows the red ring
+//! (RecordingRing.mc) until its wearer starts recording by hand — the
+//! auto-start/pause above only ever reacts to an *observed* transition,
+//! never the state a match was already in.
 //!
 //! The GPS is a separate switch again (`enableGps`). A `Session` records
 //! whichever sensors are already on and never turns the GPS on itself,
@@ -156,17 +166,24 @@ class ActivityRecorder {
         _session.start();
     }
 
-    //! Kick-off starts the activity on every watch that has the match open
-    //! at that moment — whether this wearer pressed Kick-off
-    //! (`agonMenuDelegate`) or another device did and this one saw it on
-    //! its next score poll (`LiveApiClient.onScore`). Resumes a paused
-    //! activity and leaves a running one alone, like `start`, and resets
-    //! the half clock either way, since this *is* the first half starting.
-    //! Buzzes when it actually starts (or resumes) recording, so a wearer
-    //! whose watch started on its own knows it has.
+    //! The start of any half (kick-off, second-half kick-off, extra time's
+    //! own kick-offs) starts the activity on every watch that has the
+    //! match open at that moment — whether this wearer tapped the period
+    //! item themselves (`agonMenuDelegate`) or another device did and this
+    //! one saw it on its next score poll (`LiveApiClient.onScore` ->
+    //! `recordingActionForPeriodWire`). Resumes a paused activity and
+    //! leaves a running one alone, like `start`, and resets the half clock
+    //! either way, since this *is* a half starting. Buzzes when it
+    //! actually starts (or resumes) recording, so a wearer whose watch
+    //! started on its own knows it has.
     //!
-    //! Second-half kick-off deliberately doesn't do this: someone who
-    //! paused at half-time may have meant to stay paused (subbed off, say).
+    //! Second-half (and later) kick-offs auto-resume the same as the
+    //! match's own kick-off does, on the theory that a pause by then almost
+    //! always came from the automatic half-time pause below, not a
+    //! deliberate personal one — a real edge case (subbed off mid-first-
+    //! half, meant to stay paused) does exist and isn't distinguished from
+    //! that here; re-pausing by hand after the auto-resume is the
+    //! workaround for now.
     function startForKickOff(name as String) as Void {
         var wasRecording = isRecording();
         start(name);

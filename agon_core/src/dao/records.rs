@@ -42,22 +42,29 @@ pub enum ScoreRecord {
         /// Games won per set per side, keyed by side id.
         entries: HashMap<String, Vec<u32>>,
     },
-    Cricket {
-        innings: Vec<CricketScoreInningsRecord>,
-        /// The current/most recent innings' recent-ball window — `None` once
-        /// there isn't a "current" innings (between innings, or the match is
-        /// over) or for a result with no ball-by-ball data behind it.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        recent_deliveries: Option<Vec<CricketDeliveryRecord>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        next_ball_context: Option<NextBallContextRecord>,
-        /// True once the log's last innings has ended and no following one
-        /// has started yet. `None` for a result with no live log behind it.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        awaiting_next_innings: Option<bool>,
-    },
+    Cricket(CricketScoreRecord),
     Football(FootballScoreRecord),
     Netball(NetballScoreRecord),
+}
+
+/// Cricket's `ScoreRecord` shape — see `NetballScoreRecord`'s doc comment for
+/// why this is a standalone type rather than an inline enum-variant struct:
+/// wire-identical to the inline shape it replaced, guarded by
+/// `agon_core/tests/cricket_score_record_roundtrip.rs`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CricketScoreRecord {
+    pub innings: Vec<CricketScoreInningsRecord>,
+    /// The current/most recent innings' recent-ball window — `None` once
+    /// there isn't a "current" innings (between innings, or the match is
+    /// over) or for a result with no ball-by-ball data behind it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recent_deliveries: Option<Vec<CricketDeliveryRecord>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_ball_context: Option<NextBallContextRecord>,
+    /// True once the log's last innings has ended and no following one
+    /// has started yet. `None` for a result with no live log behind it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awaiting_next_innings: Option<bool>,
 }
 
 /// Football's `ScoreRecord` shape — see `NetballScoreRecord`'s doc comment

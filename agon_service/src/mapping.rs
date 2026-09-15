@@ -7,21 +7,12 @@
 use poem::error::InternalServerError;
 use tracing::error;
 
-use crate::detailed_score::cricket::{
-    CricketBattingEntry, CricketBowlingEntry, CricketDelivery, CricketDeliveryExtra,
-    CricketDeliveryWicket, CricketDismissal, CricketDismissalKind, CricketExtraKind, CricketExtras,
-    CricketFallOfWicket, NextBallContext, Overs, balls_to_overs,
-};
+use crate::detailed_score::cricket::{Overs, balls_to_overs};
 use crate::live_score::{
-    LiveEvent, LiveEventInput, NewLiveEventInput,
-    cricket::{
-        CricketInningsEndEvent, CricketInningsStartEvent, CricketLiveEvent, CricketRetireEvent,
-        InningsEndReason,
-    },
-    football::FootballLiveEvent,
-    netball::NetballLiveEvent,
+    LiveEvent, LiveEventInput, NewLiveEventInput, cricket::CricketLiveEvent,
+    football::FootballLiveEvent, netball::NetballLiveEvent,
 };
-use crate::match_format::{CricketFormat, MatchFormat};
+use crate::match_format::MatchFormat;
 use crate::membership::{
     ExternalMember, Invitation, InvitationContext, InvitationKind, InvitationMatchContext,
     InvitationStatus, InvitationTeamContext, JoinLink, JoinLinkScope, MatchPlayerRole, Member,
@@ -36,30 +27,24 @@ use crate::notification::{
 use crate::team::{AssignableTeamRole, Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
     BestBowlingFigures, BestFigure, Comment, ConfirmedScore, CricketPlayerStats, CricketScore,
-    CricketScoreInnings, DevicePlatform, FeedMatch, FootballPlayerStats, FootballScore,
-    GenericPlayerStats, Location, Match, MatchOutcome, MatchPlayer, MatchSide, MatchSocial,
-    MatchStatus, MatchType, NetballScore, PendingScore, Photo, RosterPreviewPlayer, Score,
-    ScoreConfirmation, ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse,
-    ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
+    DevicePlatform, FeedMatch, FootballPlayerStats, FootballScore, GenericPlayerStats, Location,
+    Match, MatchOutcome, MatchPlayer, MatchSide, MatchSocial, MatchStatus, MatchType, NetballScore,
+    PendingScore, Photo, RosterPreviewPlayer, Score, ScoreConfirmation, ScoreResponseKind,
+    ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus, SearchMatch, SetsScore,
+    SimpleScore, UserProfile, UserStats,
 };
 use agon_core::dao::error::DaoError;
 use agon_core::dao::live_score_ops::NewLiveEvent;
 use agon_core::dao::records::{
     BestBowlingFiguresRecord, BestFigureRecord, CommentRecord, ConfirmedScoreRecord,
-    CricketBattingEntryRecord, CricketBowlingEntryRecord, CricketDeliveryExtraRecord,
-    CricketDeliveryRecord, CricketDeliveryWicketRecord, CricketDismissalKindRecord,
-    CricketDismissalRecord, CricketExtraKindRecord, CricketExtrasRecord, CricketFallOfWicketRecord,
-    CricketFormatRecord, CricketInningsEndEventRecord, CricketInningsStartEventRecord,
-    CricketLiveEventRecord, CricketRetireEventRecord, CricketScoreInningsRecord,
     CricketStatsRecord, DevicePlatform as DevicePlatformRecord, EmbeddedInvitationRecord,
-    FootballStatsRecord, GenericSportStatsRecord, InningsEndReasonRecord,
-    InvitationContextRecord, InvitationKindRecord, InvitationRecord, JoinLinkRecord,
-    JoinLinkScopeRecord, LiveEventPayloadRecord, LiveEventRecord, MatchFormatRecord,
-    MatchLikeRecord, MatchPlayerRecord, MatchPlayerRole as MatchPlayerRoleRecord, MatchRecord,
-    MatchScoreRecord, MatchSideRecord, NextBallContextRecord,
-    NotificationKindRecord, NotificationRecord, OversRecord, PendingScoreRecord,
-    ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord, ScoreSubmissionRecord,
-    TeamMemberRecord, TeamRecord, UserRecord, UserStatsRecord,
+    FootballStatsRecord, GenericSportStatsRecord, InvitationContextRecord, InvitationKindRecord,
+    InvitationRecord, JoinLinkRecord, JoinLinkScopeRecord, LiveEventPayloadRecord, LiveEventRecord,
+    MatchFormatRecord, MatchLikeRecord, MatchPlayerRecord,
+    MatchPlayerRole as MatchPlayerRoleRecord, MatchRecord, MatchScoreRecord, MatchSideRecord,
+    NotificationKindRecord, NotificationRecord, PendingScoreRecord, ScoreConfirmationRecord,
+    ScoreRecord, ScoreResponseRecord, ScoreSubmissionRecord, TeamMemberRecord, TeamRecord,
+    UserRecord, UserStatsRecord,
 };
 
 /// Parse an RFC-3339 timestamp string stored by the DAO into a UTC datetime,
@@ -268,193 +253,9 @@ pub fn score_from_record(rec: &ScoreRecord) -> Score {
         ScoreRecord::Sets { entries } => Score::Sets(SetsScore {
             entries: entries.clone(),
         }),
-        ScoreRecord::Cricket {
-            innings,
-            recent_deliveries,
-            next_ball_context,
-            awaiting_next_innings,
-        } => Score::Cricket(CricketScore {
-            innings: innings
-                .iter()
-                .map(cricket_score_innings_from_record)
-                .collect(),
-            recent_deliveries: recent_deliveries
-                .as_ref()
-                .map(|ds| ds.iter().map(cricket_delivery_from_record).collect()),
-            next_ball_context: next_ball_context
-                .as_ref()
-                .map(next_ball_context_from_record),
-            awaiting_next_innings: *awaiting_next_innings,
-            // Not stored — `Api::hydrate_score_players` fills this afterward
-            // (see `CricketScore::players`' doc comment).
-            players: std::collections::HashMap::new(),
-        }),
+        ScoreRecord::Cricket(rec) => Score::Cricket(crate::sports::cricket::score_from_record(rec)),
         ScoreRecord::Football(rec) => Score::Football(crate::sports::football::score_from_record(rec)),
         ScoreRecord::Netball(rec) => Score::Netball(crate::sports::netball::score_from_record(rec)),
-    }
-}
-
-fn overs_from_record(rec: &OversRecord) -> Overs {
-    Overs {
-        overs: rec.overs,
-        balls: rec.balls,
-    }
-}
-
-fn overs_to_record(overs: &Overs) -> OversRecord {
-    OversRecord {
-        overs: overs.overs,
-        balls: overs.balls,
-    }
-}
-
-fn cricket_dismissal_to_record(d: &CricketDismissal) -> CricketDismissalRecord {
-    CricketDismissalRecord {
-        kind: cricket_dismissal_kind_to_record(&d.kind),
-        bowler_player_id: d.bowler_player_id.clone(),
-        fielder_player_id: d.fielder_player_id.clone(),
-    }
-}
-
-fn cricket_dismissal_from_record(rec: &CricketDismissalRecord) -> CricketDismissal {
-    CricketDismissal {
-        kind: cricket_dismissal_kind_from_record(&rec.kind),
-        bowler_player_id: rec.bowler_player_id.clone(),
-        fielder_player_id: rec.fielder_player_id.clone(),
-    }
-}
-
-fn cricket_batting_entry_to_record(b: &CricketBattingEntry) -> CricketBattingEntryRecord {
-    CricketBattingEntryRecord {
-        player_id: b.player_id.clone(),
-        runs: b.runs,
-        balls_faced: b.balls_faced,
-        fours: b.fours,
-        sixes: b.sixes,
-        dismissal: b.dismissal.as_ref().map(cricket_dismissal_to_record),
-        batting_position: b.batting_position,
-    }
-}
-
-fn cricket_batting_entry_from_record(rec: &CricketBattingEntryRecord) -> CricketBattingEntry {
-    CricketBattingEntry {
-        player_id: rec.player_id.clone(),
-        runs: rec.runs,
-        balls_faced: rec.balls_faced,
-        fours: rec.fours,
-        sixes: rec.sixes,
-        dismissal: rec.dismissal.as_ref().map(cricket_dismissal_from_record),
-        batting_position: rec.batting_position,
-    }
-}
-
-fn cricket_bowling_entry_to_record(b: &CricketBowlingEntry) -> CricketBowlingEntryRecord {
-    CricketBowlingEntryRecord {
-        player_id: b.player_id.clone(),
-        overs: overs_to_record(&b.overs),
-        maidens: b.maidens,
-        runs_conceded: b.runs_conceded,
-        wickets: b.wickets,
-        wides: b.wides,
-        no_balls: b.no_balls,
-    }
-}
-
-fn cricket_bowling_entry_from_record(rec: &CricketBowlingEntryRecord) -> CricketBowlingEntry {
-    CricketBowlingEntry {
-        player_id: rec.player_id.clone(),
-        overs: overs_from_record(&rec.overs),
-        maidens: rec.maidens,
-        runs_conceded: rec.runs_conceded,
-        wickets: rec.wickets,
-        wides: rec.wides,
-        no_balls: rec.no_balls,
-    }
-}
-
-fn cricket_extras_to_record(e: &CricketExtras) -> CricketExtrasRecord {
-    CricketExtrasRecord {
-        byes: e.byes,
-        leg_byes: e.leg_byes,
-        wides: e.wides,
-        no_balls: e.no_balls,
-        penalty: e.penalty,
-    }
-}
-
-fn cricket_extras_from_record(rec: &CricketExtrasRecord) -> CricketExtras {
-    CricketExtras {
-        byes: rec.byes,
-        leg_byes: rec.leg_byes,
-        wides: rec.wides,
-        no_balls: rec.no_balls,
-        penalty: rec.penalty,
-    }
-}
-
-fn cricket_fall_of_wicket_to_record(f: &CricketFallOfWicket) -> CricketFallOfWicketRecord {
-    CricketFallOfWicketRecord {
-        wicket: f.wicket,
-        runs: f.runs,
-        player_id: f.player_id.clone(),
-        overs: f.overs.map(|o| overs_to_record(&o)),
-    }
-}
-
-fn cricket_fall_of_wicket_from_record(rec: &CricketFallOfWicketRecord) -> CricketFallOfWicket {
-    CricketFallOfWicket {
-        wicket: rec.wicket,
-        runs: rec.runs,
-        player_id: rec.player_id.clone(),
-        overs: rec.overs.map(|o| overs_from_record(&o)),
-    }
-}
-
-fn cricket_score_innings_to_record(i: &CricketScoreInnings) -> CricketScoreInningsRecord {
-    CricketScoreInningsRecord {
-        batting_side_id: i.batting_side_id.clone(),
-        bowling_side_id: i.bowling_side_id.clone(),
-        runs: i.runs,
-        wickets: i.wickets,
-        overs: overs_to_record(&i.overs),
-        declared: i.declared,
-        batting: i
-            .batting
-            .as_ref()
-            .map(|bs| bs.iter().map(cricket_batting_entry_to_record).collect()),
-        bowling: i
-            .bowling
-            .as_ref()
-            .map(|bs| bs.iter().map(cricket_bowling_entry_to_record).collect()),
-        fall_of_wickets: i
-            .fall_of_wickets
-            .as_ref()
-            .map(|fs| fs.iter().map(cricket_fall_of_wicket_to_record).collect()),
-        extras: i.extras.as_ref().map(cricket_extras_to_record),
-    }
-}
-
-fn cricket_score_innings_from_record(rec: &CricketScoreInningsRecord) -> CricketScoreInnings {
-    CricketScoreInnings {
-        batting_side_id: rec.batting_side_id.clone(),
-        bowling_side_id: rec.bowling_side_id.clone(),
-        runs: rec.runs,
-        wickets: rec.wickets,
-        overs: overs_from_record(&rec.overs),
-        declared: rec.declared,
-        batting: rec
-            .batting
-            .as_ref()
-            .map(|bs| bs.iter().map(cricket_batting_entry_from_record).collect()),
-        bowling: rec
-            .bowling
-            .as_ref()
-            .map(|bs| bs.iter().map(cricket_bowling_entry_from_record).collect()),
-        fall_of_wickets: rec
-            .fall_of_wickets
-            .as_ref()
-            .map(|fs| fs.iter().map(cricket_fall_of_wicket_from_record).collect()),
-        extras: rec.extras.as_ref().map(cricket_extras_from_record),
     }
 }
 
@@ -466,22 +267,7 @@ pub fn score_to_record(score: &Score) -> ScoreRecord {
         Score::Sets(s) => ScoreRecord::Sets {
             entries: s.entries.clone(),
         },
-        Score::Cricket(s) => ScoreRecord::Cricket {
-            innings: s
-                .innings
-                .iter()
-                .map(cricket_score_innings_to_record)
-                .collect(),
-            recent_deliveries: s
-                .recent_deliveries
-                .as_ref()
-                .map(|ds| ds.iter().map(cricket_delivery_to_record).collect()),
-            next_ball_context: s
-                .next_ball_context
-                .as_ref()
-                .map(next_ball_context_to_record),
-            awaiting_next_innings: s.awaiting_next_innings,
-        },
+        Score::Cricket(s) => ScoreRecord::Cricket(crate::sports::cricket::score_to_record(s)),
         Score::Football(s) => ScoreRecord::Football(crate::sports::football::score_to_record(s)),
         Score::Netball(s) => ScoreRecord::Netball(crate::sports::netball::score_to_record(s)),
     }
@@ -1152,16 +938,7 @@ pub fn match_score_from_record(rec: &MatchScoreRecord) -> Score {
 pub fn match_format_to_record(fmt: &MatchFormat) -> MatchFormatRecord {
     match fmt {
         MatchFormat::Football(f) => MatchFormatRecord::Football(crate::sports::football::format_to_record(f)),
-        MatchFormat::Cricket(f) => MatchFormatRecord::Cricket(CricketFormatRecord {
-            overs_per_innings: f.overs_per_innings,
-            innings_per_side: f.innings_per_side,
-            balls_per_over: f.balls_per_over,
-            no_ball_penalty_runs: f.no_ball_penalty_runs,
-            wide_penalty_runs: f.wide_penalty_runs,
-            wide_is_extra_ball: f.wide_is_extra_ball,
-            no_ball_is_extra_ball: f.no_ball_is_extra_ball,
-            free_hit_after_no_ball: f.free_hit_after_no_ball,
-        }),
+        MatchFormat::Cricket(f) => MatchFormatRecord::Cricket(crate::sports::cricket::format_to_record(f)),
         MatchFormat::Netball(f) => MatchFormatRecord::Netball(crate::sports::netball::format_to_record(f)),
     }
 }
@@ -1171,16 +948,7 @@ pub fn match_format_to_record(fmt: &MatchFormat) -> MatchFormatRecord {
 pub fn match_format_from_record(rec: &MatchFormatRecord) -> MatchFormat {
     match rec {
         MatchFormatRecord::Football(f) => MatchFormat::Football(crate::sports::football::format_from_record(f)),
-        MatchFormatRecord::Cricket(f) => MatchFormat::Cricket(CricketFormat {
-            overs_per_innings: f.overs_per_innings,
-            innings_per_side: f.innings_per_side,
-            balls_per_over: f.balls_per_over,
-            no_ball_penalty_runs: f.no_ball_penalty_runs,
-            wide_penalty_runs: f.wide_penalty_runs,
-            wide_is_extra_ball: f.wide_is_extra_ball,
-            no_ball_is_extra_ball: f.no_ball_is_extra_ball,
-            free_hit_after_no_ball: f.free_hit_after_no_ball,
-        }),
+        MatchFormatRecord::Cricket(f) => MatchFormat::Cricket(crate::sports::cricket::format_from_record(f)),
         MatchFormatRecord::Netball(f) => MatchFormat::Netball(crate::sports::netball::format_from_record(f)),
     }
 }
@@ -1221,7 +989,7 @@ pub fn live_event_input_to_record(event: &LiveEventInput) -> LiveEventPayloadRec
             LiveEventPayloadRecord::Football(crate::sports::football::live_event_to_record(f))
         }
         LiveEventInput::Cricket(c) => {
-            LiveEventPayloadRecord::Cricket(cricket_live_event_to_record(c))
+            LiveEventPayloadRecord::Cricket(crate::sports::cricket::live_event_to_record(c))
         }
         LiveEventInput::Netball(n) => {
             LiveEventPayloadRecord::Netball(crate::sports::netball::live_event_to_record(n))
@@ -1235,7 +1003,7 @@ pub fn live_event_payload_from_record(rec: &LiveEventPayloadRecord) -> LiveEvent
             LiveEventInput::Football(crate::sports::football::live_event_from_record(f))
         }
         LiveEventPayloadRecord::Cricket(c) => {
-            LiveEventInput::Cricket(cricket_live_event_from_record(c))
+            LiveEventInput::Cricket(crate::sports::cricket::live_event_from_record(c))
         }
         LiveEventPayloadRecord::Netball(n) => {
             LiveEventInput::Netball(crate::sports::netball::live_event_from_record(n))
@@ -1243,207 +1011,9 @@ pub fn live_event_payload_from_record(rec: &LiveEventPayloadRecord) -> LiveEvent
     }
 }
 
-// Football's and netball's API<->DAO mapping (score/format/live-event) have
-// moved to `crate::sports::football`/`crate::sports::netball` — see their
-// module doc comments.
-
-// ---- Cricket ------------------------------------------------------------
-
-fn cricket_live_event_to_record(event: &CricketLiveEvent) -> CricketLiveEventRecord {
-    match event {
-        CricketLiveEvent::Delivery(d) => {
-            CricketLiveEventRecord::Delivery(cricket_delivery_to_record(d))
-        }
-        CricketLiveEvent::Retire(r) => CricketLiveEventRecord::Retire(CricketRetireEventRecord {
-            batter_player_id: r.batter_player_id.clone(),
-            retired_out: r.retired_out,
-        }),
-        CricketLiveEvent::InningsStart(s) => {
-            CricketLiveEventRecord::InningsStart(CricketInningsStartEventRecord {
-                batting_side_id: s.batting_side_id.clone(),
-                bowling_side_id: s.bowling_side_id.clone(),
-            })
-        }
-        CricketLiveEvent::InningsEnd(e) => {
-            CricketLiveEventRecord::InningsEnd(CricketInningsEndEventRecord {
-                reason: innings_end_reason_to_record(&e.reason),
-            })
-        }
-    }
-}
-
-pub fn cricket_live_event_from_record(rec: &CricketLiveEventRecord) -> CricketLiveEvent {
-    match rec {
-        CricketLiveEventRecord::Delivery(d) => {
-            CricketLiveEvent::Delivery(cricket_delivery_from_record(d))
-        }
-        CricketLiveEventRecord::Retire(r) => CricketLiveEvent::Retire(CricketRetireEvent {
-            batter_player_id: r.batter_player_id.clone(),
-            retired_out: r.retired_out,
-        }),
-        CricketLiveEventRecord::InningsStart(s) => {
-            CricketLiveEvent::InningsStart(CricketInningsStartEvent {
-                batting_side_id: s.batting_side_id.clone(),
-                bowling_side_id: s.bowling_side_id.clone(),
-            })
-        }
-        CricketLiveEventRecord::InningsEnd(e) => {
-            CricketLiveEvent::InningsEnd(CricketInningsEndEvent {
-                reason: innings_end_reason_from_record(&e.reason),
-            })
-        }
-    }
-}
-
-fn innings_end_reason_to_record(reason: &InningsEndReason) -> InningsEndReasonRecord {
-    match reason {
-        InningsEndReason::AllOut => InningsEndReasonRecord::AllOut,
-        InningsEndReason::OversComplete => InningsEndReasonRecord::OversComplete,
-        InningsEndReason::Declared => InningsEndReasonRecord::Declared,
-        InningsEndReason::TargetReached => InningsEndReasonRecord::TargetReached,
-    }
-}
-
-fn innings_end_reason_from_record(rec: &InningsEndReasonRecord) -> InningsEndReason {
-    match rec {
-        InningsEndReasonRecord::AllOut => InningsEndReason::AllOut,
-        InningsEndReasonRecord::OversComplete => InningsEndReason::OversComplete,
-        InningsEndReasonRecord::Declared => InningsEndReason::Declared,
-        InningsEndReasonRecord::TargetReached => InningsEndReason::TargetReached,
-    }
-}
-
-fn next_ball_context_to_record(ctx: &NextBallContext) -> NextBallContextRecord {
-    NextBallContextRecord {
-        striker_player_id: ctx.striker_player_id.clone(),
-        non_striker_player_id: ctx.non_striker_player_id.clone(),
-        bowler_player_id: ctx.bowler_player_id.clone(),
-        over: ctx.over,
-        ball: ctx.ball,
-        previous_over_bowler_player_id: ctx.previous_over_bowler_player_id.clone(),
-        runs_conceded_this_over: ctx.runs_conceded_this_over,
-    }
-}
-
-fn next_ball_context_from_record(rec: &NextBallContextRecord) -> NextBallContext {
-    NextBallContext {
-        striker_player_id: rec.striker_player_id.clone(),
-        non_striker_player_id: rec.non_striker_player_id.clone(),
-        bowler_player_id: rec.bowler_player_id.clone(),
-        over: rec.over,
-        ball: rec.ball,
-        previous_over_bowler_player_id: rec.previous_over_bowler_player_id.clone(),
-        runs_conceded_this_over: rec.runs_conceded_this_over,
-    }
-}
-
-fn cricket_delivery_to_record(d: &CricketDelivery) -> CricketDeliveryRecord {
-    CricketDeliveryRecord {
-        over: d.over,
-        ball: d.ball,
-        bowler_player_id: d.bowler_player_id.clone(),
-        striker_player_id: d.striker_player_id.clone(),
-        non_striker_player_id: d.non_striker_player_id.clone(),
-        runs_off_bat: d.runs_off_bat,
-        extra: d.extra.as_ref().map(cricket_delivery_extra_to_record),
-        wicket: d.wicket.as_ref().map(cricket_delivery_wicket_to_record),
-        occurred_at: d
-            .occurred_at
-            .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
-    }
-}
-
-fn cricket_delivery_from_record(rec: &CricketDeliveryRecord) -> CricketDelivery {
-    CricketDelivery {
-        over: rec.over,
-        ball: rec.ball,
-        bowler_player_id: rec.bowler_player_id.clone(),
-        striker_player_id: rec.striker_player_id.clone(),
-        non_striker_player_id: rec.non_striker_player_id.clone(),
-        runs_off_bat: rec.runs_off_bat,
-        extra: rec.extra.as_ref().map(cricket_delivery_extra_from_record),
-        wicket: rec.wicket.as_ref().map(cricket_delivery_wicket_from_record),
-        occurred_at: parse_ts_opt(&rec.occurred_at),
-    }
-}
-
-fn cricket_delivery_extra_to_record(e: &CricketDeliveryExtra) -> CricketDeliveryExtraRecord {
-    CricketDeliveryExtraRecord {
-        kind: cricket_extra_kind_to_record(&e.kind),
-        runs: e.runs,
-    }
-}
-
-fn cricket_delivery_extra_from_record(rec: &CricketDeliveryExtraRecord) -> CricketDeliveryExtra {
-    CricketDeliveryExtra {
-        kind: cricket_extra_kind_from_record(&rec.kind),
-        runs: rec.runs,
-    }
-}
-
-fn cricket_extra_kind_to_record(kind: &CricketExtraKind) -> CricketExtraKindRecord {
-    match kind {
-        CricketExtraKind::Wide => CricketExtraKindRecord::Wide,
-        CricketExtraKind::NoBall => CricketExtraKindRecord::NoBall,
-        CricketExtraKind::Bye => CricketExtraKindRecord::Bye,
-        CricketExtraKind::LegBye => CricketExtraKindRecord::LegBye,
-        CricketExtraKind::Penalty => CricketExtraKindRecord::Penalty,
-    }
-}
-
-fn cricket_extra_kind_from_record(rec: &CricketExtraKindRecord) -> CricketExtraKind {
-    match rec {
-        CricketExtraKindRecord::Wide => CricketExtraKind::Wide,
-        CricketExtraKindRecord::NoBall => CricketExtraKind::NoBall,
-        CricketExtraKindRecord::Bye => CricketExtraKind::Bye,
-        CricketExtraKindRecord::LegBye => CricketExtraKind::LegBye,
-        CricketExtraKindRecord::Penalty => CricketExtraKind::Penalty,
-    }
-}
-
-fn cricket_delivery_wicket_to_record(w: &CricketDeliveryWicket) -> CricketDeliveryWicketRecord {
-    CricketDeliveryWicketRecord {
-        kind: cricket_dismissal_kind_to_record(&w.kind),
-        dismissed_player_id: w.dismissed_player_id.clone(),
-        bowler_player_id: w.bowler_player_id.clone(),
-        fielder_player_id: w.fielder_player_id.clone(),
-    }
-}
-
-fn cricket_delivery_wicket_from_record(rec: &CricketDeliveryWicketRecord) -> CricketDeliveryWicket {
-    CricketDeliveryWicket {
-        kind: cricket_dismissal_kind_from_record(&rec.kind),
-        dismissed_player_id: rec.dismissed_player_id.clone(),
-        bowler_player_id: rec.bowler_player_id.clone(),
-        fielder_player_id: rec.fielder_player_id.clone(),
-    }
-}
-
-fn cricket_dismissal_kind_to_record(kind: &CricketDismissalKind) -> CricketDismissalKindRecord {
-    match kind {
-        CricketDismissalKind::Bowled => CricketDismissalKindRecord::Bowled,
-        CricketDismissalKind::Caught => CricketDismissalKindRecord::Caught,
-        CricketDismissalKind::LegBeforeWicket => CricketDismissalKindRecord::LegBeforeWicket,
-        CricketDismissalKind::RunOut => CricketDismissalKindRecord::RunOut,
-        CricketDismissalKind::Stumped => CricketDismissalKindRecord::Stumped,
-        CricketDismissalKind::HitWicket => CricketDismissalKindRecord::HitWicket,
-        CricketDismissalKind::RetiredOut => CricketDismissalKindRecord::RetiredOut,
-        CricketDismissalKind::RetiredHurt => CricketDismissalKindRecord::RetiredHurt,
-    }
-}
-
-fn cricket_dismissal_kind_from_record(rec: &CricketDismissalKindRecord) -> CricketDismissalKind {
-    match rec {
-        CricketDismissalKindRecord::Bowled => CricketDismissalKind::Bowled,
-        CricketDismissalKindRecord::Caught => CricketDismissalKind::Caught,
-        CricketDismissalKindRecord::LegBeforeWicket => CricketDismissalKind::LegBeforeWicket,
-        CricketDismissalKindRecord::RunOut => CricketDismissalKind::RunOut,
-        CricketDismissalKindRecord::Stumped => CricketDismissalKind::Stumped,
-        CricketDismissalKindRecord::HitWicket => CricketDismissalKind::HitWicket,
-        CricketDismissalKindRecord::RetiredOut => CricketDismissalKind::RetiredOut,
-        CricketDismissalKindRecord::RetiredHurt => CricketDismissalKind::RetiredHurt,
-    }
-}
+// Cricket's, football's and netball's API<->DAO mapping (score/format/
+// live-event) have moved to `crate::sports::{cricket,football,netball}` —
+// see their module doc comments.
 
 // ---- Batch append / read / derive ---------------------------------------
 
@@ -1508,16 +1078,17 @@ pub fn derive_live_score(
             let events: Vec<(chrono::DateTime<chrono::Utc>, CricketLiveEvent)> = records
                 .iter()
                 .filter_map(|r| match &r.payload {
-                    LiveEventPayloadRecord::Cricket(c) => {
-                        Some((parse_ts(&r.occurred_at), cricket_live_event_from_record(c)))
-                    }
+                    LiveEventPayloadRecord::Cricket(c) => Some((
+                        parse_ts(&r.occurred_at),
+                        crate::sports::cricket::live_event_from_record(c),
+                    )),
                     LiveEventPayloadRecord::Football(_) | LiveEventPayloadRecord::Netball(_) => {
                         None
                     }
                 })
                 .collect();
             let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) =
-                cricket_format_args(format);
+                crate::sports::cricket::format_args(format);
             Some(Score::Cricket(CricketScore::from_events(
                 &events,
                 balls_per_over,
@@ -1541,23 +1112,6 @@ pub fn derive_live_score(
             Some(Score::Netball(NetballScore::from_events(&events)))
         }
         _ => None,
-    }
-}
-
-/// A cricket match's configured over length and extra-ball rules — standard
-/// rules (a 6-ball over, wides/no-balls re-bowled as extras) unless the match
-/// configured something else (e.g. The Hundred's 5-ball over). The only
-/// pieces of match format the DAO-agnostic scoring math actually needs, so
-/// callers thread these three through as plain arguments rather than the
-/// whole format.
-pub fn cricket_format_args(format: Option<&MatchFormatRecord>) -> (u32, bool, bool) {
-    match format {
-        Some(MatchFormatRecord::Cricket(f)) => (
-            f.balls_per_over,
-            f.wide_is_extra_ball,
-            f.no_ball_is_extra_ball,
-        ),
-        _ => (6, true, true),
     }
 }
 
@@ -1735,6 +1289,11 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+    use crate::detailed_score::cricket::{
+        CricketBattingEntry, CricketBowlingEntry, CricketDelivery, CricketDeliveryExtra,
+        CricketDeliveryWicket, CricketDismissal, CricketDismissalKind, CricketExtraKind,
+        CricketExtras, CricketFallOfWicket, NextBallContext,
+    };
     use crate::detailed_score::football::{
         FootballCardColor, FootballCardEvent, FootballGoalEvent, FootballPenaltyShootoutKick,
         FootballPeriod, FootballSubstitutionEvent,
@@ -1742,9 +1301,13 @@ mod tests {
     use crate::detailed_score::netball::{
         NetballFoulEvent, NetballFoulKind, NetballGoalEvent, NetballPeriod, NetballPosition,
     };
+    use crate::live_score::cricket::{
+        CricketInningsEndEvent, CricketInningsStartEvent, CricketRetireEvent, InningsEndReason,
+    };
     use crate::live_score::football::FootballPeriodEvent;
     use crate::live_score::netball::NetballPeriodEvent;
-    use crate::match_format::{FootballFormat, NetballFormat};
+    use crate::match_format::{CricketFormat, FootballFormat, NetballFormat};
+    use crate::CricketScoreInnings;
     use poem_openapi::types::ToJSON;
 
     /// Round-tripping through the DAO mirror must reproduce the same wire

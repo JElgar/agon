@@ -4120,7 +4120,7 @@ impl Api {
         match &mut score {
             Score::Cricket(s) => {
                 let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) =
-                    mapping::cricket_format_args(format);
+                    sports::cricket::format_args(format);
                 for e in new_events {
                     let LiveEventInput::Cricket(event) = &e.event else {
                         // Sport mismatch is already rejected earlier in

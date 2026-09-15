@@ -2634,6 +2634,15 @@ impl Api {
             following_count: 0,
             unread_count: 0,
             stats: dao::records::UserStatsRecord::default(),
+            // A brand-new account has played nothing and consented to
+            // nothing: rated on no ladder, opted in to none — the same state a
+            // profile written before ratings existed deserializes into.
+            // Neither is settable at signup. Opting in is ticking the consent
+            // box on a ranked game, and only the rating pipeline writes
+            // `ratings`; both are later changes, and these are here only
+            // because the record now has the fields.
+            ratings: HashMap::new(),
+            rating_opt_ins: HashMap::new(),
             created_at: now_iso(),
         };
         match dao.create_user(&jwt_data.sub, &record).await {

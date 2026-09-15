@@ -4,13 +4,12 @@
 
 use std::collections::HashMap;
 
-use aws_sdk_dynamodb::error::SdkError;
-use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 use aws_sdk_dynamodb::types::{AttributeValue, Delete, Put, TransactWriteItem, Update};
 
 use super::audience::AudienceMember;
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
+use super::is_update_conditional_failure;
 use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_pk, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::{
@@ -1371,14 +1370,6 @@ fn headcount_delta_update(
         .build()
         .map(Some)
         .map_err(|e| DaoError::Dynamo(e.to_string()))
-}
-
-fn is_update_conditional_failure(err: &SdkError<UpdateItemError>) -> bool {
-    matches!(
-        err,
-        SdkError::ServiceError(se)
-            if matches!(se.err(), UpdateItemError::ConditionalCheckFailedException(_))
-    )
 }
 
 #[cfg(test)]

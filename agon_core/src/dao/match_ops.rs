@@ -41,12 +41,20 @@ pub const ROSTER_PREVIEW_CAP: usize = 4;
 /// within [`ROSTER_PREVIEW_CAP`], otherwise empty. Pure/sync; shared by
 /// `create_match` (already has the full roster in memory) and
 /// `refresh_side_roster_previews` (re-queries it).
+///
+/// The two halves deliberately count different things. `player_count` is the
+/// figure a side's `max_players` is enforced against, so it counts only
+/// players who take a spot ([`MatchPlayerRecord::occupies_slot`]) — it used to
+/// count every row on the side, so a pending or declined invite held a spot.
+/// `roster_preview` is a display of who's been placed on the side, pending
+/// invitees included, exactly as before: narrowing it would change what feed
+/// cards show, a separate call from getting the count right.
 fn side_roster(side_id: &str, players: &[MatchPlayerRecord]) -> (u32, Vec<SideRosterMemberRecord>) {
     let on_side: Vec<&MatchPlayerRecord> = players
         .iter()
         .filter(|p| p.side_id.as_deref() == Some(side_id))
         .collect();
-    let player_count = on_side.len() as u32;
+    let player_count = on_side.iter().filter(|p| p.occupies_slot()).count() as u32;
     let roster_preview = if on_side.len() <= ROSTER_PREVIEW_CAP {
         on_side
             .into_iter()
@@ -60,6 +68,118 @@ fn side_roster(side_id: &str, players: &[MatchPlayerRecord]) -> (u32, Vec<SideRo
         Vec::new()
     };
     (player_count, roster_preview)
+}
+
+/// The match-wide headcount `MatchRecord::total_player_count` stores: players
+/// who take a spot ([`MatchPlayerRecord::occupies_slot`]) across every side
+/// plus unassigned — not every roster row.
+fn total_player_count(players: &[MatchPlayerRecord]) -> u64 {
+    players.iter().filter(|p| p.occupies_slot()).count() as u64
+}
+
+/// How many times [`Dao::refresh_side_roster_previews`] re-reads and recounts
+/// when a concurrent roster write lands between its read and its guarded
+/// write. Each attempt starts from a fresh strongly consistent read, so one
+/// retry normally settles it; the bound only matters under sustained
+/// contention, where every competing writer brings its own recount anyway.
+const ROSTER_RECOUNT_ATTEMPTS: u32 = 5;
+
+/// A match's headcounts as [`Dao::refresh_side_roster_previews`] just
+/// recomputed and stored them. Returned so a caller acting on the fresh counts
+/// (`join_match` re-checking capacity) needn't read them back — a read that,
+/// being eventually consistent, could still see the old ones.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RosterCounts {
+    pub total_player_count: u64,
+    /// Keyed by side id.
+    pub side_player_counts: HashMap<String, u32>,
+}
+
+/// The counters on a match's meta item as read at the start of a recount —
+/// the values its write is guarded on. `None` means the attribute is absent
+/// (items written before it existed), which the guard has to express as
+/// `attribute_not_exists`: `= 0` is false against a missing attribute, so
+/// defaulting to zero here would fail the guard on every attempt.
+#[derive(Debug, Default, serde::Deserialize)]
+struct StoredRosterCounts {
+    #[serde(default)]
+    total_player_count: Option<u64>,
+    #[serde(default)]
+    sides: HashMap<String, StoredSideCount>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct StoredSideCount {
+    #[serde(default)]
+    player_count: Option<u32>,
+}
+
+/// A recount's guarded `UpdateItem`, and the counts it stores.
+struct RecountWrite {
+    update_expression: String,
+    condition_expression: String,
+    names: HashMap<String, String>,
+    values: HashMap<String, AttributeValue>,
+    counts: RosterCounts,
+}
+
+/// Build the recount write for a match from its counters as `stored` and its
+/// players as queried *after* them. Pure, so the guard — the part that stops a
+/// recount clobbering a concurrent `ADD` — can be unit-tested directly; see
+/// [`Dao::refresh_side_roster_previews`] for why it's shaped this way.
+fn recount_write(
+    stored: &StoredRosterCounts,
+    players: &[MatchPlayerRecord],
+) -> DaoResult<RecountWrite> {
+    let total = total_player_count(players);
+    let mut set = vec!["total_player_count = :tpc".to_string()];
+    let mut conditions = vec![
+        "attribute_exists(#pk)".to_string(),
+        match stored.total_player_count {
+            Some(_) => "total_player_count = :read_tpc".to_string(),
+            None => "attribute_not_exists(total_player_count)".to_string(),
+        },
+    ];
+    let mut names = HashMap::from([("#pk".to_string(), ATTR_PK.to_string())]);
+    let mut values = HashMap::from([(":tpc".to_string(), to_attr(&total)?)]);
+    if let Some(read) = stored.total_player_count {
+        values.insert(":read_tpc".to_string(), to_attr(&read)?);
+    }
+
+    // Sorted only so the expression is deterministic (a map has no stable
+    // order), which keeps it testable.
+    let mut side_ids: Vec<&String> = stored.sides.keys().collect();
+    side_ids.sort();
+    let mut side_player_counts = HashMap::with_capacity(side_ids.len());
+    for (i, side_id) in side_ids.into_iter().enumerate() {
+        let (player_count, roster_preview) = side_roster(side_id, players);
+        let side = format!("sides.#s{i}");
+        set.push(format!(
+            "{side}.player_count = :pc{i}, {side}.roster_preview = :rp{i}"
+        ));
+        conditions.push(match stored.sides[side_id].player_count {
+            Some(read) => {
+                values.insert(format!(":read_pc{i}"), to_attr(&read)?);
+                format!("{side}.player_count = :read_pc{i}")
+            }
+            None => format!("attribute_not_exists({side}.player_count)"),
+        });
+        names.insert(format!("#s{i}"), side_id.clone());
+        values.insert(format!(":pc{i}"), to_attr(&player_count)?);
+        values.insert(format!(":rp{i}"), to_attr(&roster_preview)?);
+        side_player_counts.insert(side_id.clone(), player_count);
+    }
+
+    Ok(RecountWrite {
+        update_expression: format!("SET {}", set.join(", ")),
+        condition_expression: conditions.join(" AND "),
+        names,
+        values,
+        counts: RosterCounts {
+            total_player_count: total,
+            side_player_counts,
+        },
+    })
 }
 
 /// Extract a match's sides out of their storage map into the stable,
@@ -135,9 +255,10 @@ impl Dao {
             side.player_count = player_count;
             side.roster_preview = roster_preview;
         }
-        // Seed the atomic roster-size counter `Dao::join_match_tx` maintains
-        // from here on — every player at creation counts, side-assigned or not.
-        match_.total_player_count = players.len() as u64;
+        // Seed the atomic headcount `Dao::join_match_tx` maintains from here
+        // on — every player at creation who takes a spot, side-assigned or
+        // not. Invitees are still pending, so they don't.
+        match_.total_player_count = total_player_count(players);
         let match_ = match_;
 
         let meta_item = to_item(
@@ -407,6 +528,19 @@ impl Dao {
         match_id: &str,
         sk_prefix: &str,
     ) -> DaoResult<Vec<T>> {
+        self.read_match_collection(match_id, sk_prefix, false).await
+    }
+
+    /// [`Self::query_match_collection`], with the read consistency chosen by
+    /// the caller. Only the roster recount (`refresh_side_roster_previews`)
+    /// asks for strong consistency: it writes what it reads straight back, and
+    /// its guard can't catch a player row that a lagging read simply missed.
+    async fn read_match_collection<T: serde::de::DeserializeOwned>(
+        &self,
+        match_id: &str,
+        sk_prefix: &str,
+        consistent_read: bool,
+    ) -> DaoResult<Vec<T>> {
         let pk = Pk::Match(match_id.into()).to_string();
         let mut items = Vec::new();
         let mut start_key = None;
@@ -419,6 +553,7 @@ impl Dao {
                 .expression_attribute_names("#pk", ATTR_PK)
                 .expression_attribute_values(":pk", s(pk.clone()))
                 .expression_attribute_values(":sk", s(sk_prefix))
+                .consistent_read(consistent_read)
                 .set_exclusive_start_key(start_key)
                 .send()
                 .await
@@ -901,87 +1036,107 @@ impl Dao {
         Ok(())
     }
 
-    /// Recompute and store every side's `player_count`/`roster_preview` from
-    /// the match's *current* player collection. Call after any write that can
-    /// change a side's composition or a player's identity within it —
-    /// invitation acceptance (linking external → user) and `put_match_player`
-    /// (roster reconciliation / late adds). `create_match` doesn't need this:
+    /// Recompute and store the match's headcounts — `total_player_count`, and
+    /// every side's `player_count`/`roster_preview` — from its *current*
+    /// player collection, counting only players who take a spot
+    /// ([`MatchPlayerRecord::occupies_slot`]). Call after any write that can
+    /// change who's on the roster, which side they're on, or who they are —
+    /// removals, `put_match_player` (late adds, side moves), invitation
+    /// acceptance (linking external → user). Removals rely on it: nothing
+    /// else ever brings a count back down. `create_match` doesn't need this:
     /// it computes the same thing inline, from the roster it already has in
-    /// memory, within the same transaction.
+    /// memory, within the same transaction. Returns the counts it stored, or
+    /// `None` if the match is gone.
     ///
-    /// One `GetItem` (meta, projected to just `sides` — to learn the current
-    /// side ids; sides never get added/removed/reassigned an id after
-    /// creation, but this doesn't assume that) + one `Query` (current
-    /// players — still per-match, player ids aren't known ahead of the read)
-    /// + one `UpdateItem` that sets every side's `player_count`/
-    /// `roster_preview` by key in a single call, regardless of how many
-    /// sides there are. Runs on the rarer roster-mutating write paths, never
-    /// on a feed read — the whole point is for the feed to *avoid*
-    /// re-deriving this live.
+    /// Because it recounts rather than adjusts, this is also what heals a
+    /// count that has drifted from the roster (e.g. one written before pending
+    /// invites stopped counting) — `join_match` runs it before turning a
+    /// joiner away as "full", since a match that only *looks* full gets no
+    /// other roster writes that would heal it.
+    ///
+    /// **Concurrency.** The same counters are `ADD`ed, atomically and
+    /// cap-guarded, by `Dao::join_match_tx` and `Dao::accept_invitation_tx`. A
+    /// `SET` computed from a read taken before one of those commits would
+    /// silently overwrite it — un-counting a player who just got in, and
+    /// letting the cap be exceeded. So the `SET` is conditioned on every
+    /// counter it overwrites still holding the value read (every `ADD` bumps
+    /// `total_player_count`, so that guard alone catches a concurrent join or
+    /// accept; the per-side guards also catch churn that happens to leave the
+    /// total where it was), and a failed guard means re-read and recount, up
+    /// to [`ROSTER_RECOUNT_ATTEMPTS`] times.
+    ///
+    /// The order of the two reads is load-bearing, and both are strongly
+    /// consistent. Counters first, then players: an `ADD` commits in the same
+    /// transaction as its player row, so any row the players query sees was
+    /// either already counted in the values read or will trip the guard. The
+    /// other way round, a join landing between the two reads would be in the
+    /// guarded values but missing from the recount — and the write would go
+    /// through, dropping it.
+    ///
+    /// One consistent `GetItem` (meta, projected to the counters) + one
+    /// consistent `Query` (players — ids aren't known ahead of the read) + one
+    /// conditional `UpdateItem` that sets every counter in a single call,
+    /// however many sides there are. Runs on the rarer roster-mutating write
+    /// paths, never on a feed read — the whole point is for the feed to
+    /// *avoid* re-deriving this live.
     #[tracing::instrument(skip(self))]
-    pub async fn refresh_side_roster_previews(&self, match_id: &str) -> DaoResult<()> {
-        let side_ids = self.match_side_ids(match_id).await?;
-        if side_ids.is_empty() {
-            return Ok(()); // Match gone, or (shouldn't happen) has no sides.
+    pub async fn refresh_side_roster_previews(
+        &self,
+        match_id: &str,
+    ) -> DaoResult<Option<RosterCounts>> {
+        for attempt in 0..ROSTER_RECOUNT_ATTEMPTS {
+            super::batch::backoff(attempt).await;
+            let Some(stored) = self.stored_roster_counts(match_id).await? else {
+                return Ok(None); // Match gone.
+            };
+            let players = self
+                .read_match_collection::<MatchPlayerRecord>(match_id, &Sk::player_prefix(), true)
+                .await?;
+            let write = recount_write(&stored, &players)?;
+
+            let result = self
+                .client
+                .update_item()
+                .table_name(self.table())
+                .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+                .key(ATTR_SK, s(Sk::Meta.to_string()))
+                .update_expression(write.update_expression)
+                .condition_expression(write.condition_expression)
+                .set_expression_attribute_names(Some(write.names))
+                .set_expression_attribute_values(Some(write.values))
+                .send()
+                .await;
+            match result {
+                Ok(_) => return Ok(Some(write.counts)),
+                // A counter moved under us (or the match was deleted) —
+                // recount from a fresh read.
+                Err(e) if is_update_conditional_failure(&e) => continue,
+                Err(e) => return Err(DaoError::Dynamo(e.to_string())),
+            }
         }
-
-        let player_prefix = Sk::player_prefix();
-        let players = self
-            .query_match_collection::<MatchPlayerRecord>(match_id, &player_prefix)
-            .await?;
-
-        let mut set_clauses = Vec::with_capacity(side_ids.len() * 2);
-        let mut names = HashMap::with_capacity(side_ids.len());
-        let mut values = HashMap::with_capacity(side_ids.len() * 2);
-        for (i, side_id) in side_ids.iter().enumerate() {
-            let (player_count, roster_preview) = side_roster(side_id, &players);
-            let name_alias = format!("#s{i}");
-            set_clauses.push(format!(
-                "sides.{name_alias}.player_count = :pc{i}, sides.{name_alias}.roster_preview = :rp{i}"
-            ));
-            names.insert(name_alias, side_id.clone());
-            values.insert(format!(":pc{i}"), to_attr(&player_count)?);
-            values.insert(format!(":rp{i}"), to_attr(&roster_preview)?);
-        }
-
-        self.client
-            .update_item()
-            .table_name(self.table())
-            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
-            .key(ATTR_SK, s(Sk::Meta.to_string()))
-            .update_expression(format!("SET {}", set_clauses.join(", ")))
-            .set_expression_attribute_names(Some(names))
-            .set_expression_attribute_values(Some(values))
-            .send()
-            .await
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-        Ok(())
+        Err(DaoError::Conflict(format!(
+            "match {match_id}'s roster kept changing; gave up recounting after \
+             {ROSTER_RECOUNT_ATTEMPTS} attempts"
+        )))
     }
 
-    /// The current side ids on a match's meta record, without pulling the
-    /// rest of it — just enough for [`refresh_side_roster_previews`] to know
-    /// which `sides.<id>` paths to update. Empty if the match doesn't exist.
-    async fn match_side_ids(&self, match_id: &str) -> DaoResult<Vec<String>> {
-        #[derive(serde::Deserialize)]
-        struct SidesOnly {
-            sides: HashMap<String, MatchSideRecord>,
-        }
-
+    /// The counters a recount guards its write on (see
+    /// [`refresh_side_roster_previews`]), without pulling the rest of the meta
+    /// item. Strongly consistent — that method explains why. `None` if the
+    /// match doesn't exist.
+    async fn stored_roster_counts(&self, match_id: &str) -> DaoResult<Option<StoredRosterCounts>> {
         let out = self
             .client
             .get_item()
             .table_name(self.table())
             .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
             .key(ATTR_SK, s(Sk::Meta.to_string()))
-            .projection_expression("sides")
+            .projection_expression("sides, total_player_count")
+            .consistent_read(true)
             .send()
             .await
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-        let Some(item) = out.item else {
-            return Ok(Vec::new()); // Match gone.
-        };
-        let parsed: SidesOnly = from_item(item)?;
-        Ok(parsed.sides.into_keys().collect())
+        out.item.map(from_item).transpose()
     }
 
     /// Fetch a match's live-scoring score record. `None` if none recorded.
@@ -1102,5 +1257,110 @@ mod tests {
     #[test]
     fn effective_max_players_zero_for_no_sides() {
         assert_eq!(effective_max_players(&[]), Some(0));
+    }
+
+    /// A roster row on `side_id` (`None` = unassigned) with the given embedded
+    /// invitation status (`None` = no invitation: added or self-joined).
+    fn player(id: &str, side_id: Option<&str>, invitation: Option<&str>) -> MatchPlayerRecord {
+        use crate::dao::records::{EmbeddedInvitationRecord, InvitationKindRecord};
+        MatchPlayerRecord {
+            player_id: id.into(),
+            user_id: Some(format!("u_{id}")),
+            display_name: None,
+            side_id: side_id.map(Into::into),
+            is_member_of_team: None,
+            invitation: invitation.map(|status| EmbeddedInvitationRecord {
+                id: format!("inv_{id}"),
+                status: status.into(),
+                invited_by_user_id: "host".into(),
+                invited_at: "2026-09-14T00:00:00Z".into(),
+                responded_at: None,
+                kind: InvitationKindRecord::User {
+                    invited_user_id: format!("u_{id}"),
+                },
+            }),
+            role: Default::default(),
+            joined_via: None,
+        }
+    }
+
+    fn stored(total: Option<u64>, sides: &[(&str, Option<u32>)]) -> StoredRosterCounts {
+        StoredRosterCounts {
+            total_player_count: total,
+            sides: sides
+                .iter()
+                .map(|(id, player_count)| {
+                    (
+                        id.to_string(),
+                        StoredSideCount {
+                            player_count: *player_count,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// The recount counts only players who take a spot: pending and declined
+    /// invitees are left out of both their side and the match total, and an
+    /// unassigned player counts toward the total only — while the side's
+    /// roster preview still lists everyone placed on it. The bug this guards:
+    /// the counts included every roster row, so a declined invite held a spot
+    /// forever and a match could read "full" with room to spare.
+    #[test]
+    fn recount_counts_only_players_who_take_a_spot() {
+        let players = [
+            player("creator", Some("a"), None),
+            player("accepted", Some("a"), Some("accepted")),
+            player("pending", Some("b"), Some("pending")),
+            player("declined", Some("b"), Some("declined")),
+            player("joined_unassigned", None, None),
+        ];
+        let write = recount_write(
+            &stored(Some(5), &[("a", Some(2)), ("b", Some(2))]),
+            &players,
+        )
+        .unwrap();
+        assert_eq!(
+            write.counts,
+            RosterCounts {
+                total_player_count: 3,
+                side_player_counts: HashMap::from([("a".to_string(), 2), ("b".to_string(), 0)]),
+            }
+        );
+        let (_, preview_b) = side_roster("b", &players);
+        assert_eq!(
+            preview_b.len(),
+            2,
+            "side b's preview still shows its invitees"
+        );
+    }
+
+    /// The recount's `SET` is guarded on every counter it overwrites still
+    /// holding the value read — the only thing stopping a recount from undoing
+    /// a `join_match_tx`/`accept_invitation_tx` `ADD` that landed after its
+    /// read (un-counting a player who just got in, so the cap can be
+    /// exceeded). A counter missing from an older item is guarded as absent:
+    /// `= 0` never matches a missing attribute, so the recount would fail its
+    /// own guard on every attempt.
+    #[test]
+    fn recount_write_is_guarded_on_every_counter_it_overwrites() {
+        let write = recount_write(&stored(Some(7), &[("a", Some(4)), ("b", None)]), &[]).unwrap();
+        assert_eq!(
+            write.condition_expression,
+            "attribute_exists(#pk) AND total_player_count = :read_tpc \
+             AND sides.#s0.player_count = :read_pc0 \
+             AND attribute_not_exists(sides.#s1.player_count)"
+        );
+        assert_eq!(write.values[":read_tpc"], AttributeValue::N("7".into()));
+        assert_eq!(write.values[":read_pc0"], AttributeValue::N("4".into()));
+        assert_eq!(write.names["#s0"], "a");
+        assert_eq!(write.names["#s1"], "b");
+
+        let legacy = recount_write(&stored(None, &[]), &[]).unwrap();
+        assert_eq!(
+            legacy.condition_expression,
+            "attribute_exists(#pk) AND attribute_not_exists(total_player_count)"
+        );
     }
 }

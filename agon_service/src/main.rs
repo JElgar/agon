@@ -426,9 +426,13 @@ struct MatchSide {
     /// a denormalized cache refreshed whenever the roster changes, so it can
     /// occasionally lag a just-now roster change.
     roster_preview: Option<Vec<RosterPreviewPlayer>>,
-    /// Total players currently on this side — unlike `roster_preview`, always
-    /// present regardless of roster size, so callers can show "4/10" (with
-    /// `max_players`) even once there are too many players to list by name.
+    /// How many players currently take a spot on this side — the number
+    /// `max_players` caps: players added or self-joined with no invitation,
+    /// and accepted invitees, but not pending or declined invitees (who are
+    /// still on `roster_preview`/`Match.players`, holding no spot). Unlike
+    /// `roster_preview`, always present regardless of roster size, so callers
+    /// can show "4/10" (with `max_players`) even once there are too many
+    /// players to list by name.
     /// On `Match` this is resolved live from `players` (see
     /// `Api::resolve_side_names`), alongside `roster_preview`; on a feed's
     /// `FeedMatch`/a search hit's `SearchMatch` it comes from the same
@@ -3023,9 +3027,12 @@ impl Api {
                 ))));
             }
             if let Some(max) = side.max_players {
+                // Only players who take a spot count against the cap: an
+                // invite doesn't reserve one (first come, first served), so an
+                // organiser may invite more people than there's room for.
                 let count = player_records
                     .iter()
-                    .filter(|p| p.side_id.as_deref() == Some(side_id.as_str()))
+                    .filter(|p| p.side_id.as_deref() == Some(side_id.as_str()) && p.occupies_slot())
                     .count() as u32;
                 if count > max {
                     return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
@@ -5891,24 +5898,42 @@ impl Api {
         // Capacity, checked here for a precise error; `Dao::join_match_tx`
         // re-checks atomically as the last-moment race guard (its own doc
         // comment covers why the split).
+        //
+        // A "full" verdict from the stored counts is recounted before it's
+        // believed. Counts that drifted high — written before pending invites
+        // stopped counting, or before leaving gave a spot back — make a match
+        // look full, and a match that looks full gets no more roster writes
+        // to heal it: it would turn every joiner away for good. The recount is
+        // only paid on this path, and the re-check uses the counts it just
+        // stored rather than reading them back (which could see stale ones).
         let effective_max = agg.effective_max_players();
-        if let Some(max) = effective_max
-            && agg.match_.total_player_count >= max as u64
-        {
-            return Ok(JoinMatchResponse::Conflict(PlainText(
-                "this match is full".into(),
-            )));
-        }
         let target_side = target_side_id
             .as_ref()
             .and_then(|sid| agg.sides.iter().find(|s| &s.side_id == sid));
-        if let Some(side) = target_side
-            && let Some(max) = side.max_players
-            && side.player_count >= max
+        let target_side_max = target_side.and_then(|s| s.max_players);
+        let mut full = capacity_conflict(
+            effective_max,
+            agg.match_.total_player_count,
+            target_side_max,
+            target_side.map(|s| s.player_count),
+        );
+        if full.is_some()
+            && let Some(counts) = dao
+                .refresh_side_roster_previews(&match_id)
+                .await
+                .map_err(dao_internal)?
         {
-            return Ok(JoinMatchResponse::Conflict(PlainText(
-                "that side is full".into(),
-            )));
+            full = capacity_conflict(
+                effective_max,
+                counts.total_player_count,
+                target_side_max,
+                target_side_id
+                    .as_ref()
+                    .and_then(|sid| counts.side_player_counts.get(sid).copied()),
+            );
+        }
+        if let Some(reason) = full {
+            return Ok(JoinMatchResponse::Conflict(PlainText(reason.into())));
         }
 
         let player = dao::records::MatchPlayerRecord {
@@ -7012,7 +7037,12 @@ impl Api {
                 }),
                 _ => None,
             };
-            side.player_count = on_side.len() as u32;
+            // Only players who take a spot, the same rule as the stored
+            // `MatchSideRecord::player_count` — so this live figure agrees
+            // with the cached one a feed card shows, and with the cap. The
+            // roster preview and sole-player name still use everyone placed
+            // on the side, pending invitees included.
+            side.player_count = on_side.iter().filter(|p| player_occupies_slot(p)).count() as u32;
             // Same "small enough to show players directly" call the feed
             // makes from its denormalized cache (`ROSTER_PREVIEW_CAP`) — here
             // computed live, since the full roster is already in memory.
@@ -7687,6 +7717,41 @@ fn caller_is_participant(players: &[dao::records::MatchPlayerRecord], uid: &str)
                 Some(inv) => inv.status == "accepted",
             }
     })
+}
+
+/// `MatchPlayerRecord::occupies_slot`, asked of an already-mapped
+/// `MatchPlayer` — `Api::resolve_side_names` runs after mapping, with no
+/// records in hand. It must stay the same rule: if `occupies_slot` ever gains
+/// a condition, so does this (and `agon_ui`'s `occupiesSlot`).
+fn player_occupies_slot(player: &MatchPlayer) -> bool {
+    let invitation = match &player.member {
+        Member::User(u) => u.invitation.as_ref(),
+        Member::External(e) => e.invitation.as_ref(),
+    };
+    invitation.is_none_or(|inv| matches!(inv.status, membership::InvitationStatus::Accepted))
+}
+
+/// Why a join would go over capacity, if it would: the match-wide cap first,
+/// then the target side's (`side_player_count` is `None` when joining
+/// unassigned). Pure, so `join_match` can put the same question to both the
+/// stored counts and a fresh recount of them.
+fn capacity_conflict(
+    total_max: Option<u32>,
+    total_player_count: u64,
+    side_max: Option<u32>,
+    side_player_count: Option<u32>,
+) -> Option<&'static str> {
+    if let Some(max) = total_max
+        && total_player_count >= max as u64
+    {
+        return Some("this match is full");
+    }
+    if let (Some(max), Some(count)) = (side_max, side_player_count)
+        && count >= max
+    {
+        return Some("that side is full");
+    }
+    None
 }
 
 /// The caller's own membership on a team, if they're an accepted member —

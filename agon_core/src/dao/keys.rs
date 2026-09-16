@@ -171,6 +171,12 @@ pub enum Sk {
     Side(String),
     /// A match player. `PLAYER#<playerId>`
     Player(String),
+    /// A match waitlist entry — someone queued for a spot that wasn't free
+    /// when they tried to join/accept, kept apart from the roster proper
+    /// (`Player`) until a match admin moves them in. `WAITLIST#<userId>` —
+    /// at most one entry per (match, user), so this doubles as the
+    /// "already waitlisted" uniqueness guard.
+    WaitlistEntry(String),
     /// A match's live-scoring score record, keyed by sport — the score as
     /// derived from the event log, live or finished, but never itself the
     /// agreed result. Named `LIVESCORE#<sport>` rather than `SCORE#` to keep
@@ -243,6 +249,7 @@ impl Sk {
             Sk::Member(_) => "MEMBER",
             Sk::Side(_) => "SIDE",
             Sk::Player(_) => "PLAYER",
+            Sk::WaitlistEntry(_) => "WAITLIST",
             Sk::Score(_) => "LIVESCORE",
             Sk::Like(_) => "LIKE",
             Sk::LiveEvent(_) => "LIVEEVT",
@@ -298,6 +305,11 @@ impl Sk {
         format!("{}{DELIMITER}", Sk::Player(String::new()).prefix())
     }
 
+    /// Lists a match's waitlist entries: `WAITLIST#`.
+    pub fn waitlist_prefix() -> String {
+        format!("{}{DELIMITER}", Sk::WaitlistEntry(String::new()).prefix())
+    }
+
     /// Lists a match's likes: `LIKE#`.
     pub fn like_prefix() -> String {
         format!("{}{DELIMITER}", Sk::Like(String::new()).prefix())
@@ -340,6 +352,7 @@ impl fmt::Display for Sk {
             | Sk::Member(v)
             | Sk::Side(v)
             | Sk::Player(v)
+            | Sk::WaitlistEntry(v)
             | Sk::Score(v)
             | Sk::Like(v)
             | Sk::ScoreSubmission(v)
@@ -395,6 +408,7 @@ impl FromStr for Sk {
             "MEMBER" => Ok(Sk::Member(rest.into())),
             "SIDE" => Ok(Sk::Side(rest.into())),
             "PLAYER" => Ok(Sk::Player(rest.into())),
+            "WAITLIST" => Ok(Sk::WaitlistEntry(rest.into())),
             "LIVESCORE" => Ok(Sk::Score(rest.into())),
             "LIKE" => Ok(Sk::Like(rest.into())),
             "LIVEEVT" => rest
@@ -486,6 +500,7 @@ mod tests {
         sk_roundtrip(Sk::Member("mem1".into()), "MEMBER#mem1");
         sk_roundtrip(Sk::Side("side_red".into()), "SIDE#side_red");
         sk_roundtrip(Sk::Player("p1".into()), "PLAYER#p1");
+        sk_roundtrip(Sk::WaitlistEntry("w1".into()), "WAITLIST#w1");
         sk_roundtrip(Sk::Score("cricket".into()), "LIVESCORE#cricket");
         sk_roundtrip(Sk::Like("u3".into()), "LIKE#u3");
         // Id-addressed (time-ordered) items now use id-only base SKs.
@@ -544,6 +559,7 @@ mod tests {
         assert_eq!(Sk::member_prefix(), "MEMBER#");
         assert_eq!(Sk::side_prefix(), "SIDE#");
         assert_eq!(Sk::player_prefix(), "PLAYER#");
+        assert_eq!(Sk::waitlist_prefix(), "WAITLIST#");
         assert_eq!(Sk::like_prefix(), "LIKE#");
         assert_eq!(Sk::live_event_prefix(), "LIVEEVT#");
         assert_eq!(Sk::stat_contribution_prefix(), "STATCONTRIB#");
@@ -567,6 +583,7 @@ mod tests {
             Sk::member_prefix(),
             Sk::side_prefix(),
             Sk::player_prefix(),
+            Sk::waitlist_prefix(),
             Sk::like_prefix(),
             Sk::live_event_prefix(),
             Sk::stat_contribution_prefix(),

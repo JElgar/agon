@@ -46,6 +46,35 @@ impl Dao {
         responded_at: &str,
         now: &str,
     ) -> DaoResult<Option<String>> {
+        let (match_id, items) = self
+            .accept_invitation_items(invitation_id, accepting_user_id, responded_at, now)
+            .await?;
+        match self.send_transact_items(items).await {
+            Ok(()) => Ok(match_id),
+            Err(DaoError::Conflict(_)) => {
+                Err(DaoError::NotFound(format!("invitation {invitation_id}")))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Build the three writes `accept_invitation_tx` sends as one transaction
+    /// — invitation, linked roster entry, (match) the accepter's own feed row
+    /// — without sending them. Shared with
+    /// `Dao::accept_invitation_onto_waitlist_tx`, which appends one more item
+    /// (the waitlist entry put) to the same list before sending, so accepting
+    /// onto the waitlist is exactly as atomic as an ordinary accept.
+    ///
+    /// Returns the match id alongside (`None` for a team invite) since the
+    /// caller needs it before the transaction is sent (to build that extra
+    /// item), not just after.
+    pub(super) async fn accept_invitation_items(
+        &self,
+        invitation_id: &str,
+        accepting_user_id: &str,
+        responded_at: &str,
+        now: &str,
+    ) -> DaoResult<(Option<String>, Vec<TransactWriteItem>)> {
         let Some(mut inv) = self.get_invitation(invitation_id).await? else {
             return Err(DaoError::NotFound(format!("invitation {invitation_id}")));
         };
@@ -113,20 +142,32 @@ impl Dao {
             .build()
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
 
-        let mut tx = self
-            .client
-            .transact_write_items()
-            .transact_items(TransactWriteItem::builder().put(put_inv).build())
-            .transact_items(TransactWriteItem::builder().put(put_roster).build());
+        let mut items = vec![
+            TransactWriteItem::builder().put(put_inv).build(),
+            TransactWriteItem::builder().put(put_roster).build(),
+        ];
         if let Some(feed_put) = feed_put {
-            tx = tx.transact_items(TransactWriteItem::builder().put(feed_put).build());
+            items.push(TransactWriteItem::builder().put(feed_put).build());
         }
+        Ok((match_id, items))
+    }
 
+    /// Send a prebuilt list of writes as one `TransactWriteItems` call.
+    /// `Conflict` on any failed item condition — the caller maps that to
+    /// whatever it actually means for its own items (`accept_invitation_tx`
+    /// maps it to `NotFound`; `accept_invitation_onto_waitlist_tx` keeps it
+    /// as `Conflict`, since there its own extra item's guard — already on the
+    /// waitlist — is at least as likely a cause as the invitation being gone).
+    pub(super) async fn send_transact_items(&self, items: Vec<TransactWriteItem>) -> DaoResult<()> {
+        let mut tx = self.client.transact_write_items();
+        for item in items {
+            tx = tx.transact_items(item);
+        }
         match tx.send().await {
-            Ok(_) => Ok(match_id),
-            Err(e) if super::is_transaction_conditional_failure(&e) => {
-                Err(DaoError::NotFound(format!("invitation {invitation_id}")))
-            }
+            Ok(_) => Ok(()),
+            Err(e) if super::is_transaction_conditional_failure(&e) => Err(DaoError::Conflict(
+                "one or more of this transaction's conditions were not met".into(),
+            )),
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
     }

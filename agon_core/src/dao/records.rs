@@ -656,6 +656,13 @@ impl MatchPlayerRecord {
     /// invitation), or an invitee who has accepted. A pending or declined
     /// invite takes nothing; sending an invite doesn't reserve a spot.
     ///
+    /// Doesn't by itself account for the waitlist: an invitee who accepted
+    /// onto the waitlist (`Dao::waitlist_join_tx`) has an *accepted* embedded
+    /// invitation here (so they're not asked again) but a live
+    /// `MatchWaitlistEntryRecord` too — `Dao::refresh_side_roster_previews`
+    /// excludes anyone with one of those before applying this rule, since a
+    /// waitlisted player holds no spot regardless of their invitation status.
+    ///
     /// The single definition behind `MatchRecord::total_player_count` and
     /// `MatchSideRecord::player_count` — see `Dao::refresh_side_roster_previews`
     /// for where those get recomputed from it.
@@ -664,6 +671,37 @@ impl MatchPlayerRecord {
             .as_ref()
             .is_none_or(|inv| inv.status == "accepted")
     }
+}
+
+/// `MATCH#<matchId>` / `WAITLIST#<userId>` — someone queued for a match/side
+/// that had no room when they tried to join or accept an invite onto it, kept
+/// entirely apart from the roster (`MatchPlayerRecord`) until a match admin
+/// moves them in (`Dao::move_in_from_waitlist_tx`) — at which point this
+/// entry is deleted and (for a plain self-served join) a real roster row is
+/// created for the first time.
+///
+/// Keyed by `user_id` rather than a minted id — unlike the roster, a waitlist
+/// entry always names a real account (only an authenticated caller can join a
+/// waitlist, so there's no unlinked-external case to key around), and at most
+/// one entry per (match, user) is meaningful anyway. That also makes "already
+/// waitlisted" a conditional-put guard on the key itself, the same pattern as
+/// every other uniqueness guard in this table (see the module doc comment).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MatchWaitlistEntryRecord {
+    pub user_id: String,
+    /// The side they're waiting for, mirroring `JoinMatchInput::side_id` —
+    /// `None` for unassigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_id: Option<String>,
+    /// Display/ordering key — longest-waiting first. Purely informational;
+    /// moving someone in is always a manual admin action, never automatic.
+    pub waitlisted_at: String,
+    /// Set when this entry came from accepting an invite that had no room
+    /// (`Dao::waitlist_join_tx` also accepts the invitation in that case, so
+    /// it isn't asked again) — kept for traceability. `None` for a plain
+    /// self-served waitlist join (join link / team self-join).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invitation_id: Option<String>,
 }
 
 /// A player's authority on a match. Kept as its own type rather than reusing
@@ -701,6 +739,9 @@ pub enum JoinSourceRecord {
     /// Joined via team self-join (`MatchSideRecord::team_join_enabled`) — no
     /// link involved.
     SelfServe,
+    /// Moved in off the waitlist by a match admin
+    /// (`Dao::move_in_from_waitlist_tx`) once a spot freed up.
+    Waitlist,
 }
 
 /// `MATCH#<matchId>` / `SCORE#<sport>` — the match's live-scoring score

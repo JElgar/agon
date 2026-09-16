@@ -41,12 +41,19 @@ pub const ROSTER_PREVIEW_CAP: usize = 4;
 /// within [`ROSTER_PREVIEW_CAP`], otherwise empty. Pure/sync; shared by
 /// `create_match` (already has the full roster in memory) and
 /// `refresh_side_roster_previews` (re-queries it).
+///
+/// The two halves deliberately count different things. `player_count` is what
+/// a side's `max_players` is enforced against, so it counts only players who
+/// take a spot (`MatchPlayerRecord::occupies_slot`) — a pending or declined
+/// invite holds none. `roster_preview` is a display of who's been placed on
+/// the side, pending invitees included, so a feed card still shows who's been
+/// asked.
 fn side_roster(side_id: &str, players: &[MatchPlayerRecord]) -> (u32, Vec<SideRosterMemberRecord>) {
     let on_side: Vec<&MatchPlayerRecord> = players
         .iter()
         .filter(|p| p.side_id.as_deref() == Some(side_id))
         .collect();
-    let player_count = on_side.len() as u32;
+    let player_count = on_side.iter().filter(|p| p.occupies_slot()).count() as u32;
     let roster_preview = if on_side.len() <= ROSTER_PREVIEW_CAP {
         on_side
             .into_iter()
@@ -60,6 +67,13 @@ fn side_roster(side_id: &str, players: &[MatchPlayerRecord]) -> (u32, Vec<SideRo
         Vec::new()
     };
     (player_count, roster_preview)
+}
+
+/// The match-wide headcount `MatchRecord::total_player_count` stores: players
+/// who take a spot (`MatchPlayerRecord::occupies_slot`) across every side plus
+/// unassigned — not every roster row.
+fn total_player_count(players: &[MatchPlayerRecord]) -> u64 {
+    players.iter().filter(|p| p.occupies_slot()).count() as u64
 }
 
 /// Extract a match's sides out of their storage map into the stable,
@@ -135,9 +149,10 @@ impl Dao {
             side.player_count = player_count;
             side.roster_preview = roster_preview;
         }
-        // Seed the atomic roster-size counter `Dao::join_match_tx` maintains
-        // from here on — every player at creation counts, side-assigned or not.
-        match_.total_player_count = players.len() as u64;
+        // Seed the atomic headcount `Dao::join_match_tx` maintains from here
+        // on — every player at creation who takes a spot, side-assigned or
+        // not. A pending invitee doesn't count until they accept.
+        match_.total_player_count = total_player_count(players);
         let match_ = match_;
 
         let meta_item = to_item(
@@ -901,23 +916,30 @@ impl Dao {
         Ok(())
     }
 
-    /// Recompute and store every side's `player_count`/`roster_preview` from
-    /// the match's *current* player collection. Call after any write that can
-    /// change a side's composition or a player's identity within it —
-    /// invitation acceptance (linking external → user) and `put_match_player`
-    /// (roster reconciliation / late adds). `create_match` doesn't need this:
-    /// it computes the same thing inline, from the roster it already has in
+    /// Recompute and store the match's headcounts — `total_player_count`, and
+    /// every side's `player_count`/`roster_preview` — from its *current*
+    /// player collection. Call after any write that can change who's on the
+    /// roster, which side they're on, or who they are — removals,
+    /// `put_match_player` (late adds, side moves), invitation acceptance
+    /// (linking external → user). Removals rely on it: nothing else ever
+    /// brings a count back down. `create_match` doesn't need this: it
+    /// computes the same thing inline, from the roster it already has in
     /// memory, within the same transaction.
     ///
     /// One `GetItem` (meta, projected to just `sides` — to learn the current
     /// side ids; sides never get added/removed/reassigned an id after
     /// creation, but this doesn't assume that) + one `Query` (current
     /// players — still per-match, player ids aren't known ahead of the read)
-    /// + one `UpdateItem` that sets every side's `player_count`/
-    /// `roster_preview` by key in a single call, regardless of how many
-    /// sides there are. Runs on the rarer roster-mutating write paths, never
-    /// on a feed read — the whole point is for the feed to *avoid*
-    /// re-deriving this live.
+    /// + one `UpdateItem` that sets every counter by key in a single call,
+    /// regardless of how many sides there are. Runs on the rarer
+    /// roster-mutating write paths, never on a feed read — the whole point is
+    /// for the feed to *avoid* re-deriving this live.
+    ///
+    /// This is a plain, unconditional recompute-and-overwrite, not guarded
+    /// against a concurrent `Dao::join_match_tx` landing between its read and
+    /// its write — accepted as a rare, self-healing race (the next
+    /// roster-changing write recomputes from the true roster again) rather
+    /// than adding retry machinery for it.
     #[tracing::instrument(skip(self))]
     pub async fn refresh_side_roster_previews(&self, match_id: &str) -> DaoResult<()> {
         let side_ids = self.match_side_ids(match_id).await?;
@@ -930,9 +952,10 @@ impl Dao {
             .query_match_collection::<MatchPlayerRecord>(match_id, &player_prefix)
             .await?;
 
-        let mut set_clauses = Vec::with_capacity(side_ids.len() * 2);
+        let mut set_clauses = vec!["total_player_count = :tpc".to_string()];
         let mut names = HashMap::with_capacity(side_ids.len());
-        let mut values = HashMap::with_capacity(side_ids.len() * 2);
+        let mut values = HashMap::with_capacity(side_ids.len() * 2 + 1);
+        values.insert(":tpc".to_string(), to_attr(&total_player_count(&players))?);
         for (i, side_id) in side_ids.iter().enumerate() {
             let (player_count, roster_preview) = side_roster(side_id, &players);
             let name_alias = format!("#s{i}");

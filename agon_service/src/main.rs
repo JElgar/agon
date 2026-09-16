@@ -3025,7 +3025,7 @@ impl Api {
             if let Some(max) = side.max_players {
                 let count = player_records
                     .iter()
-                    .filter(|p| p.side_id.as_deref() == Some(side_id.as_str()))
+                    .filter(|p| p.side_id.as_deref() == Some(side_id.as_str()) && p.occupies_slot())
                     .count() as u32;
                 if count > max {
                     return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
@@ -6589,7 +6589,8 @@ impl Api {
             // own feed row so the game is on their feed immediately. Follower
             // fan-out + notification happen async off the resulting stream event.
             membership::InvitationResponse::Accepted => {
-                dao.accept_invitation_tx(&invitation_id, &uid, &responded_at, &responded_at)
+                let match_id = dao
+                    .accept_invitation_tx(&invitation_id, &uid, &responded_at, &responded_at)
                     .await
                     .map_err(|e| match e {
                         dao::DaoError::NotFound(_) => {
@@ -6597,6 +6598,14 @@ impl Api {
                         }
                         other => dao_internal(other),
                     })?;
+                // Accepting takes a roster spot — recompute the match's
+                // headcounts from the now-accepted roster entry (see
+                // `Dao::refresh_side_roster_previews`).
+                if let Some(match_id) = match_id {
+                    dao.refresh_side_roster_previews(&match_id)
+                        .await
+                        .map_err(dao_internal)?;
+                }
                 "accepted"
             }
             membership::InvitationResponse::Declined => {
@@ -6659,7 +6668,8 @@ impl Api {
             // userless) token invitation, link the roster entry, and write the
             // accepter's own feed row. Follower fan-out follows async.
             membership::InvitationResponse::Accepted => {
-                dao.accept_invitation_tx(&rec.id, &uid, &responded_at, &responded_at)
+                let match_id = dao
+                    .accept_invitation_tx(&rec.id, &uid, &responded_at, &responded_at)
                     .await
                     .map_err(|e| match e {
                         dao::DaoError::NotFound(_) => {
@@ -6667,6 +6677,14 @@ impl Api {
                         }
                         other => dao_internal(other),
                     })?;
+                // Accepting takes a roster spot — recompute the match's
+                // headcounts from the now-accepted roster entry (see
+                // `Dao::refresh_side_roster_previews`).
+                if let Some(match_id) = match_id {
+                    dao.refresh_side_roster_previews(&match_id)
+                        .await
+                        .map_err(dao_internal)?;
+                }
                 "accepted"
             }
             membership::InvitationResponse::Declined => {

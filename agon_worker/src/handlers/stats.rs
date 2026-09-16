@@ -79,20 +79,16 @@ pub async fn reconcile_match_stats(dao: &Dao, match_id: &str) -> WorkerResult<()
     };
 
     // Desired contribution per participant who actually played, keyed by user
-    // id. "Played" = a match with a confirmed score where the player is the
-    // creator/self-added (no embedded invitation) or an accepted invitee.
-    // Pending/declined invitees are on the roster but didn't play.
+    // id. "Played" = a match with a confirmed score where the player took a
+    // spot (`MatchPlayerRecord::occupies_slot` — the same rule the roster
+    // counts use). Pending/declined invitees are on the roster but didn't play.
     let mut desired: BTreeMap<String, MatchContribution> = Default::default();
     if let Some(cs) = confirmed_score {
         for player in &agg.players {
             let Some(user_id) = &player.user_id else {
                 continue;
             };
-            let played = match &player.invitation {
-                None => true,
-                Some(inv) => inv.status == "accepted",
-            };
-            if !played {
+            if !player.occupies_slot() {
                 continue;
             }
             // No winner recorded => the match was a draw for everyone who

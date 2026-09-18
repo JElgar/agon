@@ -41,12 +41,26 @@ pub const ROSTER_PREVIEW_CAP: usize = 4;
 /// within [`ROSTER_PREVIEW_CAP`], otherwise empty. Pure/sync; shared by
 /// `create_match` (already has the full roster in memory) and
 /// `refresh_side_roster_previews` (re-queries it).
-fn side_roster(side_id: &str, players: &[MatchPlayerRecord]) -> (u32, Vec<SideRosterMemberRecord>) {
+///
+/// The two halves deliberately count different things. `player_count` is what
+/// a side's `max_players` is enforced against, so it counts only players who
+/// take a spot (`occupies_counted_slot`) — a pending or declined invite holds
+/// none, and nor does an accepted invitee currently on the waitlist.
+/// `roster_preview` is a display of who's been placed on the side, pending
+/// invitees included, so a feed card still shows who's been asked.
+fn side_roster(
+    side_id: &str,
+    players: &[MatchPlayerRecord],
+    waitlisted_user_ids: &std::collections::HashSet<String>,
+) -> (u32, Vec<SideRosterMemberRecord>) {
     let on_side: Vec<&MatchPlayerRecord> = players
         .iter()
         .filter(|p| p.side_id.as_deref() == Some(side_id))
         .collect();
-    let player_count = on_side.len() as u32;
+    let player_count = on_side
+        .iter()
+        .filter(|p| occupies_counted_slot(p, waitlisted_user_ids))
+        .count() as u32;
     let roster_preview = if on_side.len() <= ROSTER_PREVIEW_CAP {
         on_side
             .into_iter()
@@ -60,6 +74,37 @@ fn side_roster(side_id: &str, players: &[MatchPlayerRecord]) -> (u32, Vec<SideRo
         Vec::new()
     };
     (player_count, roster_preview)
+}
+
+/// The match-wide headcount `MatchRecord::total_player_count` stores: players
+/// who take a spot (`occupies_counted_slot`) across every side plus
+/// unassigned — not every roster row.
+fn total_player_count(
+    players: &[MatchPlayerRecord],
+    waitlisted_user_ids: &std::collections::HashSet<String>,
+) -> u64 {
+    players
+        .iter()
+        .filter(|p| occupies_counted_slot(p, waitlisted_user_ids))
+        .count() as u64
+}
+
+/// Whether `p` counts toward the match/side headcounts: takes a spot
+/// (`MatchPlayerRecord::occupies_slot`) *and* isn't currently on the match's
+/// waitlist. An invitee accepted onto the waitlist
+/// (`Dao::accept_invitation_onto_waitlist_tx`) has an accepted embedded
+/// invitation — so `occupies_slot` alone would count them — but holds no
+/// spot until a match admin moves them in and their `MatchWaitlistEntryRecord`
+/// is deleted.
+fn occupies_counted_slot(
+    p: &MatchPlayerRecord,
+    waitlisted_user_ids: &std::collections::HashSet<String>,
+) -> bool {
+    p.occupies_slot()
+        && !p
+            .user_id
+            .as_deref()
+            .is_some_and(|uid| waitlisted_user_ids.contains(uid))
 }
 
 /// Extract a match's sides out of their storage map into the stable,
@@ -129,15 +174,18 @@ impl Dao {
         match_: &MatchRecord,
         players: &[MatchPlayerRecord],
     ) -> DaoResult<()> {
+        // No waitlist entries exist yet for a match that doesn't exist yet.
+        let no_waitlist = std::collections::HashSet::new();
         let mut match_ = match_.clone();
         for side in match_.sides.values_mut() {
-            let (player_count, roster_preview) = side_roster(&side.side_id, players);
+            let (player_count, roster_preview) = side_roster(&side.side_id, players, &no_waitlist);
             side.player_count = player_count;
             side.roster_preview = roster_preview;
         }
-        // Seed the atomic roster-size counter `Dao::join_match_tx` maintains
-        // from here on — every player at creation counts, side-assigned or not.
-        match_.total_player_count = players.len() as u64;
+        // Seed the atomic headcount `Dao::join_match_tx` maintains from here
+        // on — every player at creation who takes a spot, side-assigned or
+        // not. A pending invitee doesn't count until they accept.
+        match_.total_player_count = total_player_count(players, &no_waitlist);
         let match_ = match_;
 
         let meta_item = to_item(
@@ -901,23 +949,35 @@ impl Dao {
         Ok(())
     }
 
-    /// Recompute and store every side's `player_count`/`roster_preview` from
-    /// the match's *current* player collection. Call after any write that can
-    /// change a side's composition or a player's identity within it —
-    /// invitation acceptance (linking external → user) and `put_match_player`
-    /// (roster reconciliation / late adds). `create_match` doesn't need this:
-    /// it computes the same thing inline, from the roster it already has in
-    /// memory, within the same transaction.
+    /// Recompute and store the match's headcounts — `total_player_count`, and
+    /// every side's `player_count`/`roster_preview` — from its *current*
+    /// player collection and waitlist. Call after any write that can change
+    /// who's on the roster, which side they're on, who they are, or who's
+    /// waitlisted — removals, `put_match_player` (late adds, side moves),
+    /// invitation acceptance (linking external → user),
+    /// `waitlist_join_tx`/`accept_invitation_onto_waitlist_tx`/
+    /// `leave_waitlist` (moving someone in or out of the waitlist changes
+    /// what counts, even with the roster itself unchanged). Removals rely on
+    /// it: nothing else ever brings a count back down. `create_match` doesn't
+    /// need this: it computes the same thing inline, from the roster it
+    /// already has in memory, within the same transaction.
     ///
     /// One `GetItem` (meta, projected to just `sides` — to learn the current
     /// side ids; sides never get added/removed/reassigned an id after
     /// creation, but this doesn't assume that) + one `Query` (current
     /// players — still per-match, player ids aren't known ahead of the read)
-    /// + one `UpdateItem` that sets every side's `player_count`/
-    /// `roster_preview` by key in a single call, regardless of how many
-    /// sides there are. Runs on the rarer roster-mutating write paths, never
-    /// on a feed read — the whole point is for the feed to *avoid*
-    /// re-deriving this live.
+    /// + one `Query` (current waitlist entries, to exclude anyone on it from
+    /// the counts even if their invitation reads accepted — see
+    /// `occupies_counted_slot`) + one `UpdateItem` that sets every counter by
+    /// key in a single call, regardless of how many sides there are. Runs on
+    /// the rarer roster-mutating write paths, never on a feed read — the
+    /// whole point is for the feed to *avoid* re-deriving this live.
+    ///
+    /// This is a plain, unconditional recompute-and-overwrite, not guarded
+    /// against a concurrent `Dao::join_match_tx` landing between its read and
+    /// its write — accepted as a rare, self-healing race (the next
+    /// roster-changing write recomputes from the true roster again) rather
+    /// than adding retry machinery for it.
     #[tracing::instrument(skip(self))]
     pub async fn refresh_side_roster_previews(&self, match_id: &str) -> DaoResult<()> {
         let side_ids = self.match_side_ids(match_id).await?;
@@ -929,12 +989,23 @@ impl Dao {
         let players = self
             .query_match_collection::<MatchPlayerRecord>(match_id, &player_prefix)
             .await?;
+        let waitlisted_user_ids: std::collections::HashSet<String> = self
+            .list_waitlist(match_id)
+            .await?
+            .into_iter()
+            .map(|e| e.user_id)
+            .collect();
 
-        let mut set_clauses = Vec::with_capacity(side_ids.len() * 2);
+        let mut set_clauses = vec!["total_player_count = :tpc".to_string()];
         let mut names = HashMap::with_capacity(side_ids.len());
-        let mut values = HashMap::with_capacity(side_ids.len() * 2);
+        let mut values = HashMap::with_capacity(side_ids.len() * 2 + 1);
+        values.insert(
+            ":tpc".to_string(),
+            to_attr(&total_player_count(&players, &waitlisted_user_ids))?,
+        );
         for (i, side_id) in side_ids.iter().enumerate() {
-            let (player_count, roster_preview) = side_roster(side_id, &players);
+            let (player_count, roster_preview) =
+                side_roster(side_id, &players, &waitlisted_user_ids);
             let name_alias = format!("#s{i}");
             set_clauses.push(format!(
                 "sides.{name_alias}.player_count = :pc{i}, sides.{name_alias}.roster_preview = :rp{i}"
@@ -1102,5 +1173,47 @@ mod tests {
     #[test]
     fn effective_max_players_zero_for_no_sides() {
         assert_eq!(effective_max_players(&[]), Some(0));
+    }
+
+    fn player(user_id: &str, invitation_status: Option<&str>) -> MatchPlayerRecord {
+        use crate::dao::records::{EmbeddedInvitationRecord, InvitationKindRecord};
+        MatchPlayerRecord {
+            player_id: format!("p_{user_id}"),
+            user_id: Some(user_id.into()),
+            display_name: None,
+            side_id: None,
+            is_member_of_team: None,
+            invitation: invitation_status.map(|status| EmbeddedInvitationRecord {
+                id: "inv".into(),
+                status: status.into(),
+                invited_by_user_id: "host".into(),
+                invited_at: "2026-09-14T00:00:00Z".into(),
+                responded_at: None,
+                kind: InvitationKindRecord::User {
+                    invited_user_id: user_id.into(),
+                },
+            }),
+            role: Default::default(),
+            joined_via: None,
+        }
+    }
+
+    /// An accepted invitee on the waitlist doesn't count toward the
+    /// headcounts, even though `occupies_slot` alone would say they do — the
+    /// whole reason `occupies_counted_slot` exists as a distinct rule (see
+    /// its doc comment). A plain accepted player with no waitlist entry
+    /// counts as normal.
+    #[test]
+    fn occupies_counted_slot_excludes_a_waitlisted_accepted_invitee() {
+        let waitlisted: std::collections::HashSet<String> = ["waiting_user".to_string()].into();
+        assert!(!occupies_counted_slot(
+            &player("waiting_user", Some("accepted")),
+            &waitlisted
+        ));
+        assert!(occupies_counted_slot(
+            &player("other_user", Some("accepted")),
+            &waitlisted
+        ));
+        assert!(occupies_counted_slot(&player("creator", None), &waitlisted));
     }
 }

@@ -21,6 +21,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
 import { PushNotificationsBanner } from '@/components/agon/PushNotificationsBanner'
+import { respondToInvitation } from '@/lib/invitations'
 
 type NotificationPage = components['schemas']['NotificationPage']
 type Notification = components['schemas']['Notification']
@@ -86,14 +87,7 @@ export function NotificationsPage() {
       invitationId: string
       response: components['schemas']['InvitationResponse']
     }) => {
-      const { error } = await fetchClient.POST(
-        '/invitations/{invitation_id}/respond',
-        {
-          params: { path: { invitation_id: input.invitationId } },
-          body: { response: input.response },
-        },
-      )
-      if (error) throw new Error('Failed to respond to invitation')
+      await respondToInvitation(input.invitationId, input.response)
     },
     onSuccess: refreshNotifications,
   })

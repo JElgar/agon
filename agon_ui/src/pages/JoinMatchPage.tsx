@@ -10,6 +10,7 @@ import { forgetJoinLink, rememberJoinLink } from '@/lib/joinLinkMemory'
 import { joinChoiceFor, sidesFor } from '@/lib/joinLink'
 import { relativeTime, scheduledDateTime } from '@/lib/datetime'
 import { sidePlayerCountLabel, sideTeamHint } from '@/lib/members'
+import { offersWaitlist, type RosterConflict } from '@/lib/waitlist'
 import { Avatar } from '@/components/agon/Avatar'
 import { SportBadge } from '@/components/agon/SportBadge'
 
@@ -113,17 +114,17 @@ export function JoinMatchPage() {
       : true
 
   const join = useMutation({
-    mutationFn: async (): Promise<'joined' | 'conflict'> => {
+    mutationFn: async (): Promise<'joined' | RosterConflict> => {
       const { error, response } = await fetchClient.POST('/matches/{match_id}/join', {
         params: { path: { match_id: matchId! } },
         body: { token: token!, side_id: effectiveSideId },
       })
-      if (response.status === 409) return 'conflict'
+      if (response.status === 409) return error as RosterConflict
       if (error) throw new Error('Failed to join')
       return 'joined'
     },
     onSuccess: (result) => {
-      if (result === 'conflict' || !matchId) return
+      if (result !== 'joined' || !matchId) return
       clearPendingInvite()
       forgetJoinLink(matchId)
       queryClient.invalidateQueries({ queryKey: ['match', matchId] })
@@ -131,6 +132,28 @@ export function JoinMatchPage() {
       navigate(`/matches/${matchId}`, { replace: true })
     },
   })
+
+  // Offered when `join` hit a full match/side — queues for the exact same
+  // side (or unassigned) the join attempt itself targeted, then drops the
+  // visitor at the match same as a successful join would.
+  const joinWaitlist = useMutation({
+    mutationFn: async () => {
+      const { error } = await fetchClient.POST('/matches/{match_id}/waitlist/join', {
+        params: { path: { match_id: matchId! } },
+        body: { token: token!, side_id: effectiveSideId },
+      })
+      if (error) throw new Error('Failed to join the waitlist')
+    },
+    onSuccess: () => {
+      if (!matchId) return
+      clearPendingInvite()
+      forgetJoinLink(matchId)
+      queryClient.invalidateQueries({ queryKey: ['match', matchId] })
+      navigate(`/matches/${matchId}`, { replace: true })
+    },
+  })
+
+  const conflict = join.data && join.data !== 'joined' ? join.data : null
 
   if (preview.isLoading || (matchId && matchQuery.isLoading) || match?.viewer_role != null) {
     return <JoinCard>Loading this game…</JoinCard>
@@ -255,19 +278,33 @@ export function JoinMatchPage() {
       {join.isError && (
         <p className="mb-3 text-sm text-destructive">Something went wrong. Try again.</p>
       )}
-      {join.data === 'conflict' && (
+      {conflict && (
+        <p className="mb-3 text-sm text-destructive">{conflict.message}</p>
+      )}
+      {joinWaitlist.isError && (
         <p className="mb-3 text-sm text-destructive">
-          This game (or side) is full, or you're already on the roster.
+          Something went wrong joining the waiting list. Try again.
         </p>
       )}
 
-      <Button
-        className="w-full"
-        disabled={join.isPending || !canSubmit}
-        onClick={() => join.mutate()}
-      >
-        {join.isPending ? 'Joining…' : 'Join'}
-      </Button>
+      {conflict && offersWaitlist(conflict) ? (
+        <Button
+          className="w-full"
+          variant="outline"
+          disabled={joinWaitlist.isPending}
+          onClick={() => joinWaitlist.mutate()}
+        >
+          {joinWaitlist.isPending ? 'Joining waiting list…' : 'Join the waiting list'}
+        </Button>
+      ) : (
+        <Button
+          className="w-full"
+          disabled={join.isPending || !canSubmit}
+          onClick={() => join.mutate()}
+        >
+          {join.isPending ? 'Joining…' : 'Join'}
+        </Button>
+      )}
 
       {/* Check the game out first without committing — the link stays
           usable from there too (just-remembered above), via

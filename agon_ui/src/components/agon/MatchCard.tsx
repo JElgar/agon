@@ -18,6 +18,7 @@ import { CricketMatchBlock } from './live/CricketMatchBlock'
 import { NetballMatchBlock } from './live/NetballMatchBlock'
 import { CricketScoreBlock } from './CricketScoreBlock'
 import { KnownPlayersRow } from './KnownPlayersRow'
+import { TeamLink } from './TeamLink'
 import { FootballScorersBySide } from './FootballScorersBySide'
 import { NetballScorersBySide } from './NetballScorersBySide'
 import { useMatchScore } from '@/hooks/useMatchScore'
@@ -361,15 +362,30 @@ export function MatchCard({
           per-innings detail gets its own tile too. */}
       {footballState ? (
         <div className="mx-3.5 mb-3">
-          <button type="button" onClick={onOpen} className="block w-full text-left">
+          {/* A plain clickable `div`, not a `<button>` — it nests each side's
+              `TeamLink` (an anchor), and interactive content can't nest
+              inside a `<button>`. */}
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={onOpen}
+            onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onOpen?.()}
+            className="block w-full text-left"
+          >
             <LiveMatchBlock match={orderedMatch} state={footballState} />
-          </button>
+          </div>
         </div>
       ) : netballState ? (
         <div className="mx-3.5 mb-3">
-          <button type="button" onClick={onOpen} className="block w-full text-left">
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={onOpen}
+            onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onOpen?.()}
+            className="block w-full text-left"
+          >
             <NetballMatchBlock match={orderedMatch} state={netballState} />
-          </button>
+          </div>
         </div>
       ) : cricketState ? (
         <div className="mx-3.5 mb-3">
@@ -386,13 +402,18 @@ export function MatchCard({
       ) : (
         (scoreInfo || match.status === 'scheduled') && (
           <div className="mx-3.5 mb-3">
-            <button
-              type="button"
+            {/* A plain clickable `div`, not a `<button>` — it nests each
+                side's `TeamLink` (an anchor), and interactive content can't
+                nest inside a `<button>`. */}
+            <div
+              role="button"
+              tabIndex={0}
               onClick={onOpen}
+              onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onOpen?.()}
               className="block w-full rounded-lg bg-muted/50 px-3.5 py-3 text-left"
             >
               <div className="flex items-center justify-between">
-                <div className="flex min-w-0 flex-1 items-center gap-2">
+                <TeamLink teamId={sideA?.team_id} className="flex min-w-0 flex-1 items-center gap-2">
                   <Avatar name={nameA} imageUrl={sideA?.team_logo?.image_url} size="md" ring={aWon ? 'winner' : 'none'} />
                   <div className="min-w-0">
                     <span className="block truncate text-xs font-medium">{nameA}</span>
@@ -405,7 +426,7 @@ export function MatchCard({
                       </span>
                     )}
                   </div>
-                </div>
+                </TeamLink>
                 {scoreInfo ? (
                   <div className="px-3 text-center">
                     <div className="text-2xl font-medium leading-none tracking-tight">
@@ -420,7 +441,10 @@ export function MatchCard({
                 ) : (
                   <div className="shrink-0 px-3 text-center text-xs text-muted-foreground">vs</div>
                 )}
-                <div className="flex min-w-0 flex-1 flex-row-reverse items-center gap-2 text-right">
+                <TeamLink
+                  teamId={sideB?.team_id}
+                  className="flex min-w-0 flex-1 flex-row-reverse items-center gap-2 text-right"
+                >
                   <Avatar name={nameB} imageUrl={sideB?.team_logo?.image_url} size="md" ring={bWon ? 'winner' : 'none'} />
                   <div className="min-w-0">
                     <span className="block truncate text-xs font-medium">{nameB}</span>
@@ -433,7 +457,7 @@ export function MatchCard({
                       </span>
                     )}
                   </div>
-                </div>
+                </TeamLink>
               </div>
               {sets.length > 0 && (
                 <div className="mt-2 border-t pt-2 text-center text-[11px] text-muted-foreground">
@@ -467,7 +491,7 @@ export function MatchCard({
                   className="mt-2.5 text-[11px]"
                 />
               )}
-            </button>
+            </div>
           </div>
         )
       )}

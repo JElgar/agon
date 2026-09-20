@@ -8,10 +8,7 @@ use poem::error::InternalServerError;
 use tracing::error;
 
 use crate::detailed_score::cricket::{Overs, balls_to_overs};
-use crate::live_score::{
-    LiveEvent, LiveEventInput, NewLiveEventInput, cricket::CricketLiveEvent,
-    football::FootballLiveEvent, netball::NetballLiveEvent,
-};
+use crate::live_score::{LiveEvent, LiveEventInput, NewLiveEventInput};
 use crate::match_format::MatchFormat;
 use crate::membership::{
     ExternalMember, Invitation, InvitationContext, InvitationKind, InvitationMatchContext,
@@ -26,12 +23,11 @@ use crate::notification::{
 };
 use crate::team::{AssignableTeamRole, Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
-    BestBowlingFigures, BestFigure, Comment, ConfirmedScore, CricketPlayerStats, CricketScore,
-    DevicePlatform, FeedMatch, FootballPlayerStats, FootballScore, GenericPlayerStats, Location,
-    Match, MatchOutcome, MatchPlayer, MatchSide, MatchSocial, MatchStatus, MatchType, NetballScore,
-    PendingScore, Photo, RosterPreviewPlayer, Score, ScoreConfirmation, ScoreResponseKind,
-    ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus, SearchMatch, SetsScore,
-    SimpleScore, UserProfile, UserStats,
+    BestBowlingFigures, BestFigure, Comment, ConfirmedScore, CricketPlayerStats, DevicePlatform,
+    FeedMatch, FootballPlayerStats, GenericPlayerStats, Location, Match, MatchOutcome, MatchPlayer,
+    MatchSide, MatchSocial, MatchStatus, MatchType, PendingScore, Photo, RosterPreviewPlayer, Score,
+    ScoreConfirmation, ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse,
+    ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
 };
 use agon_core::dao::error::DaoError;
 use agon_core::dao::live_score_ops::NewLiveEvent;
@@ -69,34 +65,161 @@ pub fn dao_internal(err: DaoError) -> poem::Error {
     InternalServerError(err)
 }
 
-/// Parse a stored sport tag into the API enum, defaulting unknown values rather
-/// than failing a read.
-pub fn match_type_from_tag(tag: &str) -> MatchType {
-    match tag {
-        "tennis" => MatchType::Tennis,
-        "badminton" => MatchType::Badminton,
-        "squash" => MatchType::Squash,
-        "table_tennis" => MatchType::TableTennis,
-        "football" => MatchType::Football,
-        "cricket" => MatchType::Cricket,
-        "netball" => MatchType::Netball,
-        _ => MatchType::Other,
-    }
-}
+/// x-macro template for `agon_sports!` (see `crate::sports`'s doc comment):
+/// every `MatchType`/`Score`/`MatchFormat`/`LiveEventInput` conversion and
+/// sport-tag/dispatch function this boundary layer needs, generated from the
+/// shared sport list in one place. This is the function-level counterpart to
+/// the type-level macros in `main.rs`/`match_format.rs`/`live_score/mod.rs` —
+/// together they're what used to be ~40 hand-written, easy-to-forget
+/// per-sport functions and match arms scattered through this file.
+macro_rules! define_sport_dispatch {
+    ($( $variant:ident { tag: $tag:literal, module: $module:ident, score: $score:ty, format: $format:ty, live_event: $live_event:ty } ),+ $(,)?) => {
+        /// Parse a stored sport tag into the API enum, defaulting unknown values
+        /// rather than failing a read.
+        pub fn match_type_from_tag(tag: &str) -> MatchType {
+            match tag {
+                "tennis" => MatchType::Tennis,
+                "badminton" => MatchType::Badminton,
+                "squash" => MatchType::Squash,
+                "table_tennis" => MatchType::TableTennis,
+                $( $tag => MatchType::$variant, )+
+                _ => MatchType::Other,
+            }
+        }
 
-/// The stored string tag for an API sport enum.
-pub fn match_type_tag(mt: &MatchType) -> &'static str {
-    match mt {
-        MatchType::Tennis => "tennis",
-        MatchType::Badminton => "badminton",
-        MatchType::Squash => "squash",
-        MatchType::TableTennis => "table_tennis",
-        MatchType::Football => "football",
-        MatchType::Cricket => "cricket",
-        MatchType::Netball => "netball",
-        MatchType::Other => "other",
-    }
+        /// The stored string tag for an API sport enum.
+        pub fn match_type_tag(mt: &MatchType) -> &'static str {
+            match mt {
+                MatchType::Tennis => "tennis",
+                MatchType::Badminton => "badminton",
+                MatchType::Squash => "squash",
+                MatchType::TableTennis => "table_tennis",
+                $( MatchType::$variant => $tag, )+
+                MatchType::Other => "other",
+            }
+        }
+
+        pub fn score_from_record(rec: &ScoreRecord) -> Score {
+            match rec {
+                ScoreRecord::Simple { entries } => Score::Simple(SimpleScore {
+                    entries: entries.clone(),
+                }),
+                ScoreRecord::Sets { entries } => Score::Sets(SetsScore {
+                    entries: entries.clone(),
+                }),
+                $( ScoreRecord::$variant(r) => Score::$variant(crate::sports::$module::score_from_record(r)), )+
+            }
+        }
+
+        pub fn score_to_record(score: &Score) -> ScoreRecord {
+            match score {
+                Score::Simple(s) => ScoreRecord::Simple {
+                    entries: s.entries.clone(),
+                },
+                Score::Sets(s) => ScoreRecord::Sets {
+                    entries: s.entries.clone(),
+                },
+                $( Score::$variant(s) => ScoreRecord::$variant(crate::sports::$module::score_to_record(s)), )+
+            }
+        }
+
+        /// Wrap a `Score` into the `(sport, score)` record shape. The sport tag
+        /// mirrors the union variant so a read can pick the right variant.
+        pub fn match_score_to_record(score: &Score, last_seq: Option<u32>) -> MatchScoreRecord {
+            let sport = match score {
+                Score::Simple(_) => "simple",
+                Score::Sets(_) => "sets",
+                $( Score::$variant(_) => $tag, )+
+            }
+            .to_string();
+            MatchScoreRecord {
+                sport,
+                score: score_to_record(score),
+                last_seq,
+            }
+        }
+
+        pub fn match_score_from_record(rec: &MatchScoreRecord) -> Score {
+            score_from_record(&rec.score)
+        }
+
+        pub fn match_format_to_record(fmt: &MatchFormat) -> MatchFormatRecord {
+            match fmt {
+                $( MatchFormat::$variant(f) => MatchFormatRecord::$variant(crate::sports::$module::format_to_record(f)), )+
+            }
+        }
+
+        /// Build the API `MatchFormat` from a stored record. Infallible — `format`
+        /// is a typed DAO enum, not JSON, so there's no parse step that can fail.
+        pub fn match_format_from_record(rec: &MatchFormatRecord) -> MatchFormat {
+            match rec {
+                $( MatchFormatRecord::$variant(f) => MatchFormat::$variant(crate::sports::$module::format_from_record(f)), )+
+            }
+        }
+
+        /// The sport tag a `MatchFormat` is for, mirroring the union variant (same
+        /// convention as `live_event_sport_tag`) — used to reject a format that
+        /// doesn't match the match's own sport.
+        pub fn match_format_sport_tag(fmt: &MatchFormat) -> &'static str {
+            match fmt {
+                $( MatchFormat::$variant(_) => $tag, )+
+            }
+        }
+
+        /// The stored sport tag for a live event, mirroring the union variant so a
+        /// read can pick the right variant back out (same convention as
+        /// `match_score_to_record`).
+        pub fn live_event_sport_tag(event: &LiveEventInput) -> &'static str {
+            match event {
+                $( LiveEventInput::$variant(_) => $tag, )+
+            }
+        }
+
+        pub fn live_event_input_to_record(event: &LiveEventInput) -> LiveEventPayloadRecord {
+            match event {
+                $( LiveEventInput::$variant(e) => LiveEventPayloadRecord::$variant(crate::sports::$module::live_event_to_record(e)), )+
+            }
+        }
+
+        pub fn live_event_payload_from_record(rec: &LiveEventPayloadRecord) -> LiveEventInput {
+            match rec {
+                $( LiveEventPayloadRecord::$variant(e) => LiveEventInput::$variant(crate::sports::$module::live_event_from_record(e)), )+
+            }
+        }
+
+        /// Folds a match's live event log into its full detail. `None` if
+        /// `match_type` isn't a sport live scoring supports yet.
+        ///
+        /// `records` is whatever the DAO currently has on record, in seq order — a
+        /// deleted event is already absent from it and an amended one already shows
+        /// its corrected content, so there's no filtering pass needed here.
+        pub fn derive_live_score(
+            match_type: &str,
+            records: &[LiveEventRecord],
+            format: Option<&MatchFormatRecord>,
+        ) -> Option<Score> {
+            match match_type {
+                $(
+                    $tag => {
+                        let events: Vec<_> = records
+                            .iter()
+                            .filter_map(|r| match &r.payload {
+                                LiveEventPayloadRecord::$variant(e) => Some((
+                                    parse_ts(&r.occurred_at),
+                                    crate::sports::$module::live_event_from_record(e),
+                                )),
+                                _ => None,
+                            })
+                            .collect();
+                        Some(Score::$variant(crate::sports::$module::from_events(&events, format)))
+                    }
+                )+
+                _ => None,
+            }
+        }
+    };
 }
+crate::agon_sports!(define_sport_dispatch);
 
 /// Map the API's device-platform enum to the DAO-owned one.
 pub fn device_platform_to_record(p: &DevicePlatform) -> DevicePlatformRecord {
@@ -242,36 +365,9 @@ pub fn match_status_str(s: &MatchStatus) -> &'static str {
 }
 
 // ===========================================================================
-// Score (union) <-> ScoreRecord
+// Score (union) <-> ScoreRecord — `score_from_record`/`score_to_record` are
+// generated by `define_sport_dispatch!` above.
 // ===========================================================================
-
-pub fn score_from_record(rec: &ScoreRecord) -> Score {
-    match rec {
-        ScoreRecord::Simple { entries } => Score::Simple(SimpleScore {
-            entries: entries.clone(),
-        }),
-        ScoreRecord::Sets { entries } => Score::Sets(SetsScore {
-            entries: entries.clone(),
-        }),
-        ScoreRecord::Cricket(rec) => Score::Cricket(crate::sports::cricket::score_from_record(rec)),
-        ScoreRecord::Football(rec) => Score::Football(crate::sports::football::score_from_record(rec)),
-        ScoreRecord::Netball(rec) => Score::Netball(crate::sports::netball::score_from_record(rec)),
-    }
-}
-
-pub fn score_to_record(score: &Score) -> ScoreRecord {
-    match score {
-        Score::Simple(s) => ScoreRecord::Simple {
-            entries: s.entries.clone(),
-        },
-        Score::Sets(s) => ScoreRecord::Sets {
-            entries: s.entries.clone(),
-        },
-        Score::Cricket(s) => ScoreRecord::Cricket(crate::sports::cricket::score_to_record(s)),
-        Score::Football(s) => ScoreRecord::Football(crate::sports::football::score_to_record(s)),
-        Score::Netball(s) => ScoreRecord::Netball(crate::sports::netball::score_to_record(s)),
-    }
-}
 
 pub fn confirmed_score_from_record(rec: &ConfirmedScoreRecord) -> ConfirmedScore {
     ConfirmedScore {
@@ -905,111 +1001,21 @@ pub fn like_user_id(rec: &MatchLikeRecord) -> String {
 // `MatchScoreRecord`'s doc comment).
 // ===========================================================================
 
-/// Wrap a `Score` into the `(sport, score)` record shape. The sport tag
-/// mirrors the union variant so a read can pick the right variant.
-pub fn match_score_to_record(score: &Score, last_seq: Option<u32>) -> MatchScoreRecord {
-    let sport = match score {
-        Score::Football(_) => "football",
-        Score::Cricket(_) => "cricket",
-        Score::Netball(_) => "netball",
-        Score::Simple(_) => "simple",
-        Score::Sets(_) => "sets",
-    }
-    .to_string();
-    MatchScoreRecord {
-        sport,
-        score: score_to_record(score),
-        last_seq,
-    }
-}
-
-pub fn match_score_from_record(rec: &MatchScoreRecord) -> Score {
-    score_from_record(&rec.score)
-}
+// `match_score_to_record`/`match_score_from_record` are generated by
+// `define_sport_dispatch!` above.
 
 // ===========================================================================
 // Match format: MatchFormat (API, poem-openapi) <-> MatchFormatRecord (DAO,
-// plain serde). A hand-mirrored DAO enum rather than opaque JSON, same
-// convention as live scoring (see LiveEventPayloadRecord's doc comment) and
-// for the same reason: a variant added on the API side and forgotten here is
-// a compile error, not a silently-dropped setting on read.
+// plain serde) — `match_format_to_record`/`match_format_from_record`/
+// `match_format_sport_tag` are generated by `define_sport_dispatch!` above.
 // ===========================================================================
-
-pub fn match_format_to_record(fmt: &MatchFormat) -> MatchFormatRecord {
-    match fmt {
-        MatchFormat::Football(f) => MatchFormatRecord::Football(crate::sports::football::format_to_record(f)),
-        MatchFormat::Cricket(f) => MatchFormatRecord::Cricket(crate::sports::cricket::format_to_record(f)),
-        MatchFormat::Netball(f) => MatchFormatRecord::Netball(crate::sports::netball::format_to_record(f)),
-    }
-}
-
-/// Build the API `MatchFormat` from a stored record. Infallible — `format`
-/// is a typed DAO enum, not JSON, so there's no parse step that can fail.
-pub fn match_format_from_record(rec: &MatchFormatRecord) -> MatchFormat {
-    match rec {
-        MatchFormatRecord::Football(f) => MatchFormat::Football(crate::sports::football::format_from_record(f)),
-        MatchFormatRecord::Cricket(f) => MatchFormat::Cricket(crate::sports::cricket::format_from_record(f)),
-        MatchFormatRecord::Netball(f) => MatchFormat::Netball(crate::sports::netball::format_from_record(f)),
-    }
-}
-
-/// The sport tag a `MatchFormat` is for, mirroring the union variant (same
-/// convention as `live_event_sport_tag`) — used to reject a format that
-/// doesn't match the match's own sport.
-pub fn match_format_sport_tag(fmt: &MatchFormat) -> &'static str {
-    match fmt {
-        MatchFormat::Football(_) => "football",
-        MatchFormat::Cricket(_) => "cricket",
-        MatchFormat::Netball(_) => "netball",
-    }
-}
 
 // ===========================================================================
 // Live scoring: LiveEventInput (API, poem-openapi) <-> LiveEventPayloadRecord
-// (DAO, plain serde). Two hand-synced enum trees rather than an opaque JSON
-// blob — see LiveEventRecord's doc comment for why. The compiler catches a
-// variant added on one side and forgotten on the other; a missing match arm
-// below is a build failure, not a silent runtime drop.
+// (DAO, plain serde) — `live_event_sport_tag`/`live_event_input_to_record`/
+// `live_event_payload_from_record` are generated by `define_sport_dispatch!`
+// above.
 // ===========================================================================
-
-/// The stored sport tag for a live event, mirroring the union variant so a
-/// read can pick the right variant back out (same convention as
-/// `match_score_to_record`).
-pub fn live_event_sport_tag(event: &LiveEventInput) -> &'static str {
-    match event {
-        LiveEventInput::Football(_) => "football",
-        LiveEventInput::Cricket(_) => "cricket",
-        LiveEventInput::Netball(_) => "netball",
-    }
-}
-
-pub fn live_event_input_to_record(event: &LiveEventInput) -> LiveEventPayloadRecord {
-    match event {
-        LiveEventInput::Football(f) => {
-            LiveEventPayloadRecord::Football(crate::sports::football::live_event_to_record(f))
-        }
-        LiveEventInput::Cricket(c) => {
-            LiveEventPayloadRecord::Cricket(crate::sports::cricket::live_event_to_record(c))
-        }
-        LiveEventInput::Netball(n) => {
-            LiveEventPayloadRecord::Netball(crate::sports::netball::live_event_to_record(n))
-        }
-    }
-}
-
-pub fn live_event_payload_from_record(rec: &LiveEventPayloadRecord) -> LiveEventInput {
-    match rec {
-        LiveEventPayloadRecord::Football(f) => {
-            LiveEventInput::Football(crate::sports::football::live_event_from_record(f))
-        }
-        LiveEventPayloadRecord::Cricket(c) => {
-            LiveEventInput::Cricket(crate::sports::cricket::live_event_from_record(c))
-        }
-        LiveEventPayloadRecord::Netball(n) => {
-            LiveEventInput::Netball(crate::sports::netball::live_event_from_record(n))
-        }
-    }
-}
 
 // Cricket's, football's and netball's API<->DAO mapping (score/format/
 // live-event) have moved to `crate::sports::{cricket,football,netball}` —
@@ -1048,72 +1054,7 @@ pub fn live_event_from_record(rec: &LiveEventRecord) -> LiveEvent {
     }
 }
 
-/// Folds a match's live event log into its full detail. `None` if
-/// `match_type` isn't a sport live scoring supports yet (only football and
-/// cricket so far — see `LiveEventInput`).
-///
-/// `records` is whatever the DAO currently has on record, in seq order — a
-/// deleted event is already absent from it and an amended one already shows
-/// its corrected content, so there's no filtering pass needed here.
-pub fn derive_live_score(
-    match_type: &str,
-    records: &[LiveEventRecord],
-    format: Option<&MatchFormatRecord>,
-) -> Option<Score> {
-    match match_type {
-        "football" => {
-            let events: Vec<(chrono::DateTime<chrono::Utc>, FootballLiveEvent)> = records
-                .iter()
-                .filter_map(|r| match &r.payload {
-                    LiveEventPayloadRecord::Football(f) => Some((
-                        parse_ts(&r.occurred_at),
-                        crate::sports::football::live_event_from_record(f),
-                    )),
-                    LiveEventPayloadRecord::Cricket(_) | LiveEventPayloadRecord::Netball(_) => None,
-                })
-                .collect();
-            Some(Score::Football(FootballScore::from_events(&events)))
-        }
-        "cricket" => {
-            let events: Vec<(chrono::DateTime<chrono::Utc>, CricketLiveEvent)> = records
-                .iter()
-                .filter_map(|r| match &r.payload {
-                    LiveEventPayloadRecord::Cricket(c) => Some((
-                        parse_ts(&r.occurred_at),
-                        crate::sports::cricket::live_event_from_record(c),
-                    )),
-                    LiveEventPayloadRecord::Football(_) | LiveEventPayloadRecord::Netball(_) => {
-                        None
-                    }
-                })
-                .collect();
-            let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) =
-                crate::sports::cricket::format_args(format);
-            Some(Score::Cricket(CricketScore::from_events(
-                &events,
-                balls_per_over,
-                wide_is_extra_ball,
-                no_ball_is_extra_ball,
-            )))
-        }
-        "netball" => {
-            let events: Vec<(chrono::DateTime<chrono::Utc>, NetballLiveEvent)> = records
-                .iter()
-                .filter_map(|r| match &r.payload {
-                    LiveEventPayloadRecord::Netball(n) => Some((
-                        parse_ts(&r.occurred_at),
-                        crate::sports::netball::live_event_from_record(n),
-                    )),
-                    LiveEventPayloadRecord::Football(_) | LiveEventPayloadRecord::Cricket(_) => {
-                        None
-                    }
-                })
-                .collect();
-            Some(Score::Netball(NetballScore::from_events(&events)))
-        }
-        _ => None,
-    }
-}
+// `derive_live_score` is generated by `define_sport_dispatch!` above.
 
 // ===========================================================================
 // Notifications
@@ -1302,12 +1243,13 @@ mod tests {
         NetballFoulEvent, NetballFoulKind, NetballGoalEvent, NetballPeriod, NetballPosition,
     };
     use crate::live_score::cricket::{
-        CricketInningsEndEvent, CricketInningsStartEvent, CricketRetireEvent, InningsEndReason,
+        CricketInningsEndEvent, CricketInningsStartEvent, CricketLiveEvent, CricketRetireEvent,
+        InningsEndReason,
     };
-    use crate::live_score::football::FootballPeriodEvent;
-    use crate::live_score::netball::NetballPeriodEvent;
+    use crate::live_score::football::{FootballLiveEvent, FootballPeriodEvent};
+    use crate::live_score::netball::{NetballLiveEvent, NetballPeriodEvent};
     use crate::match_format::{CricketFormat, FootballFormat, NetballFormat};
-    use crate::CricketScoreInnings;
+    use crate::{CricketScore, CricketScoreInnings, FootballScore, NetballScore};
     use poem_openapi::types::ToJSON;
 
     /// Round-tripping through the DAO mirror must reproduce the same wire

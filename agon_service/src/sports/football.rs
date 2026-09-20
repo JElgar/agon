@@ -1,7 +1,6 @@
 //! Football's API↔DAO mapping — colocated here instead of scattered across
 //! `mapping.rs` (see `crate::sports::netball`'s doc comment for the pattern
-//! and its rationale). Plain functions rather than a `SportApi` trait impl,
-//! same reasoning as netball's module.
+//! and its rationale).
 
 use std::collections::HashMap;
 
@@ -19,6 +18,19 @@ use crate::detailed_score::football::{
 use crate::live_score::football::{FootballLiveEvent, FootballPeriodEvent};
 use crate::mapping::{parse_ts, parse_ts_opt};
 use crate::match_format::FootballFormat;
+
+/// Folds an ordered event log into a full `FootballScore` — the uniform
+/// signature `agon_sports!`'s `derive_live_score` dispatches through (see
+/// `sports::mod`'s doc comment). Football's own `FootballScore::from_events`
+/// takes no format, so `format` is unused here — kept in the signature only
+/// so every sport's `from_events` has the same shape to call generically;
+/// cricket's is the one that actually needs it.
+pub fn from_events(
+    events: &[(chrono::DateTime<chrono::Utc>, FootballLiveEvent)],
+    _format: Option<&agon_core::dao::records::MatchFormatRecord>,
+) -> FootballScore {
+    FootballScore::from_events(events)
+}
 
 pub fn score_to_record(s: &FootballScore) -> FootballScoreRecord {
     FootballScoreRecord {

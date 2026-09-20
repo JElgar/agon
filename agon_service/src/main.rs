@@ -480,41 +480,57 @@ struct MatchPlayer {
     role: MatchPlayerRole,
 }
 
-/// Match score. Tagged union so each sport's scoring shape is modelled
-/// explicitly; clients switch on `type` to pick a renderer. Add new variants
-/// (e.g. golf) without breaking existing clients.
-///
-/// One type serves three roles for football/cricket: the confirmable result
-/// embedded on `Match.confirmed_score`/`pending_score`, the persisted
-/// live-scoring record, and `GET /matches/:id/score`'s live-poll response —
-/// live or finished, confirmed or not, it's the same shape either way. Every
-/// field beyond the settled headline (goal tally; per-innings totals) is
-/// `Option`: `None` for a bare manually-entered result with no richer detail
-/// behind it, `Some(...)` (possibly containing empty collections) once
-/// there's live or backfilled detail to carry.
-#[derive(Union)]
-#[oai(one_of, discriminator_name = "type")]
-enum Score {
-    /// Single number per side: basketball, rugby, and any other sport with no
-    /// richer native shape.
-    Simple(SimpleScore),
-    /// Set-based: tennis, volleyball, badminton.
-    Sets(SetsScore),
-    /// Per-innings runs/wickets/overs (plus optional per-player detail), the
-    /// result of a completed cricket match — live-scored or manually entered.
-    /// Carries enough to render the completed scorecard tile — and to derive
-    /// the result margin ("won by 4 wickets" / "by 100 runs") — without a
-    /// separate fetch of the match's live event log.
-    Cricket(CricketScore),
-    /// Goals scored (plus optional cards/substitutions), the result of a
-    /// completed football match — live-scored or manually entered. Carries
-    /// enough to render the feed/detail goal ticker without a separate fetch.
-    Football(FootballScore),
-    /// Goals scored (plus optional fouls and per-quarter breakdown), the
-    /// result of a completed netball match — live-scored (either
-    /// event-by-event or quarter-only) or manually entered.
-    Netball(NetballScore),
+/// x-macro template for `agon_sports!` (see `crate::sports`'s doc comment):
+/// builds `Score` and `MatchType` from the shared sport list. Per-sport
+/// variant doc comments (the kind `Cricket(CricketScore)` used to carry)
+/// don't survive being macro-generated — see each sport's `Score`-typed
+/// struct (`CricketScore`, `FootballScore`, `NetballScore` below) for that
+/// documentation instead.
+macro_rules! define_score_and_match_type {
+    ($( $variant:ident { tag: $tag:literal, module: $module:ident, score: $score:ty, format: $format:ty, live_event: $live_event:ty } ),+ $(,)?) => {
+        /// Match score. Tagged union so each sport's scoring shape is modelled
+        /// explicitly; clients switch on `type` to pick a renderer. Add new sports
+        /// (e.g. golf) via `agon_sports!` (see `crate::sports`) without breaking
+        /// existing clients.
+        ///
+        /// One type serves three roles for football/cricket: the confirmable result
+        /// embedded on `Match.confirmed_score`/`pending_score`, the persisted
+        /// live-scoring record, and `GET /matches/:id/score`'s live-poll response —
+        /// live or finished, confirmed or not, it's the same shape either way. Every
+        /// field beyond the settled headline (goal tally; per-innings totals) is
+        /// `Option`: `None` for a bare manually-entered result with no richer detail
+        /// behind it, `Some(...)` (possibly containing empty collections) once
+        /// there's live or backfilled detail to carry.
+        #[derive(Union)]
+        #[oai(one_of, discriminator_name = "type")]
+        enum Score {
+            /// Single number per side: basketball, rugby, and any other sport with no
+            /// richer native shape.
+            Simple(SimpleScore),
+            /// Set-based: tennis, volleyball, badminton.
+            Sets(SetsScore),
+            $( $variant($score), )+
+        }
+
+        /// The sport a match was played in. Determines the expected `Score` shape
+        /// (e.g. racket sports use `Score::Sets`, football uses `Score::Football`,
+        /// and cricket uses `Score::Cricket`). Extend via `agon_sports!` (see
+        /// `crate::sports`) for a fully-modeled sport, or add a bare variant here
+        /// alongside `Tennis`/`Badminton`/etc for one that just needs a label.
+        #[derive(Enum)]
+        #[oai(rename_all = "snake_case")]
+        pub enum MatchType {
+            Tennis,
+            Badminton,
+            Squash,
+            TableTennis,
+            $( $variant, )+
+            /// Fallback for sports not yet modelled explicitly.
+            Other,
+        }
+    };
 }
+crate::agon_sports!(define_score_and_match_type);
 
 #[derive(Object)]
 struct SimpleScore {
@@ -696,22 +712,8 @@ struct NetballScore {
     players: HashMap<String, RosterPreviewPlayer>,
 }
 
-/// The sport a match was played in. Determines the expected `Score` shape
-/// (e.g. racket sports use `Score::Sets`, football uses `Score::Football`,
-/// and cricket uses `Score::Cricket`). Extend as more sports are supported.
-#[derive(Enum)]
-#[oai(rename_all = "snake_case")]
-pub enum MatchType {
-    Tennis,
-    Badminton,
-    Squash,
-    TableTennis,
-    Football,
-    Cricket,
-    Netball,
-    /// Fallback for sports not yet modelled explicitly.
-    Other,
-}
+// `MatchType` is generated by `define_score_and_match_type!` above, via
+// `crate::agon_sports!` (see `crate::sports`'s doc comment).
 
 /// Lifecycle state of a match. Independent of score confirmation: a `Completed`
 /// match may still have an unconfirmed score.

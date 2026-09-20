@@ -1,7 +1,6 @@
 //! Cricket's API↔DAO mapping — colocated here instead of scattered across
 //! `mapping.rs` (see `crate::sports::netball`'s doc comment for the pattern
-//! and its rationale). Plain functions rather than a `SportApi` trait impl,
-//! same reasoning as netball's/football's modules.
+//! and its rationale).
 
 use std::collections::HashMap;
 
@@ -103,6 +102,19 @@ pub fn format_args(format: Option<&MatchFormatRecord>) -> (u32, bool, bool) {
         ),
         _ => (6, true, true),
     }
+}
+
+/// Folds an ordered event log into a full `CricketScore` — see
+/// `crate::sports::football::from_events`'s doc comment for the uniform
+/// signature every sport's `from_events` shares. Cricket is the one sport
+/// that actually needs `format` here, for `format_args`' over-length/
+/// extra-ball rules.
+pub fn from_events(
+    events: &[(chrono::DateTime<chrono::Utc>, CricketLiveEvent)],
+    format: Option<&MatchFormatRecord>,
+) -> CricketScore {
+    let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) = format_args(format);
+    CricketScore::from_events(events, balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball)
 }
 
 fn overs_to_record(overs: &Overs) -> OversRecord {

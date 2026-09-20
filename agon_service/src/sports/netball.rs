@@ -1,10 +1,10 @@
 //! Netball's API↔DAO mapping — colocated here instead of scattered across
 //! `mapping.rs` (see the project's sport-setup refactor design notes). Plain
-//! functions rather than a `SportApi` trait impl for now: nothing yet
-//! dispatches over sports generically (that's the later `define_sports!`
-//! macro cutover, once every sport has moved here), so a trait would have no
-//! caller — these are called directly from `mapping.rs`, the same way the
-//! not-yet-migrated cricket/football functions still are.
+//! functions with names `agon_sports!` (see `crate::sports`) expects every
+//! sport module to provide, rather than a shared trait — there's no dynamic
+//! dispatch here (the macro expands to a direct call through the module
+//! path for each sport), so a trait would add ceremony without a caller
+//! that needs it.
 
 use std::collections::HashMap;
 
@@ -21,6 +21,16 @@ use crate::NetballScore;
 use crate::live_score::netball::{NetballLiveEvent, NetballPeriodEvent};
 use crate::mapping::{parse_ts, parse_ts_opt};
 use crate::match_format::NetballFormat;
+
+/// Folds an ordered event log into a full `NetballScore` — see
+/// `crate::sports::football::from_events`'s doc comment for the uniform
+/// signature every sport's `from_events` shares.
+pub fn from_events(
+    events: &[(chrono::DateTime<chrono::Utc>, NetballLiveEvent)],
+    _format: Option<&agon_core::dao::records::MatchFormatRecord>,
+) -> NetballScore {
+    NetballScore::from_events(events)
+}
 
 pub fn score_to_record(s: &NetballScore) -> NetballScoreRecord {
     NetballScoreRecord {

@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use agon_core::dao::records::{
+use agon_core::sports::netball::{
     NetballFormatRecord, NetballFoulEventRecord, NetballFoulKindRecord, NetballGoalEventRecord,
     NetballLiveEventRecord, NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord,
     NetballScoreRecord,

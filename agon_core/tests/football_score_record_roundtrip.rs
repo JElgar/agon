@@ -7,9 +7,10 @@ mod common;
 
 use std::collections::HashMap;
 
-use agon_core::dao::records::{
+use agon_core::dao::records::{MatchScoreRecord, ScoreRecord};
+use agon_core::sports::football::{
     FootballCardColorRecord, FootballCardEventRecord, FootballGoalEventRecord, FootballScoreRecord,
-    FootballSubstitutionEventRecord, MatchScoreRecord, ScoreRecord,
+    FootballSubstitutionEventRecord,
 };
 use common::{TestEnv, local_env};
 
@@ -34,7 +35,7 @@ async fn football_score_record_round_trips_through_dynamodb() {
 
     let mut period_times = HashMap::new();
     period_times.insert(
-        agon_core::dao::records::FootballPeriodRecord::KickOff,
+        agon_core::sports::football::FootballPeriodRecord::KickOff,
         "2026-01-10T15:00:00Z".to_string(),
     );
 
@@ -80,10 +81,10 @@ async fn football_score_record_round_trips_through_dynamodb() {
                 minute: Some(70),
                 occurred_at: None,
             }]),
-            period: Some(agon_core::dao::records::FootballPeriodRecord::FullTime),
+            period: Some(agon_core::sports::football::FootballPeriodRecord::FullTime),
             period_times: Some(period_times),
             penalty_shootout: Some(vec![
-                agon_core::dao::records::FootballPenaltyShootoutKickRecord {
+                agon_core::sports::football::FootballPenaltyShootoutKickRecord {
                     side_id: "side_a".to_string(),
                     scored: true,
                 },

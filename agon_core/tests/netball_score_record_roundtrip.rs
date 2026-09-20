@@ -40,9 +40,10 @@ mod common;
 
 use std::collections::HashMap;
 
-use agon_core::dao::records::{
-    MatchScoreRecord, NetballFoulEventRecord, NetballFoulKindRecord, NetballGoalEventRecord,
-    NetballPeriodRecord, NetballPositionRecord, NetballScoreRecord, ScoreRecord,
+use agon_core::dao::records::{MatchScoreRecord, ScoreRecord};
+use agon_core::sports::netball::{
+    NetballFoulEventRecord, NetballFoulKindRecord, NetballGoalEventRecord, NetballPeriodRecord,
+    NetballPositionRecord, NetballScoreRecord,
 };
 use common::{TestEnv, local_env};
 

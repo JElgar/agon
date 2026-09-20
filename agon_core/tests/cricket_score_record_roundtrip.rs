@@ -6,11 +6,12 @@
 
 mod common;
 
-use agon_core::dao::records::{
+use agon_core::dao::records::{MatchScoreRecord, ScoreRecord};
+use agon_core::sports::cricket::{
     CricketBattingEntryRecord, CricketBowlingEntryRecord, CricketDeliveryRecord,
     CricketDismissalKindRecord, CricketDismissalRecord, CricketExtrasRecord,
-    CricketFallOfWicketRecord, CricketScoreInningsRecord, CricketScoreRecord, MatchScoreRecord,
-    NextBallContextRecord, OversRecord, ScoreRecord,
+    CricketFallOfWicketRecord, CricketScoreInningsRecord, CricketScoreRecord,
+    NextBallContextRecord, OversRecord,
 };
 use common::{TestEnv, local_env};
 

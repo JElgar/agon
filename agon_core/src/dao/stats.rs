@@ -9,7 +9,8 @@ use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, ATTR_SK, from_item, item_sk, s, to_item};
 use super::keys::{Pk, Sk};
-use super::records::{OversRecord, StatContributionRecord};
+use super::records::StatContributionRecord;
+use crate::sports::cricket::OversRecord;
 
 /// Type tag for the per-match stat-contribution item.
 pub const TYPE_STAT_CONTRIBUTION: &str = "stat_contribution";

@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use agon_core::dao::records::{
+use agon_core::sports::football::{
     FootballCardColorRecord, FootballCardEventRecord, FootballFormatRecord,
     FootballGoalEventRecord, FootballLiveEventRecord, FootballPenaltyShootoutKickRecord,
     FootballPeriodEventRecord, FootballPeriodRecord, FootballScoreRecord,
@@ -186,8 +186,8 @@ fn card_event_from_record(rec: &FootballCardEventRecord) -> FootballCardEvent {
 
 fn substitution_event_to_record(
     s: &FootballSubstitutionEvent,
-) -> agon_core::dao::records::FootballSubstitutionEventRecord {
-    agon_core::dao::records::FootballSubstitutionEventRecord {
+) -> agon_core::sports::football::FootballSubstitutionEventRecord {
+    agon_core::sports::football::FootballSubstitutionEventRecord {
         side_id: s.side_id.clone(),
         player_in_id: s.player_in_id.clone(),
         player_out_id: s.player_out_id.clone(),
@@ -199,7 +199,7 @@ fn substitution_event_to_record(
 }
 
 fn substitution_event_from_record(
-    rec: &agon_core::dao::records::FootballSubstitutionEventRecord,
+    rec: &agon_core::sports::football::FootballSubstitutionEventRecord,
 ) -> FootballSubstitutionEvent {
     FootballSubstitutionEvent {
         side_id: rec.side_id.clone(),

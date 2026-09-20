@@ -8,6 +8,7 @@ import { isSetsSport, type MatchType } from '@/lib/sports'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { DateTimePicker } from '@/components/ui/date-time-picker'
 import { SportPicker } from '@/components/agon/SportPicker'
 import { MatchFormatEditor } from '@/components/agon/MatchFormatEditor'
 import type { MatchFormat } from '@/lib/matchFormat'
@@ -671,11 +672,10 @@ export function LogMatchPage() {
         <Label htmlFor="starts-at" className="text-xs text-muted-foreground">
           {mode === 'scheduled' ? 'Kick-off time' : 'When it was played'}
         </Label>
-        <Input
+        <DateTimePicker
           id="starts-at"
-          type="datetime-local"
           value={startsAt}
-          onChange={(e) => setStartsAt(e.target.value)}
+          onChange={setStartsAt}
           className="mt-1"
         />
         {timeError && (

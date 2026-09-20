@@ -38,6 +38,7 @@ pub mod paired_device;
 pub mod stats;
 pub mod team;
 pub mod user;
+pub mod waitlist;
 
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::transact_write_items::TransactWriteItemsError;

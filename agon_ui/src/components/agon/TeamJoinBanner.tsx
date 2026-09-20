@@ -4,6 +4,7 @@ import { Users } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
+import { offersWaitlist, type RosterConflict } from '@/lib/waitlist'
 
 type Match = components['schemas']['Match']
 
@@ -32,23 +33,58 @@ export function TeamJoinBanner({ match }: { match: Match }) {
   const canSubmit = needsPick ? match.allow_unassigned || !!effectiveSideId : true
 
   const join = useMutation({
-    mutationFn: async (): Promise<'joined' | 'conflict'> => {
+    mutationFn: async (): Promise<'joined' | RosterConflict> => {
       const { error, response } = await fetchClient.POST('/matches/{match_id}/join', {
         params: { path: { match_id: match.id } },
         body: { side_id: effectiveSideId },
       })
-      if (response.status === 409) return 'conflict'
+      if (response.status === 409) return error as RosterConflict
       if (error) throw new Error('Failed to join')
       return 'joined'
     },
     onSuccess: (result) => {
-      if (result === 'conflict') return
+      if (result !== 'joined') return
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })
       queryClient.invalidateQueries({ queryKey: ['feed'] })
     },
   })
 
+  // Offered when `join` hit a full match/side — queues for the exact same
+  // side the join attempt itself targeted.
+  const joinWaitlist = useMutation({
+    mutationFn: async () => {
+      const { error } = await fetchClient.POST('/matches/{match_id}/waitlist/join', {
+        params: { path: { match_id: match.id } },
+        body: { side_id: effectiveSideId },
+      })
+      if (error) throw new Error('Failed to join the waitlist')
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['match', match.id] })
+    },
+  })
+
+  const conflict = join.data && join.data !== 'joined' ? join.data : null
+
   if (!eligibleSideIds || eligibleSideIds.length === 0) return null
+
+  if (joinWaitlist.isSuccess) {
+    return (
+      <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
+        <div className="flex items-start gap-3">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+            <Users className="size-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">You're on the waiting list</p>
+            <p className="text-xs text-muted-foreground">
+              We'll let you know if a spot opens up.
+            </p>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
@@ -92,20 +128,34 @@ export function TeamJoinBanner({ match }: { match: Match }) {
           {join.isError && (
             <p className="mt-2 text-xs text-destructive">Something went wrong. Try again.</p>
           )}
-          {join.data === 'conflict' && (
+          {conflict && (
+            <p className="mt-2 text-xs text-destructive">{conflict.message}</p>
+          )}
+          {joinWaitlist.isError && (
             <p className="mt-2 text-xs text-destructive">
-              This game (or side) is full, or you're already on the roster.
+              Something went wrong joining the waiting list. Try again.
             </p>
           )}
 
-          <div className="mt-3">
-            <Button
-              size="sm"
-              disabled={join.isPending || !canSubmit}
-              onClick={() => join.mutate()}
-            >
-              {join.isPending ? 'Joining…' : 'Join'}
-            </Button>
+          <div className="mt-3 flex gap-2">
+            {conflict && offersWaitlist(conflict) ? (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={joinWaitlist.isPending}
+                onClick={() => joinWaitlist.mutate()}
+              >
+                {joinWaitlist.isPending ? 'Joining waiting list…' : 'Join the waiting list'}
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                disabled={join.isPending || !canSubmit}
+                onClick={() => join.mutate()}
+              >
+                {join.isPending ? 'Joining…' : 'Join'}
+              </Button>
+            )}
           </div>
         </div>
       </div>

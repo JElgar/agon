@@ -395,3 +395,15 @@ export function playersOnSide(
 export function playerId(player: MatchPlayer): string {
   return player.member.id
 }
+
+/**
+ * Every player on this match whose invitation is still `pending` — invited
+ * (by account or by name) but never accepted or declined. Used to nudge an
+ * organiser to review/revoke stale invites before kickoff or a result is
+ * published (`PendingInvitesNudge`), since an unanswered invite next to a
+ * side that's clearly already been played without them is usually just
+ * noise, not a real absence to chase up.
+ */
+export function pendingInvitees(match: Match): MatchPlayer[] {
+  return match.players.filter((p) => p.member.invitation?.status === 'pending')
+}

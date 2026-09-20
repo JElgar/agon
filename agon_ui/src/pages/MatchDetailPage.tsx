@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { CalendarClock, ChevronLeft, Flame, Link2, MailOpen, Pencil, Radio, ShieldPlus, UserPlus } from 'lucide-react'
+import { CalendarClock, ChevronLeft, Clock, Flame, Link2, MailOpen, MapPin, Pencil, Radio, ShieldPlus, UserPlus } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { scheduledDateTime } from '@/lib/datetime'
+import { directionsUrl } from '@/lib/location'
 import { Button } from '@/components/ui/button'
 import { Avatar } from '@/components/agon/Avatar'
 import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
@@ -52,6 +53,7 @@ import {
   sideTeamHint,
   withInvitationStatus,
 } from '@/lib/members'
+import { respondToInvitation } from '@/lib/invitations'
 import { CopyInviteButton } from '@/components/agon/CopyInviteButton'
 import { MatchDetailsEditor } from '@/components/agon/MatchDetailsEditor'
 import { MatchFormatCard } from '@/components/agon/MatchFormatCard'
@@ -289,6 +291,22 @@ function MatchDetail({
                 <CalendarClock className="size-3 shrink-0" />
                 {scheduledDateTime(match.starts_at)}
               </p>
+              {match.location && (
+                <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
+                  <MapPin className="size-3 shrink-0" />
+                  <span className="truncate">{match.location.text}</span>
+                  {directionsUrl(match.location) && (
+                    <a
+                      href={directionsUrl(match.location)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="shrink-0 text-primary hover:underline"
+                    >
+                      Get directions
+                    </a>
+                  )}
+                </p>
+              )}
             </div>
             {canEdit && !cancelled && (
               <Button
@@ -531,6 +549,12 @@ function MatchDetail({
         </div>
       )}
 
+      {/* Who's queued for a spot that wasn't free — hidden once the match is
+          cancelled (moot) or there's simply no one waiting. */}
+      {!cancelled && (
+        <WaitlistSection match={match} currentUserId={currentUserId} canManage={canEdit} />
+      )}
+
       {/* Cricket scorecard: run progression + per-player batting/bowling,
           once there's per-innings detail recorded (live-scored or entered
           directly). */}
@@ -658,14 +682,7 @@ function InviteBanner({
       response: components['schemas']['InvitationResponse'],
     ) => {
       if (!invitation) return
-      const { error } = await fetchClient.POST(
-        '/invitations/{invitation_id}/respond',
-        {
-          params: { path: { invitation_id: invitation.id } },
-          body: { response },
-        },
-      )
-      if (error) throw new Error('Failed to respond to invitation')
+      await respondToInvitation(invitation.id, response)
     },
     // Optimistically flip the viewer's invitation status in the match cache so
     // the banner (and the "You're invited" badge) disappear immediately, without
@@ -754,10 +771,142 @@ function InviteBanner({
         open={promptOpen}
         onOpenChange={setPromptOpen}
         name={match.name}
+        matchId={match.id}
         respond={(response) => respond.mutateAsync(response)}
         onSuccess={handleResponded}
       />
     </>
+  )
+}
+
+/**
+ * Who's queued for a spot on this match/side that wasn't free when they
+ * tried to join or accept an invite onto it — `GET /matches/:id/waitlist`,
+ * longest-waiting first. Renders nothing while empty; a match with no one
+ * waiting shouldn't carry an always-there "no one waiting" placeholder.
+ *
+ * `canManage` (mirrors `MatchDetailPage`'s own `canEdit`) gates "Move in" —
+ * admin-only, and only works once a spot is actually free (the same typed
+ * conflict `join` returns). Removing an entry ("Leave"/"Remove") is open to
+ * the waiting player themselves or a match admin, same split the server
+ * enforces.
+ */
+function WaitlistSection({
+  match,
+  currentUserId,
+  canManage,
+}: {
+  match: Match
+  currentUserId?: string
+  canManage: boolean
+}) {
+  const queryClient = useQueryClient()
+  const waitlistKey = ['waitlist', match.id]
+
+  const query = useQuery({
+    queryKey: waitlistKey,
+    queryFn: async (): Promise<components['schemas']['WaitlistEntry'][]> => {
+      const { data, error } = await fetchClient.GET('/matches/{match_id}/waitlist', {
+        params: { path: { match_id: match.id } },
+      })
+      if (error || !data) throw new Error('Failed to load the waitlist')
+      return data
+    },
+  })
+
+  const moveIn = useMutation({
+    mutationFn: async (userId: string) => {
+      const { error } = await fetchClient.POST(
+        '/matches/{match_id}/waitlist/{user_id}/move-in',
+        { params: { path: { match_id: match.id, user_id: userId } } },
+      )
+      if (error) throw new Error('Failed to move that player in')
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: waitlistKey })
+      queryClient.invalidateQueries({ queryKey: ['match', match.id] })
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
+    },
+  })
+
+  const leave = useMutation({
+    mutationFn: async (userId: string) => {
+      const { error } = await fetchClient.DELETE('/matches/{match_id}/waitlist/{user_id}', {
+        params: { path: { match_id: match.id, user_id: userId } },
+      })
+      if (error) throw new Error('Failed to remove that waitlist entry')
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: waitlistKey })
+    },
+  })
+
+  const entries = query.data ?? []
+  if (entries.length === 0) return null
+
+  return (
+    <div className="rounded-xl border p-4">
+      <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
+        <Clock className="size-4 text-muted-foreground" />
+        Waiting list
+      </div>
+      <div className="space-y-2">
+        {entries.map((entry) => {
+          const side = match.sides.find((s) => s.id === entry.side_id)
+          const isMe = entry.user_id === currentUserId
+          const canRemove = isMe || canManage
+          return (
+            <div
+              key={entry.user_id}
+              className="flex items-center justify-between gap-2 rounded-lg border bg-muted/30 px-2.5 py-2"
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <Avatar name={entry.name} imageUrl={entry.avatar_url} size="sm" />
+                <div className="min-w-0">
+                  <span className="block truncate text-sm font-medium">
+                    {entry.name}
+                    {isMe && ' (you)'}
+                  </span>
+                  <span className="block truncate text-xs text-muted-foreground">
+                    #{entry.position} · {sideName(side, 'Unassigned')}
+                  </span>
+                </div>
+              </div>
+              <div className="flex shrink-0 gap-1">
+                {canManage && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={moveIn.isPending}
+                    onClick={() => moveIn.mutate(entry.user_id)}
+                  >
+                    Move in
+                  </Button>
+                )}
+                {canRemove && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={leave.isPending}
+                    onClick={() => leave.mutate(entry.user_id)}
+                  >
+                    {isMe ? 'Leave' : 'Remove'}
+                  </Button>
+                )}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      {moveIn.isError && (
+        <p className="mt-2 text-xs text-destructive">
+          Couldn't move that player in — check there's actually a free spot.
+        </p>
+      )}
+      {leave.isError && (
+        <p className="mt-2 text-xs text-destructive">Something went wrong. Try again.</p>
+      )}
+    </div>
   )
 }
 

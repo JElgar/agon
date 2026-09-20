@@ -168,12 +168,14 @@ mod tests {
                 invitation_id: "i1".into(),
                 match_id: "m1".into(),
                 match_name: "Sunday Tennis".into(),
+                status: "pending".into(),
             },
             NotificationKindRecord::TeamInvitation {
                 actor_user_id: "u1".into(),
                 invitation_id: "i1".into(),
                 team_id: "t1".into(),
                 team_name: "The Aces".into(),
+                status: "pending".into(),
             },
             NotificationKindRecord::InvitationAccepted {
                 actor_user_id: "u1".into(),

@@ -5,8 +5,10 @@ import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { DateTimePicker } from '@/components/ui/date-time-picker'
 import { isoToDateTimeLocal } from '@/lib/datetime'
 import { MultiImageUploadField } from '@/components/agon/MultiImageUploadField'
+import { LocationField, type LocationValue } from '@/components/agon/LocationField'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -49,6 +51,17 @@ export function MatchDetailsEditor({
   // Local wall-clock for the datetime-local control, seeded from the stored UTC.
   const [startsAt, setStartsAt] = useState(isoToDateTimeLocal(match.starts_at))
 
+  const [location, setLocation] = useState<LocationValue | null>(
+    match.location
+      ? {
+          text: match.location.text,
+          latitude: match.location.latitude,
+          longitude: match.location.longitude,
+          place_id: match.location.place_id,
+        }
+      : null,
+  )
+
   const existingHeaderAssetIds = match.header_photos.map((p) => p.asset_id!)
   const [headerAssetIds, setHeaderAssetIds] = useState<string[]>(existingHeaderAssetIds)
 
@@ -77,6 +90,9 @@ export function MatchDetailsEditor({
       if (newIso !== match.starts_at) body.starts_at = newIso
       if (JSON.stringify(headerAssetIds) !== JSON.stringify(existingHeaderAssetIds)) {
         body.header_photo_asset_ids = headerAssetIds
+      }
+      if (JSON.stringify(location) !== JSON.stringify(match.location ?? null)) {
+        if (location) body.location = location
       }
 
       const sideNameUpdates: UpdateMatchSideNameInput[] = []
@@ -145,16 +161,27 @@ export function MatchDetailsEditor({
         <Label htmlFor="match-starts" className="text-xs text-muted-foreground">
           When
         </Label>
-        <Input
+        <DateTimePicker
           id="match-starts"
-          type="datetime-local"
           value={startsAt}
-          onChange={(e) => setStartsAt(e.target.value)}
+          onChange={setStartsAt}
           className="mt-1"
         />
         {timeError && (
           <p className="mt-1 text-xs text-destructive">{timeError}</p>
         )}
+      </div>
+
+      <div>
+        <Label htmlFor="match-location" className="text-xs text-muted-foreground">
+          Where
+        </Label>
+        <LocationField
+          id="match-location"
+          value={location}
+          onChange={setLocation}
+          className="mt-1"
+        />
       </div>
 
       <div className="flex flex-col gap-2">

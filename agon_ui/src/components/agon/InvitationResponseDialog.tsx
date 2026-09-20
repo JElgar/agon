@@ -17,6 +17,7 @@ import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { confirmationState } from '@/lib/confirmation'
 import { displayScore, headlineBySide, headlineLabel } from '@/lib/score'
 import { cricketScoreFrom, formatOvers, sideNameFor } from '@/lib/cricketScore'
+import { RosterConflictError, offersWaitlist } from '@/lib/waitlist'
 
 type InvitationResponse = components['schemas']['InvitationResponse']
 type Match = components['schemas']['Match']
@@ -117,7 +118,28 @@ export function InvitationResponseDialog({
     },
   })
 
+  // Offered only when accepting hit a full match/side (`mutation.error` is a
+  // `RosterConflictError` — see below): accepts the still-pending invitation
+  // and queues for the spot in one step, same endpoint the self-serve join
+  // banners use for their own full-side case.
+  const joinWaitlist = useMutation({
+    mutationFn: async () => {
+      if (!matchId) throw new Error('no match to queue for')
+      const { error } = await fetchClient.POST('/matches/{match_id}/waitlist/join', {
+        params: { path: { match_id: matchId } },
+        body: {},
+      })
+      if (error) throw new Error('Failed to join the waitlist')
+    },
+    onSuccess: () => {
+      onOpenChange(false)
+      onSuccess('accepted')
+    },
+  })
+
   if (!action) return null
+
+  const conflict = mutation.error instanceof RosterConflictError ? mutation.error.conflict : null
 
   const isAccept = action === 'accept'
 
@@ -204,7 +226,32 @@ export function InvitationResponseDialog({
           </div>
         )}
 
-        {mutation.isError && (
+        {conflict && (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3">
+            <p className="text-sm text-destructive">{conflict.message}</p>
+            {matchId && offersWaitlist(conflict) && (
+              <>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="mt-2"
+                  disabled={joinWaitlist.isPending}
+                  onClick={() => joinWaitlist.mutate()}
+                >
+                  {joinWaitlist.isPending
+                    ? 'Joining waiting list…'
+                    : 'Join the waiting list instead'}
+                </Button>
+                {joinWaitlist.isError && (
+                  <p className="mt-2 text-xs text-destructive">
+                    Something went wrong. Try again.
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+        )}
+        {mutation.isError && !conflict && (
           <p className="text-sm text-destructive">
             {isAccept ? 'Failed to join.' : 'Failed to decline.'} Please try
             again.

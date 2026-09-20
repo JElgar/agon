@@ -183,6 +183,7 @@ async fn notify_invitation(
             invitation_id: invitation_id.to_string(),
             match_id: match_id.clone(),
             match_name: match_name.clone(),
+            status: "pending".to_string(),
         },
         InvitationContextRecord::Team { team_id, team_name } => {
             NotificationKindRecord::TeamInvitation {
@@ -190,6 +191,7 @@ async fn notify_invitation(
                 invitation_id: invitation_id.to_string(),
                 team_id: team_id.clone(),
                 team_name: team_name.clone(),
+                status: "pending".to_string(),
             }
         }
     };

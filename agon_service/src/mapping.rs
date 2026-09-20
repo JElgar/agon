@@ -25,8 +25,8 @@ use crate::team::{AssignableTeamRole, Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
     BestBowlingFigures, BestFigure, Comment, ConfirmedScore, CricketPlayerStats, DevicePlatform,
     FeedMatch, FootballPlayerStats, GenericPlayerStats, Location, Match, MatchOutcome, MatchPlayer,
-    MatchSide, MatchSocial, MatchStatus, MatchType, PendingScore, Photo, RosterPreviewPlayer, Score,
-    ScoreConfirmation, ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse,
+    MatchSide, MatchSocial, MatchStatus, MatchType, PendingScore, Photo, RosterPreviewPlayer,
+    Score, ScoreConfirmation, ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse,
     ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
 };
 use agon_core::dao::error::DaoError;

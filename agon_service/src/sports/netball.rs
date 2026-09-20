@@ -14,10 +14,10 @@ use agon_core::dao::records::{
     NetballScoreRecord,
 };
 
+use crate::NetballScore;
 use crate::detailed_score::netball::{
     NetballFoulEvent, NetballFoulKind, NetballGoalEvent, NetballPeriod, NetballPosition,
 };
-use crate::NetballScore;
 use crate::live_score::netball::{NetballLiveEvent, NetballPeriodEvent};
 use crate::mapping::{parse_ts, parse_ts_opt};
 use crate::match_format::NetballFormat;

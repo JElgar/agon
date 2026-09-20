@@ -17,7 +17,11 @@ impl SportRecord for NetballRecord {
     /// best-figures from, same as cricket/football — just not built out yet.
     /// Matches today's behavior (netball falls through the worker's `_ =>
     /// empty` default) exactly.
-    fn contribution(_score: &ScoreRecord, _player_id: &str, _balls_per_over: u32) -> SportContribution {
+    fn contribution(
+        _score: &ScoreRecord,
+        _player_id: &str,
+        _balls_per_over: u32,
+    ) -> SportContribution {
         SportContribution::default()
     }
 }

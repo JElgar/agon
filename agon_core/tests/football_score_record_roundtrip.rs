@@ -8,8 +8,8 @@ mod common;
 use std::collections::HashMap;
 
 use agon_core::dao::records::{
-    FootballCardColorRecord, FootballCardEventRecord, FootballGoalEventRecord,
-    FootballScoreRecord, FootballSubstitutionEventRecord, MatchScoreRecord, ScoreRecord,
+    FootballCardColorRecord, FootballCardEventRecord, FootballGoalEventRecord, FootballScoreRecord,
+    FootballSubstitutionEventRecord, MatchScoreRecord, ScoreRecord,
 };
 use common::{TestEnv, local_env};
 
@@ -82,10 +82,12 @@ async fn football_score_record_round_trips_through_dynamodb() {
             }]),
             period: Some(agon_core::dao::records::FootballPeriodRecord::FullTime),
             period_times: Some(period_times),
-            penalty_shootout: Some(vec![agon_core::dao::records::FootballPenaltyShootoutKickRecord {
-                side_id: "side_a".to_string(),
-                scored: true,
-            }]),
+            penalty_shootout: Some(vec![
+                agon_core::dao::records::FootballPenaltyShootoutKickRecord {
+                    side_id: "side_a".to_string(),
+                    scored: true,
+                },
+            ]),
             penalty_shootout_score: Some(shootout_score),
         }),
         last_seq: Some(9),

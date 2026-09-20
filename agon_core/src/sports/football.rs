@@ -18,7 +18,11 @@ impl SportRecord for FootballRecord {
     /// not "assists" alone, since a single assist doesn't make as complete a
     /// "best game" record as the combined tally. No `bowling_spell` — that's
     /// cricket-only.
-    fn contribution(score: &ScoreRecord, player_id: &str, _balls_per_over: u32) -> SportContribution {
+    fn contribution(
+        score: &ScoreRecord,
+        player_id: &str,
+        _balls_per_over: u32,
+    ) -> SportContribution {
         let mut counters = HashMap::new();
         let ScoreRecord::Football(rec) = score else {
             return SportContribution::default();

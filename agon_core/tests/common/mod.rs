@@ -42,7 +42,13 @@ async fn ensure_table_exists(client: &aws_sdk_dynamodb::Client, table: &str) {
         Projection, ProjectionType, ScalarAttributeType,
     };
 
-    if client.describe_table().table_name(table).send().await.is_ok() {
+    if client
+        .describe_table()
+        .table_name(table)
+        .send()
+        .await
+        .is_ok()
+    {
         return;
     }
 

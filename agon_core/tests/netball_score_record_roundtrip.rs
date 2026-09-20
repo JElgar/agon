@@ -66,7 +66,10 @@ async fn netball_score_record_round_trips_through_dynamodb() {
     score.insert("side_b".to_string(), 9u32);
 
     let mut period_times = HashMap::new();
-    period_times.insert(NetballPeriodRecord::Start, "2026-01-10T10:00:00Z".to_string());
+    period_times.insert(
+        NetballPeriodRecord::Start,
+        "2026-01-10T10:00:00Z".to_string(),
+    );
     period_times.insert(
         NetballPeriodRecord::QuarterOneEnd,
         "2026-01-10T10:15:00Z".to_string(),
@@ -235,4 +238,3 @@ async fn pre_refactor_netball_score_json_still_deserializes() {
     assert_eq!(score.goals.as_ref().unwrap()[0].side_id, "side_a");
     assert_eq!(fetched.last_seq, Some(3));
 }
-

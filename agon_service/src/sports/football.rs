@@ -43,11 +43,10 @@ pub fn score_to_record(s: &FootballScore) -> FootballScoreRecord {
             .cards
             .as_ref()
             .map(|cs| cs.iter().map(card_event_to_record).collect()),
-        substitutions: s.substitutions.as_ref().map(|subs| {
-            subs.iter()
-                .map(substitution_event_to_record)
-                .collect()
-        }),
+        substitutions: s
+            .substitutions
+            .as_ref()
+            .map(|subs| subs.iter().map(substitution_event_to_record).collect()),
         period: s.period.as_ref().map(period_to_record),
         period_times: s.period_times.as_ref().map(|pts| {
             pts.iter()
@@ -82,11 +81,10 @@ pub fn score_from_record(rec: &FootballScoreRecord) -> FootballScore {
             .cards
             .as_ref()
             .map(|cs| cs.iter().map(card_event_from_record).collect()),
-        substitutions: rec.substitutions.as_ref().map(|subs| {
-            subs.iter()
-                .map(substitution_event_from_record)
-                .collect()
-        }),
+        substitutions: rec
+            .substitutions
+            .as_ref()
+            .map(|subs| subs.iter().map(substitution_event_from_record).collect()),
         period: rec.period.as_ref().map(period_from_record),
         period_times: rec.period_times.as_ref().map(|pts| {
             pts.iter()
@@ -254,9 +252,11 @@ pub fn live_event_to_record(event: &FootballLiveEvent) -> FootballLiveEventRecor
         FootballLiveEvent::Substitution(s) => {
             FootballLiveEventRecord::Substitution(substitution_event_to_record(s))
         }
-        FootballLiveEvent::Period(p) => FootballLiveEventRecord::Period(FootballPeriodEventRecord {
-            period: period_to_record(&p.period),
-        }),
+        FootballLiveEvent::Period(p) => {
+            FootballLiveEventRecord::Period(FootballPeriodEventRecord {
+                period: period_to_record(&p.period),
+            })
+        }
         FootballLiveEvent::PenaltyShootoutKick(k) => {
             FootballLiveEventRecord::PenaltyShootoutKick(FootballPenaltyShootoutKickRecord {
                 side_id: k.side_id.clone(),

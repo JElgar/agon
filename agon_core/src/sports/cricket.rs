@@ -26,7 +26,11 @@ impl SportRecord for CricketRecord {
     /// sixes, balls faced, dismissals, catches, runs conceded, balls bowled)
     /// are lifetime totals only — nobody's asked to see "most balls faced in
     /// a game" as a record, so there's no reason to pay for tracking it.
-    fn contribution(score: &ScoreRecord, player_id: &str, balls_per_over: u32) -> SportContribution {
+    fn contribution(
+        score: &ScoreRecord,
+        player_id: &str,
+        balls_per_over: u32,
+    ) -> SportContribution {
         let mut counters = HashMap::new();
         let mut best_candidates = HashMap::new();
         let mut bowling_spell = BowlingSpell::default();
@@ -61,7 +65,8 @@ impl SportRecord for CricketRecord {
             }
             for entry in inning.bowling.iter().flatten() {
                 if entry.player_id == player_id {
-                    let balls = overs_to_balls(entry.overs.overs, entry.overs.balls, balls_per_over);
+                    let balls =
+                        overs_to_balls(entry.overs.overs, entry.overs.balls, balls_per_over);
                     *counters.entry("wickets".to_string()).or_insert(0) += entry.wickets as u64;
                     *counters.entry("runs_conceded".to_string()).or_insert(0) +=
                         entry.runs_conceded as u64;

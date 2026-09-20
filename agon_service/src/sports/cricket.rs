@@ -7,14 +7,13 @@ use std::collections::HashMap;
 use agon_core::dao::records::{
     CricketBattingEntryRecord, CricketBowlingEntryRecord, CricketDeliveryExtraRecord,
     CricketDeliveryRecord, CricketDeliveryWicketRecord, CricketDismissalKindRecord,
-    CricketDismissalRecord, CricketExtraKindRecord, CricketExtrasRecord,
-    CricketFallOfWicketRecord, CricketFormatRecord, CricketInningsEndEventRecord,
-    CricketInningsStartEventRecord, CricketLiveEventRecord, CricketRetireEventRecord,
-    CricketScoreInningsRecord, CricketScoreRecord, InningsEndReasonRecord, MatchFormatRecord,
-    NextBallContextRecord, OversRecord,
+    CricketDismissalRecord, CricketExtraKindRecord, CricketExtrasRecord, CricketFallOfWicketRecord,
+    CricketFormatRecord, CricketInningsEndEventRecord, CricketInningsStartEventRecord,
+    CricketLiveEventRecord, CricketRetireEventRecord, CricketScoreInningsRecord,
+    CricketScoreRecord, InningsEndReasonRecord, MatchFormatRecord, NextBallContextRecord,
+    OversRecord,
 };
 
-use crate::{CricketScore, CricketScoreInnings};
 use crate::detailed_score::cricket::{
     CricketBattingEntry, CricketBowlingEntry, CricketDelivery, CricketDeliveryExtra,
     CricketDeliveryWicket, CricketDismissal, CricketDismissalKind, CricketExtraKind, CricketExtras,
@@ -26,6 +25,7 @@ use crate::live_score::cricket::{
 };
 use crate::mapping::parse_ts_opt;
 use crate::match_format::CricketFormat;
+use crate::{CricketScore, CricketScoreInnings};
 
 pub fn score_to_record(s: &CricketScore) -> CricketScoreRecord {
     CricketScoreRecord {
@@ -34,18 +34,17 @@ pub fn score_to_record(s: &CricketScore) -> CricketScoreRecord {
             .recent_deliveries
             .as_ref()
             .map(|ds| ds.iter().map(delivery_to_record).collect()),
-        next_ball_context: s.next_ball_context.as_ref().map(next_ball_context_to_record),
+        next_ball_context: s
+            .next_ball_context
+            .as_ref()
+            .map(next_ball_context_to_record),
         awaiting_next_innings: s.awaiting_next_innings,
     }
 }
 
 pub fn score_from_record(rec: &CricketScoreRecord) -> CricketScore {
     CricketScore {
-        innings: rec
-            .innings
-            .iter()
-            .map(score_innings_from_record)
-            .collect(),
+        innings: rec.innings.iter().map(score_innings_from_record).collect(),
         recent_deliveries: rec
             .recent_deliveries
             .as_ref()
@@ -114,7 +113,12 @@ pub fn from_events(
     format: Option<&MatchFormatRecord>,
 ) -> CricketScore {
     let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) = format_args(format);
-    CricketScore::from_events(events, balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball)
+    CricketScore::from_events(
+        events,
+        balls_per_over,
+        wide_is_extra_ball,
+        no_ball_is_extra_ball,
+    )
 }
 
 fn overs_to_record(overs: &Overs) -> OversRecord {
@@ -465,8 +469,10 @@ pub fn live_event_from_record(rec: &CricketLiveEventRecord) -> CricketLiveEvent 
                 bowling_side_id: s.bowling_side_id.clone(),
             })
         }
-        CricketLiveEventRecord::InningsEnd(e) => CricketLiveEvent::InningsEnd(CricketInningsEndEvent {
-            reason: innings_end_reason_from_record(&e.reason),
-        }),
+        CricketLiveEventRecord::InningsEnd(e) => {
+            CricketLiveEvent::InningsEnd(CricketInningsEndEvent {
+                reason: innings_end_reason_from_record(&e.reason),
+            })
+        }
     }
 }

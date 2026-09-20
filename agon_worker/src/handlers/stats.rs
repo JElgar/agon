@@ -143,7 +143,8 @@ pub async fn reconcile_match_stats(dao: &Dao, match_id: &str) -> WorkerResult<()
     }
     for contribution in desired.values_mut() {
         if let Some(spell) = &mut contribution.bowling_spell {
-            spell.overs = agon_core::sports::cricket::balls_to_overs(spell.balls_bowled, balls_per_over);
+            spell.overs =
+                agon_core::sports::cricket::balls_to_overs(spell.balls_bowled, balls_per_over);
         }
     }
 

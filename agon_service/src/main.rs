@@ -7111,6 +7111,19 @@ impl Api {
             }
         };
 
+        // Best-effort: flip the invitee's own notification so the feed stops
+        // offering Confirm/Decline for it. Never fails the response itself —
+        // worst case the row keeps showing the (now stale) buttons, same as
+        // before this existed.
+        if let Err(e) = dao
+            .mark_invitation_notification_actioned(&uid, &invitation_id, status)
+            .await
+        {
+            error!(
+                "Failed to mark invitation notification {invitation_id} actioned for {uid}: {e}"
+            );
+        }
+
         let mut invitation = invitation_from_record(&rec);
         invitation.status = invitation_status_from_str(status);
         invitation.responded_at = Some(mapping::parse_ts(&responded_at));
@@ -9195,6 +9208,7 @@ fn mock_notifications() -> Vec<Notification> {
                 invitation_id: String::from("inv_abc"),
                 match_id: String::from("match_123"),
                 match_name: String::from("Tennis vs Raj"),
+                status: InvitationStatus::Pending,
             }),
         },
         Notification {
@@ -9206,6 +9220,7 @@ fn mock_notifications() -> Vec<Notification> {
                 invitation_id: String::from("inv_team_xyz"),
                 team_id: String::from("team_kent"),
                 team_name: String::from("Kent"),
+                status: InvitationStatus::Pending,
             }),
         },
         Notification {

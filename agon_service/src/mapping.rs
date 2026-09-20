@@ -2102,23 +2102,27 @@ pub fn notification_from_record(rec: &NotificationRecord, actor: UserProfile) ->
             invitation_id,
             match_id,
             match_name,
+            status,
             ..
         } => NotificationKind::MatchInvitation(MatchInvitationNotification {
             inviter: actor,
             invitation_id: invitation_id.clone(),
             match_id: match_id.clone(),
             match_name: match_name.clone(),
+            status: invitation_status_from_str(status),
         }),
         NotificationKindRecord::TeamInvitation {
             invitation_id,
             team_id,
             team_name,
+            status,
             ..
         } => NotificationKind::TeamInvitation(TeamInvitationNotification {
             inviter: actor,
             invitation_id: invitation_id.clone(),
             team_id: team_id.clone(),
             team_name: team_name.clone(),
+            status: invitation_status_from_str(status),
         }),
         NotificationKindRecord::InvitationAccepted {
             invitation_id,

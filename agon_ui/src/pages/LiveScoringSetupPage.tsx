@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { useAppendFootballEvent } from '@/hooks/useLiveScore'
 import { useMatchScore } from '@/hooks/useMatchScore'
+import { PendingInvitesNudge } from '@/components/agon/PendingInvitesNudge'
 import {
   footballScoreFrom,
   loadTrackPrefs,
@@ -185,6 +186,8 @@ export function LiveScoringSetupPage() {
       <p className="text-center text-xs text-muted-foreground">
         Turn more on anytime — even mid-match
       </p>
+
+      <PendingInvitesNudge match={match} />
 
       {start.isError && (
         <p className="text-center text-xs text-destructive">

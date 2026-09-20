@@ -10,6 +10,7 @@ import { CricketScoreFields } from '@/components/agon/CricketScoreFields'
 import { NetballScoreFields } from '@/components/agon/NetballScoreFields'
 import { displayScore, headlineBySide } from '@/lib/score'
 import { cricketProgressFromScore, matchTotalsBySide } from '@/lib/cricketScore'
+import { PendingInvitesNudge } from '@/components/agon/PendingInvitesNudge'
 
 type Match = components['schemas']['Match']
 type UpdateMatchInput = components['schemas']['UpdateMatchInput']
@@ -352,6 +353,8 @@ export function MatchResultEditor({
           {(save.error as Error).message}
         </p>
       )}
+
+      <PendingInvitesNudge match={match} />
 
       <div className="flex gap-2">
         <Button

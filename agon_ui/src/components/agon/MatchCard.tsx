@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, Flame, MailOpen, MessageCircle, Share2 } from 'lucide-react'
-import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { useToggleLike } from '@/hooks/useToggleLike'
@@ -13,6 +12,7 @@ import { StatusBadge, matchBadgeStatus } from './StatusBadge'
 import { ScoreConfirmationBar } from './ScoreConfirmationBar'
 import { MatchHeaderCarousel } from './MatchHeaderCarousel'
 import { InvitationResponseDialog } from './InvitationResponseDialog'
+import { respondToInvitation } from '@/lib/invitations'
 import { LiveMatchBlock } from './live/LiveMatchBlock'
 import { CricketMatchBlock } from './live/CricketMatchBlock'
 import { NetballMatchBlock } from './live/NetballMatchBlock'
@@ -89,14 +89,7 @@ function InviteResponseBar({
   const respond = useMutation({
     mutationFn: async (response: components['schemas']['InvitationResponse']) => {
       if (!invitation) return
-      const { error } = await fetchClient.POST(
-        '/invitations/{invitation_id}/respond',
-        {
-          params: { path: { invitation_id: invitation.id } },
-          body: { response },
-        },
-      )
-      if (error) throw new Error('Failed to respond to invitation')
+      await respondToInvitation(invitation.id, response)
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })

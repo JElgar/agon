@@ -6,9 +6,7 @@ use std::collections::HashMap;
 
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
-use aws_sdk_dynamodb::types::{
-    AttributeValue, DeleteRequest, Put, TransactWriteItem, Update, WriteRequest,
-};
+use aws_sdk_dynamodb::types::{AttributeValue, Delete, Put, TransactWriteItem, Update};
 
 use super::audience::AudienceMember;
 use super::client::Dao;
@@ -41,12 +39,29 @@ pub const ROSTER_PREVIEW_CAP: usize = 4;
 /// within [`ROSTER_PREVIEW_CAP`], otherwise empty. Pure/sync; shared by
 /// `create_match` (already has the full roster in memory) and
 /// `refresh_side_roster_previews` (re-queries it).
+///
+/// The two halves deliberately count different things. `player_count` is what
+/// a side's `max_players` is enforced against, so it counts only players who
+/// take a spot (`MatchPlayerRecord::occupies_slot`) — a pending or declined
+/// invite holds none. `roster_preview` is a display of who's been placed on
+/// the side, pending invitees included, so a feed card still shows who's been
+/// asked.
+///
+/// `player_count`'s value here is only ever used to *seed* it (`create_match`,
+/// which has no prior value to maintain a delta against). Every other write
+/// that changes who occupies a slot maintains the stored counter directly via
+/// an atomic `ADD` in its own transaction (`take_slot_update`/
+/// `headcount_delta_update`) — never by recomputing and overwriting it, which
+/// would race a concurrent counter update landing between this function's
+/// read and whatever wrote it. This function itself stays a pure, sync
+/// computation over an in-memory slice for exactly that reason: it has no way
+/// to accidentally clobber a concurrent write.
 fn side_roster(side_id: &str, players: &[MatchPlayerRecord]) -> (u32, Vec<SideRosterMemberRecord>) {
     let on_side: Vec<&MatchPlayerRecord> = players
         .iter()
         .filter(|p| p.side_id.as_deref() == Some(side_id))
         .collect();
-    let player_count = on_side.len() as u32;
+    let player_count = on_side.iter().filter(|p| p.occupies_slot()).count() as u32;
     let roster_preview = if on_side.len() <= ROSTER_PREVIEW_CAP {
         on_side
             .into_iter()
@@ -60,6 +75,14 @@ fn side_roster(side_id: &str, players: &[MatchPlayerRecord]) -> (u32, Vec<SideRo
         Vec::new()
     };
     (player_count, roster_preview)
+}
+
+/// The match-wide headcount `MatchRecord::total_player_count` stores: players
+/// who take a spot (`MatchPlayerRecord::occupies_slot`) across every side plus
+/// unassigned — not every roster row. See `side_roster`'s doc comment: only
+/// ever used to seed the counter, never to recompute it.
+fn total_player_count(players: &[MatchPlayerRecord]) -> u64 {
+    players.iter().filter(|p| p.occupies_slot()).count() as u64
 }
 
 /// Extract a match's sides out of their storage map into the stable,
@@ -135,9 +158,11 @@ impl Dao {
             side.player_count = player_count;
             side.roster_preview = roster_preview;
         }
-        // Seed the atomic roster-size counter `Dao::join_match_tx` maintains
-        // from here on — every player at creation counts, side-assigned or not.
-        match_.total_player_count = players.len() as u64;
+        // Seed the atomic headcount every roster-changing write maintains
+        // from here on via `ADD` — every player at creation who takes a spot,
+        // side-assigned or not. A pending invitee doesn't count until they
+        // accept.
+        match_.total_player_count = total_player_count(players);
         let match_ = match_;
 
         let meta_item = to_item(
@@ -766,6 +791,34 @@ impl Dao {
         starts_at: &str,
         now: &str,
     ) -> DaoResult<()> {
+        let items = self.join_match_items(
+            match_id,
+            player,
+            side_max_players,
+            total_max_players,
+            starts_at,
+            now,
+        )?;
+        self.send_transact_items(items).await
+    }
+
+    /// Build the writes `join_match_tx` sends as one transaction — the roster
+    /// put, the cap-guarded headcount `ADD`, and (if `player.user_id` is set)
+    /// the joiner's own feed row — without sending them. Shared with
+    /// `Dao::move_in_from_waitlist_tx`, which appends one more item (deleting
+    /// the mover's waitlist entry) to the same list before sending, so a
+    /// move-in either lands fully — on the roster and off the waitlist — or
+    /// not at all, rather than the two as separate calls a partial failure
+    /// could split apart.
+    pub(super) fn join_match_items(
+        &self,
+        match_id: &str,
+        player: &MatchPlayerRecord,
+        side_max_players: Option<u32>,
+        total_max_players: Option<u32>,
+        starts_at: &str,
+        now: &str,
+    ) -> DaoResult<Vec<TransactWriteItem>> {
         let put_player = Put::builder()
             .table_name(self.table())
             .set_item(Some(self.match_player_item(match_id, player)?))
@@ -774,51 +827,18 @@ impl Dao {
             .build()
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
 
-        let mut names: std::collections::HashMap<String, String> = Default::default();
-        let mut values: std::collections::HashMap<String, AttributeValue> = Default::default();
-        names.insert("#pk".into(), ATTR_PK.into());
-        values.insert(":one".into(), AttributeValue::N("1".into()));
+        let update_meta = take_slot_update(
+            self.table(),
+            match_id,
+            player.side_id.as_deref(),
+            side_max_players,
+            total_max_players,
+        )?;
 
-        // A single `ADD` section, comma-separated — DynamoDB rejects an
-        // `UpdateExpression` with more than one `ADD` keyword.
-        let mut add_clauses = vec!["total_player_count :one".to_string()];
-        let mut conditions: Vec<String> = vec!["attribute_exists(#pk)".into()];
-        if let Some(max) = total_max_players {
-            conditions.push(
-                "(attribute_not_exists(total_player_count) OR total_player_count < :totalmax)"
-                    .into(),
-            );
-            values.insert(":totalmax".into(), AttributeValue::N(max.to_string()));
-        }
-        if let Some(side_id) = &player.side_id {
-            names.insert("#sid".into(), side_id.clone());
-            add_clauses.push("sides.#sid.player_count :one".to_string());
-            if let Some(max) = side_max_players {
-                conditions.push(
-                    "(attribute_not_exists(sides.#sid.max_players) OR sides.#sid.player_count < :sidemax)"
-                        .into(),
-                );
-                values.insert(":sidemax".into(), AttributeValue::N(max.to_string()));
-            }
-        }
-        let update_expr = format!("ADD {}", add_clauses.join(", "));
-
-        let update_meta = Update::builder()
-            .table_name(self.table())
-            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
-            .key("SK", s(Sk::Meta.to_string()))
-            .update_expression(update_expr)
-            .condition_expression(conditions.join(" AND "))
-            .set_expression_attribute_names(Some(names))
-            .set_expression_attribute_values(Some(values))
-            .build()
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-
-        let mut tx = self
-            .client
-            .transact_write_items()
-            .transact_items(TransactWriteItem::builder().put(put_player).build())
-            .transact_items(TransactWriteItem::builder().update(update_meta).build());
+        let mut items = vec![
+            TransactWriteItem::builder().put(put_player).build(),
+            TransactWriteItem::builder().update(update_meta).build(),
+        ];
 
         if let Some(uid) = &player.user_id {
             let feed_item = self.feed_item(
@@ -836,16 +856,10 @@ impl Dao {
                 .set_item(Some(feed_item))
                 .build()
                 .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-            tx = tx.transact_items(TransactWriteItem::builder().put(feed_put).build());
+            items.push(TransactWriteItem::builder().put(feed_put).build());
         }
 
-        match tx.send().await {
-            Ok(_) => Ok(()),
-            Err(e) if super::is_transaction_conditional_failure(&e) => Err(DaoError::Conflict(
-                "match is full, or you're already on the roster".into(),
-            )),
-            Err(e) => Err(DaoError::Dynamo(e.to_string())),
-        }
+        Ok(items)
     }
 
     /// Add or update a single match player (roster reconciliation / late adds).
@@ -865,59 +879,147 @@ impl Dao {
         Ok(())
     }
 
+    /// Add an ad-hoc player directly onto the roster (an organiser's own add
+    /// — no invitation, so it always takes a spot), atomically bumping
+    /// `total_player_count`/the target side's `player_count` alongside the
+    /// put. Uncapped — an organiser can always add players regardless of any
+    /// side's cap, unlike `join_match_tx`'s guarded self-serve path.
+    #[tracing::instrument(skip(self, player), fields(player_id = %player.player_id))]
+    pub async fn add_match_player_tx(
+        &self,
+        match_id: &str,
+        player: &MatchPlayerRecord,
+    ) -> DaoResult<()> {
+        let put_player = Put::builder()
+            .table_name(self.table())
+            .set_item(Some(self.match_player_item(match_id, player)?))
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        let side_deltas: Vec<(String, i64)> = player
+            .side_id
+            .as_ref()
+            .map(|sid| (sid.clone(), 1))
+            .into_iter()
+            .collect();
+        let update = headcount_delta_update(self.table(), match_id, 1, &side_deltas)?
+            .expect("adding a player is always a +1 total delta");
+
+        self.send_transact_items(vec![
+            TransactWriteItem::builder().put(put_player).build(),
+            TransactWriteItem::builder().update(update).build(),
+        ])
+        .await
+    }
+
+    /// Move an existing player to a different side (or to/from unassigned),
+    /// atomically adjusting `sides.<old>.player_count`/`sides.<new>.player_count`
+    /// alongside the put — only if `updated` currently occupies a slot (a
+    /// still-pending invitee's reassignment touches no counter, matching
+    /// `MatchPlayerRecord::occupies_slot`). `total_player_count` never
+    /// changes: it's the same player, just on a different side. Uncapped,
+    /// same as `add_match_player_tx`.
+    #[tracing::instrument(skip(self, updated), fields(player_id = %updated.player_id))]
+    pub async fn reassign_match_player_tx(
+        &self,
+        match_id: &str,
+        updated: &MatchPlayerRecord,
+        old_side_id: Option<&str>,
+    ) -> DaoResult<()> {
+        let put_player = Put::builder()
+            .table_name(self.table())
+            .set_item(Some(self.match_player_item(match_id, updated)?))
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        let mut side_deltas = Vec::new();
+        if updated.occupies_slot() {
+            if let Some(old) = old_side_id {
+                side_deltas.push((old.to_string(), -1));
+            }
+            if let Some(new) = &updated.side_id {
+                side_deltas.push((new.clone(), 1));
+            }
+        }
+
+        let mut items = vec![TransactWriteItem::builder().put(put_player).build()];
+        if let Some(update) = headcount_delta_update(self.table(), match_id, 0, &side_deltas)? {
+            items.push(TransactWriteItem::builder().update(update).build());
+        }
+        self.send_transact_items(items).await
+    }
+
     /// Remove players from a match's roster entirely (not just unassign their
-    /// side — see `put_match_player` with `side_id: None` for that), in one
-    /// batch delete (`BatchWriteItem`, `BATCH_WRITE_MAX` items/request — see
-    /// `dao::batch`) rather than a `DeleteItem` per player. Idempotent
-    /// (deleting a missing player is a no-op); a no-op itself for an empty
-    /// `player_ids`.
-    #[tracing::instrument(skip(self))]
+    /// side — see `reassign_match_player_tx` for that), atomically
+    /// decrementing `total_player_count`/each affected side's `player_count`
+    /// for however many of `removed` occupied a slot — a pending or declined
+    /// invitee's removal touches no counter. One `TransactWriteItems` (a
+    /// `Delete` per player plus, if any occupied a slot, one `Update`) rather
+    /// than `put_match_player`'s old chunked `BatchWriteItem`: `BatchWriteItem`
+    /// has no room for a conditional/counter write alongside the deletes.
+    /// DynamoDB caps a transaction at 100 items, so more than 99 players
+    /// removed in one call would need chunking — not handled here (fine for
+    /// real team sizes, same caveat `create_match` already carries). A no-op
+    /// for an empty `removed`.
+    #[tracing::instrument(skip(self, removed))]
     pub async fn remove_match_players(
         &self,
         match_id: &str,
-        player_ids: &[String],
+        removed: &[MatchPlayerRecord],
     ) -> DaoResult<()> {
-        for chunk in player_ids.chunks(super::batch::BATCH_WRITE_MAX) {
-            let mut requests = Vec::with_capacity(chunk.len());
-            for player_id in chunk {
-                let key = HashMap::from([
-                    (
-                        ATTR_PK.to_string(),
-                        s(Pk::Match(match_id.into()).to_string()),
-                    ),
-                    (
-                        ATTR_SK.to_string(),
-                        s(Sk::Player(player_id.clone()).to_string()),
-                    ),
-                ]);
-                let delete = DeleteRequest::builder()
-                    .set_key(Some(key))
-                    .build()
-                    .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-                requests.push(WriteRequest::builder().delete_request(delete).build());
-            }
-            self.flush_batch_write(requests).await?;
+        if removed.is_empty() {
+            return Ok(());
         }
-        Ok(())
+
+        let mut total_delta = 0i64;
+        let mut side_deltas: Vec<(String, i64)> = Vec::new();
+        let mut items = Vec::with_capacity(removed.len() + 1);
+        for player in removed {
+            let delete = Delete::builder()
+                .table_name(self.table())
+                .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+                .key(ATTR_SK, s(Sk::Player(player.player_id.clone()).to_string()))
+                .build()
+                .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+            items.push(TransactWriteItem::builder().delete(delete).build());
+
+            if player.occupies_slot() {
+                total_delta -= 1;
+                if let Some(sid) = &player.side_id {
+                    side_deltas.push((sid.clone(), -1));
+                }
+            }
+        }
+        if let Some(update) =
+            headcount_delta_update(self.table(), match_id, total_delta, &side_deltas)?
+        {
+            items.push(TransactWriteItem::builder().update(update).build());
+        }
+        self.send_transact_items(items).await
     }
 
-    /// Recompute and store every side's `player_count`/`roster_preview` from
-    /// the match's *current* player collection. Call after any write that can
-    /// change a side's composition or a player's identity within it —
-    /// invitation acceptance (linking external → user) and `put_match_player`
-    /// (roster reconciliation / late adds). `create_match` doesn't need this:
-    /// it computes the same thing inline, from the roster it already has in
-    /// memory, within the same transaction.
+    /// Recompute and store every side's cached `roster_preview` from the
+    /// match's *current* player collection — a display cache, not a counter
+    /// (see `add_match_player_tx`/`reassign_match_player_tx`/
+    /// `remove_match_players`/`join_match_tx`/`Dao::accept_invitation_items`
+    /// for how `total_player_count`/`sides.*.player_count` are actually
+    /// maintained: an atomic `ADD` alongside whatever write changed who
+    /// occupies a slot, never a recompute). Call after any write that can
+    /// change who's been placed on a side or who they are — invitation
+    /// acceptance (linking external → user) is the one roster-composition
+    /// change that doesn't itself touch `roster_preview`, since it doesn't go
+    /// through the DAO methods above.
+    ///
+    /// This *is* a plain, unconditional recompute-and-overwrite — but for
+    /// `roster_preview` that's harmless even under a race: it's a display
+    /// snapshot, not a value anything's correctness depends on, and the next
+    /// roster-changing write recomputes it from the true roster again.
     ///
     /// One `GetItem` (meta, projected to just `sides` — to learn the current
     /// side ids; sides never get added/removed/reassigned an id after
     /// creation, but this doesn't assume that) + one `Query` (current
     /// players — still per-match, player ids aren't known ahead of the read)
-    /// + one `UpdateItem` that sets every side's `player_count`/
-    /// `roster_preview` by key in a single call, regardless of how many
-    /// sides there are. Runs on the rarer roster-mutating write paths, never
-    /// on a feed read — the whole point is for the feed to *avoid*
-    /// re-deriving this live.
+    /// + one `UpdateItem` that sets every side's `roster_preview` by key in a
+    /// single call, regardless of how many sides there are.
     #[tracing::instrument(skip(self))]
     pub async fn refresh_side_roster_previews(&self, match_id: &str) -> DaoResult<()> {
         let side_ids = self.match_side_ids(match_id).await?;
@@ -930,17 +1032,14 @@ impl Dao {
             .query_match_collection::<MatchPlayerRecord>(match_id, &player_prefix)
             .await?;
 
-        let mut set_clauses = Vec::with_capacity(side_ids.len() * 2);
+        let mut set_clauses = Vec::with_capacity(side_ids.len());
         let mut names = HashMap::with_capacity(side_ids.len());
-        let mut values = HashMap::with_capacity(side_ids.len() * 2);
+        let mut values = HashMap::with_capacity(side_ids.len());
         for (i, side_id) in side_ids.iter().enumerate() {
-            let (player_count, roster_preview) = side_roster(side_id, &players);
+            let (_, roster_preview) = side_roster(side_id, &players);
             let name_alias = format!("#s{i}");
-            set_clauses.push(format!(
-                "sides.{name_alias}.player_count = :pc{i}, sides.{name_alias}.roster_preview = :rp{i}"
-            ));
+            set_clauses.push(format!("sides.{name_alias}.roster_preview = :rp{i}"));
             names.insert(name_alias, side_id.clone());
-            values.insert(format!(":pc{i}"), to_attr(&player_count)?);
             values.insert(format!(":rp{i}"), to_attr(&roster_preview)?);
         }
 
@@ -1062,6 +1161,135 @@ fn to_attr<T: serde::Serialize>(value: &T) -> DaoResult<AttributeValue> {
     Ok(serde_dynamo::to_attribute_value(value)?)
 }
 
+/// The cap-guarded `ADD` for a write that takes a real spot on a match —
+/// `total_player_count` always, plus `sides.<side_id>.player_count` when
+/// `side_id` is given — conditioned on the match existing and, for whichever
+/// of `total_max_players`/`side_max_players` is `Some`, there still being
+/// room. One builder shared by every path that can push a match/side to (or
+/// past) its cap, so they can never disagree about what "full" means:
+/// `Dao::join_match_tx` (self-serve) and `Dao::accept_invitation_items`
+/// (invite acceptance into a real spot — not onto the waitlist, which takes
+/// no spot and so never calls this).
+///
+/// Unlike [`headcount_delta_update`], this is never called on its own: the
+/// caller always pairs it, in the same transaction, with the `Put` that
+/// actually adds the player — so a failed guard here fails the whole write,
+/// and a successful one always has a real player row to match.
+pub(super) fn take_slot_update(
+    table: &str,
+    match_id: &str,
+    side_id: Option<&str>,
+    side_max_players: Option<u32>,
+    total_max_players: Option<u32>,
+) -> DaoResult<Update> {
+    let mut names: HashMap<String, String> = HashMap::new();
+    let mut values: HashMap<String, AttributeValue> = HashMap::new();
+    names.insert("#pk".into(), ATTR_PK.into());
+    values.insert(":one".into(), AttributeValue::N("1".into()));
+
+    // A single `ADD` section, comma-separated — DynamoDB rejects an
+    // `UpdateExpression` with more than one `ADD` keyword.
+    let mut add_clauses = vec!["total_player_count :one".to_string()];
+    let mut conditions: Vec<String> = vec!["attribute_exists(#pk)".into()];
+    if let Some(max) = total_max_players {
+        conditions.push(
+            "(attribute_not_exists(total_player_count) OR total_player_count < :totalmax)".into(),
+        );
+        values.insert(":totalmax".into(), AttributeValue::N(max.to_string()));
+    }
+    if let Some(side_id) = side_id {
+        names.insert("#sid".into(), side_id.to_string());
+        add_clauses.push("sides.#sid.player_count :one".to_string());
+        if let Some(max) = side_max_players {
+            conditions.push(
+                "(attribute_not_exists(sides.#sid.max_players) OR sides.#sid.player_count < :sidemax)"
+                    .into(),
+            );
+            values.insert(":sidemax".into(), AttributeValue::N(max.to_string()));
+        }
+    }
+
+    Update::builder()
+        .table_name(table)
+        .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+        .key(ATTR_SK, s(Sk::Meta.to_string()))
+        .update_expression(format!("ADD {}", add_clauses.join(", ")))
+        .condition_expression(conditions.join(" AND "))
+        .set_expression_attribute_names(Some(names))
+        .set_expression_attribute_values(Some(values))
+        .build()
+        .map_err(|e| DaoError::Dynamo(e.to_string()))
+}
+
+/// The plain (uncapped) headcount `ADD` for a write that doesn't need a
+/// capacity guard — an organiser adding/removing/reassigning players
+/// directly always overrides any cap, exactly like today. `total_delta`
+/// changes `total_player_count`; `side_deltas` changes each named side's
+/// `player_count` by its paired delta. Deltas for the same side id are
+/// summed and a net-zero result dropped, so a reassignment back onto the
+/// same side (or any other delta that cancels out) never emits a clause for
+/// it — DynamoDB rejects an `UpdateExpression` naming the same document path
+/// twice.
+///
+/// Always paired, in the same transaction, with whatever `Put`/`Delete`
+/// actually changed the roster — safe to leave unconditional itself (beyond
+/// the match still existing) because that other item's own guard is what
+/// makes the whole transaction — and so this delta — commit only when the
+/// roster really changed the way the delta assumes.
+///
+/// `Ok(None)` if every delta is zero (nothing to write) — `total_delta == 0`
+/// and every side delta cancels out.
+fn headcount_delta_update(
+    table: &str,
+    match_id: &str,
+    total_delta: i64,
+    side_deltas: &[(String, i64)],
+) -> DaoResult<Option<Update>> {
+    let mut merged: HashMap<String, i64> = HashMap::new();
+    for (side_id, delta) in side_deltas {
+        *merged.entry(side_id.clone()).or_insert(0) += delta;
+    }
+    merged.retain(|_, delta| *delta != 0);
+
+    if total_delta == 0 && merged.is_empty() {
+        return Ok(None);
+    }
+
+    let mut names: HashMap<String, String> = HashMap::new();
+    let mut values: HashMap<String, AttributeValue> = HashMap::new();
+    let mut add_clauses = Vec::new();
+    if total_delta != 0 {
+        add_clauses.push("total_player_count :total".to_string());
+        values.insert(":total".into(), AttributeValue::N(total_delta.to_string()));
+    }
+    // Sorted so the expression (and so the test asserting it) is deterministic
+    // — a `HashMap`'s iteration order isn't.
+    let mut side_ids: Vec<&String> = merged.keys().collect();
+    side_ids.sort();
+    for (i, side_id) in side_ids.into_iter().enumerate() {
+        let alias = format!("#s{i}");
+        add_clauses.push(format!("sides.{alias}.player_count :d{i}"));
+        names.insert(alias, side_id.clone());
+        values.insert(
+            format!(":d{i}"),
+            AttributeValue::N(merged[side_id].to_string()),
+        );
+    }
+    names.insert("#pk".into(), ATTR_PK.into());
+
+    Update::builder()
+        .table_name(table)
+        .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+        .key(ATTR_SK, s(Sk::Meta.to_string()))
+        .update_expression(format!("ADD {}", add_clauses.join(", ")))
+        .condition_expression("attribute_exists(#pk)")
+        .set_expression_attribute_names(Some(names))
+        .set_expression_attribute_values(Some(values))
+        .build()
+        .map(Some)
+        .map_err(|e| DaoError::Dynamo(e.to_string()))
+}
+
 fn is_update_conditional_failure(err: &SdkError<UpdateItemError>) -> bool {
     matches!(
         err,
@@ -1102,5 +1330,54 @@ mod tests {
     #[test]
     fn effective_max_players_zero_for_no_sides() {
         assert_eq!(effective_max_players(&[]), Some(0));
+    }
+
+    /// Deltas for the same side sum, and a net-zero result (a reassignment
+    /// back onto the side it started on, or any other cancelling pair) drops
+    /// that side's clause entirely — DynamoDB rejects an `UpdateExpression`
+    /// naming the same document path twice, so this is load-bearing, not
+    /// just tidiness.
+    #[test]
+    fn headcount_delta_update_merges_and_drops_net_zero_sides() {
+        let update = headcount_delta_update(
+            "table",
+            "m1",
+            0,
+            &[("a".into(), -1), ("a".into(), 1), ("b".into(), 2)],
+        )
+        .unwrap()
+        .expect("side b still has a net delta");
+        let expr = update.update_expression();
+        assert!(!expr.contains("total_player_count"), "total delta was 0");
+        // Side "a"'s +1/-1 cancelled — only "b" should appear.
+        assert_eq!(expr.matches("player_count").count(), 1);
+    }
+
+    /// Every delta cancelling out (or all zero to begin with) means nothing
+    /// to write — the caller skips the `Update` transact item entirely rather
+    /// than sending a no-op.
+    #[test]
+    fn headcount_delta_update_is_none_when_everything_cancels() {
+        assert!(
+            headcount_delta_update("table", "m1", 0, &[("a".into(), 1), ("a".into(), -1)])
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            headcount_delta_update("table", "m1", 0, &[])
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// A plain add/remove (no side involved) only ever touches
+    /// `total_player_count`.
+    #[test]
+    fn headcount_delta_update_total_only() {
+        let update = headcount_delta_update("table", "m1", -1, &[])
+            .unwrap()
+            .expect("nonzero total delta");
+        let expr = update.update_expression();
+        assert_eq!(expr, "ADD total_player_count :total");
     }
 }

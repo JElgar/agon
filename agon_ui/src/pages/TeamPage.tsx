@@ -31,6 +31,7 @@ import { LeaveTeamDialog } from '@/components/agon/LeaveTeamDialog'
 import { PromoteToOwnerDialog } from '@/components/agon/PromoteToOwnerDialog'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
 import { InvitePromptDialog } from '@/components/agon/InvitePromptDialog'
+import { respondToInvitation } from '@/lib/invitations'
 import { MatchCard } from '@/components/agon/MatchCard'
 import { Button } from '@/components/ui/button'
 import {
@@ -284,14 +285,7 @@ function TeamInviteBanner({
       response: components['schemas']['InvitationResponse'],
     ) => {
       if (!invitation) return
-      const { error } = await fetchClient.POST(
-        '/invitations/{invitation_id}/respond',
-        {
-          params: { path: { invitation_id: invitation.id } },
-          body: { response },
-        },
-      )
-      if (error) throw new Error('Failed to respond to invitation')
+      await respondToInvitation(invitation.id, response)
     },
     // Optimistically flip the viewer's invitation status across every fetched
     // page of the member list, so the banner/badge disappear immediately.

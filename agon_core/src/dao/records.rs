@@ -439,11 +439,16 @@ pub struct MatchRecord {
     /// `side_id` was always optional).
     #[serde(default = "default_true")]
     pub allow_unassigned: bool,
-    /// Total roster size (every side plus unassigned), maintained atomically
-    /// alongside each side's own `player_count` — see `Dao::join_match_tx`
-    /// and `MatchAggregate::effective_max_players` for how it's used to
-    /// enforce the derived overall cap. `#[serde(default)]` for records
-    /// written before this field existed.
+    /// How many players take a spot on the match — every side plus
+    /// unassigned, counting only `MatchPlayerRecord::occupies_slot` players
+    /// (pending and declined invitees hold no spot). `Dao::join_match_tx`
+    /// bumps it atomically, cap-guarded, as a join lands; every other
+    /// roster-changing write (accept, add/remove/reassign) recomputes it from
+    /// the roster via `Dao::refresh_side_roster_previews` — the only thing
+    /// that brings it back down after a removal. See
+    /// `MatchAggregate::effective_max_players` for how it enforces the
+    /// derived overall cap. `#[serde(default)]` for records written before
+    /// this field existed.
     #[serde(default)]
     pub total_player_count: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -583,10 +588,13 @@ pub struct MatchSideRecord {
     /// opt-in for team self-join. Meaningless without a `team_id`.
     #[serde(default)]
     pub team_join_enabled: bool,
-    /// Total players currently on this side. Denormalized alongside
-    /// `roster_preview` (kept in sync on every roster-changing write — see
-    /// `Dao::refresh_side_roster_previews`) so the feed can decide "show
-    /// players" vs "show team" without a live players query.
+    /// How many players currently take a spot on this side
+    /// (`MatchPlayerRecord::occupies_slot`) — the number `max_players` caps.
+    /// Pending and declined invitees placed on the side aren't counted,
+    /// though they do still appear in `roster_preview`. Denormalized
+    /// alongside `roster_preview` (kept in sync on every roster-changing
+    /// write — see `Dao::refresh_side_roster_previews`) so the feed can
+    /// decide "show players" vs "show team" without a live players query.
     /// `#[serde(default)]` for items written before this field existed.
     #[serde(default)]
     pub player_count: u32,
@@ -642,6 +650,68 @@ pub struct MatchPlayerRecord {
     pub joined_via: Option<JoinSourceRecord>,
 }
 
+impl MatchPlayerRecord {
+    /// Whether this player takes one of the match's spots: they're *in* —
+    /// added by an organiser or self-served via a join link/team (no
+    /// invitation), or an invitee who has accepted. A pending or declined
+    /// invite takes nothing; sending an invite doesn't reserve a spot.
+    ///
+    /// A waitlisted player is never represented by a `MatchPlayerRecord` at
+    /// all — self-served, their `MatchWaitlistEntryRecord` is the only row;
+    /// an invitee who accepts onto the waitlist has their pending roster
+    /// placeholder deleted rather than flipped to accepted, in the same
+    /// transaction that creates the waitlist entry (see
+    /// `Dao::accept_invitation_items`'s `onto_waitlist` branch). So this rule
+    /// never needs to cross-reference the waitlist — every row it sees is a
+    /// real roster candidate.
+    ///
+    /// The single source of truth `MatchRecord::total_player_count` and
+    /// `MatchSideRecord::player_count` are kept in sync with: every write
+    /// that can flip this rule's answer for a row (join, accept, organizer
+    /// add/remove/reassign, move-in from the waitlist) applies the matching
+    /// atomic `ADD`/`SUBTRACT` delta in the same transaction, rather than
+    /// ever recomputing from a full scan — see `match_ops::take_slot_update`
+    /// and `match_ops::headcount_delta_update`.
+    pub fn occupies_slot(&self) -> bool {
+        self.invitation
+            .as_ref()
+            .is_none_or(|inv| inv.status == "accepted")
+    }
+}
+
+/// `MATCH#<matchId>` / `WAITLIST#<userId>` — someone queued for a match/side
+/// that had no room when they tried to join or accept an invite onto it, kept
+/// entirely apart from the roster (`MatchPlayerRecord`): a waitlisted person
+/// (self-served, or an invitee who accepted onto the waitlist) has no roster
+/// row at all until a match admin moves them in (the `move_in_from_waitlist`
+/// handler) — at which point this entry is deleted and a fresh roster row is
+/// created via the same cap-guarded write `join_match` uses, regardless of
+/// how they got onto the waitlist.
+///
+/// Keyed by `user_id` rather than a minted id — unlike the roster, a waitlist
+/// entry always names a real account (only an authenticated caller can join a
+/// waitlist, so there's no unlinked-external case to key around), and at most
+/// one entry per (match, user) is meaningful anyway. That also makes "already
+/// waitlisted" a conditional-put guard on the key itself, the same pattern as
+/// every other uniqueness guard in this table (see the module doc comment).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MatchWaitlistEntryRecord {
+    pub user_id: String,
+    /// The side they're waiting for, mirroring `JoinMatchInput::side_id` —
+    /// `None` for unassigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_id: Option<String>,
+    /// Display/ordering key — longest-waiting first. Purely informational;
+    /// moving someone in is always a manual admin action, never automatic.
+    pub waitlisted_at: String,
+    /// Set when this entry came from accepting an invite that had no room
+    /// (`Dao::waitlist_join_tx` also accepts the invitation in that case, so
+    /// it isn't asked again) — kept for traceability. `None` for a plain
+    /// self-served waitlist join (join link / team self-join).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invitation_id: Option<String>,
+}
+
 /// A player's authority on a match. Kept as its own type rather than reusing
 /// `TeamMemberRecord.role` (a raw "admin"/"member" string) — match and team
 /// roles are conceptually related but not guaranteed to stay identical, and a
@@ -677,6 +747,9 @@ pub enum JoinSourceRecord {
     /// Joined via team self-join (`MatchSideRecord::team_join_enabled`) — no
     /// link involved.
     SelfServe,
+    /// Moved in off the waitlist by a match admin
+    /// (`Dao::move_in_from_waitlist_tx`) once a spot freed up.
+    Waitlist,
 }
 
 /// `MATCH#<matchId>` / `SCORE#<sport>` — the match's live-scoring score
@@ -1580,6 +1653,38 @@ pub struct StatContributionRecord {
 mod tests {
     use super::*;
     use aws_sdk_dynamodb::types::AttributeValue;
+
+    /// `occupies_slot` is the one rule for who takes a spot: in with no
+    /// invitation, or an accepted invitee — never a pending or declined one.
+    #[test]
+    fn occupies_slot_counts_only_players_who_are_in() {
+        let player = |status: Option<&str>| MatchPlayerRecord {
+            player_id: "p".into(),
+            user_id: Some("u".into()),
+            display_name: None,
+            side_id: None,
+            is_member_of_team: None,
+            invitation: status.map(|status| EmbeddedInvitationRecord {
+                id: "inv".into(),
+                status: status.into(),
+                invited_by_user_id: "host".into(),
+                invited_at: "2026-09-14T00:00:00Z".into(),
+                responded_at: None,
+                kind: InvitationKindRecord::User {
+                    invited_user_id: "u".into(),
+                },
+            }),
+            role: MatchPlayerRole::Player,
+            joined_via: None,
+        };
+        assert!(
+            player(None).occupies_slot(),
+            "added by an organiser or self-joined"
+        );
+        assert!(player(Some("accepted")).occupies_slot());
+        assert!(!player(Some("pending")).occupies_slot());
+        assert!(!player(Some("declined")).occupies_slot());
+    }
 
     /// `Simple`/`Sets` `entries` round-trip through the side_id-keyed map
     /// shape. (Data written before this shape landed no longer needs

@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { CalendarClock, ChevronLeft, Clock, Flame, Link2, MailOpen, Pencil, Radio, ShieldPlus, UserPlus } from 'lucide-react'
+import { CalendarClock, ChevronLeft, Clock, Flame, Link2, MailOpen, MapPin, Pencil, Radio, ShieldPlus, UserPlus } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { scheduledDateTime } from '@/lib/datetime'
+import { directionsUrl } from '@/lib/location'
 import { Button } from '@/components/ui/button'
 import { Avatar } from '@/components/agon/Avatar'
 import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
@@ -290,6 +291,22 @@ function MatchDetail({
                 <CalendarClock className="size-3 shrink-0" />
                 {scheduledDateTime(match.starts_at)}
               </p>
+              {match.location && (
+                <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
+                  <MapPin className="size-3 shrink-0" />
+                  <span className="truncate">{match.location.text}</span>
+                  {directionsUrl(match.location) && (
+                    <a
+                      href={directionsUrl(match.location)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="shrink-0 text-primary hover:underline"
+                    >
+                      Get directions
+                    </a>
+                  )}
+                </p>
+              )}
             </div>
             {canEdit && !cancelled && (
               <Button

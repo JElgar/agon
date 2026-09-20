@@ -1861,6 +1861,16 @@ new k8s.apps.v1.Deployment("agon-ui-deployment", {
 								name: "VITE_FIREBASE_VAPID_KEY",
 								value: config.get("firebaseVapidKey"),
 							},
+							// Google Maps JS API key for Places Autocomplete on a match's
+							// location field (see agon_ui/src/lib/googleMaps.ts) — not
+							// automatable (console-only, like the VAPID key above): unset
+							// until someone pastes one in via `pulumi config set
+							// googleMapsApiKey`, which just leaves the location field as
+							// plain text (see isGoogleMapsConfigured).
+							{
+								name: "VITE_GOOGLE_MAPS_API_KEY",
+								value: config.get("googleMapsApiKey"),
+							},
 						],
 					},
 				],

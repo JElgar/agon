@@ -16,6 +16,11 @@ const runtimeEnv = {
   VITE_FIREBASE_MESSAGING_SENDER_ID: '${VITE_FIREBASE_MESSAGING_SENDER_ID}',
   VITE_FIREBASE_APP_ID: '${VITE_FIREBASE_APP_ID}',
   VITE_FIREBASE_VAPID_KEY: '${VITE_FIREBASE_VAPID_KEY}',
+  // Google Maps JS API key, for Places Autocomplete on a match's location
+  // field (see src/lib/googleMaps.ts). Public/client-safe, same as the
+  // Firebase values above — restricted by HTTP referrer, not by secrecy.
+  // Unset means the location field stays plain text, no autocomplete.
+  VITE_GOOGLE_MAPS_API_KEY: '${VITE_GOOGLE_MAPS_API_KEY}',
 }
 
 type RuntimeEnv = typeof runtimeEnv;
@@ -32,6 +37,7 @@ export function getRuntimeEnv(): RuntimeEnv {
       VITE_FIREBASE_MESSAGING_SENDER_ID: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
       VITE_FIREBASE_APP_ID: import.meta.env.VITE_FIREBASE_APP_ID,
       VITE_FIREBASE_VAPID_KEY: import.meta.env.VITE_FIREBASE_VAPID_KEY,
+      VITE_GOOGLE_MAPS_API_KEY: import.meta.env.VITE_GOOGLE_MAPS_API_KEY,
     };
   }
 

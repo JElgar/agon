@@ -18,13 +18,18 @@
 
 use poem_openapi::{Object, Union};
 
-#[derive(Union, Clone)]
-#[oai(one_of, discriminator_name = "sport")]
-pub enum MatchFormat {
-    Football(FootballFormat),
-    Cricket(CricketFormat),
-    Netball(NetballFormat),
+/// x-macro template for `agon_sports!` (see `crate::sports`'s doc comment):
+/// builds `MatchFormat` from the shared sport list.
+macro_rules! define_match_format {
+    ($( $variant:ident { tag: $tag:literal, module: $module:ident, score: $score:ty, format: $format:ty, live_event: $live_event:ty } ),+ $(,)?) => {
+        #[derive(Union, Clone)]
+        #[oai(one_of, discriminator_name = "sport")]
+        pub enum MatchFormat {
+            $( $variant($format), )+
+        }
+    };
 }
+crate::agon_sports!(define_match_format);
 
 #[derive(Object, Clone)]
 pub struct FootballFormat {

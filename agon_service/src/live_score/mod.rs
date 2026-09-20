@@ -26,17 +26,21 @@ pub use cricket::CricketLiveEvent;
 pub use football::FootballLiveEvent;
 pub use netball::NetballLiveEvent;
 
-/// A single live-scoring event, sport-first discriminated so a new sport is a
-/// new variant without touching existing ones — same pattern as `Score`.
-/// See `football`/`cricket` for the per-kind union nested inside each
-/// variant.
-#[derive(Union)]
-#[oai(one_of, discriminator_name = "sport")]
-pub enum LiveEventInput {
-    Football(FootballLiveEvent),
-    Cricket(CricketLiveEvent),
-    Netball(NetballLiveEvent),
+/// x-macro template for `agon_sports!` (see `crate::sports`'s doc comment):
+/// builds `LiveEventInput` from the shared sport list.
+macro_rules! define_live_event_input {
+    ($( $variant:ident { tag: $tag:literal, module: $module:ident, score: $score:ty, format: $format:ty, live_event: $live_event:ty } ),+ $(,)?) => {
+        /// A single live-scoring event, sport-first discriminated so a new sport is a
+        /// new variant without touching existing ones — same pattern as `Score`. See
+        /// `football`/`cricket` for the per-kind union nested inside each variant.
+        #[derive(Union)]
+        #[oai(one_of, discriminator_name = "sport")]
+        pub enum LiveEventInput {
+            $( $variant($live_event), )+
+        }
+    };
 }
+crate::agon_sports!(define_live_event_input);
 
 /// One event to append, before the server has assigned it a `seq`.
 #[derive(Object)]

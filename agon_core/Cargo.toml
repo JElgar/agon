@@ -45,3 +45,8 @@ opentelemetry-appender-tracing = "0.32"
 # `telemetry::init` — see its doc comment. `ring` (not `aws-lc-rs`) to match
 # what the Temporal SDK / reqwest's `rustls-tls` already pull in.
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+[dev-dependencies]
+# `#[tokio::test]` for the DynamoDB-Local integration tests under `tests/` —
+# the `[dependencies]` `tokio` above only pulls in the `time` feature.
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

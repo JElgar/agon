@@ -1055,6 +1055,37 @@ export const firebaseWebConfig = gcp.firebase.getWebAppConfigOutput({
 	project: gcpProjectId,
 });
 
+// ── Google Maps JS API key: Places Autocomplete on a match's location field ─
+// Unlike the Firebase VAPID key pair above, a browser Maps key IS a normal,
+// fully automatable GCP resource (`gcp.projects.ApiKey`) — restricted here to
+// exactly the two APIs the location field needs, and to this deployment's own
+// origin, so it's useless if it ever leaks.
+const mapsBackendApi = new gcp.projects.Service("maps-backend-api", {
+	project: gcpProjectId,
+	service: "maps-backend.googleapis.com",
+	disableOnDestroy: false,
+});
+
+const placesBackendApi = new gcp.projects.Service("places-backend-api", {
+	project: gcpProjectId,
+	service: "places-backend.googleapis.com",
+	disableOnDestroy: false,
+});
+
+const googleMapsApiKey = new gcp.projects.ApiKey("agon-ui-maps-key", {
+	project: gcpProjectId,
+	displayName: "agon-ui-maps",
+	restrictions: {
+		apiTargets: [
+			{ service: "maps-backend.googleapis.com" },
+			{ service: "places-backend.googleapis.com" },
+		],
+		browserKeyRestrictions: {
+			allowedReferrers: [`${agonUiUrl}/*`],
+		},
+	},
+}, { dependsOn: [mapsBackendApi, placesBackendApi] });
+
 // ── Supabase Google Auth: OAuth consent screen + client ─────────────────────
 // Fully manual, per project — and NOT automatable at all right now, not even
 // partially. This used to create the OAuth consent screen ("Brand") via
@@ -1862,14 +1893,12 @@ new k8s.apps.v1.Deployment("agon-ui-deployment", {
 								value: config.get("firebaseVapidKey"),
 							},
 							// Google Maps JS API key for Places Autocomplete on a match's
-							// location field (see agon_ui/src/lib/googleMaps.ts) — not
-							// automatable (console-only, like the VAPID key above): unset
-							// until someone pastes one in via `pulumi config set
-							// googleMapsApiKey`, which just leaves the location field as
-							// plain text (see isGoogleMapsConfigured).
+							// location field (see agon_ui/src/lib/googleMaps.ts) —
+							// provisioned above via `gcp.projects.ApiKey`, restricted to
+							// this deployment's own origin.
 							{
 								name: "VITE_GOOGLE_MAPS_API_KEY",
-								value: config.get("googleMapsApiKey"),
+								value: googleMapsApiKey.keyString,
 							},
 						],
 					},

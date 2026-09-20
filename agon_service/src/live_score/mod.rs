@@ -3,12 +3,15 @@
 //! goal-by-goal, card-by-card, ...) in real time — possibly in batches, from a
 //! device catching up after being offline.
 //!
-//! This is the write-side vocabulary, plus the pure functions (in
-//! `football`/`cricket`) that fold an ordered event log into `Score`'s
-//! optional rich-detail fields — there's no separate "live" read shape:
-//! `GET /matches/:id/score` serves the same `Score` whether the match is
-//! still being scored or long finished, live or confirmed (see `Score`'s
-//! doc comment on `main.rs`).
+//! This is the write-side vocabulary. Each sport's own event types, plus the
+//! pure functions that fold an ordered event log into its `Score`'s optional
+//! rich-detail fields, live in `crate::sports::{football,cricket,netball}`
+//! alongside the rest of that sport's surface — this file only holds the
+//! generic `LiveEventInput` union `agon_sports!` assembles from them, plus
+//! the sport-agnostic envelope types around it. There's no separate "live"
+//! read shape: `GET /matches/:id/score` serves the same `Score` whether the
+//! match is still being scored or long finished, live or confirmed (see
+//! `Score`'s doc comment on `main.rs`).
 //!
 //! Corrections are restricted to undoing the most recently recorded event —
 //! `DELETE /matches/:id/live/events/:seq` only succeeds when `seq` is the
@@ -18,13 +21,9 @@
 
 use poem_openapi::{Object, Union};
 
-pub mod cricket;
-pub mod football;
-pub mod netball;
-
-pub use cricket::CricketLiveEvent;
-pub use football::FootballLiveEvent;
-pub use netball::NetballLiveEvent;
+use crate::sports::cricket::CricketLiveEvent;
+use crate::sports::football::FootballLiveEvent;
+use crate::sports::netball::NetballLiveEvent;
 
 /// x-macro template for `agon_sports!` (see `crate::sports`'s doc comment):
 /// builds `LiveEventInput` from the shared sport list.
@@ -93,7 +92,7 @@ pub struct LiveScoreSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::detailed_score::football::{FootballCardColor, FootballCardEvent};
+    use crate::sports::football::{FootballCardColor, FootballCardEvent};
     use poem_openapi::types::{ParseFromJSON, ToJSON};
 
     /// The outer (`sport`) and inner (`kind`) unions must serialize as one
@@ -140,8 +139,7 @@ mod tests {
     /// have — see `NetballFoulEvent::foul_kind`'s doc comment).
     #[test]
     fn netball_foul_kind_does_not_collide_with_the_outer_discriminator() {
-        use crate::detailed_score::netball::{NetballFoulEvent, NetballFoulKind};
-        use crate::live_score::netball::NetballLiveEvent;
+        use crate::sports::netball::{NetballFoulEvent, NetballFoulKind};
 
         let event = LiveEventInput::Netball(NetballLiveEvent::Foul(NetballFoulEvent {
             side_id: "side_a".into(),

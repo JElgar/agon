@@ -16,28 +16,39 @@
 //! Idempotent: re-running either against an already-accepted entry re-writes the
 //! same accepted state, so the at-least-once accept workflow can replay safely.
 
-use aws_sdk_dynamodb::types::{Put, TransactWriteItem};
+use aws_sdk_dynamodb::types::{Delete, Put, TransactWriteItem};
 
 use super::audience::AudienceMember;
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
-use super::item::{ATTR_PK, Item};
-use super::records::InvitationContextRecord;
+use super::item::{ATTR_PK, ATTR_SK, Item, s};
+use super::keys::{Pk, Sk};
+use super::match_ops::take_slot_update;
+use super::records::{InvitationContextRecord, MatchPlayerRecord};
 
 impl Dao {
-    /// Accept an invitation synchronously and atomically. In one transaction:
+    /// Accept an invitation synchronously and atomically, into a real roster
+    /// spot (never onto the waitlist — see `Dao::accept_invitation_onto_waitlist_tx`
+    /// for that). In one transaction:
     /// 1. rewrite the standalone invitation (`status=accepted`, `responded_at`,
     ///    `invited_user_id=accepting_user_id`, inbox GSI1 projection) — this also
     ///    resolves a bare-token invite to the accepting account;
     /// 2. link the roster entry embedding the invitation to the accepting user
     ///    and mark its embedded invitation accepted;
-    /// 3. for a match invite, write the accepter's own feed row so the match is
-    ///    on their feed the moment they accept.
+    /// 3. for a match invite, write the accepter's own feed row, and — the
+    ///    cap-guarded last-moment race check, same split as `Dao::join_match_tx`
+    ///    — bump `total_player_count`/the target side's `player_count`.
     ///
     /// Returns the match id when the invite is to a match (so the caller can
     /// kick off async follower fan-out), or `None` for a team invite.
     ///
-    /// `NotFound` if the invitation or its embedding roster entry is gone.
+    /// `NotFound` if the invitation is gone at the initial read. `Conflict` if
+    /// the transaction's own conditions fail instead — the invitation was
+    /// revoked concurrently, *or* (match invite only) the cap guard tripped.
+    /// The two aren't distinguished here; a caller that needs to (the
+    /// `respond_to_invitation` handlers, to return the right typed error)
+    /// re-reads to classify which, the same way `join_match`'s own handler
+    /// re-classifies its atomic guard's failure.
     #[tracing::instrument(skip(self))]
     pub async fn accept_invitation_tx(
         &self,
@@ -47,26 +58,30 @@ impl Dao {
         now: &str,
     ) -> DaoResult<Option<String>> {
         let (match_id, items) = self
-            .accept_invitation_items(invitation_id, accepting_user_id, responded_at, now)
+            .accept_invitation_items(invitation_id, accepting_user_id, responded_at, now, false)
             .await?;
-        match self.send_transact_items(items).await {
-            Ok(()) => Ok(match_id),
-            Err(DaoError::Conflict(_)) => {
-                Err(DaoError::NotFound(format!("invitation {invitation_id}")))
-            }
-            Err(e) => Err(e),
-        }
+        self.send_transact_items(items).await?;
+        Ok(match_id)
     }
 
-    /// Build the three writes `accept_invitation_tx` sends as one transaction
-    /// — invitation, linked roster entry, (match) the accepter's own feed row
-    /// — without sending them. Shared with
-    /// `Dao::accept_invitation_onto_waitlist_tx`, which appends one more item
-    /// (the waitlist entry put) to the same list before sending, so accepting
-    /// onto the waitlist is exactly as atomic as an ordinary accept.
+    /// Build the writes `accept_invitation_tx` sends as one transaction —
+    /// invitation, roster entry, (match) the accepter's own feed row, plus
+    /// (match, real spot only) the cap-guarded headcount `ADD` — without
+    /// sending them. Shared with `Dao::accept_invitation_onto_waitlist_tx`,
+    /// which appends one more item (the waitlist entry put) to the same list
+    /// before sending.
+    ///
+    /// `onto_waitlist` changes what "link the roster entry" means for a match
+    /// invite: `false` (an ordinary accept) links it as a real, counted
+    /// roster row, cap-guarded. `true` *deletes* the pending placeholder row
+    /// instead — the accepter isn't actually in yet, so there's nothing to
+    /// link and no cap to guard (the waitlist is uncapped); the separate
+    /// `MatchWaitlistEntryRecord` `accept_invitation_onto_waitlist_tx` adds is
+    /// the only record of them from here on, until a match admin moves them
+    /// in. Ignored for a team invite — teams have no waitlist.
     ///
     /// Returns the match id alongside (`None` for a team invite) since the
-    /// caller needs it before the transaction is sent (to build that extra
+    /// caller needs it before the transaction is sent (to build the waitlist
     /// item), not just after.
     pub(super) async fn accept_invitation_items(
         &self,
@@ -74,6 +89,7 @@ impl Dao {
         accepting_user_id: &str,
         responded_at: &str,
         now: &str,
+        onto_waitlist: bool,
     ) -> DaoResult<(Option<String>, Vec<TransactWriteItem>)> {
         let Some(mut inv) = self.get_invitation(invitation_id).await? else {
             return Err(DaoError::NotFound(format!("invitation {invitation_id}")));
@@ -95,24 +111,21 @@ impl Dao {
             .build()
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
 
-        // 2 + 3. Link the roster entry, and (match) the accepter's own feed row.
-        let (roster_item, feed_put, match_id) = match &inv.context {
+        // 2 + 3. Link (or, onto the waitlist, remove) the roster entry, and
+        // (match) the accepter's own feed row + cap-guarded headcount `ADD`.
+        let (roster_write, feed_put, match_id, slot_update) = match &inv.context {
             InvitationContextRecord::Match { match_id, .. } => {
-                let (item, starts_at, side_id) = self
-                    .linked_match_player_item(
-                        match_id,
-                        invitation_id,
-                        accepting_user_id,
-                        responded_at,
-                    )
+                let (existing, starts_at, side_max_players, total_max_players) = self
+                    .match_player_for_invitation(match_id, invitation_id)
                     .await?;
+
                 let feed_item = self.feed_item(
                     accepting_user_id,
                     match_id,
                     &starts_at,
                     now,
                     &AudienceMember {
-                        viewer_side_id: side_id,
+                        viewer_side_id: existing.side_id.clone(),
                         ..Default::default()
                     },
                 )?;
@@ -121,7 +134,53 @@ impl Dao {
                     .set_item(Some(feed_item))
                     .build()
                     .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-                (item, Some(feed_put), Some(match_id.clone()))
+
+                if onto_waitlist {
+                    // Not actually in — delete the pending placeholder rather
+                    // than link it. No headcount change: it didn't count
+                    // while pending, and it still won't while waitlisted.
+                    let delete = Delete::builder()
+                        .table_name(self.table())
+                        .key(ATTR_PK, s(Pk::Match(match_id.clone()).to_string()))
+                        .key(
+                            ATTR_SK,
+                            s(Sk::Player(existing.player_id.clone()).to_string()),
+                        )
+                        .build()
+                        .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+                    (
+                        TransactWriteItem::builder().delete(delete).build(),
+                        Some(feed_put),
+                        Some(match_id.clone()),
+                        None,
+                    )
+                } else {
+                    let mut linked = existing;
+                    linked.user_id = Some(accepting_user_id.to_string());
+                    linked.display_name = None;
+                    if let Some(inv) = linked.invitation.as_mut() {
+                        inv.status = "accepted".to_string();
+                        inv.responded_at = Some(responded_at.to_string());
+                    }
+                    let put_roster = Put::builder()
+                        .table_name(self.table())
+                        .set_item(Some(self.match_player_item(match_id, &linked)?))
+                        .build()
+                        .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+                    let slot_update = take_slot_update(
+                        self.table(),
+                        match_id,
+                        linked.side_id.as_deref(),
+                        side_max_players,
+                        total_max_players,
+                    )?;
+                    (
+                        TransactWriteItem::builder().put(put_roster).build(),
+                        Some(feed_put),
+                        Some(match_id.clone()),
+                        Some(slot_update),
+                    )
+                }
             }
             InvitationContextRecord::Team { team_id, .. } => {
                 let item = self
@@ -132,32 +191,38 @@ impl Dao {
                         responded_at,
                     )
                     .await?;
-                (item, None, None)
+                let put_roster = Put::builder()
+                    .table_name(self.table())
+                    .set_item(Some(item))
+                    .build()
+                    .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+                (
+                    TransactWriteItem::builder().put(put_roster).build(),
+                    None,
+                    None,
+                    None,
+                )
             }
         };
 
-        let put_roster = Put::builder()
-            .table_name(self.table())
-            .set_item(Some(roster_item))
-            .build()
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-
         let mut items = vec![
             TransactWriteItem::builder().put(put_inv).build(),
-            TransactWriteItem::builder().put(put_roster).build(),
+            roster_write,
         ];
         if let Some(feed_put) = feed_put {
             items.push(TransactWriteItem::builder().put(feed_put).build());
+        }
+        if let Some(slot_update) = slot_update {
+            items.push(TransactWriteItem::builder().update(slot_update).build());
         }
         Ok((match_id, items))
     }
 
     /// Send a prebuilt list of writes as one `TransactWriteItems` call.
-    /// `Conflict` on any failed item condition — the caller maps that to
-    /// whatever it actually means for its own items (`accept_invitation_tx`
-    /// maps it to `NotFound`; `accept_invitation_onto_waitlist_tx` keeps it
-    /// as `Conflict`, since there its own extra item's guard — already on the
-    /// waitlist — is at least as likely a cause as the invitation being gone).
+    /// `Conflict` on any failed item condition — a caller that needs to know
+    /// *which* one re-reads and reclassifies rather than this inspecting the
+    /// transaction's cancellation reasons (the same choice `join_match`'s own
+    /// handler makes for its atomic guard's failure).
     pub(super) async fn send_transact_items(&self, items: Vec<TransactWriteItem>) -> DaoResult<()> {
         let mut tx = self.client.transact_write_items();
         for item in items {
@@ -172,24 +237,24 @@ impl Dao {
         }
     }
 
-    /// Build the linked match-player item (external → user) for `invitation_id`,
-    /// returning it together with the match's `starts_at` (feed sort material)
-    /// and the player's `side_id` (feed material too — the accepter's own
-    /// feed row records which side they play on).
-    /// Keeps the stable `player_id` so score references survive the flip.
-    async fn linked_match_player_item(
+    /// Find the roster row embedding `invitation_id`, unmodified, together
+    /// with match context needed either to link it (a real accept — see
+    /// `accept_invitation_items`, which does the actual mutating) or to know
+    /// what's being removed (an accept onto the waitlist): the match's
+    /// `starts_at` (feed sort material), the target side's own cap, and the
+    /// match's derived overall cap (`take_slot_update`'s guard — `None` for
+    /// either when there's no side/no cap).
+    async fn match_player_for_invitation(
         &self,
         match_id: &str,
         invitation_id: &str,
-        accepting_user_id: &str,
-        responded_at: &str,
-    ) -> DaoResult<(Item, String, Option<String>)> {
+    ) -> DaoResult<(MatchPlayerRecord, String, Option<u32>, Option<u32>)> {
         let Some(agg) = self.get_match(match_id).await? else {
             return Err(DaoError::NotFound(format!("match {match_id}")));
         };
-        let starts_at = agg.match_.starts_at.clone();
+        let total_max_players = agg.effective_max_players();
 
-        let Some(mut player) = agg
+        let Some(player) = agg
             .players
             .into_iter()
             .find(|p| p.invitation.as_ref().is_some_and(|i| i.id == invitation_id))
@@ -198,19 +263,17 @@ impl Dao {
                 "no player for invitation {invitation_id} in match {match_id}"
             )));
         };
-
-        player.user_id = Some(accepting_user_id.to_string());
-        player.display_name = None;
-        if let Some(inv) = player.invitation.as_mut() {
-            inv.status = "accepted".to_string();
-            inv.responded_at = Some(responded_at.to_string());
-        }
-        let side_id = player.side_id.clone();
+        let side_max_players = player
+            .side_id
+            .as_deref()
+            .and_then(|sid| agg.sides.iter().find(|s| s.side_id == sid))
+            .and_then(|s| s.max_players);
 
         Ok((
-            self.match_player_item(match_id, &player)?,
-            starts_at,
-            side_id,
+            player,
+            agg.match_.starts_at,
+            side_max_players,
+            total_max_players,
         ))
     }
 
@@ -253,9 +316,19 @@ impl Dao {
     ///
     /// Used by the async accept saga as an idempotent re-link (the synchronous
     /// [`Self::accept_invitation_tx`] has usually already done this); a fixed-
-    /// point re-write, so a replay is harmless.
+    /// point re-write, so a replay is harmless. The saga fires off the
+    /// invitation's own `pending` → `accepted` stream transition, so it runs
+    /// the same regardless of whether the sync accept landed in a real spot or
+    /// onto the waitlist (`Dao::accept_invitation_onto_waitlist_tx`) — for the
+    /// latter, the sync transaction already *deleted* the roster row and
+    /// created a `MatchWaitlistEntryRecord` instead, so the fixed point this
+    /// replay converges on is "no roster row, a live waitlist entry" rather
+    /// than a linked one. Checking for that entry first and no-op'ing is what
+    /// makes this still idempotent in that case rather than failing `NotFound`
+    /// against a row that was deleted on purpose.
     ///
-    /// Returns `NotFound` if the invitation or its target entry is gone.
+    /// Returns `NotFound` if the invitation or (a real accept only) its target
+    /// entry is gone.
     #[tracing::instrument(skip(self))]
     pub async fn link_accepted_invitation(
         &self,
@@ -269,14 +342,23 @@ impl Dao {
 
         match &inv.context {
             InvitationContextRecord::Match { match_id, .. } => {
-                let (item, _, _) = self
-                    .linked_match_player_item(
-                        match_id,
-                        invitation_id,
-                        accepting_user_id,
-                        responded_at,
-                    )
+                if self
+                    .get_waitlist_entry(match_id, accepting_user_id)
+                    .await?
+                    .is_some()
+                {
+                    return Ok(());
+                }
+                let (mut player, _, _, _) = self
+                    .match_player_for_invitation(match_id, invitation_id)
                     .await?;
+                player.user_id = Some(accepting_user_id.to_string());
+                player.display_name = None;
+                if let Some(inv) = player.invitation.as_mut() {
+                    inv.status = "accepted".to_string();
+                    inv.responded_at = Some(responded_at.to_string());
+                }
+                let item = self.match_player_item(match_id, &player)?;
                 self.put_item(item).await
             }
             InvitationContextRecord::Team { team_id, .. } => {

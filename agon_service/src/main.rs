@@ -3822,13 +3822,19 @@ impl Api {
                     role: dao::records::MatchPlayerRole::Player,
                     joined_via: None,
                 };
-                dao.put_match_player(&match_id, &player)
+                dao.add_match_player_tx(&match_id, &player)
                     .await
                     .map_err(dao_internal)?;
             }
         }
         if let Some(removed_ids) = &input.removed_player_ids {
-            dao.remove_match_players(&match_id, removed_ids)
+            let removed: Vec<dao::records::MatchPlayerRecord> = agg
+                .players
+                .iter()
+                .filter(|p| removed_ids.contains(&p.player_id))
+                .cloned()
+                .collect();
+            dao.remove_match_players(&match_id, &removed)
                 .await
                 .map_err(dao_internal)?;
         }
@@ -3840,9 +3846,10 @@ impl Api {
                 for a in assignments {
                     if let Some(existing) = agg.players.iter().find(|p| p.player_id == a.player_id)
                     {
+                        let old_side_id = existing.side_id.clone();
                         let mut updated = existing.clone();
                         updated.side_id = a.side_id.clone();
-                        dao.put_match_player(&match_id, &updated)
+                        dao.reassign_match_player_tx(&match_id, &updated, old_side_id.as_deref())
                             .await
                             .map_err(dao_internal)?;
                     }
@@ -3851,7 +3858,10 @@ impl Api {
         }
         // A roster change can move players between sides (or add/remove them) —
         // refresh each side's cached roster preview once from the now-current
-        // roster, rather than per player_id above.
+        // roster, rather than per player_id above. (Headcounts themselves are
+        // already right: `add_match_player_tx`/`reassign_match_player_tx`/
+        // `remove_match_players` each maintain them atomically alongside their
+        // own write, above.)
         if input.added_players.is_some()
             || input.side_assignments.is_some()
             || input.removed_player_ids.is_some()
@@ -6195,7 +6205,7 @@ impl Api {
             )));
         }
 
-        dao.remove_match_players(&match_id, std::slice::from_ref(&player.player_id))
+        dao.remove_match_players(&match_id, std::slice::from_ref(player))
             .await
             .map_err(dao_internal)?;
         dao.refresh_side_roster_previews(&match_id)
@@ -6460,49 +6470,47 @@ impl Api {
             })));
         }
 
-        // An invitee already has a real, accepted roster row (created when
-        // waitlisted — see `Dao::accept_invitation_onto_waitlist_tx`); it's
-        // only excluded from the counts by the waitlist entry itself, so
-        // deleting that is enough. A plain self-served entry has no roster
-        // row yet — create one now via the same cap-guarded write `join_match`
+        // A waitlisted player never has a roster row (a pending invitee's
+        // placeholder gets deleted, not linked, the moment they land on the
+        // waitlist — see `Dao::accept_invitation_items`'s `onto_waitlist`
+        // branch) — self-served or invite-derived, moving in always means
+        // creating one fresh, via the same cap-guarded write `join_match`
         // uses (the `full_reason` check just above is the precise error;
         // this is the atomic last-moment guard, same split as there).
-        if entry.invitation_id.is_none() {
-            let target_side = entry
-                .side_id
-                .as_deref()
-                .and_then(|sid| agg.sides.iter().find(|s| s.side_id == sid));
-            let player = dao::records::MatchPlayerRecord {
-                player_id: new_id(),
-                user_id: Some(entry.user_id.clone()),
-                display_name: None,
-                side_id: entry.side_id.clone(),
-                is_member_of_team: None,
-                invitation: None,
-                role: dao::records::MatchPlayerRole::Player,
-                joined_via: Some(dao::records::JoinSourceRecord::Waitlist),
+        let target_side = entry
+            .side_id
+            .as_deref()
+            .and_then(|sid| agg.sides.iter().find(|s| s.side_id == sid));
+        let player = dao::records::MatchPlayerRecord {
+            player_id: new_id(),
+            user_id: Some(entry.user_id.clone()),
+            display_name: None,
+            side_id: entry.side_id.clone(),
+            is_member_of_team: None,
+            invitation: None,
+            role: dao::records::MatchPlayerRole::Player,
+            joined_via: Some(dao::records::JoinSourceRecord::Waitlist),
+        };
+        if let Err(e) = dao
+            .join_match_tx(
+                &match_id,
+                &player,
+                target_side.and_then(|s| s.max_players),
+                agg.effective_max_players(),
+                &agg.match_.starts_at,
+                &now_iso(),
+            )
+            .await
+        {
+            return match e {
+                dao::DaoError::Conflict(_) => {
+                    Ok(MoveInFromWaitlistResponse::Conflict(Json(RosterConflict {
+                        kind: RosterConflictKind::SideFull,
+                        message: "no free spot".into(),
+                    })))
+                }
+                other => Err(dao_internal(other)),
             };
-            if let Err(e) = dao
-                .join_match_tx(
-                    &match_id,
-                    &player,
-                    target_side.and_then(|s| s.max_players),
-                    agg.effective_max_players(),
-                    &agg.match_.starts_at,
-                    &now_iso(),
-                )
-                .await
-            {
-                return match e {
-                    dao::DaoError::Conflict(_) => {
-                        Ok(MoveInFromWaitlistResponse::Conflict(Json(RosterConflict {
-                            kind: RosterConflictKind::SideFull,
-                            message: "no free spot".into(),
-                        })))
-                    }
-                    other => Err(dao_internal(other)),
-                };
-            }
         }
 
         dao.leave_waitlist(&match_id, &user_id)
@@ -7053,15 +7061,29 @@ impl Api {
                         },
                     )));
                 }
-                let match_id = dao
+                let match_id = match dao
                     .accept_invitation_tx(&invitation_id, &uid, &responded_at, &responded_at)
                     .await
-                    .map_err(|e| match e {
-                        dao::DaoError::NotFound(_) => {
-                            Error::from_string("not found", StatusCode::NOT_FOUND)
-                        }
-                        other => dao_internal(other),
-                    })?;
+                {
+                    Ok(match_id) => match_id,
+                    Err(dao::DaoError::NotFound(_)) => {
+                        return Err(Error::from_string("not found", StatusCode::NOT_FOUND));
+                    }
+                    Err(dao::DaoError::Conflict(_)) => {
+                        return match reclassify_accept_conflict(dao, &invitation_id).await? {
+                            AcceptConflictOutcome::NotFound => {
+                                Err(Error::from_string("not found", StatusCode::NOT_FOUND))
+                            }
+                            AcceptConflictOutcome::Conflict(kind, message) => Ok(
+                                RespondToInvitationResponse::Conflict(Json(RosterConflict {
+                                    kind,
+                                    message: message.into(),
+                                })),
+                            ),
+                        };
+                    }
+                    Err(other) => return Err(dao_internal(other)),
+                };
                 // Accepting takes a roster spot — recompute the match's
                 // headcounts from the now-accepted roster entry (see
                 // `Dao::refresh_side_roster_previews`).
@@ -7138,15 +7160,29 @@ impl Api {
                         message: message.into(),
                     })));
                 }
-                let match_id = dao
+                let match_id = match dao
                     .accept_invitation_tx(&rec.id, &uid, &responded_at, &responded_at)
                     .await
-                    .map_err(|e| match e {
-                        dao::DaoError::NotFound(_) => {
-                            Error::from_string("not found", StatusCode::NOT_FOUND)
-                        }
-                        other => dao_internal(other),
-                    })?;
+                {
+                    Ok(match_id) => match_id,
+                    Err(dao::DaoError::NotFound(_)) => {
+                        return Err(Error::from_string("not found", StatusCode::NOT_FOUND));
+                    }
+                    Err(dao::DaoError::Conflict(_)) => {
+                        return match reclassify_accept_conflict(dao, &rec.id).await? {
+                            AcceptConflictOutcome::NotFound => {
+                                Err(Error::from_string("not found", StatusCode::NOT_FOUND))
+                            }
+                            AcceptConflictOutcome::Conflict(kind, message) => {
+                                Ok(RespondByTokenResponse::Conflict(Json(RosterConflict {
+                                    kind,
+                                    message: message.into(),
+                                })))
+                            }
+                        };
+                    }
+                    Err(other) => return Err(dao_internal(other)),
+                };
                 // Accepting takes a roster spot — recompute the match's
                 // headcounts from the now-accepted roster entry (see
                 // `Dao::refresh_side_roster_previews`).
@@ -8481,6 +8517,36 @@ async fn match_invite_full_reason(
         .find(|p| p.invitation.as_ref().is_some_and(|i| i.id == rec.id))
         .and_then(|p| p.side_id.clone());
     Ok(full_reason(&agg, target_side_id.as_deref()))
+}
+
+/// What a `DaoError::Conflict` from `Dao::accept_invitation_tx` actually
+/// means, resolved by re-reading rather than guessed. `respond_to_invitation`
+/// and `respond_to_invitation_by_token` both pre-check capacity via
+/// `match_invite_full_reason` before calling it, so a Conflict there is one
+/// of two rare races: the invitation was revoked concurrently (re-read finds
+/// it gone), or capacity closed in the same narrow window the transaction's
+/// own cap guard caught (re-read finds the match/side full) — the same
+/// split `join_match`'s atomic race-guard fallback uses.
+enum AcceptConflictOutcome {
+    NotFound,
+    Conflict(RosterConflictKind, &'static str),
+}
+
+async fn reclassify_accept_conflict(
+    dao: &dao::Dao,
+    invitation_id: &str,
+) -> Result<AcceptConflictOutcome> {
+    let Some(rec) = dao
+        .get_invitation(invitation_id)
+        .await
+        .map_err(dao_internal)?
+    else {
+        return Ok(AcceptConflictOutcome::NotFound);
+    };
+    let (kind, message) = match_invite_full_reason(dao, &rec)
+        .await?
+        .unwrap_or((RosterConflictKind::MatchFull, "this match is full"));
+    Ok(AcceptConflictOutcome::Conflict(kind, message))
 }
 
 fn build_invited_player(

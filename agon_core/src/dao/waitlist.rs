@@ -1,9 +1,11 @@
 //! Match waitlist: someone queued for a match/side that had no room when
 //! they tried to join or accept an invite onto it, kept entirely apart from
-//! the roster (`MatchPlayerRecord`) until a match admin moves them in — see
-//! `MatchWaitlistEntryRecord`'s doc comment for why, and
-//! `Dao::refresh_side_roster_previews` for how a waitlisted-but-accepted
-//! invitee still counts toward no cap.
+//! the roster (`MatchPlayerRecord`) — a waitlisted person, self-served or
+//! invite-derived, has no roster row at all until a match admin moves them
+//! in. See `MatchWaitlistEntryRecord`'s doc comment for why, and
+//! `Dao::accept_invitation_items`'s `onto_waitlist` branch for how an
+//! invite-based waitlist join deletes the pending roster placeholder instead
+//! of linking it.
 
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::put_item::PutItemError;
@@ -85,17 +87,20 @@ impl Dao {
         }
     }
 
-    /// Accept a pending match invitation and join the waitlist in one
-    /// transaction: the invitation and its roster entry flip to accepted
-    /// (exactly like `Dao::accept_invitation_tx` — so the invitee isn't asked
-    /// to respond again) with the waitlist entry created alongside, atomic
-    /// with both. Deleting the waitlist entry later (`Dao::leave_waitlist`,
-    /// or as part of moving them in) is all that's then needed to bring them
-    /// back into the match's counts — see
-    /// `MatchPlayerRecord::occupies_slot`'s doc comment.
+    /// Accept a pending match invitation onto the waitlist, in one
+    /// transaction: the invitation is marked accepted (so the invitee isn't
+    /// asked to respond again) but its pending roster-row placeholder is
+    /// *deleted* rather than linked — they aren't actually in — with the
+    /// waitlist entry created in its place, atomic with both (see
+    /// `Dao::accept_invitation_items`'s `onto_waitlist` branch for the
+    /// roster-row handling, and `MatchWaitlistEntryRecord`'s doc comment for
+    /// why there's no roster row to reconcile from here on). No cap check:
+    /// the waitlist itself is uncapped.
     ///
-    /// `NotFound` if the invitation is gone; `Conflict` if it's not to a
-    /// match, or the caller is already on this match's waitlist.
+    /// `NotFound` if the invitation is gone at the initial read. `Conflict`
+    /// if the transaction's own conditions fail instead — the invitation was
+    /// revoked concurrently, it's not to a match, or the caller is already on
+    /// this match's waitlist (not distinguished; all rare).
     #[tracing::instrument(skip(self, entry), fields(user_id = %entry.user_id))]
     pub async fn accept_invitation_onto_waitlist_tx(
         &self,
@@ -106,7 +111,7 @@ impl Dao {
         entry: &MatchWaitlistEntryRecord,
     ) -> DaoResult<String> {
         let (match_id, mut items) = self
-            .accept_invitation_items(invitation_id, accepting_user_id, responded_at, now)
+            .accept_invitation_items(invitation_id, accepting_user_id, responded_at, now, true)
             .await?;
         let Some(match_id) = match_id else {
             return Err(DaoError::Conflict(format!(

@@ -656,16 +656,22 @@ impl MatchPlayerRecord {
     /// invitation), or an invitee who has accepted. A pending or declined
     /// invite takes nothing; sending an invite doesn't reserve a spot.
     ///
-    /// Doesn't by itself account for the waitlist: an invitee who accepted
-    /// onto the waitlist (`Dao::waitlist_join_tx`) has an *accepted* embedded
-    /// invitation here (so they're not asked again) but a live
-    /// `MatchWaitlistEntryRecord` too — `Dao::refresh_side_roster_previews`
-    /// excludes anyone with one of those before applying this rule, since a
-    /// waitlisted player holds no spot regardless of their invitation status.
+    /// A waitlisted player is never represented by a `MatchPlayerRecord` at
+    /// all — self-served, their `MatchWaitlistEntryRecord` is the only row;
+    /// an invitee who accepts onto the waitlist has their pending roster
+    /// placeholder deleted rather than flipped to accepted, in the same
+    /// transaction that creates the waitlist entry (see
+    /// `Dao::accept_invitation_items`'s `onto_waitlist` branch). So this rule
+    /// never needs to cross-reference the waitlist — every row it sees is a
+    /// real roster candidate.
     ///
-    /// The single definition behind `MatchRecord::total_player_count` and
-    /// `MatchSideRecord::player_count` — see `Dao::refresh_side_roster_previews`
-    /// for where those get recomputed from it.
+    /// The single source of truth `MatchRecord::total_player_count` and
+    /// `MatchSideRecord::player_count` are kept in sync with: every write
+    /// that can flip this rule's answer for a row (join, accept, organizer
+    /// add/remove/reassign, move-in from the waitlist) applies the matching
+    /// atomic `ADD`/`SUBTRACT` delta in the same transaction, rather than
+    /// ever recomputing from a full scan — see `match_ops::take_slot_update`
+    /// and `match_ops::headcount_delta_update`.
     pub fn occupies_slot(&self) -> bool {
         self.invitation
             .as_ref()
@@ -675,10 +681,12 @@ impl MatchPlayerRecord {
 
 /// `MATCH#<matchId>` / `WAITLIST#<userId>` — someone queued for a match/side
 /// that had no room when they tried to join or accept an invite onto it, kept
-/// entirely apart from the roster (`MatchPlayerRecord`) until a match admin
-/// moves them in (`Dao::move_in_from_waitlist_tx`) — at which point this
-/// entry is deleted and (for a plain self-served join) a real roster row is
-/// created for the first time.
+/// entirely apart from the roster (`MatchPlayerRecord`): a waitlisted person
+/// (self-served, or an invitee who accepted onto the waitlist) has no roster
+/// row at all until a match admin moves them in (the `move_in_from_waitlist`
+/// handler) — at which point this entry is deleted and a fresh roster row is
+/// created via the same cap-guarded write `join_match` uses, regardless of
+/// how they got onto the waitlist.
 ///
 /// Keyed by `user_id` rather than a minted id — unlike the roster, a waitlist
 /// entry always names a real account (only an authenticated caller can join a

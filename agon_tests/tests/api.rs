@@ -6971,10 +6971,12 @@ async fn accepting_an_invite_into_a_full_match_returns_a_conflict_and_stays_pend
 /// Joining the waitlist when the caller has a pending invitation to a full
 /// match accepts that invitation and queues them in one step — the invite
 /// isn't left dangling, and the invitee doesn't have to respond separately.
-/// The accepted-but-waitlisted player doesn't occupy the spot: a fresh
-/// self-serve join into the same side still lands on the waitlist's cap
-/// check as full, since the spot is still notionally taken by the original
-/// filler, not double-counted by the invitee.
+/// The now-accepted invitee has no roster row at all (their pending
+/// placeholder is deleted, not linked — see
+/// `Dao::accept_invitation_items`'s `onto_waitlist` branch), so they don't
+/// occupy the spot: a fresh self-serve join into the same side still lands
+/// on the waitlist's cap check as full, since the spot is still held by the
+/// original filler, not double-counted by the invitee.
 #[tokio::test]
 async fn waitlist_join_accepts_a_pending_invitation_in_one_step() {
     let (owner_config, owner) = new_user().await;
@@ -7041,8 +7043,9 @@ async fn waitlist_join_accepts_a_pending_invitation_in_one_step() {
         models::InvitationStatus::Accepted
     ));
 
-    // The invitee is on the roster now (accepted), but doesn't occupy the
-    // spot — the match still reads as full to a brand new joiner.
+    // The invitee has no roster row (accepted onto the waitlist, not linked)
+    // and so doesn't occupy the spot — the match still reads as full to a
+    // brand new joiner.
     let (third_config, _third) = new_user().await;
     let second_link = matches_match_id_join_links_post(
         &owner_config,

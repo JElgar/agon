@@ -43,7 +43,7 @@ use mapping::{
     derive_live_score, device_platform_to_record, feed_match_from_records,
     invitation_detail_from_record, invitation_from_record, invitation_status_from_str,
     invitation_status_str, join_link_from_record, join_link_scope_from_record,
-    join_link_scope_to_record, live_event_from_record, match_format_sport_tag,
+    join_link_scope_to_record, live_event_from_record, location_to_record, match_format_sport_tag,
     match_format_to_record, match_from_records, match_player_role_from_record,
     match_score_from_record, match_score_to_record, match_status_str, match_type_tag,
     new_live_event_to_dao, notification_actor_id, notification_from_record, roster_preview_player,
@@ -725,11 +725,20 @@ pub enum MatchStatus {
     Cancelled,
 }
 
-/// A geographic location. Optional on a match.
+/// Where a match is played. `text` is always present and is what's shown to
+/// users — free-typed, or (once a Places suggestion is picked) that place's
+/// formatted address. `latitude`/`longitude`/`place_id` are only ever set
+/// together, when the location was resolved to an actual place — a client
+/// should only offer a "get directions" link once one of those is present;
+/// free text alone isn't reliable enough to build a maps query from.
 #[derive(Object)]
 struct Location {
-    latitude: f64,
-    longitude: f64,
+    text: String,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
+    /// Google Place ID, when this resolved to a real place — use it to link
+    /// to that place's own listing rather than a bare coordinate pin.
+    place_id: Option<String>,
 }
 
 #[derive(Object)]
@@ -3271,10 +3280,7 @@ impl Api {
             // from `player_records` in the same transaction (mirrors how the
             // sides' own `player_count`/`roster_preview` above are handled).
             total_player_count: 0,
-            location: input.location.map(|l| dao::records::LocationRecord {
-                latitude: l.latitude,
-                longitude: l.longitude,
-            }),
+            location: input.location.as_ref().map(location_to_record),
             header_photos,
             sides,
             confirmed_score: None,
@@ -3784,6 +3790,7 @@ impl Api {
             pending_score.map(Some),
             header_photos,
             input.format.as_ref().map(match_format_to_record),
+            input.location.as_ref().map(location_to_record),
             &side_name_updates,
         )
         .await
@@ -4181,6 +4188,7 @@ impl Api {
                 None,
                 None,
                 Some("in_progress"),
+                None,
                 None,
                 None,
                 None,
@@ -4692,6 +4700,7 @@ impl Api {
                     Some(None),
                     None,
                     None,
+                    None,
                     &[],
                 )
                 .await
@@ -4747,6 +4756,7 @@ impl Api {
                         None,
                         Some(confirmed),
                         Some(None),
+                        None,
                         None,
                         None,
                         &[],
@@ -5708,6 +5718,7 @@ impl Api {
             dao.update_match_meta(
                 &match_id,
                 Some(&agg.match_.name),
+                None,
                 None,
                 None,
                 None,
@@ -8926,8 +8937,10 @@ fn mock_match(id: String) -> Match {
         status: MatchStatus::Completed,
         starts_at: mock_timestamp(),
         location: Some(Location {
-            latitude: 51.5074,
-            longitude: -0.1278,
+            text: String::from("Hackney Marshes, London"),
+            latitude: Some(51.5074),
+            longitude: Some(-0.1278),
+            place_id: None,
         }),
         header_photos: vec![Photo {
             image_url: String::from("https://cdn.example.com/matches/match_123/header.jpg"),

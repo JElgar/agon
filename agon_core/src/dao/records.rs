@@ -14,11 +14,25 @@ use serde::{Deserialize, Serialize};
 // DynamoDB maps, typed here for safety rather than as `serde_json::Value`.
 // ===========================================================================
 
-/// A geographic location.
+/// Where a match is played. `text` is the always-present display label — a
+/// free-typed description ("Pitch 5, Leather Lane") or, once a Google Places
+/// suggestion was picked, that place's formatted address. `place_id` and the
+/// coordinates are only ever set together, when a suggestion was picked;
+/// free text alone leaves both `None` — a maps query built from text alone
+/// isn't reliable enough to point at the right place, so a client only
+/// offers a "get directions" link once one of those is present.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LocationRecord {
-    pub latitude: f64,
-    pub longitude: f64,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latitude: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub longitude: Option<f64>,
+    /// Google Place ID, when this location was resolved to a real place —
+    /// lets a directions/map link point at that specific place's own listing
+    /// rather than just a coordinate pin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place_id: Option<String>,
 }
 
 /// One header photo attached to a match: the asset it was uploaded as (so a

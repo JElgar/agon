@@ -14,8 +14,8 @@ use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_pk, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::{
-    ConfirmedScoreRecord, HeaderPhotoRecord, MatchFormatRecord, MatchPlayerRecord, MatchRecord,
-    MatchScoreRecord, MatchSideRecord, PendingScoreRecord, SideRosterMemberRecord,
+    ConfirmedScoreRecord, HeaderPhotoRecord, LocationRecord, MatchFormatRecord, MatchPlayerRecord,
+    MatchRecord, MatchScoreRecord, MatchSideRecord, PendingScoreRecord, SideRosterMemberRecord,
 };
 
 pub const TYPE_MATCH: &str = "match";
@@ -461,10 +461,12 @@ impl Dao {
         Ok(items)
     }
 
-    /// Update a match's mutable meta fields. Any `Some` field is written; `name`,
-    /// `description`, `status`, `starts_at`, `location` (Some(None) clears it),
-    /// and the resolved `confirmed_score`/`pending_score` blobs. `NotFound` if
-    /// the match is absent.
+    /// Update a match's mutable meta fields. Any `Some` field is written:
+    /// `name`, `description`, `status`, `starts_at`, `location`, `format`
+    /// (each overwritten wholesale, no clear case — mirrors `format`'s own
+    /// doc comment), and the resolved `confirmed_score`/`pending_score`
+    /// blobs (which do support clearing via `Some(None)`). `NotFound` if the
+    /// match is absent.
     ///
     /// `side_names` renames one or more sides in the same `UpdateItem` call as
     /// everything else here — both target the same item, so folding it in
@@ -494,6 +496,9 @@ impl Dao {
         // overwrites. No "clear" case yet (Phase 1 doesn't need one — a
         // match's sport, and so its format shape, doesn't change).
         format: Option<MatchFormatRecord>,
+        // Replace the location. `None` leaves it unchanged; `Some(value)`
+        // overwrites. No "clear" case yet, same as `format` above.
+        location: Option<LocationRecord>,
         side_names: &[(String, Option<String>)],
     ) -> DaoResult<()> {
         let mut set: Vec<String> = Vec::new();
@@ -559,6 +564,11 @@ impl Dao {
             set.push("#fmt = :fmt".into());
             names.insert("#fmt".into(), "format".into());
             values.insert(":fmt".into(), to_attr(&fmt)?);
+        }
+        if let Some(loc) = location {
+            set.push("#loc = :loc".into());
+            names.insert("#loc".into(), "location".into());
+            values.insert(":loc".into(), to_attr(&loc)?);
         }
         if !side_names.is_empty() {
             // Same literal attribute name ("name") as the top-level `#name`

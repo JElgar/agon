@@ -64,14 +64,14 @@ use agon_core::dao::records::{
     FootballPeriodEventRecord, FootballPeriodRecord, FootballStatsRecord,
     FootballSubstitutionEventRecord, GenericSportStatsRecord, InningsEndReasonRecord,
     InvitationContextRecord, InvitationKindRecord, InvitationRecord, JoinLinkRecord,
-    JoinLinkScopeRecord, LiveEventPayloadRecord, LiveEventRecord, MatchFormatRecord,
-    MatchLikeRecord, MatchPlayerRecord, MatchPlayerRole as MatchPlayerRoleRecord, MatchRecord,
-    MatchScoreRecord, MatchSideRecord, NetballFormatRecord, NetballFoulEventRecord,
-    NetballFoulKindRecord, NetballGoalEventRecord, NetballLiveEventRecord,
-    NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord, NextBallContextRecord,
-    NotificationKindRecord, NotificationRecord, OversRecord, PendingScoreRecord,
-    ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord, ScoreSubmissionRecord,
-    TeamMemberRecord, TeamRecord, UserRecord, UserStatsRecord,
+    JoinLinkScopeRecord, LiveEventPayloadRecord, LiveEventRecord, LocationRecord,
+    MatchFormatRecord, MatchLikeRecord, MatchPlayerRecord,
+    MatchPlayerRole as MatchPlayerRoleRecord, MatchRecord, MatchScoreRecord, MatchSideRecord,
+    NetballFormatRecord, NetballFoulEventRecord, NetballFoulKindRecord, NetballGoalEventRecord,
+    NetballLiveEventRecord, NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord,
+    NextBallContextRecord, NotificationKindRecord, NotificationRecord, OversRecord,
+    PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord,
+    ScoreSubmissionRecord, TeamMemberRecord, TeamRecord, UserRecord, UserStatsRecord,
 };
 
 /// Parse an RFC-3339 timestamp string stored by the DAO into a UTC datetime,
@@ -1045,6 +1045,31 @@ pub fn roster_preview_player(
 }
 
 // ===========================================================================
+// Location: Location (API) <-> LocationRecord (DAO). Both are the same flat
+// shape today, but kept as explicit functions (rather than field-for-field
+// literals repeated at each call site) so a future divergence is a
+// one-place change.
+// ===========================================================================
+
+pub fn location_to_record(loc: &Location) -> LocationRecord {
+    LocationRecord {
+        text: loc.text.clone(),
+        latitude: loc.latitude,
+        longitude: loc.longitude,
+        place_id: loc.place_id.clone(),
+    }
+}
+
+pub fn location_from_record(rec: &LocationRecord) -> Location {
+    Location {
+        text: rec.text.clone(),
+        latitude: rec.latitude,
+        longitude: rec.longitude,
+        place_id: rec.place_id.clone(),
+    }
+}
+
+// ===========================================================================
 // Match aggregate
 // ===========================================================================
 
@@ -1064,10 +1089,7 @@ pub fn match_from_records(
         status: match_status_from_str(&rec.status),
         starts_at: parse_ts(&rec.starts_at),
         allow_unassigned: rec.allow_unassigned,
-        location: rec.location.as_ref().map(|l| Location {
-            latitude: l.latitude,
-            longitude: l.longitude,
-        }),
+        location: rec.location.as_ref().map(location_from_record),
         header_photos: rec
             .header_photos
             .iter()
@@ -1118,10 +1140,7 @@ pub fn feed_match_from_records(
         match_type: match_type_from_tag(&rec.match_type),
         status: match_status_from_str(&rec.status),
         starts_at: parse_ts(&rec.starts_at),
-        location: rec.location.as_ref().map(|l| Location {
-            latitude: l.latitude,
-            longitude: l.longitude,
-        }),
+        location: rec.location.as_ref().map(location_from_record),
         header_photos: rec
             .header_photos
             .iter()
@@ -1174,10 +1193,7 @@ pub fn search_match_from_records(
         match_type: match_type_from_tag(&rec.match_type),
         status: match_status_from_str(&rec.status),
         starts_at: parse_ts(&rec.starts_at),
-        location: rec.location.as_ref().map(|l| Location {
-            latitude: l.latitude,
-            longitude: l.longitude,
-        }),
+        location: rec.location.as_ref().map(location_from_record),
         header_photos: rec
             .header_photos
             .iter()

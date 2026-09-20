@@ -240,6 +240,7 @@ function NotificationRow({
           {formatDistanceToNow(new Date(notification.created_at), {
             addSuffix: true,
           })}
+          {view.resolvedLabel && <> · {view.resolvedLabel}</>}
         </div>
 
         {view.actions && (
@@ -338,6 +339,25 @@ interface NotificationView {
     userId: string
     isFollowing: boolean
   }
+  /** Present once a match/team invitation has been responded to (from this
+   *  notification's own actions, or from elsewhere, e.g. the match page) —
+   *  shown next to the timestamp in place of the Confirm/Decline buttons. */
+  resolvedLabel?: string
+}
+
+/** Label shown next to the timestamp once a match/team invitation is no
+ *  longer pending, in place of the Confirm/Decline buttons. */
+function resolvedInvitationLabel(
+  status: components['schemas']['InvitationStatus'],
+): string | undefined {
+  switch (status) {
+    case 'accepted':
+      return 'Accepted'
+    case 'declined':
+      return 'Declined'
+    case 'pending':
+      return undefined
+  }
 }
 
 /**
@@ -361,13 +381,20 @@ function describe(kind: Kind): NotificationView {
         badgeClass: 'bg-primary',
         href: `/matches/${kind.match_id}`,
         actions: {
-          invitation: {
-            id: kind.invitation_id,
-            name: kind.match_name,
-            matchId: kind.match_id,
-          },
+          // Only offer Confirm/Decline while the invitation is still pending —
+          // once responded to (here or elsewhere, e.g. the match page), the
+          // row keeps its "View match" link but drops the buttons.
+          invitation:
+            kind.status === 'pending'
+              ? {
+                  id: kind.invitation_id,
+                  name: kind.match_name,
+                  matchId: kind.match_id,
+                }
+              : undefined,
           viewLabel: 'View match',
         },
+        resolvedLabel: resolvedInvitationLabel(kind.status),
       }
     case 'TeamInvitation':
       return {
@@ -384,13 +411,17 @@ function describe(kind: Kind): NotificationView {
         badgeClass: 'bg-primary',
         href: `/teams/${kind.team_id}`,
         actions: {
-          invitation: {
-            id: kind.invitation_id,
-            name: kind.team_name,
-            suffix: ' as a member',
-          },
+          invitation:
+            kind.status === 'pending'
+              ? {
+                  id: kind.invitation_id,
+                  name: kind.team_name,
+                  suffix: ' as a member',
+                }
+              : undefined,
           viewLabel: 'View team',
         },
+        resolvedLabel: resolvedInvitationLabel(kind.status),
       }
     case 'InvitationAccepted': {
       // `context` has the same discriminant erasure as `kind` — cast to the

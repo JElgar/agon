@@ -1,14 +1,16 @@
 use poem_openapi::{Object, Union};
 
 use crate::UserProfile;
-use crate::membership::InvitationContext;
+use crate::membership::{InvitationContext, InvitationStatus};
 
-/// A notification feed entry. A thin, read-only record of "something happened"
-/// that references the underlying entity rather than owning its state — the
-/// action buttons resolve to the existing domain endpoints (e.g. a match
-/// invitation notification carries an `invitation_id` and Confirm calls
-/// `POST /invitations/:id/respond`). Notifications never store actionable state
-/// such as invitation status, so they cannot drift out of sync with it.
+/// A notification feed entry. A thin, mostly read-only record of "something
+/// happened" that references the underlying entity rather than owning its
+/// state — the action buttons resolve to the existing domain endpoints (e.g.
+/// a match invitation notification carries an `invitation_id` and Confirm
+/// calls `POST /invitations/:id/respond`). The one exception is an
+/// invitation notification's own `status`, mirrored onto it in place when the
+/// invitee responds (`Dao::mark_invitation_notification_actioned`) so the
+/// client knows to stop offering Confirm/Decline once it's been actioned.
 #[derive(Object)]
 pub struct Notification {
     pub id: String,
@@ -62,6 +64,11 @@ pub struct MatchInvitationNotification {
     pub match_id: String,
     /// Display label so the row renders without fetching the match.
     pub match_name: String,
+    /// The invitation's current status. The client should only offer
+    /// Confirm/Decline while this is `pending` — once responded to (by this
+    /// notification's own actions, or from elsewhere, e.g. the match page),
+    /// it stays `accepted`/`declined`.
+    pub status: InvitationStatus,
 }
 
 #[derive(Object)]
@@ -73,6 +80,8 @@ pub struct TeamInvitationNotification {
     pub team_id: String,
     /// Display label so the row renders without fetching the team.
     pub team_name: String,
+    /// See `MatchInvitationNotification::status`.
+    pub status: InvitationStatus,
 }
 
 #[derive(Object)]

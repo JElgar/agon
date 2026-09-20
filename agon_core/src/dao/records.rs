@@ -1179,12 +1179,22 @@ pub enum NotificationKindRecord {
         invitation_id: String,
         match_id: String,
         match_name: String,
+        /// The invitation's live status ("pending"/"accepted"/"declined"),
+        /// flipped in place by `Dao::mark_invitation_notification_actioned`
+        /// when the invitee responds, so the feed stops offering
+        /// Confirm/Decline once it's been actioned. Defaults to "pending" for
+        /// notifications written before this field existed.
+        #[serde(default = "default_pending_invitation_status")]
+        status: String,
     },
     TeamInvitation {
         actor_user_id: String,
         invitation_id: String,
         team_id: String,
         team_name: String,
+        /// See `MatchInvitation::status`.
+        #[serde(default = "default_pending_invitation_status")]
+        status: String,
     },
     InvitationAccepted {
         actor_user_id: String,
@@ -1249,6 +1259,10 @@ pub enum NotificationKindRecord {
         match_id: String,
         match_name: String,
     },
+}
+
+fn default_pending_invitation_status() -> String {
+    "pending".to_string()
 }
 
 /// The client platform a registered push token belongs to. Distinguishes how

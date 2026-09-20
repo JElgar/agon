@@ -5,6 +5,8 @@
 //! request handlers. The unread badge count is a counter on the user's profile
 //! item, kept in step with the notifications' `is_read` flags.
 
+use aws_sdk_dynamodb::error::SdkError;
+use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 use aws_sdk_dynamodb::types::{AttributeValue, Put, TransactWriteItem, Update};
 
 use super::client::Dao;
@@ -183,6 +185,45 @@ impl Dao {
         Ok(())
     }
 
+    /// Flip the invitee's own `MatchInvitation`/`TeamInvitation` notification
+    /// to `status` in place, once they've responded — so the notifications
+    /// feed stops offering Confirm/Decline for it.
+    ///
+    /// Addressed by the same deterministic id the worker uses when creating
+    /// it (`notif-invitation-<invitation_id>`, see
+    /// `agon_worker/src/handlers/notify.rs::notify_invitation`), so this is a
+    /// direct `UpdateItem` on a computed key — no query needed. No-ops if the
+    /// notification doesn't exist (e.g. a self-invite, which the worker never
+    /// creates one for).
+    #[tracing::instrument(skip(self))]
+    pub async fn mark_invitation_notification_actioned(
+        &self,
+        user_id: &str,
+        invitation_id: &str,
+        status: &str,
+    ) -> DaoResult<()> {
+        let notification_id = format!("notif-invitation-{invitation_id}");
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::User(user_id.into()).to_string()))
+            .key("SK", s(Sk::Notification(notification_id).to_string()))
+            .update_expression("SET kind.#status = :status")
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_names("#status", "status")
+            .expression_attribute_values(":status", s(status))
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => Ok(()),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
     /// An `Update` adding `delta` to the profile's `unread_count`.
     fn unread_delta(&self, user_id: &str, delta: i64) -> DaoResult<Update> {
         Update::builder()
@@ -194,4 +235,12 @@ impl Dao {
             .build()
             .map_err(|e| DaoError::Dynamo(e.to_string()))
     }
+}
+
+fn is_update_conditional_failure(err: &SdkError<UpdateItemError>) -> bool {
+    matches!(
+        err,
+        SdkError::ServiceError(se)
+            if matches!(se.err(), UpdateItemError::ConditionalCheckFailedException(_))
+    )
 }

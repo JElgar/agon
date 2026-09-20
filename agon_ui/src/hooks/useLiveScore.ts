@@ -149,6 +149,18 @@ export function useUndoTargetSeq(matchId: string | undefined, options?: { enable
  * any live event is recorded, so every append also invalidates the match and
  * feed queries — that's the only signal the scorer's own client has that the
  * status (and therefore other viewers' "Live" gate) may have just changed.
+ *
+ * `useLiveSeq`'s `staleTime: Infinity` means nothing ever refetches this
+ * tab's cached tip in the background — so if another client (another tab,
+ * or the Garmin watch app's own scorer, which has this exact same
+ * optimistic-concurrency handshake) appends while this tab is open, the
+ * very next append here comes back `409 Conflict` with a now-stale cached
+ * tip that nothing was fixing, needing a full page reload to reseed it —
+ * reported directly as "have to refresh the page after an event comes in
+ * from the watch app". Fixed the same way the watch app's own client
+ * retries after a conflict: re-fetch the real tip and retry this exact
+ * event with it once, rather than just failing and leaving the cache
+ * stale for next time too.
  */
 function useAppendLiveEvent<T extends { kind: string }>(
   matchId: string,
@@ -156,20 +168,37 @@ function useAppendLiveEvent<T extends { kind: string }>(
 ) {
   const queryClient = useQueryClient()
 
+  const sendAppend = (event: T, expected: number) => {
+    const input: NewLiveEventInput = {
+      occurred_at: new Date().toISOString(),
+      event: { sport, ...event } as NewLiveEventInput['event'],
+    }
+    return fetchClient.POST('/matches/{match_id}/live/events', {
+      params: { path: { match_id: matchId } },
+      body: {
+        expected_last_seq: expected,
+        events: [input],
+      },
+    })
+  }
+
   return useMutation({
     mutationFn: async (event: T) => {
       const expected = queryClient.getQueryData<number>(liveSeqQueryKey(matchId)) ?? 0
-      const input: NewLiveEventInput = {
-        occurred_at: new Date().toISOString(),
-        event: { sport, ...event } as NewLiveEventInput['event'],
+      let { data, error, response } = await sendAppend(event, expected)
+      if (response.status === 409) {
+        // staleTime: 0 forces a real network refetch regardless of
+        // useLiveSeq's own Infinity — fetchQuery takes the options given
+        // here, not whatever a hook elsewhere registered this key with —
+        // and its result also updates the shared cache, fixing it for
+        // every other reader too, not just this retry.
+        const realSeq = await queryClient.fetchQuery({
+          queryKey: liveSeqQueryKey(matchId),
+          queryFn: () => fetchLiveSeq(matchId),
+          staleTime: 0,
+        })
+        ;({ data, error, response } = await sendAppend(event, realSeq))
       }
-      const { data, error } = await fetchClient.POST('/matches/{match_id}/live/events', {
-        params: { path: { match_id: matchId } },
-        body: {
-          expected_last_seq: expected,
-          events: [input],
-        },
-      })
       if (error || !data) throw new Error('Failed to record event')
       return data
     },

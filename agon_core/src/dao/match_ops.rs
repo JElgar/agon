@@ -791,6 +791,34 @@ impl Dao {
         starts_at: &str,
         now: &str,
     ) -> DaoResult<()> {
+        let items = self.join_match_items(
+            match_id,
+            player,
+            side_max_players,
+            total_max_players,
+            starts_at,
+            now,
+        )?;
+        self.send_transact_items(items).await
+    }
+
+    /// Build the writes `join_match_tx` sends as one transaction — the roster
+    /// put, the cap-guarded headcount `ADD`, and (if `player.user_id` is set)
+    /// the joiner's own feed row — without sending them. Shared with
+    /// `Dao::move_in_from_waitlist_tx`, which appends one more item (deleting
+    /// the mover's waitlist entry) to the same list before sending, so a
+    /// move-in either lands fully — on the roster and off the waitlist — or
+    /// not at all, rather than the two as separate calls a partial failure
+    /// could split apart.
+    pub(super) fn join_match_items(
+        &self,
+        match_id: &str,
+        player: &MatchPlayerRecord,
+        side_max_players: Option<u32>,
+        total_max_players: Option<u32>,
+        starts_at: &str,
+        now: &str,
+    ) -> DaoResult<Vec<TransactWriteItem>> {
         let put_player = Put::builder()
             .table_name(self.table())
             .set_item(Some(self.match_player_item(match_id, player)?))
@@ -807,11 +835,10 @@ impl Dao {
             total_max_players,
         )?;
 
-        let mut tx = self
-            .client
-            .transact_write_items()
-            .transact_items(TransactWriteItem::builder().put(put_player).build())
-            .transact_items(TransactWriteItem::builder().update(update_meta).build());
+        let mut items = vec![
+            TransactWriteItem::builder().put(put_player).build(),
+            TransactWriteItem::builder().update(update_meta).build(),
+        ];
 
         if let Some(uid) = &player.user_id {
             let feed_item = self.feed_item(
@@ -829,16 +856,10 @@ impl Dao {
                 .set_item(Some(feed_item))
                 .build()
                 .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-            tx = tx.transact_items(TransactWriteItem::builder().put(feed_put).build());
+            items.push(TransactWriteItem::builder().put(feed_put).build());
         }
 
-        match tx.send().await {
-            Ok(_) => Ok(()),
-            Err(e) if super::is_transaction_conditional_failure(&e) => Err(DaoError::Conflict(
-                "match is full, or you're already on the roster".into(),
-            )),
-            Err(e) => Err(DaoError::Dynamo(e.to_string())),
-        }
+        Ok(items)
     }
 
     /// Add or update a single match player (roster reconciliation / late adds).

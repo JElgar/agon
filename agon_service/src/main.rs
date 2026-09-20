@@ -6474,9 +6474,10 @@ impl Api {
         // placeholder gets deleted, not linked, the moment they land on the
         // waitlist — see `Dao::accept_invitation_items`'s `onto_waitlist`
         // branch) — self-served or invite-derived, moving in always means
-        // creating one fresh, via the same cap-guarded write `join_match`
-        // uses (the `full_reason` check just above is the precise error;
-        // this is the atomic last-moment guard, same split as there).
+        // creating one fresh, atomically with leaving the waitlist (see
+        // `Dao::move_in_from_waitlist_tx`; the `full_reason` check just above
+        // is the precise error, this is the atomic last-moment guard, same
+        // split `join_match` uses).
         let target_side = entry
             .side_id
             .as_deref()
@@ -6492,7 +6493,7 @@ impl Api {
             joined_via: Some(dao::records::JoinSourceRecord::Waitlist),
         };
         if let Err(e) = dao
-            .join_match_tx(
+            .move_in_from_waitlist_tx(
                 &match_id,
                 &player,
                 target_side.and_then(|s| s.max_players),
@@ -6513,9 +6514,6 @@ impl Api {
             };
         }
 
-        dao.leave_waitlist(&match_id, &user_id)
-            .await
-            .map_err(dao_internal)?;
         dao.refresh_side_roster_previews(&match_id)
             .await
             .map_err(dao_internal)?;

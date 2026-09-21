@@ -1072,6 +1072,16 @@ const placesBackendApi = new gcp.projects.Service("places-backend-api", {
 	disableOnDestroy: false,
 });
 
+// Separate from the two API targets above: this is the management API for
+// creating/reading the key resource itself, not an API the key grants access
+// to. Without it, `gcp.projects.ApiKey` create fails with "API Keys API has
+// not been used in project ... or it is disabled".
+const apiKeysApi = new gcp.projects.Service("apikeys-api", {
+	project: gcpProjectId,
+	service: "apikeys.googleapis.com",
+	disableOnDestroy: false,
+});
+
 const googleMapsApiKey = new gcp.projects.ApiKey("agon-ui-maps-key", {
 	project: gcpProjectId,
 	displayName: "agon-ui-maps",
@@ -1084,7 +1094,7 @@ const googleMapsApiKey = new gcp.projects.ApiKey("agon-ui-maps-key", {
 			allowedReferrers: [`${agonUiUrl}/*`],
 		},
 	},
-}, { dependsOn: [mapsBackendApi, placesBackendApi] });
+}, { dependsOn: [mapsBackendApi, placesBackendApi, apiKeysApi] });
 
 // ── Supabase Google Auth: OAuth consent screen + client ─────────────────────
 // Fully manual, per project — and NOT automatable at all right now, not even

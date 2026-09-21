@@ -1,7 +1,21 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { CalendarClock, CalendarPlus, ChevronLeft, Clock, Flame, Link2, MailOpen, MapPin, Pencil, Radio, ShieldPlus, UserPlus } from 'lucide-react'
+import {
+  CalendarClock,
+  CalendarPlus,
+  ChevronLeft,
+  Clock,
+  Crown,
+  Flame,
+  Link2,
+  MailOpen,
+  MapPin,
+  MoreVertical,
+  Pencil,
+  Radio,
+  UserPlus,
+} from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
@@ -9,7 +23,14 @@ import { scheduledDateTime } from '@/lib/datetime'
 import { directionsUrl } from '@/lib/location'
 import { downloadMatchIcs } from '@/lib/calendar'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Avatar } from '@/components/agon/Avatar'
+import { PromoteToMatchOwnerDialog } from '@/components/agon/PromoteToMatchOwnerDialog'
 import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
 import { SportBadge } from '@/components/agon/SportBadge'
 import { StatusBadge, matchBadgeStatus } from '@/components/agon/StatusBadge'
@@ -630,7 +651,7 @@ function MatchDetail({
       {/* Leave the match — the one action left to a plain player once
           they're read-only on everything else here. An admin can leave too
           (mirrors team leave); the owner is pointed at the roster's own
-          "Make owner" button first. */}
+          "Promote to owner" menu item first. */}
       {iAmParticipant && !cancelled && (
         <LeaveMatch match={match} isOwner={iAmOwner} />
       )}
@@ -998,8 +1019,8 @@ function CancelMatch({ match }: { match: Match }) {
  * "Leave match" action: same two-step confirm as `CancelMatch`, then `POST
  * /matches/:id/leave`. The owner can't leave this way — the server rejects
  * it — so rather than duplicate `LeaveTeamDialog`'s in-dialog "pick a new
- * owner" picker, this just points them at the roster's own "Make owner"
- * button (`SideRoster`'s `ShieldPlus` affordance, next to each other
+ * owner" picker, this just points them at the roster's own "Promote to
+ * owner" menu item (`SideRoster`'s per-player "…" menu, next to each other
  * accepted player) and asks them to come back once they've handed it off.
  */
 function LeaveMatch({ match, isOwner }: { match: Match; isOwner: boolean }) {
@@ -1037,8 +1058,9 @@ function LeaveMatch({ match, isOwner }: { match: Match; isOwner: boolean }) {
       <div className="rounded-xl border p-4">
         <p className="text-sm font-medium">Transfer ownership first</p>
         <p className="mt-0.5 text-xs text-muted-foreground">
-          As owner, hand the role to someone else — tap "Make owner" next to
-          their name in the roster above — before you can leave.
+          As owner, hand the role to someone else — open the "…" menu next to
+          their name in the roster above and choose "Promote to owner" —
+          before you can leave.
         </p>
         <div className="mt-3">
           <Button variant="outline" size="sm" onClick={() => setConfirming(false)}>
@@ -1196,18 +1218,6 @@ function SideRoster({
   currentUserId?: string
   iAmOwner: boolean
 }) {
-  const queryClient = useQueryClient()
-  const transferMutation = useMutation({
-    mutationFn: async (playerId: string) => {
-      const { error } = await fetchClient.POST('/matches/{match_id}/transfer-ownership', {
-        params: { path: { match_id: matchId } },
-        body: { player_id: playerId },
-      })
-      if (error) throw new Error('Failed to transfer ownership')
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['match', matchId] }),
-  })
-
   return (
     <div className="rounded-xl border bg-card p-3">
       <p className="mb-2 truncate text-xs font-medium uppercase tracking-wider text-muted-foreground">
@@ -1217,71 +1227,104 @@ function SideRoster({
         {players.length === 0 && (
           <p className="text-xs text-muted-foreground">No players.</p>
         )}
-        {players.map((p, i) => {
-          const name = memberName(p.member)
-          const avatarUrl = memberAvatarUrl(p.member)
-          const pending =
-            p.member.invitation && p.member.invitation.status === 'pending'
-          // Token-invited (external) players have a shareable link; offer to
-          // copy it instead of the bare "invited" label.
-          const inviteToken = memberInviteToken(p.member)
-          // Only linked Agon users have a profile to open — external players
-          // (invited by name only) have no `user_id` and stay plain text.
-          const userId = p.member.type === 'User' ? p.member.user_id : undefined
-          // The owner may hand the role to any other accepted player — not
-          // themselves, and not a still-pending invitee (mirrors the server's
-          // "must already be an accepted player" rule).
-          const isYou = userId !== undefined && userId === currentUserId
-          const canTransferTo = iAmOwner && !isYou && !pending && p.role !== 'owner'
-          return (
-            <div key={i} className="flex items-center gap-2">
-              {userId ? (
-                <Link
-                  to={`/users/${userId}`}
-                  className="flex min-w-0 flex-1 items-center gap-2"
-                >
-                  <Avatar name={name} imageUrl={avatarUrl} size="md" />
-                  <span className="flex-1 truncate text-sm">{name}</span>
-                </Link>
-              ) : (
-                <>
-                  <Avatar name={name} imageUrl={avatarUrl} size="md" />
-                  <span className="flex-1 truncate text-sm">{name}</span>
-                </>
-              )}
-              {(p.role === 'owner' || p.role === 'admin') && (
-                <span className="text-[10px] capitalize text-muted-foreground">
-                  {p.role}
-                </span>
-              )}
-              {canTransferTo && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-6 shrink-0"
-                  disabled={transferMutation.isPending}
-                  aria-label={`Make ${name} owner`}
-                  title="Make owner"
-                  onClick={() => transferMutation.mutate(p.member.id)}
-                >
-                  <ShieldPlus className="size-3.5" />
-                </Button>
-              )}
-              {inviteToken ? (
-                <CopyInviteButton token={inviteToken} />
-              ) : (
-                pending && (
-                  <span className="text-[10px] text-muted-foreground">invited</span>
-                )
-              )}
-            </div>
-          )
-        })}
+        {players.map((p, i) => (
+          <RosterPlayerRow
+            key={i}
+            player={p}
+            matchId={matchId}
+            currentUserId={currentUserId}
+            iAmOwner={iAmOwner}
+          />
+        ))}
       </div>
-      {transferMutation.isError && (
-        <p className="mt-2 text-[10px] text-destructive">
-          Couldn't transfer ownership. Try again.
-        </p>
+    </div>
+  )
+}
+
+/** One roster row: avatar, name, role badge, an "invited"/copy-link badge for
+ *  someone who hasn't accepted yet, and — for the match owner viewer, on any
+ *  other accepted player — a "…" menu offering "Promote to owner". Mirrors
+ *  `TeamPage`'s `MemberRow`; matches only ever have this one contextual
+ *  action (no admin/member toggle or removal here), so the menu has a single
+ *  item, but it's still a labeled menu rather than a bare icon button, and
+ *  still gated behind a confirmation dialog since it demotes the caller. */
+function RosterPlayerRow({
+  player: p,
+  matchId,
+  currentUserId,
+  iAmOwner,
+}: {
+  player: MatchPlayer
+  matchId: string
+  currentUserId?: string
+  iAmOwner: boolean
+}) {
+  const [promoteOpen, setPromoteOpen] = useState(false)
+  const name = memberName(p.member)
+  const avatarUrl = memberAvatarUrl(p.member)
+  const pending = p.member.invitation && p.member.invitation.status === 'pending'
+  // Token-invited (external) players have a shareable link; offer to
+  // copy it instead of the bare "invited" label.
+  const inviteToken = memberInviteToken(p.member)
+  // Only linked Agon users have a profile to open — external players
+  // (invited by name only) have no `user_id` and stay plain text.
+  const userId = p.member.type === 'User' ? p.member.user_id : undefined
+  // The owner may hand the role to any other accepted player — not
+  // themselves, and not a still-pending invitee (mirrors the server's
+  // "must already be an accepted player" rule).
+  const isYou = userId !== undefined && userId === currentUserId
+  const canTransferTo = iAmOwner && !isYou && !pending && p.role !== 'owner'
+
+  return (
+    <div className="flex items-center gap-2">
+      {userId ? (
+        <Link to={`/users/${userId}`} className="flex min-w-0 flex-1 items-center gap-2">
+          <Avatar name={name} imageUrl={avatarUrl} size="md" />
+          <span className="flex-1 truncate text-sm">{name}</span>
+        </Link>
+      ) : (
+        <>
+          <Avatar name={name} imageUrl={avatarUrl} size="md" />
+          <span className="flex-1 truncate text-sm">{name}</span>
+        </>
+      )}
+      {(p.role === 'owner' || p.role === 'admin') && (
+        <span className="text-[10px] capitalize text-muted-foreground">{p.role}</span>
+      )}
+      {canTransferTo && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-6 shrink-0"
+              aria-label={`Manage ${name}`}
+            >
+              <MoreVertical className="size-3.5" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent>
+            <DropdownMenuItem onSelect={() => setPromoteOpen(true)}>
+              <Crown />
+              Promote to owner
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+      {inviteToken ? (
+        <CopyInviteButton token={inviteToken} />
+      ) : (
+        pending && <span className="text-[10px] text-muted-foreground">invited</span>
+      )}
+
+      {canTransferTo && (
+        <PromoteToMatchOwnerDialog
+          matchId={matchId}
+          playerId={p.member.id}
+          playerName={name}
+          open={promoteOpen}
+          onOpenChange={setPromoteOpen}
+        />
       )}
     </div>
   )

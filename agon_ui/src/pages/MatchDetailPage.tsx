@@ -10,6 +10,7 @@ import { directionsUrl } from '@/lib/location'
 import { downloadMatchIcs } from '@/lib/calendar'
 import { Button } from '@/components/ui/button'
 import { Avatar } from '@/components/agon/Avatar'
+import { TeamLink } from '@/components/agon/TeamLink'
 import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
 import { SportBadge } from '@/components/agon/SportBadge'
 import { StatusBadge, matchBadgeStatus } from '@/components/agon/StatusBadge'
@@ -357,7 +358,7 @@ function MatchDetail({
             </div>
           ) : (
             <div className="mt-3 flex items-center justify-between">
-              <div className="flex min-w-0 flex-1 items-center gap-2">
+              <TeamLink teamId={sideA?.team_id} className="flex min-w-0 flex-1 items-center gap-2">
                 <Avatar name={nameA} imageUrl={sideA?.team_logo?.image_url} size="md" ring={aWon ? 'winner' : 'none'} />
                 <div className="min-w-0">
                   <p className={cn('truncate text-sm', aWon && 'font-medium')}>{nameA}</p>
@@ -370,7 +371,7 @@ function MatchDetail({
                     </p>
                   )}
                 </div>
-              </div>
+              </TeamLink>
               {scoreInfo ? (
                 <div className="px-3 text-center">
                   <div className="text-3xl font-medium tracking-tight">
@@ -392,7 +393,10 @@ function MatchDetail({
                   )}
                 </div>
               )}
-              <div className="flex min-w-0 flex-1 flex-row-reverse items-center gap-2 text-right">
+              <TeamLink
+                teamId={sideB?.team_id}
+                className="flex min-w-0 flex-1 flex-row-reverse items-center gap-2 text-right"
+              >
                 <Avatar name={nameB} imageUrl={sideB?.team_logo?.image_url} size="md" ring={bWon ? 'winner' : 'none'} />
                 <div className="min-w-0">
                   <p className={cn('truncate text-sm', bWon && 'font-medium')}>{nameB}</p>
@@ -405,7 +409,7 @@ function MatchDetail({
                     </p>
                   )}
                 </div>
-              </div>
+              </TeamLink>
             </div>
           )}
 

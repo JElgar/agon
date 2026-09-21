@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { CalendarClock, ChevronLeft, Clock, Flame, Link2, MailOpen, MapPin, Pencil, Radio, ShieldPlus, UserPlus } from 'lucide-react'
+import { CalendarClock, CalendarPlus, ChevronLeft, Clock, Flame, Link2, MailOpen, MapPin, Pencil, Radio, ShieldPlus, UserPlus } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { scheduledDateTime } from '@/lib/datetime'
 import { directionsUrl } from '@/lib/location'
+import { downloadMatchIcs } from '@/lib/calendar'
 import { Button } from '@/components/ui/button'
 import { Avatar } from '@/components/agon/Avatar'
 import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
@@ -308,16 +309,31 @@ function MatchDetail({
                 </p>
               )}
             </div>
-            {canEdit && !cancelled && (
+            <div className="-mt-1 -mr-1 flex shrink-0 items-center gap-1">
               <Button
                 variant="ghost"
                 size="sm"
-                className="-mt-1 -mr-1 h-7 gap-1 px-2 text-xs text-muted-foreground"
-                onClick={() => setEditingDetails(true)}
+                className="h-7 gap-1 px-2 text-xs text-muted-foreground"
+                onClick={() =>
+                  downloadMatchIcs(match, {
+                    title: match.name,
+                    description: `${nameA} vs ${nameB}`,
+                  })
+                }
               >
-                <Pencil className="size-3" /> Edit
+                <CalendarPlus className="size-3" /> Add to calendar
               </Button>
-            )}
+              {canEdit && !cancelled && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 gap-1 px-2 text-xs text-muted-foreground"
+                  onClick={() => setEditingDetails(true)}
+                >
+                  <Pencil className="size-3" /> Edit
+                </Button>
+              )}
+            </div>
           </div>
 
           {/* Score header — the live block (score + mini-ticker) takes over

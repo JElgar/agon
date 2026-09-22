@@ -13,6 +13,7 @@ import { SportPicker } from '@/components/agon/SportPicker'
 import { MatchFormatEditor } from '@/components/agon/MatchFormatEditor'
 import type { MatchFormat } from '@/lib/matchFormat'
 import { MultiImageUploadField } from '@/components/agon/MultiImageUploadField'
+import { LocationField, type LocationValue } from '@/components/agon/LocationField'
 import {
   PlayerSideEditor,
   type TaggedPlayer,
@@ -128,6 +129,7 @@ export function LogMatchPage() {
   const [sport, setSport] = useState<MatchType | null>(null)
   const [format, setFormat] = useState<MatchFormat | null>(null)
   const [name, setName] = useState('')
+  const [location, setLocation] = useState<LocationValue | null>(null)
   const [sideA, setSideA] = useState<TaggedPlayer[]>([])
   const [sideB, setSideB] = useState<TaggedPlayer[]>([])
   // Optional custom names for ad-hoc sides, and the persistent Team (if any)
@@ -448,6 +450,7 @@ export function LogMatchPage() {
     if (creatorSide) body.creator_side_client_id = creatorSide
 
     if (headerAssetIds.length > 0) body.header_photo_asset_ids = headerAssetIds
+    if (location) body.location = location
     if (format) body.format = format
     body.allow_unassigned = allowUnassigned
 
@@ -681,6 +684,14 @@ export function LogMatchPage() {
         {timeError && (
           <p className="mt-1.5 text-xs text-destructive">{timeError}</p>
         )}
+      </Section>
+
+      {/* Location (optional) */}
+      <Section title="Where">
+        <Label htmlFor="match-location" className="sr-only">
+          Location
+        </Label>
+        <LocationField id="match-location" value={location} onChange={setLocation} />
       </Section>
 
       {/* 5 · Score — only for a completed match, and only once players are set */}

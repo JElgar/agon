@@ -10,7 +10,7 @@ use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, ATTR_SK, from_item, item_sk, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::StatContributionRecord;
-use crate::sports::cricket::OversRecord;
+use crate::sports::cricket::BowlingSpell;
 
 /// Type tag for the per-match stat-contribution item.
 pub const TYPE_STAT_CONTRIBUTION: &str = "stat_contribution";
@@ -51,24 +51,6 @@ pub struct MatchContribution {
     /// `Dao::update_best_bowling_figures`. `None` for every non-cricket
     /// sport, and for a cricket player who didn't bowl.
     pub bowling_spell: Option<BowlingSpell>,
-}
-
-/// One player's bowling figures in a single match (possibly summed across
-/// more than one innings) — the raw material for `best_bowling`. `overs` is
-/// the exact figure in that match's own `balls_per_over` (the caller — the
-/// worker, which knows the match's format — computes it that way), not a
-/// value this sport-agnostic DAO layer derives from `balls_bowled` under some
-/// assumed over length.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct BowlingSpell {
-    pub wickets: u64,
-    pub runs_conceded: u64,
-    /// Legal balls bowled — folded into the cumulative `balls_bowled`
-    /// counter (see `CricketStatsRecord::balls_bowled`).
-    pub balls_bowled: u64,
-    /// Same ball count as whole overs + balls, in this match's own format —
-    /// what `best_bowling` actually stores/displays.
-    pub overs: OversRecord,
 }
 
 impl StatContributionRecord {
@@ -323,7 +305,7 @@ impl Dao {
         // for a played contribution), so each `best_<counter>` field can be
         // set directly on it — no intermediate map to ensure first. The
         // field name is `best_<counter>` (e.g. `best_runs`), matching
-        // `CricketStatsRecord`/`FootballPlayerStats`'s flat `best_*` fields
+        // `CricketStatsRecord`/`FootballStatsRecord`'s flat `best_*` fields
         // exactly — not nested under a `best` sub-map.
         for (counter, value) in candidates {
             let field = format!("best_{counter}");

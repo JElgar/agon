@@ -1,10 +1,13 @@
-//! Football's DAO record types and `SportRecord` implementation.
+//! Football's whole DAO-side surface — see `crate::sports::cricket`'s doc
+//! comment.
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::dao::records::ScoreRecord;
+use crate::dao::records::{
+    BestFigureRecord, GenericSportStatsRecord, MatchFormatRecord, ScoreRecord,
+};
 use crate::sport::{SportContribution, SportRecord};
 
 /// Football's `ScoreRecord` shape — see
@@ -137,13 +140,33 @@ pub struct FootballPenaltyShootoutKickRecord {
     pub scored: bool,
 }
 
+/// Lifetime football stats (`stats.football` on the user's profile): the
+/// common counters plus goals/assists derived from every confirmed match's
+/// goal log, and personal-best single-match figures.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct FootballStatsRecord {
+    #[serde(flatten)]
+    pub common: GenericSportStatsRecord,
+    // Sparse for the same reason as `CricketStatsRecord`'s counters — only
+    // ever written once actually incremented.
+    #[serde(default)]
+    pub goals: u64,
+    #[serde(default)]
+    pub assists: u64,
+    /// Most goals scored in a single match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_goals: Option<BestFigureRecord>,
+    /// Most goals + assists combined in a single match — a more complete
+    /// "best game" than assists alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_goal_contributions: Option<BestFigureRecord>,
+}
+
 /// Marker type for football's `SportRecord` impl — see
 /// `agon_core::sports::netball::NetballRecord`'s doc comment for the pattern.
 pub struct FootballRecord;
 
 impl SportRecord for FootballRecord {
-    const NAME: &'static str = "football";
-
     /// Counts this player's goals scored (own goals excluded) and assists
     /// across a confirmed football score's goal log. Best-candidates are
     /// "goals" and "goal_contributions" (goals + assists in this match) —
@@ -153,7 +176,7 @@ impl SportRecord for FootballRecord {
     fn contribution(
         score: &ScoreRecord,
         player_id: &str,
-        _balls_per_over: u32,
+        _format: Option<&MatchFormatRecord>,
     ) -> SportContribution {
         let mut counters = HashMap::new();
         let ScoreRecord::Football(rec) = score else {
@@ -182,6 +205,29 @@ impl SportRecord for FootballRecord {
             counters,
             best_candidates,
             bowling_spell: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use aws_sdk_dynamodb::types::AttributeValue;
+
+    use super::*;
+
+    /// A `Football` score written in the brief window before the `score`
+    /// tally field existed (just `goals`, no aggregate) deserializes to an
+    /// empty tally rather than 500ing on a missing field.
+    #[test]
+    fn football_score_missing_tally_field_deserializes() {
+        let score_av = AttributeValue::M(HashMap::from([
+            ("type".to_string(), AttributeValue::S("football".into())),
+            ("goals".to_string(), AttributeValue::L(vec![])),
+        ]));
+        let rec: ScoreRecord = serde_dynamo::from_attribute_value(score_av).unwrap();
+        match rec {
+            ScoreRecord::Football(rec) => assert!(rec.score.is_empty()),
+            _ => panic!("expected football"),
         }
     }
 }

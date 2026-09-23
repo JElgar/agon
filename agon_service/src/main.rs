@@ -42,16 +42,18 @@ mod mapping;
 // mapping), one module per sport — see its own doc comment.
 mod sports;
 use mapping::{
-    assignable_team_role_str, comment_from_record, dao_internal, deleted_user_profile,
-    derive_live_score, device_platform_to_record, feed_match_from_records,
+    apply_new_live_events, assignable_team_role_str, comment_from_record, dao_internal,
+    deleted_user_profile, derive_live_score, device_platform_to_record, feed_match_from_records,
     invitation_detail_from_record, invitation_from_record, invitation_status_from_str,
-    invitation_status_str, join_link_from_record, join_link_scope_from_record,
-    join_link_scope_to_record, live_event_from_record, match_format_sport_tag,
-    match_format_to_record, match_from_records, match_player_role_from_record,
-    match_score_from_record, match_score_to_record, match_status_str, match_type_tag,
-    new_live_event_to_dao, notification_actor_id, notification_from_record, roster_preview_player,
-    score_submission_from_record, score_to_record, search_match_from_records, team_from_records,
-    team_list_item_from_record, team_member_from_record, user_profile_from_record,
+    invitation_status_str, is_live_scored_sport, join_link_from_record,
+    join_link_scope_from_record, join_link_scope_to_record, live_event_from_record,
+    match_format_sport_tag, match_format_to_record, match_from_records,
+    match_player_role_from_record, match_score_from_record, match_score_to_record,
+    match_status_str, match_type_tag, new_live_event_to_dao, notification_actor_id,
+    notification_from_record, resolve_score_ids, roster_preview_player, score_player_ids,
+    score_side_ids, score_submission_from_record, score_to_record, search_match_from_records,
+    set_score_players, team_from_records, team_list_item_from_record, team_member_from_record,
+    user_profile_from_record, winner_from_score,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -65,9 +67,6 @@ mod live_score;
 use live_score::{
     AppendLiveEventsInput, LiveEvent, LiveEventInput, LiveScoreSnapshot, NewLiveEventInput,
 };
-use sports::cricket::{CricketScore, Overs};
-use sports::football::FootballScore;
-use sports::netball::NetballScore;
 
 mod membership;
 use membership::{
@@ -127,8 +126,9 @@ struct Api;
 /// Lifetime stats common to every sport: matches played and the outcome
 /// breakdown (win/draw/loss), plus a derived win percentage. Also the full
 /// shape for a sport with no richer per-player detail to add (tennis,
-/// badminton, squash, table tennis, "other") — `CricketPlayerStats`/
-/// `FootballPlayerStats` flatten this in and add their own fields on top.
+/// badminton, squash, table tennis, "other") — each fully-modeled sport's own
+/// stats type (`crate::sports::<sport>`) flattens this in and adds its own
+/// fields on top.
 #[derive(Object)]
 pub struct GenericPlayerStats {
     pub matches_played: i32,
@@ -151,94 +151,6 @@ pub struct GenericPlayerStats {
 pub struct BestFigure {
     pub value: i32,
     pub match_id: String,
-}
-
-/// A personal-best single-match bowling spell: most wickets taken, plus the
-/// runs conceded and overs bowled in that same spell — e.g. "5 wickets for
-/// 32 runs off 5.4 overs", not just "5 wickets". Ranked by wickets alone
-/// (ties aren't broken by economy). Only ever increases — same reasoning as
-/// `BestFigure`.
-#[derive(Object)]
-pub struct BestBowlingFigures {
-    pub wickets: i32,
-    pub runs_conceded: i32,
-    pub overs: Overs,
-    pub match_id: String,
-}
-
-/// Lifetime cricket stats: the common counters plus a batting/bowling summary
-/// derived from every confirmed match's box score. `strike_rate`/
-/// `batting_average`/`economy` are derived server-side (`None` when their
-/// divisor is zero), the same convention as `GenericPlayerStats::
-/// win_percentage`.
-#[derive(Object)]
-pub struct CricketPlayerStats {
-    #[oai(flatten)]
-    pub common: GenericPlayerStats,
-    pub runs: i32,
-    pub wickets: i32,
-    pub fours: i32,
-    pub sixes: i32,
-    /// Legal balls faced while batting (career total).
-    pub balls_faced: i32,
-    /// Times out as a batter — divisor for `batting_average`.
-    pub dismissals: i32,
-    /// Catches taken.
-    pub catches: i32,
-    /// Runs conceded while bowling (career total) — divisor for `economy`.
-    pub runs_conceded: i32,
-    /// Overs bowled (career total). Each contributing match's legal-ball
-    /// count is exact (computed from that match's own `balls_per_over`, 5 or
-    /// 6 or otherwise, not assumed) — only turning the resulting cross-match
-    /// ball total back into an "X overs Y balls" figure uses a fixed
-    /// standard 6-ball over, the same convention real-world career bowling
-    /// figures are always reported in regardless of which formats
-    /// contributed to them.
-    pub overs_bowled: Overs,
-    /// Runs scored per 100 balls faced. `None` with zero balls faced.
-    pub strike_rate: Option<f32>,
-    /// Runs scored per dismissal — an undismissed batter has no average to
-    /// show. `None` with zero dismissals.
-    pub batting_average: Option<f32>,
-    /// Runs conceded per over bowled. `None` with zero overs bowled.
-    pub economy: Option<f32>,
-    /// Highest score in a single match.
-    pub best_runs: Option<BestFigure>,
-    /// Best single-match bowling spell — `overs` is the exact figure from
-    /// that one match (no cross-format approximation needed, unlike
-    /// `overs_bowled` above).
-    pub best_bowling: Option<BestBowlingFigures>,
-}
-
-/// Lifetime football stats: the common counters plus goals/assists derived
-/// from every confirmed match's goal log.
-#[derive(Object)]
-pub struct FootballPlayerStats {
-    #[oai(flatten)]
-    pub common: GenericPlayerStats,
-    pub goals: i32,
-    pub assists: i32,
-    /// Most goals scored in a single match.
-    pub best_goals: Option<BestFigure>,
-    /// Most goals + assists combined in a single match — a more complete
-    /// "best game" than assists alone.
-    pub best_goal_contributions: Option<BestFigure>,
-}
-
-/// A user's lifetime stats, one field per sport — `None` for a sport they've
-/// never played a confirmed match in. Explicit per-sport fields rather than a
-/// list/map so each sport's shape is self-describing: cricket and football
-/// carry their own typed detail, everything else is the common shape as-is.
-#[derive(Object)]
-pub struct UserStats {
-    pub cricket: Option<CricketPlayerStats>,
-    pub football: Option<FootballPlayerStats>,
-    pub tennis: Option<GenericPlayerStats>,
-    pub badminton: Option<GenericPlayerStats>,
-    pub squash: Option<GenericPlayerStats>,
-    pub table_tennis: Option<GenericPlayerStats>,
-    pub netball: Option<GenericPlayerStats>,
-    pub other: Option<GenericPlayerStats>,
 }
 
 #[derive(Object)]
@@ -471,13 +383,19 @@ struct MatchPlayer {
 }
 
 /// x-macro template for `agon_sports!` (see `crate::sports`'s doc comment):
-/// builds `Score` and `MatchType` from the shared sport list. Per-sport
-/// variant doc comments (the kind `Cricket(CricketScore)` used to carry)
-/// don't survive being macro-generated — see each sport's `Score`-typed
-/// struct (`CricketScore`, `FootballScore`, `NetballScore` below) for that
-/// documentation instead.
+/// builds `Score`, `MatchType` and `UserStats` from the shared sport list.
+/// Per-sport variant doc comments don't survive being macro-generated — see
+/// each sport's own types in `crate::sports::<sport>` for that documentation
+/// instead.
 macro_rules! define_score_and_match_type {
-    ($( $variant:ident { tag: $tag:literal, module: $module:ident, score: $score:ty, format: $format:ty, live_event: $live_event:ty } ),+ $(,)?) => {
+    ($( $variant:ident {
+        tag: $tag:literal,
+        module: $module:ident,
+        score: $score:ty,
+        format: $format:ty,
+        live_event: $live_event:ty,
+        stats: $stats:ty $(,)?
+    } ),+ $(,)?) => {
         /// Match score. Tagged union so each sport's scoring shape is modelled
         /// explicitly; clients switch on `type` to pick a renderer. Add new sports
         /// (e.g. golf) via `agon_sports!` (see `crate::sports`) without breaking
@@ -518,6 +436,22 @@ macro_rules! define_score_and_match_type {
             /// Fallback for sports not yet modelled explicitly.
             Other,
         }
+
+        /// A user's lifetime stats, one field per sport — `None` for a sport
+        /// they've never played a confirmed match in. Explicit per-sport
+        /// fields rather than a list/map so each sport's shape is
+        /// self-describing: every fully-modeled sport carries its own typed
+        /// detail (see `crate::sports::<sport>`), everything else is the
+        /// common shape as-is.
+        #[derive(Object)]
+        pub struct UserStats {
+            $( pub $module: Option<$stats>, )+
+            pub tennis: Option<GenericPlayerStats>,
+            pub badminton: Option<GenericPlayerStats>,
+            pub squash: Option<GenericPlayerStats>,
+            pub table_tennis: Option<GenericPlayerStats>,
+            pub other: Option<GenericPlayerStats>,
+        }
     };
 }
 crate::agon_sports!(define_score_and_match_type);
@@ -537,13 +471,9 @@ struct SetsScore {
     entries: HashMap<String, Vec<u32>>,
 }
 
-// `CricketScore`/`FootballScore`/`NetballScore` (and cricket's
-// `CricketScoreInnings`) are generated... no — each is a hand-written type
-// living in `crate::sports::{cricket,football,netball}` alongside the rest
-// of that sport's surface (its detailed-score/live-event types, event fold,
-// and API<->DAO mapping). `MatchType` itself is generated by
-// `define_score_and_match_type!` above, via `crate::agon_sports!` (see
-// `crate::sports`'s doc comment).
+// Each fully-modeled sport's own score/format/live-event/stats types live in
+// `crate::sports::<sport>`; `Score`/`MatchType`/`UserStats` above are
+// generated from the sport list by `define_score_and_match_type!`.
 
 /// Lifecycle state of a match. Independent of score confirmation: a `Completed`
 /// match may still have an unconfirmed score.
@@ -3300,10 +3230,7 @@ impl Api {
         // completion time.
         let mut derived_winner_side_id: Option<String> = None;
         if input.score.is_some()
-            && matches!(
-                agg.match_.match_type.as_str(),
-                "football" | "cricket" | "netball"
-            )
+            && is_live_scored_sport(&agg.match_.match_type)
             && let Some(record) = dao
                 .get_match_score(&match_id, &agg.match_.match_type)
                 .await
@@ -3356,13 +3283,7 @@ impl Api {
 
         if let Some(score) = effective_score {
             // Validate every scored side exists on the match.
-            let score_sides: Vec<&str> = match score {
-                Score::Simple(s) => s.entries.keys().map(|k| k.as_str()).collect(),
-                Score::Sets(s) => s.entries.keys().map(|k| k.as_str()).collect(),
-                Score::Cricket(s) => sports::cricket::side_ids(s),
-                Score::Football(s) => sports::football::side_ids(s),
-                Score::Netball(s) => sports::netball::side_ids(s),
-            };
+            let score_sides = score_side_ids(score);
             if score_sides.iter().any(|sid| !valid_sides.contains(sid)) {
                 return Ok(UpdateMatchResponse::ValidationError(PlainText(
                     "score references a side that is not part of this match".into(),
@@ -3945,21 +3866,7 @@ impl Api {
         }
         let mut score = match_score_from_record(&record);
 
-        // Sport mismatch (a `new_events` entry not matching `score`'s own
-        // variant) is already rejected earlier in `append_live_events`;
-        // `apply_new_events` returning `None` for it is unreachable in
-        // practice. `Simple`/`Sets` are unreachable too — live scoring only
-        // ever creates a `Cricket`/`Football`/`Netball` record for this
-        // match_id/sport pair.
-        let applied = match &mut score {
-            Score::Cricket(s) => sports::cricket::apply_new_events(s, new_events, format).is_some(),
-            Score::Football(s) => {
-                sports::football::apply_new_events(s, new_events, format).is_some()
-            }
-            Score::Netball(s) => sports::netball::apply_new_events(s, new_events, format).is_some(),
-            Score::Simple(_) | Score::Sets(_) => false,
-        };
-        if !applied {
+        if !apply_new_live_events(&mut score, new_events, format) {
             return Ok(None);
         }
 
@@ -6982,55 +6889,6 @@ impl Api {
     }
 }
 
-/// Re-point a `Score`'s request-scoped client ids to the real side/player ids
-/// assigned at creation — side ids via `CreateMatchSideInput.client_id`,
-/// player ids via a real user's own id or a guest's `CreateMatchExternalInviteInput.client_id`
-/// (see `create_match`). Returns `None` if any referenced side or player is
-/// unknown.
-fn resolve_score_ids(
-    score: &Score,
-    side_ids: &std::collections::HashMap<String, String>,
-    player_ids: &std::collections::HashMap<String, String>,
-) -> Option<Score> {
-    let map = |client_id: &str| side_ids.get(client_id).cloned();
-    match score {
-        Score::Simple(s) => {
-            let mut entries = HashMap::with_capacity(s.entries.len());
-            for (side_id, points) in &s.entries {
-                entries.insert(map(side_id)?, *points);
-            }
-            Some(Score::Simple(SimpleScore { entries }))
-        }
-        Score::Sets(s) => {
-            let mut entries = HashMap::with_capacity(s.entries.len());
-            for (side_id, sets) in &s.entries {
-                entries.insert(map(side_id)?, sets.clone());
-            }
-            Some(Score::Sets(SetsScore { entries }))
-        }
-        Score::Cricket(s) => Some(Score::Cricket(sports::cricket::resolve_ids(
-            s, side_ids, player_ids,
-        )?)),
-        Score::Football(s) => Some(Score::Football(sports::football::resolve_ids(
-            s, side_ids, player_ids,
-        )?)),
-        Score::Netball(s) => Some(Score::Netball(sports::netball::resolve_ids(
-            s, side_ids, player_ids,
-        )?)),
-    }
-}
-
-/// Set a score's resolved-players map, whichever variant it is. No-op for
-/// `Score::Simple`/`Score::Sets`, which have no such field.
-fn set_score_players(score: &mut Score, resolved: HashMap<String, RosterPreviewPlayer>) {
-    match score {
-        Score::Cricket(s) => sports::cricket::set_players(s, resolved),
-        Score::Football(s) => sports::football::set_players(s, resolved),
-        Score::Netball(s) => sports::netball::set_players(s, resolved),
-        Score::Simple(_) | Score::Sets(_) => {}
-    }
-}
-
 /// Look up `score`'s own referenced player ids (`score_player_ids`) in a
 /// cross-match batch result (keyed by `(match_id, player_id)`) and set
 /// `score`'s resolved-players map from whichever of them belong to
@@ -7057,39 +6915,6 @@ fn resolve_score_players_for_match(
         })
         .collect();
     set_score_players(score, resolved);
-}
-
-/// Every player id referenced anywhere in a score — the set
-/// `Api::hydrate_score_players` resolves names for. Empty (nothing to
-/// resolve) for `Score::Simple`/`Score::Sets`, which don't reference
-/// players by id at all.
-fn score_player_ids(score: &Score) -> Vec<String> {
-    match score {
-        Score::Cricket(s) => sports::cricket::player_ids(s),
-        Score::Football(s) => sports::football::player_ids(s),
-        Score::Netball(s) => sports::netball::player_ids(s),
-        Score::Simple(_) | Score::Sets(_) => Vec::new(),
-    }
-}
-
-/// Derives the winner (when decidable) from a live-scored match's persisted
-/// score — used by `update_match` to finish a live-scored match without the
-/// client having to work out and resubmit a margin the server already has
-/// enough to compute (see `LiveScoringPage`/`CricketLiveScoringPage`'s
-/// `finishMatch`). `side_ids` is the match's own two side ids, needed
-/// because a tally map only holds entries for sides that are actually on the
-/// board — "absence means zero" — so the winner comparison needs to know
-/// both ids to look up, not just iterate whatever's present. `None` for
-/// `Score::Simple`/`Score::Sets` — winner derivation for those sports isn't
-/// this function's job (the client always supplies `winner_side_id` itself
-/// for a manual entry/correction on those sports).
-fn winner_from_score(score: &Score, side_ids: &[String]) -> Option<String> {
-    match score {
-        Score::Football(s) => sports::football::winner(s, side_ids),
-        Score::Cricket(s) => sports::cricket::winner(s, side_ids),
-        Score::Netball(s) => sports::netball::winner(s, side_ids),
-        Score::Simple(_) | Score::Sets(_) => None,
-    }
 }
 
 /// Compares two sides by a score function and returns the higher-scoring
@@ -7683,22 +7508,15 @@ fn mock_user_profile(id: String, name: String) -> UserProfile {
             image_url: String::from("https://cdn.example.com/users/avatar.jpg"),
             asset_id: None,
         }),
-        stats: UserStats {
-            cricket: None,
-            football: None,
-            tennis: Some(GenericPlayerStats {
+        stats: mapping::user_stats_from_record(&dao::records::UserStatsRecord {
+            tennis: Some(dao::records::GenericSportStatsRecord {
                 matches_played: 12,
                 wins: 7,
                 draws: 0,
                 losses: 5,
-                win_percentage: Some(58.3),
             }),
-            badminton: None,
-            squash: None,
-            table_tennis: None,
-            netball: None,
-            other: None,
-        },
+            ..Default::default()
+        }),
         follower_count: 42,
         following_count: 17,
         is_followed_by_me: false,

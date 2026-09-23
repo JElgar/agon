@@ -11,16 +11,21 @@ use std::collections::HashMap;
 use poem_openapi::{Enum, Object, Union};
 
 use agon_core::sports::cricket::{
-    CricketBattingEntryRecord, CricketBowlingEntryRecord, CricketDeliveryExtraRecord,
-    CricketDeliveryRecord, CricketDeliveryWicketRecord, CricketDismissalKindRecord,
-    CricketDismissalRecord, CricketExtraKindRecord, CricketExtrasRecord, CricketFallOfWicketRecord,
-    CricketFormatRecord, CricketInningsEndEventRecord, CricketInningsStartEventRecord,
-    CricketLiveEventRecord, CricketRetireEventRecord, CricketScoreInningsRecord,
-    CricketScoreRecord, InningsEndReasonRecord, NextBallContextRecord, OversRecord,
+    BestBowlingFiguresRecord, CricketBattingEntryRecord, CricketBowlingEntryRecord,
+    CricketDeliveryExtraRecord, CricketDeliveryRecord, CricketDeliveryWicketRecord,
+    CricketDismissalKindRecord, CricketDismissalRecord, CricketExtraKindRecord,
+    CricketExtrasRecord, CricketFallOfWicketRecord, CricketFormatRecord,
+    CricketInningsEndEventRecord, CricketInningsStartEventRecord, CricketLiveEventRecord,
+    CricketRetireEventRecord, CricketScoreInningsRecord, CricketScoreRecord, CricketStatsRecord,
+    InningsEndReasonRecord, NextBallContextRecord, OversRecord,
 };
 
 use crate::live_score::NewLiveEventInput;
-use crate::mapping::parse_ts_opt;
+use crate::mapping::{best_figure_from_record, generic_stats_from_record, parse_ts_opt};
+use crate::{BestFigure, GenericPlayerStats};
+
+/// How this sport is named to people (e.g. share-card headings).
+pub const LABEL: &str = "Cricket";
 
 // ===========================================================================
 // API types (formerly `match_format::CricketFormat`, `detailed_score::cricket`,
@@ -313,7 +318,7 @@ fn runs_charged_to_bowler(delivery: &CricketDelivery) -> u32 {
 /// Converts a count of legal balls into whole overs + balls, e.g. 13 balls
 /// -> 2 overs + 1 ball, given how many legal deliveries make an over (6 for
 /// almost everything, 5 for The Hundred).
-pub(crate) fn balls_to_overs(balls: u32, balls_per_over: u32) -> Overs {
+fn balls_to_overs(balls: u32, balls_per_over: u32) -> Overs {
     Overs {
         overs: balls / balls_per_over,
         balls: balls % balls_per_over,
@@ -1105,6 +1110,103 @@ pub fn winner(score: &CricketScore, side_ids: &[String]) -> Option<String> {
         *totals.entry(i.batting_side_id.as_str()).or_insert(0) += i.runs;
     }
     crate::two_side_winner(side_ids, |sid| *totals.get(sid).unwrap_or(&0) as i64)
+}
+
+// ===========================================================================
+// Stats (a user's lifetime cricket totals, `UserStats::cricket`).
+// ===========================================================================
+
+/// A personal-best single-match bowling spell: most wickets taken, plus the
+/// runs conceded and overs bowled in that same spell — e.g. "5 wickets for
+/// 32 runs off 5.4 overs", not just "5 wickets". Ranked by wickets alone
+/// (ties aren't broken by economy). Only ever increases — same reasoning as
+/// `BestFigure`.
+#[derive(Object)]
+pub struct BestBowlingFigures {
+    pub wickets: i32,
+    pub runs_conceded: i32,
+    pub overs: Overs,
+    pub match_id: String,
+}
+
+/// Lifetime cricket stats: the common counters plus a batting/bowling summary
+/// derived from every confirmed match's box score. `strike_rate`/
+/// `batting_average`/`economy` are derived server-side (`None` when their
+/// divisor is zero), the same convention as `GenericPlayerStats::
+/// win_percentage`.
+#[derive(Object)]
+pub struct CricketPlayerStats {
+    #[oai(flatten)]
+    pub common: GenericPlayerStats,
+    pub runs: i32,
+    pub wickets: i32,
+    pub fours: i32,
+    pub sixes: i32,
+    /// Legal balls faced while batting (career total).
+    pub balls_faced: i32,
+    /// Times out as a batter — divisor for `batting_average`.
+    pub dismissals: i32,
+    /// Catches taken.
+    pub catches: i32,
+    /// Runs conceded while bowling (career total) — divisor for `economy`.
+    pub runs_conceded: i32,
+    /// Overs bowled (career total). Each contributing match's legal-ball
+    /// count is exact (computed from that match's own `balls_per_over`, 5 or
+    /// 6 or otherwise, not assumed) — only turning the resulting cross-match
+    /// ball total back into an "X overs Y balls" figure uses a fixed
+    /// standard 6-ball over, the same convention real-world career bowling
+    /// figures are always reported in regardless of which formats
+    /// contributed to them.
+    pub overs_bowled: Overs,
+    /// Runs scored per 100 balls faced. `None` with zero balls faced.
+    pub strike_rate: Option<f32>,
+    /// Runs scored per dismissal — an undismissed batter has no average to
+    /// show. `None` with zero dismissals.
+    pub batting_average: Option<f32>,
+    /// Runs conceded per over bowled. `None` with zero overs bowled.
+    pub economy: Option<f32>,
+    /// Highest score in a single match.
+    pub best_runs: Option<BestFigure>,
+    /// Best single-match bowling spell — `overs` is the exact figure from
+    /// that one match (no cross-format approximation needed, unlike
+    /// `overs_bowled` above).
+    pub best_bowling: Option<BestBowlingFigures>,
+}
+
+pub fn stats_from_record(rec: &CricketStatsRecord) -> CricketPlayerStats {
+    let strike_rate =
+        (rec.balls_faced > 0).then(|| (rec.runs as f32 / rec.balls_faced as f32) * 100.0);
+    let batting_average = (rec.dismissals > 0).then(|| rec.runs as f32 / rec.dismissals as f32);
+    let economy =
+        (rec.balls_bowled > 0).then(|| rec.runs_conceded as f32 / (rec.balls_bowled as f32 / 6.0));
+    CricketPlayerStats {
+        common: generic_stats_from_record(&rec.common),
+        runs: rec.runs as i32,
+        wickets: rec.wickets as i32,
+        fours: rec.fours as i32,
+        sixes: rec.sixes as i32,
+        balls_faced: rec.balls_faced as i32,
+        dismissals: rec.dismissals as i32,
+        catches: rec.catches as i32,
+        runs_conceded: rec.runs_conceded as i32,
+        overs_bowled: balls_to_overs(rec.balls_bowled as u32, 6),
+        strike_rate,
+        batting_average,
+        economy,
+        best_runs: rec.best_runs.as_ref().map(best_figure_from_record),
+        best_bowling: rec.best_bowling.as_ref().map(best_bowling_from_record),
+    }
+}
+
+fn best_bowling_from_record(b: &BestBowlingFiguresRecord) -> BestBowlingFigures {
+    BestBowlingFigures {
+        wickets: b.wickets as i32,
+        runs_conceded: b.runs_conceded as i32,
+        // The exact figure from that one match — no conversion/assumption
+        // needed, unlike `overs_bowled` (a cross-match total).
+        overs: overs_from_record(&b.overs),
+        match_id: b.match_id.clone(),
+    }
 }
 
 // ===========================================================================

@@ -1,17 +1,16 @@
-//! The `SportRecord` trait: everything a DAO-only context (the DAO itself,
+//! The `SportRecord` trait: what a DAO-only context (the DAO itself,
 //! `agon_worker`) needs to know about one sport, purely in terms of its
 //! DynamoDB record shapes. No dependency on `poem-openapi` — `agon_worker`
 //! depends only on this crate, not `agon_service`.
 //!
-//! Pairs with `agon_service::sport::SportApi`, which bridges a sport's API
-//! (poem-openapi) types to the DAO shapes named here. See the project's
-//! sport-setup refactor design notes for the split rationale and the
-//! `define_sports!` macro this is expected to grow into once every sport is
-//! migrated.
+//! Each fully-modeled sport implements it in its own `crate::sports::<sport>`
+//! module; `crate::sports::contribution` dispatches to the right one by sport
+//! tag (generated from the sport list — see `crate::sports`).
 
 use std::collections::HashMap;
 
-use crate::dao::stats::BowlingSpell;
+use crate::dao::records::{MatchFormatRecord, ScoreRecord};
+use crate::sports::cricket::BowlingSpell;
 
 /// One player's box-score contribution to a single match's *confirmed*
 /// score — every counter that feeds their lifetime totals, the subset worth
@@ -29,25 +28,17 @@ pub struct SportContribution {
     pub bowling_spell: Option<BowlingSpell>,
 }
 
-/// A sport's DAO-facing contract. `agon_core::dao::records::ScoreRecord`
-/// stays one enum covering every sport (so a match's score is still one
-/// value regardless of sport) — implementations pattern-match out their own
-/// variant and return `SportContribution::default()` for any other, same as
-/// the free functions this replaces.
+/// A sport's DAO-facing contract. `ScoreRecord` stays one enum covering every
+/// sport (so a match's score is still one value regardless of sport) —
+/// implementations pattern-match out their own variant and return
+/// `SportContribution::default()` for any other.
 pub trait SportRecord {
-    /// The DAO's string sport tag, e.g. `"netball"` — matches
-    /// `MatchRecord.sport` / `MatchScoreRecord.sport`.
-    const NAME: &'static str;
-
-    /// This player's box-score contribution to a confirmed score. Cricket
-    /// additionally needs the match's `balls_per_over` (from its
-    /// `CricketFormatRecord`, standard 6 if unconfigured) to convert overs to
-    /// an exact ball count — threaded through as-is rather than a full
-    /// `Option<&MatchFormatRecord>`, since no other sport needs format
-    /// context here yet.
+    /// This player's box-score contribution to a confirmed score. `format` is
+    /// the match's configured format, for a sport whose counting depends on
+    /// it (cricket's `balls_per_over`); most sports ignore it.
     fn contribution(
-        score: &crate::dao::records::ScoreRecord,
+        score: &ScoreRecord,
         player_id: &str,
-        balls_per_over: u32,
+        format: Option<&MatchFormatRecord>,
     ) -> SportContribution;
 }

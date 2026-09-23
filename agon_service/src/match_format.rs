@@ -22,14 +22,17 @@
 
 use poem_openapi::Union;
 
-use crate::sports::cricket::CricketFormat;
-use crate::sports::football::FootballFormat;
-use crate::sports::netball::NetballFormat;
-
 /// x-macro template for `agon_sports!` (see `crate::sports`'s doc comment):
 /// builds `MatchFormat` from the shared sport list.
 macro_rules! define_match_format {
-    ($( $variant:ident { tag: $tag:literal, module: $module:ident, score: $score:ty, format: $format:ty, live_event: $live_event:ty } ),+ $(,)?) => {
+    ($( $variant:ident {
+        tag: $tag:literal,
+        module: $module:ident,
+        score: $score:ty,
+        format: $format:ty,
+        live_event: $live_event:ty,
+        stats: $stats:ty $(,)?
+    } ),+ $(,)?) => {
         #[derive(Union, Clone)]
         #[oai(one_of, discriminator_name = "sport")]
         pub enum MatchFormat {

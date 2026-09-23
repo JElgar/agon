@@ -1,11 +1,14 @@
-//! Cricket's DAO record types and `SportRecord` implementation.
+//! Cricket's whole DAO-side surface: its score/format/live-event record
+//! types, its lifetime stats record, and its `SportRecord` impl (what a
+//! confirmed score contributes to each player's stats).
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::dao::records::{ScoreRecord, default_true};
-use crate::dao::stats::BowlingSpell;
+use crate::dao::records::{
+    BestFigureRecord, GenericSportStatsRecord, MatchFormatRecord, ScoreRecord, default_true,
+};
 use crate::sport::{SportContribution, SportRecord};
 
 /// Cricket's `ScoreRecord` shape — see
@@ -249,13 +252,127 @@ pub enum InningsEndReasonRecord {
     TargetReached,
 }
 
+// ===========================================================================
+// Stats (lifetime per-user totals, stored inline on the user's profile as
+// `stats.cricket` — see `crate::dao::records::UserStatsRecord`).
+// ===========================================================================
+
+/// Lifetime cricket stats: the common counters plus a batting/bowling summary
+/// derived from every confirmed match's box score, and each counter's
+/// personal-best single-match figure.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct CricketStatsRecord {
+    #[serde(flatten)]
+    pub common: GenericSportStatsRecord,
+    // As with `GenericSportStatsRecord`, every counter here is
+    // `#[serde(default)]`: only counters that were ever actually
+    // incremented get written to `stats.cricket` (see `Dao::stats_delta`),
+    // so e.g. a bowler who never batted has no `runs` attribute at all.
+    #[serde(default)]
+    pub runs: u64,
+    #[serde(default)]
+    pub wickets: u64,
+    #[serde(default)]
+    pub fours: u64,
+    #[serde(default)]
+    pub sixes: u64,
+    /// Legal balls faced while batting (career total).
+    #[serde(default)]
+    pub balls_faced: u64,
+    /// Times out as a batter — divisor for batting average. Not-out innings
+    /// aren't counted, same convention as the sport's own "average".
+    #[serde(default)]
+    pub dismissals: u64,
+    /// Catches taken (as the credited fielder on any dismissal, batting side
+    /// or bowling side — a catch isn't tied to which side this player was
+    /// fielding for in that innings).
+    #[serde(default)]
+    pub catches: u64,
+    /// Runs conceded while bowling (career total) — divisor for economy.
+    #[serde(default)]
+    pub runs_conceded: u64,
+    /// Legal balls bowled (career total) — divisor for economy, and the
+    /// source for the displayed "overs bowled". Summed as a raw ball count
+    /// rather than `Overs`, and — critically — each contributing match's
+    /// legal-ball count is computed from *that match's own*
+    /// `CricketFormatRecord::balls_per_over` (5-ball, 6-ball, whatever it
+    /// was), not a fixed assumption, so the accumulation itself is exact
+    /// regardless of how many different formats a career spans. The only
+    /// approximation left is display: turning a cross-format total back into
+    /// an "X overs Y balls" figure has to pick *some* over length, since a
+    /// blended career total isn't really in any one format — this uses the
+    /// standard 6-ball over, the same convention real-world career bowling
+    /// figures are always reported in regardless of which tournaments
+    /// contributed to them.
+    #[serde(default)]
+    pub balls_bowled: u64,
+    /// Highest score in a single match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_runs: Option<BestFigureRecord>,
+    /// Best single-match bowling spell — most wickets, with the runs
+    /// conceded and overs bowled in that same spell so it isn't just a bare
+    /// wicket count. See `Dao::update_best_bowling_figures`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub best_bowling: Option<BestBowlingFiguresRecord>,
+}
+
+/// A personal-best single-match bowling spell: most wickets taken, plus the
+/// runs conceded and overs bowled in that same spell — e.g. "5 wickets for
+/// 32 runs off 5.4 overs", not just "5 wickets". Ranked by `wickets` alone
+/// (ties aren't broken by economy). See `Dao::update_best_bowling_figures`
+/// for why this only ever ratchets up, same as `BestFigureRecord`.
+///
+/// `overs` is the exact figure from that one match (in that match's own
+/// `balls_per_over`), not re-derived from a raw ball count under some
+/// assumed over length — unlike the career `balls_bowled` total above, a
+/// single match's own bowling figures have no cross-format ambiguity to
+/// approximate away.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BestBowlingFiguresRecord {
+    pub wickets: u64,
+    pub runs_conceded: u64,
+    pub overs: OversRecord,
+    pub match_id: String,
+}
+
+/// One player's bowling figures in a single match (possibly summed across
+/// more than one innings) — the raw material for `best_bowling`. Not
+/// persisted as-is: `Dao::update_best_bowling_figures` writes it out as a
+/// `BestBowlingFiguresRecord`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BowlingSpell {
+    pub wickets: u64,
+    pub runs_conceded: u64,
+    /// Legal balls bowled — also folded into the cumulative `balls_bowled`
+    /// counter (see `CricketStatsRecord::balls_bowled`).
+    pub balls_bowled: u64,
+    /// Same ball count as whole overs + balls, in this match's own format —
+    /// what `best_bowling` actually stores/displays.
+    pub overs: OversRecord,
+    /// This match's over length, kept alongside so `absorb` can re-derive
+    /// `overs` exactly after summing.
+    pub balls_per_over: u32,
+}
+
+impl BowlingSpell {
+    /// Fold a second spell *from the same match* into this one — the rare
+    /// case of one user appearing as more than one player in a single match.
+    /// `overs` is re-derived from the summed raw ball count rather than
+    /// added field-wise: two `Overs` values don't sum that way (balls can roll
+    /// over into a whole extra over).
+    pub fn absorb(&mut self, other: &BowlingSpell) {
+        self.wickets += other.wickets;
+        self.runs_conceded += other.runs_conceded;
+        self.balls_bowled += other.balls_bowled;
+        self.overs = balls_to_overs(self.balls_bowled, self.balls_per_over);
+    }
+}
+
 /// Marker type for cricket's `SportRecord` impl — see
 /// `agon_core::sports::netball::NetballRecord`'s doc comment for the pattern.
 pub struct CricketRecord;
 
 impl SportRecord for CricketRecord {
-    const NAME: &'static str = "cricket";
-
     /// Sums this player's batting (runs/fours/sixes/balls faced/dismissals),
     /// fielding (catches), and bowling (wickets/runs conceded/balls bowled)
     /// across every innings of a confirmed cricket score. A player can
@@ -272,16 +389,19 @@ impl SportRecord for CricketRecord {
     fn contribution(
         score: &ScoreRecord,
         player_id: &str,
-        balls_per_over: u32,
+        format: Option<&MatchFormatRecord>,
     ) -> SportContribution {
-        let mut counters = HashMap::new();
-        let mut best_candidates = HashMap::new();
-        let mut bowling_spell = BowlingSpell::default();
-        let mut bowled = false;
-
         let ScoreRecord::Cricket(rec) = score else {
             return SportContribution::default();
         };
+        let balls_per_over = balls_per_over(format);
+
+        let mut counters = HashMap::new();
+        let mut best_candidates = HashMap::new();
+        let mut spell_wickets = 0;
+        let mut spell_runs_conceded = 0;
+        let mut spell_balls = 0;
+        let mut bowled = false;
 
         for inning in &rec.innings {
             for entry in inning.batting.iter().flatten() {
@@ -315,9 +435,9 @@ impl SportRecord for CricketRecord {
                         entry.runs_conceded as u64;
                     *counters.entry("balls_bowled".to_string()).or_insert(0) += balls;
                     bowled = true;
-                    bowling_spell.wickets += entry.wickets as u64;
-                    bowling_spell.runs_conceded += entry.runs_conceded as u64;
-                    bowling_spell.balls_bowled += balls;
+                    spell_wickets += entry.wickets as u64;
+                    spell_runs_conceded += entry.runs_conceded as u64;
+                    spell_balls += balls;
                 }
             }
         }
@@ -329,8 +449,23 @@ impl SportRecord for CricketRecord {
         SportContribution {
             counters,
             best_candidates,
-            bowling_spell: bowled.then_some(bowling_spell),
+            bowling_spell: bowled.then(|| BowlingSpell {
+                wickets: spell_wickets,
+                runs_conceded: spell_runs_conceded,
+                balls_bowled: spell_balls,
+                overs: balls_to_overs(spell_balls, balls_per_over),
+                balls_per_over,
+            }),
         }
+    }
+}
+
+/// This match's legal deliveries per over — its own `CricketFormatRecord`'s,
+/// or the standard 6 when it has no (cricket) format configured.
+fn balls_per_over(format: Option<&MatchFormatRecord>) -> u32 {
+    match format {
+        Some(MatchFormatRecord::Cricket(f)) => f.balls_per_over,
+        _ => 6,
     }
 }
 
@@ -343,11 +478,8 @@ fn overs_to_balls(overs: u32, balls: u32, balls_per_over: u32) -> u64 {
 }
 
 /// The inverse of `overs_to_balls` — a raw ball count back to whole overs +
-/// balls, in the same `balls_per_over`. Used by `agon_worker` after summing
-/// `bowling_spell.balls_bowled` across every appearance (two `Overs` values
-/// don't sum field-wise — balls can roll over into a whole extra over — so
-/// the reconciler sums raw balls first and converts once via this).
-pub fn balls_to_overs(balls: u64, balls_per_over: u32) -> OversRecord {
+/// balls, in the same `balls_per_over`.
+fn balls_to_overs(balls: u64, balls_per_over: u32) -> OversRecord {
     OversRecord {
         overs: (balls / balls_per_over as u64) as u32,
         balls: (balls % balls_per_over as u64) as u32,
@@ -356,7 +488,10 @@ pub fn balls_to_overs(balls: u64, balls_per_over: u32) -> OversRecord {
 
 #[cfg(test)]
 mod tests {
+    use aws_sdk_dynamodb::types::AttributeValue;
+
     use super::*;
+    use crate::dao::records::UserStatsRecord;
 
     /// The whole point of threading a match's real `balls_per_over` through
     /// instead of assuming 6: a 5-ball-over spell (The Hundred) must convert
@@ -389,15 +524,52 @@ mod tests {
         }
     }
 
-    /// A rolled-over accumulation (more balls than fit in the format's
-    /// notion of "one over") still reduces correctly — this is exactly the
-    /// case the fully-accumulated `bowling_spell.balls_bowled` hits when a
-    /// player bowls in two innings of the same match.
+    /// Summing two spells from the same match re-derives `overs` from the
+    /// summed raw ball count in that match's own over length — not field-wise
+    /// (2.3 + 1.4 at 5 balls/over is 13 + 9 = 22 balls = 4.2, not "3.7").
     #[test]
-    fn balls_to_overs_reduces_a_ball_count_bigger_than_one_over() {
-        // 19 balls at 5/over = 3 overs, 4 balls (not the same shape you'd
-        // get summing two innings' `Overs` field-by-field, which is exactly
-        // why the reconciler sums raw balls first and converts once).
-        assert_eq!(balls_to_overs(19, 5), OversRecord { overs: 3, balls: 4 });
+    fn absorbing_a_second_spell_rolls_balls_over_into_whole_overs() {
+        let spell = |wickets, balls| BowlingSpell {
+            wickets,
+            runs_conceded: 10,
+            balls_bowled: balls,
+            overs: balls_to_overs(balls, 5),
+            balls_per_over: 5,
+        };
+        let mut acc = spell(1, 13);
+        acc.absorb(&spell(2, 9));
+        assert_eq!(acc.wickets, 3);
+        assert_eq!(acc.runs_conceded, 20);
+        assert_eq!(acc.balls_bowled, 22);
+        assert_eq!(acc.overs, OversRecord { overs: 4, balls: 2 });
+    }
+
+    /// `stats.<sport>` is only ever populated with the counters that have
+    /// actually been incremented (see `Dao::stats_delta`/`ensure_stats_sport`),
+    /// so a player who has only ever bowled (no `runs`, `fours`, `sixes`,
+    /// `balls_faced`, `dismissals`, `wins`/`draws`/`losses` beyond whichever
+    /// outcome actually happened, ...) has a sparse `stats.cricket` map, not
+    /// one with every counter present at `0`. This must deserialize rather
+    /// than 500 with "missing field" (the bug behind this test).
+    #[test]
+    fn sparse_cricket_stats_deserializes() {
+        let stats_av = AttributeValue::M(HashMap::from([(
+            "cricket".to_string(),
+            AttributeValue::M(HashMap::from([
+                ("matches_played".to_string(), AttributeValue::N("3".into())),
+                ("wins".to_string(), AttributeValue::N("3".into())),
+                ("wickets".to_string(), AttributeValue::N("5".into())),
+            ])),
+        )]));
+        let rec: UserStatsRecord = serde_dynamo::from_attribute_value(stats_av).unwrap();
+        let cricket = rec.cricket.expect("cricket stats present");
+        assert_eq!(cricket.common.matches_played, 3);
+        assert_eq!(cricket.common.wins, 3);
+        assert_eq!(cricket.common.draws, 0);
+        assert_eq!(cricket.common.losses, 0);
+        assert_eq!(cricket.wickets, 5);
+        assert_eq!(cricket.runs, 0);
+        assert_eq!(cricket.balls_faced, 0);
+        assert_eq!(cricket.balls_bowled, 0);
     }
 }

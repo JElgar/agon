@@ -21,14 +21,17 @@
 
 use poem_openapi::{Object, Union};
 
-use crate::sports::cricket::CricketLiveEvent;
-use crate::sports::football::FootballLiveEvent;
-use crate::sports::netball::NetballLiveEvent;
-
 /// x-macro template for `agon_sports!` (see `crate::sports`'s doc comment):
 /// builds `LiveEventInput` from the shared sport list.
 macro_rules! define_live_event_input {
-    ($( $variant:ident { tag: $tag:literal, module: $module:ident, score: $score:ty, format: $format:ty, live_event: $live_event:ty } ),+ $(,)?) => {
+    ($( $variant:ident {
+        tag: $tag:literal,
+        module: $module:ident,
+        score: $score:ty,
+        format: $format:ty,
+        live_event: $live_event:ty,
+        stats: $stats:ty $(,)?
+    } ),+ $(,)?) => {
         /// A single live-scoring event, sport-first discriminated so a new sport is a
         /// new variant without touching existing ones — same pattern as `Score`. See
         /// `football`/`cricket` for the per-kind union nested inside each variant.
@@ -92,7 +95,7 @@ pub struct LiveScoreSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sports::football::{FootballCardColor, FootballCardEvent};
+    use crate::sports::football::{FootballCardColor, FootballCardEvent, FootballLiveEvent};
     use poem_openapi::types::{ParseFromJSON, ToJSON};
 
     /// The outer (`sport`) and inner (`kind`) unions must serialize as one
@@ -139,7 +142,7 @@ mod tests {
     /// have — see `NetballFoulEvent::foul_kind`'s doc comment).
     #[test]
     fn netball_foul_kind_does_not_collide_with_the_outer_discriminator() {
-        use crate::sports::netball::{NetballFoulEvent, NetballFoulKind};
+        use crate::sports::netball::{NetballFoulEvent, NetballFoulKind, NetballLiveEvent};
 
         let event = LiveEventInput::Netball(NetballLiveEvent::Foul(NetballFoulEvent {
             side_id: "side_a".into(),

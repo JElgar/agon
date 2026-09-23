@@ -22,16 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use agon_core::dao::Dao;
 use agon_core::dao::keys::{Pk, Sk};
-use agon_core::dao::records::{MatchFormatRecord, ScoreRecord};
-use agon_core::dao::stats::{BowlingSpell, MatchContribution, MatchOutcome};
-use agon_core::sport::{SportContribution, SportRecord};
-use agon_core::sports::cricket::CricketRecord;
-use agon_core::sports::football::FootballRecord;
-use agon_core::sports::netball::NetballRecord;
-
-/// Legal deliveries per over when a match hasn't configured a format (or
-/// configured a non-cricket one) — the standard rule.
-const DEFAULT_BALLS_PER_OVER: u32 = 6;
+use agon_core::dao::stats::{MatchContribution, MatchOutcome};
 
 use crate::error::WorkerResult;
 use crate::event::ChangeEvent;
@@ -72,14 +63,6 @@ pub async fn reconcile_match_stats(dao: &Dao, match_id: &str) -> WorkerResult<()
     let sport = agg.match_.match_type.clone();
     let winner_side_id = confirmed_score.and_then(|cs| cs.winner_side_id.clone());
 
-    // Cricket-only: this match's actual legal-ball-per-over count, so a
-    // bowling entry's `Overs` converts to a raw ball count exactly (not by
-    // assuming the standard 6) regardless of which format the match used.
-    let balls_per_over = match &agg.match_.format {
-        Some(MatchFormatRecord::Cricket(f)) => f.balls_per_over,
-        _ => DEFAULT_BALLS_PER_OVER,
-    };
-
     // Desired contribution per participant who actually played, keyed by user
     // id. "Played" = a match with a confirmed score where the player is the
     // creator/self-added (no embedded invitation) or an accepted invitee.
@@ -109,8 +92,12 @@ pub async fn reconcile_match_stats(dao: &Dao, match_id: &str) -> WorkerResult<()
             } else {
                 MatchOutcome::Lost
             };
-            let contribution =
-                sport_contribution(&sport, &cs.score, &player.player_id, balls_per_over);
+            let contribution = agon_core::sports::contribution(
+                &sport,
+                &cs.score,
+                &player.player_id,
+                agg.match_.format.as_ref(),
+            );
 
             // If a user somehow appears twice, take the best outcome
             // (won > drawn > lost) and sum counters/bowling figures across
@@ -128,23 +115,11 @@ pub async fn reconcile_match_stats(dao: &Dao, match_id: &str) -> WorkerResult<()
                 *entry.best_candidates.entry(k).or_insert(0) += v;
             }
             if let Some(spell) = contribution.bowling_spell {
-                let acc = entry.bowling_spell.get_or_insert(BowlingSpell::default());
-                acc.wickets += spell.wickets;
-                acc.runs_conceded += spell.runs_conceded;
-                acc.balls_bowled += spell.balls_bowled;
-                // `overs` is derived once below, from the fully-accumulated
-                // `balls_bowled` — two `Overs` values don't sum field-wise
-                // (balls can roll over into a whole extra over), so summing
-                // the raw ball count first and converting once is what's
-                // actually correct for the rare case of one user appearing
-                // as more than one player in the same match.
+                match &mut entry.bowling_spell {
+                    Some(acc) => acc.absorb(&spell),
+                    None => entry.bowling_spell = Some(spell),
+                }
             }
-        }
-    }
-    for contribution in desired.values_mut() {
-        if let Some(spell) = &mut contribution.bowling_spell {
-            spell.overs =
-                agon_core::sports::cricket::balls_to_overs(spell.balls_bowled, balls_per_over);
         }
     }
 
@@ -164,22 +139,3 @@ pub async fn reconcile_match_stats(dao: &Dao, match_id: &str) -> WorkerResult<()
 
     Ok(())
 }
-
-fn sport_contribution(
-    sport: &str,
-    score: &ScoreRecord,
-    player_id: &str,
-    balls_per_over: u32,
-) -> SportContribution {
-    match sport {
-        "cricket" => CricketRecord::contribution(score, player_id, balls_per_over),
-        "football" => FootballRecord::contribution(score, player_id, balls_per_over),
-        "netball" => NetballRecord::contribution(score, player_id, balls_per_over),
-        _ => SportContribution::default(),
-    }
-}
-
-// Cricket's contribution logic (including `overs_to_balls`/`balls_to_overs`)
-// has moved to `agon_core::sports::cricket` — see that module.
-// Football's contribution logic has moved to
-// `agon_core::sports::football::FootballRecord` — see that module.

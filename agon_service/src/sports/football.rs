@@ -8,12 +8,16 @@ use poem_openapi::{Enum, Object, Union};
 use agon_core::sports::football::{
     FootballCardColorRecord, FootballCardEventRecord, FootballFormatRecord,
     FootballGoalEventRecord, FootballLiveEventRecord, FootballPenaltyShootoutKickRecord,
-    FootballPeriodEventRecord, FootballPeriodRecord, FootballScoreRecord,
+    FootballPeriodEventRecord, FootballPeriodRecord, FootballScoreRecord, FootballStatsRecord,
     FootballSubstitutionEventRecord,
 };
 
 use crate::live_score::NewLiveEventInput;
-use crate::mapping::{parse_ts, parse_ts_opt};
+use crate::mapping::{best_figure_from_record, generic_stats_from_record, parse_ts, parse_ts_opt};
+use crate::{BestFigure, GenericPlayerStats};
+
+/// How this sport is named to people (e.g. share-card headings).
+pub const LABEL: &str = "Football";
 
 // ===========================================================================
 // API types (formerly `match_format::FootballFormat`,
@@ -503,6 +507,38 @@ pub fn winner(score: &FootballScore, side_ids: &[String]) -> Option<String> {
             })
         },
     )
+}
+
+// ===========================================================================
+// Stats (a user's lifetime football totals, `UserStats::football`).
+// ===========================================================================
+
+/// Lifetime football stats: the common counters plus goals/assists derived
+/// from every confirmed match's goal log.
+#[derive(Object)]
+pub struct FootballPlayerStats {
+    #[oai(flatten)]
+    pub common: GenericPlayerStats,
+    pub goals: i32,
+    pub assists: i32,
+    /// Most goals scored in a single match.
+    pub best_goals: Option<BestFigure>,
+    /// Most goals + assists combined in a single match — a more complete
+    /// "best game" than assists alone.
+    pub best_goal_contributions: Option<BestFigure>,
+}
+
+pub fn stats_from_record(rec: &FootballStatsRecord) -> FootballPlayerStats {
+    FootballPlayerStats {
+        common: generic_stats_from_record(&rec.common),
+        goals: rec.goals as i32,
+        assists: rec.assists as i32,
+        best_goals: rec.best_goals.as_ref().map(best_figure_from_record),
+        best_goal_contributions: rec
+            .best_goal_contributions
+            .as_ref()
+            .map(best_figure_from_record),
+    }
 }
 
 // ===========================================================================

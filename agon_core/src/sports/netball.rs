@@ -1,10 +1,11 @@
-//! Netball's DAO record types and `SportRecord` implementation.
+//! Netball's whole DAO-side surface — see `crate::sports::cricket`'s doc
+//! comment.
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::dao::records::ScoreRecord;
+use crate::dao::records::{GenericSportStatsRecord, MatchFormatRecord, ScoreRecord};
 use crate::sport::{SportContribution, SportRecord};
 
 /// Netball's `ScoreRecord` shape — pulled out to its own type (rather than an
@@ -136,25 +137,109 @@ pub enum NetballPeriodRecord {
     ExtraTimeEnd,
 }
 
+/// Lifetime netball stats (`stats.netball` on the user's profile): the
+/// common counters plus goals scored, derived from every confirmed match's
+/// goal log.
+///
+/// Wire-compatible with the `GenericSportStatsRecord` shape `stats.netball`
+/// used before this type existed — the common counters are flattened in at
+/// the same keys and `goals` defaults to `0` when absent — guarded by
+/// `agon_core/tests/netball_stats_record_roundtrip.rs`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct NetballStatsRecord {
+    #[serde(flatten)]
+    pub common: GenericSportStatsRecord,
+    /// Goals scored (career total) — a count of successful shots, so a
+    /// two-point-zone goal counts once here even though it's worth two on
+    /// the scoreboard. Sparse like every other counter: absent until the
+    /// player's first goal.
+    #[serde(default)]
+    pub goals: u64,
+}
+
 /// Marker type for netball's `SportRecord` impl — no fields, just a home for
-/// the trait's associated const/methods (same pattern `agon_service::sports::
-/// netball::NetballSport` uses on the API side).
+/// the trait's methods (the same per-sport marker pattern cricket/football
+/// use).
 pub struct NetballRecord;
 
 impl SportRecord for NetballRecord {
-    const NAME: &'static str = "netball";
-
-    /// Netball has no dedicated stats record yet — a per-player goal/foul log
-    /// exists on `ScoreRecord::Netball` (see `NetballGoalEventRecord`) that a
-    /// future `NetballStatsRecord` (mirroring cricket/football) could derive
-    /// best-figures from, same as cricket/football — just not built out yet.
-    /// Matches today's behavior (netball falls through the worker's `_ =>
-    /// empty` default) exactly.
+    /// Counts the goals this player scored across a confirmed netball
+    /// score's goal log. Nothing to count for a quarter-only-scored or
+    /// manually-entered result with no goal-by-goal detail — the player still
+    /// gets their played/won/drawn/lost from the outcome, just no goals.
     fn contribution(
-        _score: &ScoreRecord,
-        _player_id: &str,
-        _balls_per_over: u32,
+        score: &ScoreRecord,
+        player_id: &str,
+        _format: Option<&MatchFormatRecord>,
     ) -> SportContribution {
-        SportContribution::default()
+        let ScoreRecord::Netball(rec) = score else {
+            return SportContribution::default();
+        };
+        let goals = rec
+            .goals
+            .iter()
+            .flatten()
+            .filter(|g| g.scorer_player_id.as_deref() == Some(player_id))
+            .count() as u64;
+
+        let mut counters = HashMap::new();
+        if goals > 0 {
+            counters.insert("goals".to_string(), goals);
+        }
+        SportContribution {
+            counters,
+            ..SportContribution::default()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn goal(scorer: Option<&str>, two_points: bool) -> NetballGoalEventRecord {
+        NetballGoalEventRecord {
+            side_id: "kestrels".into(),
+            scorer_player_id: scorer.map(Into::into),
+            scorer_position: None,
+            two_points,
+            minute: None,
+            occurred_at: None,
+        }
+    }
+
+    fn score(goals: Option<Vec<NetballGoalEventRecord>>) -> ScoreRecord {
+        ScoreRecord::Netball(NetballScoreRecord {
+            score: HashMap::new(),
+            goals,
+            fouls: None,
+            period: None,
+            period_times: None,
+            period_scores: None,
+        })
+    }
+
+    #[test]
+    fn counts_only_this_players_goals_with_a_two_pointer_counting_once() {
+        let s = score(Some(vec![
+            goal(Some("p1"), false),
+            goal(Some("p1"), true),
+            goal(Some("p2"), false),
+            goal(None, false),
+        ]));
+        let c = NetballRecord::contribution(&s, "p1", None);
+        assert_eq!(c.counters.get("goals"), Some(&2));
+        assert!(c.best_candidates.is_empty());
+        assert!(c.bowling_spell.is_none());
+    }
+
+    #[test]
+    fn a_player_with_no_goals_contributes_no_goals_counter() {
+        let c =
+            NetballRecord::contribution(&score(Some(vec![goal(Some("p2"), false)])), "p1", None);
+        assert!(c.counters.is_empty());
+        // Quarter-only / manual result: no goal log at all.
+        let c = NetballRecord::contribution(&score(None), "p1", None);
+        assert!(c.counters.is_empty());
     }
 }

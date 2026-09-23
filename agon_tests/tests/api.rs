@@ -1939,6 +1939,104 @@ async fn football_stats_track_goals_assists_and_best_goal_contributions() {
     );
 }
 
+/// A netball match's goal log credits each scorer's own `goals` — a
+/// two-point-zone goal counts once (it's one goal, worth two on the board) —
+/// alongside the usual played/won/lost.
+#[tokio::test]
+async fn netball_stats_track_goals_scored() {
+    let (owner_config, owner) = new_user().await;
+    let (teammate_config, teammate) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+
+    let mut input = match_between(
+        "Netball Match",
+        &[&owner.profile.id, &teammate.profile.id],
+        &[&opponent.profile.id],
+    );
+    input.match_type = models::MatchType::Netball;
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("create match");
+    accept_match_invitation(&teammate_config, &created.id).await;
+    accept_match_invitation(&opponent_config, &created.id).await;
+
+    let side_a = side_id_for_user(&created, &owner.profile.id);
+    let side_b = side_id_for_user(&created, &opponent.profile.id);
+    let owner_pid = player_id_for_user(&created, &owner.profile.id);
+    let teammate_pid = player_id_for_user(&created, &teammate.profile.id);
+    let opponent_pid = player_id_for_user(&created, &opponent.profile.id);
+
+    let goal = |side: &str, scorer: &str, two_points: bool| {
+        let mut g = models::NetballGoalEvent::new(side.to_string(), two_points);
+        g.scorer_player_id = Some(scorer.to_string());
+        g
+    };
+    let score_tally = std::collections::HashMap::from([(side_a.clone(), 4), (side_b.clone(), 1)]);
+    let mut netball_score = models::ScoreNetballScore::new(
+        score_tally,
+        std::collections::HashMap::new(),
+        Default::default(),
+    );
+    netball_score.goals = Some(vec![
+        goal(&side_a, &owner_pid, false),
+        goal(&side_a, &owner_pid, true),
+        goal(&side_a, &teammate_pid, false),
+        goal(&side_b, &opponent_pid, false),
+    ]);
+
+    let updated = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(models::Score::Netball(Box::new(netball_score)))),
+            winner_side_id: Some(side_a.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("patch netball score");
+    let submission_id = updated
+        .pending_score
+        .expect("pending score after patch")
+        .submission_id;
+    matches_match_id_score_submissions_submission_id_respond_post(
+        &opponent_config,
+        &created.id,
+        &submission_id,
+        models::RespondToScoreInput {
+            response: models::ScoreResponseKind::Confirm,
+        },
+    )
+    .await
+    .expect("confirm netball score");
+
+    assert_matches_played_reaches(&owner_config, models::MatchType::Netball, 1, "owner").await;
+    let owner_netball = users_me_get(&owner_config)
+        .await
+        .expect("get me")
+        .profile
+        .stats
+        .netball
+        .expect("netball stats");
+    assert_eq!(owner_netball.wins, 1);
+    assert_eq!(
+        owner_netball.goals, 2,
+        "two goals, one of them a two-pointer — counted as goals, not points"
+    );
+
+    assert_matches_played_reaches(&opponent_config, models::MatchType::Netball, 1, "opponent")
+        .await;
+    let opponent_netball = users_me_get(&opponent_config)
+        .await
+        .expect("get me")
+        .profile
+        .stats
+        .netball
+        .expect("netball stats");
+    assert_eq!(opponent_netball.losses, 1);
+    assert_eq!(opponent_netball.goals, 1);
+}
+
 /// A match confirmed with no winner is a draw for every participant: neither
 /// side's win nor loss is credited, only `draws`.
 #[tokio::test]

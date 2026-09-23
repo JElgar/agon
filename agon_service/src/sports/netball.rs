@@ -1,13 +1,12 @@
-//! Netball's whole API-side surface: its detailed-score/live-event/format
+//! Netball's whole API-side surface: its score/format/live-event/stats
 //! types, the event-log fold (`NetballScore::from_events`/`apply_event`),
-//! every per-score-shape helper `main.rs`'s generic `Score` dispatchers call
-//! into (`side_ids`/`resolve_ids`/`set_players`/`player_ids`/`winner`/
-//! `apply_new_events`), and the API<->DAO mapping — colocated here instead of
-//! scattered across `main.rs`/`mapping.rs`/`detailed_score`/`live_score` (see
-//! `crate::sports`'s doc comment). Plain functions with names `agon_sports!`
-//! (see `crate::sports`) expects every sport module to provide, rather than a
-//! shared trait — there's no dynamic dispatch here (the macro expands to a
-//! direct call through the module path for each sport), so a trait would add
+//! every per-score-shape helper the generic `Score` dispatchers call into
+//! (`side_ids`/`resolve_ids`/`set_players`/`player_ids`/`winner`/
+//! `apply_new_events`), and the API<->DAO mapping (see `crate::sports`'s doc
+//! comment). Plain functions with the names `agon_sports!`'s generated
+//! dispatchers expect every sport module to provide, rather than a shared
+//! trait — there's no dynamic dispatch here (the macro expands to a direct
+//! call through the module path for each sport), so a trait would add
 //! ceremony without a caller that needs it.
 
 use std::collections::HashMap;
@@ -17,11 +16,15 @@ use poem_openapi::{Enum, Object, Union};
 use agon_core::sports::netball::{
     NetballFormatRecord, NetballFoulEventRecord, NetballFoulKindRecord, NetballGoalEventRecord,
     NetballLiveEventRecord, NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord,
-    NetballScoreRecord,
+    NetballScoreRecord, NetballStatsRecord,
 };
 
+use crate::GenericPlayerStats;
 use crate::live_score::NewLiveEventInput;
-use crate::mapping::{parse_ts, parse_ts_opt};
+use crate::mapping::{generic_stats_from_record, parse_ts, parse_ts_opt};
+
+/// How this sport is named to people (e.g. share-card headings).
+pub const LABEL: &str = "Netball";
 
 // ===========================================================================
 // API types (formerly `match_format::NetballFormat`,
@@ -488,6 +491,30 @@ pub fn player_ids(score: &NetballScore) -> Vec<String> {
 /// persisted score. `None` if the two sides are tied.
 pub fn winner(score: &NetballScore, side_ids: &[String]) -> Option<String> {
     crate::two_side_winner(side_ids, |sid| *score.score.get(sid).unwrap_or(&0) as i64)
+}
+
+// ===========================================================================
+// Stats (a user's lifetime netball totals, `UserStats::netball`).
+// ===========================================================================
+
+/// Lifetime netball stats: the common counters plus goals scored, derived
+/// from every confirmed match's goal log. A quarter-only-scored or
+/// manually-entered match has no goal-by-goal log, so it still counts
+/// towards matches played/won/drawn/lost but adds no goals.
+#[derive(Object)]
+pub struct NetballPlayerStats {
+    #[oai(flatten)]
+    pub common: GenericPlayerStats,
+    /// Goals scored (career total) — successful shots, so a two-point-zone
+    /// goal counts once here even though it's worth two on the scoreboard.
+    pub goals: i32,
+}
+
+pub fn stats_from_record(rec: &NetballStatsRecord) -> NetballPlayerStats {
+    NetballPlayerStats {
+        common: generic_stats_from_record(&rec.common),
+        goals: rec.goals as i32,
+    }
 }
 
 // ===========================================================================
@@ -1061,5 +1088,34 @@ mod tests {
                 crate::mapping::score_from_record(&crate::mapping::score_to_record(&score));
             assert_eq!(original_json, round_tripped.to_json());
         }
+    }
+
+    /// `UserStats.netball` carries the common counters flattened in next to
+    /// `goals` (the same shape as cricket's/football's stats), so a client
+    /// reading only `matches_played`/`wins`/... keeps working unchanged.
+    #[test]
+    fn netball_stats_serialize_flat_with_goals() {
+        use agon_core::dao::records::{GenericSportStatsRecord, UserStatsRecord};
+
+        let stats = crate::mapping::user_stats_from_record(&UserStatsRecord {
+            netball: Some(NetballStatsRecord {
+                common: GenericSportStatsRecord {
+                    matches_played: 4,
+                    wins: 3,
+                    draws: 0,
+                    losses: 1,
+                },
+                goals: 17,
+            }),
+            ..Default::default()
+        });
+        let json = stats.to_json().expect("serializes");
+        let netball = json["netball"].as_object().expect("netball stats present");
+        assert_eq!(netball["matches_played"], 4);
+        assert_eq!(netball["wins"], 3);
+        assert_eq!(netball["losses"], 1);
+        assert_eq!(netball["win_percentage"], 75.0);
+        assert_eq!(netball["goals"], 17);
+        assert!(json["football"].is_null(), "no stats for an unplayed sport");
     }
 }

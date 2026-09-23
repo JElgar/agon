@@ -36,7 +36,7 @@ use poem::{
     web::{Data, Html, Path},
 };
 
-use crate::{Api, Match, MatchType, Member, assets::Assets, mapping, sign_match_headers};
+use crate::{Api, Match, Member, assets::Assets, mapping, sign_match_headers};
 
 /// The web app's public base URL (`AGON_UI_URL`, trimmed of a trailing
 /// slash), used to build the SPA URL a preview page bounces a real visitor
@@ -355,25 +355,12 @@ fn match_title(m: &Match) -> String {
 /// state at all), the creator's own description tacked on when they wrote one.
 fn match_blurb(m: &Match) -> String {
     let when = m.starts_at.format("%a %-d %b, %H:%M UTC");
-    let heading = format!("{} · {when}", sport_label(&m.match_type));
+    let heading = format!("{} · {when}", mapping::match_type_label(&m.match_type));
     let description = m.description.trim();
     if description.is_empty() {
         heading
     } else {
         format!("{heading} — {description}")
-    }
-}
-
-fn sport_label(t: &MatchType) -> &'static str {
-    match t {
-        MatchType::Tennis => "Tennis",
-        MatchType::Badminton => "Badminton",
-        MatchType::Squash => "Squash",
-        MatchType::TableTennis => "Table Tennis",
-        MatchType::Football => "Football",
-        MatchType::Cricket => "Cricket",
-        MatchType::Netball => "Netball",
-        MatchType::Other => "Match",
     }
 }
 

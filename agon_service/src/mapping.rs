@@ -30,9 +30,9 @@ use crate::live_score::{
 };
 use crate::match_format::{CricketFormat, FootballFormat, MatchFormat, NetballFormat};
 use crate::membership::{
-    ExternalMember, Invitation, InvitationContext, InvitationKind, InvitationMatchContext,
-    InvitationStatus, InvitationTeamContext, JoinLink, JoinLinkScope, MatchPlayerRole, Member,
-    TokenInvitation, UserInvitation, UserMember,
+    AssignableMatchPlayerRole, ExternalMember, Invitation, InvitationContext, InvitationKind,
+    InvitationMatchContext, InvitationStatus, InvitationTeamContext, JoinLink, JoinLinkScope,
+    MatchPlayerRole, Member, TokenInvitation, UserInvitation, UserMember,
 };
 use crate::notification::{
     CommentNotification, FollowNotification, InvitationAcceptedNotification, LikeNotification,
@@ -856,6 +856,17 @@ pub fn assignable_team_role_str(r: &AssignableTeamRole) -> &'static str {
     match r {
         AssignableTeamRole::Admin => "admin",
         AssignableTeamRole::Member => "member",
+    }
+}
+
+/// The stored string for a role assignable via `PATCH
+/// /matches/{match_id}/players/{player_id}` — never `"owner"`, which
+/// `AssignableMatchPlayerRole` excludes at the type level (see its doc
+/// comment).
+pub fn assignable_match_player_role_str(r: &AssignableMatchPlayerRole) -> &'static str {
+    match r {
+        AssignableMatchPlayerRole::Admin => "admin",
+        AssignableMatchPlayerRole::Player => "player",
     }
 }
 

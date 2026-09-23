@@ -39,8 +39,8 @@ use auth::{DeviceTokenSigner, JwtClaims, JwtVerifier, SCOPE_LIVE_SCORING};
 // Boundary mapping between API models and DAO records.
 mod mapping;
 use mapping::{
-    assignable_team_role_str, comment_from_record, dao_internal, deleted_user_profile,
-    derive_live_score, device_platform_to_record, feed_match_from_records,
+    assignable_match_player_role_str, assignable_team_role_str, comment_from_record, dao_internal,
+    deleted_user_profile, derive_live_score, device_platform_to_record, feed_match_from_records,
     invitation_detail_from_record, invitation_from_record, invitation_status_from_str,
     invitation_status_str, join_link_from_record, join_link_scope_from_record,
     join_link_scope_to_record, live_event_from_record, location_to_record, match_format_sport_tag,
@@ -81,7 +81,8 @@ use membership::{
     AddInvitationsInput, CreateJoinLinkInput, Invitation, InvitationContext, InvitationDetail,
     InvitationKind, InvitationMatchContext, InvitationStatus, JoinLink, JoinLinkPreview,
     JoinMatchInput, MatchPlayerRole, Member, RespondByTokenInput, RespondToInvitationInput,
-    TokenInvitation, TransferMatchOwnershipInput, UserInvitation, UserMember,
+    TokenInvitation, TransferMatchOwnershipInput, UpdateMatchPlayerRoleInput, UserInvitation,
+    UserMember,
 };
 
 mod team;
@@ -2177,6 +2178,22 @@ enum MoveInFromWaitlistResponse {
     /// No free spot — see `RosterConflict::kind`.
     #[oai(status = 409)]
     Conflict(Json<RosterConflict>),
+}
+
+#[derive(ApiResponse)]
+enum UpdateMatchPlayerRoleResponse {
+    #[oai(status = 204)]
+    Ok,
+
+    /// The caller may not manage the match (see `caller_is_match_admin`), or
+    /// the target is the match's owner (role is permanent — see the
+    /// endpoint's doc comment).
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    /// The match, or the player within it, doesn't exist.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -6127,6 +6144,59 @@ impl Api {
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m, &uid).await?;
         Ok(JoinMatchResponse::Match(Json(m)))
+    }
+
+    /// Change a match player's role.
+    ///
+    /// Change a player's role between `admin` and `player` — never `owner`,
+    /// which only ever moves via `POST /matches/:match_id/transfer-ownership`
+    /// (see `AssignableMatchPlayerRole`'s doc comment). Mirrors `PATCH
+    /// /teams/:team_id/members/:member_id` exactly: whoever may manage the
+    /// match (`caller_is_match_admin` — owner, admin, the non-playing
+    /// creator, or a managing team's owner/admin) may call this; the target
+    /// can't be the match's owner (their role can't be changed by anyone,
+    /// including themselves).
+    #[oai(path = "/matches/:match_id/players/:player_id", method = "patch")]
+    async fn update_match_player_role(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        Path(player_id): Path<String>,
+        input: Json<UpdateMatchPlayerRoleInput>,
+    ) -> Result<UpdateMatchPlayerRoleResponse> {
+        info!("Setting role of player {player_id} on match {match_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let Some(agg) = dao.get_match(&match_id).await.map_err(dao_internal)? else {
+            return Ok(UpdateMatchPlayerRoleResponse::NotFound(PlainText(
+                "match not found".into(),
+            )));
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(UpdateMatchPlayerRoleResponse::Forbidden(PlainText(
+                "only a match admin can change a player's role".into(),
+            )));
+        }
+        let Some(target) = agg.players.iter().find(|p| p.player_id == player_id) else {
+            return Ok(UpdateMatchPlayerRoleResponse::NotFound(PlainText(
+                "player not found".into(),
+            )));
+        };
+        if target.role == dao::records::MatchPlayerRole::Owner {
+            return Ok(UpdateMatchPlayerRoleResponse::Forbidden(PlainText(
+                "the match's owner's role can't be changed".into(),
+            )));
+        }
+
+        dao.update_match_player_role(
+            &match_id,
+            &player_id,
+            assignable_match_player_role_str(&input.role),
+        )
+        .await
+        .map_err(dao_internal)?;
+        Ok(UpdateMatchPlayerRoleResponse::Ok)
     }
 
     /// Transfer match ownership.

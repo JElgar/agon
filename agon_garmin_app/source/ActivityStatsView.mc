@@ -277,9 +277,10 @@ class ActivityStatsView extends WatchUi.View {
 }
 
 //! Same controls as the score screen's `agonDelegate`: up/down pages back
-//! to it, and menu/select open the same main menu. Back isn't overridden
-//! — both pages sit at the same depth in the view stack, so it does the
-//! same thing from here as from the score screen.
+//! to it, and menu/select open the same main menu. Also swallows Back the
+//! same way `agonDelegate` does — both pages sit at the same depth in the
+//! view stack (nothing underneath, reached via switchToView), so an
+//! unoverridden Back would exit the app here too.
 class ActivityStatsDelegate extends WatchUi.BehaviorDelegate {
 
     function initialize() {
@@ -303,6 +304,10 @@ class ActivityStatsDelegate extends WatchUi.BehaviorDelegate {
 
     function onPreviousPage() as Boolean {
         WatchUi.switchToView(new agonView(), new agonDelegate(), WatchUi.SLIDE_DOWN);
+        return true;
+    }
+
+    function onBack() as Boolean {
         return true;
     }
 }

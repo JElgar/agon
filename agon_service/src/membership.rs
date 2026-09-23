@@ -183,6 +183,25 @@ pub enum MatchPlayerRole {
     Player,
 }
 
+/// A role assignable via `PATCH /matches/{match_id}/players/{player_id}`.
+/// Deliberately a separate, smaller type from `MatchPlayerRole` rather than
+/// reusing it with runtime validation — same reasoning as
+/// `AssignableTeamRole`: `Owner` only ever moves via `POST
+/// /matches/:id/transfer-ownership`, so excluding it here makes "you can't
+/// set someone to owner this way" a type error for API consumers instead of
+/// a 400 they have to hit first.
+#[derive(Enum)]
+#[oai(rename_all = "snake_case")]
+pub enum AssignableMatchPlayerRole {
+    Admin,
+    Player,
+}
+
+#[derive(Object)]
+pub struct UpdateMatchPlayerRoleInput {
+    pub role: AssignableMatchPlayerRole,
+}
+
 /// A shareable, many-use join link for a match. Unlike a token `Invitation`
 /// (single-use — pre-bound to one specific roster row), any number of
 /// different people may join via the same link's token, bounded only by the

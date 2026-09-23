@@ -722,6 +722,40 @@ impl Dao {
         }
     }
 
+    /// Set a player's role — mirrors `Dao::update_team_member_role` exactly.
+    /// `role` is expected to be `"admin"` or `"player"` (never `"owner"`,
+    /// which only ever moves via `transfer_match_ownership`) — the caller is
+    /// responsible for that and every other business-rule check (caller may
+    /// manage the match, target isn't the owner); this just writes the role.
+    /// `NotFound` if the player doesn't exist.
+    pub async fn update_match_player_role(
+        &self,
+        match_id: &str,
+        player_id: &str,
+        role: &str,
+    ) -> DaoResult<()> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Player(player_id.into()).to_string()))
+            .update_expression("SET #role = :role")
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#role", "role")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_values(":role", s(role))
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => Err(DaoError::NotFound(format!(
+                "player {player_id} on match {match_id}"
+            ))),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
     /// Move the `Owner` role from one player to another, in one transaction
     /// — mirrors `Dao::transfer_team_ownership` exactly (same reasoning: the
     /// promote and demote either both land or neither does, so the match is

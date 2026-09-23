@@ -14,6 +14,8 @@ import {
   MoreVertical,
   Pencil,
   Radio,
+  ShieldMinus,
+  ShieldPlus,
   UserPlus,
 } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
@@ -27,6 +29,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Avatar } from '@/components/agon/Avatar'
@@ -581,6 +584,7 @@ function MatchDetail({
             activeTab={rosterTab}
             onTabChange={setRosterTab}
             currentUserId={currentUserId}
+            canManage={canEdit}
             iAmOwner={iAmOwner}
           />
         </div>
@@ -1122,6 +1126,7 @@ function RosterTabs({
   activeTab,
   onTabChange,
   currentUserId,
+  canManage,
   iAmOwner,
 }: {
   matchId: string
@@ -1133,6 +1138,7 @@ function RosterTabs({
   activeTab: string
   onTabChange: (tab: string) => void
   currentUserId?: string
+  canManage: boolean
   iAmOwner: boolean
 }) {
   const tabs = [
@@ -1181,6 +1187,7 @@ function RosterTabs({
           players={active.players}
           matchId={matchId}
           currentUserId={currentUserId}
+          canManage={canManage}
           iAmOwner={iAmOwner}
         />
       </div>
@@ -1191,6 +1198,7 @@ function RosterTabs({
           players={playersA}
           matchId={matchId}
           currentUserId={currentUserId}
+          canManage={canManage}
           iAmOwner={iAmOwner}
         />
         <SideRoster
@@ -1198,6 +1206,7 @@ function RosterTabs({
           players={playersB}
           matchId={matchId}
           currentUserId={currentUserId}
+          canManage={canManage}
           iAmOwner={iAmOwner}
         />
       </div>
@@ -1210,12 +1219,14 @@ function SideRoster({
   players,
   matchId,
   currentUserId,
+  canManage,
   iAmOwner,
 }: {
   title: string
   players: MatchPlayer[]
   matchId: string
   currentUserId?: string
+  canManage: boolean
   iAmOwner: boolean
 }) {
   return (
@@ -1233,6 +1244,7 @@ function SideRoster({
             player={p}
             matchId={matchId}
             currentUserId={currentUserId}
+            canManage={canManage}
             iAmOwner={iAmOwner}
           />
         ))}
@@ -1242,21 +1254,23 @@ function SideRoster({
 }
 
 /** One roster row: avatar, name, role badge, an "invited"/copy-link badge for
- *  someone who hasn't accepted yet, and — for the match owner viewer, on any
- *  other accepted player — a "…" menu offering "Promote to owner". Mirrors
- *  `TeamPage`'s `MemberRow`; matches only ever have this one contextual
- *  action (no admin/member toggle or removal here), so the menu has a single
- *  item, but it's still a labeled menu rather than a bare icon button, and
- *  still gated behind a confirmation dialog since it demotes the caller. */
+ *  someone who hasn't accepted yet, and — for a match admin/owner viewer, on
+ *  any other accepted player — a "…" menu of role actions. Mirrors
+ *  `TeamPage`'s `MemberRow`: any match admin (or the owner) may promote a
+ *  plain player to admin or demote an admin back, but only the owner may
+ *  hand over ownership itself, gated behind a confirmation dialog since it
+ *  also demotes the caller. */
 function RosterPlayerRow({
   player: p,
   matchId,
   currentUserId,
+  canManage,
   iAmOwner,
 }: {
   player: MatchPlayer
   matchId: string
   currentUserId?: string
+  canManage: boolean
   iAmOwner: boolean
 }) {
   const [promoteOpen, setPromoteOpen] = useState(false)
@@ -1274,6 +1288,23 @@ function RosterPlayerRow({
   // "must already be an accepted player" rule).
   const isYou = userId !== undefined && userId === currentUserId
   const canTransferTo = iAmOwner && !isYou && !pending && p.role !== 'owner'
+  // Any match admin (or the owner) can promote a plain player to admin, or
+  // demote an admin back — same "any admin, never the owner's own row" rule
+  // `TeamPage`'s `MemberRow` uses (mirrors the server's
+  // `caller_is_match_admin` gate on `PATCH .../players/:player_id`).
+  const canChangeRole = canManage && p.role !== 'owner'
+
+  const queryClient = useQueryClient()
+  const roleMutation = useMutation({
+    mutationFn: async (role: 'admin' | 'player') => {
+      const { error } = await fetchClient.PATCH('/matches/{match_id}/players/{player_id}', {
+        params: { path: { match_id: matchId, player_id: p.member.id } },
+        body: { role },
+      })
+      if (error) throw new Error('Failed to update role')
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['match', matchId] }),
+  })
 
   return (
     <div className="flex items-center gap-2">
@@ -1291,23 +1322,39 @@ function RosterPlayerRow({
       {(p.role === 'owner' || p.role === 'admin') && (
         <span className="text-[10px] capitalize text-muted-foreground">{p.role}</span>
       )}
-      {canTransferTo && (
+      {(canChangeRole || canTransferTo) && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
               variant="ghost"
               size="icon"
               className="size-6 shrink-0"
+              disabled={roleMutation.isPending}
               aria-label={`Manage ${name}`}
             >
               <MoreVertical className="size-3.5" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent>
-            <DropdownMenuItem onSelect={() => setPromoteOpen(true)}>
-              <Crown />
-              Promote to owner
-            </DropdownMenuItem>
+            {canChangeRole &&
+              (p.role === 'admin' ? (
+                <DropdownMenuItem onSelect={() => roleMutation.mutate('player')}>
+                  <ShieldMinus />
+                  Demote to player
+                </DropdownMenuItem>
+              ) : (
+                <DropdownMenuItem onSelect={() => roleMutation.mutate('admin')}>
+                  <ShieldPlus />
+                  Promote to admin
+                </DropdownMenuItem>
+              ))}
+            {canChangeRole && canTransferTo && <DropdownMenuSeparator />}
+            {canTransferTo && (
+              <DropdownMenuItem onSelect={() => setPromoteOpen(true)}>
+                <Crown />
+                Promote to owner
+              </DropdownMenuItem>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       )}

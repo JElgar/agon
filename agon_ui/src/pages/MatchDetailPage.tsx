@@ -7,7 +7,7 @@ import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { scheduledDateTime } from '@/lib/datetime'
 import { directionsUrl } from '@/lib/location'
-import { downloadMatchIcs } from '@/lib/calendar'
+import { addMatchToCalendar } from '@/lib/calendar'
 import { Button } from '@/components/ui/button'
 import { Avatar } from '@/components/agon/Avatar'
 import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
@@ -315,7 +315,7 @@ function MatchDetail({
                 size="sm"
                 className="h-7 gap-1 px-2 text-xs text-muted-foreground"
                 onClick={() =>
-                  downloadMatchIcs(match, {
+                  addMatchToCalendar(match, {
                     title: match.name,
                     description: `${nameA} vs ${nameB}`,
                   })

@@ -70,6 +70,18 @@ export function scheduledDateTime(iso: string): string {
   })
 }
 
+/**
+ * A short fixed date for an ISO instant, e.g. "Sat 8 Aug" — no time, no year,
+ * no comma. Matches the "Agon redesign" canvas's feed-card subtitle line
+ * (`Tiles.dc.html`'s finished cards), which is more compact than
+ * `scheduledDateTime`'s full "Sat, 12 Sep · 3:00 PM".
+ */
+export function shortDate(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })
+}
+
 /** Whether two dates fall on the same local calendar day. */
 function isSameDay(a: Date, b: Date): boolean {
   return (

@@ -110,17 +110,17 @@ export function QuarterScoresCard({ match, score, live }: { match: Match; score:
   const totalB = cols.at(-1)!.b
 
   const row = (side: typeof a, idx: number, pick: 'a' | 'b', total: number, otherTotal: number) => (
-    <div style={grid} className="grid min-h-10 items-center gap-x-1 border-t border-[#F0ECE4] text-sm tabular-nums">
+    <div style={grid} className="grid min-h-10 items-center gap-x-1 border-t border-hairline text-sm tabular-nums">
       <span className="flex min-w-0 items-center gap-2 font-semibold">
         <SideSwatch index={idx} size={10} />
         <span className="truncate">{sideLabel(match, side?.id, idx === 0 ? 'Side A' : 'Side B')}</span>
       </span>
       {perQuarter.map((q) => (
-        <span key={q.label} className={cn('text-center', q.current ? 'font-bold text-destructive' : 'text-[#3D404A]')}>
+        <span key={q.label} className={cn('text-center', q.current ? 'font-bold text-destructive' : 'text-ink-soft')}>
           {q[pick]}
         </span>
       ))}
-      <span className={cn('text-right font-display text-lg font-extrabold', total < otherTotal && 'text-[#7D8190]')}>{total}</span>
+      <span className={cn('text-right font-display text-lg font-extrabold', total < otherTotal && 'text-ink-faint')}>{total}</span>
     </div>
   )
 
@@ -199,7 +199,7 @@ export function NetballScoreFlowCard({ match, score, format, live }: { match: Ma
       <svg width="100%" viewBox="0 0 322 190" role="img" aria-label={`Score by quarter: ${nameA} ${nowA}, ${nameB} ${nowB}`} className="block font-sans">
         {ticks.map((v) => (
           <g key={v}>
-            <line x1={x0} x2={x1} y1={yFor(v)} y2={yFor(v)} stroke="#EEEAE2" strokeWidth="1" />
+            <line x1={x0} x2={x1} y1={yFor(v)} y2={yFor(v)} stroke="var(--gridline)" strokeWidth="1" />
             <text x={x0 - 8} y={yFor(v) + 4} textAnchor="end" fontSize="11" className="fill-muted-foreground">
               {v}
             </text>
@@ -211,14 +211,14 @@ export function NetballScoreFlowCard({ match, score, format, live }: { match: Ma
           </text>
         ))}
         {Array.from({ length: quarters - 1 }, (_, i) => (
-          <line key={i} x1={x0 + ((i + 1) / quarters) * (x1 - x0)} x2={x0 + ((i + 1) / quarters) * (x1 - x0)} y1={yTop} y2={yBase} stroke="#EEEAE2" strokeWidth="1" strokeDasharray={i === 1 ? '3 4' : undefined} />
+          <line key={i} x1={x0 + ((i + 1) / quarters) * (x1 - x0)} x2={x0 + ((i + 1) / quarters) * (x1 - x0)} y1={yTop} y2={yBase} stroke="var(--gridline)" strokeWidth="1" strokeDasharray={i === 1 ? '3 4' : undefined} />
         ))}
         <path d={line('b')} fill="none" stroke={KIT_GREY} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
         <path d={line('a')} fill="none" className="stroke-primary" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
         {pts.slice(1).map((p, i) => (
           <g key={i}>
-            <circle cx={xFor(i + 1)} cy={yFor(p.b)} r="3.5" fill={KIT_GREY} stroke="#FFFFFF" strokeWidth="1.5" />
-            <circle cx={xFor(i + 1)} cy={yFor(p.a)} r="3.5" className="fill-primary" stroke="#FFFFFF" strokeWidth="1.5" />
+            <circle cx={xFor(i + 1)} cy={yFor(p.b)} r="3.5" fill={KIT_GREY} stroke="var(--card)" strokeWidth="1.5" />
+            <circle cx={xFor(i + 1)} cy={yFor(p.a)} r="3.5" className="fill-primary" stroke="var(--card)" strokeWidth="1.5" />
           </g>
         ))}
         <text x={endX - 8} y={ya - 9} textAnchor="end" fontSize="13" fontWeight="700" className="fill-primary">
@@ -302,7 +302,7 @@ export function TopScorersCard({ match, detail }: { match: Match; detail: Netbal
         </div>
       ))}
       {rows.length > 6 && (
-        <button type="button" onClick={() => setShowAll((v) => !v)} className="mt-0.5 h-11 border-t border-[#F0ECE4] text-sm font-bold text-primary">
+        <button type="button" onClick={() => setShowAll((v) => !v)} className="mt-0.5 h-11 border-t border-hairline text-sm font-bold text-primary">
           {showAll ? 'Show fewer' : 'See everyone'}
         </button>
       )}
@@ -335,7 +335,7 @@ function NetIcon({ index, two }: { index: number; two: boolean }) {
 
 function FoulIcon() {
   return (
-    <span className="flex size-[30px] shrink-0 items-center justify-center rounded-full bg-[#EEEAE2] text-[#3D404A]">
+    <span className="flex size-[30px] shrink-0 items-center justify-center rounded-full bg-chip text-ink-soft">
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round">
         <path d="M6 6l12 12M18 6L6 18" />
       </svg>
@@ -460,7 +460,7 @@ export function NetballTimeline({
             onClick={() => setFilter(f.id)}
             className={cn(
               'box-border h-9 rounded-full border px-3.5 text-sm font-bold',
-              filter === f.id ? 'border-foreground bg-foreground text-background' : 'border-[#DCD7CC] bg-card text-foreground',
+              filter === f.id ? 'border-foreground bg-foreground text-background' : 'border-edge bg-card text-foreground',
             )}
           >
             {f.label}
@@ -478,14 +478,14 @@ export function NetballTimeline({
               <div key={`m${i}`} className="grid grid-cols-[44px_32px_minmax(0,1fr)] gap-x-2.5 pr-2.5 pl-1.5">
                 <span />
                 <div className="flex flex-col items-center">
-                  <span className={cn('h-2.5 w-0.5', first ? 'bg-transparent' : 'bg-[#E4E0D7]')} />
+                  <span className={cn('h-2.5 w-0.5', first ? 'bg-transparent' : 'bg-rule')} />
                   <span className="size-3 rounded-full bg-foreground" />
-                  <span className={cn('h-2.5 w-0.5', last ? 'bg-transparent' : 'bg-[#E4E0D7]')} />
+                  <span className={cn('h-2.5 w-0.5', last ? 'bg-transparent' : 'bg-rule')} />
                 </div>
                 <div className="flex items-center">
                   <span className="flex h-7 items-center rounded-full bg-foreground px-3 text-[13px] font-bold text-background">
                     {item.label}
-                    {item.score && <span className="ml-1 font-medium text-[#C9CCD4]">{`· ${item.score[0]}–${item.score[1]}`}</span>}
+                    {item.score && <span className="ml-1 font-medium text-ink-ghost">{`· ${item.score[0]}–${item.score[1]}`}</span>}
                   </span>
                 </div>
               </div>
@@ -511,9 +511,9 @@ export function NetballTimeline({
                 )}
               </div>
               <div className="flex flex-col items-center">
-                <span className={cn('w-0.5 flex-1', first ? 'bg-transparent' : 'bg-[#E4E0D7]')} />
+                <span className={cn('w-0.5 flex-1', first ? 'bg-transparent' : 'bg-rule')} />
                 {isGoal ? <NetIcon index={idx} two={event.kind === 'two_point_goal'} /> : <FoulIcon />}
-                <span className={cn('w-0.5 flex-1', last ? 'bg-transparent' : 'bg-[#E4E0D7]')} />
+                <span className={cn('w-0.5 flex-1', last ? 'bg-transparent' : 'bg-rule')} />
               </div>
               <div className="flex min-w-0 flex-col justify-center gap-px py-3">
                 <span className="flex items-baseline text-[15px] leading-snug font-semibold">
@@ -536,7 +536,7 @@ export function NetballTimeline({
         })}
       </section>
       {hidden > 0 && (
-        <button type="button" onClick={() => setExpanded(true)} className="h-12 rounded-[14px] border border-[#DCD7CC] bg-card text-sm font-bold">
+        <button type="button" onClick={() => setExpanded(true)} className="h-12 rounded-[14px] border border-edge bg-card text-sm font-bold">
           Show earlier · {hidden} more
         </button>
       )}
@@ -616,7 +616,7 @@ export function NetballPlayersTab({
               {players.length === 0 && !unnamed && <p className="px-4 py-5 text-sm text-muted-foreground">No players yet.</p>}
               {players.map(row)}
               {unnamed && (
-                <div className={cn('flex min-h-16 items-center gap-3 px-4 py-2.5', players.length > 0 && 'border-t border-[#F0ECE4]')}>
+                <div className={cn('flex min-h-16 items-center gap-3 px-4 py-2.5', players.length > 0 && 'border-t border-hairline')}>
                   <span className="box-border flex size-10 shrink-0 items-center justify-center rounded-full border-[1.5px] border-dashed text-base font-bold text-muted-foreground" style={{ borderColor: KIT_GREY }}>
                     ?
                   </span>

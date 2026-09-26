@@ -26,7 +26,7 @@ export function SetsCard({ match, score }: { match: Match; score: Score }) {
   const grid = { gridTemplateColumns: `minmax(0,1fr) repeat(${count}, 34px) 40px` }
 
   const row = (idx: number, mine: number[], theirs: number[], sets: number, otherSets: number) => (
-    <div style={grid} className="grid min-h-11 items-center gap-x-1 border-t border-[#F0ECE4] text-sm tabular-nums">
+    <div style={grid} className="grid min-h-11 items-center gap-x-1 border-t border-hairline text-sm tabular-nums">
       <span className="flex min-w-0 items-center gap-2 font-semibold">
         <SideSwatch index={idx} size={10} />
         <span className="truncate">{sideLabel(match, idx)}</span>
@@ -40,7 +40,7 @@ export function SetsCard({ match, score }: { match: Match; score: Score }) {
           </span>
         )
       })}
-      <span className={cn('text-right font-display text-lg font-extrabold', sets < otherSets && 'text-[#7D8190]')}>{sets}</span>
+      <span className={cn('text-right font-display text-lg font-extrabold', sets < otherSets && 'text-ink-faint')}>{sets}</span>
     </div>
   )
 

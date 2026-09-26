@@ -63,6 +63,20 @@ export function sportEmoji(type: MatchType): string {
   return SPORT_EMOJI[type] ?? SPORT_EMOJI.other
 }
 
+/**
+ * Pastel icon-badge tint per sport, for the feed card's 40×40 sport-icon
+ * badge — card-local accents from the "Agon redesign" canvas
+ * (`Tiles.dc.html`), not theme colors, so they live here as a plain map
+ * rather than new CSS custom properties. Only the sports with a dedicated
+ * icon badge in the redesigned feed card (currently cricket) need an entry;
+ * football uses a team-initials avatar instead (see `MatchCard`).
+ */
+export const SPORT_ICON_TINT: Partial<Record<MatchType, { bg: string; stroke: string }>> = {
+  cricket: { bg: '#D3E3F0', stroke: '#123E5B' },
+  tennis: { bg: '#E4F0B8', stroke: '#3B5B12' },
+  squash: { bg: '#F7D9C6', stroke: '#6B2F12' },
+}
+
 /** Racket sports are scored by sets; everything else by a single points total. */
 export function isSetsSport(sport: MatchType): boolean {
   return (

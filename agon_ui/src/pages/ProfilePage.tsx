@@ -81,8 +81,8 @@ export function ProfilePage() {
   const profile = profileQuery.data
 
   return (
-    <div className="mx-auto flex max-w-xl flex-col gap-4">
-      <header className="flex items-center justify-between">
+    <div className="mx-auto flex max-w-xl flex-col gap-4 xl:max-w-none">
+      <header className="flex w-full items-center justify-between xl:mx-auto xl:max-w-[1080px]">
         <h1 className="font-display text-[22px] font-extrabold">Profile</h1>
         {isOwnProfile && <SettingsSheet />}
       </header>
@@ -213,110 +213,127 @@ function OwnProfile({
   const sportRows = sortedByActivity(profile.stats)
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-4">
-        <Avatar
-          name={profile.name}
-          imageUrl={profile.profile_image?.image_url}
-          size="xl"
-          ring="you"
-          className="size-[84px] text-2xl"
-        />
-        <div className="flex min-w-0 flex-col gap-1">
-          <h2 className="truncate font-display text-2xl font-extrabold tracking-tight">
-            {profile.name}
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            <Link to={`/users/${profile.id}/followers`} className="font-bold text-foreground hover:underline">
-              {profile.follower_count}
-            </Link>{' '}
-            followers &middot;{' '}
-            <Link to={`/users/${profile.id}/following`} className="font-bold text-foreground hover:underline">
-              {profile.following_count}
-            </Link>{' '}
-            following
-          </p>
+    <div className="flex flex-col gap-4 xl:mx-auto xl:max-w-[1080px]">
+      {/* Header row: on desktop (`DesktopProfile.dc.html`) the avatar/name/
+          buttons column sits beside a fixed-width stat banner instead of
+          stacking above it. */}
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:gap-6">
+        <div className="flex flex-col gap-4 xl:flex-grow">
+          <div className="flex items-center gap-4">
+            <Avatar
+              name={profile.name}
+              imageUrl={profile.profile_image?.image_url}
+              size="xl"
+              ring="you"
+              className="size-[84px] text-2xl"
+            />
+            <div className="flex min-w-0 flex-col gap-1">
+              <h2 className="truncate font-display text-2xl font-extrabold tracking-tight">
+                {profile.name}
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                <Link to={`/users/${profile.id}/followers`} className="font-bold text-foreground hover:underline">
+                  {profile.follower_count}
+                </Link>{' '}
+                followers &middot;{' '}
+                <Link to={`/users/${profile.id}/following`} className="font-bold text-foreground hover:underline">
+                  {profile.following_count}
+                </Link>{' '}
+                following
+              </p>
+            </div>
+          </div>
+
+          <div className="flex gap-2.5">
+            <EditProfileDialog profile={profile}>
+              <Button variant="outline" shape="pill" className="h-11 flex-grow font-bold xl:flex-grow-0">
+                Edit profile
+              </Button>
+            </EditProfileDialog>
+            <Button
+              variant="outline"
+              shape="pill"
+              className="h-11 flex-grow gap-2 font-bold xl:flex-grow-0"
+              onClick={() => shareProfile(profile)}
+            >
+              <Share2 className="size-4" /> Share profile
+            </Button>
+          </div>
+        </div>
+
+        <div className="xl:w-[420px] xl:shrink-0">
+          <StatBanner
+            aria-label="All sports"
+            stats={[
+              { value: matches_played, label: 'Matches' },
+              { value: totalWins(profile), label: 'Wins' },
+              { value: formatWinRate(winRate), label: 'Win rate' },
+            ]}
+          />
         </div>
       </div>
 
-      <div className="flex gap-2.5">
-        <EditProfileDialog profile={profile}>
-          <Button variant="outline" shape="pill" className="h-11 flex-grow font-bold">
-            Edit profile
-          </Button>
-        </EditProfileDialog>
-        <Button
-          variant="outline"
-          shape="pill"
-          className="h-11 flex-grow gap-2 font-bold"
-          onClick={() => shareProfile(profile)}
-        >
-          <Share2 className="size-4" /> Share profile
-        </Button>
-      </div>
+      {/* Below the header, desktop splits into "Your matches" (primary,
+          grows) beside "Your sports" (a fixed 380px rail) — DOM order
+          matches mobile's stacking (sports above matches), `xl:order-*`
+          reassigns the desktop columns without duplicating markup. */}
+      <div className="flex flex-col gap-4 xl:grid xl:grid-cols-[1fr_380px] xl:items-start xl:gap-6">
+        {sportRows.length > 0 && (
+          <div className="flex flex-col gap-4 xl:order-2 xl:min-w-0">
+            <h3 className="px-1 pt-2 font-display text-[19px] font-bold xl:pt-0">Your sports</h3>
+            <Card className="flex flex-col overflow-hidden">
+              {sportRows.map(({ sport, stats }, i) => (
+                <SportProgressRow
+                  key={sport}
+                  sport={sport}
+                  matchesPlayed={stats.matches_played}
+                  winPercentage={stats.win_percentage}
+                  to={`/profile/stats/${sport}`}
+                  isFirst={i === 0}
+                />
+              ))}
+            </Card>
+          </div>
+        )}
 
-      <StatBanner
-        aria-label="All sports"
-        stats={[
-          { value: matches_played, label: 'Matches' },
-          { value: totalWins(profile), label: 'Wins' },
-          { value: formatWinRate(winRate), label: 'Win rate' },
-        ]}
-      />
-
-      {sportRows.length > 0 && (
-        <>
-          <h3 className="px-1 pt-2 font-display text-[19px] font-bold">Your sports</h3>
-          <Card className="flex flex-col overflow-hidden">
-            {sportRows.map(({ sport, stats }, i) => (
-              <SportProgressRow
-                key={sport}
-                sport={sport}
-                matchesPlayed={stats.matches_played}
-                winPercentage={stats.win_percentage}
-                to={`/profile/stats/${sport}`}
-                isFirst={i === 0}
-              />
+        <div className="flex flex-col gap-4 xl:order-1 xl:min-w-0">
+          <div className="flex items-baseline justify-between px-1 pt-2 xl:pt-0">
+            <h3 className="font-display text-[19px] font-bold">Your matches</h3>
+            <span className="text-[13px] text-muted-foreground">
+              {narrowed ? `Showing ${filtered.length} of ${matches.length}` : `${matches.length} matches`}
+            </span>
+          </div>
+          <label className="flex h-12 items-center gap-2.5 rounded-2xl border bg-card px-3.5 text-muted-foreground [&:has(input:focus)]:ring-1 [&:has(input:focus)]:ring-ring">
+            <Search className="size-5 shrink-0" />
+            <input
+              type="search"
+              aria-label="Search your matches"
+              placeholder="Search by match name"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              className="min-w-0 flex-grow bg-transparent text-[15px] font-medium text-foreground outline-none placeholder:text-muted-foreground"
+            />
+          </label>
+          <div role="group" aria-label="Filter matches" className="flex flex-wrap gap-2">
+            {[...MATCH_FILTERS, ...sports.map((s) => ({ id: s, label: sportLabel(s) }))].map((c) => (
+              <Chip key={c.id} pressed={filter === c.id} onClick={() => setFilter(c.id)}>
+                {c.label}
+              </Chip>
             ))}
-          </Card>
-        </>
-      )}
-
-      <div className="flex items-baseline justify-between px-1 pt-2">
-        <h3 className="font-display text-[19px] font-bold">Your matches</h3>
-        <span className="text-[13px] text-muted-foreground">
-          {narrowed ? `Showing ${filtered.length} of ${matches.length}` : `${matches.length} matches`}
-        </span>
+          </div>
+          <MatchList
+            isLoading={matchesQuery.isLoading}
+            isError={matchesQuery.isError}
+            matches={filtered}
+            onOpen={onOpenMatch}
+            onRetry={() => matchesQuery.refetch()}
+            onReset={() => {
+              setQ('')
+              setFilter('all')
+            }}
+          />
+        </div>
       </div>
-      <label className="flex h-12 items-center gap-2.5 rounded-2xl border bg-card px-3.5 text-muted-foreground [&:has(input:focus)]:ring-1 [&:has(input:focus)]:ring-ring">
-        <Search className="size-5 shrink-0" />
-        <input
-          type="search"
-          aria-label="Search your matches"
-          placeholder="Search by match name"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          className="min-w-0 flex-grow bg-transparent text-[15px] font-medium text-foreground outline-none placeholder:text-muted-foreground"
-        />
-      </label>
-      <div role="group" aria-label="Filter matches" className="flex flex-wrap gap-2">
-        {[...MATCH_FILTERS, ...sports.map((s) => ({ id: s, label: sportLabel(s) }))].map((c) => (
-          <Chip key={c.id} pressed={filter === c.id} onClick={() => setFilter(c.id)}>
-            {c.label}
-          </Chip>
-        ))}
-      </div>
-      <MatchList
-        isLoading={matchesQuery.isLoading}
-        isError={matchesQuery.isError}
-        matches={filtered}
-        onOpen={onOpenMatch}
-        onRetry={() => matchesQuery.refetch()}
-        onReset={() => {
-          setQ('')
-          setFilter('all')
-        }}
-      />
     </div>
   )
 }
@@ -363,113 +380,129 @@ function OtherProfile({
   const sportRows = sortedByActivity(profile.stats)
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-4">
-        <Avatar
-          name={profile.name}
-          imageUrl={profile.profile_image?.image_url}
-          size="xl"
-          className="size-[84px] text-2xl"
-        />
-        <div className="flex min-w-0 flex-col gap-1">
-          <h2 className="truncate font-display text-2xl font-extrabold tracking-tight">
-            {profile.name}
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            <Link to={`/users/${profile.id}/followers`} className="font-bold text-foreground hover:underline">
-              {profile.follower_count}
-            </Link>{' '}
-            followers &middot;{' '}
-            <Link to={`/users/${profile.id}/following`} className="font-bold text-foreground hover:underline">
-              {profile.following_count}
-            </Link>{' '}
-            following
-          </p>
+    <div className="flex flex-col gap-4 xl:mx-auto xl:max-w-[1080px]">
+      {/* No "other profile" board exists on the canvas's desktop set, only
+          the own-profile `DesktopProfile.dc.html` — this mirrors that same
+          header-row + two-column shape (list beside a stats rail) rather
+          than leaving this state unstyled at desktop widths. */}
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:gap-6">
+        <div className="flex flex-col gap-4 xl:flex-grow">
+          <div className="flex items-center gap-4">
+            <Avatar
+              name={profile.name}
+              imageUrl={profile.profile_image?.image_url}
+              size="xl"
+              className="size-[84px] text-2xl"
+            />
+            <div className="flex min-w-0 flex-col gap-1">
+              <h2 className="truncate font-display text-2xl font-extrabold tracking-tight">
+                {profile.name}
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                <Link to={`/users/${profile.id}/followers`} className="font-bold text-foreground hover:underline">
+                  {profile.follower_count}
+                </Link>{' '}
+                followers &middot;{' '}
+                <Link to={`/users/${profile.id}/following`} className="font-bold text-foreground hover:underline">
+                  {profile.following_count}
+                </Link>{' '}
+                following
+              </p>
+            </div>
+          </div>
+
+          <div className="flex gap-2.5">
+            <FollowButton
+              userId={profile.id}
+              isFollowing={profile.is_followed_by_me}
+              shape="pill"
+              className="h-11 flex-grow font-bold xl:flex-grow-0 xl:px-8"
+            />
+          </div>
+        </div>
+
+        <div className="xl:w-[420px] xl:shrink-0">
+          <StatBanner
+            aria-label={`${profile.name}'s overall stats`}
+            stats={[
+              { value: matches_played, label: 'Matches' },
+              { value: totalWins(profile), label: 'Wins' },
+              { value: formatWinRate(winRate), label: 'Win rate' },
+            ]}
+          />
         </div>
       </div>
 
-      <div className="flex gap-2.5">
-        <FollowButton
-          userId={profile.id}
-          isFollowing={profile.is_followed_by_me}
-          shape="pill"
-          className="h-11 flex-grow font-bold"
-        />
-      </div>
+      <div className="flex flex-col gap-4 xl:grid xl:grid-cols-[1fr_380px] xl:items-start xl:gap-6">
+        <div className="flex flex-col gap-4 xl:order-2 xl:min-w-0">
+          {sportRows.length > 0 && (
+            <>
+              <h3 className="px-1 pt-2 font-display text-[19px] font-bold xl:pt-0">
+                {firstName(profile.name)}'s sports
+              </h3>
+              <Card className="flex flex-col overflow-hidden">
+                {sportRows.map(({ sport, stats }, i) => (
+                  <SportProgressRow
+                    key={sport}
+                    sport={sport}
+                    matchesPlayed={stats.matches_played}
+                    winPercentage={stats.win_percentage}
+                    to={`/users/${profile.id}/stats/${sport}`}
+                    isFirst={i === 0}
+                  />
+                ))}
+              </Card>
+            </>
+          )}
 
-      <StatBanner
-        aria-label={`${profile.name}'s overall stats`}
-        stats={[
-          { value: matches_played, label: 'Matches' },
-          { value: totalWins(profile), label: 'Wins' },
-          { value: formatWinRate(winRate), label: 'Win rate' },
-        ]}
-      />
+          <h3 className="px-1 pt-2 font-display text-[19px] font-bold">Head to head</h3>
+          <StatBanner
+            aria-label="Record as opponents"
+            stats={[
+              { value: headToHead.youWon, label: 'You won' },
+              { value: headToHead.draws, label: 'Draws' },
+              { value: headToHead.theyWon, label: `${firstName(profile.name)} won` },
+            ]}
+            footer={<SportBreakdownBar entries={headToHead.bySport} tone="blue" />}
+          />
 
-      {sportRows.length > 0 && (
-        <>
-          <h3 className="px-1 pt-2 font-display text-[19px] font-bold">
-            {firstName(profile.name)}'s sports
-          </h3>
-          <Card className="flex flex-col overflow-hidden">
-            {sportRows.map(({ sport, stats }, i) => (
-              <SportProgressRow
-                key={sport}
-                sport={sport}
-                matchesPlayed={stats.matches_played}
-                winPercentage={stats.win_percentage}
-                to={`/users/${profile.id}/stats/${sport}`}
-                isFirst={i === 0}
-              />
+          <h3 className="px-1 pt-2 font-display text-[19px] font-bold">Playing together</h3>
+          <StatBanner
+            tone="terracotta"
+            aria-label="Record as teammates"
+            stats={[
+              { value: playingTogether.won, label: 'Won' },
+              { value: playingTogether.draws, label: 'Draws' },
+              { value: playingTogether.lost, label: 'Lost' },
+            ]}
+            footer={<SportBreakdownBar entries={playingTogether.bySport} tone="terracotta" />}
+          />
+        </div>
+
+        <div className="flex flex-col gap-4 xl:order-1 xl:min-w-0">
+          <div className="flex items-baseline justify-between px-1 pt-2 xl:pt-0">
+            <h3 className="font-display text-[19px] font-bold">Matches together</h3>
+            <span className="text-[13px] text-muted-foreground">
+              {together.length} match{together.length === 1 ? '' : 'es'}
+            </span>
+          </div>
+          <div role="group" aria-label="Filter matches together" className="flex flex-wrap gap-2">
+            {[...H2H_FILTERS, ...sports.map((s) => ({ id: s, label: sportLabel(s) }))].map((c) => (
+              <Chip key={c.id} pressed={filter === c.id} onClick={() => setFilter(c.id)}>
+                {c.label}
+              </Chip>
             ))}
-          </Card>
-        </>
-      )}
-
-      <h3 className="px-1 pt-2 font-display text-[19px] font-bold">Head to head</h3>
-      <StatBanner
-        aria-label="Record as opponents"
-        stats={[
-          { value: headToHead.youWon, label: 'You won' },
-          { value: headToHead.draws, label: 'Draws' },
-          { value: headToHead.theyWon, label: `${firstName(profile.name)} won` },
-        ]}
-        footer={<SportBreakdownBar entries={headToHead.bySport} tone="blue" />}
-      />
-
-      <h3 className="px-1 pt-2 font-display text-[19px] font-bold">Playing together</h3>
-      <StatBanner
-        tone="terracotta"
-        aria-label="Record as teammates"
-        stats={[
-          { value: playingTogether.won, label: 'Won' },
-          { value: playingTogether.draws, label: 'Draws' },
-          { value: playingTogether.lost, label: 'Lost' },
-        ]}
-        footer={<SportBreakdownBar entries={playingTogether.bySport} tone="terracotta" />}
-      />
-
-      <div className="flex items-baseline justify-between px-1 pt-2">
-        <h3 className="font-display text-[19px] font-bold">Matches together</h3>
-        <span className="text-[13px] text-muted-foreground">
-          {together.length} match{together.length === 1 ? '' : 'es'}
-        </span>
+          </div>
+          <MatchList
+            isLoading={isLoading}
+            isError={isError}
+            matches={filtered.map((t) => t.match)}
+            together={filtered}
+            onOpen={onOpenMatch}
+            onRetry={refetch}
+          />
+        </div>
       </div>
-      <div role="group" aria-label="Filter matches together" className="flex flex-wrap gap-2">
-        {[...H2H_FILTERS, ...sports.map((s) => ({ id: s, label: sportLabel(s) }))].map((c) => (
-          <Chip key={c.id} pressed={filter === c.id} onClick={() => setFilter(c.id)}>
-            {c.label}
-          </Chip>
-        ))}
-      </div>
-      <MatchList
-        isLoading={isLoading}
-        isError={isError}
-        matches={filtered.map((t) => t.match)}
-        together={filtered}
-        onOpen={onOpenMatch}
-        onRetry={refetch}
-      />
     </div>
   )
 }

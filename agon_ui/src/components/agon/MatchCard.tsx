@@ -194,9 +194,9 @@ function ShareMatchButton({ match }: { match: Match | FeedMatch | SearchMatch })
       aria-label="Share match"
     >
       {copied ? (
-        <Check className="size-3.5 text-primary" />
+        <Check className="size-5 text-primary" />
       ) : (
-        <Share2 className="size-3.5" />
+        <Share2 className="size-5" />
       )}
     </button>
   )

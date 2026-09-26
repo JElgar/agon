@@ -304,7 +304,7 @@ export function TopScorersCard({ match, detail }: { match: Match; detail: Netbal
         </div>
       ))}
       {rows.length > 6 && (
-        <button type="button" onClick={() => setShowAll((v) => !v)} className="mt-0.5 h-11 border-t border-hairline text-sm font-bold text-primary">
+        <button type="button" onClick={() => setShowAll((v) => !v)} className="mt-0.5 h-11 border-t border-hairline text-sm font-bold text-link">
           {showAll ? 'Show fewer' : 'See everyone'}
         </button>
       )}

@@ -129,6 +129,8 @@ export function FootballHeroCard({
   liveLabel,
   kickoffLabel,
   finishedLabel = 'Full time',
+  avatars,
+  resultText,
 }: {
   match: Match
   goalsA: number
@@ -137,6 +139,10 @@ export function FootballHeroCard({
   liveLabel?: string
   kickoffLabel?: string
   finishedLabel?: string
+  /** Replace the kit discs, e.g. profile photos for a 1v1 match. */
+  avatars?: [React.ReactNode, React.ReactNode]
+  /** Replace the default "X won by N" result pill text. */
+  resultText?: string
 }) {
   const [sideA, sideB] = match.sides
   const nameA = sideLabel(sideA, 'Side A')
@@ -149,10 +155,10 @@ export function FootballHeroCard({
     state === 'finished' ? finishedLabel : state === 'live' ? liveLabel : state === 'cancelled' ? 'Cancelled' : kickoffLabel
 
   const result =
-    state !== 'finished' ? null : aWon ? `${nameA} won by ${goalsA - goalsB}` : bWon ? `${nameB} won by ${goalsB - goalsA}` : 'Draw'
+    state !== 'finished' ? null : resultText ? resultText : aWon ? `${nameA} won by ${goalsA - goalsB}` : bWon ? `${nameB} won by ${goalsB - goalsA}` : 'Draw'
 
   const nameClass = (won: boolean, lost: boolean) =>
-    cn('truncate text-[17px]', won || !lost ? 'font-bold' : 'font-medium text-muted-foreground')
+    cn('line-clamp-2 max-w-full text-center text-[17px] leading-tight break-words', won || !lost ? 'font-bold' : 'font-medium text-muted-foreground')
 
   return (
     <section className="flex flex-col items-center gap-3 rounded-[20px] border bg-card px-[18px] pt-5 pb-[18px]">
@@ -167,12 +173,17 @@ export function FootballHeroCard({
         ))}
       <div className="grid w-full grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3">
         <div className="flex min-w-0 flex-col items-center gap-2">
-          <SideDisc side={sideA} index={0} />
+          {avatars ? avatars[0] : <SideDisc side={sideA} index={0} />}
           <span className={nameClass(aWon, bWon)}>{nameA}</span>
           {state === 'scheduled' && <span className="-mt-1.5 text-[13px] text-muted-foreground">{sideA?.player_count ?? 0} going</span>}
         </div>
         {hasScore ? (
-          <div className="flex items-center gap-2.5 font-display text-5xl leading-none font-extrabold">
+          <div
+            className={cn(
+              'flex items-center gap-2.5 font-display leading-none font-extrabold',
+              Math.max(goalsA, goalsB) >= 10 ? 'text-[40px]' : 'text-5xl',
+            )}
+          >
             <span className={cn(bWon && 'text-[#7D8190]')}>{goalsA}</span>
             <span className="text-[28px]" style={{ color: KIT_GREY }}>
               –
@@ -185,7 +196,7 @@ export function FootballHeroCard({
           </span>
         )}
         <div className="flex min-w-0 flex-col items-center gap-2">
-          <SideDisc side={sideB} index={1} />
+          {avatars ? avatars[1] : <SideDisc side={sideB} index={1} />}
           <span className={nameClass(bWon, aWon)}>{nameB}</span>
           {state === 'scheduled' && <span className="-mt-1.5 text-[13px] text-muted-foreground">{sideB?.player_count ?? 0} going</span>}
         </div>

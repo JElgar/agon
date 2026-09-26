@@ -935,6 +935,7 @@ export function FootballPlayersTab({
   goalsB,
   finished,
   footer,
+  layout = 'stack',
 }: {
   match: Match
   detail: FootballEventSource | null
@@ -943,6 +944,9 @@ export function FootballPlayersTab({
   goalsB: number
   finished: boolean
   footer?: React.ReactNode
+  /** `columns` (desktop) puts the sides side by side and leaves the top
+   *  performer out; `top` renders only the top performer card. */
+  layout?: PlayersLayout
 }) {
   const following = useViewerFollowing(currentUserId)
   const stats = useMemo(() => {
@@ -1007,52 +1011,57 @@ export function FootballPlayersTab({
     )
   }
 
+  const topCard = top ? (
+    <TopPerformerCard
+      player={top.player}
+      detail={`${top.total} goal ${top.total === 1 ? 'involvement' : 'involvements'}${topSide ? ` for ${sideLabel(topSide, '')}` : ''}`}
+      value={top.total}
+    />
+  ) : null
+  if (layout === 'top') return topCard
+
   return (
     <>
-      {top && (
-        <TopPerformerCard
-          player={top.player}
-          detail={`${top.total} goal ${top.total === 1 ? 'involvement' : 'involvements'}${topSide ? ` for ${sideLabel(topSide, '')}` : ''}`}
-          value={top.total}
-        />
-      )}
+      {layout === 'stack' && topCard}
 
-      {match.sides.slice(0, 2).map((side, idx) => {
-        const players = match.players.filter((p) => p.side_id === side.id)
-        const unnamed = unnamedBySide[side.id] ?? 0
-        const res = result(idx)
-        return (
-          <div key={side.id} className="flex flex-col gap-3.5">
-            <SideHeading
-              index={idx}
-              name={sideLabel(side, idx === 0 ? 'Side A' : 'Side B')}
-              meta={`${res ? `${res} · ` : ''}${players.length} ${players.length === 1 ? 'player' : 'players'}`}
-            />
-            <section className="flex flex-col overflow-hidden rounded-[20px] border bg-card">
-              {players.length === 0 && unnamed === 0 && (
-                <p className="px-4 py-5 text-sm text-muted-foreground">No players yet.</p>
-              )}
-              {players.map(renderRow)}
-              {unnamed > 0 && (
-                <div className={cn('flex min-h-16 items-center gap-3 px-4 py-2.5', players.length > 0 && 'border-t border-hairline')}>
-                  <span
-                    className="box-border flex size-10 shrink-0 items-center justify-center rounded-full border-[1.5px] border-dashed text-base font-bold text-muted-foreground"
-                    style={{ borderColor: KIT_GREY }}
-                  >
-                    ?
-                  </span>
-                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="text-[15px] font-semibold">Unnamed player</span>
-                    <span className="text-[13px] text-muted-foreground">
-                      {unnamed} {unnamed === 1 ? 'goal' : 'goals'}
+      <SidesGrid columns={layout === 'columns'}>
+        {match.sides.slice(0, 2).map((side, idx) => {
+          const players = match.players.filter((p) => p.side_id === side.id)
+          const unnamed = unnamedBySide[side.id] ?? 0
+          const res = result(idx)
+          return (
+            <div key={side.id} className="flex flex-col gap-3.5">
+              <SideHeading
+                index={idx}
+                name={sideLabel(side, idx === 0 ? 'Side A' : 'Side B')}
+                meta={`${res ? `${res} · ` : ''}${players.length} ${players.length === 1 ? 'player' : 'players'}`}
+              />
+              <section className="flex flex-col overflow-hidden rounded-[20px] border bg-card">
+                {players.length === 0 && unnamed === 0 && (
+                  <p className="px-4 py-5 text-sm text-muted-foreground">No players yet.</p>
+                )}
+                {players.map(renderRow)}
+                {unnamed > 0 && (
+                  <div className={cn('flex min-h-16 items-center gap-3 px-4 py-2.5', players.length > 0 && 'border-t border-hairline')}>
+                    <span
+                      className="box-border flex size-10 shrink-0 items-center justify-center rounded-full border-[1.5px] border-dashed text-base font-bold text-muted-foreground"
+                      style={{ borderColor: KIT_GREY }}
+                    >
+                      ?
                     </span>
+                    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <span className="text-[15px] font-semibold">Unnamed player</span>
+                      <span className="text-[13px] text-muted-foreground">
+                        {unnamed} {unnamed === 1 ? 'goal' : 'goals'}
+                      </span>
+                    </div>
                   </div>
-                </div>
-              )}
-            </section>
-          </div>
-        )
-      })}
+                )}
+              </section>
+            </div>
+          )
+        })}
+      </SidesGrid>
 
       {unassigned.length > 0 && (
         <div className="flex flex-col gap-3.5">
@@ -1074,6 +1083,14 @@ export function FootballPlayersTab({
       {footer}
     </>
   )
+}
+
+export type PlayersLayout = 'stack' | 'columns' | 'top'
+
+/** Wraps a Players tab's per-side lists: stacked on phones, side by side on
+ *  the desktop board. */
+export function SidesGrid({ columns, children }: { columns: boolean; children: React.ReactNode }) {
+  return columns ? <div className="grid grid-cols-2 items-start gap-6">{children}</div> : <>{children}</>
 }
 
 /** One roster row: avatar, name (+ badges and a You/organiser tag), a stat

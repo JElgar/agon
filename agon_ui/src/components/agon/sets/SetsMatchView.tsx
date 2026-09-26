@@ -1,6 +1,6 @@
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
-import { PlayerRow, SideHeading, SideSwatch, cardClass } from '@/components/agon/football/FootballMatchView'
+import { PlayerRow, SideHeading, SideSwatch, cardClass, SidesGrid, type PlayersLayout } from '@/components/agon/football/FootballMatchView'
 import { useViewerFollowing } from '@/hooks/useViewerFollowing'
 
 type Match = components['schemas']['Match']
@@ -69,12 +69,15 @@ export function RosterTab({
   currentUserId,
   result,
   footer,
+  layout = 'stack',
 }: {
   match: Match
   currentUserId?: string
   /** "Won" / "Lost" / "Drew" per side id, once there's a result. */
   result?: Record<string, string>
   footer?: React.ReactNode
+  /** `columns` puts the sides side by side on the desktop board. */
+  layout?: PlayersLayout
 }) {
   const following = useViewerFollowing(currentUserId)
   const unassigned = match.players.filter((p) => !match.sides.some((s) => s.id === p.side_id))
@@ -84,19 +87,21 @@ export function RosterTab({
   const count = (n: number) => `${n} ${n === 1 ? 'player' : 'players'}`
   return (
     <>
-      {match.sides.map((side, idx) => {
-        const players = match.players.filter((p) => p.side_id === side.id)
-        const res = result?.[side.id]
-        return (
-          <div key={side.id} className="flex flex-col gap-3.5">
-            <SideHeading index={idx} name={sideLabel(match, idx)} meta={`${res ? `${res} · ` : ''}${count(players.length)}`} />
-            <section className="flex flex-col overflow-hidden rounded-[20px] border bg-card">
-              {players.length === 0 && <p className="px-4 py-5 text-sm text-muted-foreground">No players yet.</p>}
-              {players.map(row)}
-            </section>
-          </div>
-        )
-      })}
+      <SidesGrid columns={layout === 'columns'}>
+        {match.sides.map((side, idx) => {
+          const players = match.players.filter((p) => p.side_id === side.id)
+          const res = result?.[side.id]
+          return (
+            <div key={side.id} className="flex flex-col gap-3.5">
+              <SideHeading index={idx} name={sideLabel(match, idx)} meta={`${res ? `${res} · ` : ''}${count(players.length)}`} />
+              <section className="flex flex-col overflow-hidden rounded-[20px] border bg-card">
+                {players.length === 0 && <p className="px-4 py-5 text-sm text-muted-foreground">No players yet.</p>}
+                {players.map(row)}
+              </section>
+            </div>
+          )
+        })}
+      </SidesGrid>
       {unassigned.length > 0 && (
         <div className="flex flex-col gap-3.5">
           <div className="mt-1.5 flex items-center gap-2.5 px-1">

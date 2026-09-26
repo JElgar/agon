@@ -190,7 +190,7 @@ function ShareMatchButton({ match }: { match: Match | FeedMatch | SearchMatch })
     <button
       type="button"
       onClick={share}
-      className="flex items-center transition-colors hover:text-primary"
+      className="flex size-11 items-center justify-center rounded-full transition-colors hover:text-primary"
       aria-label="Share match"
     >
       {copied ? (

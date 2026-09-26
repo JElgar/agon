@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { CalendarClock, CalendarPlus, ChevronLeft, Clock, Flame, Link2, MailOpen, MapPin, Pencil, Radio, ShieldPlus, UserPlus } from 'lucide-react'
@@ -14,7 +14,7 @@ import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
 import { SportBadge } from '@/components/agon/SportBadge'
 import { StatusBadge, matchBadgeStatus } from '@/components/agon/StatusBadge'
 import { ScoreConfirmationBar } from '@/components/agon/ScoreConfirmationBar'
-import { LiveMatchBlock } from '@/components/agon/live/LiveMatchBlock'
+import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { CricketMatchBlock } from '@/components/agon/live/CricketMatchBlock'
 import { NetballMatchBlock } from '@/components/agon/live/NetballMatchBlock'
 import { CricketScoreBlock } from '@/components/agon/CricketScoreBlock'
@@ -27,7 +27,16 @@ import { NetballScorersBySide } from '@/components/agon/NetballScorersBySide'
 import { NetballQuarterBreakdown } from '@/components/agon/NetballQuarterBreakdown'
 import { useLiveEvents } from '@/hooks/useLiveScore'
 import { useMatchScore } from '@/hooks/useMatchScore'
-import { footballScoreFrom, footballEventSourceFromScore } from '@/lib/liveScore'
+import {
+  describeEvent,
+  eventClockLabel,
+  eventEmoji,
+  footballScoreFrom,
+  footballEventSourceFromScore,
+  liveClockLabel,
+  recentEvents,
+  type FootballScore,
+} from '@/lib/liveScore'
 import { netballScoreFrom, netballEventSourceFromScore } from '@/lib/netballScore'
 import { cricketInningsFor, cricketScoreFrom, inningsDeliveriesFromEvents } from '@/lib/cricketScore'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
@@ -82,6 +91,213 @@ function sideName(side: MatchSide | undefined, fallback: string): string {
   return side?.name?.trim() || fallback
 }
 
+/** "Blues won by 19" / "Draw" — the result-pill line under a finished
+ *  football match's score, mirroring cricket's own state-of-game pill
+ *  (`RedesignedSportCard`'s `description` pill, e.g. "Kent won by 17 runs").
+ *  Football has no server-computed equivalent (unlike cricket's
+ *  `cricketStateDescription`), so this is worked out locally from the two
+ *  sides' goal tallies. */
+function footballResultLabel(
+  goalsA: number,
+  goalsB: number,
+  nameA: string,
+  nameB: string,
+  aWon?: boolean | string,
+  bWon?: boolean | string,
+): string {
+  if (!aWon && !bWon) return 'Draw'
+  const winner = aWon ? nameA : nameB
+  const margin = Math.abs(goalsA - goalsB)
+  return `${winner} won by ${margin}`
+}
+
+/**
+ * Football's detail-page score header: the centered badge/name/score layout
+ * from the redesign canvas's "Match"/"MatchFootball" board (the
+ * `MKvQ8bNeKnqHzxqZfMNFnc` artifact's "Full time" card), covering all three
+ * states the plain (non-live) header can be in — this is *not* a live block,
+ * that's `LiveMatchBlock` below. Detail-page-sized version of the same team
+ * badge/score vocabulary `RedesignedSportCard`'s football tile uses (round
+ * team badges, `font-display` numerals, a tinted result pill), laid out
+ * centered/stacked per the mock rather than that tile's left/right rows.
+ *
+ * The canvas only mocks the finished state; the scheduled ("vs") state below
+ * is a judgment call extending the same visual language (centered layout,
+ * `font-display` reserved for an actual score) rather than a modeled design.
+ */
+function FootballScoreHeader({
+  sideA,
+  sideB,
+  nameA,
+  nameB,
+  aWon,
+  bWon,
+  scoreInfo,
+  headline,
+  showPlayerCounts,
+  match,
+}: {
+  sideA: MatchSide | undefined
+  sideB: MatchSide | undefined
+  nameA: string
+  nameB: string
+  aWon?: boolean | string
+  bWon?: boolean | string
+  scoreInfo: { score: components['schemas']['Score']; winnerSideId?: string; confirmed: boolean } | null
+  headline: Record<string, number>
+  showPlayerCounts: boolean
+  match: Match
+}) {
+  const goalsA = headline[sideA?.id ?? ''] ?? 0
+  const goalsB = headline[sideB?.id ?? ''] ?? 0
+
+  return (
+    <div className="mt-3 flex flex-col items-center gap-3">
+      {scoreInfo && (
+        <span className="text-xs font-semibold text-muted-foreground">Full time</span>
+      )}
+      <div className="grid w-full grid-cols-[1fr_auto_1fr] items-center gap-3">
+        <div className="flex flex-col items-center gap-2">
+          <Avatar
+            name={nameA}
+            imageUrl={sideA?.team_logo?.image_url}
+            size="lg"
+            ring={aWon ? 'winner' : 'none'}
+          />
+          <div className="min-w-0 text-center">
+            <p className={cn('truncate text-[15px]', aWon ? 'font-bold' : 'font-medium text-muted-foreground')}>
+              {nameA}
+            </p>
+            {sideTeamHint(sideA) && (
+              <p className="truncate text-[10px] text-muted-foreground">{sideTeamHint(sideA)}</p>
+            )}
+            {showPlayerCounts && (
+              <p className="truncate text-[10px] text-muted-foreground">{sidePlayerCountLabel(sideA)}</p>
+            )}
+          </div>
+        </div>
+
+        {scoreInfo ? (
+          <div className="flex items-center gap-2.5 font-display text-4xl leading-none font-extrabold">
+            <span className={cn(!aWon && bWon && 'text-muted-foreground')}>{goalsA}</span>
+            <span className="text-2xl text-muted-foreground">–</span>
+            <span className={cn(!bWon && aWon && 'text-muted-foreground')}>{goalsB}</span>
+          </div>
+        ) : (
+          <div className="px-2 text-center text-xs text-muted-foreground">
+            vs
+            {showPlayerCounts && (
+              <p className="mt-0.5 text-[10px] text-nowrap">{matchPlayerTotalLabel(match)}</p>
+            )}
+          </div>
+        )}
+
+        <div className="flex flex-col items-center gap-2">
+          <Avatar
+            name={nameB}
+            imageUrl={sideB?.team_logo?.image_url}
+            size="lg"
+            ring={bWon ? 'winner' : 'none'}
+          />
+          <div className="min-w-0 text-center">
+            <p className={cn('truncate text-[15px]', bWon ? 'font-bold' : 'font-medium text-muted-foreground')}>
+              {nameB}
+            </p>
+            {sideTeamHint(sideB) && (
+              <p className="truncate text-[10px] text-muted-foreground">{sideTeamHint(sideB)}</p>
+            )}
+            {showPlayerCounts && (
+              <p className="truncate text-[10px] text-muted-foreground">{sidePlayerCountLabel(sideB)}</p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {scoreInfo && (
+        <span className="inline-flex h-[30px] items-center rounded-full bg-primary/10 px-3 text-sm font-bold text-primary">
+          {footballResultLabel(goalsA, goalsB, nameA, nameB, aWon, bWon)}
+        </span>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Football's detail-page LIVE score header — same centered layout as
+ * `FootballScoreHeader`, for a match currently being scored live. Reads the
+ * same `FootballScore` as the old `LiveMatchBlock` (still used by the feed's
+ * `MatchCard`, untouched here), just laid out and restyled to match this
+ * page's new centered football header instead of that component's
+ * left/right rows.
+ */
+function LiveFootballScoreHeader({
+  match,
+  state,
+}: {
+  match: Match
+  state: FootballScore
+}) {
+  const [sideA, sideB] = match.sides
+  const nameA = sideName(sideA, 'Side A')
+  const nameB = sideName(sideB, 'Side B')
+  const goalsFor = (sideId: string | undefined) => (sideId ? state.score[sideId] : undefined) ?? 0
+  const events = recentEvents(state, 3)
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 15_000)
+    return () => clearInterval(id)
+  }, [])
+
+  return (
+    <div className="mt-3 flex flex-col items-center gap-3">
+      <LiveIndicator>{(() => {
+        const label = liveClockLabel(state, now)
+        return label === 'LIVE' ? undefined : label
+      })()}</LiveIndicator>
+      <div className="grid w-full grid-cols-[1fr_auto_1fr] items-center gap-3">
+        <div className="flex flex-col items-center gap-2">
+          <Avatar name={nameA} imageUrl={sideA?.team_logo?.image_url} size="lg" />
+          <p className="truncate text-center text-[15px] font-medium">{nameA}</p>
+        </div>
+        <div className="flex items-center gap-2.5 font-display text-4xl leading-none font-extrabold">
+          <span>{goalsFor(sideA?.id)}</span>
+          <span className="text-2xl text-muted-foreground">–</span>
+          <span>{goalsFor(sideB?.id)}</span>
+        </div>
+        <div className="flex flex-col items-center gap-2">
+          <Avatar name={nameB} imageUrl={sideB?.team_logo?.image_url} size="lg" />
+          <p className="truncate text-center text-[15px] font-medium">{nameB}</p>
+        </div>
+      </div>
+
+      {events.length > 0 && (
+        <div className="w-full space-y-1 border-t pt-2.5">
+          {events.map((event, i) => {
+            const isSideB = event.side_id === sideB?.id
+            return (
+              <p
+                key={i}
+                className={cn(
+                  'flex items-baseline gap-1.5 truncate text-xs text-muted-foreground',
+                  isSideB && 'flex-row-reverse text-right',
+                )}
+              >
+                <span aria-hidden>{eventEmoji(event.kind)}</span>
+                {eventClockLabel(event, state.period_times) && (
+                  <span className="font-medium text-foreground">
+                    {eventClockLabel(event, state.period_times)}
+                  </span>
+                )}
+                <span className="truncate">{describeEvent(event, match, state.players)}</span>
+              </p>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // Roster tab ids for the mobile tablist — side A/B use these fixed ids
 // rather than the sides' own (possibly absent) `id`s so the tablist always
 // has something stable to key off; unassigned players get a third tab.
@@ -111,7 +327,7 @@ export function MatchDetailPage() {
   if (query.isLoading) {
     return (
       <div className="mx-auto max-w-xl">
-        <div className="h-64 animate-pulse rounded-xl border bg-card" aria-hidden />
+        <div className="h-64 animate-pulse rounded-2xl border bg-card" aria-hidden />
       </div>
     )
   }
@@ -284,7 +500,7 @@ function MatchDetail({
           onDone={() => setEditingDetails(false)}
         />
       ) : (
-        <div className="rounded-xl border bg-card p-4">
+        <div className="rounded-2xl border bg-card p-4">
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
               <p className="text-sm text-muted-foreground">{match.name}</p>
@@ -340,9 +556,7 @@ function MatchDetail({
               while a football/cricket match is being scored live; otherwise
               the usual confirmed/pending result. */}
           {footballState ? (
-            <div className="mt-3">
-              <LiveMatchBlock match={orderedMatch} state={footballState} tickerLimit={3} />
-            </div>
+            <LiveFootballScoreHeader match={orderedMatch} state={footballState} />
           ) : netballState ? (
             <div className="mt-3">
               <NetballMatchBlock match={orderedMatch} state={netballState} tickerLimit={3} />
@@ -355,6 +569,19 @@ function MatchDetail({
             <div className="mt-3">
               <CricketScoreBlock match={orderedMatch} score={cricketScore} />
             </div>
+          ) : match.match_type === 'football' ? (
+            <FootballScoreHeader
+              sideA={sideA}
+              sideB={sideB}
+              nameA={nameA}
+              nameB={nameB}
+              aWon={aWon}
+              bWon={bWon}
+              scoreInfo={scoreInfo}
+              headline={headline}
+              showPlayerCounts={showPlayerCounts}
+              match={match}
+            />
           ) : (
             <div className="mt-3 flex items-center justify-between">
               <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -649,7 +876,7 @@ function LikeBar({ match }: { match: Match }) {
   const toggleLike = useToggleLike(match)
 
   return (
-    <div className="flex items-center gap-4 rounded-xl border bg-card px-4 py-2.5 text-sm text-muted-foreground">
+    <div className="flex items-center gap-4 rounded-2xl border bg-card px-4 py-2.5 text-sm text-muted-foreground">
       <button
         type="button"
         onClick={() => toggleLike.mutate(!i_liked)}
@@ -747,7 +974,7 @@ function InviteBanner({
 
   return (
     <>
-      <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
+      <div className="rounded-2xl border border-primary/30 bg-primary/5 p-4">
         <div className="flex items-start gap-3">
           <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
             <MailOpen className="size-5" />
@@ -861,7 +1088,7 @@ function WaitlistSection({
   if (entries.length === 0) return null
 
   return (
-    <div className="rounded-xl border p-4">
+    <div className="rounded-2xl border p-4">
       <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
         <Clock className="size-4 text-muted-foreground" />
         Waiting list
@@ -962,7 +1189,7 @@ function CancelMatch({ match }: { match: Match }) {
   }
 
   return (
-    <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4">
+    <div className="rounded-2xl border border-destructive/30 bg-destructive/5 p-4">
       <p className="text-sm font-medium">Cancel this match?</p>
       <p className="mt-0.5 text-xs text-muted-foreground">
         It'll be marked cancelled for everyone. You can't undo this here.
@@ -1034,7 +1261,7 @@ function LeaveMatch({ match, isOwner }: { match: Match; isOwner: boolean }) {
 
   if (isOwner) {
     return (
-      <div className="rounded-xl border p-4">
+      <div className="rounded-2xl border p-4">
         <p className="text-sm font-medium">Transfer ownership first</p>
         <p className="mt-0.5 text-xs text-muted-foreground">
           As owner, hand the role to someone else — tap "Make owner" next to
@@ -1050,7 +1277,7 @@ function LeaveMatch({ match, isOwner }: { match: Match; isOwner: boolean }) {
   }
 
   return (
-    <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4">
+    <div className="rounded-2xl border border-destructive/30 bg-destructive/5 p-4">
       <p className="text-sm font-medium">Leave this match?</p>
       <p className="mt-0.5 text-xs text-muted-foreground">
         You'll need to be invited or added again to rejoin.
@@ -1209,7 +1436,7 @@ function SideRoster({
   })
 
   return (
-    <div className="rounded-xl border bg-card p-3">
+    <div className="rounded-2xl border bg-card p-3">
       <p className="mb-2 truncate text-xs font-medium uppercase tracking-wider text-muted-foreground">
         {title}
       </p>

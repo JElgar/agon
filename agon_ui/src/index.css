@@ -29,6 +29,7 @@
   --color-success-foreground: var(--success-foreground);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
+  --color-link: var(--link);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -105,6 +106,9 @@
   --success-foreground: oklch(0.985 0 0);
   --warning: oklch(0.834 0.158 89);
   --warning-foreground: oklch(0.205 0.006 271.1);
+  /* Same brand blue as --primary — on the light cream/white surfaces it
+   * already has plenty of contrast as text, unlike on dark (see below). */
+  --link: oklch(0.5 0.211 265.8);
   --border: oklch(0.932 0.013 86.8);
   --input: oklch(0.88 0.016 86.4);
   --ring: oklch(0.5 0.211 265.8);
@@ -155,7 +159,9 @@
   --card-foreground: oklch(0.958 0.005 95.1);
   --popover: oklch(0.232 0.01 276.6);
   --popover-foreground: oklch(0.958 0.005 95.1);
-  /* Same Agon blue as light mode — it already reads fine on the dark surface. */
+  /* Same Agon blue as light mode — it already reads fine on the dark surface
+   * as a SOLID FILL (buttons, the stats banner). Don't reuse it as text
+   * color; see --link below. */
   --primary: oklch(0.5 0.211 265.8);
   --primary-foreground: oklch(0.985 0 0);
   --secondary: oklch(0.294 0.013 272.9);
@@ -171,6 +177,11 @@
   --success-foreground: oklch(0.145 0 0);
   --warning: oklch(0.834 0.158 89);
   --warning-foreground: oklch(0.145 0 0);
+  /* #8FA8FF — the mock's MainDark board uses this lighter blue for every
+   * anchor/link text on the dark surface (--primary's #2952D9 stays reserved
+   * for solid fills there), since --primary reads as a dull, low-contrast
+   * blue at text size against the near-black background. */
+  --link: oklch(0.746 0.116 266.3);
   --border: oklch(0.294 0.013 272.9);
   --input: oklch(0.294 0.013 272.9);
   --ring: oklch(0.5 0.211 265.8);

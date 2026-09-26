@@ -256,3 +256,28 @@ pub struct TransferMatchOwnershipInput {
     /// to hand the `Owner` role to. Must already be an accepted player.
     pub player_id: String,
 }
+
+/// A non-playing match organizer: an Owner or Admin who isn't (and needn't
+/// ever be) on the roster, so they take no roster spot and accrue no stats.
+/// See `agon_core::dao::records::MatchAuthorityRecord`.
+#[derive(Object)]
+pub struct MatchOrganizer {
+    pub user_id: String,
+    /// Hydrated at read time from the user profile, same as a roster
+    /// member's `Member.name` — empty if the account could no longer be
+    /// found.
+    pub name: String,
+    pub avatar_url: Option<String>,
+    /// Always `Owner` or `Admin` — never `Player` (see `MatchOrganizer`'s
+    /// doc comment).
+    pub role: MatchPlayerRole,
+}
+
+/// Grant a user non-playing `Admin` authority on a match — they take no
+/// roster spot. Granting `Owner` isn't offered here (the creator is the
+/// only `Owner` organizer today; use `POST /matches/:id/transfer-ownership`
+/// to move roster-held ownership).
+#[derive(Object)]
+pub struct AddMatchOrganizerInput {
+    pub user_id: String,
+}

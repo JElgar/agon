@@ -31,8 +31,8 @@ use crate::live_score::{
 use crate::match_format::{CricketFormat, FootballFormat, MatchFormat, NetballFormat};
 use crate::membership::{
     ExternalMember, Invitation, InvitationContext, InvitationKind, InvitationMatchContext,
-    InvitationStatus, InvitationTeamContext, JoinLink, JoinLinkScope, MatchPlayerRole, Member,
-    TokenInvitation, UserInvitation, UserMember,
+    InvitationStatus, InvitationTeamContext, JoinLink, JoinLinkScope, MatchOrganizer,
+    MatchPlayerRole, Member, TokenInvitation, UserInvitation, UserMember,
 };
 use crate::notification::{
     CommentNotification, FollowNotification, InvitationAcceptedNotification, LikeNotification,
@@ -65,7 +65,7 @@ use agon_core::dao::records::{
     FootballSubstitutionEventRecord, GenericSportStatsRecord, InningsEndReasonRecord,
     InvitationContextRecord, InvitationKindRecord, InvitationRecord, JoinLinkRecord,
     JoinLinkScopeRecord, LiveEventPayloadRecord, LiveEventRecord, LocationRecord,
-    MatchFormatRecord, MatchLikeRecord, MatchPlayerRecord,
+    MatchAuthorityRecord, MatchFormatRecord, MatchLikeRecord, MatchPlayerRecord,
     MatchPlayerRole as MatchPlayerRoleRecord, MatchRecord, MatchScoreRecord, MatchSideRecord,
     NetballFormatRecord, NetballFoulEventRecord, NetballFoulKindRecord, NetballGoalEventRecord,
     NetballLiveEventRecord, NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord,
@@ -1073,12 +1073,14 @@ pub fn location_from_record(rec: &LocationRecord) -> Location {
 // Match aggregate
 // ===========================================================================
 
-/// Build the API `Match` from a match record plus its sides and players.
-/// `i_liked` is a viewer-relative flag the caller resolves separately.
+/// Build the API `Match` from a match record plus its sides, players, and
+/// non-roster organizers. `i_liked` is a viewer-relative flag the caller
+/// resolves separately.
 pub fn match_from_records(
     rec: &MatchRecord,
     sides: &[MatchSideRecord],
     players: &[MatchPlayerRecord],
+    organizers: &[MatchAuthorityRecord],
     i_liked: bool,
 ) -> Match {
     Match {
@@ -1100,6 +1102,7 @@ pub fn match_from_records(
             .collect(),
         sides: sides.iter().map(match_side_from_record).collect(),
         players: players.iter().map(match_player_from_record).collect(),
+        organizers: organizers.iter().map(match_organizer_from_record).collect(),
         confirmed_score: rec
             .confirmed_score
             .as_ref()
@@ -1117,6 +1120,24 @@ pub fn match_from_records(
         // function has no viewer to resolve it against.
         viewer_role: None,
         viewer_team_join_side_ids: None,
+        // Same deal as `viewer_role` above — the caller patches these in via
+        // `caller_is_match_admin`/`caller_is_match_owner`, which need the
+        // full aggregate (organizers + team bridge) this function doesn't
+        // have.
+        viewer_is_admin: false,
+        viewer_is_owner: false,
+    }
+}
+
+/// See `MatchOrganizer`'s doc comment. `name`/`avatar_url` are filled in by
+/// `hydrate_matches` (`apply_player_profiles`), same as a roster player's —
+/// this pure mapping function has no user lookup to resolve them against.
+pub fn match_organizer_from_record(rec: &MatchAuthorityRecord) -> MatchOrganizer {
+    MatchOrganizer {
+        user_id: rec.user_id.clone(),
+        name: rec.display_name.clone().unwrap_or_default(),
+        avatar_url: None,
+        role: match_player_role_from_record(rec.role),
     }
 }
 

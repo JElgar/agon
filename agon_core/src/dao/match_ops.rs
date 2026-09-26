@@ -14,13 +14,15 @@ use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_pk, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::{
-    ConfirmedScoreRecord, HeaderPhotoRecord, LocationRecord, MatchFormatRecord, MatchPlayerRecord,
-    MatchRecord, MatchScoreRecord, MatchSideRecord, PendingScoreRecord, SideRosterMemberRecord,
+    ConfirmedScoreRecord, HeaderPhotoRecord, LocationRecord, MatchAuthorityRecord,
+    MatchFormatRecord, MatchPlayerRecord, MatchRecord, MatchScoreRecord, MatchSideRecord,
+    PendingScoreRecord, SideRosterMemberRecord,
 };
 
 pub const TYPE_MATCH: &str = "match";
 pub const TYPE_MATCH_SIDE: &str = "match_side";
 pub const TYPE_MATCH_PLAYER: &str = "match_player";
+pub const TYPE_MATCH_AUTHORITY: &str = "match_authority";
 pub const TYPE_MATCH_SCORE: &str = "match_score";
 
 /// A side's roster is cached in full (`MatchSideRecord::roster_preview`) only
@@ -116,6 +118,10 @@ pub struct MatchAggregate {
     pub match_: MatchRecord,
     pub sides: Vec<MatchSideRecord>,
     pub players: Vec<MatchPlayerRecord>,
+    /// Non-roster Owner/Admin grants — see `MatchAuthorityRecord`'s doc
+    /// comment. Never overlaps with stats/roster logic; only
+    /// `caller_is_match_admin`/`caller_is_match_owner` read this.
+    pub organizers: Vec<MatchAuthorityRecord>,
 }
 
 impl MatchAggregate {
@@ -137,20 +143,22 @@ pub struct MatchSummary {
 impl Dao {
     /// Create a match with its sides (embedded on the meta record —
     /// `player_count`/`roster_preview` are filled in here from `players`,
-    /// overwriting whatever the caller set) and players, in a single
-    /// transaction. `Conflict` if the match id already exists.
+    /// overwriting whatever the caller set), players, and non-roster
+    /// organizers (see `MatchAuthorityRecord`), in a single transaction.
+    /// `Conflict` if the match id already exists.
     ///
     /// Note: DynamoDB caps a transaction at 100 items, so a match with a very
     /// large roster would need chunking — not handled here (fine for real
     /// team sizes). Feed fan-out happens asynchronously off the stream, not here.
     #[tracing::instrument(
-        skip(self, match_, players),
+        skip(self, match_, players, organizers),
         fields(match_id = %match_.id, sides = match_.sides.len(), players = players.len())
     )]
     pub async fn create_match(
         &self,
         match_: &MatchRecord,
         players: &[MatchPlayerRecord],
+        organizers: &[MatchAuthorityRecord],
     ) -> DaoResult<()> {
         let mut match_ = match_.clone();
         for side in match_.sides.values_mut() {
@@ -221,6 +229,15 @@ impl Dao {
             }
         }
 
+        for organizer in organizers {
+            let put = Put::builder()
+                .table_name(self.table())
+                .set_item(Some(self.match_authority_item(&match_.id, organizer)?))
+                .build()
+                .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+            tx = tx.transact_items(TransactWriteItem::builder().put(put).build());
+        }
+
         match tx.send().await {
             Ok(_) => Ok(()),
             Err(e) if super::is_transaction_conditional_failure(&e) => Err(DaoError::Conflict(
@@ -263,12 +280,16 @@ impl Dao {
         let players: Vec<MatchPlayerRecord> = self
             .query_match_collection(match_id, &Sk::player_prefix())
             .await?;
+        let organizers: Vec<MatchAuthorityRecord> = self
+            .query_match_collection(match_id, &Sk::authority_prefix())
+            .await?;
         let sides = sorted_sides(&match_.sides);
 
         Ok(Some(MatchAggregate {
             match_,
             sides,
             players,
+            organizers,
         }))
     }
 
@@ -1163,6 +1184,58 @@ impl Dao {
             None => base,
         };
         Ok(item)
+    }
+
+    /// Build a match-authority item (no GSI projection — nothing queries "my
+    /// organized matches" yet; add one if that's ever needed).
+    fn match_authority_item(
+        &self,
+        match_id: &str,
+        organizer: &MatchAuthorityRecord,
+    ) -> DaoResult<std::collections::HashMap<String, AttributeValue>> {
+        to_item(
+            &Pk::Match(match_id.into()),
+            &Sk::Authority(organizer.user_id.clone()),
+            TYPE_MATCH_AUTHORITY,
+            organizer,
+        )
+    }
+
+    /// Grant a user Owner/Admin authority on a match, independent of roster
+    /// membership — upserts (setting a role for a user who already has one
+    /// replaces it, e.g. promoting an existing organizer from `Admin` to
+    /// `Owner`). Callers are responsible for authorization (only an existing
+    /// admin/owner may call this) and for the single-owner invariant if
+    /// granting `Owner` — this just writes the row.
+    #[tracing::instrument(skip(self, organizer), fields(user_id = %organizer.user_id))]
+    pub async fn add_match_organizer(
+        &self,
+        match_id: &str,
+        organizer: &MatchAuthorityRecord,
+    ) -> DaoResult<()> {
+        self.client
+            .put_item()
+            .table_name(self.table())
+            .set_item(Some(self.match_authority_item(match_id, organizer)?))
+            .send()
+            .await
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Revoke a user's non-roster match authority. A no-op (not an error) if
+    /// they didn't have any — deleting an absent item succeeds in DynamoDB.
+    #[tracing::instrument(skip(self))]
+    pub async fn remove_match_organizer(&self, match_id: &str, user_id: &str) -> DaoResult<()> {
+        self.client
+            .delete_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Authority(user_id.into()).to_string()))
+            .send()
+            .await
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        Ok(())
     }
 }
 

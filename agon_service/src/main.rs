@@ -78,10 +78,11 @@ use live_score::{
 
 mod membership;
 use membership::{
-    AddInvitationsInput, CreateJoinLinkInput, Invitation, InvitationContext, InvitationDetail,
-    InvitationKind, InvitationMatchContext, InvitationStatus, JoinLink, JoinLinkPreview,
-    JoinMatchInput, MatchPlayerRole, Member, RespondByTokenInput, RespondToInvitationInput,
-    TokenInvitation, TransferMatchOwnershipInput, UserInvitation, UserMember,
+    AddInvitationsInput, AddMatchOrganizerInput, CreateJoinLinkInput, Invitation,
+    InvitationContext, InvitationDetail, InvitationKind, InvitationMatchContext, InvitationStatus,
+    JoinLink, JoinLinkPreview, JoinMatchInput, MatchOrganizer, MatchPlayerRole, Member,
+    RespondByTokenInput, RespondToInvitationInput, TokenInvitation, TransferMatchOwnershipInput,
+    UserInvitation, UserMember,
 };
 
 mod team;
@@ -759,6 +760,9 @@ struct Match {
     /// Flat roster of everyone in the match. Each player links to a side via
     /// `side_id` (None while invited but not yet assigned).
     players: Vec<MatchPlayer>,
+    /// Non-playing Owner/Admin organizers — take no roster spot and accrue
+    /// no stats. See `MatchOrganizer`'s doc comment.
+    organizers: Vec<MatchOrganizer>,
     /// The agreed, official result. Present once a submission is fully
     /// confirmed; None until then.
     confirmed_score: Option<ConfirmedScore>,
@@ -797,6 +801,17 @@ struct Match {
     /// every other `Match`-returning response, not because it doesn't
     /// apply, just because nothing reads it there.
     viewer_team_join_side_ids: Option<Vec<String>>,
+    /// Whether the requesting user may perform match-admin actions — see
+    /// `caller_is_match_admin`. True for an accepted roster `Owner`/`Admin`,
+    /// a non-playing organizer, the match's creator, or a team admin with a
+    /// side on this match — a client should show admin affordances (edit,
+    /// invite, manage join links, ...) whenever this is true, regardless of
+    /// `viewer_role`.
+    viewer_is_admin: bool,
+    /// Whether the requesting user is the match's owner — see
+    /// `caller_is_match_owner`. Only true for an accepted roster `Owner` or
+    /// an `Owner`-role organizer.
+    viewer_is_owner: bool,
 }
 
 /// Social engagement summary for a match. Counts plus whether the requesting
@@ -2200,6 +2215,34 @@ enum TransferMatchOwnershipResponse {
 }
 
 #[derive(ApiResponse)]
+enum AddMatchOrganizerResponse {
+    /// Added (or promoted, if already an organizer); the response carries
+    /// the full updated match.
+    #[oai(status = 200)]
+    Match(Json<Match>),
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum RemoveMatchOrganizerResponse {
+    #[oai(status = 200)]
+    Match(Json<Match>),
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
 enum LeaveMatchResponse {
     /// The caller is no longer on the roster.
     #[oai(status = 204)]
@@ -3297,7 +3340,20 @@ impl Api {
             created_at: now.clone(),
         };
 
-        match dao.create_match(&match_record, &player_records).await {
+        // The creator always gets non-roster `Owner` authority, whether or
+        // not `creator_side_client_id` also puts them on the roster —
+        // authority and roster membership are independent facts (see
+        // `MatchAuthorityRecord`'s doc comment).
+        let organizer_records = vec![dao::records::MatchAuthorityRecord {
+            user_id: uid.clone(),
+            role: dao::records::MatchPlayerRole::Owner,
+            display_name: None,
+        }];
+
+        match dao
+            .create_match(&match_record, &player_records, &organizer_records)
+            .await
+        {
             Ok(()) => {}
             Err(dao::DaoError::Conflict(msg)) => {
                 return Ok(CreateMatchResponse::ValidationError(PlainText(msg)));
@@ -3326,8 +3382,19 @@ impl Api {
             match_record.sides.values().cloned().collect();
         sides_for_response.sort_by(|a, b| a.side_id.cmp(&b.side_id));
 
-        let mut m = match_from_records(&match_record, &sides_for_response, &player_records, false);
+        let mut m = match_from_records(
+            &match_record,
+            &sides_for_response,
+            &player_records,
+            &organizer_records,
+            false,
+        );
         m.viewer_role = caller_match_role(&player_records, &uid).map(match_player_role_from_record);
+        // The caller is always this fresh match's Owner organizer — no
+        // aggregate exists yet to run `caller_is_match_admin`/`_owner`
+        // against (see those functions' doc comments).
+        m.viewer_is_admin = true;
+        m.viewer_is_owner = true;
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m, &uid).await?;
         Ok(CreateMatchResponse::Match(Json(m)))
@@ -3359,8 +3426,16 @@ impl Api {
             .has_liked_match(&match_id, &uid)
             .await
             .map_err(dao_internal)?;
-        let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
+        let mut m = match_from_records(
+            &agg.match_,
+            &agg.sides,
+            &agg.players,
+            &agg.organizers,
+            i_liked,
+        );
         m.viewer_role = caller_match_role(&agg.players, &uid).map(match_player_role_from_record);
+        m.viewer_is_owner = caller_is_match_owner(&agg, &uid);
+        m.viewer_is_admin = caller_is_match_admin(dao, &agg, &uid).await?;
         // Only worth the extra team lookups for a non-participant on a match
         // that actually offers team self-join somewhere.
         if m.viewer_role.is_none() && agg.sides.iter().any(|s| s.team_join_enabled) {
@@ -3895,8 +3970,16 @@ impl Api {
             .has_liked_match(&match_id, &uid)
             .await
             .map_err(dao_internal)?;
-        let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
+        let mut m = match_from_records(
+            &agg.match_,
+            &agg.sides,
+            &agg.players,
+            &agg.organizers,
+            i_liked,
+        );
         m.viewer_role = caller_match_role(&agg.players, &uid).map(match_player_role_from_record);
+        m.viewer_is_owner = caller_is_match_owner(&agg, &uid);
+        m.viewer_is_admin = caller_is_match_admin(dao, &agg, &uid).await?;
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m, &uid).await?;
         Ok(UpdateMatchResponse::Match(Json(m)))
@@ -6122,8 +6205,16 @@ impl Api {
                 "match not found".into(),
             )));
         };
-        let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, false);
+        let mut m = match_from_records(
+            &agg.match_,
+            &agg.sides,
+            &agg.players,
+            &agg.organizers,
+            false,
+        );
         m.viewer_role = caller_match_role(&agg.players, &uid).map(match_player_role_from_record);
+        m.viewer_is_owner = caller_is_match_owner(&agg, &uid);
+        m.viewer_is_admin = caller_is_match_admin(dao, &agg, &uid).await?;
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m, &uid).await?;
         Ok(JoinMatchResponse::Match(Json(m)))
@@ -6188,6 +6279,133 @@ impl Api {
             .await
             .map_err(dao_internal)?;
         Ok(TransferMatchOwnershipResponse::Ok)
+    }
+
+    /// Add a non-playing match organizer.
+    ///
+    /// Grant a user `Admin` authority on the match without putting them on
+    /// the roster — they take no roster spot and accrue no stats (see
+    /// `MatchOrganizer`'s doc comment). Admin-only. Idempotent: adding an
+    /// existing organizer again just re-confirms `Admin`.
+    #[oai(path = "/matches/:match_id/organizers", method = "post")]
+    async fn add_match_organizer(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        Data(assets): Data<&Assets>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        input: Json<AddMatchOrganizerInput>,
+    ) -> Result<AddMatchOrganizerResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let input = input.0;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(AddMatchOrganizerResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(AddMatchOrganizerResponse::Forbidden(PlainText(
+                "only a match admin can add organizers".into(),
+            )));
+        }
+
+        dao.add_match_organizer(
+            &match_id,
+            &dao::records::MatchAuthorityRecord {
+                user_id: input.user_id,
+                role: dao::records::MatchPlayerRole::Admin,
+                display_name: None,
+            },
+        )
+        .await
+        .map_err(dao_internal)?;
+
+        let Some(agg) = dao.get_match(&match_id).await.map_err(dao_internal)? else {
+            return Ok(AddMatchOrganizerResponse::NotFound(PlainText(
+                "match not found".into(),
+            )));
+        };
+        let i_liked = dao
+            .has_liked_match(&match_id, &uid)
+            .await
+            .map_err(dao_internal)?;
+        let mut m = match_from_records(
+            &agg.match_,
+            &agg.sides,
+            &agg.players,
+            &agg.organizers,
+            i_liked,
+        );
+        m.viewer_role = caller_match_role(&agg.players, &uid).map(match_player_role_from_record);
+        m.viewer_is_owner = caller_is_match_owner(&agg, &uid);
+        m.viewer_is_admin = caller_is_match_admin(dao, &agg, &uid).await?;
+        sign_match_headers(assets, &mut m);
+        let m = self.hydrate_match(dao, m, &uid).await?;
+        Ok(AddMatchOrganizerResponse::Match(Json(m)))
+    }
+
+    /// Remove a non-playing match organizer.
+    ///
+    /// Revoke a user's non-roster authority (added via `POST
+    /// /matches/:match_id/organizers`). Admin-only. Does not touch a roster
+    /// row — an organizer who is also separately a roster player keeps their
+    /// roster `role` untouched; this only removes the non-roster grant.
+    /// Idempotent: removing a non-organizer is a no-op, not an error.
+    #[oai(path = "/matches/:match_id/organizers/:user_id", method = "delete")]
+    async fn remove_match_organizer(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        Data(assets): Data<&Assets>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        Path(user_id): Path<String>,
+    ) -> Result<RemoveMatchOrganizerResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(RemoveMatchOrganizerResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(RemoveMatchOrganizerResponse::Forbidden(PlainText(
+                "only a match admin can remove organizers".into(),
+            )));
+        }
+
+        dao.remove_match_organizer(&match_id, &user_id)
+            .await
+            .map_err(dao_internal)?;
+
+        let Some(agg) = dao.get_match(&match_id).await.map_err(dao_internal)? else {
+            return Ok(RemoveMatchOrganizerResponse::NotFound(PlainText(
+                "match not found".into(),
+            )));
+        };
+        let i_liked = dao
+            .has_liked_match(&match_id, &uid)
+            .await
+            .map_err(dao_internal)?;
+        let mut m = match_from_records(
+            &agg.match_,
+            &agg.sides,
+            &agg.players,
+            &agg.organizers,
+            i_liked,
+        );
+        m.viewer_role = caller_match_role(&agg.players, &uid).map(match_player_role_from_record);
+        m.viewer_is_owner = caller_is_match_owner(&agg, &uid);
+        m.viewer_is_admin = caller_is_match_admin(dao, &agg, &uid).await?;
+        sign_match_headers(assets, &mut m);
+        let m = self.hydrate_match(dao, m, &uid).await?;
+        Ok(RemoveMatchOrganizerResponse::Match(Json(m)))
     }
 
     /// Leave a match.
@@ -7447,7 +7665,11 @@ impl Api {
         mut matches: Vec<Match>,
         viewer_uid: &str,
     ) -> Result<Vec<Match>> {
-        let user_ids: Vec<String> = matches.iter().flat_map(Self::player_user_ids).collect();
+        let user_ids: Vec<String> = matches
+            .iter()
+            .flat_map(Self::player_user_ids)
+            .chain(matches.iter().flat_map(Self::organizer_user_ids))
+            .collect();
         let user_records = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
 
         let team_ids: Vec<String> = matches
@@ -7458,6 +7680,7 @@ impl Api {
 
         for m in &mut matches {
             Self::apply_player_profiles(m, &user_records);
+            Self::apply_organizer_profiles(m, &user_records);
             Self::resolve_side_names(m, viewer_uid, &team_metas);
         }
         Ok(matches)
@@ -7473,6 +7696,13 @@ impl Api {
                 Member::External(_) => None,
             })
             .collect()
+    }
+
+    /// Every organizer's account id — organizers are always a linked user
+    /// (see `MatchOrganizer`'s doc comment), unlike `players` there's no
+    /// external variant to filter out.
+    fn organizer_user_ids(m: &Match) -> Vec<String> {
+        m.organizers.iter().map(|o| o.user_id.clone()).collect()
     }
 
     /// Fill in each `User` team member's `name`/`avatar_url` from their
@@ -7516,6 +7746,22 @@ impl Api {
             {
                 u.name = record.name.clone();
                 u.avatar_url = record.profile_image_url.clone();
+            }
+        }
+    }
+
+    /// Fill in each organizer's `name`/`avatar_url` from `records` — the
+    /// organizer counterpart of `apply_player_profiles`. Leaves the
+    /// mapping-time fallback (empty name) in place for an id `records`
+    /// doesn't have (the account could no longer be found).
+    fn apply_organizer_profiles(
+        m: &mut Match,
+        records: &std::collections::HashMap<String, dao::records::UserRecord>,
+    ) {
+        for organizer in &mut m.organizers {
+            if let Some(record) = records.get(&organizer.user_id) {
+                organizer.name = record.name.clone();
+                organizer.avatar_url = record.profile_image_url.clone();
             }
         }
     }
@@ -8318,19 +8564,33 @@ fn caller_match_role(
     caller_match_membership(players, uid).map(|p| p.role)
 }
 
-/// Whether the caller owns the match — see `MatchPlayerRole::Owner`'s doc
-/// comment for how a non-playing organizer isn't covered by this yet.
+/// The caller's non-roster authority role, if any — see
+/// `MatchAuthorityRecord`. The organizer-table counterpart to
+/// `caller_match_role`.
+fn caller_authority_role(
+    organizers: &[dao::records::MatchAuthorityRecord],
+    uid: &str,
+) -> Option<dao::records::MatchPlayerRole> {
+    organizers.iter().find(|o| o.user_id == uid).map(|o| o.role)
+}
+
+/// Whether the caller owns the match: an accepted roster `Owner`, or an
+/// `Owner`-role organizer (see `MatchAuthorityRecord`). Does not fall back to
+/// `created_by_user_id` — that fallback only covers admin actions (see
+/// `caller_is_match_admin`), not sole ownership.
 fn caller_is_match_owner(agg: &dao::match_ops::MatchAggregate, uid: &str) -> bool {
     caller_match_role(&agg.players, uid) == Some(dao::records::MatchPlayerRole::Owner)
+        || caller_authority_role(&agg.organizers, uid) == Some(dao::records::MatchPlayerRole::Owner)
 }
 
 /// Whether `uid` may perform match-admin actions: editing the match (details,
 /// format, roster, scores, status), inviting people, recording live events,
 /// minting/revoking join-links, changing `join_policy`, changing a side's
-/// `max_players`. An ordinary player is read-only on the match itself — the
-/// only action left to them is `POST /matches/:match_id/leave`. True for a
-/// roster player with `role` `Owner` or `Admin`, the match's creator (a
-/// stopgap for a non-playing organizer — see `MatchRecord::created_by_user_id`'s
+/// `max_players`, adding/removing organizers. An ordinary player is
+/// read-only on the match itself — the only action left to them is `POST
+/// /matches/:match_id/leave`. True for a roster player with `role` `Owner`
+/// or `Admin`, a non-playing organizer (`MatchAuthorityRecord`), the match's
+/// creator (a permanent fallback — see `MatchRecord::created_by_user_id`'s
 /// doc comment), or an owner/admin of a team that has a side on this match
 /// (so a team's admin can manage a game their team is playing in even before
 /// joining the roster themselves — see `caller_can_manage_team` for that
@@ -8344,6 +8604,9 @@ async fn caller_is_match_admin(
         caller_match_role(&agg.players, uid),
         Some(dao::records::MatchPlayerRole::Owner) | Some(dao::records::MatchPlayerRole::Admin)
     ) {
+        return Ok(true);
+    }
+    if caller_authority_role(&agg.organizers, uid).is_some() {
         return Ok(true);
     }
     if agg.match_.created_by_user_id == uid {
@@ -9018,6 +9281,7 @@ fn mock_match(id: String) -> Match {
                 role: MatchPlayerRole::Player,
             },
         ],
+        organizers: vec![],
         confirmed_score: Some(ConfirmedScore {
             score: Score::Simple(SimpleScore {
                 entries: HashMap::from([
@@ -9037,6 +9301,8 @@ fn mock_match(id: String) -> Match {
         allow_unassigned: true,
         viewer_role: Some(MatchPlayerRole::Owner),
         viewer_team_join_side_ids: None,
+        viewer_is_admin: true,
+        viewer_is_owner: true,
     }
 }
 

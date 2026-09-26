@@ -383,7 +383,7 @@ export function GoalsAssistsCard({ match, detail }: { match: Match; detail: Foot
         <button
           type="button"
           onClick={() => setShowAll((v) => !v)}
-          className="mt-0.5 h-11 border-t border-hairline text-sm font-bold text-primary"
+          className="mt-0.5 h-11 border-t border-hairline text-sm font-bold text-link"
         >
           {showAll ? 'Show fewer' : 'See everyone'}
         </button>
@@ -585,7 +585,7 @@ export function CommentsPreviewCard({
       <div className="flex items-baseline justify-between">
         <span className="text-[15px] font-bold">Comments</span>
         {count > 0 && (
-          <button type="button" onClick={onOpen} className="text-sm font-bold text-primary">
+          <button type="button" onClick={onOpen} className="text-sm font-bold text-link">
             See all {count}
           </button>
         )}

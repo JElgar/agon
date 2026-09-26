@@ -75,6 +75,11 @@ export const SPORT_ICON_TINT: Partial<Record<MatchType, { bg: string; stroke: st
   cricket: { bg: '#D3E3F0', stroke: '#123E5B' },
   tennis: { bg: '#E4F0B8', stroke: '#3B5B12' },
   squash: { bg: '#F7D9C6', stroke: '#6B2F12' },
+  // No mock covers these two — same lavender/pink pastel treatment as the
+  // above, just a fresh pair of tones so all four racket sports read as a
+  // family without colliding with tennis/squash's.
+  badminton: { bg: '#EDE3F5', stroke: '#4B2E68' },
+  table_tennis: { bg: '#FBE0EA', stroke: '#7A1F3D' },
 }
 
 /** Racket sports are scored by sets; everything else by a single points total. */

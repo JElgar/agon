@@ -20,7 +20,13 @@ import { CricketScoreBlock } from './CricketScoreBlock'
 import { KnownPlayersRow } from './KnownPlayersRow'
 import { FootballScorersBySide } from './FootballScorersBySide'
 import { NetballScorersBySide } from './NetballScorersBySide'
-import { FootballFeedCardBody, CricketFeedCardBody } from './RedesignedSportCard'
+import {
+  FootballFeedCardBody,
+  CricketFeedCardBody,
+  NetballFeedCardBody,
+  TennisFeedCardBody,
+  SquashFeedCardBody,
+} from './RedesignedSportCard'
 import { useMatchScore } from '@/hooks/useMatchScore'
 import { footballScoreFrom } from '@/lib/liveScore'
 import { netballGoalsFromScore } from '@/lib/score'
@@ -37,6 +43,7 @@ import {
   headlineBySide,
   headlineLabel,
   setLine,
+  setsScoreFrom,
 } from '@/lib/score'
 import {
   myPendingInvitation,
@@ -280,6 +287,12 @@ export function MatchCard({
   // `CricketLiveScoringPage`) — a manually-logged result still degrades to
   // the generic totals-only `Score::Simple`.
   const cricketScore = scoreInfo ? cricketScoreFrom(scoreInfo.score) : null
+  // A racket sport's set-by-set score, when there is one — feeds the
+  // tennis/badminton/squash/table_tennis redesigned card bodies below. No
+  // live poll backs this (see `TennisFeedCardBody`'s doc comment on why
+  // `isLiveSport` doesn't include these sports), so this is always the
+  // confirmed/pending score, never a live one.
+  const setsScore = scoreInfo ? setsScoreFrom(scoreInfo.score) : null
   // Cricket's own state-of-game line ("England won by 4 wickets" / "...need
   // 200 to win" / "...lead by 30 runs") is a strictly better headline than
   // the generic "beat"/"vs" — it carries the margin, not just the winner —
@@ -300,11 +313,13 @@ export function MatchCard({
   const { like_count, comment_count, i_liked } = match.social
   const toggleLike = useToggleLike(match)
 
-  // Football/cricket get the "Agon redesign" canvas's rebuilt card body (see
-  // `RedesignedSportCard`) — every other sport keeps the pre-existing generic
-  // header/score layout below untouched, per James's ask to leave those
-  // alone for now.
-  const isRedesignedSport = match.match_type === 'football' || match.match_type === 'cricket'
+  // Every sport but "other" now gets the "Agon redesign" canvas's rebuilt
+  // card body (see `RedesignedSportCard`) — football and cricket first, then
+  // netball/tennis/badminton/squash/table_tennis per James's follow-up ask
+  // ("we've only done 2 sports so far, let's do the rest"). "other" has no
+  // mock and no natural sport family to borrow from, so it keeps the
+  // pre-existing generic header/score layout below.
+  const isRedesignedSport = match.match_type !== 'other'
   const isLiveShadow = isRedesignedSport && isCurrentlyLive
 
   return (
@@ -335,7 +350,7 @@ export function MatchCard({
             startsAt={match.starts_at}
             onOpen={onOpen}
           />
-        ) : (
+        ) : match.match_type === 'cricket' ? (
           <CricketFeedCardBody
             match={orderedMatch}
             sideA={sideA}
@@ -351,7 +366,55 @@ export function MatchCard({
             startsAt={match.starts_at}
             onOpen={onOpen}
           />
-        )
+        ) : match.match_type === 'netball' ? (
+          <NetballFeedCardBody
+            match={orderedMatch}
+            sideA={sideA}
+            sideB={sideB}
+            nameA={nameA}
+            nameB={nameB}
+            isLive={isCurrentlyLive}
+            liveState={netballState}
+            finishedHeadline={headline}
+            finishedGoals={finishedNetballGoals}
+            finishedPlayers={finishedNetballScorePlayers}
+            finishedPeriodTimes={finishedNetballPeriodTimes}
+            aWon={aWon}
+            bWon={bWon}
+            startsAt={match.starts_at}
+            onOpen={onOpen}
+          />
+        ) : match.match_type === 'tennis' || match.match_type === 'badminton' ? (
+          <TennisFeedCardBody
+            match={orderedMatch}
+            sideA={sideA}
+            sideB={sideB}
+            nameA={nameA}
+            nameB={nameB}
+            sport={match.match_type}
+            score={setsScore}
+            aWon={aWon}
+            bWon={bWon}
+            isLive={false}
+            startsAt={match.starts_at}
+            onOpen={onOpen}
+          />
+        ) : match.match_type === 'squash' || match.match_type === 'table_tennis' ? (
+          <SquashFeedCardBody
+            match={orderedMatch}
+            sideA={sideA}
+            sideB={sideB}
+            nameA={nameA}
+            nameB={nameB}
+            sport={match.match_type}
+            score={setsScore}
+            headline={headline}
+            aWon={aWon}
+            bWon={bWon}
+            startsAt={match.starts_at}
+            onOpen={onOpen}
+          />
+        ) : null
       ) : (
         <>
           {/* Header: the cricket state-of-game line when there is one, else the

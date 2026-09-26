@@ -10,15 +10,19 @@ export interface SportBreakdownBarProps {
   className?: string
 }
 
-/** Segment colors for the stacked bar, one array per banner tone — the same
- *  "white first, tinted after" treatment as the feed's stats banner
- *  (`StatsOptions.dc.html`, option A) and the Profile board's head-to-head /
- *  playing-together banners. Only two sports are designed; a third+ sport
- *  falls back to a fading tint of the same family rather than an
+/** The banner's own background (`--primary`/`--destructive`) is identical in
+ *  light/dark mode, so a fixed white-first segment reads fine in both — but
+ *  it's still resolved through `--primary-foreground` (equal to white) and
+ *  the `--banner-*-accent` tokens (`index.css`) rather than inlined hex, per
+ *  the "tokens only" rule. Only two sports are designed (the "white first,
+ *  tinted after" treatment from `StatsOptions.dc.html`, option A); a third+
+ *  sport fades the same white token via `color-mix` rather than inventing an
  *  undesigned color. */
-const PALETTES: Record<'blue' | 'terracotta', string[]> = {
-  blue: ['#FFFFFF', '#FFC9A8', 'rgba(255,255,255,0.55)', 'rgba(255,255,255,0.3)'],
-  terracotta: ['#FFFFFF', '#FFE0C7', 'rgba(255,255,255,0.55)', 'rgba(255,255,255,0.3)'],
+function segmentColor(tone: 'blue' | 'terracotta', index: number): string {
+  if (index === 0) return 'var(--primary-foreground)'
+  if (index === 1) return tone === 'blue' ? 'var(--banner-blue-accent)' : 'var(--banner-terracotta-accent)'
+  const opacity = index === 2 ? 55 : 30
+  return `color-mix(in oklch, var(--primary-foreground) ${opacity}%, transparent)`
 }
 
 /**
@@ -30,7 +34,6 @@ const PALETTES: Record<'blue' | 'terracotta', string[]> = {
 export function SportBreakdownBar({ entries, tone = 'blue', className }: SportBreakdownBarProps) {
   const total = entries.reduce((sum, e) => sum + e.count, 0)
   if (total === 0) return null
-  const palette = PALETTES[tone]
 
   return (
     <div className={cn('flex flex-col gap-2', className)}>
@@ -41,7 +44,7 @@ export function SportBreakdownBar({ entries, tone = 'blue', className }: SportBr
             className="h-2 rounded-full"
             style={{
               width: `${(e.count / total) * 100}%`,
-              background: palette[i % palette.length],
+              background: segmentColor(tone, i),
               flexGrow: i === entries.length - 1 ? 1 : 0,
             }}
           />
@@ -52,7 +55,7 @@ export function SportBreakdownBar({ entries, tone = 'blue', className }: SportBr
           <span key={e.sport} className="flex items-center gap-1.5">
             <span
               className="size-2 shrink-0 rounded-full"
-              style={{ background: palette[i % palette.length] }}
+              style={{ background: segmentColor(tone, i) }}
             />
             {sportLabel(e.sport)} {e.count}
           </span>

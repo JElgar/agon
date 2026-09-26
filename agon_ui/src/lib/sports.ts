@@ -51,11 +51,13 @@ export function sportIcon(type: MatchType): LucideIcon {
  * Icon-badge tint per sport, for the profile "Your sports" rows — matches the
  * "Agon redesign" canvas's Profile board, which only designs football/cricket;
  * every other sport falls back to the shared accent tint rather than
- * inventing an un-designed color.
+ * inventing an un-designed color. Resolved through the `--sport-*` CSS
+ * variables (`index.css`), each with a `.dark` override, rather than raw hex,
+ * so these move correctly when dark mode is toggled.
  */
 const SPORT_TINTS: Partial<Record<MatchType, { bg: string; fg: string }>> = {
-  football: { bg: '#DDE5FB', fg: '#1E3FA8' },
-  cricket: { bg: '#D3E3F0', fg: '#123E5B' },
+  football: { bg: 'var(--sport-football-bg)', fg: 'var(--sport-football-fg)' },
+  cricket: { bg: 'var(--sport-cricket-bg)', fg: 'var(--sport-cricket-fg)' },
 }
 
 export function sportTint(type: MatchType): { bg: string; fg: string } {

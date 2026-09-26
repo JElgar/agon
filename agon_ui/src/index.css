@@ -92,6 +92,21 @@
   --chart-3: oklch(0.421 0.091 151.4);
   --chart-4: oklch(0.834 0.158 89);
   --chart-5: oklch(0.498 0.023 272.9);
+  /* Per-sport icon-badge tints (profile "Your sports" rows) — redesign-
+   * specific colors the semantic tokens above don't cover. Only
+   * football/cricket are designed on the canvas; every other sport falls
+   * back to `--accent`/`--accent-foreground` (see `sportTint` in
+   * `lib/sports.ts`). */
+  --sport-football-bg: #dde5fb;
+  --sport-football-fg: #1e3fa8;
+  --sport-cricket-bg: #d3e3f0;
+  --sport-cricket-fg: #123e5b;
+  /* The second segment of the profile head-to-head/playing-together
+   * banners' per-sport breakdown bar (see `SportBreakdownBar`). The
+   * banner's own background (`--primary`/`--destructive`) is identical in
+   * light/dark, so these need no `.dark` override either. */
+  --banner-blue-accent: #ffc9a8;
+  --banner-terracotta-accent: #ffe0c7;
   --sidebar: oklch(1 0 0);
   --sidebar-foreground: oklch(0.205 0.006 271.1);
   --sidebar-primary: oklch(0.5 0.211 265.8);
@@ -135,6 +150,13 @@
   --chart-3: oklch(0.65 0.13 151.4);
   --chart-4: oklch(0.834 0.158 89);
   --chart-5: oklch(0.729 0.018 271.2);
+  /* Muted dark-surface equivalents of the light sport tints above — football
+   * reuses the dark `--accent` pair exactly (same blue family), cricket gets
+   * its own muted slate so the two stay distinguishable. */
+  --sport-football-bg: oklch(0.295 0.069 268.4);
+  --sport-football-fg: oklch(0.748 0.129 270.8);
+  --sport-cricket-bg: oklch(0.28 0.02 230);
+  --sport-cricket-fg: oklch(0.75 0.03 220);
   --sidebar: oklch(0.232 0.01 276.6);
   --sidebar-foreground: oklch(0.958 0.005 95.1);
   --sidebar-primary: oklch(0.5 0.211 265.8);

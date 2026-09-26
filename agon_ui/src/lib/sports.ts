@@ -80,6 +80,12 @@ export const SPORT_ICON_TINT: Partial<Record<MatchType, { bg: string; stroke: st
   // family without colliding with tennis/squash's.
   badminton: { bg: '#EDE3F5', stroke: '#4B2E68' },
   table_tennis: { bg: '#FBE0EA', stroke: '#7A1F3D' },
+  // Football's tint/stroke are given verbatim by the "team crests" mock
+  // (`Tiles.dc.html`'s football icon badge).
+  football: { bg: '#EAEFFC', stroke: '#2952D9' },
+  // No mock covers netball (same situation as badminton/table_tennis above)
+  // — a fresh pastel green so it doesn't collide with any other sport's tint.
+  netball: { bg: '#E1F3E8', stroke: '#1F6B42' },
 }
 
 /** Racket sports are scored by sets; everything else by a single points total. */

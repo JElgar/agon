@@ -2,7 +2,7 @@ import { Check } from 'lucide-react'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { Avatar } from './Avatar'
-import { initials } from '@/lib/members'
+import { initials, sideTeamHint } from '@/lib/members'
 import type { ScorePlayers } from '@/lib/members'
 import { sportLabel, SPORT_ICON_TINT, type MatchType } from '@/lib/sports'
 import { shortDate } from '@/lib/datetime'
@@ -92,21 +92,11 @@ function CardHeader({
   )
 }
 
-/** Team-initials avatar badge, football's stand-in for a club crest — see
- *  `MatchCard`'s doc comment on why this reuses the side name rather than
- *  inventing a "club" concept the schema doesn't have. */
-function TeamInitialsBadge({ side }: { side: MatchSide | undefined }) {
-  return (
-    <span className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-primary text-[13px] font-bold text-primary-foreground">
-      {initials(side?.name)}
-    </span>
-  )
-}
-
-/** Sport-icon badge (pastel tint + stroke icon) — used for every redesigned
- *  sport except football/netball, which use `TeamInitialsBadge` instead
- *  (team-based sports where a side's own name/crest is the more useful
- *  glyph). */
+/** Sport-icon badge (pastel tint + stroke icon) — used for the header badge
+ *  of every redesigned sport. Per James's team-crests spec, the header badge
+ *  is ALWAYS the plain sport icon; a team's own crest never goes there (it
+ *  shows next to the side's name in the score row instead — see
+ *  `TeamCrestBadge`/`SideMarkerOrCrest` below). */
 function SportIconBadge({ sport }: { sport: MatchType }) {
   const tint = SPORT_ICON_TINT[sport] ?? { bg: '#EAEFFC', stroke: '#1E3FA8' }
   return (
@@ -219,10 +209,58 @@ function TableTennisIcon({ stroke }: { stroke: string }) {
   )
 }
 
-/** Which sport-specific icon `SportIconBadge` draws — every sport that gets a
- *  pastel icon badge rather than `TeamInitialsBadge` (football, netball). */
+/** The soccer-ball icon from the redesign canvas's football tiles — reused
+ *  verbatim from `Tiles.dc.html`, same as `CricketBatIcon`. */
+function FootballIcon({ stroke }: { stroke: string }) {
+  return (
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={stroke}
+      strokeWidth="2.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7.2l3.8 2.8-1.5 4.6h-4.6l-1.5-4.6z" />
+      <path d="M12 3v4.2M4 8.6l3 1.7M20 8.6l-3 1.7M7.4 19.2l1.3-4.7M16.6 19.2l-1.3-4.7" />
+    </svg>
+  )
+}
+
+/** No mock covers netball (same situation as `ShuttlecockIcon`/
+ *  `TableTennisIcon` above) — a plain hand-drawn hoop-and-ball, in the same
+ *  stroke style as the other sport badges, standing in until a real mock
+ *  exists. */
+function NetballIcon({ stroke }: { stroke: string }) {
+  return (
+    <svg
+      width="22"
+      height="22"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={stroke}
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12 3v3.5" />
+      <rect x="8" y="3" width="8" height="3" rx="1" />
+      <circle cx="12" cy="14" r="7" />
+      <path d="M12 7v14M5 14h14" />
+    </svg>
+  )
+}
+
+/** Which sport-specific icon `SportIconBadge` draws. */
 function SportGlyph({ sport, stroke }: { sport: MatchType; stroke: string }) {
   switch (sport) {
+    case 'football':
+      return <FootballIcon stroke={stroke} />
+    case 'netball':
+      return <NetballIcon stroke={stroke} />
     case 'cricket':
       return <CricketBatIcon stroke={stroke} />
     case 'tennis':
@@ -253,6 +291,127 @@ function SideMarker({ leading }: { leading: boolean }) {
 
 function WinnerCheck() {
   return <Check className="size-4 shrink-0 text-primary" aria-label="Winner" />
+}
+
+// ---------------------------------------------------------------------------
+// Team crests — a side linked to a real team shows its crest next to its
+// name instead of the plain colored dot (`SideMarker`), per James's
+// "team crests" design-canvas follow-up (`Tiles.dc.html`'s "Team sides —"
+// mock sections). The header badge stays the plain sport icon in every case
+// (see `SportIconBadge`'s doc comment) — crests only ever appear here, in the
+// score row.
+// ---------------------------------------------------------------------------
+
+/** A small fixed palette to derive a team's crest color from, since the
+ *  schema has no team-colour field at all. Judgment call: hash `team_id`
+ *  (sum of char codes, mod palette length) to a deterministic entry, so the
+ *  same team always renders the same colour without needing real brand data
+ *  — same spirit as this file's other stand-in choices (badminton/
+ *  table_tennis's invented tints, netball's icon). */
+const TEAM_CREST_PALETTE = [
+  '#123E5B',
+  '#1F4D3A',
+  '#7A1F3D',
+  '#6B2F12',
+  '#3B5B12',
+  '#4B2E68',
+  '#8A4B08',
+  '#1E3FA8',
+]
+
+function teamCrestColor(teamId: string): string {
+  let sum = 0
+  for (let i = 0; i < teamId.length; i++) sum += teamId.charCodeAt(i)
+  return TEAM_CREST_PALETTE[sum % TEAM_CREST_PALETTE.length]
+}
+
+/** 22×22 team crest — the team's own logo image if it has one, else its
+ *  initials on a solid, deterministically-colored circle (`teamCrestColor`).
+ *  `cornerTag`, when given, adds the small 9px kit-colour tag used for the
+ *  "a team playing itself" case (`leading` picks the same primary-filled vs.
+ *  white-bordered coloring `SideMarker` uses for the plain dot). */
+function TeamCrestBadge({
+  side,
+  cornerTag,
+}: {
+  side: MatchSide | undefined
+  cornerTag?: { leading: boolean }
+}) {
+  const teamId = side?.team_id ?? ''
+  const label = initials(side?.team_name ?? side?.name)
+  const crest = side?.team_logo?.image_url ? (
+    <span className="block size-[22px] shrink-0 overflow-hidden rounded-full">
+      <img src={side.team_logo.image_url} alt="" className="size-full object-cover" loading="lazy" />
+    </span>
+  ) : (
+    <span
+      className="flex size-[22px] shrink-0 items-center justify-center rounded-full text-[8px] font-bold text-white"
+      style={{ background: teamCrestColor(teamId) }}
+    >
+      {label}
+    </span>
+  )
+
+  if (!cornerTag) return crest
+
+  return (
+    <span className="relative inline-block size-[22px] shrink-0">
+      {crest}
+      <span
+        className={cn(
+          'absolute -bottom-[3px] -right-[3px] size-[9px] rounded-[3px] border-2 border-card',
+          cornerTag.leading ? 'bg-primary' : 'border-muted-foreground/30 bg-card',
+        )}
+      />
+    </span>
+  )
+}
+
+/** Drop-in replacement for a bare `<SideMarker leading={...} />` in a score
+ *  row: renders the team crest when the side is linked to a team
+ *  (`side.team_id` set), else falls back to the existing plain dot. Pass
+ *  `selfPlay` when both sides of the match share the same team id, so the
+ *  crest also gets the small kit-colour corner tag. */
+function SideMarkerOrCrest({
+  side,
+  leading,
+  selfPlay,
+}: {
+  side: MatchSide | undefined
+  leading: boolean
+  selfPlay?: boolean
+}) {
+  if (side?.team_id) {
+    return <TeamCrestBadge side={side} cornerTag={selfPlay ? { leading } : undefined} />
+  }
+  return <SideMarker leading={leading} />
+}
+
+/** The muted "playing itself" note shown between the header and the score
+ *  rows when both sides are linked to the same team (an internal/training
+ *  match) — e.g. "**Riverside FC** playing itself · Firsts vs Seconds", per
+ *  the design canvas's mock. */
+function SelfPlayNote({ teamName, nameA, nameB }: { teamName: string; nameA: string; nameB: string }) {
+  return (
+    <div className="mx-3.5 mb-3 flex items-center gap-2 rounded-xl bg-muted/50 p-3 text-sm text-foreground/80">
+      <span>
+        <b className="font-semibold text-foreground">{teamName}</b> playing itself · {nameA} vs {nameB}
+      </span>
+    </div>
+  )
+}
+
+/** The bold-name + small muted caption line shown under a side's name when
+ *  `sideTeamHint(side)` has something to say (a custom side name, or the
+ *  self-play case's "Firsts"/"Riverside FC" pair) — the design canvas's
+ *  two-line name pattern. */
+function SideNameWithHint({ name, hint }: { name: string; hint: string | undefined }) {
+  return (
+    <span className="truncate">
+      {name}
+      {hint && <span className="block truncate text-[11px] font-medium text-muted-foreground">{hint}</span>}
+    </span>
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -302,6 +461,8 @@ export function FootballFeedCardBody({
   const goalsB = isLive ? goalsForLive(sideB?.id) : (finishedHeadline?.[sideB?.id ?? ''] ?? 0)
   const aLeading = isLive ? goalsA > goalsB : !!aWon
   const bLeading = isLive ? goalsB > goalsA : !!bWon
+  const selfPlay = !!sideA?.team_id && sideA.team_id === sideB?.team_id
+  const selfPlayTeamName = selfPlay ? (sideA?.team_name ?? sideA?.name ?? '') : null
 
   const subtitle = isLive
     ? liveState
@@ -321,12 +482,16 @@ export function FootballFeedCardBody({
   return (
     <>
       <CardHeader
-        badge={<TeamInitialsBadge side={sideA} />}
+        badge={<SportIconBadge sport="football" />}
         title={match.name}
         subtitle={subtitle}
         live={isLive ? <LivePill>{liveState ? liveClockLabel(liveState) : 'LIVE'}</LivePill> : undefined}
         onOpen={onOpen}
       />
+
+      {selfPlay && selfPlayTeamName && (
+        <SelfPlayNote teamName={selfPlayTeamName} nameA={nameA} nameB={nameB} />
+      )}
 
       <button type="button" onClick={onOpen} className="block w-full px-3.5 pb-4 text-left">
         {!isLive && (
@@ -334,14 +499,14 @@ export function FootballFeedCardBody({
         )}
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center gap-3">
-            <SideMarker leading={aLeading} />
+            <SideMarkerOrCrest side={sideA} leading={aLeading} selfPlay={selfPlay} />
             <span
               className={cn(
                 'flex min-w-0 flex-1 items-center gap-1.5 truncate text-lg',
                 aLeading ? 'font-bold' : 'font-medium text-muted-foreground',
               )}
             >
-              <span className="truncate">{nameA}</span>
+              <SideNameWithHint name={nameA} hint={sideTeamHint(sideA)} />
               {!isLive && aWon && <WinnerCheck />}
             </span>
             <span
@@ -354,14 +519,14 @@ export function FootballFeedCardBody({
             </span>
           </div>
           <div className="flex items-center gap-3">
-            <SideMarker leading={bLeading} />
+            <SideMarkerOrCrest side={sideB} leading={bLeading} selfPlay={selfPlay} />
             <span
               className={cn(
                 'flex min-w-0 flex-1 items-center gap-1.5 truncate text-lg',
                 bLeading ? 'font-bold' : 'font-medium text-muted-foreground',
               )}
             >
-              <span className="truncate">{nameB}</span>
+              <SideNameWithHint name={nameB} hint={sideTeamHint(sideB)} />
               {!isLive && bWon && <WinnerCheck />}
             </span>
             <span
@@ -505,6 +670,8 @@ export function CricketFeedCardBody({
   const bBatting = isLive && battingSideId === sideB?.id
   const aHeadline = isLive ? aBatting : !!aWon
   const bHeadline = isLive ? bBatting : !!bWon
+  const selfPlay = !!sideA?.team_id && sideA.team_id === sideB?.team_id
+  const selfPlayTeamName = selfPlay ? (sideA?.team_name ?? sideA?.name ?? '') : null
 
   const subtitle = isLive
     ? `${sportLabel('cricket')} · ${cricketFormatLabel(format)} · ${
@@ -531,13 +698,14 @@ export function CricketFeedCardBody({
     const inn = innings(side?.id)
     return (
       <div className="flex items-baseline gap-2.5">
+        {side?.team_id && <SideMarkerOrCrest side={side} leading={headline} selfPlay={selfPlay} />}
         <span
           className={cn(
             'flex min-w-0 flex-1 items-center gap-2 truncate text-[17px]',
             headline ? 'font-bold' : 'font-medium text-muted-foreground',
           )}
         >
-          <span className="truncate">{name}</span>
+          <SideNameWithHint name={name} hint={sideTeamHint(side)} />
           {!isLive && winner && <WinnerCheck />}
           {batting && <span className="size-2 shrink-0 rounded-[3px] bg-destructive" aria-label="Batting" />}
         </span>
@@ -565,6 +733,10 @@ export function CricketFeedCardBody({
         live={isLive ? <LivePill>LIVE</LivePill> : undefined}
         onOpen={onOpen}
       />
+
+      {selfPlay && selfPlayTeamName && (
+        <SelfPlayNote teamName={selfPlayTeamName} nameA={nameA} nameB={nameB} />
+      )}
 
       <button type="button" onClick={onOpen} className="block w-full px-3.5 pb-4 text-left">
         <div className="flex flex-col gap-1.5">
@@ -667,6 +839,8 @@ export function NetballFeedCardBody({
   const goalsB = isLive ? goalsForLive(sideB?.id) : (finishedHeadline?.[sideB?.id ?? ''] ?? 0)
   const aLeading = isLive ? goalsA > goalsB : !!aWon
   const bLeading = isLive ? goalsB > goalsA : !!bWon
+  const selfPlay = !!sideA?.team_id && sideA.team_id === sideB?.team_id
+  const selfPlayTeamName = selfPlay ? (sideA?.team_name ?? sideA?.name ?? '') : null
 
   const subtitle = isLive
     ? liveState
@@ -689,12 +863,16 @@ export function NetballFeedCardBody({
   return (
     <>
       <CardHeader
-        badge={<TeamInitialsBadge side={sideA} />}
+        badge={<SportIconBadge sport="netball" />}
         title={match.name}
         subtitle={subtitle}
         live={isLive ? <LivePill>{liveState ? netballLiveClockLabel(liveState) : 'LIVE'}</LivePill> : undefined}
         onOpen={onOpen}
       />
+
+      {selfPlay && selfPlayTeamName && (
+        <SelfPlayNote teamName={selfPlayTeamName} nameA={nameA} nameB={nameB} />
+      )}
 
       <button type="button" onClick={onOpen} className="block w-full px-3.5 pb-4 text-left">
         {!isLive && (
@@ -702,14 +880,14 @@ export function NetballFeedCardBody({
         )}
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center gap-3">
-            <SideMarker leading={aLeading} />
+            <SideMarkerOrCrest side={sideA} leading={aLeading} selfPlay={selfPlay} />
             <span
               className={cn(
                 'flex min-w-0 flex-1 items-center gap-1.5 truncate text-lg',
                 aLeading ? 'font-bold' : 'font-medium text-muted-foreground',
               )}
             >
-              <span className="truncate">{nameA}</span>
+              <SideNameWithHint name={nameA} hint={sideTeamHint(sideA)} />
               {!isLive && aWon && <WinnerCheck />}
             </span>
             <span
@@ -722,14 +900,14 @@ export function NetballFeedCardBody({
             </span>
           </div>
           <div className="flex items-center gap-3">
-            <SideMarker leading={bLeading} />
+            <SideMarkerOrCrest side={sideB} leading={bLeading} selfPlay={selfPlay} />
             <span
               className={cn(
                 'flex min-w-0 flex-1 items-center gap-1.5 truncate text-lg',
                 bLeading ? 'font-bold' : 'font-medium text-muted-foreground',
               )}
             >
-              <span className="truncate">{nameB}</span>
+              <SideNameWithHint name={nameB} hint={sideTeamHint(sideB)} />
               {!isLive && bWon && <WinnerCheck />}
             </span>
             <span
@@ -914,6 +1092,9 @@ export function TennisFeedCardBody({
 
   const scoreRow = (side: MatchSide | undefined, name: string, sets: number[], winner: boolean, mine: 'a' | 'b') => (
     <div className="flex items-center gap-2">
+      {side?.roster_preview?.length === 1 && (
+        <Avatar name={name} imageUrl={side.roster_preview[0].avatar_url} size="sm" />
+      )}
       <span
         className={cn(
           'flex min-w-0 flex-1 items-center gap-1.5 truncate text-lg',
@@ -1051,6 +1232,9 @@ export function SquashFeedCardBody({
     mine: 'a' | 'b',
   ) => (
     <div className="flex items-center gap-3">
+      {side?.roster_preview?.length === 1 && (
+        <Avatar name={name} imageUrl={side.roster_preview[0].avatar_url} size="sm" />
+      )}
       <div className="min-w-0 flex-1">
         <span
           className={cn(

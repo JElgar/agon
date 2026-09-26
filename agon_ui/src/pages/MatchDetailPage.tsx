@@ -397,8 +397,14 @@ function MatchDetail({
     </DropdownMenu>
   )
 
+  // Only the scheduled/RSVP view has its own desktop board
+  // (`DesktopInvite.dc.html`) — every other state/sport keeps the app's
+  // deliberate mobile-width column at desktop widths (see
+  // dark-desktop-rules.md), so the wider cap is scoped to just this state.
+  const isScheduledInvite = match.match_type !== 'football' && match.status === 'scheduled' && !cancelled
+
   return (
-    <div className="mx-auto flex max-w-xl flex-col gap-4">
+    <div className={cn('mx-auto flex flex-col gap-4', isScheduledInvite ? 'max-w-xl xl:max-w-[1040px]' : 'max-w-xl')}>
       {match.match_type === 'football' ? (
         <>
           {/* Football follows the redesign mocks: `Match.dc.html` (photo hero,
@@ -630,7 +636,7 @@ function MatchDetail({
             </SheetContent>
           </Sheet>
         </>
-      ) : match.status === 'scheduled' && !cancelled ? (
+      ) : isScheduledInvite ? (
         <>
           {/* Every other sport's redesigned pre-match/RSVP view (`Invite.dc.html`)
               — football's own scheduled state is the hero card above instead. */}
@@ -896,7 +902,7 @@ function MatchDetail({
               logic as the feed/profile match card). Skipped while scheduled: the
               redesigned Invite view's own "I'm in"/"Can't make it" bar above
               already covers this, so a second banner here would just duplicate it. */}
-          {myPendingInvitation(match, currentUserId) && !(match.status === 'scheduled' && !cancelled) ? (
+          {myPendingInvitation(match, currentUserId) && !isScheduledInvite ? (
             <InviteBanner match={match} currentUserId={currentUserId} />
           ) : (
             match.pending_score && (

@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Calendar, CalendarPlus, ChevronLeft, Pencil, MapPin, Share } from 'lucide-react'
 import type { components } from '@/types/api'
-import { cn } from '@/lib/utils'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { scheduledDateTime } from '@/lib/datetime'
@@ -254,9 +253,7 @@ export function ScheduledMatchInvite({
               type="button"
               aria-label="Add to calendar"
               onClick={() => downloadMatchIcs(match, { title: match.name, description: `${sideLabel(sideA, 'Side A')} vs ${sideLabel(sideB, 'Side B')}` })}
-              className={cn(
-                'box-border flex size-[54px] shrink-0 items-center justify-center rounded-2xl border border-[#DCD7CC] bg-card',
-              )}
+              className="box-border flex size-[54px] shrink-0 items-center justify-center rounded-2xl border bg-card"
             >
               <CalendarPlus className="size-[22px]" />
             </button>

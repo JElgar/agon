@@ -1,44 +1,53 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ChevronRight, LogOut, Pencil, Users, Watch } from 'lucide-react'
+import { LogOut, Search, Settings, Share2, Users, Watch } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
-import { ProfileHeader } from '@/components/agon/ProfileHeader'
+import { Avatar } from '@/components/agon/Avatar'
 import { EditProfileDialog } from '@/components/agon/EditProfileDialog'
 import { FollowButton } from '@/components/agon/FollowButton'
-import { SportStatsTable } from '@/components/agon/SportStatsTable'
-import { MatchCard } from '@/components/agon/MatchCard'
+import { StatBanner } from '@/components/agon/StatBanner'
+import { SportBreakdownBar } from '@/components/agon/SportBreakdownBar'
+import { SportProgressRow } from '@/components/agon/SportProgressRow'
+import { ProfileMatchRow } from '@/components/agon/ProfileMatchRow'
+import { Chip } from '@/components/agon/Chip'
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from '@/components/ui/sheet'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { useAuth } from '@/hooks/useAuth'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
-import { sportEntries } from '@/lib/stats'
+import { useMatchesTogether } from '@/hooks/useMatchesTogether'
+import { sortedByActivity, totalMatches, overallWinRate, formatWinRate } from '@/lib/stats'
+import { sportLabel, type MatchType } from '@/lib/sports'
 
 type UserProfile = components['schemas']['UserProfile']
 type SearchMatch = components['schemas']['SearchMatch']
 
-/** Number of sports shown before the "See all sports" toggle reveals the rest. */
-const SPORT_SUMMARY_LIMIT = 3
-/** Recent-activity matches to fetch/show. */
-const RECENT_LIMIT = 5
+/** Matches fetched per list — generous enough for the chip/search filtering
+ *  below to work over a real slice of history without paging. */
+const MATCHES_LIMIT = 50
 
 /**
  * The profile page, serving both the viewer's own profile (`/profile`, via
  * `GET /users/me`) and another user's (`/users/:userId`, via
- * `GET /users/{user_id}`). When `userId` is present it's someone else's profile:
- * the follow button shows (gated on `is_followed_by_me`) and there's no email.
- *
- * Composed from the shared `ProfileHeader`, `SportStatsTable`, and `MatchCard`.
- * Reads the authenticated fetch client, so it relies on a signed-in session
- * (the app shell only mounts this once auth + profile gates pass).
+ * `GET /users/{user_id}`) — restyled to the "Agon redesign" canvas's Profile
+ * board, including its "viewing someone else" state (head-to-head +
+ * playing-together records, folded into this same page rather than a
+ * separate screen).
  */
 export function ProfilePage() {
   const { userId } = useParams()
   const navigate = useNavigate()
   const isOwnProfile = !userId
   const currentUserId = useCurrentUserId()
-  const [showAllSports, setShowAllSports] = useState(false)
 
   const profileQuery = useQuery({
     queryKey: ['profile', userId ?? 'me'],
@@ -56,23 +65,7 @@ export function ProfilePage() {
     },
   })
 
-  const profileId = profileQuery.data?.id
-
-  const activityQuery = useQuery({
-    queryKey: ['profile-activity', profileId],
-    enabled: !!profileId,
-    queryFn: async (): Promise<SearchMatch[]> => {
-      const { data, error } = await fetchClient.GET('/matches', {
-        params: { query: { participant: profileId, limit: RECENT_LIMIT } },
-      })
-      if (error || !data) throw new Error('Failed to load recent activity')
-      return data.items
-    },
-  })
-
-  if (profileQuery.isLoading) {
-    return <ProfileSkeleton />
-  }
+  if (profileQuery.isLoading) return <ProfileSkeleton />
 
   if (profileQuery.isError || !profileQuery.data) {
     return (
@@ -86,169 +79,513 @@ export function ProfilePage() {
   }
 
   const profile = profileQuery.data
-  const statsBasePath = userId ? `/users/${userId}` : '/profile'
 
   return (
-    <div className="mx-auto flex max-w-xl flex-col gap-8">
-      <div className="flex flex-col gap-5">
-        <ProfileHeader profile={profile} />
-        {isOwnProfile ? (
-          <EditProfileDialog profile={profile}>
-            <Button variant="outline" className="gap-2">
-              <Pencil className="size-4" />
-              Edit profile
-            </Button>
-          </EditProfileDialog>
-        ) : (
-          userId && (
-            <FollowButton
-              userId={userId}
-              isFollowing={profile.is_followed_by_me}
-            />
-          )
-        )}
-      </div>
+    <div className="mx-auto flex max-w-xl flex-col gap-4 xl:max-w-none">
+      <header className="flex w-full items-center justify-between xl:mx-auto xl:max-w-[1080px]">
+        <h1 className="font-display text-[22px] font-extrabold">Profile</h1>
+        {isOwnProfile && <SettingsSheet />}
+      </header>
 
-      <section className="flex flex-col gap-2">
-        <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Sports
-        </h2>
-        <SportStatsTable
-          stats={profile.stats}
-          statsBasePath={statsBasePath}
-          limit={showAllSports ? undefined : SPORT_SUMMARY_LIMIT}
-        />
-        {sportEntries(profile.stats).length > SPORT_SUMMARY_LIMIT && (
-          <Button
-            variant="outline"
-            className="mt-1"
-            onClick={() => setShowAllSports((v) => !v)}
-          >
-            {showAllSports ? 'Show less' : 'See all sports'}
-            {!showAllSports && <ChevronRight className="size-4" />}
-          </Button>
-        )}
-      </section>
-
-      <section className="flex flex-col gap-2">
-        <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          Recent activity
-        </h2>
-        <RecentActivity
-          query={activityQuery}
-          onOpen={(id) => navigate(`/matches/${id}`)}
+      {isOwnProfile ? (
+        <OwnProfile profile={profile} onOpenMatch={(id) => navigate(`/matches/${id}`)} />
+      ) : (
+        <OtherProfile
+          profile={profile}
           currentUserId={currentUserId}
+          onOpenMatch={(id) => navigate(`/matches/${id}`)}
         />
-      </section>
-
-      {/* Account settings live here rather than in a nav item — on mobile the
-          bottom tab bar only has Feed / Create / Profile, so this is the one
-          reachable place for them. Desktop still has the sidebar too. */}
-      {isOwnProfile && <AccountSettings />}
+      )}
     </div>
   )
 }
 
-/** Sign-out, theme, and the (mobile-only) Teams link — see the comment above. */
-function AccountSettings() {
+/** Gear-icon button opening the account settings that used to live inline at
+ *  the bottom of this page — sign-out, theme and the mobile-only Teams/paired
+ *  devices links (desktop still has the sidebar for those). */
+function SettingsSheet() {
   const { signOut } = useAuth()
   return (
-    <section className="flex flex-col gap-2">
-      <h2 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        Account
-      </h2>
-      <div className="flex flex-col gap-2 rounded-xl border bg-card p-3 md:hidden">
-        <Button variant="ghost" className="justify-start gap-2" asChild>
-          <Link to="/teams">
-            <Users className="size-4" /> Teams
+    <Sheet>
+      <SheetTrigger asChild>
+        <Button variant="ghost" size="icon" className="rounded-full" aria-label="Settings">
+          <Settings className="size-[22px]" />
+        </Button>
+      </SheetTrigger>
+      <SheetContent side="bottom" className="rounded-t-2xl">
+        <SheetHeader>
+          <SheetTitle>Account</SheetTitle>
+        </SheetHeader>
+        <div className="flex flex-col gap-2 pt-2 md:hidden">
+          <Button variant="ghost" className="justify-start gap-2" asChild>
+            <Link to="/teams">
+              <Users className="size-4" /> Teams
+            </Link>
+          </Button>
+        </div>
+        <div className="flex items-center justify-between gap-2 rounded-xl border bg-card p-3">
+          <span className="text-sm text-muted-foreground">Appearance</span>
+          <ThemeToggle />
+        </div>
+        <Button variant="outline" className="w-full justify-start gap-2" asChild>
+          <Link to="/devices">
+            <Watch className="size-4" /> Paired devices
           </Link>
         </Button>
-      </div>
-      <div className="flex items-center justify-between gap-2 rounded-xl border bg-card p-3">
-        <span className="text-sm text-muted-foreground">Appearance</span>
-        <ThemeToggle />
-      </div>
-      <Button variant="outline" className="w-full justify-start gap-2" asChild>
-        <Link to="/devices">
-          <Watch className="size-4" /> Paired devices
-        </Link>
-      </Button>
-      <Button variant="outline" className="w-full gap-2" onClick={signOut}>
-        <LogOut className="size-4" /> Sign out
-      </Button>
-    </section>
+        <Button variant="outline" className="w-full gap-2" onClick={signOut}>
+          <LogOut className="size-4" /> Sign out
+        </Button>
+      </SheetContent>
+    </Sheet>
   )
 }
 
-interface RecentActivityProps {
-  query: ReturnType<typeof useQuery<SearchMatch[]>>
-  onOpen: (matchId: string) => void
-  currentUserId?: string
+/** Shares this profile's link via the native share sheet, falling back to a
+ *  clipboard copy — same fallback chain as `ShareMatchButton` on `MatchCard`. */
+function shareProfile(profile: UserProfile) {
+  const url = `${window.location.origin}/users/${profile.id}`
+  if (navigator.share) {
+    navigator.share({ title: profile.name, url }).catch(() => {})
+    return
+  }
+  navigator.clipboard?.writeText(url).catch(() => window.prompt('Copy this profile link:', url))
 }
 
-/** Recent-activity list: loading / error / empty states, else the match cards. */
-function RecentActivity({ query, onOpen, currentUserId }: RecentActivityProps) {
-  if (query.isLoading) {
-    return (
-      <div className="flex flex-col gap-3">
-        {Array.from({ length: 2 }).map((_, i) => (
-          <div
-            key={i}
-            className="h-48 animate-pulse rounded-xl border bg-card"
-            aria-hidden
+const MATCH_FILTERS: { id: string; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'won', label: 'Won' },
+  { id: 'lost', label: 'Lost' },
+]
+
+/** Client-side filter over an already-fetched match page: sport chips are
+ *  derived from what's actually in the list, `won`/`lost` chips from each
+ *  match's `outcome` (resolved server-side for the `participant` this list
+ *  is scoped to), and free text over the match name. */
+function filterMatches(matches: SearchMatch[], filter: string, q: string): SearchMatch[] {
+  const needle = q.trim().toLowerCase()
+  return matches.filter((m) => {
+    if (filter === 'won' && m.outcome !== 'won') return false
+    if (filter === 'lost' && m.outcome !== 'lost') return false
+    if (filter !== 'all' && filter !== 'won' && filter !== 'lost' && m.match_type !== filter) return false
+    if (needle && !m.name.toLowerCase().includes(needle)) return false
+    return true
+  })
+}
+
+/** The sports actually present in a match list, in first-seen order — used
+ *  to build the sport filter chips without hardcoding a sport list. */
+function sportsIn(matches: SearchMatch[]): MatchType[] {
+  const seen: MatchType[] = []
+  for (const m of matches) {
+    if (!seen.includes(m.match_type)) seen.push(m.match_type)
+  }
+  return seen
+}
+
+function OwnProfile({
+  profile,
+  onOpenMatch,
+}: {
+  profile: UserProfile
+  onOpenMatch: (id: string) => void
+}) {
+  const [q, setQ] = useState('')
+  const [filter, setFilter] = useState('all')
+
+  const matchesQuery = useQuery({
+    queryKey: ['profile-matches', profile.id],
+    queryFn: async (): Promise<SearchMatch[]> => {
+      const { data, error } = await fetchClient.GET('/matches', {
+        params: { query: { participant: profile.id, limit: MATCHES_LIMIT } },
+      })
+      if (error || !data) throw new Error('Failed to load matches')
+      return data.items
+    },
+  })
+
+  const matches = useMemo(() => matchesQuery.data ?? [], [matchesQuery.data])
+  const sports = useMemo(() => sportsIn(matches), [matches])
+  const filtered = useMemo(() => filterMatches(matches, filter, q), [matches, filter, q])
+  const narrowed = filter !== 'all' || q.trim() !== ''
+
+  const matches_played = totalMatches(profile.stats)
+  const winRate = overallWinRate(profile.stats)
+  const sportRows = sortedByActivity(profile.stats)
+
+  return (
+    <div className="flex flex-col gap-4 xl:mx-auto xl:max-w-[1080px]">
+      {/* Header row: on desktop (`DesktopProfile.dc.html`) the avatar/name/
+          buttons column sits beside a fixed-width stat banner instead of
+          stacking above it. */}
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:gap-6">
+        <div className="flex flex-col gap-4 xl:flex-grow">
+          <div className="flex items-center gap-4">
+            <Avatar
+              name={profile.name}
+              imageUrl={profile.profile_image?.image_url}
+              size="xl"
+              ring="you"
+              className="size-[84px] text-2xl"
+            />
+            <div className="flex min-w-0 flex-col gap-1">
+              <h2 className="truncate font-display text-2xl font-extrabold tracking-tight">
+                {profile.name}
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                <Link to={`/users/${profile.id}/followers`} className="font-bold text-foreground hover:underline">
+                  {profile.follower_count}
+                </Link>{' '}
+                followers &middot;{' '}
+                <Link to={`/users/${profile.id}/following`} className="font-bold text-foreground hover:underline">
+                  {profile.following_count}
+                </Link>{' '}
+                following
+              </p>
+            </div>
+          </div>
+
+          <div className="flex gap-2.5">
+            <EditProfileDialog profile={profile}>
+              <Button variant="outline" shape="pill" className="h-11 flex-grow font-bold xl:flex-grow-0">
+                Edit profile
+              </Button>
+            </EditProfileDialog>
+            <Button
+              variant="outline"
+              shape="pill"
+              className="h-11 flex-grow gap-2 font-bold xl:flex-grow-0"
+              onClick={() => shareProfile(profile)}
+            >
+              <Share2 className="size-4" /> Share profile
+            </Button>
+          </div>
+        </div>
+
+        <div className="xl:w-[420px] xl:shrink-0">
+          <StatBanner
+            aria-label="All sports"
+            stats={[
+              { value: matches_played, label: 'Matches' },
+              { value: totalWins(profile), label: 'Wins' },
+              { value: formatWinRate(winRate), label: 'Win rate' },
+            ]}
           />
+        </div>
+      </div>
+
+      {/* Below the header, desktop splits into "Your matches" (primary,
+          grows) beside "Your sports" (a fixed 380px rail) — DOM order
+          matches mobile's stacking (sports above matches), `xl:order-*`
+          reassigns the desktop columns without duplicating markup. */}
+      <div className="flex flex-col gap-4 xl:grid xl:grid-cols-[1fr_380px] xl:items-start xl:gap-6">
+        {sportRows.length > 0 && (
+          <div className="flex flex-col gap-4 xl:order-2 xl:min-w-0">
+            <h3 className="px-1 pt-2 font-display text-[19px] font-bold xl:pt-0">Your sports</h3>
+            <Card className="flex flex-col overflow-hidden">
+              {sportRows.map(({ sport, stats }, i) => (
+                <SportProgressRow
+                  key={sport}
+                  sport={sport}
+                  matchesPlayed={stats.matches_played}
+                  winPercentage={stats.win_percentage}
+                  to={`/profile/stats/${sport}`}
+                  isFirst={i === 0}
+                />
+              ))}
+            </Card>
+          </div>
+        )}
+
+        <div className="flex flex-col gap-4 xl:order-1 xl:min-w-0">
+          <div className="flex items-baseline justify-between px-1 pt-2 xl:pt-0">
+            <h3 className="font-display text-[19px] font-bold">Your matches</h3>
+            <span className="text-[13px] text-muted-foreground">
+              {narrowed ? `Showing ${filtered.length} of ${matches.length}` : `${matches.length} matches`}
+            </span>
+          </div>
+          <label className="flex h-12 items-center gap-2.5 rounded-2xl border bg-card px-3.5 text-muted-foreground [&:has(input:focus)]:ring-1 [&:has(input:focus)]:ring-ring">
+            <Search className="size-5 shrink-0" />
+            <input
+              type="search"
+              aria-label="Search your matches"
+              placeholder="Search by match name"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              className="min-w-0 flex-grow bg-transparent text-[15px] font-medium text-foreground outline-none placeholder:text-muted-foreground"
+            />
+          </label>
+          <div role="group" aria-label="Filter matches" className="flex flex-wrap gap-2">
+            {[...MATCH_FILTERS, ...sports.map((s) => ({ id: s, label: sportLabel(s) }))].map((c) => (
+              <Chip key={c.id} pressed={filter === c.id} onClick={() => setFilter(c.id)}>
+                {c.label}
+              </Chip>
+            ))}
+          </div>
+          <MatchList
+            isLoading={matchesQuery.isLoading}
+            isError={matchesQuery.isError}
+            matches={filtered}
+            onOpen={onOpenMatch}
+            onRetry={() => matchesQuery.refetch()}
+            onReset={() => {
+              setQ('')
+              setFilter('all')
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function totalWins(profile: UserProfile): number {
+  const stats = profile.stats
+  return sortedByActivity(stats).reduce((sum, s) => sum + s.stats.wins, 0)
+}
+
+const H2H_FILTERS: { id: string; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'against', label: 'As opponents' },
+  { id: 'with', label: 'As teammates' },
+]
+
+function OtherProfile({
+  profile,
+  currentUserId,
+  onOpenMatch,
+}: {
+  profile: UserProfile
+  currentUserId: string | undefined
+  onOpenMatch: (id: string) => void
+}) {
+  const [filter, setFilter] = useState('all')
+  const { isLoading, isError, together, headToHead, playingTogether, refetch } =
+    useMatchesTogether(currentUserId, profile.id)
+
+  const sports = useMemo(() => sportsIn(together.map((t) => t.match)), [together])
+  const filtered = useMemo(
+    () =>
+      together.filter((t) => {
+        if (filter === 'against' && t.kind !== 'against') return false
+        if (filter === 'with' && t.kind !== 'with') return false
+        if (filter !== 'all' && filter !== 'against' && filter !== 'with' && t.match.match_type !== filter)
+          return false
+        return true
+      }),
+    [together, filter],
+  )
+
+  const matches_played = totalMatches(profile.stats)
+  const winRate = overallWinRate(profile.stats)
+  const sportRows = sortedByActivity(profile.stats)
+
+  return (
+    <div className="flex flex-col gap-4 xl:mx-auto xl:max-w-[1080px]">
+      {/* No "other profile" board exists on the canvas's desktop set, only
+          the own-profile `DesktopProfile.dc.html` — this mirrors that same
+          header-row + two-column shape (list beside a stats rail) rather
+          than leaving this state unstyled at desktop widths. */}
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:gap-6">
+        <div className="flex flex-col gap-4 xl:flex-grow">
+          <div className="flex items-center gap-4">
+            <Avatar
+              name={profile.name}
+              imageUrl={profile.profile_image?.image_url}
+              size="xl"
+              className="size-[84px] text-2xl"
+            />
+            <div className="flex min-w-0 flex-col gap-1">
+              <h2 className="truncate font-display text-2xl font-extrabold tracking-tight">
+                {profile.name}
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                <Link to={`/users/${profile.id}/followers`} className="font-bold text-foreground hover:underline">
+                  {profile.follower_count}
+                </Link>{' '}
+                followers &middot;{' '}
+                <Link to={`/users/${profile.id}/following`} className="font-bold text-foreground hover:underline">
+                  {profile.following_count}
+                </Link>{' '}
+                following
+              </p>
+            </div>
+          </div>
+
+          <div className="flex gap-2.5">
+            <FollowButton
+              userId={profile.id}
+              isFollowing={profile.is_followed_by_me}
+              shape="pill"
+              className="h-11 flex-grow font-bold xl:flex-grow-0 xl:px-8"
+            />
+          </div>
+        </div>
+
+        <div className="xl:w-[420px] xl:shrink-0">
+          <StatBanner
+            aria-label={`${profile.name}'s overall stats`}
+            stats={[
+              { value: matches_played, label: 'Matches' },
+              { value: totalWins(profile), label: 'Wins' },
+              { value: formatWinRate(winRate), label: 'Win rate' },
+            ]}
+          />
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-4 xl:grid xl:grid-cols-[1fr_380px] xl:items-start xl:gap-6">
+        <div className="flex flex-col gap-4 xl:order-2 xl:min-w-0">
+          {sportRows.length > 0 && (
+            <>
+              <h3 className="px-1 pt-2 font-display text-[19px] font-bold xl:pt-0">
+                {firstName(profile.name)}'s sports
+              </h3>
+              <Card className="flex flex-col overflow-hidden">
+                {sportRows.map(({ sport, stats }, i) => (
+                  <SportProgressRow
+                    key={sport}
+                    sport={sport}
+                    matchesPlayed={stats.matches_played}
+                    winPercentage={stats.win_percentage}
+                    to={`/users/${profile.id}/stats/${sport}`}
+                    isFirst={i === 0}
+                  />
+                ))}
+              </Card>
+            </>
+          )}
+
+          <h3 className="px-1 pt-2 font-display text-[19px] font-bold">Head to head</h3>
+          <StatBanner
+            aria-label="Record as opponents"
+            stats={[
+              { value: headToHead.youWon, label: 'You won' },
+              { value: headToHead.draws, label: 'Draws' },
+              { value: headToHead.theyWon, label: `${firstName(profile.name)} won` },
+            ]}
+            footer={<SportBreakdownBar entries={headToHead.bySport} tone="blue" />}
+          />
+
+          <h3 className="px-1 pt-2 font-display text-[19px] font-bold">Playing together</h3>
+          <StatBanner
+            tone="terracotta"
+            aria-label="Record as teammates"
+            stats={[
+              { value: playingTogether.won, label: 'Won' },
+              { value: playingTogether.draws, label: 'Draws' },
+              { value: playingTogether.lost, label: 'Lost' },
+            ]}
+            footer={<SportBreakdownBar entries={playingTogether.bySport} tone="terracotta" />}
+          />
+        </div>
+
+        <div className="flex flex-col gap-4 xl:order-1 xl:min-w-0">
+          <div className="flex items-baseline justify-between px-1 pt-2 xl:pt-0">
+            <h3 className="font-display text-[19px] font-bold">Matches together</h3>
+            <span className="text-[13px] text-muted-foreground">
+              {together.length} match{together.length === 1 ? '' : 'es'}
+            </span>
+          </div>
+          <div role="group" aria-label="Filter matches together" className="flex flex-wrap gap-2">
+            {[...H2H_FILTERS, ...sports.map((s) => ({ id: s, label: sportLabel(s) }))].map((c) => (
+              <Chip key={c.id} pressed={filter === c.id} onClick={() => setFilter(c.id)}>
+                {c.label}
+              </Chip>
+            ))}
+          </div>
+          <MatchList
+            isLoading={isLoading}
+            isError={isError}
+            matches={filtered.map((t) => t.match)}
+            together={filtered}
+            onOpen={onOpenMatch}
+            onRetry={refetch}
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function firstName(name: string): string {
+  return name.trim().split(/\s+/)[0] ?? name
+}
+
+interface MatchListProps {
+  isLoading: boolean
+  isError: boolean
+  matches: SearchMatch[]
+  together?: { match: SearchMatch; kind: 'with' | 'against' }[]
+  onOpen: (id: string) => void
+  onRetry: () => void
+  onReset?: () => void
+}
+
+/** The white section-card list of match rows — loading/error/empty states,
+ *  else `ProfileMatchRow` per match, tagging "Teammates" when `together`
+ *  identifies that match as a played-together (not played-against) one. */
+function MatchList({ isLoading, isError, matches, together, onOpen, onRetry, onReset }: MatchListProps) {
+  if (isLoading) {
+    return (
+      <div className="flex flex-col gap-2">
+        {Array.from({ length: 3 }).map((_, i) => (
+          <div key={i} className="h-[60px] animate-pulse rounded-2xl bg-card" aria-hidden />
         ))}
       </div>
     )
   }
 
-  if (query.isError) {
+  if (isError) {
     return (
-      <div className="rounded-xl border bg-card p-6 text-center">
-        <p className="mb-3 text-sm text-muted-foreground">
-          Couldn't load recent activity.
-        </p>
-        <Button variant="outline" size="sm" onClick={() => query.refetch()}>
+      <Card className="p-6 text-center">
+        <p className="mb-3 text-sm text-muted-foreground">Couldn't load matches.</p>
+        <Button variant="outline" size="sm" onClick={onRetry}>
           Retry
         </Button>
-      </div>
+      </Card>
     )
   }
-
-  const matches = query.data ?? []
 
   if (matches.length === 0) {
     return (
-      <div className="rounded-xl border bg-card p-6 text-center text-sm text-muted-foreground">
-        No recent matches.
-      </div>
+      <Card className="flex flex-col items-center gap-2 px-5 py-7 text-center">
+        <span className="text-[15px] font-bold">No matches found</span>
+        {onReset && (
+          <Button variant="secondary" shape="pill" size="sm" onClick={onReset}>
+            Clear search and filters
+          </Button>
+        )}
+      </Card>
     )
   }
 
+  const kindByMatchId = new Map(together?.map((t) => [t.match.id, t.kind]))
+
   return (
-    <div className="flex flex-col gap-3">
-      {matches.map((match) => (
-        <MatchCard
-          key={match.id}
-          match={match}
-          currentUserId={currentUserId}
-          onOpen={() => onOpen(match.id)}
+    <Card className="flex flex-col overflow-hidden">
+      {matches.map((m, i) => (
+        <ProfileMatchRow
+          key={m.id}
+          match={m}
+          isFirst={i === 0}
+          teammates={kindByMatchId.get(m.id) === 'with'}
+          onOpen={() => onOpen(m.id)}
         />
       ))}
-    </div>
+    </Card>
   )
 }
 
 /** Placeholder while the profile loads. */
 function ProfileSkeleton() {
   return (
-    <div className="mx-auto flex max-w-xl flex-col gap-8">
+    <div className="mx-auto flex max-w-xl flex-col gap-4">
       <div className="flex items-center gap-4">
-        <div className="size-16 animate-pulse rounded-full bg-card" aria-hidden />
+        <div className="size-[84px] animate-pulse rounded-full bg-card" aria-hidden />
         <div className="h-6 w-40 animate-pulse rounded bg-card" aria-hidden />
       </div>
-      <div className="h-40 animate-pulse rounded-xl border bg-card" aria-hidden />
-      <div className="h-48 animate-pulse rounded-xl border bg-card" aria-hidden />
+      <div className="h-32 animate-pulse rounded-2xl border bg-card" aria-hidden />
+      <div className="h-48 animate-pulse rounded-2xl border bg-card" aria-hidden />
     </div>
   )
 }

@@ -171,9 +171,7 @@ export function FeedPage() {
 
       {sections.map((section) => (
         <div key={section.label} className="flex flex-col gap-3">
-          <h2 className="font-serif text-lg italic text-muted-foreground">
-            {section.label}
-          </h2>
+          <h2 className="px-1 font-display text-lg font-bold">{section.label}</h2>
           {section.items.map((item) => (
             <MatchCard
               key={item.id}

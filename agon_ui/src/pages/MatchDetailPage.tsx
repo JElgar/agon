@@ -382,8 +382,8 @@ function MatchDetail({
           type="button"
           aria-label="More options"
           className={cn(
-            'flex size-11 items-center justify-center rounded-full text-[#16171A]',
-            variant === 'overlay' ? 'bg-white/95' : 'text-foreground hover:bg-muted',
+            'flex size-11 items-center justify-center rounded-full',
+            variant === 'overlay' ? 'bg-card/95 text-foreground' : 'text-foreground hover:bg-muted',
           )}
         >
           <MoreHorizontal className="size-[22px]" />
@@ -473,7 +473,7 @@ function MatchDetail({
                 type="button"
                 onClick={onBack}
                 aria-label="Back"
-                className="absolute top-4 left-4 flex size-11 items-center justify-center rounded-full bg-white/95 text-[#16171A]"
+                className="absolute top-4 left-4 flex size-11 items-center justify-center rounded-full bg-card/95 text-foreground"
               >
                 <ChevronLeft className="size-[22px]" strokeWidth={2.2} />
               </button>
@@ -500,8 +500,8 @@ function MatchDetail({
               <div className={cn('flex flex-col px-1', match.header_photos.length > 0 ? 'gap-1.5 pt-1' : 'gap-2')}>
                 <div className="flex items-center gap-2.5">
                   {matchView === 'live' ? (
-                    <span className="flex h-6 items-center gap-1.5 rounded-full bg-destructive px-[9px] text-[11px] font-bold tracking-[0.6px] text-white">
-                      <span className="size-1.5 rounded-full bg-white" />
+                    <span className="flex h-6 items-center gap-1.5 rounded-full bg-destructive px-[9px] text-[11px] font-bold tracking-[0.6px] text-destructive-foreground">
+                      <span className="size-1.5 rounded-full bg-destructive-foreground" />
                       LIVE
                     </span>
                   ) : (

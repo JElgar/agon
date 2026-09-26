@@ -74,7 +74,7 @@ export function FollowButton({
       className={cn(
         tone === 'soft' &&
           (following
-            ? 'border-[#DCD7CC] bg-card text-[#3D404A] shadow-none hover:bg-muted hover:text-[#3D404A]'
+            ? 'border-edge bg-card text-ink-soft shadow-none hover:bg-muted hover:text-ink-soft'
             : 'bg-accent text-accent-foreground shadow-none hover:bg-accent/80'),
         className,
       )}

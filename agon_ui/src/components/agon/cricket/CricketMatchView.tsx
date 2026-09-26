@@ -44,10 +44,10 @@ type CricketDismissal = components['schemas']['CricketDismissal']
 
 // Mock colours with no theme token: the wicket tint and its text, the
 // muted chip fills and the timeline rail.
-const WICKET_TINT = '#FBE4DA'
-const WICKET_TEXT = '#9A3210'
-const LOSER_GREY = '#7D8190'
-const RAIL = '#E4E0D7'
+const WICKET_TINT = 'var(--wicket-tint)'
+const WICKET_TEXT = 'var(--wicket-foreground)'
+const LOSER_GREY = 'var(--ink-faint)'
+const RAIL = 'var(--rule)'
 
 function sideIndex(match: Match, sideId: string | undefined): number {
   return Math.max(
@@ -110,7 +110,7 @@ function chipTone(d: CricketDelivery): ChipTone {
 
 /** One ball as a round chip, coloured like the mocks: dot, runs, boundary,
  *  wicket, or a ringed wide/no-ball. */
-function BallChip({ d, size, dotFill = '#EEEAE2' }: { d: CricketDelivery; size: number; dotFill?: string }) {
+function BallChip({ d, size, dotFill = 'var(--chip)' }: { d: CricketDelivery; size: number; dotFill?: string }) {
   const tone = chipTone(d)
   const raw = deliveryChipLabel(d)
   const label = raw === '·' ? '•' : raw
@@ -127,10 +127,10 @@ function BallChip({ d, size, dotFill = '#EEEAE2' }: { d: CricketDelivery; size: 
       className={cn(
         'box-border flex shrink-0 items-center justify-center rounded-full font-extrabold',
         tone === 'dot' && 'text-muted-foreground',
-        tone === 'runs' && 'bg-[#F1EEE7] text-foreground',
+        tone === 'runs' && 'bg-chip-soft text-foreground',
         tone === 'boundary' && 'bg-primary text-primary-foreground',
         tone === 'wicket' && 'bg-destructive text-white',
-        tone === 'extra' && 'border-[1.5px] bg-card text-[#3D404A]',
+        tone === 'extra' && 'border-[1.5px] bg-card text-ink-soft',
       )}
     >
       {label}
@@ -232,7 +232,7 @@ export function CricketHeroCard({
           return (
             <div
               key={sideId}
-              className={cn('flex items-center gap-2.5', (open || i > 0) && 'border-t border-[#F0ECE4] pt-3')}
+              className={cn('flex items-center gap-2.5', (open || i > 0) && 'border-t border-hairline pt-3')}
             >
               <span className="min-w-0 flex-1 truncate text-base font-medium text-muted-foreground">{name}</span>
               <span className="shrink-0 text-sm text-muted-foreground">
@@ -243,7 +243,7 @@ export function CricketHeroCard({
         }
         const lost = !!winnerId && winnerId !== sideId
         return (
-          <div key={sideId} className={cn('flex items-center gap-2.5', i > 0 && 'border-t border-[#F0ECE4] pt-3')}>
+          <div key={sideId} className={cn('flex items-center gap-2.5', i > 0 && 'border-t border-hairline pt-3')}>
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
               <span className={cn('truncate', lost ? 'text-base font-medium text-muted-foreground' : 'text-lg font-bold')}>
                 {name}
@@ -271,10 +271,10 @@ export function CricketHeroCard({
           <span className="text-[13px] font-semibold text-muted-foreground">{over.label}</span>
           <div className="flex flex-wrap gap-2">
             {over.balls.map((d, i) => (
-              <BallChip key={i} d={d} size={38} dotFill="#F1EEE7" />
+              <BallChip key={i} d={d} size={38} dotFill="var(--chip-soft)" />
             ))}
             {Array.from({ length: over.remaining }, (_, i) => (
-              <span key={`r${i}`} className="box-border size-[38px] rounded-full border-[1.5px] border-dashed border-[#CFC9BD]" />
+              <span key={`r${i}`} className="box-border size-[38px] rounded-full border-[1.5px] border-dashed border-placeholder" />
             ))}
           </div>
         </div>
@@ -364,7 +364,7 @@ export function AtTheCreaseCard({ match, score }: { match: Match; score: Cricket
         const onStrike = id === strikerId
         const boundaryNote = entry?.sixes ? plural(entry.sixes, 'six', 'sixes') : entry?.fours ? plural(entry.fours, 'four') : null
         return (
-          <div key={id} className={cn('flex items-center gap-3 py-2.5', i > 0 && 'border-t border-[#F0ECE4]')}>
+          <div key={id} className={cn('flex items-center gap-3 py-2.5', i > 0 && 'border-t border-hairline')}>
             {avatar(id, name)}
             <div className="flex min-w-0 flex-1 flex-col">
               <span className="truncate text-base font-semibold">{name}</span>
@@ -381,7 +381,7 @@ export function AtTheCreaseCard({ match, score }: { match: Match; score: Cricket
       })}
       {bowlerId && (
         <>
-          <span className="border-t border-[#F0ECE4] pt-3.5 pb-1.5 text-[13px] font-semibold text-muted-foreground">Bowling</span>
+          <span className="border-t border-hairline pt-3.5 pb-1.5 text-[13px] font-semibold text-muted-foreground">Bowling</span>
           <div className="flex items-center gap-3 pt-2.5 pb-3.5">
             {avatar(bowlerId, nameOf(bowlerId) ?? 'Unknown bowler')}
             <span className="min-w-[72px] flex-1 truncate text-base font-semibold">{nameOf(bowlerId) ?? 'Unknown bowler'}</span>
@@ -518,7 +518,7 @@ export function RunsOverTimeCard({
       >
         {yTicks.map((v) => (
           <g key={v}>
-            <line x1={x0} x2={x1} y1={yFor(v)} y2={yFor(v)} stroke="#EEEAE2" strokeWidth="1" />
+            <line x1={x0} x2={x1} y1={yFor(v)} y2={yFor(v)} stroke="var(--gridline)" strokeWidth="1" />
             <text x={x0 - 8} y={yFor(v) + 4} textAnchor="end" fontSize="11" className="fill-muted-foreground">
               {v}
             </text>
@@ -554,13 +554,13 @@ export function RunsOverTimeCard({
               {s.points
                 .filter((p) => p.isWicket)
                 .map((p, k) => (
-                  <circle key={k} cx={xFor(p.overDecimal)} cy={yFor(p.runs)} r="5.5" fill="#D2461B" stroke="#FFFFFF" strokeWidth="2">
+                  <circle key={k} cx={xFor(p.overDecimal)} cy={yFor(p.runs)} r="5.5" fill="var(--destructive)" stroke="var(--card)" strokeWidth="2">
                     <title>
                       Wicket at {p.runs}/{p.wickets} ({formatOvers(p.overs)} ov)
                     </title>
                   </circle>
                 ))}
-              <circle cx={end.x} cy={end.y} r="5.5" fill={color} stroke="#FFFFFF" strokeWidth="2" />
+              <circle cx={end.x} cy={end.y} r="5.5" fill={color} stroke="var(--card)" strokeWidth="2" />
               <text
                 x={end.x - 8}
                 y={labelY(si, end.y)}
@@ -576,7 +576,7 @@ export function RunsOverTimeCard({
         })}
       </svg>
       {series.some((s) => fallOfWickets(s.inn, format).length > 0) && (
-        <div className="flex flex-col gap-2 border-t border-[#F0ECE4]">
+        <div className="flex flex-col gap-2 border-t border-hairline">
           {series.map((s) => {
             const fow = fallOfWickets(s.inn, format)
             if (!fow.length) return null
@@ -663,7 +663,7 @@ export function CricketScorecardTab({
               </div>
               {batting.length === 0 && <p className="px-4 pb-3 text-sm text-muted-foreground">No batting recorded.</p>}
               {batting.map((b: CricketBattingEntry, bi) => (
-                <div key={`${b.player_id}-${bi}`} className={cn(BAT_GRID, 'border-t border-[#F0ECE4] px-4 py-2.5 tabular-nums')}>
+                <div key={`${b.player_id}-${bi}`} className={cn(BAT_GRID, 'border-t border-hairline px-4 py-2.5 tabular-nums')}>
                   <span className="flex min-w-0 flex-col">
                     <span className="truncate text-[15px] font-semibold">
                       {nameOf(b.player_id) ?? 'Unknown'}
@@ -683,13 +683,13 @@ export function CricketScorecardTab({
                 </div>
               ))}
               {inn.extras && (
-                <div className="flex items-center gap-2 border-t border-[#F0ECE4] px-4 py-2.5 text-sm">
+                <div className="flex items-center gap-2 border-t border-hairline px-4 py-2.5 text-sm">
                   <span className="font-semibold">Extras</span>
                   <span className="flex-1 truncate text-[13px] text-muted-foreground">{extras.detail && `(${extras.detail})`}</span>
                   <span className="font-semibold tabular-nums">{extras.total}</span>
                 </div>
               )}
-              <div className="flex items-center gap-2 border-t border-[#F0ECE4] bg-muted/60 px-4 py-3">
+              <div className="flex items-center gap-2 border-t border-hairline bg-muted/60 px-4 py-3">
                 <span className="text-[15px] font-bold">Total</span>
                 <span className="flex-1 text-[13px] text-muted-foreground">
                   {formatOvers(inn.overs)} ov · RR {rr.toFixed(2)}
@@ -699,7 +699,7 @@ export function CricketScorecardTab({
                 </span>
               </div>
               {didNotBat.length > 0 && inn.batting && inn.batting.length > 0 && (
-                <p className="border-t border-[#F0ECE4] px-4 py-2.5 text-[13px] text-muted-foreground">
+                <p className="border-t border-hairline px-4 py-2.5 text-[13px] text-muted-foreground">
                   <span className="font-semibold text-foreground">Yet to bat · </span>
                   {didNotBat.map((p) => nameOf(p.member.id)).filter(Boolean).join(', ')}
                 </p>
@@ -719,7 +719,7 @@ export function CricketScorecardTab({
                 {bowling.map((bw, bi) => {
                   const balls = bw.overs.overs * format.balls_per_over + bw.overs.balls
                   return (
-                    <div key={`${bw.player_id}-${bi}`} className={cn(BOWL_GRID, 'border-t border-[#F0ECE4] px-4 py-3 tabular-nums')}>
+                    <div key={`${bw.player_id}-${bi}`} className={cn(BOWL_GRID, 'border-t border-hairline px-4 py-3 tabular-nums')}>
                       <span className="truncate text-[15px] font-semibold">{nameOf(bw.player_id) ?? 'Unknown'}</span>
                       <span className="text-right text-sm">{formatOvers(bw.overs)}</span>
                       <span className="text-right text-sm text-muted-foreground">{bw.maidens}</span>
@@ -904,7 +904,7 @@ export function CricketTimeline({
             onClick={() => setFilter(f.id)}
             className={cn(
               'box-border h-9 rounded-full border px-3.5 text-sm font-bold',
-              filter === f.id ? 'border-foreground bg-foreground text-background' : 'border-[#DCD7CC] bg-card text-foreground',
+              filter === f.id ? 'border-foreground bg-foreground text-background' : 'border-edge bg-card text-foreground',
             )}
           >
             {f.label}
@@ -932,7 +932,7 @@ export function CricketTimeline({
           return (
             <div key={g.key} className="flex flex-col">
               {inningsLabel && (
-                <span className={cn('px-3 pt-3 text-xs font-bold tracking-[0.5px] text-muted-foreground uppercase', gi > 0 && 'mt-2 border-t border-[#F0ECE4] pt-4')}>
+                <span className={cn('px-3 pt-3 text-xs font-bold tracking-[0.5px] text-muted-foreground uppercase', gi > 0 && 'mt-2 border-t border-hairline pt-4')}>
                   {inningsLabel}
                 </span>
               )}
@@ -1002,7 +1002,7 @@ export function CricketTimeline({
                       <div className="flex items-center">
                         <span className="flex h-7 items-center rounded-full bg-foreground px-3 text-[13px] font-bold text-background">
                           End of over {prevOver.over + 1}
-                          <span className="font-medium text-[#C9CCD4]">
+                          <span className="font-medium text-ink-ghost">
                             &nbsp;· {g.before.runs}/{g.before.wickets}
                           </span>
                         </span>
@@ -1014,7 +1014,7 @@ export function CricketTimeline({
                 <button
                   type="button"
                   onClick={() => filter === 'all' && toggle(g.key)}
-                  className="my-1.5 flex flex-col items-stretch gap-2.5 border-y border-[#F0ECE4] p-3 text-left"
+                  className="my-1.5 flex flex-col items-stretch gap-2.5 border-y border-hairline p-3 text-left"
                 >
                   <span className="flex items-center gap-2.5">
                     <span className="flex min-w-0 flex-1 flex-col gap-px">
@@ -1038,7 +1038,7 @@ export function CricketTimeline({
         <button
           type="button"
           onClick={() => setLimit((n) => n + 10)}
-          className="box-border h-12 rounded-[14px] border border-[#DCD7CC] bg-card text-sm font-bold"
+          className="box-border h-12 rounded-[14px] border border-edge bg-card text-sm font-bold"
         >
           Show earlier overs
         </button>

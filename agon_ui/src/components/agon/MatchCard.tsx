@@ -223,8 +223,8 @@ export function MatchCard({
 
   const nameA = sideName(sideA, 'Side A')
   const nameB = sideName(sideB, 'Side B')
-  const aWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
-  const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
+  const aWon = !!scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
+  const bWon = !!scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
   // The "X beat Y" headline needs the winner named first, or it reads
   // backwards whenever B is the one who actually won (the score box below
   // stays in match.sides order regardless — only this headline reorders).

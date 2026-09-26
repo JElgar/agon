@@ -425,13 +425,11 @@ pub struct TeamMemberRecord {
 pub struct MatchRecord {
     pub id: String,
     /// The user who created (organizes) the match. Immutable — a historical
-    /// fact, unrelated to the transferable `Owner` role on `players` below
-    /// (see `MatchPlayerRole`). Still checked directly by
-    /// `caller_can_manage_match`/`caller_is_match_admin` as a stopgap for a
-    /// creator who organizes without playing — they'd otherwise have no
-    /// roster row to carry any role at all. A future "non-player organizers"
-    /// list (tracked separately, not yet built) is the real fix for that
-    /// case; this field isn't it, just today's fallback.
+    /// fact, unrelated to the transferable `Owner`/`Admin` authority in
+    /// `MatchAuthorityRecord` (or the roster's own `MatchPlayerRole`). Also
+    /// still checked directly by `caller_is_match_admin` as a permanent
+    /// fallback, so a match created before `MatchAuthorityRecord` existed
+    /// keeps working with no backfill.
     /// `#[serde(default)]` for records written before this field existed.
     #[serde(default)]
     pub created_by_user_id: String,
@@ -730,6 +728,12 @@ pub struct MatchWaitlistEntryRecord {
 /// `TeamMemberRecord.role` (a raw "admin"/"member" string) — match and team
 /// roles are conceptually related but not guaranteed to stay identical, and a
 /// shared type would couple them accidentally.
+///
+/// This is the roster's own authority field. A player who is also (or
+/// instead) a non-playing organizer holds their `Owner`/`Admin` authority as
+/// a separate `MatchAuthorityRecord`, not here — see its doc comment for why
+/// the two are kept apart. `caller_is_match_admin`/`caller_is_match_owner`
+/// (agon_service) check both.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchPlayerRole {
@@ -737,9 +741,10 @@ pub enum MatchPlayerRole {
     /// one at a time, transferable via `Dao::transfer_match_ownership` (which
     /// atomically demotes the outgoing owner to `Admin`, mirroring
     /// `Dao::transfer_team_ownership`). The playing creator gets this by
-    /// default. A non-playing organizer has no roster row and so can't hold
-    /// it today — `MatchRecord::created_by_user_id` is the stopgap for that
-    /// case (see its doc comment) until a non-player-organizers list exists.
+    /// default. Only meaningful for a player who actually holds the `Owner`
+    /// role via their roster row — a non-playing owner holds it via
+    /// `MatchAuthorityRecord` instead, which `transfer_match_ownership`
+    /// does not touch (a future generalization, not built here).
     Owner,
     /// Full authority over the match short of transferring ownership: manage
     /// `join_policy`/caps, mint or revoke join-links, invite people.
@@ -749,6 +754,34 @@ pub enum MatchPlayerRole {
     /// above.
     #[default]
     Player,
+}
+
+/// `MATCH#<matchId>` / `AUTHORITY#<userId>` — a non-roster grant of match
+/// authority: an Owner or Admin who need not (and may never) appear on the
+/// roster at all. Kept as its own item collection rather than folded into
+/// `MatchPlayerRecord` so authority and roster membership are fully
+/// independent facts — a player can leave the roster without losing
+/// authority, and an admin can be added without ever taking a roster spot or
+/// being eligible for stats (stats are reconciled purely from roster rows,
+/// see `agon_worker`'s stats handler — a row here is never read for that).
+/// No `Player` variant: a plain player simply has no row here at all.
+///
+/// The match's creator always gets an `Owner` row here at creation
+/// (`agon_service`'s `create_match` handler), whether or not they also take
+/// a roster spot. `caller_is_match_admin`/`caller_is_match_owner`
+/// (agon_service) check this collection in addition to the roster's own
+/// `MatchPlayerRole` and the permanent `MatchRecord::created_by_user_id`
+/// fallback (for matches created before this collection existed).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MatchAuthorityRecord {
+    pub user_id: String,
+    /// `Owner` or `Admin` — never `Player` (see the type's doc comment).
+    pub role: MatchPlayerRole,
+    /// Denormalized so the organizer list can render without an extra user
+    /// lookup. `None` if never supplied (a live lookup is still the source
+    /// of truth for a linked account's current display name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 /// How a player joined the match, when it wasn't the organizer adding them

@@ -1,6 +1,6 @@
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
-import { Avatar } from './Avatar'
+import { AvatarStack } from './AvatarStack'
 
 type UserProfile = components['schemas']['UserProfile']
 
@@ -45,17 +45,13 @@ export function KnownPlayersRow({
 
   return (
     <div className={cn('flex items-center gap-2.5', className)} {...props}>
-      <div className="flex -space-x-2">
-        {avatars.map((p) => (
-          <Avatar
-            key={p.id}
-            name={p.name}
-            imageUrl={p.profile_image?.image_url}
-            size="sm"
-            className="ring-2 ring-card"
-          />
-        ))}
-      </div>
+      <AvatarStack
+        people={avatars.map((p) => ({
+          name: p.name,
+          imageUrl: p.profile_image?.image_url,
+        }))}
+        size="sm"
+      />
       <p className="min-w-0 truncate text-xs text-muted-foreground">
         You follow{' '}
         <span className="font-medium text-foreground">

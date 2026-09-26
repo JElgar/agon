@@ -4,6 +4,7 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { MatchCard } from '@/components/agon/MatchCard'
 import { StatBanner } from '@/components/agon/StatBanner'
+import { UpcomingMatchCard } from '@/components/agon/UpcomingMatchCard'
 import { Button } from '@/components/ui/button'
 import { useNavigate } from 'react-router-dom'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
@@ -87,6 +88,35 @@ export function FeedPage() {
     />
   )
 
+  // Scheduled matches the viewer is playing in or following, soonest first —
+  // a horizontal strip above the day-grouped activity below. Naturally empty
+  // (and hidden) until the feed query resolves, same as `banner` above.
+  const upcoming = [...serverItems]
+    .filter((m) => m.status === 'scheduled')
+    .sort((a, b) => new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime())
+
+  const comingUp = upcoming.length > 0 && (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between px-1">
+        <h2 className="font-display text-lg font-bold">
+          Coming up{' '}
+          <span className="text-base font-semibold text-muted-foreground">
+            {upcoming.length}
+          </span>
+        </h2>
+      </div>
+      <div
+        aria-label="Upcoming matches"
+        className="-mx-4 flex snap-x snap-mandatory gap-2.5 overflow-x-auto scroll-pl-4 px-4 pb-1"
+        style={{ scrollbarWidth: 'none' }}
+      >
+        {upcoming.map((m) => (
+          <UpcomingMatchCard key={m.id} match={m} onOpen={() => navigate(`/matches/${m.id}`)} />
+        ))}
+      </div>
+    </div>
+  )
+
   if (query.isLoading) {
     return (
       <div className="mx-auto flex max-w-xl flex-col gap-6">
@@ -120,6 +150,7 @@ export function FeedPage() {
     return (
       <div className="mx-auto flex max-w-xl flex-col gap-6">
         {banner}
+        {comingUp}
         <div className="py-16 text-center">
           <h2 className="mb-1 text-lg font-medium">Your feed is empty</h2>
           <p className="mb-4 text-sm text-muted-foreground">
@@ -136,6 +167,7 @@ export function FeedPage() {
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-6">
       {banner}
+      {comingUp}
 
       {sections.map((section) => (
         <div key={section.label} className="flex flex-col gap-3">

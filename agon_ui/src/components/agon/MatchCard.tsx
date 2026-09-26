@@ -302,7 +302,7 @@ export function MatchCard({
   return (
     <div
       className={cn(
-        'overflow-hidden rounded-xl border bg-card text-card-foreground',
+        'overflow-hidden rounded-2xl border bg-card text-card-foreground',
         className,
       )}
       {...props}

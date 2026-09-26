@@ -1,8 +1,9 @@
 import { useEffect } from 'react'
-import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { MatchCard } from '@/components/agon/MatchCard'
+import { StatBanner } from '@/components/agon/StatBanner'
 import { Button } from '@/components/ui/button'
 import { useNavigate } from 'react-router-dom'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
@@ -15,6 +16,7 @@ import {
 type FeedPageData = components['schemas']['FeedPage']
 type FeedMatch = components['schemas']['FeedMatch']
 type Match = components['schemas']['Match']
+type UserProfile = components['schemas']['UserProfile']
 /** A server feed item (`FeedMatch`) or a viewer's own just-created `Match`,
  *  shown in the pending overlay until the async fan-out lands it in
  *  `GET /feed` (see `usePendingMatches`). `MatchCard` renders either. */
@@ -33,6 +35,16 @@ export function FeedPage() {
   const navigate = useNavigate()
   const currentUserId = useCurrentUserId()
   const queryClient = useQueryClient()
+
+  // Same query key/fetcher as `useCurrentUserId` (called above), so this
+  // shares its cache entry and network request instead of fetching twice.
+  const profileQuery = useQuery({
+    queryKey: ['users-me'],
+    queryFn: async (): Promise<UserProfile | null> => {
+      const { data } = await fetchClient.GET('/users/me')
+      return data?.profile ?? null
+    },
+  })
 
   const query = useInfiniteQuery({
     queryKey: ['feed'],
@@ -65,17 +77,35 @@ export function FeedPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverIdsKey, pending.length, queryClient])
 
+  // The stats banner only needs the profile to have loaded; it doesn't block
+  // on (or get blocked by) the feed query below.
+  const banner = profileQuery.data && (
+    <StatBanner
+      name={profileQuery.data.name}
+      profileImageUrl={profileQuery.data.profile_image?.image_url}
+      stats={profileQuery.data.stats}
+    />
+  )
+
   if (query.isLoading) {
-    return <FeedSkeleton />
+    return (
+      <div className="mx-auto flex max-w-xl flex-col gap-6">
+        {banner}
+        <FeedSkeleton />
+      </div>
+    )
   }
 
   if (query.isError) {
     return (
-      <div className="py-16 text-center">
-        <p className="mb-4 text-muted-foreground">Couldn't load your feed.</p>
-        <Button variant="outline" onClick={() => query.refetch()}>
-          Retry
-        </Button>
+      <div className="mx-auto flex max-w-xl flex-col gap-6">
+        {banner}
+        <div className="py-16 text-center">
+          <p className="mb-4 text-muted-foreground">Couldn't load your feed.</p>
+          <Button variant="outline" onClick={() => query.refetch()}>
+            Retry
+          </Button>
+        </div>
       </div>
     )
   }
@@ -88,12 +118,15 @@ export function FeedPage() {
 
   if (items.length === 0) {
     return (
-      <div className="py-16 text-center">
-        <h2 className="mb-1 text-lg font-medium">Your feed is empty</h2>
-        <p className="mb-4 text-sm text-muted-foreground">
-          Matches you play and the people you follow show up here.
-        </p>
-        <Button onClick={() => navigate('/matches/new')}>Log a match</Button>
+      <div className="mx-auto flex max-w-xl flex-col gap-6">
+        {banner}
+        <div className="py-16 text-center">
+          <h2 className="mb-1 text-lg font-medium">Your feed is empty</h2>
+          <p className="mb-4 text-sm text-muted-foreground">
+            Matches you play and the people you follow show up here.
+          </p>
+          <Button onClick={() => navigate('/matches/new')}>Log a match</Button>
+        </div>
       </div>
     )
   }
@@ -102,6 +135,8 @@ export function FeedPage() {
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-6">
+      {banner}
+
       {sections.map((section) => (
         <div key={section.label} className="flex flex-col gap-3">
           <h2 className="font-serif text-lg italic text-muted-foreground">

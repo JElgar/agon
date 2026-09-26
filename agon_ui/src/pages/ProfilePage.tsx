@@ -8,6 +8,7 @@ import { Avatar } from '@/components/agon/Avatar'
 import { EditProfileDialog } from '@/components/agon/EditProfileDialog'
 import { FollowButton } from '@/components/agon/FollowButton'
 import { StatBanner } from '@/components/agon/StatBanner'
+import { SportBreakdownBar } from '@/components/agon/SportBreakdownBar'
 import { SportProgressRow } from '@/components/agon/SportProgressRow'
 import { ProfileMatchRow } from '@/components/agon/ProfileMatchRow'
 import { Chip } from '@/components/agon/Chip'
@@ -359,6 +360,7 @@ function OtherProfile({
 
   const matches_played = totalMatches(profile.stats)
   const winRate = overallWinRate(profile.stats)
+  const sportRows = sortedByActivity(profile.stats)
 
   return (
     <div className="flex flex-col gap-4">
@@ -404,6 +406,26 @@ function OtherProfile({
         ]}
       />
 
+      {sportRows.length > 0 && (
+        <>
+          <h3 className="px-1 pt-2 font-display text-[19px] font-bold">
+            {firstName(profile.name)}'s sports
+          </h3>
+          <Card className="flex flex-col overflow-hidden">
+            {sportRows.map(({ sport, stats }, i) => (
+              <SportProgressRow
+                key={sport}
+                sport={sport}
+                matchesPlayed={stats.matches_played}
+                winPercentage={stats.win_percentage}
+                to={`/users/${profile.id}/stats/${sport}`}
+                isFirst={i === 0}
+              />
+            ))}
+          </Card>
+        </>
+      )}
+
       <h3 className="px-1 pt-2 font-display text-[19px] font-bold">Head to head</h3>
       <StatBanner
         aria-label="Record as opponents"
@@ -412,7 +434,7 @@ function OtherProfile({
           { value: headToHead.draws, label: 'Draws' },
           { value: headToHead.theyWon, label: `${firstName(profile.name)} won` },
         ]}
-        footnote={`${headToHead.total} match${headToHead.total === 1 ? '' : 'es'} played against each other`}
+        footer={<SportBreakdownBar entries={headToHead.bySport} tone="blue" />}
       />
 
       <h3 className="px-1 pt-2 font-display text-[19px] font-bold">Playing together</h3>
@@ -424,7 +446,7 @@ function OtherProfile({
           { value: playingTogether.draws, label: 'Draws' },
           { value: playingTogether.lost, label: 'Lost' },
         ]}
-        footnote={`${playingTogether.total} match${playingTogether.total === 1 ? '' : 'es'} played on the same side`}
+        footer={<SportBreakdownBar entries={playingTogether.bySport} tone="terracotta" />}
       />
 
       <div className="flex items-baseline justify-between px-1 pt-2">

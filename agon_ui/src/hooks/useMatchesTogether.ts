@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
+import type { MatchType } from '@/lib/sports'
 
 type SearchMatch = components['schemas']['SearchMatch']
 type MatchOutcome = components['schemas']['MatchOutcome']
@@ -81,16 +82,31 @@ export function useMatchesTogether(viewerId: string | undefined, otherUserId: st
       draws: against.filter((t) => t.viewerOutcome === 'draw').length,
       theyWon: against.filter((t) => t.viewerOutcome === 'lost').length,
       total: against.length,
+      bySport: bySport(against),
     },
     playingTogether: {
       won: withTeam.filter((t) => t.viewerOutcome === 'won').length,
       draws: withTeam.filter((t) => t.viewerOutcome === 'draw').length,
       lost: withTeam.filter((t) => t.viewerOutcome === 'lost').length,
       total: withTeam.length,
+      bySport: bySport(withTeam),
     },
     refetch: () => {
       viewerQuery.refetch()
       otherQuery.refetch()
     },
   }
+}
+
+/** Per-sport match counts, largest first — feeds the `SportBreakdownBar`
+ *  under the head-to-head/playing-together banners ("Football 3 / Cricket
+ *  1"), same idea as the feed's own matches-per-sport bar. */
+function bySport(matches: TogetherMatch[]): { sport: MatchType; count: number }[] {
+  const counts = new Map<MatchType, number>()
+  for (const t of matches) {
+    counts.set(t.match.match_type, (counts.get(t.match.match_type) ?? 0) + 1)
+  }
+  return [...counts.entries()]
+    .map(([sport, count]) => ({ sport, count }))
+    .sort((a, b) => b.count - a.count)
 }

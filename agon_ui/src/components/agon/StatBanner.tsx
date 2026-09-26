@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 import { StatTile } from './StatTile'
 
@@ -6,7 +7,10 @@ export interface StatBannerProps extends React.HTMLAttributes<HTMLElement> {
   /** `blue` is the brand-primary treatment (overall stats, head-to-head);
    *  `terracotta` is the secondary treatment (playing-together). */
   tone?: 'blue' | 'terracotta'
-  footnote?: string
+  /** A `SportBreakdownBar` (or any other footer content) shown below the
+   *  stat grid, e.g. the profile's head-to-head/playing-together per-sport
+   *  breakdown. */
+  footer?: ReactNode
 }
 
 /**
@@ -20,27 +24,25 @@ export interface StatBannerProps extends React.HTMLAttributes<HTMLElement> {
 export function StatBanner({
   stats,
   tone = 'blue',
-  footnote,
+  footer,
   className,
   ...props
 }: StatBannerProps) {
   return (
     <section
       className={cn(
-        'grid grid-cols-3 gap-2 rounded-2xl p-[18px] text-primary-foreground',
+        'flex flex-col gap-4 rounded-2xl p-[18px] text-primary-foreground',
         tone === 'blue' ? 'bg-primary' : 'bg-destructive',
         className,
       )}
       {...props}
     >
-      {stats.map((s, i) => (
-        <StatTile key={i} value={s.value} label={s.label} tone="inverted" />
-      ))}
-      {footnote && (
-        <span className="col-span-3 mt-0.5 text-xs text-primary-foreground/80">
-          {footnote}
-        </span>
-      )}
+      <div className="grid grid-cols-3 gap-2">
+        {stats.map((s, i) => (
+          <StatTile key={i} value={s.value} label={s.label} tone="inverted" />
+        ))}
+      </div>
+      {footer}
     </section>
   )
 }

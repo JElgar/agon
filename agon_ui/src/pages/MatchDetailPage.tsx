@@ -305,6 +305,14 @@ const ROSTER_TAB_A = '__side_a__'
 const ROSTER_TAB_B = '__side_b__'
 const ROSTER_TAB_UNASSIGNED = '__unassigned__'
 
+// Football's match-detail tab bar (`MatchFootball.dc.html`: Summary /
+// Timeline / Players — no Scorecard tab, that's cricket-only).
+const FOOTBALL_TABS = [
+  { id: 'summary', label: 'Summary' },
+  { id: 'timeline', label: 'Timeline' },
+  { id: 'players', label: 'Players' },
+] as const
+
 /** Full match view: score (with confirm/dispute when pending), sides + rosters.
  *  Participants get inline editing of details/result, plus invite and cancel. */
 export function MatchDetailPage() {
@@ -372,6 +380,9 @@ function MatchDetail({
   // points at a tab that's no longer showing (e.g. the last unassigned
   // player was placed on a side).
   const [rosterTab, setRosterTab] = useState<string>(ROSTER_TAB_A)
+  // Football's Summary/Timeline/Players tab bar (`MatchFootball.dc.html`) —
+  // other sports keep the single always-visible layout below unchanged.
+  const [footballTab, setFootballTab] = useState<'summary' | 'timeline' | 'players'>('summary')
 
   // Owner or admin only, mirroring the server's `caller_is_match_admin` — an
   // ordinary player is read-only on the match itself; `LeaveMatch` below is
@@ -485,53 +496,97 @@ function MatchDetail({
     <div className="mx-auto flex max-w-xl flex-col gap-4">
       {match.match_type === 'football' ? (
         <>
-          {/* Football's restyled header: icon-only back button (no chrome
-              competing with the title below), edit/calendar actions kept but
-              demoted to small icon buttons — matches the redesign canvas's
-              plain back/more-options row (`MatchFootball.dc.html`), which has
-              no sport-badge chip in it (that's implied by the page itself). */}
-          <div className="flex items-center justify-between">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-11 rounded-full"
-              onClick={onBack}
-              aria-label="Back"
-            >
-              <ChevronLeft className="size-5" />
-            </Button>
-            {!editingDetails && (
-              <div className="flex items-center gap-1">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-11 rounded-full text-muted-foreground"
-                  aria-label="Add to calendar"
-                  onClick={() =>
-                    downloadMatchIcs(match, {
-                      title: match.name,
-                      description: `${nameA} vs ${nameB}`,
-                    })
-                  }
-                >
-                  <CalendarPlus className="size-4" />
-                </Button>
-                {canEdit && !cancelled && (
+          {/* Football's restyled header. With a photo, it's the mock's
+              full-bleed hero treatment (`Match.dc.html`): the image runs
+              edge-to-edge (breaking out of the page's own side/top padding)
+              with the back/more-options buttons floating on top of it as
+              translucent white circles. With no photo, it's a plain
+              icon-only back/calendar/edit row above the title, matching
+              `MatchFootball.dc.html`'s no-photo header. */}
+          {match.header_photos.length > 0 ? (
+            <div className="relative -mx-4 -mt-8 h-[250px] w-[calc(100%+2rem)] overflow-hidden md:mx-0 md:mt-0 md:w-full md:rounded-2xl">
+              <MatchHeaderCarousel photos={match.header_photos} hero />
+              <Button
+                variant="ghost"
+                size="icon"
+                className="absolute top-4 left-4 size-11 rounded-full bg-white/95 text-foreground shadow-sm hover:bg-white"
+                onClick={onBack}
+                aria-label="Back"
+              >
+                <ChevronLeft className="size-5" />
+              </Button>
+              {!editingDetails && (
+                <div className="absolute top-4 right-4 flex items-center gap-2">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-11 rounded-full bg-white/95 text-foreground shadow-sm hover:bg-white"
+                    aria-label="Add to calendar"
+                    onClick={() =>
+                      downloadMatchIcs(match, {
+                        title: match.name,
+                        description: `${nameA} vs ${nameB}`,
+                      })
+                    }
+                  >
+                    <CalendarPlus className="size-4" />
+                  </Button>
+                  {canEdit && !cancelled && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-11 rounded-full bg-white/95 text-foreground shadow-sm hover:bg-white"
+                      aria-label="Edit match details"
+                      onClick={() => setEditingDetails(true)}
+                    >
+                      <Pencil className="size-4" />
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center justify-between">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-11 rounded-full"
+                onClick={onBack}
+                aria-label="Back"
+              >
+                <ChevronLeft className="size-5" />
+              </Button>
+              {!editingDetails && (
+                <div className="flex items-center gap-1">
                   <Button
                     variant="ghost"
                     size="icon"
                     className="size-11 rounded-full text-muted-foreground"
-                    aria-label="Edit match details"
-                    onClick={() => setEditingDetails(true)}
+                    aria-label="Add to calendar"
+                    onClick={() =>
+                      downloadMatchIcs(match, {
+                        title: match.name,
+                        description: `${nameA} vs ${nameB}`,
+                      })
+                    }
                   >
-                    <Pencil className="size-4" />
+                    <CalendarPlus className="size-4" />
                   </Button>
-                )}
-              </div>
-            )}
-          </div>
-
-          <MatchHeaderCarousel photos={match.header_photos} />
+                  {canEdit && !cancelled && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-11 rounded-full text-muted-foreground"
+                      aria-label="Edit match details"
+                      onClick={() => setEditingDetails(true)}
+                    >
+                      <Pencil className="size-4" />
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
           {editingDetails ? (
             <MatchDetailsEditor match={match} onDone={() => setEditingDetails(false)} />
@@ -624,6 +679,120 @@ function MatchDetail({
                   </div>
                 </div>
               </div>
+
+              {/* Summary / Timeline / Players tab bar — `MatchFootball.dc.html`'s
+                  3-tab bar. Timeline reuses the existing event-timeline
+                  component (`FootballScorecard`) and Players reuses the
+                  existing roster block; neither is new content, just gated
+                  behind tab selection instead of always showing. */}
+              <div className="grid grid-cols-3 gap-1 rounded-full bg-muted p-1">
+                {FOOTBALL_TABS.map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setFootballTab(tab.id)}
+                    className={cn(
+                      'rounded-full py-2 text-sm transition-colors',
+                      footballTab === tab.id
+                        ? 'bg-card font-bold text-foreground shadow-sm'
+                        : 'font-medium text-muted-foreground',
+                    )}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              {footballTab === 'summary' && (
+                <div className="flex flex-col gap-4">
+                  {footballEventSource && (
+                    <FootballGoalContributions
+                      goals={footballEventSource.goals}
+                      match={orderedMatch}
+                      players={footballEventSource.players}
+                    />
+                  )}
+                  <MatchFormatCard match={match} canEdit={canEdit && !cancelled} />
+                  {!cancelled && <MatchJoinSettingsEditor match={match} canManage={canEdit} />}
+                  {myPendingInvitation(match, currentUserId) ? (
+                    <InviteBanner match={match} currentUserId={currentUserId} />
+                  ) : (
+                    match.pending_score && (
+                      <ScoreConfirmationBar match={match} currentUserId={currentUserId} variant="detail" />
+                    )
+                  )}
+                  {!cancelled && <TeamJoinBanner match={match} />}
+                  {!cancelled && <JoinLinkBanner match={match} />}
+                  {canEdit && !cancelled && (
+                    inviting ? (
+                      <InvitePlayers match={match} onDone={() => setInviting(false)} />
+                    ) : (
+                      <Button variant="outline" className="gap-1.5" onClick={() => setInviting(true)}>
+                        <UserPlus className="size-4" /> Invite players
+                      </Button>
+                    )
+                  )}
+                  {canEdit && !cancelled && (
+                    <MatchJoinLinksDialog match={match}>
+                      <Button variant="outline" className="gap-1.5">
+                        <Link2 className="size-4" /> Join links
+                      </Button>
+                    </MatchJoinLinksDialog>
+                  )}
+                  <LikeBar match={match} />
+                  <MatchComments matchId={match.id} currentUserId={currentUserId} />
+                </div>
+              )}
+
+              {footballTab === 'timeline' && (
+                <div className="flex flex-col gap-4">
+                  {footballEventSource ? (
+                    <FootballScorecard match={orderedMatch} detail={footballEventSource} />
+                  ) : (
+                    <p className="px-1 text-sm text-muted-foreground">No events recorded yet.</p>
+                  )}
+                </div>
+              )}
+
+              {footballTab === 'players' && (
+                <div className="flex flex-col gap-4">
+                  {editingRoster ? (
+                    <MatchRosterEditor match={match} onDone={() => setEditingRoster(false)} />
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      {canEdit && !cancelled && (
+                        <div className="flex justify-end">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 gap-1 px-2 text-xs text-muted-foreground"
+                            onClick={() => setEditingRoster(true)}
+                          >
+                            <Pencil className="size-3" /> Edit roster
+                          </Button>
+                        </div>
+                      )}
+                      <RosterTabs
+                        matchId={match.id}
+                        nameA={nameA}
+                        nameB={nameB}
+                        playersA={match.players.filter((p) => p.side_id === sideA?.id)}
+                        playersB={match.players.filter((p) => p.side_id === sideB?.id)}
+                        unassigned={match.players.filter(
+                          (p) => p.side_id !== sideA?.id && p.side_id !== sideB?.id,
+                        )}
+                        activeTab={rosterTab}
+                        onTabChange={setRosterTab}
+                        currentUserId={currentUserId}
+                        iAmOwner={iAmOwner}
+                      />
+                    </div>
+                  )}
+                  {!cancelled && (
+                    <WaitlistSection match={match} currentUserId={currentUserId} canManage={canEdit} />
+                  )}
+                </div>
+              )}
             </>
           )}
         </>
@@ -849,142 +1018,150 @@ function MatchDetail({
         />
       )}
 
-      {/* Goal contributions table — every scorer/assister, sortable by most
-          goals (default) or most assists, each breaking ties on the other.
-          Same goal log as the event timeline further down, so it tracks a
-          live match too. */}
-      {footballEventSource && (
-        <FootballGoalContributions
-          goals={footballEventSource.goals}
-          match={orderedMatch}
-          players={footballEventSource.players}
-        />
-      )}
+      {/* Everything from here through the comments is football's own
+          Summary/Timeline/Players tab content above instead (see the
+          football branch) — this unconditional layout stays for every
+          other sport, which has no tab bar. */}
+      {match.match_type !== 'football' && (
+        <>
+          {/* Goal contributions table — every scorer/assister, sortable by
+              most goals (default) or most assists, each breaking ties on
+              the other. Same goal log as the event timeline further down,
+              so it tracks a live match too. */}
+          {footballEventSource && (
+            <FootballGoalContributions
+              goals={footballEventSource.goals}
+              match={orderedMatch}
+              players={footballEventSource.players}
+            />
+          )}
 
-      {/* Match format — half length/overs limit/penalty runs, football and
-          cricket only. Renders nothing for other sports. */}
-      <MatchFormatCard match={match} canEdit={canEdit && !cancelled} />
+          {/* Match format — half length/overs limit/penalty runs, football and
+              cricket only. Renders nothing for other sports. */}
+          <MatchFormatCard match={match} canEdit={canEdit && !cancelled} />
 
-      {/* Join settings — whether/how a self-serve joiner may pick a side,
-          and each side's player cap. Owner/admin only to edit. */}
-      {!cancelled && <MatchJoinSettingsEditor match={match} canManage={canEdit} />}
+          {/* Join settings — whether/how a self-serve joiner may pick a side,
+              and each side's player cap. Owner/admin only to edit. */}
+          {!cancelled && <MatchJoinSettingsEditor match={match} canManage={canEdit} />}
 
-      {/* Respond to a pending invite first; only once joined does the score
-          confirm/dispute prompt apply — the two are mutually exclusive (same
-          logic as the feed/profile match card). */}
-      {myPendingInvitation(match, currentUserId) ? (
-        <InviteBanner match={match} currentUserId={currentUserId} />
-      ) : (
-        match.pending_score && (
-          <ScoreConfirmationBar
-            match={match}
-            currentUserId={currentUserId}
-            variant="detail"
-          />
-        )
-      )}
+          {/* Respond to a pending invite first; only once joined does the score
+              confirm/dispute prompt apply — the two are mutually exclusive (same
+              logic as the feed/profile match card). */}
+          {myPendingInvitation(match, currentUserId) ? (
+            <InviteBanner match={match} currentUserId={currentUserId} />
+          ) : (
+            match.pending_score && (
+              <ScoreConfirmationBar
+                match={match}
+                currentUserId={currentUserId}
+                variant="detail"
+              />
+            )
+          )}
 
-      {/* An accepted member of a team on one of this match's sides, not yet
-          on the roster themselves — join directly, no invite/link needed. */}
-      {!cancelled && <TeamJoinBanner match={match} />}
+          {/* An accepted member of a team on one of this match's sides, not yet
+              on the roster themselves — join directly, no invite/link needed. */}
+          {!cancelled && <TeamJoinBanner match={match} />}
 
-      {/* A join link the viewer previewed for this exact match but hasn't
-          used yet (see `lib/joinLinkMemory`) — stays actionable here too. */}
-      {!cancelled && <JoinLinkBanner match={match} />}
+          {/* A join link the viewer previewed for this exact match but hasn't
+              used yet (see `lib/joinLinkMemory`) — stays actionable here too. */}
+          {!cancelled && <JoinLinkBanner match={match} />}
 
-      {/* Rosters, one column per side — or the drag-to-reassign/remove editor
-          in place of it, for a participant reconciling the line-up. */}
-      {editingRoster ? (
-        <MatchRosterEditor match={match} onDone={() => setEditingRoster(false)} />
-      ) : (
-        <div className="flex flex-col gap-2">
-          {canEdit && !cancelled && (
-            <div className="flex justify-end">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7 gap-1 px-2 text-xs text-muted-foreground"
-                onClick={() => setEditingRoster(true)}
-              >
-                <Pencil className="size-3" /> Edit roster
-              </Button>
+          {/* Rosters, one column per side — or the drag-to-reassign/remove editor
+              in place of it, for a participant reconciling the line-up. */}
+          {editingRoster ? (
+            <MatchRosterEditor match={match} onDone={() => setEditingRoster(false)} />
+          ) : (
+            <div className="flex flex-col gap-2">
+              {canEdit && !cancelled && (
+                <div className="flex justify-end">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 gap-1 px-2 text-xs text-muted-foreground"
+                    onClick={() => setEditingRoster(true)}
+                  >
+                    <Pencil className="size-3" /> Edit roster
+                  </Button>
+                </div>
+              )}
+              <RosterTabs
+                matchId={match.id}
+                nameA={nameA}
+                nameB={nameB}
+                playersA={match.players.filter((p) => p.side_id === sideA?.id)}
+                playersB={match.players.filter((p) => p.side_id === sideB?.id)}
+                unassigned={match.players.filter(
+                  (p) => p.side_id !== sideA?.id && p.side_id !== sideB?.id,
+                )}
+                activeTab={rosterTab}
+                onTabChange={setRosterTab}
+                currentUserId={currentUserId}
+                iAmOwner={iAmOwner}
+              />
             </div>
           )}
-          <RosterTabs
-            matchId={match.id}
-            nameA={nameA}
-            nameB={nameB}
-            playersA={match.players.filter((p) => p.side_id === sideA?.id)}
-            playersB={match.players.filter((p) => p.side_id === sideB?.id)}
-            unassigned={match.players.filter(
-              (p) => p.side_id !== sideA?.id && p.side_id !== sideB?.id,
-            )}
-            activeTab={rosterTab}
-            onTabChange={setRosterTab}
-            currentUserId={currentUserId}
-            iAmOwner={iAmOwner}
-          />
-        </div>
+
+          {/* Who's queued for a spot that wasn't free — hidden once the match is
+              cancelled (moot) or there's simply no one waiting. */}
+          {!cancelled && (
+            <WaitlistSection match={match} currentUserId={currentUserId} canManage={canEdit} />
+          )}
+
+          {/* Cricket scorecard: run progression + per-player batting/bowling,
+              once there's per-innings detail recorded (live-scored or entered
+              directly). */}
+          {cricketInnings && cricketInnings.length > 0 && (
+            <CricketScorecard match={orderedMatch} innings={cricketInnings} players={cricketScore?.players} />
+          )}
+
+          {/* Football event timeline: goals/cards/subs, once there's detail
+              recorded (live-scored or entered directly) — stays visible after
+              the match finishes, unlike the live score header above. */}
+          {footballEventSource && <FootballScorecard match={orderedMatch} detail={footballEventSource} />}
+
+          {/* Netball quarter breakdown — reads the same regardless of which
+              live-scoring method produced the score (see
+              `NetballQuarterBreakdown`'s doc comment), so it shows even for a
+              quarter-only-scored match. */}
+          {netballQuarterScore && (
+            <NetballQuarterBreakdown score={netballQuarterScore} sideA={sideA} sideB={sideB} />
+          )}
+
+          {/* Netball event timeline: goals/fouls, only present for an
+              event-by-event-scored match — stays visible after the match
+              finishes, unlike the live score header above. */}
+          {netballEventSource && <NetballScorecard match={orderedMatch} detail={netballEventSource} />}
+
+          {/* Invite more people (match admins only). */}
+          {canEdit && !cancelled && (
+            inviting ? (
+              <InvitePlayers match={match} onDone={() => setInviting(false)} />
+            ) : (
+              <Button
+                variant="outline"
+                className="gap-1.5"
+                onClick={() => setInviting(true)}
+              >
+                <UserPlus className="size-4" /> Invite players
+              </Button>
+            )
+          )}
+
+          {/* Share a many-use join link (owner/admin only). */}
+          {canEdit && !cancelled && (
+            <MatchJoinLinksDialog match={match}>
+              <Button variant="outline" className="gap-1.5">
+                <Link2 className="size-4" /> Join links
+              </Button>
+            </MatchJoinLinksDialog>
+          )}
+
+          {/* Social: like the match, then the comment thread. */}
+          <LikeBar match={match} />
+          <MatchComments matchId={match.id} currentUserId={currentUserId} />
+        </>
       )}
-
-      {/* Who's queued for a spot that wasn't free — hidden once the match is
-          cancelled (moot) or there's simply no one waiting. */}
-      {!cancelled && (
-        <WaitlistSection match={match} currentUserId={currentUserId} canManage={canEdit} />
-      )}
-
-      {/* Cricket scorecard: run progression + per-player batting/bowling,
-          once there's per-innings detail recorded (live-scored or entered
-          directly). */}
-      {cricketInnings && cricketInnings.length > 0 && (
-        <CricketScorecard match={orderedMatch} innings={cricketInnings} players={cricketScore?.players} />
-      )}
-
-      {/* Football event timeline: goals/cards/subs, once there's detail
-          recorded (live-scored or entered directly) — stays visible after
-          the match finishes, unlike the live score header above. */}
-      {footballEventSource && <FootballScorecard match={orderedMatch} detail={footballEventSource} />}
-
-      {/* Netball quarter breakdown — reads the same regardless of which
-          live-scoring method produced the score (see
-          `NetballQuarterBreakdown`'s doc comment), so it shows even for a
-          quarter-only-scored match. */}
-      {netballQuarterScore && (
-        <NetballQuarterBreakdown score={netballQuarterScore} sideA={sideA} sideB={sideB} />
-      )}
-
-      {/* Netball event timeline: goals/fouls, only present for an
-          event-by-event-scored match — stays visible after the match
-          finishes, unlike the live score header above. */}
-      {netballEventSource && <NetballScorecard match={orderedMatch} detail={netballEventSource} />}
-
-      {/* Invite more people (match admins only). */}
-      {canEdit && !cancelled && (
-        inviting ? (
-          <InvitePlayers match={match} onDone={() => setInviting(false)} />
-        ) : (
-          <Button
-            variant="outline"
-            className="gap-1.5"
-            onClick={() => setInviting(true)}
-          >
-            <UserPlus className="size-4" /> Invite players
-          </Button>
-        )
-      )}
-
-      {/* Share a many-use join link (owner/admin only). */}
-      {canEdit && !cancelled && (
-        <MatchJoinLinksDialog match={match}>
-          <Button variant="outline" className="gap-1.5">
-            <Link2 className="size-4" /> Join links
-          </Button>
-        </MatchJoinLinksDialog>
-      )}
-
-      {/* Social: like the match, then the comment thread. */}
-      <LikeBar match={match} />
-      <MatchComments matchId={match.id} currentUserId={currentUserId} />
 
       {/* Cancel the match (match admins only; not already cancelled). */}
       {canEdit && !cancelled && <CancelMatch match={match} />}

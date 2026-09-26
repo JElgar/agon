@@ -24,6 +24,7 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
   --color-success: var(--success);
   --color-success-foreground: var(--success-foreground);
   --color-warning: var(--warning);
@@ -47,91 +48,101 @@
   --radius-2xl: calc(var(--radius) + 8px);
   --radius-3xl: calc(var(--radius) + 12px);
   --radius-4xl: calc(var(--radius) + 16px);
-  --font-serif: "Newsreader", ui-serif, Georgia, Cambria, "Times New Roman", serif;
+  /* Fraunces italic is the wordmark/section-title face (see Logo.tsx); DM Sans
+   * is body copy, Bricolage Grotesque is for large numerals and headings —
+   * matches the "Agon redesign" canvas (claude.ai/artifact/MKvQ8bNeKnqHzxqZfMNFnc). */
+  --font-serif: "Fraunces", ui-serif, Georgia, Cambria, "Times New Roman", serif;
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Bricolage Grotesque", "DM Sans", ui-sans-serif, system-ui, sans-serif;
 }
 
 :root {
-  --radius: 0.625rem;
-  /* Warm neutral (not pure white) background; cards stay white so they lift off it. */
-  --background: oklch(0.975 0.006 75);
-  --foreground: oklch(0.145 0 0);
+  /* 20px card radius (radius-2xl) matches the redesign's section cards. */
+  --radius: 0.75rem;
+  /* Warm cream background (#F6F4EF); cards stay white so they lift off it. */
+  --background: oklch(0.967 0.007 88.6);
+  --foreground: oklch(0.205 0.006 271.1);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  --card-foreground: oklch(0.205 0.006 271.1);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  /* Agon blue (#2563EB) as the brand primary; see docs/agon_screens mockups. */
-  --primary: oklch(0.546 0.215 262.88);
+  --popover-foreground: oklch(0.205 0.006 271.1);
+  /* Agon blue (#2952D9) as the brand primary, per the redesign canvas. */
+  --primary: oklch(0.5 0.211 265.8);
   --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.965 0.008 75);
-  --muted-foreground: oklch(0.556 0 0);
-  /* Tinted accent (#EEF2FF-ish) for the blue-on-light chips/avatars in the UI. */
-  --accent: oklch(0.962 0.018 264.5);
-  --accent-foreground: oklch(0.546 0.215 262.88);
-  --destructive: oklch(0.577 0.245 27.325);
+  --secondary: oklch(0.95 0.01 87.5);
+  --secondary-foreground: oklch(0.205 0.006 271.1);
+  --muted: oklch(0.95 0.01 87.5);
+  --muted-foreground: oklch(0.498 0.023 272.9);
+  /* Tinted accent (#EAEFFC) for the blue-on-light chips/avatars in the UI. */
+  --accent: oklch(0.952 0.018 269.1);
+  --accent-foreground: oklch(0.416 0.173 265.6);
+  /* Terracotta (#D2461B) — "live" badges and loss states, not just errors. */
+  --destructive: oklch(0.587 0.184 36.3);
+  --destructive-foreground: oklch(0.985 0 0);
   /* Semantic result colours (win / loss / pending), shared across cards + badges. */
-  --success: oklch(0.596 0.145 163.2);
+  --success: oklch(0.421 0.091 151.4);
   --success-foreground: oklch(0.985 0 0);
-  --warning: oklch(0.705 0.166 61.5);
-  --warning-foreground: oklch(0.985 0 0);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.546 0.215 262.88);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
+  --warning: oklch(0.834 0.158 89);
+  --warning-foreground: oklch(0.205 0.006 271.1);
+  --border: oklch(0.932 0.013 86.8);
+  --input: oklch(0.88 0.016 86.4);
+  --ring: oklch(0.5 0.211 265.8);
+  --chart-1: oklch(0.5 0.211 265.8);
+  --chart-2: oklch(0.587 0.184 36.3);
+  --chart-3: oklch(0.421 0.091 151.4);
+  --chart-4: oklch(0.834 0.158 89);
+  --chart-5: oklch(0.498 0.023 272.9);
+  --sidebar: oklch(1 0 0);
+  --sidebar-foreground: oklch(0.205 0.006 271.1);
+  --sidebar-primary: oklch(0.5 0.211 265.8);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar-accent: oklch(0.952 0.018 269.1);
+  --sidebar-accent-foreground: oklch(0.416 0.173 265.6);
+  --sidebar-border: oklch(0.932 0.013 86.8);
+  --sidebar-ring: oklch(0.5 0.211 265.8);
 }
 
 .dark {
-  /* Warm dark neutral (not pure black-gray), mirroring the light theme's tint. */
-  --background: oklch(0.16 0.006 75);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.21 0.006 75);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.21 0.006 75);
-  --popover-foreground: oklch(0.985 0 0);
-  /* Lifted Agon blue so it reads on the dark surface. */
-  --primary: oklch(0.62 0.19 262.88);
+  /* Near-black neutral (#111214) with cards a step lighter (#1C1D22), per the
+   * canvas's dark-mode feed board (MainDark.dc.html). */
+  --background: oklch(0.182 0.004 264.5);
+  --foreground: oklch(0.958 0.005 95.1);
+  --card: oklch(0.232 0.01 276.6);
+  --card-foreground: oklch(0.958 0.005 95.1);
+  --popover: oklch(0.232 0.01 276.6);
+  --popover-foreground: oklch(0.958 0.005 95.1);
+  /* Same Agon blue as light mode — it already reads fine on the dark surface. */
+  --primary: oklch(0.5 0.211 265.8);
   --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.28 0.008 75);
-  --muted-foreground: oklch(0.708 0 0);
+  --secondary: oklch(0.294 0.013 272.9);
+  --secondary-foreground: oklch(0.958 0.005 95.1);
+  --muted: oklch(0.294 0.013 272.9);
+  --muted-foreground: oklch(0.729 0.018 271.2);
   /* Muted blue-tinted accent for chips/avatars on dark. */
-  --accent: oklch(0.32 0.06 262.88);
-  --accent-foreground: oklch(0.88 0.06 262.88);
-  --destructive: oklch(0.704 0.191 22.216);
-  --success: oklch(0.696 0.145 163.2);
+  --accent: oklch(0.295 0.069 268.4);
+  --accent-foreground: oklch(0.748 0.129 270.8);
+  --destructive: oklch(0.65 0.19 36.3);
+  --destructive-foreground: oklch(0.985 0 0);
+  --success: oklch(0.65 0.13 151.4);
   --success-foreground: oklch(0.145 0 0);
-  --warning: oklch(0.75 0.16 61.5);
+  --warning: oklch(0.834 0.158 89);
   --warning-foreground: oklch(0.145 0 0);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.62 0.19 262.88);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --border: oklch(0.294 0.013 272.9);
+  --input: oklch(0.294 0.013 272.9);
+  --ring: oklch(0.5 0.211 265.8);
+  --chart-1: oklch(0.5 0.211 265.8);
+  --chart-2: oklch(0.65 0.19 36.3);
+  --chart-3: oklch(0.65 0.13 151.4);
+  --chart-4: oklch(0.834 0.158 89);
+  --chart-5: oklch(0.729 0.018 271.2);
+  --sidebar: oklch(0.232 0.01 276.6);
+  --sidebar-foreground: oklch(0.958 0.005 95.1);
+  --sidebar-primary: oklch(0.5 0.211 265.8);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --sidebar-accent: oklch(0.295 0.069 268.4);
+  --sidebar-accent-foreground: oklch(0.748 0.129 270.8);
+  --sidebar-border: oklch(0.294 0.013 272.9);
+  --sidebar-ring: oklch(0.5 0.211 265.8);
 }
 
 @layer base {
@@ -139,7 +150,7 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground font-sans;
   }
   /* Phone photos often carry an HDR gain map; HDR-capable browsers boost
    * display brightness for them, dimming the rest of the screen by

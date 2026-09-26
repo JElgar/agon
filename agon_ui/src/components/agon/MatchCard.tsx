@@ -615,31 +615,62 @@ export function MatchCard({
         )
       )}
 
-      {/* Footer: kudos + comments on the left, lifecycle/confirmation state on the right. */}
-      <div className="flex items-center gap-4 border-t px-3.5 py-2.5 text-muted-foreground">
-        <button
-          type="button"
-          onClick={() => toggleLike.mutate(!i_liked)}
-          aria-pressed={i_liked}
-          aria-label={i_liked ? 'Remove kudos' : 'Give kudos'}
-          className={cn(
-            'flex items-center gap-1.5 text-xs transition-colors hover:text-primary',
-            i_liked && 'text-primary',
-          )}
-        >
-          <Flame className={cn('size-3.5', i_liked && 'fill-current')} />{' '}
-          {like_count}
-        </button>
-        <button
-          type="button"
-          onClick={onOpen}
-          className="flex items-center gap-1.5 text-xs transition-colors hover:text-primary"
-        >
-          <MessageCircle className="size-3.5" /> {comment_count}
-        </button>
-        <ShareMatchButton match={match} />
-        <StatusBadge status={matchBadgeStatus(match)} className="ml-auto" />
-      </div>
+      {/* Footer: kudos + comments + share. The redesigned sports match the
+          mock exactly (a "Kudos" label, not a count; no lifecycle badge —
+          the score confirmation prompt above already covers that state);
+          the generic ("other" sport) layout keeps its original footer. */}
+      {isRedesignedSport ? (
+        <div className="flex items-center gap-1 border-t px-2 py-1 text-muted-foreground">
+          <button
+            type="button"
+            onClick={() => toggleLike.mutate(!i_liked)}
+            aria-pressed={i_liked}
+            aria-label={i_liked ? 'Remove kudos' : 'Give kudos'}
+            className={cn(
+              'flex h-11 items-center gap-1.5 rounded-full px-2.5 text-sm font-semibold transition-colors hover:text-primary',
+              i_liked && 'text-primary',
+            )}
+          >
+            <Flame className={cn('size-5', i_liked && 'fill-current')} />
+            Kudos
+          </button>
+          <button
+            type="button"
+            onClick={onOpen}
+            className="flex h-11 items-center gap-1.5 rounded-full px-2.5 text-sm font-semibold transition-colors hover:text-primary"
+          >
+            <MessageCircle className="size-5" />
+            {comment_count}
+          </button>
+          <span className="flex-grow" />
+          <ShareMatchButton match={match} />
+        </div>
+      ) : (
+        <div className="flex items-center gap-4 border-t px-3.5 py-2.5 text-muted-foreground">
+          <button
+            type="button"
+            onClick={() => toggleLike.mutate(!i_liked)}
+            aria-pressed={i_liked}
+            aria-label={i_liked ? 'Remove kudos' : 'Give kudos'}
+            className={cn(
+              'flex items-center gap-1.5 text-xs transition-colors hover:text-primary',
+              i_liked && 'text-primary',
+            )}
+          >
+            <Flame className={cn('size-3.5', i_liked && 'fill-current')} />{' '}
+            {like_count}
+          </button>
+          <button
+            type="button"
+            onClick={onOpen}
+            className="flex items-center gap-1.5 text-xs transition-colors hover:text-primary"
+          >
+            <MessageCircle className="size-3.5" /> {comment_count}
+          </button>
+          <ShareMatchButton match={match} />
+          <StatusBadge status={matchBadgeStatus(match)} className="ml-auto" />
+        </div>
+      )}
     </div>
   )
 }

@@ -47,6 +47,21 @@ export function sportIcon(type: MatchType): LucideIcon {
   return SPORT_ICONS[type] ?? Circle
 }
 
+/**
+ * Icon-badge tint per sport, for the profile "Your sports" rows — matches the
+ * "Agon redesign" canvas's Profile board, which only designs football/cricket;
+ * every other sport falls back to the shared accent tint rather than
+ * inventing an un-designed color.
+ */
+const SPORT_TINTS: Partial<Record<MatchType, { bg: string; fg: string }>> = {
+  football: { bg: '#DDE5FB', fg: '#1E3FA8' },
+  cricket: { bg: '#D3E3F0', fg: '#123E5B' },
+}
+
+export function sportTint(type: MatchType): { bg: string; fg: string } {
+  return SPORT_TINTS[type] ?? { bg: 'var(--accent)', fg: 'var(--accent-foreground)' }
+}
+
 /** Emoji for a sport, used by the compact sport pill (feed cards, match detail). */
 const SPORT_EMOJI: Record<MatchType, string> = {
   tennis: '🎾',

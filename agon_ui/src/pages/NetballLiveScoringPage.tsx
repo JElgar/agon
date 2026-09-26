@@ -327,7 +327,7 @@ function NetballEventByEventScoringPage({
           {onBackToPicker && (
             <>
               {' · '}
-              <button type="button" onClick={onBackToPicker} className="text-primary hover:underline">
+              <button type="button" onClick={onBackToPicker} className="text-link hover:underline">
                 Change scoring method
               </button>
             </>
@@ -539,7 +539,7 @@ function NetballQuarterOnlyScoringPage({
           {onBackToPicker && (
             <>
               {' · '}
-              <button type="button" onClick={onBackToPicker} className="text-primary hover:underline">
+              <button type="button" onClick={onBackToPicker} className="text-link hover:underline">
                 Change scoring method
               </button>
             </>

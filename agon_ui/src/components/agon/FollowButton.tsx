@@ -12,6 +12,8 @@ export interface FollowButtonProps
   isFollowing: boolean
   /** Notified after a successful toggle with the new follow state. */
   onToggled?: (following: boolean) => void
+  /** `soft` draws "Follow" as a pale blue chip instead of a solid button. */
+  tone?: 'default' | 'soft'
 }
 
 /**
@@ -29,6 +31,7 @@ export function FollowButton({
   userId,
   isFollowing,
   onToggled,
+  tone = 'default',
   className,
   disabled,
   ...props
@@ -68,7 +71,13 @@ export function FollowButton({
       variant={following ? 'outline' : 'default'}
       disabled={disabled || mutation.isPending}
       onClick={() => mutation.mutate(!following)}
-      className={cn(className)}
+      className={cn(
+        tone === 'soft' &&
+          (following
+            ? 'border-[#DCD7CC] bg-card text-[#3D404A] shadow-none hover:bg-muted hover:text-[#3D404A]'
+            : 'bg-accent text-accent-foreground shadow-none hover:bg-accent/80'),
+        className,
+      )}
       {...props}
     >
       {following ? 'Following' : 'Follow'}

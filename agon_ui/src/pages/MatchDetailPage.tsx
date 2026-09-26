@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { CalendarClock, CalendarPlus, ChevronLeft, Clock, Flame, Link2, MailOpen, MapPin, Pencil, Radio, ShieldPlus, UserPlus } from 'lucide-react'
+import { CalendarClock, CalendarPlus, ChevronLeft, Clock, Flame, Link2, MailOpen, MapPin, MoreHorizontal, Pencil, Radio, ShieldPlus, UserPlus } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
@@ -14,7 +14,6 @@ import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
 import { SportBadge } from '@/components/agon/SportBadge'
 import { StatusBadge, matchBadgeStatus } from '@/components/agon/StatusBadge'
 import { ScoreConfirmationBar } from '@/components/agon/ScoreConfirmationBar'
-import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
 import { CricketMatchBlock } from '@/components/agon/live/CricketMatchBlock'
 import { NetballMatchBlock } from '@/components/agon/live/NetballMatchBlock'
 import { CricketScoreBlock } from '@/components/agon/CricketScoreBlock'
@@ -28,14 +27,10 @@ import { NetballQuarterBreakdown } from '@/components/agon/NetballQuarterBreakdo
 import { useLiveEvents } from '@/hooks/useLiveScore'
 import { useMatchScore } from '@/hooks/useMatchScore'
 import {
-  describeEvent,
-  eventClockLabel,
-  eventEmoji,
   footballScoreFrom,
   footballEventSourceFromScore,
+  currentMinute,
   liveClockLabel,
-  recentEvents,
-  type FootballScore,
 } from '@/lib/liveScore'
 import { netballScoreFrom, netballEventSourceFromScore } from '@/lib/netballScore'
 import { cricketInningsFor, cricketScoreFrom, inningsDeliveriesFromEvents } from '@/lib/cricketScore'
@@ -80,6 +75,28 @@ import { useToggleLike } from '@/hooks/useToggleLike'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
 import { InvitePromptDialog } from '@/components/agon/InvitePromptDialog'
 import { useInvitePrompt } from '@/hooks/useInvitePrompt'
+import { footballFormat } from '@/lib/matchFormat'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
+import {
+  AddEventButton,
+  CommentsPreviewCard,
+  FootballHeroCard,
+  FootballPlayersTab,
+  FootballScoreStrip,
+  FootballTabBar,
+  FootballTimeline,
+  GoalsAssistsCard,
+  KudosButton,
+  MatchActionBar,
+  MatchRulesRow,
+  ScoreFlowCard,
+  SideDisc,
+  WhoPlayedCard,
+  YourGameCard,
+  primaryActionClass,
+  type FootballTab,
+} from '@/components/agon/football/FootballMatchView'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -91,213 +108,6 @@ function sideName(side: MatchSide | undefined, fallback: string): string {
   return side?.name?.trim() || fallback
 }
 
-/** "Blues won by 19" / "Draw" — the result-pill line under a finished
- *  football match's score, mirroring cricket's own state-of-game pill
- *  (`RedesignedSportCard`'s `description` pill, e.g. "Kent won by 17 runs").
- *  Football has no server-computed equivalent (unlike cricket's
- *  `cricketStateDescription`), so this is worked out locally from the two
- *  sides' goal tallies. */
-function footballResultLabel(
-  goalsA: number,
-  goalsB: number,
-  nameA: string,
-  nameB: string,
-  aWon?: boolean | string,
-  bWon?: boolean | string,
-): string {
-  if (!aWon && !bWon) return 'Draw'
-  const winner = aWon ? nameA : nameB
-  const margin = Math.abs(goalsA - goalsB)
-  return `${winner} won by ${margin}`
-}
-
-/**
- * Football's detail-page score header: the centered badge/name/score layout
- * from the redesign canvas's "Match"/"MatchFootball" board (the
- * `MKvQ8bNeKnqHzxqZfMNFnc` artifact's "Full time" card), covering all three
- * states the plain (non-live) header can be in — this is *not* a live block,
- * that's `LiveMatchBlock` below. Detail-page-sized version of the same team
- * badge/score vocabulary `RedesignedSportCard`'s football tile uses (round
- * team badges, `font-display` numerals, a tinted result pill), laid out
- * centered/stacked per the mock rather than that tile's left/right rows.
- *
- * The canvas only mocks the finished state; the scheduled ("vs") state below
- * is a judgment call extending the same visual language (centered layout,
- * `font-display` reserved for an actual score) rather than a modeled design.
- */
-function FootballScoreHeader({
-  sideA,
-  sideB,
-  nameA,
-  nameB,
-  aWon,
-  bWon,
-  scoreInfo,
-  headline,
-  showPlayerCounts,
-  match,
-}: {
-  sideA: MatchSide | undefined
-  sideB: MatchSide | undefined
-  nameA: string
-  nameB: string
-  aWon?: boolean | string
-  bWon?: boolean | string
-  scoreInfo: { score: components['schemas']['Score']; winnerSideId?: string; confirmed: boolean } | null
-  headline: Record<string, number>
-  showPlayerCounts: boolean
-  match: Match
-}) {
-  const goalsA = headline[sideA?.id ?? ''] ?? 0
-  const goalsB = headline[sideB?.id ?? ''] ?? 0
-
-  return (
-    <div className="mt-3 flex flex-col items-center gap-3">
-      {scoreInfo && (
-        <span className="text-xs font-semibold text-muted-foreground">Full time</span>
-      )}
-      <div className="grid w-full grid-cols-[1fr_auto_1fr] items-center gap-3">
-        <div className="flex flex-col items-center gap-2">
-          <Avatar
-            name={nameA}
-            imageUrl={sideA?.team_logo?.image_url}
-            size="lg"
-            ring={aWon ? 'winner' : 'none'}
-          />
-          <div className="min-w-0 text-center">
-            <p className={cn('truncate text-[15px]', aWon ? 'font-bold' : 'font-medium text-muted-foreground')}>
-              {nameA}
-            </p>
-            {sideTeamHint(sideA) && (
-              <p className="truncate text-[10px] text-muted-foreground">{sideTeamHint(sideA)}</p>
-            )}
-            {showPlayerCounts && (
-              <p className="truncate text-[10px] text-muted-foreground">{sidePlayerCountLabel(sideA)}</p>
-            )}
-          </div>
-        </div>
-
-        {scoreInfo ? (
-          <div className="flex items-center gap-2.5 font-display text-4xl leading-none font-extrabold">
-            <span className={cn(!aWon && bWon && 'text-muted-foreground')}>{goalsA}</span>
-            <span className="text-2xl text-muted-foreground">–</span>
-            <span className={cn(!bWon && aWon && 'text-muted-foreground')}>{goalsB}</span>
-          </div>
-        ) : (
-          <div className="px-2 text-center text-xs text-muted-foreground">
-            vs
-            {showPlayerCounts && (
-              <p className="mt-0.5 text-[10px] text-nowrap">{matchPlayerTotalLabel(match)}</p>
-            )}
-          </div>
-        )}
-
-        <div className="flex flex-col items-center gap-2">
-          <Avatar
-            name={nameB}
-            imageUrl={sideB?.team_logo?.image_url}
-            size="lg"
-            ring={bWon ? 'winner' : 'none'}
-          />
-          <div className="min-w-0 text-center">
-            <p className={cn('truncate text-[15px]', bWon ? 'font-bold' : 'font-medium text-muted-foreground')}>
-              {nameB}
-            </p>
-            {sideTeamHint(sideB) && (
-              <p className="truncate text-[10px] text-muted-foreground">{sideTeamHint(sideB)}</p>
-            )}
-            {showPlayerCounts && (
-              <p className="truncate text-[10px] text-muted-foreground">{sidePlayerCountLabel(sideB)}</p>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {scoreInfo && (
-        <span className="inline-flex h-[30px] items-center rounded-full bg-primary/10 px-3 text-sm font-bold text-primary">
-          {footballResultLabel(goalsA, goalsB, nameA, nameB, aWon, bWon)}
-        </span>
-      )}
-    </div>
-  )
-}
-
-/**
- * Football's detail-page LIVE score header — same centered layout as
- * `FootballScoreHeader`, for a match currently being scored live. Reads the
- * same `FootballScore` as the old `LiveMatchBlock` (still used by the feed's
- * `MatchCard`, untouched here), just laid out and restyled to match this
- * page's new centered football header instead of that component's
- * left/right rows.
- */
-function LiveFootballScoreHeader({
-  match,
-  state,
-}: {
-  match: Match
-  state: FootballScore
-}) {
-  const [sideA, sideB] = match.sides
-  const nameA = sideName(sideA, 'Side A')
-  const nameB = sideName(sideB, 'Side B')
-  const goalsFor = (sideId: string | undefined) => (sideId ? state.score[sideId] : undefined) ?? 0
-  const events = recentEvents(state, 3)
-  const [now, setNow] = useState(() => new Date())
-  useEffect(() => {
-    const id = setInterval(() => setNow(new Date()), 15_000)
-    return () => clearInterval(id)
-  }, [])
-
-  return (
-    <div className="mt-3 flex flex-col items-center gap-3">
-      <LiveIndicator>{(() => {
-        const label = liveClockLabel(state, now)
-        return label === 'LIVE' ? undefined : label
-      })()}</LiveIndicator>
-      <div className="grid w-full grid-cols-[1fr_auto_1fr] items-center gap-3">
-        <div className="flex flex-col items-center gap-2">
-          <Avatar name={nameA} imageUrl={sideA?.team_logo?.image_url} size="lg" />
-          <p className="truncate text-center text-[15px] font-medium">{nameA}</p>
-        </div>
-        <div className="flex items-center gap-2.5 font-display text-4xl leading-none font-extrabold">
-          <span>{goalsFor(sideA?.id)}</span>
-          <span className="text-2xl text-muted-foreground">–</span>
-          <span>{goalsFor(sideB?.id)}</span>
-        </div>
-        <div className="flex flex-col items-center gap-2">
-          <Avatar name={nameB} imageUrl={sideB?.team_logo?.image_url} size="lg" />
-          <p className="truncate text-center text-[15px] font-medium">{nameB}</p>
-        </div>
-      </div>
-
-      {events.length > 0 && (
-        <div className="w-full space-y-1 border-t pt-2.5">
-          {events.map((event, i) => {
-            const isSideB = event.side_id === sideB?.id
-            return (
-              <p
-                key={i}
-                className={cn(
-                  'flex items-baseline gap-1.5 truncate text-xs text-muted-foreground',
-                  isSideB && 'flex-row-reverse text-right',
-                )}
-              >
-                <span aria-hidden>{eventEmoji(event.kind)}</span>
-                {eventClockLabel(event, state.period_times) && (
-                  <span className="font-medium text-foreground">
-                    {eventClockLabel(event, state.period_times)}
-                  </span>
-                )}
-                <span className="truncate">{describeEvent(event, match, state.players)}</span>
-              </p>
-            )
-          })}
-        </div>
-      )}
-    </div>
-  )
-}
-
 // Roster tab ids for the mobile tablist — side A/B use these fixed ids
 // rather than the sides' own (possibly absent) `id`s so the tablist always
 // has something stable to key off; unassigned players get a third tab.
@@ -305,16 +115,36 @@ const ROSTER_TAB_A = '__side_a__'
 const ROSTER_TAB_B = '__side_b__'
 const ROSTER_TAB_UNASSIGNED = '__unassigned__'
 
-// Football's match-detail tab bar (`MatchFootball.dc.html`: Summary /
-// Timeline / Players — no Scorecard tab, that's cricket-only).
-const FOOTBALL_TABS = [
-  { id: 'summary', label: 'Summary' },
-  { id: 'timeline', label: 'Timeline' },
-  { id: 'players', label: 'Players' },
-] as const
 
 /** Full match view: score (with confirm/dispute when pending), sides + rosters.
  *  Participants get inline editing of details/result, plus invite and cancel. */
+/** "2 × 40min · extra time · penalties" — the football "Match rules" row. */
+function footballRulesSummary(match: Match): string {
+  const fmt = footballFormat(match.format)
+  const parts = [`${fmt.num_halves} × ${fmt.half_length_minutes} min`]
+  if (fmt.extra_time) parts.push('extra time')
+  if (fmt.penalties) parts.push('penalties')
+  return parts.join(' · ')
+}
+
+/** Native share sheet, else copy the link (else show it to copy by hand). */
+async function shareMatch(match: Match) {
+  const url = `${window.location.origin}/matches/${match.id}`
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: match.name, url })
+      return
+    } catch {
+      // Dismissed or failed; fall through to copying.
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(url)
+  } catch {
+    window.prompt('Copy this match link:', url)
+  }
+}
+
 export function MatchDetailPage() {
   const { matchId } = useParams()
   const navigate = useNavigate()
@@ -382,7 +212,11 @@ function MatchDetail({
   const [rosterTab, setRosterTab] = useState<string>(ROSTER_TAB_A)
   // Football's Summary/Timeline/Players tab bar (`MatchFootball.dc.html`) —
   // other sports keep the single always-visible layout below unchanged.
-  const [footballTab, setFootballTab] = useState<'summary' | 'timeline' | 'players'>('summary')
+  const [footballTab, setFootballTab] = useState<FootballTab>('summary')
+  const [commentsOpen, setCommentsOpen] = useState(false)
+  const [rulesOpen, setRulesOpen] = useState(false)
+  const toggleLike = useToggleLike(match)
+  const navigate = useNavigate()
 
   // Owner or admin only, mirroring the server's `caller_is_match_admin` — an
   // ordinary player is read-only on the match itself; `LeaveMatch` below is
@@ -492,120 +326,134 @@ function MatchDetail({
     deliveries: liveInningsDeliveries?.[i]?.deliveries ?? [],
   }))
 
+  // Football's redesigned view (see the football branch below).
+  const footballView: 'finished' | 'live' | 'scheduled' | 'cancelled' = cancelled
+    ? 'cancelled'
+    : footballState || match.status === 'in_progress'
+      ? 'live'
+      : scoreInfo
+        ? 'finished'
+        : 'scheduled'
+  // Football keeps the sides in their stored order (not viewer-first) so each
+  // side's kit colour stays the same for everyone looking at the match.
+  const [kitSideA, kitSideB] = match.sides
+  const footballGoalsA = (footballState ? footballState.score : headline)[kitSideA?.id ?? ''] ?? 0
+  const footballGoalsB = (footballState ? footballState.score : headline)[kitSideB?.id ?? ''] ?? 0
+  const myPlayer = match.players.find((p) => p.member.type === 'User' && p.member.user_id === currentUserId)
+  const metaTeamSide = match.sides.find((s) => s.team_name)
+
+  const moreMenu = (variant: 'overlay' | 'plain') => (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label="More options"
+          className={cn(
+            'flex size-11 items-center justify-center rounded-full text-[#16171A]',
+            variant === 'overlay' ? 'bg-white/95' : 'text-foreground hover:bg-muted',
+          )}
+        >
+          <MoreHorizontal className="size-[22px]" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-52">
+        <DropdownMenuItem
+          onSelect={() => downloadMatchIcs(match, { title: match.name, description: `${nameA} vs ${nameB}` })}
+        >
+          <CalendarPlus className="size-4" /> Add to calendar
+        </DropdownMenuItem>
+        {canEdit && !cancelled && (
+          <DropdownMenuItem onSelect={() => setEditingDetails(true)}>
+            <Pencil className="size-4" /> Edit match details
+          </DropdownMenuItem>
+        )}
+        {canEdit && !cancelled && match.status !== 'completed' && (
+          <DropdownMenuItem onSelect={() => navigate(liveEntryPath)}>
+            <Radio className="size-4" /> {hasLiveState ? 'Continue scoring' : 'Score live'}
+          </DropdownMenuItem>
+        )}
+        {canEdit && !cancelled && !hasLiveState && (
+          <DropdownMenuItem
+            onSelect={() => {
+              setFootballTab('summary')
+              setEditingResult(true)
+            }}
+          >
+            <Pencil className="size-4" /> {scoreInfo ? 'Edit result' : 'Add result'}
+          </DropdownMenuItem>
+        )}
+        {canEdit && !cancelled && (
+          <DropdownMenuItem
+            onSelect={() => {
+              setFootballTab('players')
+              setEditingRoster(true)
+            }}
+          >
+            <UserPlus className="size-4" /> Edit roster
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
       {match.match_type === 'football' ? (
         <>
-          {/* Football's restyled header. With a photo, it's the mock's
-              full-bleed hero treatment (`Match.dc.html`): the image runs
-              edge-to-edge (breaking out of the page's own side/top padding)
-              with the back/more-options buttons floating on top of it as
-              translucent white circles. With no photo, it's a plain
-              icon-only back/calendar/edit row above the title, matching
-              `MatchFootball.dc.html`'s no-photo header. */}
-          {match.header_photos.length > 0 ? (
-            <div className="relative -mx-4 -mt-8 h-[250px] w-[calc(100%+2rem)] overflow-hidden md:mx-0 md:mt-0 md:w-full md:rounded-2xl">
+          {/* Football follows the redesign mocks: `Match.dc.html` (photo hero,
+              live) and `MatchFootball.dc.html` / `EventsFootball.dc.html` /
+              `PlayersFootball.dc.html` (no photo, tabs). Admin actions live in
+              the ⋯ menu instead of crowding the page. */}
+          {match.header_photos.length > 0 && footballTab === 'summary' ? (
+            <div className="relative -mx-4 -mt-8 h-[250px] overflow-hidden md:mx-0 md:mt-0 md:rounded-[20px]">
               <MatchHeaderCarousel photos={match.header_photos} hero />
-              <Button
-                variant="ghost"
-                size="icon"
-                className="absolute top-4 left-4 size-11 rounded-full bg-white/95 text-foreground shadow-sm hover:bg-white"
+              <button
+                type="button"
                 onClick={onBack}
                 aria-label="Back"
+                className="absolute top-4 left-4 flex size-11 items-center justify-center rounded-full bg-white/95 text-[#16171A]"
               >
-                <ChevronLeft className="size-5" />
-              </Button>
-              {!editingDetails && (
-                <div className="absolute top-4 right-4 flex items-center gap-2">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-11 rounded-full bg-white/95 text-foreground shadow-sm hover:bg-white"
-                    aria-label="Add to calendar"
-                    onClick={() =>
-                      downloadMatchIcs(match, {
-                        title: match.name,
-                        description: `${nameA} vs ${nameB}`,
-                      })
-                    }
-                  >
-                    <CalendarPlus className="size-4" />
-                  </Button>
-                  {canEdit && !cancelled && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="size-11 rounded-full bg-white/95 text-foreground shadow-sm hover:bg-white"
-                      aria-label="Edit match details"
-                      onClick={() => setEditingDetails(true)}
-                    >
-                      <Pencil className="size-4" />
-                    </Button>
-                  )}
-                </div>
-              )}
+                <ChevronLeft className="size-[22px]" strokeWidth={2.2} />
+              </button>
+              <div className="absolute top-4 right-4">{moreMenu('overlay')}</div>
             </div>
           ) : (
-            <div className="flex items-center justify-between">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-11 rounded-full"
+            <div className="-mx-2 -mt-5 flex items-center justify-between">
+              <button
+                type="button"
                 onClick={onBack}
                 aria-label="Back"
+                className="flex size-11 items-center justify-center rounded-full text-foreground hover:bg-muted"
               >
-                <ChevronLeft className="size-5" />
-              </Button>
-              {!editingDetails && (
-                <div className="flex items-center gap-1">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-11 rounded-full text-muted-foreground"
-                    aria-label="Add to calendar"
-                    onClick={() =>
-                      downloadMatchIcs(match, {
-                        title: match.name,
-                        description: `${nameA} vs ${nameB}`,
-                      })
-                    }
-                  >
-                    <CalendarPlus className="size-4" />
-                  </Button>
-                  {canEdit && !cancelled && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="size-11 rounded-full text-muted-foreground"
-                      aria-label="Edit match details"
-                      onClick={() => setEditingDetails(true)}
-                    >
-                      <Pencil className="size-4" />
-                    </Button>
-                  )}
-                </div>
-              )}
+                <ChevronLeft className="size-[22px]" strokeWidth={2.2} />
+              </button>
+              {moreMenu('plain')}
             </div>
           )}
 
-          {editingDetails ? (
-            <MatchDetailsEditor match={match} onDone={() => setEditingDetails(false)} />
-          ) : (
+          {editingDetails && <MatchDetailsEditor match={match} onDone={() => setEditingDetails(false)} />}
+
+          {footballTab === 'summary' ? (
             <>
-              {/* Title block — the match name reads as the page's actual
-                  heading here (`font-display`, large), not small meta text,
-                  per the mock's big "Monday Night Football" h1 with the
-                  when/where as a muted line underneath. */}
-              <div className="px-1">
-                <h1 className="font-display text-[26px] leading-tight font-extrabold tracking-tight">
-                  {match.name}
-                </h1>
-                <p className="mt-1 flex items-center gap-1 text-sm text-muted-foreground">
-                  <CalendarClock className="size-3.5 shrink-0" />
-                  {scheduledDateTime(match.starts_at)}
-                </p>
+              <div className={cn('flex flex-col px-1', match.header_photos.length > 0 ? 'gap-1.5 pt-1' : 'gap-2')}>
+                <div className="flex items-center gap-2.5">
+                  {footballView === 'live' ? (
+                    <span className="flex h-6 items-center gap-1.5 rounded-full bg-destructive px-[9px] text-[11px] font-bold tracking-[0.6px] text-white">
+                      <span className="size-1.5 rounded-full bg-white" />
+                      LIVE
+                    </span>
+                  ) : (
+                    metaTeamSide && (
+                      <SideDisc side={metaTeamSide} index={match.sides.indexOf(metaTeamSide)} size={32} />
+                    )
+                  )}
+                  <span className="truncate text-sm text-muted-foreground">
+                    {metaTeamSide?.team_name ?? 'Football'} · {scheduledDateTime(match.starts_at)}
+                  </span>
+                </div>
+                <h1 className="font-display text-[30px] leading-tight font-extrabold tracking-[-0.4px]">{match.name}</h1>
                 {match.location && (
-                  <p className="mt-0.5 flex items-center gap-1 text-sm text-muted-foreground">
+                  <p className="flex items-center gap-1 text-sm text-muted-foreground">
                     <MapPin className="size-3.5 shrink-0" />
                     <span className="truncate">{match.location.text}</span>
                     {directionsUrl(match.location) && (
@@ -613,188 +461,173 @@ function MatchDetail({
                         href={directionsUrl(match.location)}
                         target="_blank"
                         rel="noreferrer"
-                        className="shrink-0 text-primary hover:underline"
+                        className="shrink-0 font-semibold text-primary hover:underline"
                       >
-                        Get directions
+                        Directions
                       </a>
                     )}
                   </p>
                 )}
               </div>
+              <FootballHeroCard
+                match={match}
+                goalsA={footballGoalsA}
+                goalsB={footballGoalsB}
+                state={footballView}
+                liveLabel={footballState ? liveClockLabel(footballState) : 'Live'}
+                kickoffLabel={`Kick-off ${new Date(match.starts_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`}
+              />
+            </>
+          ) : (
+            <FootballScoreStrip
+              match={match}
+              goalsA={footballGoalsA}
+              goalsB={footballGoalsB}
+              hasScore={footballView === 'finished' || footballView === 'live'}
+            />
+          )}
 
-              {/* The score itself is its own standalone hero card — the
-                  mock's "Full time" card sits on its own, not sharing a
-                  wrapper with meta text/edit buttons the way the generic
-                  layout below does. */}
-              <div className="rounded-2xl border bg-card p-5">
-                {footballState ? (
-                  <LiveFootballScoreHeader match={orderedMatch} state={footballState} />
-                ) : (
-                  <FootballScoreHeader
-                    sideA={sideA}
-                    sideB={sideB}
-                    nameA={nameA}
-                    nameB={nameB}
-                    aWon={aWon}
-                    bWon={bWon}
-                    scoreInfo={scoreInfo}
-                    headline={headline}
-                    showPlayerCounts={showPlayerCounts}
-                    match={match}
-                  />
-                )}
+          <FootballTabBar value={footballTab} onChange={setFootballTab} />
 
-                {finishedFootballGoals && (
-                  <FootballScorersBySide
-                    goals={finishedFootballGoals}
-                    match={orderedMatch}
-                    players={finishedFootballScorePlayers}
-                    periodTimes={finishedFootballPeriodTimes}
-                    sideA={sideA}
-                    sideB={sideB}
-                    className="mt-3 text-xs"
-                  />
-                )}
-
-                <div className="mt-3 flex items-center justify-between border-t pt-3">
-                  <StatusBadge status={matchBadgeStatus(match)} />
-                  <div className="flex items-center gap-1">
-                    {canEdit && isLiveSport && !cancelled && match.status !== 'completed' && (
-                      <Button asChild variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs text-primary">
-                        <Link to={liveEntryPath}>
-                          <Radio className="size-3" /> {hasLiveState ? 'Continue scoring' : 'Score live'}
-                        </Link>
-                      </Button>
-                    )}
-                    {canEdit && !cancelled && !hasLiveState && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 px-2 text-xs text-muted-foreground"
-                        onClick={() => setEditingResult(true)}
-                      >
-                        {scoreInfo ? 'Edit result' : 'Add result'}
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {/* Summary / Timeline / Players tab bar — `MatchFootball.dc.html`'s
-                  3-tab bar. Timeline reuses the existing event-timeline
-                  component (`FootballScorecard`) and Players reuses the
-                  existing roster block; neither is new content, just gated
-                  behind tab selection instead of always showing. */}
-              <div className="grid grid-cols-3 gap-1 rounded-full bg-muted p-1">
-                {FOOTBALL_TABS.map((tab) => (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => setFootballTab(tab.id)}
-                    className={cn(
-                      'rounded-full py-2 text-sm transition-colors',
-                      footballTab === tab.id
-                        ? 'bg-card font-bold text-foreground shadow-sm'
-                        : 'font-medium text-muted-foreground',
-                    )}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
-
-              {footballTab === 'summary' && (
-                <div className="flex flex-col gap-4">
-                  {footballEventSource && (
-                    <FootballGoalContributions
-                      goals={footballEventSource.goals}
-                      match={orderedMatch}
-                      players={footballEventSource.players}
-                    />
-                  )}
-                  <MatchFormatCard match={match} canEdit={canEdit && !cancelled} />
-                  {!cancelled && <MatchJoinSettingsEditor match={match} canManage={canEdit} />}
-                  {myPendingInvitation(match, currentUserId) ? (
-                    <InviteBanner match={match} currentUserId={currentUserId} />
-                  ) : (
-                    match.pending_score && (
-                      <ScoreConfirmationBar match={match} currentUserId={currentUserId} variant="detail" />
-                    )
-                  )}
-                  {!cancelled && <TeamJoinBanner match={match} />}
-                  {!cancelled && <JoinLinkBanner match={match} />}
-                  {canEdit && !cancelled && (
-                    inviting ? (
-                      <InvitePlayers match={match} onDone={() => setInviting(false)} />
-                    ) : (
-                      <Button variant="outline" className="gap-1.5" onClick={() => setInviting(true)}>
-                        <UserPlus className="size-4" /> Invite players
-                      </Button>
-                    )
-                  )}
-                  {canEdit && !cancelled && (
-                    <MatchJoinLinksDialog match={match}>
-                      <Button variant="outline" className="gap-1.5">
-                        <Link2 className="size-4" /> Join links
-                      </Button>
-                    </MatchJoinLinksDialog>
-                  )}
-                  <LikeBar match={match} />
-                  <MatchComments matchId={match.id} currentUserId={currentUserId} />
-                </div>
+          {footballTab === 'summary' && (
+            <>
+              {myPendingInvitation(match, currentUserId) ? (
+                <InviteBanner match={match} currentUserId={currentUserId} />
+              ) : (
+                match.pending_score && (
+                  <ScoreConfirmationBar match={match} currentUserId={currentUserId} variant="detail" />
+                )
               )}
+              {!cancelled && <TeamJoinBanner match={match} />}
+              {!cancelled && <JoinLinkBanner match={match} />}
+              {editingResult && <MatchResultEditor match={match} onDone={() => setEditingResult(false)} />}
 
-              {footballTab === 'timeline' && (
-                <div className="flex flex-col gap-4">
-                  {footballEventSource ? (
-                    <FootballScorecard match={orderedMatch} detail={footballEventSource} />
-                  ) : (
-                    <p className="px-1 text-sm text-muted-foreground">No events recorded yet.</p>
-                  )}
-                </div>
+              {myPlayer?.side_id && footballEventSource && (footballView === 'finished' || footballView === 'live') && (
+                <YourGameCard match={match} me={myPlayer} detail={footballEventSource} />
               )}
-
-              {footballTab === 'players' && (
-                <div className="flex flex-col gap-4">
-                  {editingRoster ? (
-                    <MatchRosterEditor match={match} onDone={() => setEditingRoster(false)} />
-                  ) : (
-                    <div className="flex flex-col gap-2">
-                      {canEdit && !cancelled && (
-                        <div className="flex justify-end">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 gap-1 px-2 text-xs text-muted-foreground"
-                            onClick={() => setEditingRoster(true)}
-                          >
-                            <Pencil className="size-3" /> Edit roster
-                          </Button>
-                        </div>
-                      )}
-                      <RosterTabs
-                        matchId={match.id}
-                        nameA={nameA}
-                        nameB={nameB}
-                        playersA={match.players.filter((p) => p.side_id === sideA?.id)}
-                        playersB={match.players.filter((p) => p.side_id === sideB?.id)}
-                        unassigned={match.players.filter(
-                          (p) => p.side_id !== sideA?.id && p.side_id !== sideB?.id,
-                        )}
-                        activeTab={rosterTab}
-                        onTabChange={setRosterTab}
-                        currentUserId={currentUserId}
-                        iAmOwner={iAmOwner}
-                      />
-                    </div>
-                  )}
-                  {!cancelled && (
-                    <WaitlistSection match={match} currentUserId={currentUserId} canManage={canEdit} />
-                  )}
-                </div>
+              {footballEventSource && <GoalsAssistsCard match={match} detail={footballEventSource} />}
+              {footballEventSource && (
+                <ScoreFlowCard
+                  match={match}
+                  detail={footballEventSource}
+                  nowMinute={footballState ? (currentMinute(footballState) ?? undefined) : undefined}
+                />
               )}
+              <WhoPlayedCard match={match} title={footballView === 'scheduled' ? "Who's playing" : 'Who played'} />
+              <CommentsPreviewCard
+                match={match}
+                viewerName={myPlayer ? memberName(myPlayer.member) : undefined}
+                viewerAvatar={myPlayer ? memberAvatarUrl(myPlayer.member) : undefined}
+                onOpen={() => setCommentsOpen(true)}
+              />
+              {rulesOpen ? (
+                <MatchFormatCard match={match} canEdit={canEdit && !cancelled} />
+              ) : (
+                <MatchRulesRow
+                  summary={footballRulesSummary(match)}
+                  onClick={canEdit && !cancelled ? () => setRulesOpen(true) : undefined}
+                />
+              )}
+              {canEdit && !cancelled && <MatchJoinSettingsEditor match={match} canManage={canEdit} />}
+              {canEdit && !cancelled && <CancelMatch match={match} />}
+              {iAmParticipant && !cancelled && <LeaveMatch match={match} isOwner={iAmOwner} />}
             </>
           )}
+
+          {footballTab === 'timeline' &&
+            (footballEventSource ? (
+              <FootballTimeline
+                match={match}
+                detail={footballEventSource}
+                currentUserId={currentUserId}
+                finished={footballView === 'finished'}
+              />
+            ) : (
+              <section className="rounded-[20px] border bg-card px-[18px] py-6 text-center text-sm text-muted-foreground">
+                {footballView === 'scheduled'
+                  ? 'Goals, cards and subs will show up here once the match kicks off.'
+                  : 'No events were recorded for this match.'}
+              </section>
+            ))}
+
+          {footballTab === 'players' &&
+            (editingRoster ? (
+              <MatchRosterEditor match={match} onDone={() => setEditingRoster(false)} />
+            ) : (
+              <FootballPlayersTab
+                match={match}
+                detail={footballEventSource}
+                currentUserId={currentUserId}
+                goalsA={footballGoalsA}
+                goalsB={footballGoalsB}
+                finished={footballView === 'finished'}
+                footer={
+                  <>
+                    {canEdit && !cancelled && (
+                      <div className="flex flex-wrap gap-2">
+                        <Button variant="outline" className="gap-1.5 rounded-full" onClick={() => setEditingRoster(true)}>
+                          <Pencil className="size-4" /> Edit roster
+                        </Button>
+                        {!inviting && (
+                          <Button variant="outline" className="gap-1.5 rounded-full" onClick={() => setInviting(true)}>
+                            <UserPlus className="size-4" /> Invite players
+                          </Button>
+                        )}
+                        <MatchJoinLinksDialog match={match}>
+                          <Button variant="outline" className="gap-1.5 rounded-full">
+                            <Link2 className="size-4" /> Join links
+                          </Button>
+                        </MatchJoinLinksDialog>
+                      </div>
+                    )}
+                    {canEdit && !cancelled && inviting && (
+                      <InvitePlayers match={match} onDone={() => setInviting(false)} />
+                    )}
+                    {!cancelled && (
+                      <WaitlistSection match={match} currentUserId={currentUserId} canManage={canEdit} />
+                    )}
+                  </>
+                }
+              />
+            ))}
+
+          <MatchActionBar
+            primary={
+              canEdit && !cancelled && footballTab === 'timeline' && match.status === 'in_progress' ? (
+                <AddEventButton to={liveEntryPath} />
+              ) : canEdit && !cancelled && match.status === 'in_progress' ? (
+                <Link to={liveEntryPath} className={primaryActionClass}>
+                  Update score
+                </Link>
+              ) : canEdit && !cancelled && match.status === 'scheduled' ? (
+                <Link to={liveEntryPath} className={primaryActionClass}>
+                  <Radio className="size-5" /> Start scoring
+                </Link>
+              ) : footballView === 'scheduled' ? (
+                <button
+                  type="button"
+                  className={primaryActionClass}
+                  onClick={() => downloadMatchIcs(match, { title: match.name, description: `${nameA} vs ${nameB}` })}
+                >
+                  <CalendarPlus className="size-5" /> Add to calendar
+                </button>
+              ) : (
+                <KudosButton liked={match.social.i_liked} onToggle={() => toggleLike.mutate(!match.social.i_liked)} />
+              )
+            }
+            commentCount={match.social.comment_count}
+            onComments={() => setCommentsOpen(true)}
+            onShare={() => shareMatch(match)}
+          />
+
+          <Sheet open={commentsOpen} onOpenChange={setCommentsOpen}>
+            <SheetContent side="bottom" className="max-h-[85vh] overflow-y-auto rounded-t-[20px] bg-background p-4">
+              <SheetHeader className="p-0">
+                <SheetTitle className="font-display text-xl">Comments</SheetTitle>
+              </SheetHeader>
+              <MatchComments matchId={match.id} currentUserId={currentUserId} />
+            </SheetContent>
+          </Sheet>
         </>
       ) : (
         <>
@@ -868,11 +701,9 @@ function MatchDetail({
           </div>
 
           {/* Score header — the live block (score + mini-ticker) takes over
-              while a football/cricket match is being scored live; otherwise
+              while a netball/cricket match is being scored live; otherwise
               the usual confirmed/pending result. */}
-          {footballState ? (
-            <LiveFootballScoreHeader match={orderedMatch} state={footballState} />
-          ) : netballState ? (
+          {netballState ? (
             <div className="mt-3">
               <NetballMatchBlock match={orderedMatch} state={netballState} tickerLimit={3} />
             </div>
@@ -1010,8 +841,9 @@ function MatchDetail({
         </>
       )}
 
-      {/* Result editor — opens below the card when editing the score. */}
-      {editingResult && (
+      {/* Result editor — opens below the card when editing the score.
+          Football opens its own inside the Summary tab. */}
+      {editingResult && match.match_type !== 'football' && (
         <MatchResultEditor
           match={match}
           onDone={() => setEditingResult(false)}
@@ -1163,14 +995,15 @@ function MatchDetail({
         </>
       )}
 
-      {/* Cancel the match (match admins only; not already cancelled). */}
-      {canEdit && !cancelled && <CancelMatch match={match} />}
+      {/* Cancel the match (match admins only; not already cancelled).
+          Football renders these inside its Summary tab instead. */}
+      {match.match_type !== 'football' && canEdit && !cancelled && <CancelMatch match={match} />}
 
       {/* Leave the match — the one action left to a plain player once
           they're read-only on everything else here. An admin can leave too
           (mirrors team leave); the owner is pointed at the roster's own
           "Make owner" button first. */}
-      {iAmParticipant && !cancelled && (
+      {match.match_type !== 'football' && iAmParticipant && !cancelled && (
         <LeaveMatch match={match} isOwner={iAmOwner} />
       )}
     </div>

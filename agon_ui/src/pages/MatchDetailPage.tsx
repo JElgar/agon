@@ -461,7 +461,7 @@ function MatchDetail({
                         href={directionsUrl(match.location)}
                         target="_blank"
                         rel="noreferrer"
-                        className="shrink-0 font-semibold text-primary hover:underline"
+                        className="shrink-0 font-semibold text-link hover:underline"
                       >
                         Directions
                       </a>
@@ -665,7 +665,7 @@ function MatchDetail({
                       href={directionsUrl(match.location)}
                       target="_blank"
                       rel="noreferrer"
-                      className="shrink-0 text-primary hover:underline"
+                      className="shrink-0 text-link hover:underline"
                     >
                       Get directions
                     </a>

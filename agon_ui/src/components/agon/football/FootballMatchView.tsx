@@ -28,13 +28,14 @@ type FootballGoalEvent = components['schemas']['FootballGoalEvent']
 type Comment = components['schemas']['Comment']
 type CommentPage = components['schemas']['CommentPage']
 
-// Mock-specific colours with no theme token equivalent: the neutral "second
-// kit" grey and the assists teal from the redesign canvas.
-const KIT_GREY = '#A9A499'
-const ASSIST_TEAL = '#1F9E8A'
-const ASSIST_TEAL_TEXT = '#17796A'
+// Redesign accents: the neutral "second kit" grey and the assists teal. Both
+// are theme tokens in index.css so they follow dark mode.
+const KIT_GREY = 'var(--kit-grey)'
+const ASSIST_TEAL = 'var(--assist)'
+const ASSIST_TEAL_TEXT = 'var(--assist-foreground)'
 
 // Pastel avatar backgrounds the mocks use for initials — picked stably per name.
+// The dark board keeps the same pastels, so these stay fixed (initials use --avatar-ink).
 const AVATAR_TINTS = ['#D8DDF7', '#CFE3D4', '#F2E3B3', '#D5ECEC', '#F9D9C9', '#E6D5F2']
 function tintFor(name: string): string {
   let h = 0
@@ -62,7 +63,7 @@ export function PersonAvatar({
     <span
       aria-hidden
       style={{ ...style, background: tintFor(name) }}
-      className={cn('flex shrink-0 items-center justify-center rounded-full font-bold text-foreground', className)}
+      className={cn('flex shrink-0 items-center justify-center rounded-full font-bold text-avatar-ink', className)}
     >
       {initials(name)}
     </span>
@@ -170,11 +171,11 @@ export function FootballHeroCard({
         </div>
         {hasScore ? (
           <div className="flex items-center gap-2.5 font-display text-5xl leading-none font-extrabold">
-            <span className={cn(bWon && 'text-[#7D8190]')}>{goalsA}</span>
+            <span className={cn(bWon && 'text-ink-faint')}>{goalsA}</span>
             <span className="text-[28px]" style={{ color: KIT_GREY }}>
               –
             </span>
-            <span className={cn(aWon && 'text-[#7D8190]')}>{goalsB}</span>
+            <span className={cn(aWon && 'text-ink-faint')}>{goalsB}</span>
           </div>
         ) : (
           <span className="font-display text-[28px] font-extrabold" style={{ color: KIT_GREY }}>
@@ -243,7 +244,7 @@ export function FootballTabBar({ value, onChange }: { value: FootballTab; onChan
             onClick={() => onChange(tab.id)}
             className={cn(
               'flex h-10 items-center justify-center rounded-[10px] text-sm transition-colors',
-              active ? 'bg-card font-bold text-foreground' : 'font-semibold text-[#4A4E59] hover:text-foreground',
+              active ? 'bg-card font-bold text-foreground' : 'font-semibold text-ink-mid hover:text-foreground',
             )}
           >
             {tab.label}
@@ -361,7 +362,7 @@ export function GoalsAssistsCard({ match, detail }: { match: Match; detail: Foot
         <button
           type="button"
           onClick={() => setShowAll((v) => !v)}
-          className="mt-0.5 h-11 border-t border-[#F0ECE4] text-sm font-bold text-primary"
+          className="mt-0.5 h-11 border-t border-hairline text-sm font-bold text-primary"
         >
           {showAll ? 'Show fewer' : 'See everyone'}
         </button>
@@ -457,7 +458,7 @@ export function ScoreFlowCard({
       >
         {yTicks.map((v) => (
           <g key={v}>
-            <line x1={x0} x2={x1} y1={yFor(v)} y2={yFor(v)} stroke="#EEEAE2" strokeWidth="1" />
+            <line x1={x0} x2={x1} y1={yFor(v)} y2={yFor(v)} stroke="var(--gridline)" strokeWidth="1" />
             <text x={x0 - 8} y={yFor(v) + 4} textAnchor="end" fontSize="11" className="fill-muted-foreground">
               {v}
             </text>
@@ -576,7 +577,7 @@ export function CommentsPreviewCard({
               <b className="font-bold">{latest.author.name}</b>{' '}
               <span className="text-muted-foreground">· {relativeTime(latest.created_at)}</span>
             </span>
-            <span className="line-clamp-3 text-sm text-[#3D404A]">{latest.text}</span>
+            <span className="line-clamp-3 text-sm text-ink-soft">{latest.text}</span>
           </span>
         </button>
       )}
@@ -652,16 +653,16 @@ function EventIcon({ kind, index }: { kind: FootballEventKind; index: number }) 
   }
   if (CARD_KINDS.includes(kind)) {
     return (
-      <span className="box-border flex size-[30px] shrink-0 items-center justify-center rounded-full border border-[#E4E0D7] bg-card">
+      <span className="box-border flex size-[30px] shrink-0 items-center justify-center rounded-full border border-rule bg-card">
         <span
           className="h-[15px] w-[11px] rotate-[8deg] rounded-[2px]"
-          style={{ background: kind === 'yellow_card' ? '#F2C230' : '#D2461B' }}
+          style={{ background: kind === 'yellow_card' ? 'var(--gold)' : 'var(--destructive)' }}
         />
       </span>
     )
   }
   return (
-    <span className="flex size-[30px] shrink-0 items-center justify-center rounded-full bg-[#EEEAE2] text-[#3D404A]">
+    <span className="flex size-[30px] shrink-0 items-center justify-center rounded-full bg-chip text-ink-soft">
       <SubIcon />
     </span>
   )
@@ -783,7 +784,7 @@ export function FootballTimeline({
             onClick={() => setFilter(f.id)}
             className={cn(
               'box-border h-9 rounded-full border px-3.5 text-sm font-bold',
-              filter === f.id ? 'border-foreground bg-foreground text-background' : 'border-[#DCD7CC] bg-card text-foreground',
+              filter === f.id ? 'border-foreground bg-foreground text-background' : 'border-edge bg-card text-foreground',
             )}
           >
             {f.label}
@@ -801,15 +802,15 @@ export function FootballTimeline({
               <div key={`m${i}`} className="grid grid-cols-[44px_32px_minmax(0,1fr)] gap-x-2.5 pr-2.5 pl-1.5">
                 <span />
                 <div className="flex flex-col items-center">
-                  <span className={cn('h-2.5 w-0.5', first ? 'bg-transparent' : 'bg-[#E4E0D7]')} />
+                  <span className={cn('h-2.5 w-0.5', first ? 'bg-transparent' : 'bg-rule')} />
                   <span className="size-3 rounded-full bg-foreground" />
-                  <span className={cn('h-2.5 w-0.5', last ? 'bg-transparent' : 'bg-[#E4E0D7]')} />
+                  <span className={cn('h-2.5 w-0.5', last ? 'bg-transparent' : 'bg-rule')} />
                 </div>
                 <div className="flex items-center">
                   <span className="flex h-7 items-center rounded-full bg-foreground px-3 text-[13px] font-bold text-background">
                     {item.label}
                     {item.score && (
-                      <span className="ml-1 font-medium text-[#C9CCD4]">{`· ${item.score[0]}–${item.score[1]}`}</span>
+                      <span className="ml-1 font-medium text-ink-ghost">{`· ${item.score[0]}–${item.score[1]}`}</span>
                     )}
                   </span>
                 </div>
@@ -837,9 +838,9 @@ export function FootballTimeline({
                 <span className="text-sm font-bold">{eventClockLabel(event, pt)}</span>
               </div>
               <div className="flex flex-col items-center">
-                <span className={cn('w-0.5 flex-1', first ? 'bg-transparent' : 'bg-[#E4E0D7]')} />
+                <span className={cn('w-0.5 flex-1', first ? 'bg-transparent' : 'bg-rule')} />
                 <EventIcon kind={event.kind} index={idx} />
-                <span className={cn('w-0.5 flex-1', last ? 'bg-transparent' : 'bg-[#E4E0D7]')} />
+                <span className={cn('w-0.5 flex-1', last ? 'bg-transparent' : 'bg-rule')} />
               </div>
               <div className="flex min-w-0 flex-col justify-center gap-px py-3">
                 <span className="flex items-baseline text-[15px] leading-snug font-semibold">
@@ -873,7 +874,7 @@ export function FootballTimeline({
           <button
             type="button"
             onClick={() => setExpanded(true)}
-            className="-mt-2.5 h-12 rounded-[14px] border border-[#DCD7CC] bg-card text-sm font-bold"
+            className="-mt-2.5 h-12 rounded-[14px] border border-edge bg-card text-sm font-bold"
           >
             Show earlier · {hidden} more
           </button>
@@ -984,7 +985,7 @@ export function FootballPlayersTab({
     const userId = p.member.type === 'User' ? p.member.user_id : undefined
     const line = pending ? 'Invited' : statsLine(s?.goals ?? 0, s?.assists ?? 0)
     return (
-      <div key={p.member.id} className={cn('flex min-h-16 items-center gap-3 px-4 py-2.5', i > 0 && 'border-t border-[#F0ECE4]')}>
+      <div key={p.member.id} className={cn('flex min-h-16 items-center gap-3 px-4 py-2.5', i > 0 && 'border-t border-hairline')}>
         {userId ? (
           <Link to={`/users/${userId}`} className="shrink-0">
             <PersonAvatar name={name} imageUrl={memberAvatarUrl(p.member)} size={40} />
@@ -1006,11 +1007,11 @@ export function FootballPlayersTab({
                 key={ci}
                 aria-label={color === 'yellow' ? 'Yellow card' : 'Red card'}
                 className="ml-1.5 inline-block h-3 w-[9px] rounded-[2px] align-[-1px]"
-                style={{ background: color === 'yellow' ? '#F2C230' : '#D2461B' }}
+                style={{ background: color === 'yellow' ? 'var(--gold)' : 'var(--destructive)' }}
               />
             ))}
             {roleTag && (
-              <span className="ml-1.5 inline-flex h-5 items-center rounded-full bg-muted px-[7px] align-[1px] text-[11px] font-bold text-[#3D404A]">
+              <span className="ml-1.5 inline-flex h-5 items-center rounded-full bg-muted px-[7px] align-[1px] text-[11px] font-bold text-ink-soft">
                 {roleTag.charAt(0).toUpperCase() + roleTag.slice(1)}
               </span>
             )}
@@ -1032,17 +1033,17 @@ export function FootballPlayersTab({
   return (
     <>
       {top && (
-        <section className="flex items-center gap-3.5 rounded-[20px] bg-foreground px-[18px] py-4 text-background">
+        <section className="flex items-center gap-3.5 rounded-[20px] bg-spotlight px-[18px] py-4 text-spotlight-foreground">
           <PersonAvatar
             name={memberName(top.player.member)}
             imageUrl={memberAvatarUrl(top.player.member)}
             size={48}
-            className="shadow-[0_0_0_3px_#F2C230]"
+            className="shadow-[0_0_0_3px_var(--gold)]"
           />
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span className="text-xs font-bold tracking-[0.5px] text-[#F2C230]">TOP PERFORMER</span>
+            <span className="text-xs font-bold tracking-[0.5px] text-gold">TOP PERFORMER</span>
             <span className="truncate text-[17px] font-bold">{memberName(top.player.member)}</span>
-            <span className="text-[13px] text-[#C9CCD4]">
+            <span className="text-[13px] text-spotlight-muted">
               {top.total} goal {top.total === 1 ? 'involvement' : 'involvements'}
               {topSide ? ` for ${sideLabel(topSide, '')}` : ''}
             </span>
@@ -1071,7 +1072,7 @@ export function FootballPlayersTab({
               )}
               {players.map(renderRow)}
               {unnamed > 0 && (
-                <div className={cn('flex min-h-16 items-center gap-3 px-4 py-2.5', players.length > 0 && 'border-t border-[#F0ECE4]')}>
+                <div className={cn('flex min-h-16 items-center gap-3 px-4 py-2.5', players.length > 0 && 'border-t border-hairline')}>
                   <span
                     className="box-border flex size-10 shrink-0 items-center justify-center rounded-full border-[1.5px] border-dashed text-base font-bold text-muted-foreground"
                     style={{ borderColor: KIT_GREY }}
@@ -1135,7 +1136,7 @@ export function MatchActionBar({
         type="button"
         aria-label={`Comments, ${commentCount}`}
         onClick={onComments}
-        className="relative box-border flex size-[52px] shrink-0 items-center justify-center rounded-2xl border border-[#DCD7CC] bg-card"
+        className="relative box-border flex size-[52px] shrink-0 items-center justify-center rounded-2xl border border-edge bg-card"
       >
         <MessageCircle className="size-[22px]" />
         {commentCount > 0 && (
@@ -1148,7 +1149,7 @@ export function MatchActionBar({
         type="button"
         aria-label="Share"
         onClick={onShare}
-        className="box-border flex size-[52px] shrink-0 items-center justify-center rounded-2xl border border-[#DCD7CC] bg-card"
+        className="box-border flex size-[52px] shrink-0 items-center justify-center rounded-2xl border border-edge bg-card"
       >
         <Share className="size-[22px]" />
       </button>
@@ -1172,7 +1173,7 @@ export function AddEventButton({ to }: { to: string }) {
   return (
     <Link
       to={to}
-      className="flex h-[52px] flex-1 items-center justify-center gap-2 rounded-2xl border border-[#DCD7CC] bg-card text-base font-bold text-foreground"
+      className="flex h-[52px] flex-1 items-center justify-center gap-2 rounded-2xl border border-edge bg-card text-base font-bold text-foreground"
     >
       <Plus className="size-5" strokeWidth={2.5} />
       Add event

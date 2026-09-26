@@ -45,6 +45,27 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  --color-hairline: var(--hairline);
+  --color-rule: var(--rule);
+  --color-edge: var(--edge);
+  --color-gridline: var(--gridline);
+  --color-chip: var(--chip);
+  --color-chip-soft: var(--chip-soft);
+  --color-placeholder: var(--placeholder);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-mid: var(--ink-mid);
+  --color-ink-faint: var(--ink-faint);
+  --color-ink-ghost: var(--ink-ghost);
+  --color-kit-grey: var(--kit-grey);
+  --color-assist: var(--assist);
+  --color-assist-foreground: var(--assist-foreground);
+  --color-wicket-tint: var(--wicket-tint);
+  --color-wicket-foreground: var(--wicket-foreground);
+  --color-spotlight: var(--spotlight);
+  --color-spotlight-foreground: var(--spotlight-foreground);
+  --color-spotlight-muted: var(--spotlight-muted);
+  --color-gold: var(--gold);
+  --color-avatar-ink: var(--avatar-ink);
   --radius-2xl: calc(var(--radius) + 8px);
   --radius-3xl: calc(var(--radius) + 12px);
   --radius-4xl: calc(var(--radius) + 16px);
@@ -100,6 +121,29 @@
   --sidebar-accent-foreground: oklch(0.416 0.173 265.6);
   --sidebar-border: oklch(0.932 0.013 86.8);
   --sidebar-ring: oklch(0.5 0.211 265.8);
+  /* Redesign accents from the canvas (match pages): light values from the
+   * mocks, dark values from MainDark.dc.html's palette. */
+  --hairline: #F0ECE4; /* row dividers inside cards */
+  --rule: #E4E0D7; /* timeline rails */
+  --edge: #DCD7CC; /* outlined buttons and filter chips */
+  --gridline: #EEEAE2; /* chart grid lines */
+  --chip: #EEEAE2; /* neutral event icons and dot balls */
+  --chip-soft: #F1EEE7; /* run balls */
+  --placeholder: #CFC9BD; /* dashed "still to come" slots */
+  --ink-soft: #3D404A; /* secondary body text */
+  --ink-mid: #4A4E59; /* inactive tab labels */
+  --ink-faint: #7D8190; /* losing scores */
+  --ink-ghost: #C9CCD4; /* running score beside timeline events */
+  --kit-grey: #A9A499; /* side B kit ring and chart line */
+  --assist: #1F9E8A; /* assists bars */
+  --assist-foreground: #17796A; /* assists figures */
+  --wicket-tint: #FBE4DA; /* wicket rows */
+  --wicket-foreground: #9A3210; /* text on wicket rows */
+  --spotlight: #16171A; /* top performer card */
+  --spotlight-foreground: #FFFFFF;
+  --spotlight-muted: #C9CCD4;
+  --gold: #F2C230; /* top performer ring, yellow cards */
+  --avatar-ink: #16171A; /* initials on the pastel avatar tints */
 }
 
 .dark {
@@ -143,6 +187,27 @@
   --sidebar-accent-foreground: oklch(0.748 0.129 270.8);
   --sidebar-border: oklch(0.294 0.013 272.9);
   --sidebar-ring: oklch(0.5 0.211 265.8);
+  --hairline: #2A2C33;
+  --rule: #34363E;
+  --edge: #3A3D46;
+  --gridline: #2A2C33;
+  --chip: #2E3038;
+  --chip-soft: #2A2C33;
+  --placeholder: #4A4D57;
+  --ink-soft: #D0D2D8;
+  --ink-mid: #B8BBC4;
+  --ink-faint: #8E92A0;
+  --ink-ghost: #5A5E6A;
+  --kit-grey: #8E92A0;
+  --assist: #3DBFA8;
+  --assist-foreground: #5CCFBB;
+  --wicket-tint: #3A241C;
+  --wicket-foreground: #FF9E7A;
+  --spotlight: #2A2C33;
+  --spotlight-foreground: #F2F1ED;
+  --spotlight-muted: #A3A7B3;
+  --gold: #F2C230;
+  --avatar-ink: #16171A;
 }
 
 @layer base {

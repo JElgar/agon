@@ -483,6 +483,152 @@ function MatchDetail({
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
+      {match.match_type === 'football' ? (
+        <>
+          {/* Football's restyled header: icon-only back button (no chrome
+              competing with the title below), edit/calendar actions kept but
+              demoted to small icon buttons — matches the redesign canvas's
+              plain back/more-options row (`MatchFootball.dc.html`), which has
+              no sport-badge chip in it (that's implied by the page itself). */}
+          <div className="flex items-center justify-between">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-11 rounded-full"
+              onClick={onBack}
+              aria-label="Back"
+            >
+              <ChevronLeft className="size-5" />
+            </Button>
+            {!editingDetails && (
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-11 rounded-full text-muted-foreground"
+                  aria-label="Add to calendar"
+                  onClick={() =>
+                    downloadMatchIcs(match, {
+                      title: match.name,
+                      description: `${nameA} vs ${nameB}`,
+                    })
+                  }
+                >
+                  <CalendarPlus className="size-4" />
+                </Button>
+                {canEdit && !cancelled && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="size-11 rounded-full text-muted-foreground"
+                    aria-label="Edit match details"
+                    onClick={() => setEditingDetails(true)}
+                  >
+                    <Pencil className="size-4" />
+                  </Button>
+                )}
+              </div>
+            )}
+          </div>
+
+          <MatchHeaderCarousel photos={match.header_photos} />
+
+          {editingDetails ? (
+            <MatchDetailsEditor match={match} onDone={() => setEditingDetails(false)} />
+          ) : (
+            <>
+              {/* Title block — the match name reads as the page's actual
+                  heading here (`font-display`, large), not small meta text,
+                  per the mock's big "Monday Night Football" h1 with the
+                  when/where as a muted line underneath. */}
+              <div className="px-1">
+                <h1 className="font-display text-[26px] leading-tight font-extrabold tracking-tight">
+                  {match.name}
+                </h1>
+                <p className="mt-1 flex items-center gap-1 text-sm text-muted-foreground">
+                  <CalendarClock className="size-3.5 shrink-0" />
+                  {scheduledDateTime(match.starts_at)}
+                </p>
+                {match.location && (
+                  <p className="mt-0.5 flex items-center gap-1 text-sm text-muted-foreground">
+                    <MapPin className="size-3.5 shrink-0" />
+                    <span className="truncate">{match.location.text}</span>
+                    {directionsUrl(match.location) && (
+                      <a
+                        href={directionsUrl(match.location)}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="shrink-0 text-primary hover:underline"
+                      >
+                        Get directions
+                      </a>
+                    )}
+                  </p>
+                )}
+              </div>
+
+              {/* The score itself is its own standalone hero card — the
+                  mock's "Full time" card sits on its own, not sharing a
+                  wrapper with meta text/edit buttons the way the generic
+                  layout below does. */}
+              <div className="rounded-2xl border bg-card p-5">
+                {footballState ? (
+                  <LiveFootballScoreHeader match={orderedMatch} state={footballState} />
+                ) : (
+                  <FootballScoreHeader
+                    sideA={sideA}
+                    sideB={sideB}
+                    nameA={nameA}
+                    nameB={nameB}
+                    aWon={aWon}
+                    bWon={bWon}
+                    scoreInfo={scoreInfo}
+                    headline={headline}
+                    showPlayerCounts={showPlayerCounts}
+                    match={match}
+                  />
+                )}
+
+                {finishedFootballGoals && (
+                  <FootballScorersBySide
+                    goals={finishedFootballGoals}
+                    match={orderedMatch}
+                    players={finishedFootballScorePlayers}
+                    periodTimes={finishedFootballPeriodTimes}
+                    sideA={sideA}
+                    sideB={sideB}
+                    className="mt-3 text-xs"
+                  />
+                )}
+
+                <div className="mt-3 flex items-center justify-between border-t pt-3">
+                  <StatusBadge status={matchBadgeStatus(match)} />
+                  <div className="flex items-center gap-1">
+                    {canEdit && isLiveSport && !cancelled && match.status !== 'completed' && (
+                      <Button asChild variant="ghost" size="sm" className="h-7 gap-1 px-2 text-xs text-primary">
+                        <Link to={liveEntryPath}>
+                          <Radio className="size-3" /> {hasLiveState ? 'Continue scoring' : 'Score live'}
+                        </Link>
+                      </Button>
+                    )}
+                    {canEdit && !cancelled && !hasLiveState && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 px-2 text-xs text-muted-foreground"
+                        onClick={() => setEditingResult(true)}
+                      >
+                        {scoreInfo ? 'Edit result' : 'Add result'}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+        </>
+      ) : (
+        <>
       <div className="flex items-center justify-between">
         <Button variant="ghost" size="sm" onClick={onBack}>
           <ChevronLeft className="size-4" /> Back
@@ -569,19 +715,6 @@ function MatchDetail({
             <div className="mt-3">
               <CricketScoreBlock match={orderedMatch} score={cricketScore} />
             </div>
-          ) : match.match_type === 'football' ? (
-            <FootballScoreHeader
-              sideA={sideA}
-              sideB={sideB}
-              nameA={nameA}
-              nameB={nameB}
-              aWon={aWon}
-              bWon={bWon}
-              scoreInfo={scoreInfo}
-              headline={headline}
-              showPlayerCounts={showPlayerCounts}
-              match={match}
-            />
           ) : (
             <div className="mt-3 flex items-center justify-between">
               <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -704,6 +837,8 @@ function MatchDetail({
             </div>
           </div>
         </div>
+      )}
+        </>
       )}
 
       {/* Result editor — opens below the card when editing the score. */}

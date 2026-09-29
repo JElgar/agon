@@ -75,7 +75,7 @@ import { useToggleLike } from '@/hooks/useToggleLike'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
 import { InvitePromptDialog } from '@/components/agon/InvitePromptDialog'
 import { useInvitePrompt } from '@/hooks/useInvitePrompt'
-import { cricketFormat, footballFormat } from '@/lib/matchFormat'
+import { cricketFormat, footballFormat, netballFormat } from '@/lib/matchFormat'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import {
@@ -106,6 +106,14 @@ import {
   RunsOverTimeCard,
 } from '@/components/agon/cricket/CricketMatchView'
 import { CRICKET_TABS, cricketRulesSummary } from '@/components/agon/cricket/cricketMeta'
+import {
+  NetballPlayersTab,
+  NetballScoreFlowCard,
+  NetballTimeline,
+  QuarterScoresCard,
+  TopScorersCard,
+} from '@/components/agon/netball/NetballMatchView'
+import { netballLiveLabel, netballRulesSummary } from '@/components/agon/netball/netballMeta'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -344,12 +352,15 @@ function MatchDetail({
   }))
 
   // Football and cricket use the redesigned tabbed view (see the branch below).
-  const redesigned = match.match_type === 'football' || match.match_type === 'cricket'
+  const redesigned =
+    match.match_type === 'football' || match.match_type === 'cricket' || match.match_type === 'netball'
   const isCricket = match.match_type === 'cricket'
+  const isNetball = match.match_type === 'netball'
+  const sportLabel = isCricket ? 'Cricket' : isNetball ? 'Netball' : 'Football'
   const cricketFmt = cricketFormat(match.format)
   const matchView: 'finished' | 'live' | 'scheduled' | 'cancelled' = cancelled
     ? 'cancelled'
-    : footballState || cricketState || match.status === 'in_progress'
+    : footballState || cricketState || netballState || match.status === 'in_progress'
       ? 'live'
       : scoreInfo
         ? 'finished'
@@ -357,8 +368,10 @@ function MatchDetail({
   // Football keeps the sides in their stored order (not viewer-first) so each
   // side's kit colour stays the same for everyone looking at the match.
   const [kitSideA, kitSideB] = match.sides
-  const footballGoalsA = (footballState ? footballState.score : headline)[kitSideA?.id ?? ''] ?? 0
-  const footballGoalsB = (footballState ? footballState.score : headline)[kitSideB?.id ?? ''] ?? 0
+  // Goals for the hero card: football's or netball's live tally, else the result.
+  const liveTally = footballState?.score ?? netballState?.score
+  const footballGoalsA = (liveTally ?? headline)[kitSideA?.id ?? ''] ?? 0
+  const footballGoalsB = (liveTally ?? headline)[kitSideB?.id ?? ''] ?? 0
   const myPlayer = match.players.find((p) => p.member.type === 'User' && p.member.user_id === currentUserId)
   const metaTeamSide = match.sides.find((s) => s.team_name)
 
@@ -497,7 +510,7 @@ function MatchDetail({
                     )
                   )}
                   <span className="truncate text-sm text-muted-foreground">
-                    {metaTeamSide?.team_name ?? (isCricket ? 'Cricket' : 'Football')} · {scheduledDateTime(match.starts_at)}
+                    {metaTeamSide?.team_name ?? sportLabel} · {scheduledDateTime(match.starts_at)}
                   </span>
                 </div>
                 <h1 className="font-display text-[30px] leading-tight font-extrabold tracking-[-0.4px]">{match.name}</h1>
@@ -527,8 +540,10 @@ function MatchDetail({
                 goalsB={footballGoalsB}
                 state={matchView}
                 finishedLabel={isCricket ? 'Result' : undefined}
-                liveLabel={footballState ? liveClockLabel(footballState) : 'Live'}
-                kickoffLabel={`${isCricket ? 'Start' : 'Kick-off'} ${new Date(match.starts_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`}
+                liveLabel={
+                  footballState ? liveClockLabel(footballState) : netballState ? netballLiveLabel(netballState) : 'Live'
+                }
+                kickoffLabel={`${isCricket ? 'Start' : isNetball ? 'Centre pass' : 'Kick-off'} ${new Date(match.starts_at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`}
               />
               )}
             </>
@@ -562,11 +577,23 @@ function MatchDetail({
               {isCricket && cricketInnings && (
                 <RunsOverTimeCard match={match} innings={cricketInnings} format={cricketFmt} live={matchView === 'live'} />
               )}
-              {!isCricket && myPlayer?.side_id && footballEventSource && (matchView === 'finished' || matchView === 'live') && (
+              {isNetball && netballQuarterScore && (
+                <QuarterScoresCard match={match} score={netballQuarterScore} live={matchView === 'live'} />
+              )}
+              {isNetball && netballEventSource && <TopScorersCard match={match} detail={netballEventSource} />}
+              {isNetball && netballQuarterScore && (
+                <NetballScoreFlowCard
+                  match={match}
+                  score={netballQuarterScore}
+                  format={netballFormat(match.format)}
+                  live={matchView === 'live'}
+                />
+              )}
+              {match.match_type === 'football' && myPlayer?.side_id && footballEventSource && (matchView === 'finished' || matchView === 'live') && (
                 <YourGameCard match={match} me={myPlayer} detail={footballEventSource} />
               )}
-              {!isCricket && footballEventSource && <GoalsAssistsCard match={match} detail={footballEventSource} />}
-              {!isCricket && footballEventSource && (
+              {match.match_type === 'football' && footballEventSource && <GoalsAssistsCard match={match} detail={footballEventSource} />}
+              {match.match_type === 'football' && footballEventSource && (
                 <ScoreFlowCard
                   match={match}
                   detail={footballEventSource}
@@ -584,7 +611,13 @@ function MatchDetail({
                 <MatchFormatCard match={match} canEdit={canEdit && !cancelled} />
               ) : (
                 <MatchRulesRow
-                  summary={isCricket ? cricketRulesSummary(cricketFmt) : footballRulesSummary(match)}
+                  summary={
+                    isCricket
+                      ? cricketRulesSummary(cricketFmt)
+                      : isNetball
+                        ? netballRulesSummary(netballFormat(match.format))
+                        : footballRulesSummary(match)
+                  }
                   onClick={canEdit && !cancelled ? () => setRulesOpen(true) : undefined}
                 />
               )}
@@ -612,6 +645,21 @@ function MatchDetail({
                 format={cricketFmt}
                 live={matchView === 'live'}
               />
+            ) : isNetball ? (
+              netballEventSource ? (
+                <NetballTimeline
+                  match={match}
+                  detail={netballEventSource}
+                  currentUserId={currentUserId}
+                  finished={matchView === 'finished'}
+                />
+              ) : (
+                <section className="rounded-[20px] border bg-card px-[18px] py-6 text-center text-sm text-muted-foreground">
+                  {matchView === 'scheduled'
+                    ? 'Goals and fouls will show up here once the match starts.'
+                    : 'No goal-by-goal events were recorded for this match.'}
+                </section>
+              )
             ) : footballEventSource ? (
               <FootballTimeline
                 match={match}
@@ -630,6 +678,16 @@ function MatchDetail({
           {matchTab === 'players' &&
             (editingRoster ? (
               <MatchRosterEditor match={match} onDone={() => setEditingRoster(false)} />
+            ) : isNetball ? (
+              <NetballPlayersTab
+                match={match}
+                detail={netballEventSource}
+                currentUserId={currentUserId}
+                scoreA={footballGoalsA}
+                scoreB={footballGoalsB}
+                finished={matchView === 'finished'}
+                footer={playersFooter}
+              />
             ) : isCricket ? (
               <CricketPlayersTab
                 match={match}

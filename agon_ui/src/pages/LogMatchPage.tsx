@@ -467,8 +467,8 @@ export function LogMatchPage() {
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-3">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Log a match</h1>
-        <Button variant="ghost" size="sm" onClick={() => navigate('/feed')}>
+        <h1 className="font-display text-2xl font-extrabold">Log a match</h1>
+        <Button variant="ghost" shape="pill" size="sm" onClick={() => navigate('/feed')}>
           Cancel
         </Button>
       </div>
@@ -537,7 +537,7 @@ export function LogMatchPage() {
             }}
           />
           <div className="flex items-center justify-center">
-            <span className="rounded-full border border-primary/30 bg-accent px-3 py-0.5 text-[11px] font-medium text-primary">
+            <span className="rounded-full border border-primary/30 bg-accent px-3 py-0.5 text-[11px] font-semibold text-primary">
               vs
             </span>
           </div>
@@ -848,8 +848,9 @@ export function LogMatchPage() {
       )}
 
       <Button
-        className="mt-1"
+        className="mt-1 h-13 text-base"
         size="lg"
+        shape="pill"
         disabled={!valid || mutation.isPending}
         onClick={handleSubmit}
       >
@@ -874,7 +875,7 @@ function Section({
   children: React.ReactNode
 }) {
   return (
-    <section className="rounded-xl border bg-card p-4">
+    <section className="rounded-2xl border bg-card p-4">
       <div className="mb-3 flex items-center gap-2">
         <span
           className={cn(
@@ -886,7 +887,7 @@ function Section({
         >
           {done ? <Check className="size-3" /> : (num ?? '·')}
         </span>
-        <h2 className="text-sm font-medium">{title}</h2>
+        <h2 className="font-display text-[15px] font-bold">{title}</h2>
       </div>
       {children}
     </section>
@@ -899,7 +900,7 @@ function Section({
  */
 function LockedRow({ label, hint }: { label: string; hint?: string }) {
   return (
-    <div className="flex items-center gap-2 rounded-xl border bg-muted/40 px-4 py-3 text-muted-foreground">
+    <div className="flex items-center gap-2 rounded-2xl border bg-muted/40 px-4 py-3 text-muted-foreground">
       <span className="text-sm">{label}</span>
       {hint && <span className="text-xs">{hint}</span>}
       <Lock className="ml-auto size-3.5" />

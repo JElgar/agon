@@ -10,16 +10,24 @@ import Toybox.WatchUi;
 //! which isn't knowable at resource-compile time the way a fixed menu.xml
 //! is.
 //!
-//! Each step uses `WatchUi.switchToView` (not `pushView`) to move to the
-//! next one, and the final step `switchToView`s back to `agonView`. The
-//! first version of this chained `pushView`s instead, assuming each menu
-//! would pop itself on selection and land the flow back where it started
-//! once the last one did the same — confirmed wrong on a real device: it
-//! oscillated between the scorer and assist screens instead.
-//! `switchToView` sidesteps the question entirely by replacing the whole
-//! view stack outright at every step, which is also exactly the (already
-//! working) mechanism `SportMenuDelegate` uses to get from the sport
-//! picker into the score screen in the first place.
+//! Side -> scorer and scorer -> assist each use `WatchUi.pushView` to
+//! layer the next step on top of the one before it, so Back steps
+//! backward through side/scorer/assist one screen at a time instead of
+//! exiting straight past the whole flow. The final step (assist picked)
+//! instead `switchToView`s all the way back to a fresh `agonView`,
+//! collapsing the whole pushed chain at once — same mechanism
+//! `SportMenuDelegate` uses to get from the sport picker into the score
+//! screen, appropriate here too since the flow is actually finished and
+//! there's nothing left to step back into.
+//!
+//! An earlier version of this chain also used `pushView` but assumed each
+//! menu would pop itself on selection, landing the flow back where it
+//! started once the last one did the same — confirmed wrong on a real
+//! device: it oscillated between the scorer and assist screens instead.
+//! The difference here is that nothing is ever popped mid-flow (`Menu2`
+//! doesn't self-dismiss on select — see `agonMenuDelegate.onSelect`'s own
+//! doc comment); each step only ever pushes forward, so there's no pop to
+//! race against.
 //!
 //! Uses `WatchUi.Menu2` (not the legacy `WatchUi.Menu` this flow used
 //! originally) — `Menu2` is the round-display-aware widget (see
@@ -92,7 +100,7 @@ class GoalSideMenuDelegate extends WatchUi.Menu2InputDelegate {
         // The id IS :home or :away — that's the side value the rest of
         // the flow needs, no resolving required.
         var side = item.getId() as Symbol;
-        WatchUi.switchToView(
+        WatchUi.pushView(
             buildPlayerMenu("Scorer", side, "Unknown", :unknown, null),
             new GoalScorerMenuDelegate(side),
             WatchUi.SLIDE_UP
@@ -111,7 +119,7 @@ class GoalScorerMenuDelegate extends WatchUi.Menu2InputDelegate {
 
     function onSelect(item as WatchUi.MenuItem) as Void {
         var scorer = playerIdFromSelection(item.getId(), :unknown);
-        WatchUi.switchToView(
+        WatchUi.pushView(
             // Exclude the scorer — a player can't assist their own goal.
             // scorer is null when they were left "Unknown", in which case
             // there's nothing to exclude.

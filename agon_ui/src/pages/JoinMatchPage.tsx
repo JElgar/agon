@@ -284,7 +284,7 @@ export function JoinMatchPage() {
       {join.isError && (
         <p className="mb-3 text-sm text-destructive">Something went wrong. Try again.</p>
       )}
-      {conflict && (
+      {conflict && !offersWaitlist(conflict) && (
         <p className="mb-3 text-sm text-destructive">{conflict.message}</p>
       )}
       {joinWaitlist.isError && (
@@ -294,16 +294,27 @@ export function JoinMatchPage() {
       )}
 
       {conflict && offersWaitlist(conflict) ? (
-        <Button
-          className="w-full"
-          variant="outline"
-          shape="pill"
-          size="lg"
-          disabled={joinWaitlist.isPending}
-          onClick={() => joinWaitlist.mutate()}
-        >
-          {joinWaitlist.isPending ? 'Joining waiting list…' : 'Join the waiting list'}
-        </Button>
+        <div className="mb-4 w-full space-y-3">
+          <div className="flex items-center gap-2 rounded-xl bg-destructive/10 p-2.5 text-left">
+            <span className="shrink-0 rounded-full bg-destructive/15 px-2 py-0.5 text-xs font-semibold text-destructive">
+              Full
+            </span>
+            <p className="text-sm text-destructive">{conflict.message}</p>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            You'll be added automatically if a spot opens up.
+          </p>
+          <Button
+            className="w-full"
+            variant="outline"
+            shape="pill"
+            size="lg"
+            disabled={joinWaitlist.isPending}
+            onClick={() => joinWaitlist.mutate()}
+          >
+            {joinWaitlist.isPending ? 'Joining waiting list…' : 'Join the waiting list'}
+          </Button>
+        </div>
       ) : (
         <Button
           className="w-full"

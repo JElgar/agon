@@ -33,12 +33,30 @@ type Kind = components['schemas']['NotificationKind']
 /** Page size for notifications. The API caps at 50; 20 matches its default. */
 const PAGE_SIZE = 20
 
+/** A notification stays in "Needs your reply" while it still has an action
+ *  attached to it — a pending match/team invite, or a score awaiting
+ *  confirmation. Everything else is a read-only update. */
+function needsReply(kind: Kind): boolean {
+  switch (kind.type) {
+    case 'MatchInvitation':
+    case 'TeamInvitation':
+      return kind.status === 'pending'
+    case 'ScoreSubmitted':
+      return kind.needs_confirmation
+    default:
+      return false
+  }
+}
+
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000
+
 /**
  * The notifications inbox: the viewer's notifications newest-first with
- * cursor-based infinite scroll. Match/team invitations surface inline
- * Confirm/Decline actions (wired to `POST /invitations/:id/respond`); the rest
- * offer a "View" jump to the referenced entity. Opening or acting on a
- * notification marks it read, and "Mark all read" clears the lot.
+ * cursor-based infinite scroll, grouped into "Needs your reply" / "This
+ * week" / "Earlier". Match/team invitations surface inline Confirm/Decline
+ * actions (wired to `POST /invitations/:id/respond`); the rest offer a
+ * "View" jump to the referenced entity. Opening or acting on a notification
+ * marks it read, and "Mark all read" clears the lot.
  */
 export function NotificationsPage() {
   const navigate = useNavigate()
@@ -102,7 +120,7 @@ export function NotificationsPage() {
         <p className="mb-4 text-muted-foreground">
           Couldn't load your notifications.
         </p>
-        <Button variant="outline" onClick={() => query.refetch()}>
+        <Button variant="outline" shape="pill" onClick={() => query.refetch()}>
           Retry
         </Button>
       </div>
@@ -114,11 +132,11 @@ export function NotificationsPage() {
 
   if (items.length === 0) {
     return (
-      <div className="mx-auto max-w-xl">
+      <div className="mx-auto max-w-xl xl:max-w-[720px]">
         <PushNotificationsBanner />
         <div className="py-16 text-center">
           <Bell className="mx-auto mb-3 size-8 text-muted-foreground" />
-          <h2 className="mb-1 text-lg font-medium">No notifications yet</h2>
+          <h2 className="mb-1 font-display text-lg font-bold">No notifications yet</h2>
           <p className="text-sm text-muted-foreground">
             Match invites, follows, likes and comments show up here.
           </p>
@@ -127,15 +145,42 @@ export function NotificationsPage() {
     )
   }
 
+  const now = Date.now()
+  const groups: { title: string; items: Notification[] }[] = [
+    { title: 'Needs your reply', items: [] },
+    { title: 'This week', items: [] },
+    { title: 'Earlier', items: [] },
+  ]
+  for (const n of items) {
+    if (needsReply(n.kind as Kind)) {
+      groups[0].items.push(n)
+    } else if (now - new Date(n.created_at).getTime() < WEEK_MS) {
+      groups[1].items.push(n)
+    } else {
+      groups[2].items.push(n)
+    }
+  }
+
+  const rowProps = {
+    navigate,
+    respondToInvitation: (
+      invitationId: string,
+      response: components['schemas']['InvitationResponse'],
+    ) => respond.mutateAsync({ invitationId, response }),
+  }
+
   return (
-    <div className="mx-auto flex max-w-xl flex-col">
+    <div className="mx-auto flex max-w-xl flex-col xl:max-w-[720px]">
       <PushNotificationsBanner />
-      <div className="mb-2 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Notifications</h1>
+      <div className="mb-1 flex items-center justify-between">
+        <h1 className="font-display text-2xl font-extrabold xl:text-3xl">
+          Notifications
+        </h1>
         {hasUnread && (
           <Button
             variant="ghost"
             size="sm"
+            className="font-bold text-primary hover:text-primary xl:h-11 xl:rounded-full xl:border xl:border-input xl:bg-card xl:px-4 xl:text-foreground xl:hover:bg-accent xl:hover:text-foreground"
             disabled={markAllRead.isPending}
             onClick={() => markAllRead.mutate()}
           >
@@ -144,25 +189,35 @@ export function NotificationsPage() {
         )}
       </div>
 
-      <ul className="flex flex-col overflow-hidden rounded-xl border bg-card">
-        {items.map((n) => (
-          <NotificationRow
-            key={n.id}
-            notification={n}
-            navigate={navigate}
-            onMarkRead={() => {
-              if (!n.is_read) markRead.mutate(n.id)
-            }}
-            respondToInvitation={(invitationId, response) =>
-              respond.mutateAsync({ invitationId, response })
-            }
-          />
-        ))}
-      </ul>
+      <div className="flex flex-col gap-2.5">
+        {groups.map(
+          (group) =>
+            group.items.length > 0 && (
+              <div key={group.title} className="flex flex-col gap-2.5">
+                <h2 className="mt-2 pl-1 font-display text-[17px] font-bold">
+                  {group.title}
+                </h2>
+                <ul className="flex flex-col overflow-hidden rounded-2xl border bg-card">
+                  {group.items.map((n) => (
+                    <NotificationRow
+                      key={n.id}
+                      notification={n}
+                      onMarkRead={() => {
+                        if (!n.is_read) markRead.mutate(n.id)
+                      }}
+                      {...rowProps}
+                    />
+                  ))}
+                </ul>
+              </div>
+            ),
+        )}
+      </div>
 
       {query.hasNextPage && (
         <Button
           variant="outline"
+          shape="pill"
           className="mt-3"
           disabled={query.isFetchingNextPage}
           onClick={() => query.fetchNextPage()}
@@ -206,19 +261,19 @@ function NotificationRow({
   return (
     <li
       className={cn(
-        'flex gap-3 border-b px-4 py-3 last:border-b-0',
-        !notification.is_read && 'bg-primary/5',
+        'flex gap-3 border-b px-4 py-3.5 last:border-b-0',
+        !notification.is_read && 'bg-accent/60',
       )}
     >
       <div className="relative shrink-0">
         <Avatar name={view.actorName} imageUrl={view.actorImage} size="lg" />
         <span
           className={cn(
-            'absolute -bottom-0.5 -right-0.5 flex size-4 items-center justify-center rounded-full border-2 border-card text-primary-foreground',
+            'absolute -bottom-0.5 -right-0.5 flex size-5 items-center justify-center rounded-full border-2 border-card text-primary-foreground',
             view.badgeClass,
           )}
         >
-          <view.badgeIcon className="size-2.5" />
+          <view.badgeIcon className="size-3" />
         </span>
       </div>
 
@@ -226,11 +281,11 @@ function NotificationRow({
         <button
           type="button"
           onClick={open}
-          className="block text-left text-sm leading-snug"
+          className="block text-left text-[15px] leading-snug"
         >
           {view.message}
         </button>
-        <div className="mt-1 text-xs text-muted-foreground">
+        <div className="mt-0.5 text-[13px] text-muted-foreground">
           {formatDistanceToNow(new Date(notification.created_at), {
             addSuffix: true,
           })}
@@ -241,11 +296,12 @@ function NotificationRow({
           <div className="mt-2 flex flex-wrap gap-2">
             {view.actions.invitation && (
               <>
-                <Button size="sm" onClick={() => setAction('accept')}>
+                <Button size="sm" shape="pill" onClick={() => setAction('accept')}>
                   Confirm
                 </Button>
                 <Button
                   size="sm"
+                  shape="pill"
                   variant="outline"
                   onClick={() => setAction('decline')}
                 >
@@ -258,10 +314,11 @@ function NotificationRow({
                 userId={view.followBack.userId}
                 isFollowing={view.followBack.isFollowing}
                 size="sm"
+                shape="pill"
               />
             )}
             {view.href && (
-              <Button size="sm" variant="ghost" onClick={open}>
+              <Button size="sm" shape="pill" variant="ghost" onClick={open}>
                 {view.actions.viewLabel}
               </Button>
             )}
@@ -435,7 +492,7 @@ function describe(kind: Kind): NotificationView {
           </>
         ),
         badgeIcon: UserPlus,
-        badgeClass: 'bg-emerald-600',
+        badgeClass: 'bg-success',
         href,
         actions: { viewLabel: 'View' },
       }
@@ -451,7 +508,7 @@ function describe(kind: Kind): NotificationView {
           </>
         ),
         badgeIcon: UserPlus,
-        badgeClass: 'bg-emerald-600',
+        badgeClass: 'bg-success',
         href: `/users/${kind.follower.id}`,
         actions: { viewLabel: 'View profile' },
         followBack: {
@@ -470,7 +527,7 @@ function describe(kind: Kind): NotificationView {
           </>
         ),
         badgeIcon: Flame,
-        badgeClass: 'bg-amber-500',
+        badgeClass: 'bg-destructive',
         href: `/matches/${kind.match_id}`,
         actions: { viewLabel: 'View match' },
       }
@@ -541,7 +598,7 @@ function describe(kind: Kind): NotificationView {
           </>
         ),
         badgeIcon: CheckCircle2,
-        badgeClass: 'bg-emerald-600',
+        badgeClass: 'bg-success',
         href: `/matches/${kind.match_id}`,
         actions: { viewLabel: 'View match' },
       }
@@ -566,11 +623,11 @@ function describe(kind: Kind): NotificationView {
 /** Placeholder rows while the first page loads. */
 function NotificationsSkeleton() {
   return (
-    <div className="mx-auto max-w-xl">
-      <div className="mb-2 h-6 w-40 animate-pulse rounded bg-muted" aria-hidden />
-      <ul className="flex flex-col overflow-hidden rounded-xl border bg-card">
+    <div className="mx-auto max-w-xl xl:max-w-[720px]">
+      <div className="mb-2 h-7 w-40 animate-pulse rounded bg-muted" aria-hidden />
+      <ul className="flex flex-col overflow-hidden rounded-2xl border bg-card">
         {Array.from({ length: 5 }).map((_, i) => (
-          <li key={i} className="flex gap-3 border-b px-4 py-3 last:border-b-0">
+          <li key={i} className="flex gap-3 border-b px-4 py-3.5 last:border-b-0">
             <div className="size-9 shrink-0 animate-pulse rounded-full bg-muted" />
             <div className="flex-1 space-y-2 py-1">
               <div className="h-3 w-3/4 animate-pulse rounded bg-muted" />

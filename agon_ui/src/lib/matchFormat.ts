@@ -66,6 +66,26 @@ export function oversLimitLabel(fmt: CricketFormat): string {
   return fmt.overs_per_innings ? `${fmt.overs_per_innings} overs` : 'Unlimited overs'
 }
 
+/** Short cricket format tag for a feed card's subtitle line, e.g. "T20" —
+ *  matches the "Agon redesign" canvas's cricket tiles ("Cricket · T20 · ...").
+ *  Falls back to a bare overs count for a length that has no common
+ *  nickname, or "Test" for an unlimited/multi-innings format. */
+export function cricketFormatLabel(fmt: CricketFormat): string {
+  if (fmt.innings_per_side > 1) return 'Test'
+  switch (fmt.overs_per_innings) {
+    case 5:
+      return 'T5'
+    case 10:
+      return 'T10'
+    case 20:
+      return 'T20'
+    case 50:
+      return 'ODI'
+    default:
+      return fmt.overs_per_innings ? `${fmt.overs_per_innings} overs` : 'Unlimited overs'
+  }
+}
+
 /** The netball format to use — the match's own if set for netball, else the
  *  app default. */
 export function netballFormat(format: unknown): NetballFormat {

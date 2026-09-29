@@ -20,6 +20,13 @@ import { CricketScoreBlock } from './CricketScoreBlock'
 import { KnownPlayersRow } from './KnownPlayersRow'
 import { FootballScorersBySide } from './FootballScorersBySide'
 import { NetballScorersBySide } from './NetballScorersBySide'
+import {
+  FootballFeedCardBody,
+  CricketFeedCardBody,
+  NetballFeedCardBody,
+  TennisFeedCardBody,
+  SquashFeedCardBody,
+} from './RedesignedSportCard'
 import { useMatchScore } from '@/hooks/useMatchScore'
 import { footballScoreFrom } from '@/lib/liveScore'
 import { netballGoalsFromScore } from '@/lib/score'
@@ -36,6 +43,7 @@ import {
   headlineBySide,
   headlineLabel,
   setLine,
+  setsScoreFrom,
 } from '@/lib/score'
 import {
   myPendingInvitation,
@@ -182,13 +190,13 @@ function ShareMatchButton({ match }: { match: Match | FeedMatch | SearchMatch })
     <button
       type="button"
       onClick={share}
-      className="flex items-center transition-colors hover:text-primary"
+      className="flex size-11 items-center justify-center rounded-full transition-colors hover:text-primary"
       aria-label="Share match"
     >
       {copied ? (
-        <Check className="size-3.5 text-primary" />
+        <Check className="size-5 text-primary" />
       ) : (
-        <Share2 className="size-3.5" />
+        <Share2 className="size-5" />
       )}
     </button>
   )
@@ -222,8 +230,8 @@ export function MatchCard({
 
   const nameA = sideName(sideA, 'Side A')
   const nameB = sideName(sideB, 'Side B')
-  const aWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
-  const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
+  const aWon = !!scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
+  const bWon = !!scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
   // The "X beat Y" headline needs the winner named first, or it reads
   // backwards whenever B is the one who actually won (the score box below
   // stays in match.sides order regardless — only this headline reorders).
@@ -279,6 +287,12 @@ export function MatchCard({
   // `CricketLiveScoringPage`) — a manually-logged result still degrades to
   // the generic totals-only `Score::Simple`.
   const cricketScore = scoreInfo ? cricketScoreFrom(scoreInfo.score) : null
+  // A racket sport's set-by-set score, when there is one — feeds the
+  // tennis/badminton/squash/table_tennis redesigned card bodies below. No
+  // live poll backs this (see `TennisFeedCardBody`'s doc comment on why
+  // `isLiveSport` doesn't include these sports), so this is always the
+  // confirmed/pending score, never a live one.
+  const setsScore = scoreInfo ? setsScoreFrom(scoreInfo.score) : null
   // Cricket's own state-of-game line ("England won by 4 wickets" / "...need
   // 200 to win" / "...lead by 30 runs") is a strictly better headline than
   // the generic "beat"/"vs" — it carries the margin, not just the winner —
@@ -299,46 +313,142 @@ export function MatchCard({
   const { like_count, comment_count, i_liked } = match.social
   const toggleLike = useToggleLike(match)
 
+  // Every sport but "other" now gets the "Agon redesign" canvas's rebuilt
+  // card body (see `RedesignedSportCard`) — football and cricket first, then
+  // netball/tennis/badminton/squash/table_tennis per James's follow-up ask
+  // ("we've only done 2 sports so far, let's do the rest"). "other" has no
+  // mock and no natural sport family to borrow from, so it keeps the
+  // pre-existing generic header/score layout below.
+  const isRedesignedSport = match.match_type !== 'other'
+  const isLiveShadow = isRedesignedSport && isCurrentlyLive
+
   return (
     <div
       className={cn(
-        'overflow-hidden rounded-xl border bg-card text-card-foreground',
+        'overflow-hidden rounded-2xl border bg-card text-card-foreground',
         className,
       )}
+      style={isLiveShadow ? { boxShadow: 'inset 0 3px 0 0 var(--destructive)' } : undefined}
       {...props}
     >
-      {/* Header: the cricket state-of-game line when there is one, else the
-          usual "who beat who" + when + sport. */}
-      <button
-        type="button"
-        onClick={onOpen}
-        className="flex w-full items-start justify-between gap-3 p-3.5 text-left"
-      >
-        <p className="text-sm leading-snug">
-          {cricketDescription ? (
-            <span>{cricketDescription}</span>
-          ) : (
-            <>
-              <span className={cn(!!scoreInfo?.winnerSideId && 'font-medium')}>{winningTeamName}</span>
-              <span className="text-primary">
+      {isRedesignedSport ? (
+        match.match_type === 'football' ? (
+          <FootballFeedCardBody
+            match={orderedMatch}
+            sideA={sideA}
+            sideB={sideB}
+            nameA={nameA}
+            nameB={nameB}
+            isLive={isCurrentlyLive}
+            liveState={footballState}
+            finishedHeadline={headline}
+            finishedGoals={finishedFootballGoals}
+            finishedPlayers={finishedFootballScorePlayers}
+            finishedPeriodTimes={finishedFootballPeriodTimes}
+            aWon={aWon}
+            bWon={bWon}
+            startsAt={match.starts_at}
+            onOpen={onOpen}
+          />
+        ) : match.match_type === 'cricket' ? (
+          <CricketFeedCardBody
+            match={orderedMatch}
+            sideA={sideA}
+            sideB={sideB}
+            nameA={nameA}
+            nameB={nameB}
+            isLive={isCurrentlyLive}
+            liveState={cricketState}
+            finishedScore={!isCurrentlyLive ? cricketScore : null}
+            aWon={aWon}
+            bWon={bWon}
+            description={cricketDescription}
+            startsAt={match.starts_at}
+            onOpen={onOpen}
+          />
+        ) : match.match_type === 'netball' ? (
+          <NetballFeedCardBody
+            match={orderedMatch}
+            sideA={sideA}
+            sideB={sideB}
+            nameA={nameA}
+            nameB={nameB}
+            isLive={isCurrentlyLive}
+            liveState={netballState}
+            finishedHeadline={headline}
+            finishedGoals={finishedNetballGoals}
+            finishedPlayers={finishedNetballScorePlayers}
+            finishedPeriodTimes={finishedNetballPeriodTimes}
+            aWon={aWon}
+            bWon={bWon}
+            startsAt={match.starts_at}
+            onOpen={onOpen}
+          />
+        ) : match.match_type === 'tennis' || match.match_type === 'badminton' ? (
+          <TennisFeedCardBody
+            match={orderedMatch}
+            sideA={sideA}
+            sideB={sideB}
+            nameA={nameA}
+            nameB={nameB}
+            sport={match.match_type}
+            score={setsScore}
+            aWon={aWon}
+            bWon={bWon}
+            isLive={false}
+            startsAt={match.starts_at}
+            onOpen={onOpen}
+          />
+        ) : match.match_type === 'squash' || match.match_type === 'table_tennis' ? (
+          <SquashFeedCardBody
+            match={orderedMatch}
+            sideA={sideA}
+            sideB={sideB}
+            nameA={nameA}
+            nameB={nameB}
+            sport={match.match_type}
+            score={setsScore}
+            headline={headline}
+            aWon={aWon}
+            bWon={bWon}
+            startsAt={match.starts_at}
+            onOpen={onOpen}
+          />
+        ) : null
+      ) : (
+        <>
+          {/* Header: the cricket state-of-game line when there is one, else the
+              usual "who beat who" + when + sport. */}
+          <button
+            type="button"
+            onClick={onOpen}
+            className="flex w-full items-start justify-between gap-3 p-3.5 text-left"
+          >
+            <p className="text-sm leading-snug">
+              {cricketDescription ? (
+                <span>{cricketDescription}</span>
+              ) : (
+                <>
+                  <span className={cn(!!scoreInfo?.winnerSideId && 'font-medium')}>{winningTeamName}</span>
+                  <span className="text-primary">
+                    {' '}
+                    {match.match_type !== 'cricket' && scoreInfo?.winnerSideId ? 'beat' : 'vs'}{' '}
+                  </span>
+                  <span>{losingTeamName}</span>
+                </>
+              )}
+              <span className="text-muted-foreground" title={scheduledDateTime(match.starts_at)}>
                 {' '}
-                {match.match_type !== 'cricket' && scoreInfo?.winnerSideId ? 'beat' : 'vs'}{' '}
+                · {relativeTime(match.starts_at)}
               </span>
-              <span>{losingTeamName}</span>
-            </>
-          )}
-          <span className="text-muted-foreground" title={scheduledDateTime(match.starts_at)}>
-            {' '}
-            · {relativeTime(match.starts_at)}
-          </span>
-        </p>
-        <div className="flex shrink-0 flex-col items-end gap-1.5">
-          <SportBadge sport={match.match_type} />
-        </div>
-      </button>
+            </p>
+            <div className="flex shrink-0 flex-col items-end gap-1.5">
+              <SportBadge sport={match.match_type} />
+            </div>
+          </button>
 
-      {/* Title + description — clickable, same as the header/score blocks above. */}
-      {(match.name || match.description) && (
+          {/* Title + description — clickable, same as the header/score blocks above. */}
+          {(match.name || match.description) && (
         <button type="button" onClick={onOpen} className="block w-full px-3.5 pb-3 text-left">
           {match.name && <p className="font-medium leading-snug">{match.name}</p>}
           {match.description && (
@@ -464,6 +574,8 @@ export function MatchCard({
           </div>
         )
       )}
+        </>
+      )}
 
       {/* "You follow Sofia, Raj +1" — who among the match's participants the
           viewer follows. Only a feed card's `FeedMatch` carries this (a
@@ -503,31 +615,62 @@ export function MatchCard({
         )
       )}
 
-      {/* Footer: kudos + comments on the left, lifecycle/confirmation state on the right. */}
-      <div className="flex items-center gap-4 border-t px-3.5 py-2.5 text-muted-foreground">
-        <button
-          type="button"
-          onClick={() => toggleLike.mutate(!i_liked)}
-          aria-pressed={i_liked}
-          aria-label={i_liked ? 'Remove kudos' : 'Give kudos'}
-          className={cn(
-            'flex items-center gap-1.5 text-xs transition-colors hover:text-primary',
-            i_liked && 'text-primary',
-          )}
-        >
-          <Flame className={cn('size-3.5', i_liked && 'fill-current')} />{' '}
-          {like_count}
-        </button>
-        <button
-          type="button"
-          onClick={onOpen}
-          className="flex items-center gap-1.5 text-xs transition-colors hover:text-primary"
-        >
-          <MessageCircle className="size-3.5" /> {comment_count}
-        </button>
-        <ShareMatchButton match={match} />
-        <StatusBadge status={matchBadgeStatus(match)} className="ml-auto" />
-      </div>
+      {/* Footer: kudos + comments + share. The redesigned sports match the
+          mock exactly (a "Kudos" label, not a count; no lifecycle badge —
+          the score confirmation prompt above already covers that state);
+          the generic ("other" sport) layout keeps its original footer. */}
+      {isRedesignedSport ? (
+        <div className="flex items-center gap-1 border-t px-2 py-1 text-muted-foreground">
+          <button
+            type="button"
+            onClick={() => toggleLike.mutate(!i_liked)}
+            aria-pressed={i_liked}
+            aria-label={i_liked ? 'Remove kudos' : 'Give kudos'}
+            className={cn(
+              'flex h-11 items-center gap-1.5 rounded-full px-2.5 text-sm font-semibold transition-colors hover:text-primary',
+              i_liked && 'text-primary',
+            )}
+          >
+            <Flame className={cn('size-5', i_liked && 'fill-current')} />
+            Kudos
+          </button>
+          <button
+            type="button"
+            onClick={onOpen}
+            className="flex h-11 items-center gap-1.5 rounded-full px-2.5 text-sm font-semibold transition-colors hover:text-primary"
+          >
+            <MessageCircle className="size-5" />
+            {comment_count}
+          </button>
+          <span className="flex-grow" />
+          <ShareMatchButton match={match} />
+        </div>
+      ) : (
+        <div className="flex items-center gap-4 border-t px-3.5 py-2.5 text-muted-foreground">
+          <button
+            type="button"
+            onClick={() => toggleLike.mutate(!i_liked)}
+            aria-pressed={i_liked}
+            aria-label={i_liked ? 'Remove kudos' : 'Give kudos'}
+            className={cn(
+              'flex items-center gap-1.5 text-xs transition-colors hover:text-primary',
+              i_liked && 'text-primary',
+            )}
+          >
+            <Flame className={cn('size-3.5', i_liked && 'fill-current')} />{' '}
+            {like_count}
+          </button>
+          <button
+            type="button"
+            onClick={onOpen}
+            className="flex items-center gap-1.5 text-xs transition-colors hover:text-primary"
+          >
+            <MessageCircle className="size-3.5" /> {comment_count}
+          </button>
+          <ShareMatchButton match={match} />
+          <StatusBadge status={matchBadgeStatus(match)} className="ml-auto" />
+        </div>
+      )}
     </div>
   )
 }

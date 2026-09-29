@@ -4,6 +4,7 @@ import { ChevronLeft } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { UserCard } from '@/components/agon/UserCard'
+import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 
@@ -61,7 +62,7 @@ export function FollowListPage({ mode }: { mode: FollowListMode }) {
   const items = (list.data?.pages ?? []).flatMap((page) => page.items)
 
   return (
-    <div className="mx-auto flex max-w-xl flex-col gap-4">
+    <div className="mx-auto flex w-full max-w-xl flex-col gap-4 md:max-w-4xl md:gap-6">
       <div className="flex items-center gap-2">
         <Button
           variant="ghost"
@@ -72,10 +73,10 @@ export function FollowListPage({ mode }: { mode: FollowListMode }) {
         >
           <ChevronLeft className="size-4" />
         </Button>
-        <h1 className="text-xl font-semibold">
+        <h1 className="font-display text-xl font-extrabold md:text-3xl">
           {title}
           {nameQuery.data && (
-            <span className="ml-2 text-sm font-normal text-muted-foreground">
+            <span className="ml-2 font-sans text-sm font-normal text-muted-foreground">
               {nameQuery.data.name}
             </span>
           )}
@@ -102,17 +103,33 @@ interface ListBodyProps {
 function ListBody({ list, items, mode, currentUserId }: ListBodyProps) {
   if (list.isLoading) {
     return (
-      <ul className="flex flex-col overflow-hidden rounded-xl border bg-card">
-        {Array.from({ length: 6 }).map((_, i) => (
-          <li key={i} className="flex items-center gap-3 border-b px-4 py-3 last:border-b-0">
-            <div className="size-9 shrink-0 animate-pulse rounded-full bg-muted" />
-            <div className="flex-1 space-y-2">
-              <div className="h-3 w-1/3 animate-pulse rounded bg-muted" />
-              <div className="h-2.5 w-1/4 animate-pulse rounded bg-muted" />
+      <>
+        <Card className="flex flex-col overflow-hidden md:hidden">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div
+              key={i}
+              className="flex items-center gap-3 border-b px-4 py-3.5 last:border-b-0"
+            >
+              <div className="size-9 shrink-0 animate-pulse rounded-full bg-muted" />
+              <div className="flex-1 space-y-2">
+                <div className="h-3 w-1/3 animate-pulse rounded bg-muted" />
+                <div className="h-2.5 w-1/4 animate-pulse rounded bg-muted" />
+              </div>
             </div>
-          </li>
-        ))}
-      </ul>
+          ))}
+        </Card>
+        <div className="hidden gap-4 md:grid md:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Card key={i} className="flex items-center gap-3 px-4 py-3.5">
+              <div className="size-9 shrink-0 animate-pulse rounded-full bg-muted" />
+              <div className="flex-1 space-y-2">
+                <div className="h-3 w-1/3 animate-pulse rounded bg-muted" />
+                <div className="h-2.5 w-1/4 animate-pulse rounded bg-muted" />
+              </div>
+            </Card>
+          ))}
+        </div>
+      </>
     )
   }
 
@@ -139,17 +156,27 @@ function ListBody({ list, items, mode, currentUserId }: ListBodyProps) {
 
   return (
     <>
-      <ul className="flex flex-col divide-y overflow-hidden rounded-xl border bg-card">
+      <Card className="overflow-hidden md:hidden">
+        <ul className="flex flex-col divide-y">
+          {items.map((user) => (
+            <li key={user.id}>
+              <UserCard user={user} currentUserId={currentUserId} />
+            </li>
+          ))}
+        </ul>
+      </Card>
+      <div className="hidden gap-4 md:grid md:grid-cols-2 lg:grid-cols-3">
         {items.map((user) => (
-          <li key={user.id}>
+          <Card key={user.id} className="overflow-hidden">
             <UserCard user={user} currentUserId={currentUserId} />
-          </li>
+          </Card>
         ))}
-      </ul>
+      </div>
 
       {list.hasNextPage && (
         <Button
           variant="outline"
+          className="h-11 w-full rounded-xl font-semibold md:mx-auto md:w-64"
           disabled={list.isFetchingNextPage}
           onClick={() => list.fetchNextPage()}
         >

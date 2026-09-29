@@ -35,9 +35,9 @@ export function TeamsPage() {
   const items = (list.data?.pages ?? []).flatMap((page) => page.items)
 
   return (
-    <div className="mx-auto flex max-w-xl flex-col gap-3">
+    <div className="mx-auto flex max-w-xl flex-col gap-3 md:max-w-3xl md:gap-5 lg:max-w-5xl">
       <div className="flex items-center justify-between gap-2">
-        <h1 className="font-display text-2xl font-extrabold">Teams</h1>
+        <h1 className="font-display text-2xl font-extrabold md:text-3xl">Teams</h1>
         <CreateTeamDialog>
           <Button shape="pill" className="gap-1.5">
             <Plus className="size-4" />
@@ -60,11 +60,11 @@ interface ListBodyProps {
 function ListBody({ list, items }: ListBodyProps) {
   if (list.isLoading) {
     return (
-      <Card className="flex flex-col overflow-hidden">
+      <div className="flex flex-col overflow-hidden rounded-2xl border bg-card md:grid md:grid-cols-2 md:gap-4 md:overflow-visible md:rounded-none md:border-0 md:bg-transparent lg:grid-cols-3">
         {Array.from({ length: 4 }).map((_, i) => (
           <div
             key={i}
-            className="flex items-center gap-3.5 border-b px-4 py-3.5 last:border-b-0"
+            className="flex items-center gap-3.5 border-b px-4 py-3.5 last:border-b-0 md:rounded-2xl md:border md:bg-card md:px-5 md:py-4"
           >
             <div className="size-12 shrink-0 animate-pulse rounded-2xl bg-muted" />
             <div className="flex-1 space-y-2">
@@ -73,7 +73,7 @@ function ListBody({ list, items }: ListBodyProps) {
             </div>
           </div>
         ))}
-      </Card>
+      </div>
     )
   }
 
@@ -101,17 +101,20 @@ function ListBody({ list, items }: ListBodyProps) {
 
   return (
     <div className="flex flex-col gap-2.5">
-      <Card className="flex flex-col divide-y overflow-hidden">
+      {/* A single divided list on mobile; a grid of standalone cards from
+          `md:` up, matching the redesign's Card visual language (20px
+          radius, hairline border) per row instead of one long list. */}
+      <div className="flex flex-col divide-y overflow-hidden rounded-2xl border bg-card md:grid md:grid-cols-2 md:gap-4 md:divide-y-0 md:overflow-visible md:rounded-none md:border-0 md:bg-transparent lg:grid-cols-3">
         {items.map((team) => (
           <TeamCard key={team.id} team={team} />
         ))}
-      </Card>
+      </div>
 
       {list.hasNextPage && (
         <Button
           variant="outline"
           shape="pill"
-          className="h-11"
+          className="h-11 md:mx-auto md:w-auto md:px-10"
           disabled={list.isFetchingNextPage}
           onClick={() => list.fetchNextPage()}
         >

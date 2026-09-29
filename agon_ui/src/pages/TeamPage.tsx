@@ -189,8 +189,8 @@ export function TeamPage() {
   const sportRecords = teamSportRecords(statsMatches, team.id)
 
   return (
-    <div className="mx-auto flex max-w-xl flex-col gap-6">
-      <div className="flex items-center justify-between">
+    <div className="mx-auto flex max-w-xl flex-col gap-6 md:max-w-3xl md:gap-8 lg:max-w-6xl">
+      <div className="flex items-center justify-between md:hidden">
         <Button
           variant="ghost"
           size="icon"
@@ -202,8 +202,20 @@ export function TeamPage() {
         </Button>
       </div>
 
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between md:gap-6">
         <div className="flex items-center gap-4">
+          {/* On desktop the back button sits inline with the header instead
+              of on its own row above (mobile keeps the standalone row, since
+              there's no adjacent content to align it with there). */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="hidden size-11 shrink-0 rounded-full md:inline-flex"
+            aria-label="Back"
+            onClick={() => navigate(-1)}
+          >
+            <ChevronLeft className="size-5" />
+          </Button>
           <Avatar
             name={team.name}
             imageUrl={team.logo?.image_url}
@@ -211,7 +223,9 @@ export function TeamPage() {
             className="size-[76px] rounded-[20px] text-2xl"
           />
           <div className="min-w-0">
-            <h1 className="truncate font-display text-2xl font-extrabold">{team.name}</h1>
+            <h1 className="truncate font-display text-2xl font-extrabold md:text-3xl">
+              {team.name}
+            </h1>
             <p className="text-sm text-muted-foreground">
               <span className="font-bold text-foreground">
                 {team.follower_count.toLocaleString()}
@@ -223,17 +237,17 @@ export function TeamPage() {
           </div>
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex gap-2 md:shrink-0">
           {canManage && (
             <>
               <EditTeamDialog team={team}>
-                <Button variant="outline" className="flex-1 gap-2 rounded-2xl">
+                <Button variant="outline" className="flex-1 gap-2 rounded-2xl md:flex-none">
                   <Pencil className="size-4" />
                   Edit
                 </Button>
               </EditTeamDialog>
               <InviteToTeamDialog teamId={team.id} excludeUserIds={existingUserIds}>
-                <Button variant="outline" className="flex-1 gap-2 rounded-2xl">
+                <Button variant="outline" className="flex-1 gap-2 rounded-2xl md:flex-none">
                   <UserPlus className="size-4" />
                   Invite
                 </Button>
@@ -267,7 +281,7 @@ export function TeamPage() {
               currentUserId={currentUserId}
               onLeft={() => navigate('/teams')}
             >
-              <Button variant="outline" className="flex-1 gap-2 rounded-2xl">
+              <Button variant="outline" className="flex-1 gap-2 rounded-2xl md:flex-none">
                 <LogOut className="size-4" />
                 Leave
               </Button>
@@ -277,7 +291,7 @@ export function TeamPage() {
               teamId={team.id}
               isFollowing={team.is_followed_by_me}
               shape="pill"
-              className="flex-1"
+              className="flex-1 md:flex-none"
             />
           )}
         </div>
@@ -287,24 +301,33 @@ export function TeamPage() {
           accept/decline pattern as a match page's `InviteBanner`. */}
       <TeamInviteBanner teamId={team.id} name={team.name} members={members} currentUserId={currentUserId} />
 
-      <TeamStats query={statsMatchesQuery} record={record} sportRecords={sportRecords} />
-
-      <section className="flex flex-col gap-2.5">
-        <h2 className="font-display text-lg font-bold">Members</h2>
-        <Members
-          query={membersQuery}
-          members={members}
-          currentUserId={currentUserId}
-          teamId={team.id}
-          canManage={canManage}
-          viewerIsOwner={isOwner}
+      {/* Stats / members / recent matches stack on mobile; from `md:` up they
+          sit side by side (stats+members share a row, matches spans below —
+          `lg:` widens to a 3-up row) instead of one long scrolling column. */}
+      <div className="flex flex-col gap-6 md:grid md:grid-cols-2 md:items-start md:gap-6 lg:grid-cols-3">
+        <TeamStats
+          query={statsMatchesQuery}
+          record={record}
+          sportRecords={sportRecords}
         />
-      </section>
 
-      <section className="flex flex-col gap-2.5">
-        <h2 className="font-display text-lg font-bold">Recent matches</h2>
-        <RecentMatches query={activityQuery} currentUserId={currentUserId} />
-      </section>
+        <section className="flex flex-col gap-2.5">
+          <h2 className="font-display text-lg font-bold">Members</h2>
+          <Members
+            query={membersQuery}
+            members={members}
+            currentUserId={currentUserId}
+            teamId={team.id}
+            canManage={canManage}
+            viewerIsOwner={isOwner}
+          />
+        </section>
+
+        <section className="flex flex-col gap-2.5 md:col-span-2 lg:col-span-1">
+          <h2 className="font-display text-lg font-bold">Recent matches</h2>
+          <RecentMatches query={activityQuery} currentUserId={currentUserId} />
+        </section>
+      </div>
     </div>
   )
 }
@@ -809,14 +832,16 @@ function RecentMatches({ query, currentUserId }: RecentMatchesProps) {
 /** Placeholder while the team loads. */
 function TeamSkeleton() {
   return (
-    <div className="mx-auto flex max-w-xl flex-col gap-6">
+    <div className="mx-auto flex max-w-xl flex-col gap-6 md:max-w-3xl md:gap-8 lg:max-w-6xl">
       <div className="flex items-center gap-4">
         <div className="size-[76px] animate-pulse rounded-[20px] bg-card" aria-hidden />
         <div className="h-6 w-40 animate-pulse rounded bg-card" aria-hidden />
       </div>
-      <div className="h-28 animate-pulse rounded-2xl bg-card" aria-hidden />
-      <div className="h-40 animate-pulse rounded-2xl border bg-card" aria-hidden />
-      <div className="h-48 animate-pulse rounded-2xl border bg-card" aria-hidden />
+      <div className="flex flex-col gap-6 md:grid md:grid-cols-2 md:gap-6 lg:grid-cols-3">
+        <div className="h-28 animate-pulse rounded-2xl bg-card" aria-hidden />
+        <div className="h-40 animate-pulse rounded-2xl border bg-card" aria-hidden />
+        <div className="h-48 animate-pulse rounded-2xl border bg-card md:col-span-2 lg:col-span-1" aria-hidden />
+      </div>
     </div>
   )
 }

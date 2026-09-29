@@ -51,6 +51,7 @@ import { InvitePlayers } from '@/components/agon/InvitePlayers'
 import { MatchComments } from '@/components/agon/MatchComments'
 import { useToggleLike } from '@/hooks/useToggleLike'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
+import { ScheduledMatchInvite } from '@/components/agon/invite/ScheduledMatchInvite'
 import { InvitePromptDialog } from '@/components/agon/InvitePromptDialog'
 import { useInvitePrompt } from '@/hooks/useInvitePrompt'
 import { cricketFormat, footballFormat, netballFormat } from '@/lib/matchFormat'
@@ -305,6 +306,10 @@ function MatchDetail({
       : scoreInfo
         ? 'finished'
         : 'scheduled'
+  // Every other sport's redesigned pre-match/RSVP view (`Invite.dc.html`) takes
+  // over the whole page instead of the hero-card summary — football's own
+  // scheduled state already reads fine as the hero card above, so it keeps it.
+  const isScheduledInvite = match.match_type !== 'football' && matchView === 'scheduled'
   // Football keeps the sides in their stored order (not viewer-first) so each
   // side's kit colour stays the same for everyone looking at the match.
   const [kitSideA, kitSideB] = match.sides
@@ -416,6 +421,22 @@ function MatchDetail({
       )}
     </>
   )
+
+  if (isScheduledInvite) {
+    return (
+      <div className="mx-auto flex max-w-xl flex-col gap-4 xl:max-w-[1040px]">
+        <ScheduledMatchInvite
+          match={match}
+          currentUserId={currentUserId}
+          canEdit={canEdit}
+          onBack={onBack}
+          onShare={() => shareMatch(match)}
+          onEdit={() => setEditingDetails(true)}
+        />
+        {editingDetails && <MatchDetailsEditor match={match} onDone={() => setEditingDetails(false)} />}
+      </div>
+    )
+  }
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">

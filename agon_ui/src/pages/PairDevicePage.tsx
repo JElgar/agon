@@ -5,6 +5,7 @@ import { Watch } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { LinkLandingCard } from '@/components/agon/LinkLandingCard'
 import { clearPendingInvite } from '@/lib/pendingInvite'
 
 /**
@@ -54,13 +55,11 @@ export function PairDevicePage() {
 
   if (editing) {
     return (
-      <PairCard>
-        <PairIcon />
-        <h2 className="mb-1 text-xl font-semibold">Pair a watch</h2>
-        <p className="mb-6 text-sm text-muted-foreground">
-          Enter the code shown on your watch — or scan its QR code with your
-          phone's camera to skip this step.
-        </p>
+      <LinkLandingCard
+        icon={<Watch className="size-7" />}
+        heading="Pair a watch"
+        description="Enter the code shown on your watch — or scan its QR code with your phone's camera to skip this step."
+      >
         <form
           className="w-full"
           onSubmit={(e) => {
@@ -80,38 +79,40 @@ export function PairDevicePage() {
             className="mb-4 text-center font-mono text-lg tracking-[0.3em]"
             maxLength={8}
           />
-          <Button type="submit" className="w-full" disabled={!code.trim()}>
+          <Button type="submit" shape="pill" size="lg" className="w-full" disabled={!code.trim()}>
             Continue
           </Button>
         </form>
-      </PairCard>
+      </LinkLandingCard>
     )
   }
 
   if (confirm.data === 'confirmed') {
     return (
-      <PairCard>
-        <PairIcon />
-        <h2 className="mb-1 text-xl font-semibold">Watch paired</h2>
-        <p className="mb-6 text-sm text-muted-foreground">
-          Check your watch — it should move on by itself within a few
-          seconds.
-        </p>
-        <Button className="w-full" onClick={() => navigate('/feed', { replace: true })}>
+      <LinkLandingCard
+        icon={<Watch className="size-7" />}
+        heading="Watch paired"
+        description="Check your watch — it should move on by itself within a few seconds."
+      >
+        <Button
+          shape="pill"
+          size="lg"
+          className="w-full"
+          onClick={() => navigate('/feed', { replace: true })}
+        >
           Done
         </Button>
-      </PairCard>
+      </LinkLandingCard>
     )
   }
 
   return (
-    <PairCard>
-      <PairIcon />
-      <h2 className="mb-1 text-xl font-semibold">Pair this watch?</h2>
-      <p className="mb-4 text-sm text-muted-foreground">
-        Only confirm if this is the code currently showing on your own watch.
-      </p>
-      <p className="mb-6 w-full rounded-lg border bg-muted/30 px-4 py-3 text-center font-mono text-2xl font-semibold tracking-[0.3em]">
+    <LinkLandingCard
+      icon={<Watch className="size-7" />}
+      heading="Pair this watch?"
+      description="Only confirm if this is the code currently showing on your own watch."
+    >
+      <p className="mb-6 w-full rounded-xl bg-muted px-4 py-3 text-center font-mono text-2xl font-semibold tracking-[0.3em]">
         {code}
       </p>
 
@@ -125,7 +126,13 @@ export function PairDevicePage() {
         <p className="mb-3 text-sm text-destructive">Something went wrong. Try again.</p>
       )}
 
-      <Button className="w-full" disabled={confirm.isPending} onClick={() => confirm.mutate()}>
+      <Button
+        shape="pill"
+        size="lg"
+        className="w-full"
+        disabled={confirm.isPending}
+        onClick={() => confirm.mutate()}
+      >
         {confirm.isPending ? 'Confirming…' : 'Confirm pairing'}
       </Button>
       <Button
@@ -139,7 +146,7 @@ export function PairDevicePage() {
       >
         Use a different code
       </Button>
-    </PairCard>
+    </LinkLandingCard>
   )
 }
 
@@ -151,19 +158,3 @@ function normalizeCode(raw: string): string {
   return raw.trim().toUpperCase()
 }
 
-function PairIcon() {
-  return (
-    <div className="mb-4 flex size-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-      <Watch className="size-7" />
-    </div>
-  )
-}
-
-/** Centered card chrome, mirroring `JoinMatchPage`/`AcceptInvitePage`'s own. */
-function PairCard({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="mx-auto flex max-w-md flex-col items-center rounded-2xl border bg-card p-8 text-center">
-      {children}
-    </div>
-  )
-}

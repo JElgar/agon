@@ -20,6 +20,7 @@ import {
 } from '@/lib/liveScore'
 import { initials, memberAvatarUrl, memberName, type ScorePlayers } from '@/lib/members'
 import { FollowButton } from '@/components/agon/FollowButton'
+import { useViewerFollowing } from '@/hooks/useViewerFollowing'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -30,7 +31,7 @@ type CommentPage = components['schemas']['CommentPage']
 
 // Redesign accents: the neutral "second kit" grey and the assists teal. Both
 // are theme tokens in index.css so they follow dark mode.
-const KIT_GREY = 'var(--kit-grey)'
+export const KIT_GREY = 'var(--kit-grey)'
 const ASSIST_TEAL = 'var(--assist)'
 const ASSIST_TEAL_TEXT = 'var(--assist-foreground)'
 
@@ -128,6 +129,7 @@ export function FootballHeroCard({
   state,
   liveLabel,
   kickoffLabel,
+  finishedLabel = 'Full time',
 }: {
   match: Match
   goalsA: number
@@ -135,6 +137,7 @@ export function FootballHeroCard({
   state: 'finished' | 'live' | 'scheduled' | 'cancelled'
   liveLabel?: string
   kickoffLabel?: string
+  finishedLabel?: string
 }) {
   const [sideA, sideB] = match.sides
   const nameA = sideLabel(sideA, 'Side A')
@@ -144,7 +147,7 @@ export function FootballHeroCard({
   const hasScore = state === 'finished' || state === 'live'
 
   const label =
-    state === 'finished' ? 'Full time' : state === 'live' ? liveLabel : state === 'cancelled' ? 'Cancelled' : kickoffLabel
+    state === 'finished' ? finishedLabel : state === 'live' ? liveLabel : state === 'cancelled' ? 'Cancelled' : kickoffLabel
 
   const result =
     state !== 'finished' ? null : aWon ? `${nameA} won by ${goalsA - goalsB}` : bWon ? `${nameB} won by ${goalsB - goalsA}` : 'Draw'
@@ -231,9 +234,27 @@ const TABS: { id: FootballTab; label: string }[] = [
 ]
 
 export function FootballTabBar({ value, onChange }: { value: FootballTab; onChange: (tab: FootballTab) => void }) {
+  return <MatchTabBar tabs={TABS} value={value} onChange={onChange} />
+}
+
+/** The segmented Summary/…/Players tab bar every redesigned match page uses. */
+export function MatchTabBar<T extends string>({
+  tabs,
+  value,
+  onChange,
+}: {
+  tabs: { id: T; label: string }[]
+  value: T
+  onChange: (tab: T) => void
+}) {
   return (
-    <div role="tablist" aria-label="Match sections" className="grid grid-cols-3 gap-1 rounded-[14px] bg-border p-1">
-      {TABS.map((tab) => {
+    <div
+      role="tablist"
+      aria-label="Match sections"
+      style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}
+      className="grid gap-1 rounded-[14px] bg-border p-1"
+    >
+      {tabs.map((tab) => {
         const active = value === tab.id
         return (
           <button
@@ -259,7 +280,7 @@ export function FootballTabBar({ value, onChange }: { value: FootballTab; onChan
 // Summary tab
 // ---------------------------------------------------------------------------
 
-const cardClass = 'rounded-[20px] border bg-card px-[18px] py-4'
+export const cardClass = 'rounded-[20px] border bg-card px-[18px] py-4'
 
 /** "Your game · Whites / 2 goals / 52' and 61' · 3 assists" — the viewer's own line. */
 export function YourGameCard({
@@ -888,28 +909,6 @@ export function FootballTimeline({
 // Players tab
 // ---------------------------------------------------------------------------
 
-/** Everyone the viewer follows, walked page by page (the API caps a page at 50). */
-function useViewerFollowing(userId: string | undefined) {
-  return useQuery({
-    queryKey: ['following-ids', userId],
-    enabled: !!userId,
-    queryFn: async () => {
-      const ids = new Set<string>()
-      let cursor: string | undefined
-      for (let page = 0; page < 10; page++) {
-        const { data, error } = await fetchClient.GET('/users/{user_id}/following', {
-          params: { path: { user_id: userId! }, query: { limit: 50, cursor } },
-        })
-        if (error || !data) break
-        data.items.forEach((u) => ids.add(u.id))
-        cursor = data.next_cursor ?? undefined
-        if (!cursor) break
-      }
-      return ids
-    },
-  })
-}
-
 function statsLine(goals: number, assists: number): string | null {
   const parts: string[] = []
   if (goals > 0) parts.push(`${goals} ${goals === 1 ? 'goal' : 'goals'}`)
@@ -975,81 +974,36 @@ export function FootballPlayersTab({
   const unassigned = match.players.filter((p) => !match.sides.some((s) => s.id === p.side_id))
 
   const renderRow = (p: MatchPlayer, i: number) => {
-    const name = memberName(p.member)
     const s = stats.get(p.member.id)
-    const isMe = p.member.type === 'User' && p.member.user_id === currentUserId
-    const pending = p.member.invitation?.status === 'pending'
-    const roleTag = [isMe ? 'You' : null, p.role === 'owner' ? 'organiser' : p.role === 'admin' ? 'admin' : null]
-      .filter(Boolean)
-      .join(' · ')
-    const userId = p.member.type === 'User' ? p.member.user_id : undefined
-    const line = pending ? 'Invited' : statsLine(s?.goals ?? 0, s?.assists ?? 0)
+    const cards = cardsByPlayer.get(p.member.id) ?? []
     return (
-      <div key={p.member.id} className={cn('flex min-h-16 items-center gap-3 px-4 py-2.5', i > 0 && 'border-t border-hairline')}>
-        {userId ? (
-          <Link to={`/users/${userId}`} className="shrink-0">
-            <PersonAvatar name={name} imageUrl={memberAvatarUrl(p.member)} size={40} />
-          </Link>
-        ) : (
-          <PersonAvatar name={name} imageUrl={memberAvatarUrl(p.member)} size={40} />
-        )}
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className="truncate text-[15px] font-semibold">
-            {userId ? (
-              <Link to={`/users/${userId}`} className="text-foreground hover:underline">
-                {name}
-              </Link>
-            ) : (
-              name
-            )}
-            {(cardsByPlayer.get(p.member.id) ?? []).map((color, ci) => (
-              <span
-                key={ci}
-                aria-label={color === 'yellow' ? 'Yellow card' : 'Red card'}
-                className="ml-1.5 inline-block h-3 w-[9px] rounded-[2px] align-[-1px]"
-                style={{ background: color === 'yellow' ? 'var(--gold)' : 'var(--destructive)' }}
-              />
-            ))}
-            {roleTag && (
-              <span className="ml-1.5 inline-flex h-5 items-center rounded-full bg-muted px-[7px] align-[1px] text-[11px] font-bold text-ink-soft">
-                {roleTag.charAt(0).toUpperCase() + roleTag.slice(1)}
-              </span>
-            )}
-          </span>
-          {line && <span className="text-[13px] text-muted-foreground">{line}</span>}
-        </div>
-        {userId && !isMe && following.data && (
-          <FollowButton
-            userId={userId}
-            isFollowing={following.data.has(userId)}
-            tone="soft"
-            className="h-9 rounded-full px-3.5 text-[13px] font-bold"
+      <PlayerRow
+        key={p.member.id}
+        player={p}
+        first={i === 0}
+        currentUserId={currentUserId}
+        followingIds={following.data}
+        line={statsLine(s?.goals ?? 0, s?.assists ?? 0)}
+        badges={cards.map((color, ci) => (
+          <span
+            key={ci}
+            aria-label={color === 'yellow' ? 'Yellow card' : 'Red card'}
+            className="ml-1.5 inline-block h-3 w-[9px] rounded-[2px] align-[-1px]"
+            style={{ background: color === 'yellow' ? 'var(--gold)' : 'var(--destructive)' }}
           />
-        )}
-      </div>
+        ))}
+      />
     )
   }
 
   return (
     <>
       {top && (
-        <section className="flex items-center gap-3.5 rounded-[20px] bg-spotlight px-[18px] py-4 text-spotlight-foreground">
-          <PersonAvatar
-            name={memberName(top.player.member)}
-            imageUrl={memberAvatarUrl(top.player.member)}
-            size={48}
-            className="shadow-[0_0_0_3px_var(--gold)]"
-          />
-          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span className="text-xs font-bold tracking-[0.5px] text-gold">TOP PERFORMER</span>
-            <span className="truncate text-[17px] font-bold">{memberName(top.player.member)}</span>
-            <span className="text-[13px] text-spotlight-muted">
-              {top.total} goal {top.total === 1 ? 'involvement' : 'involvements'}
-              {topSide ? ` for ${sideLabel(topSide, '')}` : ''}
-            </span>
-          </div>
-          <span className="font-display text-[32px] font-extrabold">{top.total}</span>
-        </section>
+        <TopPerformerCard
+          player={top.player}
+          detail={`${top.total} goal ${top.total === 1 ? 'involvement' : 'involvements'}${topSide ? ` for ${sideLabel(topSide, '')}` : ''}`}
+          value={top.total}
+        />
       )}
 
       {match.sides.slice(0, 2).map((side, idx) => {
@@ -1058,14 +1012,11 @@ export function FootballPlayersTab({
         const res = result(idx)
         return (
           <div key={side.id} className="flex flex-col gap-3.5">
-            <div className="mt-1.5 flex items-center gap-2.5 px-1">
-              <SideSwatch index={idx} size={14} />
-              <span className="flex-1 truncate font-display text-[19px] font-bold">{sideLabel(side, idx === 0 ? 'Side A' : 'Side B')}</span>
-              <span className="text-[13px] text-muted-foreground">
-                {res ? `${res} · ` : ''}
-                {players.length} {players.length === 1 ? 'player' : 'players'}
-              </span>
-            </div>
+            <SideHeading
+              index={idx}
+              name={sideLabel(side, idx === 0 ? 'Side A' : 'Side B')}
+              meta={`${res ? `${res} · ` : ''}${players.length} ${players.length === 1 ? 'player' : 'players'}`}
+            />
             <section className="flex flex-col overflow-hidden rounded-[20px] border bg-card">
               {players.length === 0 && unnamed === 0 && (
                 <p className="px-4 py-5 text-sm text-muted-foreground">No players yet.</p>
@@ -1111,6 +1062,101 @@ export function FootballPlayersTab({
       )}
       {footer}
     </>
+  )
+}
+
+/** One roster row: avatar, name (+ badges and a You/organiser tag), a stat
+ *  line and a Follow button. Shared by every sport's Players tab. */
+export function PlayerRow({
+  player,
+  first,
+  currentUserId,
+  followingIds,
+  line,
+  badges,
+}: {
+  player: MatchPlayer
+  first: boolean
+  currentUserId?: string
+  followingIds?: Set<string>
+  line?: string | null
+  badges?: React.ReactNode
+}) {
+  const name = memberName(player.member)
+  const isMe = player.member.type === 'User' && player.member.user_id === currentUserId
+  const pending = player.member.invitation?.status === 'pending'
+  const roleTag = [isMe ? 'You' : null, player.role === 'owner' ? 'organiser' : player.role === 'admin' ? 'admin' : null]
+    .filter(Boolean)
+    .join(' · ')
+  const userId = player.member.type === 'User' ? player.member.user_id : undefined
+  const subline = pending ? 'Invited' : line
+  return (
+    <div className={cn('flex min-h-16 items-center gap-3 px-4 py-2.5', !first && 'border-t border-hairline')}>
+      {userId ? (
+        <Link to={`/users/${userId}`} className="shrink-0">
+          <PersonAvatar name={name} imageUrl={memberAvatarUrl(player.member)} size={40} />
+        </Link>
+      ) : (
+        <PersonAvatar name={name} imageUrl={memberAvatarUrl(player.member)} size={40} />
+      )}
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="truncate text-[15px] font-semibold">
+          {userId ? (
+            <Link to={`/users/${userId}`} className="text-foreground hover:underline">
+              {name}
+            </Link>
+          ) : (
+            name
+          )}
+          {badges}
+          {roleTag && (
+            <span className="ml-1.5 inline-flex h-5 items-center rounded-full bg-muted px-[7px] align-[1px] text-[11px] font-bold text-ink-soft">
+              {roleTag.charAt(0).toUpperCase() + roleTag.slice(1)}
+            </span>
+          )}
+        </span>
+        {subline && <span className="text-[13px] text-muted-foreground">{subline}</span>}
+      </div>
+      {userId && !isMe && followingIds && (
+        <FollowButton
+          userId={userId}
+          isFollowing={followingIds.has(userId)}
+          tone="soft"
+          className="h-9 rounded-full px-3.5 text-[13px] font-bold"
+        />
+      )}
+    </div>
+  )
+}
+
+/** The dark "Top performer" banner at the top of a Players tab. */
+export function TopPerformerCard({ player, detail, value }: { player: MatchPlayer; detail: string; value: React.ReactNode }) {
+  return (
+    <section className="flex items-center gap-3.5 rounded-[20px] bg-spotlight px-[18px] py-4 text-spotlight-foreground">
+      <PersonAvatar
+        name={memberName(player.member)}
+        imageUrl={memberAvatarUrl(player.member)}
+        size={48}
+        className="shadow-[0_0_0_3px_var(--gold)]"
+      />
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="text-xs font-bold tracking-[0.5px] text-gold">TOP PERFORMER</span>
+        <span className="truncate text-[17px] font-bold">{memberName(player.member)}</span>
+        <span className="text-[13px] text-spotlight-muted">{detail}</span>
+      </div>
+      <span className="font-display text-[32px] font-extrabold">{value}</span>
+    </section>
+  )
+}
+
+/** Kit swatch + side name + a short meta line, above a side's roster card. */
+export function SideHeading({ index, name, meta }: { index: number; name: string; meta?: string }) {
+  return (
+    <div className="mt-1.5 flex items-center gap-2.5 px-1">
+      <SideSwatch index={index} size={14} />
+      <span className="flex-1 truncate font-display text-[19px] font-bold">{name}</span>
+      {meta && <span className="text-[13px] text-muted-foreground">{meta}</span>}
+    </div>
   )
 }
 

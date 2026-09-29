@@ -4,6 +4,7 @@ import { Search } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { UserCard } from '@/components/agon/UserCard'
+import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
@@ -43,15 +44,15 @@ export function UserSearchPage() {
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
-      <h1 className="text-xl font-semibold">Find people</h1>
+      <h1 className="font-display text-xl font-extrabold">Find people</h1>
 
       <div className="relative">
-        <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+        <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           value={term}
           onChange={(e) => setTerm(e.target.value)}
           placeholder="Search by name…"
-          className="pl-9"
+          className="h-12 rounded-2xl pl-10"
           autoFocus
           aria-label="Search people"
         />
@@ -84,17 +85,20 @@ function Results({ query, term, currentUserId }: ResultsProps) {
 
   if (query.isLoading) {
     return (
-      <ul className="flex flex-col overflow-hidden rounded-xl border bg-card">
+      <Card className="flex flex-col overflow-hidden">
         {Array.from({ length: 5 }).map((_, i) => (
-          <li key={i} className="flex items-center gap-3 border-b px-4 py-3 last:border-b-0">
+          <div
+            key={i}
+            className="flex items-center gap-3 border-b px-4 py-3.5 last:border-b-0"
+          >
             <div className="size-9 shrink-0 animate-pulse rounded-full bg-muted" />
             <div className="flex-1 space-y-2">
               <div className="h-3 w-1/3 animate-pulse rounded bg-muted" />
               <div className="h-2.5 w-1/4 animate-pulse rounded bg-muted" />
             </div>
-          </li>
+          </div>
         ))}
-      </ul>
+      </Card>
     )
   }
 
@@ -122,12 +126,14 @@ function Results({ query, term, currentUserId }: ResultsProps) {
   }
 
   return (
-    <ul className="flex flex-col divide-y overflow-hidden rounded-xl border bg-card">
-      {users.map((user) => (
-        <li key={user.id}>
-          <UserCard user={user} currentUserId={currentUserId} />
-        </li>
-      ))}
-    </ul>
+    <Card className="overflow-hidden">
+      <ul className="flex flex-col divide-y">
+        {users.map((user) => (
+          <li key={user.id}>
+            <UserCard user={user} currentUserId={currentUserId} />
+          </li>
+        ))}
+      </ul>
+    </Card>
   )
 }

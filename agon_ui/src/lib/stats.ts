@@ -49,6 +49,11 @@ export function totalMatches(stats: UserStats): number {
   return sportEntries(stats).reduce((sum, s) => sum + s.stats.matches_played, 0)
 }
 
+/** Total wins across all sports. */
+export function totalWins(stats: UserStats): number {
+  return sportEntries(stats).reduce((sum, s) => sum + s.stats.wins, 0)
+}
+
 /**
  * Overall win rate (0–100) across all sports, weighted by matches played — the
  * per-sport `win_percentage` values can't just be averaged. Returns `null`

@@ -120,28 +120,143 @@ export function SportStatsPage() {
   const chartData = monthlyActivity(matches)
   const busiest = busiestMonth(chartData)
 
+  // Football's desktop "Record" card folds the goals/assists numbers in
+  // beside the win rate (see `DesktopSport.dc.html`) — no other sport has a
+  // bespoke desktop board, so everyone else's banner just reflows via its
+  // own responsive classes with no `extra` cluster.
+  const bannerExtra =
+    stats && 'goals' in stats ? (
+      <>
+        <PerMatchStat value={stats.goals} label="Goals" matches={stats.matches_played} />
+        <PerMatchStat value={stats.assists} label="Assists" matches={stats.matches_played} />
+      </>
+    ) : undefined
+
+  const breakdownEl = !stats ? null : 'runs' in stats ? (
+    <section className="flex flex-col gap-3">
+      <SectionHeading>Batting &amp; bowling</SectionHeading>
+      <Card className="grid grid-cols-3 gap-3 p-[18px] sm:grid-cols-5">
+        <StatTile value={stats.runs} label="Runs" />
+        <StatTile value={stats.wickets} label="Wickets" />
+        <StatTile value={stats.fours} label="Fours" />
+        <StatTile value={stats.sixes} label="Sixes" />
+        <StatTile value={stats.catches} label="Catches" />
+      </Card>
+      <Card className="grid grid-cols-3 gap-3 p-[18px]">
+        <StatTileWithInfo
+          value={stats.batting_average?.toFixed(1) ?? '-'}
+          label="Average"
+          info="Runs scored per dismissal — the traditional batting average. Shows “-” until you've been out at least once."
+        />
+        <StatTileWithInfo
+          value={stats.strike_rate?.toFixed(0) ?? '-'}
+          label="Strike rate"
+          info="Runs scored per 100 balls faced."
+        />
+        <StatTileWithInfo
+          value={stats.economy?.toFixed(1) ?? '-'}
+          label="Economy"
+          info="Runs conceded per over bowled — lower is better."
+        />
+      </Card>
+    </section>
+  ) : 'goals' in stats ? (
+    <section className="flex flex-col gap-3 xl:hidden">
+      <SectionHeading>Goals &amp; assists</SectionHeading>
+      <Card className="grid grid-cols-2 gap-4 p-[18px]">
+        <PerMatchStat value={stats.goals} label="Goals" matches={stats.matches_played} />
+        <PerMatchStat value={stats.assists} label="Assists" matches={stats.matches_played} />
+      </Card>
+    </section>
+  ) : null
+
+  const personalBestsEl = !stats ? null : 'runs' in stats ? (
+    <section className="flex flex-col gap-3">
+      <SectionHeading>Personal bests</SectionHeading>
+      <PersonalBestsCard
+        rows={[{ label: 'High score', unit: 'runs', figure: stats.best_runs }]}
+        bowlingFigure={stats.best_bowling}
+        onOpen={(id) => navigate(`/matches/${id}`)}
+      />
+    </section>
+  ) : 'goals' in stats ? (
+    <section className="flex flex-col gap-3">
+      <SectionHeading>Personal bests</SectionHeading>
+      <PersonalBestsCard
+        rows={[
+          { label: 'Most goals in a match', unit: 'goals', figure: stats.best_goals },
+          { label: 'Most goals + assists', sub: 'in one match', figure: stats.best_goal_contributions },
+        ]}
+        onOpen={(id) => navigate(`/matches/${id}`)}
+      />
+    </section>
+  ) : null
+
+  const chartEl = (
+    <section className="flex flex-col gap-3">
+      <SectionHeading>Matches per month</SectionHeading>
+      <Card className="flex flex-col gap-3 p-[18px]">
+        <MatchActivityChart data={chartData} />
+        <span className="text-[13px] text-muted-foreground">
+          {busiest
+            ? (
+              <>
+                Busiest month: <b className="font-semibold text-foreground">{busiest.fullLabel.split(' ')[0]}</b> with{' '}
+                {busiest.count} match{busiest.count === 1 ? '' : 'es'}
+              </>
+            )
+            : `No matches in the last ${CHART_MONTHS} months`}
+        </span>
+      </Card>
+    </section>
+  )
+
+  const recentMatchesEl = (
+    <RecentMatches
+      query={matchesQuery}
+      matches={recentByDate}
+      search={query}
+      onSearch={setQuery}
+      filter={filter}
+      onFilter={setFilter}
+      currentUserId={currentUserId}
+      navigate={navigate}
+    />
+  )
+
   return (
-    <div className="mx-auto flex max-w-xl flex-col gap-4">
-      <header className="flex items-center gap-2 pt-1">
+    <div className="mx-auto flex w-full max-w-xl flex-col gap-4 xl:max-w-[1080px]">
+      <header className="flex flex-col gap-3 pt-1">
         <Button
           variant="ghost"
-          size="icon"
-          className="size-11 rounded-full"
-          aria-label="Back"
-          onClick={() => navigate(-1)}
+          className="hidden h-11 w-fit gap-1.5 rounded-full pl-2 xl:flex"
+          onClick={() => navigate(isOwnProfile ? '/profile' : `/users/${userId}`)}
         >
           <ChevronLeft className="size-5" />
+          Profile
         </Button>
-        <span className="flex size-10 items-center justify-center rounded-full bg-accent">
-          <Icon className="size-[22px] text-accent-foreground" />
-        </span>
-        <div className="flex flex-col">
-          <h1 className="font-display text-2xl leading-tight font-extrabold">
-            {sportLabel(matchType)}
-          </h1>
-          <span className="text-[13px] text-muted-foreground">
-            {isOwnProfile ? 'Your stats' : `${profile.name}'s stats`}
+        <div className="flex items-center gap-2 xl:gap-3.5">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-11 rounded-full xl:hidden"
+            aria-label="Back"
+            onClick={() => navigate(-1)}
+          >
+            <ChevronLeft className="size-5" />
+          </Button>
+          <span className="flex size-10 items-center justify-center rounded-full bg-accent xl:size-[52px]">
+            <Icon className="size-[22px] text-accent-foreground xl:size-7" />
           </span>
+          <div className="flex flex-col">
+            <h1 className="font-display text-2xl leading-tight font-extrabold xl:text-[30px]">
+              {sportLabel(matchType)}
+            </h1>
+            <span className="text-[13px] text-muted-foreground xl:text-sm">
+              {isOwnProfile ? 'Your stats' : `${profile.name}'s stats`}
+              {stats && <span className="hidden xl:inline"> · {stats.matches_played} matches</span>}
+            </span>
+          </div>
         </div>
       </header>
 
@@ -151,91 +266,37 @@ export function SportStatsPage() {
         </Card>
       ) : (
         <>
-          <WinRateBanner stats={stats} recentOutcomes={recentByDate.map((m) => m.outcome)} />
+          {/* Mobile / tablet: everything in a single column, in the order
+              verified against the "Sport" board's mobile mock. */}
+          <div className="flex flex-col gap-4 xl:hidden">
+            <WinRateBanner stats={stats} recentOutcomes={recentByDate.map((m) => m.outcome)} />
+            {breakdownEl}
+            {personalBestsEl}
+            {chartEl}
+            {recentMatchesEl}
+          </div>
 
-          {'runs' in stats && (
-            <section className="flex flex-col gap-3">
-              <SectionHeading>Batting &amp; bowling</SectionHeading>
-              <Card className="grid grid-cols-3 gap-3 p-[18px] sm:grid-cols-5">
-                <StatTile value={stats.runs} label="Runs" />
-                <StatTile value={stats.wickets} label="Wickets" />
-                <StatTile value={stats.fours} label="Fours" />
-                <StatTile value={stats.sixes} label="Sixes" />
-                <StatTile value={stats.catches} label="Catches" />
-              </Card>
-              <Card className="grid grid-cols-3 gap-3 p-[18px]">
-                <StatTileWithInfo
-                  value={stats.batting_average?.toFixed(1) ?? '-'}
-                  label="Average"
-                  info="Runs scored per dismissal — the traditional batting average. Shows “-” until you've been out at least once."
-                />
-                <StatTileWithInfo
-                  value={stats.strike_rate?.toFixed(0) ?? '-'}
-                  label="Strike rate"
-                  info="Runs scored per 100 balls faced."
-                />
-                <StatTileWithInfo
-                  value={stats.economy?.toFixed(1) ?? '-'}
-                  label="Economy"
-                  info="Runs conceded per over bowled — lower is better."
-                />
-              </Card>
-              <SectionHeading>Personal bests</SectionHeading>
-              <PersonalBestsCard
-                rows={[
-                  { label: 'High score', unit: 'runs', figure: stats.best_runs },
-                ]}
-                bowlingFigure={stats.best_bowling}
-                onOpen={(id) => navigate(`/matches/${id}`)}
+          {/* Desktop (`xl`, ≥1280px): the "DesktopSport" board's two-column
+              layout — win rate + breakdown + recent matches on the left,
+              personal bests + activity chart in a fixed-width rail on the
+              right. Grid placement (not DOM order) does the reordering, so
+              this reuses the same subcomponents/state as the mobile column
+              above rather than duplicating them. */}
+          <div className="hidden xl:grid xl:grid-cols-[minmax(0,1fr)_420px] xl:items-start xl:gap-6">
+            <div className="flex min-w-0 flex-col gap-4">
+              <WinRateBanner
+                stats={stats}
+                recentOutcomes={recentByDate.map((m) => m.outcome)}
+                extra={bannerExtra}
               />
-            </section>
-          )}
-
-          {'goals' in stats && (
-            <section className="flex flex-col gap-3">
-              <SectionHeading>Goals &amp; assists</SectionHeading>
-              <Card className="grid grid-cols-2 gap-4 p-[18px]">
-                <PerMatchStat value={stats.goals} label="Goals" matches={stats.matches_played} />
-                <PerMatchStat value={stats.assists} label="Assists" matches={stats.matches_played} />
-              </Card>
-              <SectionHeading>Personal bests</SectionHeading>
-              <PersonalBestsCard
-                rows={[
-                  { label: 'Most goals in a match', unit: 'goals', figure: stats.best_goals },
-                  { label: 'Most goals + assists', sub: 'in one match', figure: stats.best_goal_contributions },
-                ]}
-                onOpen={(id) => navigate(`/matches/${id}`)}
-              />
-            </section>
-          )}
-
-          <section className="flex flex-col gap-3">
-            <SectionHeading>Matches per month</SectionHeading>
-            <Card className="flex flex-col gap-3 p-[18px]">
-              <MatchActivityChart data={chartData} />
-              <span className="text-[13px] text-muted-foreground">
-                {busiest
-                  ? (
-                    <>
-                      Busiest month: <b className="font-semibold text-foreground">{busiest.fullLabel.split(' ')[0]}</b> with{' '}
-                      {busiest.count} match{busiest.count === 1 ? '' : 'es'}
-                    </>
-                  )
-                  : `No matches in the last ${CHART_MONTHS} months`}
-              </span>
-            </Card>
-          </section>
-
-          <RecentMatches
-            query={matchesQuery}
-            matches={recentByDate}
-            search={query}
-            onSearch={setQuery}
-            filter={filter}
-            onFilter={setFilter}
-            currentUserId={currentUserId}
-            navigate={navigate}
-          />
+              {'runs' in stats && breakdownEl}
+              {recentMatchesEl}
+            </div>
+            <div className="flex flex-col gap-4">
+              {personalBestsEl}
+              {chartEl}
+            </div>
+          </div>
         </>
       )}
     </div>
@@ -260,21 +321,31 @@ function SectionHeading({ children }: { children: React.ReactNode }) {
 function WinRateBanner({
   stats,
   recentOutcomes,
+  extra,
 }: {
   stats: { matches_played: number; wins: number; draws: number; losses: number; win_percentage?: number | null }
   recentOutcomes: (MatchOutcome | undefined)[]
+  /** Extra stat tiles shown beside the win rate on desktop only (the
+   *  "DesktopSport" board folds football's goals/assists into this card) —
+   *  hidden below `xl` regardless of what's passed. */
+  extra?: React.ReactNode
 }) {
   const form = recentOutcomes.filter((o): o is MatchOutcome => !!o).slice(0, FORM_LIMIT)
 
   return (
-    <Card className="flex flex-col gap-4 p-[18px]">
-      <div className="flex flex-col gap-0.5">
-        <span className="font-display text-5xl leading-none font-extrabold text-primary">
-          {formatWinRate(stats.win_percentage)}
-        </span>
-        <span className="text-sm text-muted-foreground">
-          win rate from {stats.matches_played} match{stats.matches_played === 1 ? '' : 'es'}
-        </span>
+    <Card className="flex flex-col gap-4 p-[18px] xl:gap-5 xl:p-6">
+      <div className="flex items-end justify-between gap-6">
+        <div className="flex flex-col gap-0.5">
+          <span className="hidden text-[13px] font-semibold text-muted-foreground xl:block">Win rate</span>
+          <span className="font-display text-5xl leading-none font-extrabold text-primary xl:text-7xl xl:tracking-tight">
+            {formatWinRate(stats.win_percentage)}
+          </span>
+          <span className="text-sm text-muted-foreground">
+            <span className="xl:hidden">win rate </span>
+            from {stats.matches_played} match{stats.matches_played === 1 ? '' : 'es'}
+          </span>
+        </div>
+        {extra && <div className="hidden items-end gap-7 xl:flex">{extra}</div>}
       </div>
 
       <div className="flex h-2.5 gap-[3px] overflow-hidden rounded-full">
@@ -283,20 +354,22 @@ function WinRateBanner({
         <span className="rounded-full bg-muted" style={{ flexGrow: stats.draws || 0.0001 }} />
       </div>
 
-      <div className="grid grid-cols-3 gap-2">
-        <StatTile value={stats.wins} label="Won" />
-        <StatTile value={stats.draws} label="Drawn" />
-        <StatTile value={stats.losses} label="Lost" />
-      </div>
-
-      {form.length > 0 && (
-        <div className="flex items-center gap-3 border-t pt-3.5">
-          <span className="flex-grow text-sm font-semibold text-muted-foreground">Recent form</span>
-          <div className="flex gap-1.5">
-            {form.map((outcome, i) => <FormBadge key={i} outcome={outcome} />)}
-          </div>
+      <div className="flex flex-col gap-3.5 xl:flex-row xl:items-center xl:gap-7">
+        <div className="grid grid-cols-3 gap-2 xl:flex xl:gap-7">
+          <StatTile value={stats.wins} label="Won" />
+          <StatTile value={stats.draws} label="Drawn" />
+          <StatTile value={stats.losses} label="Lost" />
         </div>
-      )}
+
+        {form.length > 0 && (
+          <div className="flex items-center gap-3 border-t pt-3.5 xl:flex-grow xl:justify-end xl:border-t-0 xl:pt-0">
+            <span className="text-sm font-semibold text-muted-foreground">Recent form</span>
+            <div className="flex gap-1.5">
+              {form.map((outcome, i) => <FormBadge key={i} outcome={outcome} />)}
+            </div>
+          </div>
+        )}
+      </div>
     </Card>
   )
 }

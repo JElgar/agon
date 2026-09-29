@@ -1,15 +1,21 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Calendar, CalendarPlus, ChevronLeft, Pencil, MapPin, Share } from 'lucide-react'
+import { Calendar, CalendarPlus, ChevronLeft, Link2, Pencil, MapPin, Share, UserPlus } from 'lucide-react'
 import type { components } from '@/types/api'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { scheduledDateTime } from '@/lib/datetime'
 import { directionsUrl } from '@/lib/location'
 import { downloadMatchIcs } from '@/lib/calendar'
 import { respondToInvitation } from '@/lib/invitations'
-import { PersonAvatar, SideSwatch } from '@/components/agon/football/FootballMatchView'
+import { PersonAvatar, SideSwatch, CommentsPreviewCard } from '@/components/agon/football/FootballMatchView'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
+import { WaitlistSection } from '@/components/agon/WaitlistSection'
+import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
+import { InvitePlayers } from '@/components/agon/InvitePlayers'
+import { MatchJoinLinksDialog } from '@/components/agon/MatchJoinLinksDialog'
+import { MatchComments } from '@/components/agon/MatchComments'
 import {
   memberAvatarUrl,
   memberName,
@@ -91,9 +97,11 @@ function OrganizerRow({ organiser }: { organiser: MatchPlayer }) {
  * alongside the app shell's sidebar) a right-hand action card replacing it.
  * Used for every non-football sport while `match.status === 'scheduled'` —
  * football has its own redesigned scheduled state (`FootballHeroCard`)
- * already, and this page's roster-editing/invite/waitlist/comments tools
- * (unchanged, below) still cover everything the single-viewport mocks don't
- * need to show at all: admin roster edits, the waitlist, join links.
+ * already. Also carries the admin roster tools (edit roster/invite/join
+ * links), the waitlist and comments — none of which the single-viewport
+ * mocks show, but this is the only view a scheduled non-football match
+ * renders, so they need to live here rather than "below" a summary that
+ * doesn't exist for this state.
  */
 export function ScheduledMatchInvite({
   match,
@@ -128,6 +136,10 @@ export function ScheduledMatchInvite({
 
   const invitation = myPendingInvitation(match, currentUserId)
   const [action, setAction] = useState<'accept' | 'decline' | null>(null)
+  const [editingRoster, setEditingRoster] = useState(false)
+  const [inviting, setInviting] = useState(false)
+  const [commentsOpen, setCommentsOpen] = useState(false)
+  const myPlayer = match.players.find((p) => p.member.type === 'User' && p.member.user_id === currentUserId)
   const matchKey = ['match', match.id]
 
   const respond = useMutation({
@@ -257,12 +269,46 @@ export function ScheduledMatchInvite({
             )}
           </Card>
 
+          <WaitlistSection match={match} currentUserId={currentUserId} canManage={canEdit} />
+
           {/* Below the fold on mobile; on desktop these move into the action
               card's column instead (right-hand `xl:flex` below). */}
           <div className="flex flex-col gap-4 xl:hidden">
             {adHocTeams && <TeamsCard sideA={sideA} sideB={sideB} />}
             {organiser && <OrganizerRow organiser={organiser} />}
           </div>
+
+          {/* Admin roster tools and comments: not shown on the single-viewport
+              mocks, but still need to be reachable from this view — the mocks
+              just don't need to show everything the page can do. */}
+          {canEdit && (
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" className="gap-1.5 rounded-full" onClick={() => setEditingRoster(true)}>
+                <Pencil className="size-4" /> Edit roster
+              </Button>
+              {!inviting && (
+                <Button variant="outline" className="gap-1.5 rounded-full" onClick={() => setInviting(true)}>
+                  <UserPlus className="size-4" /> Invite players
+                </Button>
+              )}
+              <MatchJoinLinksDialog match={match}>
+                <Button variant="outline" className="gap-1.5 rounded-full">
+                  <Link2 className="size-4" /> Join links
+                </Button>
+              </MatchJoinLinksDialog>
+            </div>
+          )}
+          {canEdit && editingRoster && (
+            <MatchRosterEditor match={match} onDone={() => setEditingRoster(false)} />
+          )}
+          {canEdit && inviting && <InvitePlayers match={match} onDone={() => setInviting(false)} />}
+
+          <CommentsPreviewCard
+            match={match}
+            viewerName={myPlayer ? memberName(myPlayer.member) : undefined}
+            viewerAvatar={myPlayer ? memberAvatarUrl(myPlayer.member) : undefined}
+            onOpen={() => setCommentsOpen(true)}
+          />
         </div>
 
         {/* Desktop-only: replaces the mobile sticky bottom bar with a
@@ -389,6 +435,15 @@ export function ScheduledMatchInvite({
           queryClient.invalidateQueries({ queryKey: ['profile-activity'] })
         }}
       />
+
+      <Sheet open={commentsOpen} onOpenChange={setCommentsOpen}>
+        <SheetContent side="bottom" className="max-h-[85vh] overflow-y-auto rounded-t-[20px] bg-background p-4">
+          <SheetHeader className="p-0">
+            <SheetTitle className="font-display text-xl">Comments</SheetTitle>
+          </SheetHeader>
+          <MatchComments matchId={match.id} currentUserId={currentUserId} />
+        </SheetContent>
+      </Sheet>
     </>
   )
 }

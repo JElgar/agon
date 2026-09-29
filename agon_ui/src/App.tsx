@@ -30,6 +30,7 @@ import { MatchDetailPage } from '@/pages/MatchDetailPage'
 import { LiveScoringSetupPage } from '@/pages/LiveScoringSetupPage'
 import { LiveScoringPage } from '@/pages/LiveScoringPage'
 import { NotificationsPage } from '@/pages/NotificationsPage'
+import { InvitationsPage } from '@/pages/InvitationsPage'
 import { UserSearchPage } from '@/pages/UserSearchPage'
 import { FollowListPage } from '@/pages/FollowListPage'
 import { SportStatsPage } from '@/pages/SportStatsPage'
@@ -49,16 +50,6 @@ import {
 function CenteredMessage({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen flex items-center justify-center">{children}</div>
-  )
-}
-
-/** Placeholder for a page not yet built in the rewrite. */
-function ComingSoon({ title }: { title: string }) {
-  return (
-    <div className="text-center py-16">
-      <h2 className="text-xl font-semibold mb-2">{title}</h2>
-      <p className="text-muted-foreground">This page is being rebuilt.</p>
-    </div>
   )
 }
 
@@ -110,7 +101,7 @@ function AppShell({ email, onSignOut }: { email: string; onSignOut: () => void }
           <Route path="/teams" element={<TeamsPage />} />
           <Route path="/teams/:teamId" element={<TeamPage />} />
           <Route path="/notifications" element={<NotificationsPage />} />
-          <Route path="/invitations" element={<ComingSoon title="Invitations" />} />
+          <Route path="/invitations" element={<InvitationsPage />} />
           <Route path="/invite/:token" element={<AcceptInvitePage />} />
           <Route path="/join/:token" element={<JoinMatchPage />} />
           <Route path="/pair" element={<PairDevicePage />} />

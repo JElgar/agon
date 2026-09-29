@@ -7,6 +7,7 @@ import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { clearPendingInvite } from '@/lib/pendingInvite'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
+import { LinkLandingCard } from '@/components/agon/LinkLandingCard'
 import { respondToInvitationByToken } from '@/lib/invitations'
 
 type InvitationDetail = components['schemas']['InvitationDetail']
@@ -57,20 +58,25 @@ export function AcceptInvitePage() {
   })
 
   if (preview.isLoading) {
-    return <InviteCard>Loading your invite…</InviteCard>
+    return <LinkLandingCard description="Loading your invite…" />
   }
 
   if (preview.isError || !preview.data) {
     return (
-      <InviteCard>
-        <h2 className="mb-2 text-xl font-semibold">Invite not found</h2>
-        <p className="mb-6 text-sm text-muted-foreground">
-          This invite link is invalid or has expired.
-        </p>
-        <Button variant="outline" onClick={() => navigate('/feed', { replace: true })}>
+      <LinkLandingCard
+        heading="Invite not found"
+        description="This invite link is invalid or has expired."
+      >
+        <Button
+          variant="outline"
+          shape="pill"
+          size="lg"
+          className="w-full"
+          onClick={() => navigate('/feed', { replace: true })}
+        >
           Go to your feed
         </Button>
-      </InviteCard>
+      </LinkLandingCard>
     )
   }
 
@@ -81,19 +87,23 @@ export function AcceptInvitePage() {
   // Already handled (e.g. the link was reused) — don't offer to respond again.
   if (status !== 'pending') {
     return (
-      <InviteCard>
-        <h2 className="mb-2 text-xl font-semibold">
-          {status === 'accepted' ? 'Already accepted' : 'Invite declined'}
-        </h2>
-        <p className="mb-6 text-sm text-muted-foreground">
-          {status === 'accepted'
+      <LinkLandingCard
+        heading={status === 'accepted' ? 'Already accepted' : 'Invite declined'}
+        description={
+          status === 'accepted'
             ? 'You have already joined.'
-            : 'You previously declined this invite.'}
-        </p>
-        <Button onClick={() => navigate(destinationFor(detail), { replace: true })}>
+            : 'You previously declined this invite.'
+        }
+      >
+        <Button
+          shape="pill"
+          size="lg"
+          className="w-full"
+          onClick={() => navigate(destinationFor(detail), { replace: true })}
+        >
           {contextLabel(context).action}
         </Button>
-      </InviteCard>
+      </LinkLandingCard>
     )
   }
 
@@ -102,22 +112,24 @@ export function AcceptInvitePage() {
   const matchId = context.type === 'Match' ? context.match_id : undefined
 
   return (
-    <InviteCard>
-      <div className="mb-4 flex size-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-        <Icon className="size-7" />
-      </div>
-      <h2 className="mb-1 text-xl font-semibold">You've been invited!</h2>
-      <p className="mb-6 text-sm text-muted-foreground">
-        Join <strong className="font-medium text-foreground">{label.name}</strong>
-        {label.kind}.
-      </p>
-
+    <LinkLandingCard
+      icon={<Icon className="size-7" />}
+      heading="You've been invited!"
+      description={
+        <>
+          Join <strong className="font-medium text-foreground">{label.name}</strong>
+          {label.kind}.
+        </>
+      }
+    >
       <div className="flex w-full gap-2">
-        <Button className="flex-1" onClick={() => setAction('accept')}>
+        <Button shape="pill" size="lg" className="flex-1" onClick={() => setAction('accept')}>
           Accept
         </Button>
         <Button
           variant="outline"
+          shape="pill"
+          size="lg"
           className="flex-1"
           onClick={() => setAction('decline')}
         >
@@ -161,7 +173,7 @@ export function AcceptInvitePage() {
           }
         }}
       />
-    </InviteCard>
+    </LinkLandingCard>
   )
 }
 
@@ -192,13 +204,4 @@ function contextLabel(context: InvitationContext): {
     kind: ' as a member',
     action: 'View team',
   }
-}
-
-/** Centered card chrome shared by every state of the accept screen. */
-function InviteCard({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="mx-auto flex max-w-md flex-col items-center rounded-2xl border bg-card p-8 text-center">
-      {children}
-    </div>
-  )
 }

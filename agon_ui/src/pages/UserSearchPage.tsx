@@ -43,16 +43,18 @@ export function UserSearchPage() {
   })
 
   return (
-    <div className="mx-auto flex max-w-xl flex-col gap-4">
-      <h1 className="font-display text-xl font-extrabold">Find people</h1>
+    <div className="mx-auto flex w-full max-w-xl flex-col gap-4 md:max-w-4xl md:gap-6">
+      <h1 className="font-display text-xl font-extrabold md:text-3xl">
+        Find people
+      </h1>
 
-      <div className="relative">
+      <div className="relative md:max-w-xl">
         <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           value={term}
           onChange={(e) => setTerm(e.target.value)}
           placeholder="Search by name…"
-          className="h-12 rounded-2xl pl-10"
+          className="h-12 rounded-2xl pl-10 md:h-14 md:text-base"
           autoFocus
           aria-label="Search people"
         />
@@ -85,20 +87,33 @@ function Results({ query, term, currentUserId }: ResultsProps) {
 
   if (query.isLoading) {
     return (
-      <Card className="flex flex-col overflow-hidden">
-        {Array.from({ length: 5 }).map((_, i) => (
-          <div
-            key={i}
-            className="flex items-center gap-3 border-b px-4 py-3.5 last:border-b-0"
-          >
-            <div className="size-9 shrink-0 animate-pulse rounded-full bg-muted" />
-            <div className="flex-1 space-y-2">
-              <div className="h-3 w-1/3 animate-pulse rounded bg-muted" />
-              <div className="h-2.5 w-1/4 animate-pulse rounded bg-muted" />
+      <>
+        <Card className="flex flex-col overflow-hidden md:hidden">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div
+              key={i}
+              className="flex items-center gap-3 border-b px-4 py-3.5 last:border-b-0"
+            >
+              <div className="size-9 shrink-0 animate-pulse rounded-full bg-muted" />
+              <div className="flex-1 space-y-2">
+                <div className="h-3 w-1/3 animate-pulse rounded bg-muted" />
+                <div className="h-2.5 w-1/4 animate-pulse rounded bg-muted" />
+              </div>
             </div>
-          </div>
-        ))}
-      </Card>
+          ))}
+        </Card>
+        <div className="hidden gap-4 md:grid md:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <Card key={i} className="flex items-center gap-3 px-4 py-3.5">
+              <div className="size-9 shrink-0 animate-pulse rounded-full bg-muted" />
+              <div className="flex-1 space-y-2">
+                <div className="h-3 w-1/3 animate-pulse rounded bg-muted" />
+                <div className="h-2.5 w-1/4 animate-pulse rounded bg-muted" />
+              </div>
+            </Card>
+          ))}
+        </div>
+      </>
     )
   }
 
@@ -126,14 +141,23 @@ function Results({ query, term, currentUserId }: ResultsProps) {
   }
 
   return (
-    <Card className="overflow-hidden">
-      <ul className="flex flex-col divide-y">
+    <>
+      <Card className="overflow-hidden md:hidden">
+        <ul className="flex flex-col divide-y">
+          {users.map((user) => (
+            <li key={user.id}>
+              <UserCard user={user} currentUserId={currentUserId} />
+            </li>
+          ))}
+        </ul>
+      </Card>
+      <div className="hidden gap-4 md:grid md:grid-cols-2 lg:grid-cols-3">
         {users.map((user) => (
-          <li key={user.id}>
+          <Card key={user.id} className="overflow-hidden">
             <UserCard user={user} currentUserId={currentUserId} />
-          </li>
+          </Card>
         ))}
-      </ul>
-    </Card>
+      </div>
+    </>
   )
 }

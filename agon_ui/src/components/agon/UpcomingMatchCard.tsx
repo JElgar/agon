@@ -24,9 +24,11 @@ function timeLabel(iso: string): string {
 }
 
 /**
- * A compact upcoming-match card for the feed's horizontal "Coming up" strip —
- * date box, title, time/location, who's playing, and the viewer's own RSVP
- * state. See the "Agon redesign" canvas's `Main.dc.html`.
+ * A compact upcoming-match card for the feed's "Coming up" list — date box,
+ * title, time/location, who's playing, and the viewer's own RSVP state. A
+ * fixed-width card in the horizontal snap-scroll strip below `xl`, full-width
+ * in the desktop sidebar's vertical stack at `xl` and up. See the "Agon
+ * redesign" canvas's `Main.dc.html`/`DesktopHome.dc.html`.
  */
 export function UpcomingMatchCard({
   match,
@@ -49,7 +51,7 @@ export function UpcomingMatchCard({
       type="button"
       onClick={onOpen}
       className={cn(
-        'flex w-[300px] shrink-0 scroll-ml-4 snap-start items-center gap-3.5 rounded-2xl border bg-card p-3.5 text-left text-card-foreground',
+        'flex w-[300px] shrink-0 scroll-ml-4 snap-start items-center gap-3.5 rounded-2xl border bg-card p-3.5 text-left text-card-foreground xl:w-full xl:shrink xl:scroll-ml-0 xl:snap-align-none',
         className,
       )}
     >

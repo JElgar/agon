@@ -73,6 +73,7 @@ import { MatchComments } from '@/components/agon/MatchComments'
 import { LikedByLine } from '@/components/agon/MatchLikes'
 import { useToggleLike } from '@/hooks/useToggleLike'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
+import { ScheduledMatchInvite } from '@/components/agon/invite/ScheduledMatchInvite'
 import { InvitePromptDialog } from '@/components/agon/InvitePromptDialog'
 import { useInvitePrompt } from '@/hooks/useInvitePrompt'
 import { footballFormat } from '@/lib/matchFormat'
@@ -629,6 +630,20 @@ function MatchDetail({
             </SheetContent>
           </Sheet>
         </>
+      ) : match.status === 'scheduled' && !cancelled ? (
+        <>
+          {/* Every other sport's redesigned pre-match/RSVP view (`Invite.dc.html`)
+              — football's own scheduled state is the hero card above instead. */}
+          <ScheduledMatchInvite
+            match={match}
+            currentUserId={currentUserId}
+            canEdit={canEdit}
+            onBack={onBack}
+            onShare={() => shareMatch(match)}
+            onEdit={() => setEditingDetails(true)}
+          />
+          {editingDetails && <MatchDetailsEditor match={match} onDone={() => setEditingDetails(false)} />}
+        </>
       ) : (
         <>
       <div className="flex items-center justify-between">
@@ -878,8 +893,10 @@ function MatchDetail({
 
           {/* Respond to a pending invite first; only once joined does the score
               confirm/dispute prompt apply — the two are mutually exclusive (same
-              logic as the feed/profile match card). */}
-          {myPendingInvitation(match, currentUserId) ? (
+              logic as the feed/profile match card). Skipped while scheduled: the
+              redesigned Invite view's own "I'm in"/"Can't make it" bar above
+              already covers this, so a second banner here would just duplicate it. */}
+          {myPendingInvitation(match, currentUserId) && !(match.status === 'scheduled' && !cancelled) ? (
             <InviteBanner match={match} currentUserId={currentUserId} />
           ) : (
             match.pending_score && (

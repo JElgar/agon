@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { ChevronLeft } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import { useAppendCricketEvent, useLiveSeq, useUndoTargetSeq } from '@/hooks/useLiveScore'
 import { matchScoreQueryKey, useMatchScore } from '@/hooks/useMatchScore'
-import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
+import { LiveScoringHeader } from '@/components/agon/live/LiveScoringHeader'
 import { UndoLastEventButton } from '@/components/agon/live/UndoLastEventButton'
 import { SidePicker, PlayerPicker, sideName } from '@/components/agon/live/Pickers'
 import { WicketDialog } from '@/components/agon/live/WicketDialog'
@@ -245,15 +245,10 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   }
 
   const header = (
-    <div className="flex items-center justify-between">
-      <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${match.id}`)}>
-        <ChevronLeft className="size-4" /> Back
-      </Button>
-      <div className="flex items-center gap-1">
-        <UndoLastEventButton matchId={match.id} seq={undoSeq.data} />
-        <LiveIndicator />
-      </div>
-    </div>
+    <LiveScoringHeader
+      onBack={() => navigate(`/matches/${match.id}`)}
+      right={<UndoLastEventButton matchId={match.id} seq={undoSeq.data} />}
+    />
   )
 
   // No innings open — either the match hasn't started, or we're between
@@ -269,7 +264,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
       <div className="mx-auto flex max-w-xl flex-col gap-4">
         {header}
         <div>
-          <h1 className="text-lg font-semibold">
+          <h1 className="font-display text-lg font-extrabold">
             {match.sides[0]?.name?.trim() || 'Side A'} vs {match.sides[1]?.name?.trim() || 'Side B'}
           </h1>
           <p className="text-sm text-muted-foreground">
@@ -281,7 +276,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
           </p>
         </div>
         {state && state.innings.length > 0 && (
-          <div className="rounded-xl border bg-card p-4">
+          <Card className="p-4">
             <div className="space-y-3">
               {state.innings.map((inn, i) => (
                 <div key={i}>
@@ -289,7 +284,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
                     {match.sides.find((s) => s.id === inn.batting_side_id)?.name?.trim() ||
                       'This side'}
                   </p>
-                  <p className="text-2xl font-medium tracking-tight">
+                  <p className="font-display text-2xl font-extrabold tracking-tight">
                     {inn.runs}/{inn.wickets}
                     <span className="ml-2 text-sm font-normal text-muted-foreground">
                       ({formatOvers(inn.overs)} ov)
@@ -298,19 +293,20 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
                 </div>
               ))}
             </div>
-          </div>
+          </Card>
         )}
 
         {!allInningsComplete && (
           <>
-            <div className="rounded-xl border bg-card p-4">
+            <Card className="p-4">
               <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
                 Who's batting?
               </p>
               <SidePicker sides={match.sides} value={startBattingSide} onChange={setStartBattingSide} />
-            </div>
+            </Card>
             <Button
               size="lg"
+              shape="pill"
               disabled={!startBattingSide || appendEvent.isPending}
               onClick={() => {
                 const bowlingSideId = match.sides.find((s) => s.id !== startBattingSide)?.id
@@ -341,6 +337,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
             <Button
               variant={allInningsComplete ? 'default' : 'outline'}
               size="lg"
+              shape="pill"
               disabled={finishMatch.isPending}
               onClick={() => finishMatch.mutate()}
             >
@@ -394,15 +391,15 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
       {header}
 
       <div>
-        <h1 className="text-lg font-semibold">
+        <h1 className="font-display text-lg font-extrabold">
           {sideName(battingSide!, 'Side A')} vs {sideName(bowlingSide!, 'Side B')}
         </h1>
         <p className="text-sm text-muted-foreground">You're scoring this match</p>
       </div>
 
-      <div className="rounded-xl border bg-card p-4">
-        <p className="text-sm font-medium">{sideName(battingSide!, 'Side A')} batting</p>
-        <p className="mt-0.5 text-3xl font-medium tracking-tight">
+      <Card className="p-5">
+        <p className="text-sm font-semibold">{sideName(battingSide!, 'Side A')} batting</p>
+        <p className="mt-0.5 font-display text-4xl font-extrabold tracking-tight">
           {innings.runs}/{innings.wickets}
           <span className="ml-2 text-sm font-normal text-muted-foreground">
             ({formatOvers(innings.overs)}
@@ -435,7 +432,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
             </div>
           )}
         </div>
-      </div>
+      </Card>
 
       {overBalls.length > 0 && (
         <div>
@@ -462,7 +459,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
       )}
 
       {showPickerPanel ? (
-        <div className="rounded-xl border bg-card p-4">
+        <Card className="p-4">
           <p className="mb-3 text-sm font-medium">
             {editingOpeningPicks && readyToScore
               ? 'Edit your selections'
@@ -529,7 +526,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
               Done
             </Button>
           )}
-        </div>
+        </Card>
       ) : (
         <div>
           {openingPicksUnconfirmed && (
@@ -552,7 +549,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
                 type="button"
                 disabled={appendEvent.isPending}
                 onClick={() => recordDelivery({ runs_off_bat: n })}
-                className="rounded-xl border bg-card p-4 text-lg font-semibold transition-colors hover:bg-muted disabled:opacity-50"
+                className="rounded-2xl border bg-card p-4 font-display text-lg font-bold transition-colors hover:bg-muted disabled:opacity-50"
               >
                 {n}
               </button>
@@ -563,7 +560,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
                 type="button"
                 disabled={appendEvent.isPending}
                 onClick={() => recordDelivery({ runs_off_bat: n })}
-                className="rounded-xl border border-primary/30 bg-primary/10 p-4 text-lg font-semibold text-primary transition-colors hover:bg-primary/15 disabled:opacity-50"
+                className="rounded-2xl border border-primary/30 bg-primary/10 p-4 font-display text-lg font-bold text-primary transition-colors hover:bg-primary/15 disabled:opacity-50"
               >
                 {n}
               </button>
@@ -572,7 +569,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
               type="button"
               disabled={appendEvent.isPending}
               onClick={() => setExtraDialog('bye')}
-              className="rounded-xl border bg-card p-4 text-sm font-semibold transition-colors hover:bg-muted disabled:opacity-50"
+              className="rounded-2xl border bg-card p-4 text-sm font-semibold transition-colors hover:bg-muted disabled:opacity-50"
             >
               Bye
             </button>
@@ -585,7 +582,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
               onClick={() =>
                 recordDelivery({ extra: { kind: 'wide', runs: format.wide_penalty_runs } })
               }
-              className="rounded-xl border bg-card p-3 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50"
+              className="rounded-2xl border bg-card p-3 text-sm font-semibold transition-colors hover:bg-muted disabled:opacity-50"
             >
               Wide
             </button>
@@ -593,7 +590,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
               type="button"
               disabled={appendEvent.isPending}
               onClick={() => setExtraDialog('no_ball')}
-              className="rounded-xl border bg-card p-3 text-sm font-medium transition-colors hover:bg-muted disabled:opacity-50"
+              className="rounded-2xl border bg-card p-3 text-sm font-semibold transition-colors hover:bg-muted disabled:opacity-50"
             >
               No ball
             </button>
@@ -601,7 +598,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
               type="button"
               disabled={appendEvent.isPending}
               onClick={() => setWicketOpen(true)}
-              className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm font-medium text-destructive transition-colors hover:bg-destructive/15 disabled:opacity-50"
+              className="rounded-2xl border border-destructive/30 bg-destructive/10 p-3 text-sm font-semibold text-destructive transition-colors hover:bg-destructive/15 disabled:opacity-50"
             >
               Wicket
             </button>
@@ -616,13 +613,14 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
       )}
 
       {endInningsOpen ? (
-        <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4">
-          <p className="mb-2 text-sm font-medium">End this innings — why?</p>
+        <Card className="border-destructive/30 bg-destructive/5 p-4">
+          <p className="mb-2 text-sm font-semibold">End this innings — why?</p>
           <div className="grid grid-cols-2 gap-2">
             {END_REASONS.map((r) => (
               <Button
                 key={r.value}
                 variant="outline"
+                shape="pill"
                 size="sm"
                 disabled={appendEvent.isPending}
                 onClick={() => endInnings(r.value)}
@@ -639,9 +637,9 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
           >
             Cancel
           </Button>
-        </div>
+        </Card>
       ) : (
-        <Button variant="outline" onClick={() => setEndInningsOpen(true)}>
+        <Button variant="outline" shape="pill" onClick={() => setEndInningsOpen(true)}>
           End innings
         </Button>
       )}

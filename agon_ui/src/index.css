@@ -29,6 +29,7 @@
   --color-success-foreground: var(--success-foreground);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
+  --color-link: var(--link);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -45,6 +46,27 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  --color-hairline: var(--hairline);
+  --color-rule: var(--rule);
+  --color-edge: var(--edge);
+  --color-gridline: var(--gridline);
+  --color-chip: var(--chip);
+  --color-chip-soft: var(--chip-soft);
+  --color-placeholder: var(--placeholder);
+  --color-ink-soft: var(--ink-soft);
+  --color-ink-mid: var(--ink-mid);
+  --color-ink-faint: var(--ink-faint);
+  --color-ink-ghost: var(--ink-ghost);
+  --color-kit-grey: var(--kit-grey);
+  --color-assist: var(--assist);
+  --color-assist-foreground: var(--assist-foreground);
+  --color-wicket-tint: var(--wicket-tint);
+  --color-wicket-foreground: var(--wicket-foreground);
+  --color-spotlight: var(--spotlight);
+  --color-spotlight-foreground: var(--spotlight-foreground);
+  --color-spotlight-muted: var(--spotlight-muted);
+  --color-gold: var(--gold);
+  --color-avatar-ink: var(--avatar-ink);
   --radius-2xl: calc(var(--radius) + 8px);
   --radius-3xl: calc(var(--radius) + 12px);
   --radius-4xl: calc(var(--radius) + 16px);
@@ -84,6 +106,9 @@
   --success-foreground: oklch(0.985 0 0);
   --warning: oklch(0.834 0.158 89);
   --warning-foreground: oklch(0.205 0.006 271.1);
+  /* Same brand blue as --primary — on the light cream/white surfaces it
+   * already has plenty of contrast as text, unlike on dark (see below). */
+  --link: oklch(0.5 0.211 265.8);
   --border: oklch(0.932 0.013 86.8);
   --input: oklch(0.88 0.016 86.4);
   --ring: oklch(0.5 0.211 265.8);
@@ -100,6 +125,29 @@
   --sidebar-accent-foreground: oklch(0.416 0.173 265.6);
   --sidebar-border: oklch(0.932 0.013 86.8);
   --sidebar-ring: oklch(0.5 0.211 265.8);
+  /* Redesign accents from the canvas (match pages): light values from the
+   * mocks, dark values from MainDark.dc.html's palette. */
+  --hairline: #F0ECE4; /* row dividers inside cards */
+  --rule: #E4E0D7; /* timeline rails */
+  --edge: #DCD7CC; /* outlined buttons and filter chips */
+  --gridline: #EEEAE2; /* chart grid lines */
+  --chip: #EEEAE2; /* neutral event icons and dot balls */
+  --chip-soft: #F1EEE7; /* run balls */
+  --placeholder: #CFC9BD; /* dashed "still to come" slots */
+  --ink-soft: #3D404A; /* secondary body text */
+  --ink-mid: #4A4E59; /* inactive tab labels */
+  --ink-faint: #7D8190; /* losing scores */
+  --ink-ghost: #C9CCD4; /* running score beside timeline events */
+  --kit-grey: #A9A499; /* side B kit ring and chart line */
+  --assist: #1F9E8A; /* assists bars */
+  --assist-foreground: #17796A; /* assists figures */
+  --wicket-tint: #FBE4DA; /* wicket rows */
+  --wicket-foreground: #9A3210; /* text on wicket rows */
+  --spotlight: #16171A; /* top performer card */
+  --spotlight-foreground: #FFFFFF;
+  --spotlight-muted: #C9CCD4;
+  --gold: #F2C230; /* top performer ring, yellow cards */
+  --avatar-ink: #16171A; /* initials on the pastel avatar tints */
 }
 
 .dark {
@@ -111,7 +159,9 @@
   --card-foreground: oklch(0.958 0.005 95.1);
   --popover: oklch(0.232 0.01 276.6);
   --popover-foreground: oklch(0.958 0.005 95.1);
-  /* Same Agon blue as light mode — it already reads fine on the dark surface. */
+  /* Same Agon blue as light mode — it already reads fine on the dark surface
+   * as a SOLID FILL (buttons, the stats banner). Don't reuse it as text
+   * color; see --link below. */
   --primary: oklch(0.5 0.211 265.8);
   --primary-foreground: oklch(0.985 0 0);
   --secondary: oklch(0.294 0.013 272.9);
@@ -127,6 +177,11 @@
   --success-foreground: oklch(0.145 0 0);
   --warning: oklch(0.834 0.158 89);
   --warning-foreground: oklch(0.145 0 0);
+  /* #8FA8FF — the mock's MainDark board uses this lighter blue for every
+   * anchor/link text on the dark surface (--primary's #2952D9 stays reserved
+   * for solid fills there), since --primary reads as a dull, low-contrast
+   * blue at text size against the near-black background. */
+  --link: oklch(0.746 0.116 266.3);
   --border: oklch(0.294 0.013 272.9);
   --input: oklch(0.294 0.013 272.9);
   --ring: oklch(0.5 0.211 265.8);
@@ -143,6 +198,27 @@
   --sidebar-accent-foreground: oklch(0.748 0.129 270.8);
   --sidebar-border: oklch(0.294 0.013 272.9);
   --sidebar-ring: oklch(0.5 0.211 265.8);
+  --hairline: #2A2C33;
+  --rule: #34363E;
+  --edge: #3A3D46;
+  --gridline: #2A2C33;
+  --chip: #2E3038;
+  --chip-soft: #2A2C33;
+  --placeholder: #4A4D57;
+  --ink-soft: #D0D2D8;
+  --ink-mid: #B8BBC4;
+  --ink-faint: #8E92A0;
+  --ink-ghost: #5A5E6A;
+  --kit-grey: #8E92A0;
+  --assist: #3DBFA8;
+  --assist-foreground: #5CCFBB;
+  --wicket-tint: #3A241C;
+  --wicket-foreground: #FF9E7A;
+  --spotlight: #2A2C33;
+  --spotlight-foreground: #F2F1ED;
+  --spotlight-muted: #A3A7B3;
+  --gold: #F2C230;
+  --avatar-ink: #16171A;
 }
 
 @layer base {

@@ -15,6 +15,10 @@ type Photo = components['schemas']['Photo']
 export interface MatchHeaderCarouselProps {
   photos: Photo[]
   className?: string
+  /** Full-bleed hero treatment (taller, no border/radius) for the football
+   *  match-detail page's photo header (`Match.dc.html`), instead of the
+   *  usual bordered rounded banner. */
+  hero?: boolean
 }
 
 /**
@@ -23,7 +27,7 @@ export interface MatchHeaderCarouselProps {
  * prev/next buttons. Swipe works on every screen size — the buttons are just an
  * affordance for mouse users and are hidden on small screens.
  */
-export function MatchHeaderCarousel({ photos, className }: MatchHeaderCarouselProps) {
+export function MatchHeaderCarousel({ photos, className, hero }: MatchHeaderCarouselProps) {
   const [api, setApi] = useState<CarouselApi>()
   const [selected, setSelected] = useState(0)
 
@@ -39,13 +43,17 @@ export function MatchHeaderCarousel({ photos, className }: MatchHeaderCarouselPr
 
   if (photos.length === 0) return null
 
+  const imageClassName = hero
+    ? 'h-[250px] w-full rounded-none border-0 object-cover'
+    : 'h-40 w-full rounded-xl border object-cover'
+
   // Single image: no carousel chrome needed.
   if (photos.length === 1) {
     return (
       <img
         src={photos[0].image_url}
         alt=""
-        className={cn('h-40 w-full rounded-xl border object-cover', className)}
+        className={cn(imageClassName, className)}
         loading="lazy"
       />
     )
@@ -59,7 +67,7 @@ export function MatchHeaderCarousel({ photos, className }: MatchHeaderCarouselPr
             <img
               src={photo.image_url}
               alt=""
-              className="h-40 w-full rounded-xl border object-cover"
+              className={imageClassName}
               loading="lazy"
             />
           </CarouselItem>

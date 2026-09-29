@@ -4,6 +4,15 @@ on:
   push:
     branches: [ main ]
 
+# A burst of merges to main fires one Release run per push; without this,
+# their deploy jobs race to commit/push the same Pulumi stack config file and
+# to run `pulumi up` against the same staging stack concurrently. Serialize
+# them (queued, not cancelled) so each deploy runs against a clean, up to
+# date main.
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
 permissions:
   contents: write
   packages: write

@@ -80,6 +80,10 @@ jobs:
             agon-service-image ${{ inputs.agon-service-image }}
             agon-worker-image ${{ inputs.agon-worker-image }}
             agon-ui-image ${{ inputs.agon-ui-image }}
+          # Concurrent deploy runs (one per merged PR) all commit this same
+          # config file; rebase onto the latest main before pushing so a run
+          # that lands after another doesn't get rejected as non-fast-forward.
+          pull: '--rebase --autostash'
 
       - uses: pulumi/actions@v6
         id: pulumi-up

@@ -7,7 +7,7 @@ import type { components } from '@/types/api'
 import { Avatar } from '@/components/agon/Avatar'
 import { EditProfileDialog } from '@/components/agon/EditProfileDialog'
 import { FollowButton } from '@/components/agon/FollowButton'
-import { StatBanner } from '@/components/agon/StatBanner'
+import { StatBannerCard } from '@/components/agon/StatBannerCard'
 import { SportBreakdownBar } from '@/components/agon/SportBreakdownBar'
 import { SportProgressRow } from '@/components/agon/SportProgressRow'
 import { ProfileMatchRow } from '@/components/agon/ProfileMatchRow'
@@ -262,7 +262,7 @@ function OwnProfile({
         </div>
 
         <div className="xl:w-[420px] xl:shrink-0">
-          <StatBanner
+          <StatBannerCard
             aria-label="All sports"
             stats={[
               { value: matches_played, label: 'Matches' },
@@ -422,7 +422,7 @@ function OtherProfile({
         </div>
 
         <div className="xl:w-[420px] xl:shrink-0">
-          <StatBanner
+          <StatBannerCard
             aria-label={`${profile.name}'s overall stats`}
             stats={[
               { value: matches_played, label: 'Matches' },
@@ -456,7 +456,7 @@ function OtherProfile({
           )}
 
           <h3 className="px-1 pt-2 font-display text-[19px] font-bold">Head to head</h3>
-          <StatBanner
+          <StatBannerCard
             aria-label="Record as opponents"
             stats={[
               { value: headToHead.youWon, label: 'You won' },
@@ -467,7 +467,7 @@ function OtherProfile({
           />
 
           <h3 className="px-1 pt-2 font-display text-[19px] font-bold">Playing together</h3>
-          <StatBanner
+          <StatBannerCard
             tone="terracotta"
             aria-label="Record as teammates"
             stats={[

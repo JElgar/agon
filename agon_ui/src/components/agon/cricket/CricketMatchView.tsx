@@ -33,6 +33,8 @@ import {
   SideSwatch,
   TopPerformerCard,
   cardClass,
+  SidesGrid,
+  type PlayersLayout,
 } from '@/components/agon/football/FootballMatchView'
 import { useViewerFollowing } from '@/hooks/useViewerFollowing'
 import { plural } from './cricketMeta'
@@ -620,11 +622,14 @@ export function CricketScorecardTab({
   innings,
   players,
   format,
+  columns = false,
 }: {
   match: Match
   innings: CricketInningsWithDeliveries[]
   players?: ScorePlayers
   format: CricketFormat
+  /** Put the innings side by side (the desktop board). */
+  columns?: boolean
 }) {
   if (innings.length === 0) {
     return (
@@ -635,7 +640,7 @@ export function CricketScorecardTab({
   }
   const nameOf = (id: string | undefined) => playerNameFor(match, id, players)
   return (
-    <>
+    <SidesGrid columns={columns}>
       {innings.map((inn, idx) => {
         const batting = [...(inn.batting ?? [])].sort((a, b) => (a.batting_position ?? 99) - (b.batting_position ?? 99))
         const bowling = inn.bowling ?? []
@@ -743,7 +748,7 @@ export function CricketScorecardTab({
           </div>
         )
       })}
-    </>
+    </SidesGrid>
   )
 }
 
@@ -1096,6 +1101,7 @@ export function CricketPlayersTab({
   format,
   finished,
   footer,
+  layout = 'stack',
 }: {
   match: Match
   innings: CricketScoreInnings[]
@@ -1103,6 +1109,9 @@ export function CricketPlayersTab({
   format: CricketFormat
   finished: boolean
   footer?: React.ReactNode
+  /** `columns` (desktop) puts the sides side by side and leaves the top
+   *  performer out; `top` renders only the top performer card. */
+  layout?: PlayersLayout
 }) {
   const following = useViewerFollowing(currentUserId)
   const stats = useMemo(() => {
@@ -1176,37 +1185,42 @@ export function CricketPlayersTab({
     />
   )
 
+  const topCard = top ? (
+    <TopPerformerCard
+      player={top.player}
+      detail={[
+        top.s.batted ? `${top.s.runs} off ${top.s.balls}` : null,
+        top.s.wickets ? `${top.s.wickets} for ${top.s.conceded}` : null,
+      ]
+        .filter(Boolean)
+        .join(' · ')}
+      value={top.s.runs >= top.s.wickets * 20 ? top.s.runs : `${top.s.wickets}/${top.s.conceded}`}
+    />
+  ) : null
+  if (layout === 'top') return topCard
+
   return (
     <>
-      {top && (
-        <TopPerformerCard
-          player={top.player}
-          detail={[
-            top.s.batted ? `${top.s.runs} off ${top.s.balls}` : null,
-            top.s.wickets ? `${top.s.wickets} for ${top.s.conceded}` : null,
-          ]
-            .filter(Boolean)
-            .join(' · ')}
-          value={top.s.runs >= top.s.wickets * 20 ? top.s.runs : `${top.s.wickets}/${top.s.conceded}`}
-        />
-      )}
-      {match.sides.slice(0, 2).map((side, idx) => {
-        const players = match.players.filter((p) => p.side_id === side.id)
-        const res = result(side.id)
-        return (
-          <div key={side.id} className="flex flex-col gap-3.5">
-            <SideHeading
-              index={idx}
-              name={sideNameFor(match, side.id)}
-              meta={`${res ? `${res} · ` : ''}${plural(players.length, 'player')}`}
-            />
-            <section className="flex flex-col overflow-hidden rounded-[20px] border bg-card">
-              {players.length === 0 && <p className="px-4 py-5 text-sm text-muted-foreground">No players yet.</p>}
-              {players.map(row)}
-            </section>
-          </div>
-        )
-      })}
+      {layout === 'stack' && topCard}
+      <SidesGrid columns={layout === 'columns'}>
+        {match.sides.slice(0, 2).map((side, idx) => {
+          const players = match.players.filter((p) => p.side_id === side.id)
+          const res = result(side.id)
+          return (
+            <div key={side.id} className="flex flex-col gap-3.5">
+              <SideHeading
+                index={idx}
+                name={sideNameFor(match, side.id)}
+                meta={`${res ? `${res} · ` : ''}${plural(players.length, 'player')}`}
+              />
+              <section className="flex flex-col overflow-hidden rounded-[20px] border bg-card">
+                {players.length === 0 && <p className="px-4 py-5 text-sm text-muted-foreground">No players yet.</p>}
+                {players.map(row)}
+              </section>
+            </div>
+          )
+        })}
+      </SidesGrid>
       {unassigned.length > 0 && (
         <div className="flex flex-col gap-3.5">
           <div className="mt-1.5 flex items-center gap-2.5 px-1">

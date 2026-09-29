@@ -20,6 +20,7 @@ import { CricketScoreBlock } from './CricketScoreBlock'
 import { KnownPlayersRow } from './KnownPlayersRow'
 import { FootballScorersBySide } from './FootballScorersBySide'
 import { NetballScorersBySide } from './NetballScorersBySide'
+import { FootballFeedCardBody, CricketFeedCardBody } from './RedesignedSportCard'
 import { useMatchScore } from '@/hooks/useMatchScore'
 import { footballScoreFrom } from '@/lib/liveScore'
 import { netballGoalsFromScore } from '@/lib/score'
@@ -222,8 +223,8 @@ export function MatchCard({
 
   const nameA = sideName(sideA, 'Side A')
   const nameB = sideName(sideB, 'Side B')
-  const aWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
-  const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
+  const aWon = !!scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
+  const bWon = !!scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
   // The "X beat Y" headline needs the winner named first, or it reads
   // backwards whenever B is the one who actually won (the score box below
   // stays in match.sides order regardless — only this headline reorders).
@@ -299,46 +300,92 @@ export function MatchCard({
   const { like_count, comment_count, i_liked } = match.social
   const toggleLike = useToggleLike(match)
 
+  // Football/cricket get the "Agon redesign" canvas's rebuilt card body (see
+  // `RedesignedSportCard`) — every other sport keeps the pre-existing generic
+  // header/score layout below untouched, per James's ask to leave those
+  // alone for now.
+  const isRedesignedSport = match.match_type === 'football' || match.match_type === 'cricket'
+  const isLiveShadow = isRedesignedSport && isCurrentlyLive
+
   return (
     <div
       className={cn(
-        'overflow-hidden rounded-xl border bg-card text-card-foreground',
+        'overflow-hidden rounded-2xl border bg-card text-card-foreground',
         className,
       )}
+      style={isLiveShadow ? { boxShadow: 'inset 0 3px 0 0 var(--destructive)' } : undefined}
       {...props}
     >
-      {/* Header: the cricket state-of-game line when there is one, else the
-          usual "who beat who" + when + sport. */}
-      <button
-        type="button"
-        onClick={onOpen}
-        className="flex w-full items-start justify-between gap-3 p-3.5 text-left"
-      >
-        <p className="text-sm leading-snug">
-          {cricketDescription ? (
-            <span>{cricketDescription}</span>
-          ) : (
-            <>
-              <span className={cn(!!scoreInfo?.winnerSideId && 'font-medium')}>{winningTeamName}</span>
-              <span className="text-primary">
+      {isRedesignedSport ? (
+        match.match_type === 'football' ? (
+          <FootballFeedCardBody
+            match={orderedMatch}
+            sideA={sideA}
+            sideB={sideB}
+            nameA={nameA}
+            nameB={nameB}
+            isLive={isCurrentlyLive}
+            liveState={footballState}
+            finishedHeadline={headline}
+            finishedGoals={finishedFootballGoals}
+            finishedPlayers={finishedFootballScorePlayers}
+            finishedPeriodTimes={finishedFootballPeriodTimes}
+            aWon={aWon}
+            bWon={bWon}
+            startsAt={match.starts_at}
+            onOpen={onOpen}
+          />
+        ) : (
+          <CricketFeedCardBody
+            match={orderedMatch}
+            sideA={sideA}
+            sideB={sideB}
+            nameA={nameA}
+            nameB={nameB}
+            isLive={isCurrentlyLive}
+            liveState={cricketState}
+            finishedScore={!isCurrentlyLive ? cricketScore : null}
+            aWon={aWon}
+            bWon={bWon}
+            description={cricketDescription}
+            startsAt={match.starts_at}
+            onOpen={onOpen}
+          />
+        )
+      ) : (
+        <>
+          {/* Header: the cricket state-of-game line when there is one, else the
+              usual "who beat who" + when + sport. */}
+          <button
+            type="button"
+            onClick={onOpen}
+            className="flex w-full items-start justify-between gap-3 p-3.5 text-left"
+          >
+            <p className="text-sm leading-snug">
+              {cricketDescription ? (
+                <span>{cricketDescription}</span>
+              ) : (
+                <>
+                  <span className={cn(!!scoreInfo?.winnerSideId && 'font-medium')}>{winningTeamName}</span>
+                  <span className="text-primary">
+                    {' '}
+                    {match.match_type !== 'cricket' && scoreInfo?.winnerSideId ? 'beat' : 'vs'}{' '}
+                  </span>
+                  <span>{losingTeamName}</span>
+                </>
+              )}
+              <span className="text-muted-foreground" title={scheduledDateTime(match.starts_at)}>
                 {' '}
-                {match.match_type !== 'cricket' && scoreInfo?.winnerSideId ? 'beat' : 'vs'}{' '}
+                · {relativeTime(match.starts_at)}
               </span>
-              <span>{losingTeamName}</span>
-            </>
-          )}
-          <span className="text-muted-foreground" title={scheduledDateTime(match.starts_at)}>
-            {' '}
-            · {relativeTime(match.starts_at)}
-          </span>
-        </p>
-        <div className="flex shrink-0 flex-col items-end gap-1.5">
-          <SportBadge sport={match.match_type} />
-        </div>
-      </button>
+            </p>
+            <div className="flex shrink-0 flex-col items-end gap-1.5">
+              <SportBadge sport={match.match_type} />
+            </div>
+          </button>
 
-      {/* Title + description — clickable, same as the header/score blocks above. */}
-      {(match.name || match.description) && (
+          {/* Title + description — clickable, same as the header/score blocks above. */}
+          {(match.name || match.description) && (
         <button type="button" onClick={onOpen} className="block w-full px-3.5 pb-3 text-left">
           {match.name && <p className="font-medium leading-snug">{match.name}</p>}
           {match.description && (
@@ -463,6 +510,8 @@ export function MatchCard({
             </button>
           </div>
         )
+      )}
+        </>
       )}
 
       {/* "You follow Sofia, Raj +1" — who among the match's participants the

@@ -412,6 +412,74 @@ export function cricketStateDescription(
   return `${sideNameFor(match, winnerSideId)} won by ${margin} run${margin === 1 ? '' : 's'}`
 }
 
+/** How much a chasing side still needs, for the feed card's live "Need N
+ *  runs from M balls" line — the same target-chase math `cricketStateDescription`
+ *  derives its "need N to win" sentence from, plus the balls remaining in the
+ *  format's over allocation (which that sentence doesn't surface). `null`
+ *  whenever `cricketStateDescription` would have nothing to say about a
+ *  target (not the decider innings, target already reached/passed, or the
+ *  format has no fixed overs limit to count balls remaining against). */
+export function chaseInfoFromState(
+  match: Pick<Match, 'sides'>,
+  state: CricketMatchProgress,
+  format: Pick<CricketFormat, 'innings_per_side' | 'overs_per_innings' | 'balls_per_over'>,
+): { runsNeeded: number; ballsRemaining: number } | null {
+  if (state.awaiting_next_innings) return null
+  const quota = match.sides.length * format.innings_per_side
+  if (state.innings.length !== quota) return null
+
+  const open = state.innings[state.innings.length - 1]
+  const totals = matchTotalsBySide(state)
+  const battingTotal = totals[open.batting_side_id] ?? 0
+  const bowlingTotal = totals[open.bowling_side_id] ?? 0
+  const runsNeeded = bowlingTotal + 1 - battingTotal
+  if (runsNeeded <= 0) return null
+  if (format.overs_per_innings == null) return null
+
+  const totalBalls = format.overs_per_innings * format.balls_per_over
+  const ballsBowled = open.overs.overs * format.balls_per_over + open.overs.balls
+  const ballsRemaining = totalBalls - ballsBowled
+  if (ballsRemaining <= 0) return null
+  return { runsNeeded, ballsRemaining }
+}
+
+/** The match's best batting/bowling performance across every innings played
+ *  so far, for a finished match's feed-card "Top bat"/"Top bowler" tiles.
+ *  Top bat is the highest individual score; top bowler is the most wickets,
+ *  tie-broken by fewest runs conceded. An entry whose player id doesn't
+ *  resolve to a name (see `playerNameFor`) is skipped rather than shown with
+ *  a placeholder — on a feed/search card's trimmed match type that's the same
+ *  "can't resolve → omit" contract `playerNameFor` itself uses. `null` when
+ *  no resolvable entry exists at all for that column. */
+export function topCricketPerformers(
+  score: CricketScore,
+  match: MatchLike,
+): {
+  topBat: { name: string; runs: number; balls: number } | null
+  topBowler: { name: string; wickets: number; runsConceded: number } | null
+} {
+  let topBat: { name: string; runs: number; balls: number } | null = null
+  let topBowler: { name: string; wickets: number; runsConceded: number } | null = null
+
+  for (const innings of score.innings) {
+    for (const b of innings.batting ?? []) {
+      if (topBat && b.runs <= topBat.runs) continue
+      const name = playerNameFor(match, b.player_id, score.players)
+      if (name) topBat = { name, runs: b.runs, balls: b.balls_faced }
+    }
+    for (const bo of innings.bowling ?? []) {
+      const better =
+        !topBowler ||
+        bo.wickets > topBowler.wickets ||
+        (bo.wickets === topBowler.wickets && bo.runs_conceded < topBowler.runsConceded)
+      if (!better) continue
+      const name = playerNameFor(match, bo.player_id, score.players)
+      if (name) topBowler = { name, wickets: bo.wickets, runsConceded: bo.runs_conceded }
+    }
+  }
+  return { topBat, topBowler }
+}
+
 /** Display name for a side id: its name, or a neutral fallback. */
 export function sideNameFor(match: Pick<Match, 'sides'>, sideId: string): string {
   return match.sides.find((s) => s.id === sideId)?.name?.trim() || 'This side'

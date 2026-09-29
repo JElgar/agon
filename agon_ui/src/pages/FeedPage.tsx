@@ -8,6 +8,7 @@ import { UpcomingMatchCard } from '@/components/agon/UpcomingMatchCard'
 import { Button } from '@/components/ui/button'
 import { useNavigate } from 'react-router-dom'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
+import { useIsDesktop } from '@/hooks/use-mobile'
 import { dayLabel } from '@/lib/datetime'
 import {
   usePendingMatches,
@@ -36,6 +37,10 @@ export function FeedPage() {
   const navigate = useNavigate()
   const currentUserId = useCurrentUserId()
   const queryClient = useQueryClient()
+  // At the `xl` desktop breakpoint the feed restructures into two columns
+  // (see `DesktopHome.dc.html`) rather than just restyling, so this needs a
+  // JS breakpoint check, not CSS alone.
+  const isDesktop = useIsDesktop()
 
   // Same query key/fetcher as `useCurrentUserId` (called above), so this
   // shares its cache entry and network request instead of fetching twice.
@@ -105,9 +110,13 @@ export function FeedPage() {
           </span>
         </h2>
       </div>
+      {/* A horizontal snap-scroll strip below `xl`; a plain vertical stack
+          in the desktop sidebar, where there's no room to scroll sideways
+          (see `DesktopHome.dc.html`). `UpcomingMatchCard` itself switches
+          from a fixed 300px card to full-width at the same breakpoint. */}
       <div
         aria-label="Upcoming matches"
-        className="-mx-4 flex snap-x snap-mandatory gap-2.5 overflow-x-auto scroll-pl-4 px-4 pb-1"
+        className="-mx-4 flex snap-x snap-mandatory gap-2.5 overflow-x-auto scroll-pl-4 px-4 pb-1 xl:mx-0 xl:flex-col xl:overflow-visible xl:px-0 xl:pb-0"
         style={{ scrollbarWidth: 'none' }}
       >
         {upcoming.map((m) => (
@@ -162,6 +171,61 @@ export function FeedPage() {
     )
   }
 
+  const renderCard = (item: FeedCardItem) => (
+    <MatchCard
+      key={item.id}
+      match={item}
+      currentUserId={currentUserId}
+      onOpen={() => navigate(`/matches/${item.id}`)}
+    />
+  )
+
+  const loadMore = query.hasNextPage && (
+    <Button
+      variant="outline"
+      className="mt-2"
+      disabled={query.isFetchingNextPage}
+      onClick={() => query.fetchNextPage()}
+    >
+      {query.isFetchingNextPage ? 'Loading…' : 'Load more'}
+    </Button>
+  )
+
+  // Below `xl`, everything (live or not) is grouped by day, as one list —
+  // matches `Main.dc.html`/`TabletHome.dc.html`. At `xl`, `DesktopHome.dc.html`
+  // pulls live matches into their own "Live now" section above the day
+  // groups instead, since the two-column layout has room for it.
+  if (isDesktop) {
+    const liveItems = items.filter((item) => item.status === 'in_progress')
+    const otherItems = items.filter((item) => item.status !== 'in_progress')
+    const sections = groupByDay(otherItems)
+
+    return (
+      <div className="mx-auto flex max-w-[980px] items-start justify-center gap-10">
+        <main className="flex w-[600px] shrink-0 flex-col gap-3">
+          <h1 className="font-display text-2xl font-extrabold">Home</h1>
+          {liveItems.length > 0 && (
+            <div className="flex flex-col gap-3">
+              <h2 className="px-1 font-display text-lg font-bold">Live now</h2>
+              {liveItems.map(renderCard)}
+            </div>
+          )}
+          {sections.map((section) => (
+            <div key={section.label} className="flex flex-col gap-3">
+              <h2 className="px-1 font-display text-lg font-bold">{section.label}</h2>
+              {section.items.map(renderCard)}
+            </div>
+          ))}
+          {loadMore}
+        </main>
+        <aside className="flex w-[340px] shrink-0 flex-col gap-3">
+          {banner}
+          {comingUp}
+        </aside>
+      </div>
+    )
+  }
+
   const sections = groupByDay(items)
 
   return (
@@ -172,27 +236,11 @@ export function FeedPage() {
       {sections.map((section) => (
         <div key={section.label} className="flex flex-col gap-3">
           <h2 className="px-1 font-display text-lg font-bold">{section.label}</h2>
-          {section.items.map((item) => (
-            <MatchCard
-              key={item.id}
-              match={item}
-              currentUserId={currentUserId}
-              onOpen={() => navigate(`/matches/${item.id}`)}
-            />
-          ))}
+          {section.items.map(renderCard)}
         </div>
       ))}
 
-      {query.hasNextPage && (
-        <Button
-          variant="outline"
-          className="mt-2"
-          disabled={query.isFetchingNextPage}
-          onClick={() => query.fetchNextPage()}
-        >
-          {query.isFetchingNextPage ? 'Loading…' : 'Load more'}
-        </Button>
-      )}
+      {loadMore}
     </div>
   )
 }

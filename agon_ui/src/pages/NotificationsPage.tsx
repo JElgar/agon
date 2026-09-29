@@ -132,7 +132,7 @@ export function NotificationsPage() {
 
   if (items.length === 0) {
     return (
-      <div className="mx-auto max-w-xl">
+      <div className="mx-auto max-w-xl xl:max-w-[720px]">
         <PushNotificationsBanner />
         <div className="py-16 text-center">
           <Bell className="mx-auto mb-3 size-8 text-muted-foreground" />
@@ -170,15 +170,17 @@ export function NotificationsPage() {
   }
 
   return (
-    <div className="mx-auto flex max-w-xl flex-col">
+    <div className="mx-auto flex max-w-xl flex-col xl:max-w-[720px]">
       <PushNotificationsBanner />
       <div className="mb-1 flex items-center justify-between">
-        <h1 className="font-display text-2xl font-extrabold">Notifications</h1>
+        <h1 className="font-display text-2xl font-extrabold xl:text-3xl">
+          Notifications
+        </h1>
         {hasUnread && (
           <Button
             variant="ghost"
             size="sm"
-            className="font-bold text-primary hover:text-primary"
+            className="font-bold text-primary hover:text-primary xl:h-11 xl:rounded-full xl:border xl:border-input xl:bg-card xl:px-4 xl:text-foreground xl:hover:bg-accent xl:hover:text-foreground"
             disabled={markAllRead.isPending}
             onClick={() => markAllRead.mutate()}
           >
@@ -621,7 +623,7 @@ function describe(kind: Kind): NotificationView {
 /** Placeholder rows while the first page loads. */
 function NotificationsSkeleton() {
   return (
-    <div className="mx-auto max-w-xl">
+    <div className="mx-auto max-w-xl xl:max-w-[720px]">
       <div className="mb-2 h-7 w-40 animate-pulse rounded bg-muted" aria-hidden />
       <ul className="flex flex-col overflow-hidden rounded-2xl border bg-card">
         {Array.from({ length: 5 }).map((_, i) => (

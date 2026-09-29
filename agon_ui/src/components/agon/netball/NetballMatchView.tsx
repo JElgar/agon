@@ -20,6 +20,8 @@ import {
   SideSwatch,
   TopPerformerCard,
   cardClass,
+  SidesGrid,
+  type PlayersLayout,
 } from '@/components/agon/football/FootballMatchView'
 import { useViewerFollowing } from '@/hooks/useViewerFollowing'
 
@@ -556,6 +558,7 @@ export function NetballPlayersTab({
   scoreB,
   finished,
   footer,
+  layout = 'stack',
 }: {
   match: Match
   detail: NetballEventSource | null
@@ -564,6 +567,9 @@ export function NetballPlayersTab({
   scoreB: number
   finished: boolean
   footer?: React.ReactNode
+  /** `columns` (desktop) puts the sides side by side and leaves the top
+   *  performer out; `top` renders only the top performer card. */
+  layout?: PlayersLayout
 }) {
   const following = useViewerFollowing(currentUserId)
   const scorers = useMemo(() => (detail ? scorerRows(match, detail) : []), [match, detail])
@@ -592,44 +598,49 @@ export function NetballPlayersTab({
     <PlayerRow key={p.member.id} player={p} first={i === 0} currentUserId={currentUserId} followingIds={following.data} line={lineFor(p.member.id)} />
   )
 
+  const topCard = top && topPlayer ? (
+    <TopPerformerCard
+      player={topPlayer}
+      detail={`${plural(top.goals, 'goal')}${top.position ? ` at ${POSITION_SHORT[top.position]}` : ''} for ${sideLabel(match, top.sideId)}`}
+      value={top.points}
+    />
+  ) : null
+  if (layout === 'top') return topCard
+
   return (
     <>
-      {top && topPlayer && (
-        <TopPerformerCard
-          player={topPlayer}
-          detail={`${plural(top.goals, 'goal')}${top.position ? ` at ${POSITION_SHORT[top.position]}` : ''} for ${sideLabel(match, top.sideId)}`}
-          value={top.points}
-        />
-      )}
-      {match.sides.slice(0, 2).map((side, idx) => {
-        const players = match.players.filter((p) => p.side_id === side.id)
-        const res = result(idx)
-        const unnamed = byPlayer.get(`unnamed-${side.id}`)
-        return (
-          <div key={side.id} className="flex flex-col gap-3.5">
-            <SideHeading
-              index={idx}
-              name={sideLabel(match, side.id, idx === 0 ? 'Side A' : 'Side B')}
-              meta={`${res ? `${res} · ` : ''}${plural(players.length, 'player')}`}
-            />
-            <section className="flex flex-col overflow-hidden rounded-[20px] border bg-card">
-              {players.length === 0 && !unnamed && <p className="px-4 py-5 text-sm text-muted-foreground">No players yet.</p>}
-              {players.map(row)}
-              {unnamed && (
-                <div className={cn('flex min-h-16 items-center gap-3 px-4 py-2.5', players.length > 0 && 'border-t border-hairline')}>
-                  <span className="box-border flex size-10 shrink-0 items-center justify-center rounded-full border-[1.5px] border-dashed text-base font-bold text-muted-foreground" style={{ borderColor: KIT_GREY }}>
-                    ?
-                  </span>
-                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="text-[15px] font-semibold">Unnamed player</span>
-                    <span className="text-[13px] text-muted-foreground">{plural(unnamed.goals, 'goal')}</span>
+      {layout === 'stack' && topCard}
+      <SidesGrid columns={layout === 'columns'}>
+        {match.sides.slice(0, 2).map((side, idx) => {
+          const players = match.players.filter((p) => p.side_id === side.id)
+          const res = result(idx)
+          const unnamed = byPlayer.get(`unnamed-${side.id}`)
+          return (
+            <div key={side.id} className="flex flex-col gap-3.5">
+              <SideHeading
+                index={idx}
+                name={sideLabel(match, side.id, idx === 0 ? 'Side A' : 'Side B')}
+                meta={`${res ? `${res} · ` : ''}${plural(players.length, 'player')}`}
+              />
+              <section className="flex flex-col overflow-hidden rounded-[20px] border bg-card">
+                {players.length === 0 && !unnamed && <p className="px-4 py-5 text-sm text-muted-foreground">No players yet.</p>}
+                {players.map(row)}
+                {unnamed && (
+                  <div className={cn('flex min-h-16 items-center gap-3 px-4 py-2.5', players.length > 0 && 'border-t border-hairline')}>
+                    <span className="box-border flex size-10 shrink-0 items-center justify-center rounded-full border-[1.5px] border-dashed text-base font-bold text-muted-foreground" style={{ borderColor: KIT_GREY }}>
+                      ?
+                    </span>
+                    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <span className="text-[15px] font-semibold">Unnamed player</span>
+                      <span className="text-[13px] text-muted-foreground">{plural(unnamed.goals, 'goal')}</span>
+                    </div>
                   </div>
-                </div>
-              )}
-            </section>
-          </div>
-        )
-      })}
+                )}
+              </section>
+            </div>
+          )
+        })}
+      </SidesGrid>
       {unassigned.length > 0 && (
         <div className="flex flex-col gap-3.5">
           <div className="mt-1.5 flex items-center gap-2.5 px-1">

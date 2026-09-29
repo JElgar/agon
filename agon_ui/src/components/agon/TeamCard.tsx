@@ -22,6 +22,11 @@ export interface TeamCardProps {
  * Fetching either per-row would mean an extra request per team in the list,
  * so this shows the follower count alone rather than inventing a backend
  * field or an N+1 fetch; see the PR description for this known gap.
+ *
+ * `TeamsPage` lays these out as one divided list on mobile and a grid of
+ * standalone cards from `md:` up (see the desktop-layout PR based on this
+ * one) — the `md:` classes below give each row its own card border/radius
+ * for that grid, on top of the same content and mobile-width appearance.
  */
 export function TeamCard({ team }: TeamCardProps) {
   const navigate = useNavigate()
@@ -30,7 +35,7 @@ export function TeamCard({ team }: TeamCardProps) {
     <button
       type="button"
       onClick={() => navigate(`/teams/${team.id}`)}
-      className="flex w-full items-center gap-3.5 px-4 py-3.5 text-left transition-colors hover:bg-accent/40"
+      className="flex w-full items-center gap-3.5 px-4 py-3.5 text-left transition-colors hover:bg-accent/40 md:rounded-2xl md:border md:bg-card md:px-5 md:py-4"
     >
       <Avatar
         name={team.name}

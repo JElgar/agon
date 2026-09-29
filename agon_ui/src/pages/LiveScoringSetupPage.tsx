@@ -1,14 +1,15 @@
 import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
-import { ChevronLeft } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import { Switch } from '@/components/ui/switch'
 import { useAppendFootballEvent } from '@/hooks/useLiveScore'
 import { useMatchScore } from '@/hooks/useMatchScore'
 import { PendingInvitesNudge } from '@/components/agon/PendingInvitesNudge'
+import { LiveScoringHeader } from '@/components/agon/live/LiveScoringHeader'
 import {
   footballScoreFrom,
   loadTrackPrefs,
@@ -142,24 +143,21 @@ export function LiveScoringSetupPage() {
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
-      <div className="flex items-center gap-3">
-        <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${matchId}`)}>
-          <ChevronLeft className="size-4" /> Back
-        </Button>
-      </div>
+      <LiveScoringHeader
+        title="Set up scoring"
+        live={false}
+        onBack={() => navigate(`/matches/${matchId}`)}
+      />
 
-      <div>
-        <h1 className="text-lg font-semibold">Set up scoring</h1>
-        <p className="text-sm text-muted-foreground">
-          {nameA} vs {nameB} · Football
-        </p>
-      </div>
+      <p className="text-center text-sm text-muted-foreground">
+        {nameA} vs {nameB} · Football
+      </p>
 
       <div>
         <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
           Track during the match
         </p>
-        <div className="overflow-hidden rounded-xl border bg-card">
+        <Card className="overflow-hidden">
           <TrackRow title="Goals" subtitle="Always on" checked disabled />
           <TrackRow
             title="Cards"
@@ -180,7 +178,7 @@ export function LiveScoringSetupPage() {
             disabled
           />
           <TrackRow title="Corners & fouls" subtitle="Coming soon" checked={false} disabled />
-        </div>
+        </Card>
       </div>
 
       <p className="text-center text-xs text-muted-foreground">
@@ -195,7 +193,7 @@ export function LiveScoringSetupPage() {
         </p>
       )}
 
-      <Button size="lg" disabled={start.isPending} onClick={() => start.mutate()}>
+      <Button size="lg" shape="pill" disabled={start.isPending} onClick={() => start.mutate()}>
         {start.isPending
           ? 'Starting…'
           : alreadyKickedOff

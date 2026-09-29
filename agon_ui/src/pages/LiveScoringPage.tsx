@@ -1,14 +1,16 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams, Link } from 'react-router-dom'
-import { ChevronLeft, CircleDot, Flag, Repeat2, TimerReset } from 'lucide-react'
+import { CircleDot, Flag, Repeat2, TimerReset } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
+import { Avatar } from '@/components/agon/Avatar'
 import { useAppendFootballEvent, useLiveSeq, useUndoTargetSeq } from '@/hooks/useLiveScore'
 import { matchScoreQueryKey, useMatchScore } from '@/hooks/useMatchScore'
 import { RecordEventDialog, type EventKind } from '@/components/agon/live/RecordEventDialog'
-import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
+import { LiveScoringHeader } from '@/components/agon/live/LiveScoringHeader'
 import { UndoLastEventButton } from '@/components/agon/live/UndoLastEventButton'
 import { CricketLiveScoringPage } from './CricketLiveScoringPage'
 import { NetballLiveScoringPage } from './NetballLiveScoringPage'
@@ -271,36 +273,32 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${match.id}`)}>
-          <ChevronLeft className="size-4" /> Back
-        </Button>
-        <div className="flex items-center gap-1">
-          <UndoLastEventButton matchId={match.id} seq={undoSeq.data} />
-          <LiveIndicator />
-        </div>
-      </div>
+      <LiveScoringHeader
+        onBack={() => navigate(`/matches/${match.id}`)}
+        right={<UndoLastEventButton matchId={match.id} seq={undoSeq.data} />}
+      />
 
-      <div>
-        <h1 className="text-lg font-semibold">
-          {nameA} vs {nameB}
-        </h1>
-        <p className="text-sm text-muted-foreground">You're scoring this match</p>
-      </div>
+      <p className="text-center text-sm text-muted-foreground">You're scoring this match</p>
 
-      <div className="rounded-xl border bg-card p-4">
-        <div className="flex items-center justify-between">
-          <p className="flex-1 truncate text-sm font-medium">{nameA}</p>
-          <div className="px-3 text-center">
+      <Card className="flex flex-col gap-4 p-5">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex w-24 flex-col items-center gap-2">
+            <Avatar name={nameA} size="lg" />
+            <p className="w-full truncate text-center text-sm font-bold">{nameA}</p>
+          </div>
+          <div className="px-2 text-center">
             {/* data-testid: the score/phase here is just digits and a status
                 word with no other accessible name to hang a locator off —
                 see agon_ui/e2e/README.md's locator guidance. */}
-            <div className="text-3xl font-medium tracking-tight" data-testid="live-score">
+            <div
+              className="font-display text-4xl font-extrabold tracking-tight"
+              data-testid="live-score"
+            >
               {goalsFor(aId)}
-              <span className="text-muted-foreground">–</span>
+              <span className="mx-1 text-muted-foreground">–</span>
               {goalsFor(bId)}
             </div>
-            <div className="mt-0.5 text-xs text-primary" data-testid="live-phase">
+            <div className="mt-1 text-xs font-semibold text-primary" data-testid="live-phase">
               {minute !== null && `${minute}' · `}
               {phaseLabel(phase)}
             </div>
@@ -312,9 +310,12 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
               </div>
             )}
           </div>
-          <p className="flex-1 truncate text-right text-sm font-medium">{nameB}</p>
+          <div className="flex w-24 flex-col items-center gap-2">
+            <Avatar name={nameB} size="lg" />
+            <p className="w-full truncate text-center text-sm font-bold">{nameB}</p>
+          </div>
         </div>
-      </div>
+      </Card>
 
       {actions.length > 0 && (
         <div className="grid grid-cols-2 gap-3">
@@ -324,7 +325,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
               type="button"
               disabled={a.disabled}
               onClick={a.onClick}
-              className="flex flex-col items-center gap-1.5 rounded-xl border bg-card p-5 text-sm font-medium transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex flex-col items-center gap-1.5 rounded-2xl border bg-card p-5 text-sm font-semibold transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             >
               {a.icon}
               {a.label}
@@ -339,12 +340,13 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
             [aId, nameA],
             [bId, nameB],
           ] as const).map(([sideId, name]) => (
-            <div key={sideId} className="flex flex-col gap-2 rounded-xl border bg-card p-4">
-              <p className="truncate text-center text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            <Card key={sideId} className="flex flex-col gap-2 p-4">
+              <p className="truncate text-center text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 {name}
               </p>
               <Button
                 variant="outline"
+                shape="pill"
                 disabled={append.isPending || !sideId}
                 onClick={() => sideId && append.mutate({ kind: 'PenaltyShootoutKick', side_id: sideId, scored: true })}
               >
@@ -352,12 +354,13 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
               </Button>
               <Button
                 variant="ghost"
+                shape="pill"
                 disabled={append.isPending || !sideId}
                 onClick={() => sideId && append.mutate({ kind: 'PenaltyShootoutKick', side_id: sideId, scored: false })}
               >
                 Missed
               </Button>
-            </div>
+            </Card>
           ))}
         </div>
       )}
@@ -381,6 +384,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
       {phase === 'penalties' && state && !penaltiesComplete(state) && (
         <Button
           variant="outline"
+          shape="pill"
           disabled={append.isPending}
           onClick={() => append.mutate({ kind: 'Period', period: 'penalties_complete' })}
         >
@@ -390,7 +394,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
 
       {continuationAvailable && (
         <div className="flex flex-col gap-2">
-          <Button size="lg" disabled={append.isPending} onClick={handleHalfFt}>
+          <Button size="lg" shape="pill" disabled={append.isPending} onClick={handleHalfFt}>
             {nextPhaseActionLabel(phase, progressionCtx)}
           </Button>
           <Button
@@ -405,7 +409,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
       )}
 
       {readyToFinish && (
-        <Button size="lg" disabled={finishMatch.isPending} onClick={() => finishMatch.mutate()}>
+        <Button size="lg" shape="pill" disabled={finishMatch.isPending} onClick={() => finishMatch.mutate()}>
           {finishMatch.isPending ? 'Finishing…' : 'Finish match'}
         </Button>
       )}
@@ -418,25 +422,23 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
 
       <Link
         to={`/matches/${match.id}/live/setup`}
-        className="text-center text-sm text-primary hover:underline"
+        className="text-center text-sm font-medium text-primary hover:underline"
       >
         + Track more (cards, subs)
       </Link>
 
-      <div className="border-t pt-3">
-        <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          Match events
-        </p>
-        {events.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No events recorded yet.</p>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {events.map((event, i) => {
+      <div className="flex flex-col gap-2">
+        <h2 className="pl-1 font-display text-base font-bold">Recent events</h2>
+        <Card className="overflow-hidden">
+          {events.length === 0 ? (
+            <p className="p-4 text-sm text-muted-foreground">No events recorded yet.</p>
+          ) : (
+            events.map((event, i) => {
               const isSideB = event.side_id === match.sides[1]?.id
               return (
                 <div
                   key={i}
-                  className={`flex items-baseline gap-2 text-sm ${isSideB ? 'flex-row-reverse text-right' : ''}`}
+                  className={`flex items-baseline gap-2 border-b p-3.5 text-sm last:border-b-0 ${isSideB ? 'flex-row-reverse text-right' : ''}`}
                 >
                   <span className="w-10 shrink-0 text-xs text-muted-foreground">
                     {eventClockLabel(event, state?.period_times)}
@@ -445,9 +447,9 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
                   <span className="min-w-0 truncate">{describeEvent(event, match, state?.players)}</span>
                 </div>
               )
-            })}
-          </div>
-        )}
+            })
+          )}
+        </Card>
       </div>
 
       {append.isError && (

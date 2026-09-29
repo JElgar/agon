@@ -5,7 +5,9 @@ import { CircleDot, OctagonAlert, TimerReset } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { Avatar } from '@/components/agon/Avatar'
 import { cn } from '@/lib/utils'
 import { useAppendNetballEvent, useLiveSeq, useUndoTargetSeq } from '@/hooks/useLiveScore'
 import { matchScoreQueryKey, useMatchScore } from '@/hooks/useMatchScore'
@@ -14,7 +16,7 @@ import {
   type NetballEventKind,
 } from '@/components/agon/live/RecordNetballEventDialog'
 import { NetballQuarterBreakdown } from '@/components/agon/NetballQuarterBreakdown'
-import { LiveIndicator } from '@/components/agon/live/LiveIndicator'
+import { LiveScoringHeader } from '@/components/agon/live/LiveScoringHeader'
 import { UndoLastEventButton } from '@/components/agon/live/UndoLastEventButton'
 import { netballFormat } from '@/lib/matchFormat'
 import {
@@ -133,7 +135,7 @@ function NetballScoringMethodPicker({
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
       <div>
-        <h1 className="text-lg font-semibold">How do you want to score this?</h1>
+        <h1 className="font-display text-lg font-extrabold">How do you want to score this?</h1>
         <p className="text-sm text-muted-foreground">
           {nameA} vs {nameB} · Netball
         </p>
@@ -142,9 +144,9 @@ function NetballScoringMethodPicker({
       <button
         type="button"
         onClick={() => onChoose('event_by_event')}
-        className="rounded-xl border bg-card p-4 text-left transition-colors hover:bg-muted"
+        className="rounded-2xl border bg-card p-4 text-left transition-colors hover:bg-muted"
       >
-        <p className="font-medium">Goal by goal</p>
+        <p className="font-semibold">Goal by goal</p>
         <p className="mt-1 text-sm text-muted-foreground">
           Log every goal and foul as it happens, with a running quarter clock.
         </p>
@@ -153,9 +155,9 @@ function NetballScoringMethodPicker({
       <button
         type="button"
         onClick={() => onChoose('quarter_only')}
-        className="rounded-xl border bg-card p-4 text-left transition-colors hover:bg-muted"
+        className="rounded-2xl border bg-card p-4 text-left transition-colors hover:bg-muted"
       >
-        <p className="font-medium">Score at the end of each quarter</p>
+        <p className="font-semibold">Score at the end of each quarter</p>
         <p className="mt-1 text-sm text-muted-foreground">
           Just enter the running score after each quarter — no goal-by-goal detail.
         </p>
@@ -308,50 +310,51 @@ function NetballEventByEventScoringPage({
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${match.id}`)}>
-          Back
-        </Button>
-        <div className="flex items-center gap-1">
-          <UndoLastEventButton matchId={match.id} seq={undoSeq.data} />
-          <LiveIndicator />
-        </div>
-      </div>
+      <LiveScoringHeader
+        onBack={() => navigate(`/matches/${match.id}`)}
+        right={<UndoLastEventButton matchId={match.id} seq={undoSeq.data} />}
+      />
 
-      <div>
-        <h1 className="text-lg font-semibold">
-          {nameA} vs {nameB}
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          You're scoring this match — goal by goal
-          {onBackToPicker && (
-            <>
-              {' · '}
-              <button type="button" onClick={onBackToPicker} className="text-primary hover:underline">
-                Change scoring method
-              </button>
-            </>
-          )}
-        </p>
-      </div>
+      <p className="text-center text-sm text-muted-foreground">
+        You're scoring this match — goal by goal
+        {onBackToPicker && (
+          <>
+            {' · '}
+            <button type="button" onClick={onBackToPicker} className="font-medium text-primary hover:underline">
+              Change scoring method
+            </button>
+          </>
+        )}
+      </p>
 
-      <div className="rounded-xl border bg-card p-4">
-        <div className="flex items-center justify-between">
-          <p className="flex-1 truncate text-sm font-medium">{nameA}</p>
-          <div className="px-3 text-center">
-            <div className="text-3xl font-medium tracking-tight">
+      <Card className="flex flex-col gap-4 p-5">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex w-24 flex-col items-center gap-2">
+            <Avatar name={nameA} size="lg" />
+            <p className="w-full truncate text-center text-sm font-bold">{nameA}</p>
+          </div>
+          <div className="px-2 text-center">
+            <div className="font-display text-4xl font-extrabold tracking-tight">
               {goalsFor(aId)}
-              <span className="text-muted-foreground">–</span>
+              <span className="mx-1 text-muted-foreground">–</span>
               {goalsFor(bId)}
             </div>
-            <div className={cn('mt-0.5 text-xs', overtime ? 'font-semibold text-destructive' : 'text-primary')}>
+            <div
+              className={cn(
+                'mt-1 text-xs font-semibold',
+                overtime ? 'text-destructive' : 'text-primary',
+              )}
+            >
               {elapsedSeconds !== null && `${formatClock(elapsedSeconds)} · `}
               {phaseLabel(phase)}
             </div>
           </div>
-          <p className="flex-1 truncate text-right text-sm font-medium">{nameB}</p>
+          <div className="flex w-24 flex-col items-center gap-2">
+            <Avatar name={nameB} size="lg" />
+            <p className="w-full truncate text-center text-sm font-bold">{nameB}</p>
+          </div>
         </div>
-      </div>
+      </Card>
 
       {actions.length > 0 && (
         <div className="grid grid-cols-2 gap-3">
@@ -361,7 +364,7 @@ function NetballEventByEventScoringPage({
               type="button"
               disabled={a.disabled}
               onClick={a.onClick}
-              className="flex flex-col items-center gap-1.5 rounded-xl border bg-card p-5 text-sm font-medium transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex flex-col items-center gap-1.5 rounded-2xl border bg-card p-5 text-sm font-semibold transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
             >
               {a.icon}
               {a.label}
@@ -372,7 +375,7 @@ function NetballEventByEventScoringPage({
 
       {continuationAvailable && (
         <div className="flex flex-col gap-2">
-          <Button size="lg" disabled={append.isPending} onClick={handleAdvancePhase}>
+          <Button size="lg" shape="pill" disabled={append.isPending} onClick={handleAdvancePhase}>
             {nextPhaseActionLabel(phase, progressionCtx)}
           </Button>
           <Button variant="ghost" size="sm" disabled={finishMatch.isPending} onClick={() => finishMatch.mutate()}>
@@ -382,7 +385,7 @@ function NetballEventByEventScoringPage({
       )}
 
       {readyToFinish && (
-        <Button size="lg" disabled={finishMatch.isPending} onClick={() => finishMatch.mutate()}>
+        <Button size="lg" shape="pill" disabled={finishMatch.isPending} onClick={() => finishMatch.mutate()}>
           {finishMatch.isPending ? 'Finishing…' : 'Finish match'}
         </Button>
       )}
@@ -391,18 +394,19 @@ function NetballEventByEventScoringPage({
         <p className="text-center text-xs text-destructive">{(finishMatch.error as Error).message}</p>
       )}
 
-      <div className="border-t pt-3">
-        <p className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          Match events
-        </p>
-        {events.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No events recorded yet.</p>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {events.map((event, i) => {
+      <div className="flex flex-col gap-2">
+        <h2 className="pl-1 font-display text-base font-bold">Recent events</h2>
+        <Card className="overflow-hidden">
+          {events.length === 0 ? (
+            <p className="p-4 text-sm text-muted-foreground">No events recorded yet.</p>
+          ) : (
+            events.map((event, i) => {
               const isSideB = event.side_id === match.sides[1]?.id
               return (
-                <div key={i} className={`flex items-baseline gap-2 text-sm ${isSideB ? 'flex-row-reverse text-right' : ''}`}>
+                <div
+                  key={i}
+                  className={`flex items-baseline gap-2 border-b p-3.5 text-sm last:border-b-0 ${isSideB ? 'flex-row-reverse text-right' : ''}`}
+                >
                   <span className="w-10 shrink-0 text-xs text-muted-foreground">
                     {eventClockLabel(event, state?.period_times)}
                   </span>
@@ -410,9 +414,9 @@ function NetballEventByEventScoringPage({
                   <span className="min-w-0 truncate">{describeEvent(event, match, state?.players)}</span>
                 </div>
               )
-            })}
-          </div>
-        )}
+            })
+          )}
+        </Card>
       </div>
 
       {append.isError && <p className="text-center text-xs text-destructive">Failed to record that event — try again.</p>}
@@ -520,48 +524,36 @@ function NetballQuarterOnlyScoringPage({
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${match.id}`)}>
-          Back
-        </Button>
-        <div className="flex items-center gap-1">
-          <UndoLastEventButton matchId={match.id} seq={undoSeq.data} />
-          <LiveIndicator />
-        </div>
-      </div>
+      <LiveScoringHeader
+        onBack={() => navigate(`/matches/${match.id}`)}
+        right={<UndoLastEventButton matchId={match.id} seq={undoSeq.data} />}
+      />
 
-      <div>
-        <h1 className="text-lg font-semibold">
-          {nameA} vs {nameB}
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Scoring by quarter
-          {onBackToPicker && (
-            <>
-              {' · '}
-              <button type="button" onClick={onBackToPicker} className="text-primary hover:underline">
-                Change scoring method
-              </button>
-            </>
-          )}
-        </p>
-      </div>
+      <p className="text-center text-sm text-muted-foreground">
+        Scoring by quarter
+        {onBackToPicker && (
+          <>
+            {' · '}
+            <button type="button" onClick={onBackToPicker} className="font-medium text-primary hover:underline">
+              Change scoring method
+            </button>
+          </>
+        )}
+      </p>
 
-      <div className="rounded-xl border bg-card p-4">
-        <div className="flex items-center justify-between">
-          <p className="flex-1 truncate text-sm font-medium">{nameA}</p>
-          <div className="px-3 text-center text-3xl font-medium tracking-tight">
-            {currentTotalA}
-            <span className="text-muted-foreground">–</span>
-            {currentTotalB}
-          </div>
-          <p className="flex-1 truncate text-right text-sm font-medium">{nameB}</p>
+      <Card className="flex items-center justify-between gap-3 p-5">
+        <p className="flex-1 truncate text-sm font-bold">{nameA}</p>
+        <div className="px-2 text-center font-display text-4xl font-extrabold tracking-tight">
+          {currentTotalA}
+          <span className="mx-1 text-muted-foreground">–</span>
+          {currentTotalB}
         </div>
-      </div>
+        <p className="flex-1 truncate text-right text-sm font-bold">{nameB}</p>
+      </Card>
 
       {nextPeriod && !allQuartersDone && (
-        <div className="flex flex-col gap-3 rounded-xl border bg-card p-4">
-          <p className="text-sm font-medium">{QUARTER_LABEL[nextPeriod]} — running score</p>
+        <Card className="flex flex-col gap-3 p-4">
+          <p className="text-sm font-semibold">{QUARTER_LABEL[nextPeriod]} — running score</p>
           <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
             <div className="flex flex-col gap-1">
               <span className="truncate text-center text-xs text-muted-foreground">{nameA}</span>
@@ -585,15 +577,16 @@ function NetballQuarterOnlyScoringPage({
               />
             </div>
           </div>
-          <Button disabled={!canSubmit || append.isPending} onClick={submitQuarter}>
+          <Button shape="pill" disabled={!canSubmit || append.isPending} onClick={submitQuarter}>
             {append.isPending ? 'Saving…' : `Save ${QUARTER_LABEL[nextPeriod].toLowerCase()}`}
           </Button>
-        </div>
+        </Card>
       )}
 
       {offerExtraTime && (
         <Button
           variant="outline"
+          shape="pill"
           disabled={!aId || !bId || append.isPending}
           onClick={() => aId && bId && append.mutate({ kind: 'Period', period: 'extra_time_start', score: { [aId]: currentTotalA, [bId]: currentTotalB } })}
         >
@@ -601,8 +594,8 @@ function NetballQuarterOnlyScoringPage({
         </Button>
       )}
       {recordedPeriods.has('extra_time_start') && !recordedPeriods.has('extra_time_end') && (
-        <div className="flex flex-col gap-3 rounded-xl border bg-card p-4">
-          <p className="text-sm font-medium">Extra time — final score</p>
+        <Card className="flex flex-col gap-3 p-4">
+          <p className="text-sm font-semibold">Extra time — final score</p>
           <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
             <Input
               type="number"
@@ -621,6 +614,7 @@ function NetballQuarterOnlyScoringPage({
             />
           </div>
           <Button
+            shape="pill"
             disabled={!aId || !bId || draftA === '' || draftB === '' || append.isPending}
             onClick={() =>
               aId && bId && append.mutate({ kind: 'Period', period: 'extra_time_end', score: { [aId]: a, [bId]: b } })
@@ -628,11 +622,11 @@ function NetballQuarterOnlyScoringPage({
           >
             Save extra time result
           </Button>
-        </div>
+        </Card>
       )}
 
       {readyToFinish && !offerExtraTime && (
-        <Button size="lg" disabled={finishMatch.isPending} onClick={() => finishMatch.mutate()}>
+        <Button size="lg" shape="pill" disabled={finishMatch.isPending} onClick={() => finishMatch.mutate()}>
           {finishMatch.isPending ? 'Finishing…' : 'Finish match'}
         </Button>
       )}

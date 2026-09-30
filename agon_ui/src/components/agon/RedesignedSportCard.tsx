@@ -1,11 +1,11 @@
-import { Check } from 'lucide-react'
+import { Check, Clock, MapPin } from 'lucide-react'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { Avatar } from './Avatar'
-import { initials, sideTeamHint } from '@/lib/members'
+import { initials, sidePlayerCountLabel, sideTeamHint } from '@/lib/members'
 import type { ScorePlayers } from '@/lib/members'
 import { sportLabel, SPORT_ICON_TINT, type MatchType } from '@/lib/sports'
-import { shortDate } from '@/lib/datetime'
+import { countdownLabel, isStartingSoon, shortDate, timeOfDay } from '@/lib/datetime'
 import { cricketFormat, cricketFormatLabel, type CricketFormat } from '@/lib/matchFormat'
 import {
   currentMinute,
@@ -64,6 +64,65 @@ function LivePill({ children }: { children: React.ReactNode }) {
       <span className="size-1.5 rounded-full bg-destructive-foreground" />
       {children}
     </span>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled tiles — the "Agon redesign" canvas's "More feed tiles" board
+// (`Tiles.dc.html`): a quiet blue "SCHEDULED" pill normally, switching to an
+// amber "KICKS OFF IN …" countdown pill (same pulsing-dot treatment as
+// `LivePill`, but amber — amber never means "live") inside the hour, plus a
+// matching info row (plain location, or "Kicks off at HH:mm · location" once
+// it's counting down).
+// ---------------------------------------------------------------------------
+
+/** The header's right-side pill for a scheduled match — swaps to the
+ *  starting-soon countdown once `isStartingSoon(startsAt)`. */
+function ScheduledPill({ startsAt }: { startsAt: string }) {
+  if (isStartingSoon(startsAt)) {
+    return (
+      <span className="flex h-6 shrink-0 items-center gap-1.5 rounded-full bg-warning px-2.5 text-[11px] font-bold tracking-wide text-warning-foreground">
+        <span className="size-1.5 rounded-full bg-warning-foreground" />
+        KICKS OFF IN {countdownLabel(startsAt)}
+      </span>
+    )
+  }
+  return (
+    <span className="flex h-6 shrink-0 items-center rounded-full bg-accent px-2.5 text-[11px] font-bold tracking-wide text-accent-foreground">
+      SCHEDULED
+    </span>
+  )
+}
+
+/** The location row under a scheduled match's side rows — a plain location
+ *  line normally, or (starting soon) an amber-tinted "Kicks off at HH:mm ·
+ *  location" line that restates the countdown's headline fact. Renders
+ *  nothing when there's neither a location nor a soon-enough kickoff to call
+ *  out. */
+function ScheduledInfoRow({
+  startsAt,
+  locationText,
+}: {
+  startsAt: string
+  locationText?: string
+}) {
+  if (isStartingSoon(startsAt)) {
+    return (
+      <div className="mt-2.5 flex items-center gap-2 rounded-xl bg-warning/15 px-3 py-2.5 text-sm text-warning-foreground">
+        <Clock className="size-4 shrink-0" />
+        <span className="truncate">
+          Kicks off at {timeOfDay(startsAt)}
+          {locationText && ` · ${locationText}`}
+        </span>
+      </div>
+    )
+  }
+  if (!locationText) return null
+  return (
+    <div className="mt-2.5 flex items-center gap-2 rounded-xl bg-muted/50 px-3 py-2.5 text-sm text-muted-foreground">
+      <MapPin className="size-4 shrink-0" />
+      <span className="truncate">{locationText}</span>
+    </div>
   )
 }
 
@@ -471,6 +530,11 @@ export function FootballFeedCardBody({
   startsAt: string
   onOpen?: () => void
 }) {
+  // A scheduled match has no score yet — it falls into neither `isLive` nor
+  // "finished" (`!isLive` used to mean "finished" alone, so a scheduled game
+  // rendered as a fabricated "0–0, Full time"; see the roster-count/"vs"
+  // treatment below, matching `FootballMatchView`'s existing scheduled state).
+  const isScheduled = match.status === 'scheduled'
   const goalsForLive = (sideId: string | undefined) =>
     liveState && sideId ? (liveState.score[sideId] ?? 0) : 0
   const goalsA = isLive ? goalsForLive(sideA?.id) : (finishedHeadline?.[sideA?.id ?? ''] ?? 0)
@@ -501,7 +565,13 @@ export function FootballFeedCardBody({
         badge={<SportIconBadge sport="football" />}
         title={match.name}
         subtitle={subtitle}
-        live={isLive ? <LivePill>{liveState ? liveClockLabel(liveState) : 'LIVE'}</LivePill> : undefined}
+        live={
+          isLive ? (
+            <LivePill>{liveState ? liveClockLabel(liveState) : 'LIVE'}</LivePill>
+          ) : isScheduled ? (
+            <ScheduledPill startsAt={startsAt} />
+          ) : undefined
+        }
         onOpen={onOpen}
       />
 
@@ -510,7 +580,7 @@ export function FootballFeedCardBody({
       )}
 
       <button type="button" onClick={onOpen} className="block w-full px-3.5 pb-4 text-left">
-        {!isLive && (
+        {!isLive && !isScheduled && (
           <p className="mb-1 text-right text-xs font-semibold text-muted-foreground">Full time</p>
         )}
         <div className="flex flex-col gap-1.5">
@@ -519,42 +589,52 @@ export function FootballFeedCardBody({
             <span
               className={cn(
                 'flex min-w-0 flex-1 items-center gap-1.5 truncate text-lg',
-                aLeading ? 'font-bold' : 'font-medium text-muted-foreground',
+                isScheduled || aLeading ? 'font-bold' : 'font-medium text-muted-foreground',
               )}
             >
               <SideNameWithHint name={nameA} hint={sideTeamHint(sideA)} />
-              {!isLive && aWon && <WinnerCheck />}
+              {!isLive && !isScheduled && aWon && <WinnerCheck />}
             </span>
-            <span
-              className={cn(
-                'font-display leading-none',
-                aLeading ? 'text-4xl font-extrabold' : 'text-4xl font-extrabold text-muted-foreground',
-              )}
-            >
-              {goalsA}
-            </span>
+            {isScheduled ? (
+              <span className="shrink-0 text-xs text-muted-foreground">{sidePlayerCountLabel(sideA)}</span>
+            ) : (
+              <span
+                className={cn(
+                  'font-display leading-none',
+                  aLeading ? 'text-4xl font-extrabold' : 'text-4xl font-extrabold text-muted-foreground',
+                )}
+              >
+                {goalsA}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-3">
             <SideMarkerOrCrest side={sideB} leading={bLeading} selfPlay={selfPlay} />
             <span
               className={cn(
                 'flex min-w-0 flex-1 items-center gap-1.5 truncate text-lg',
-                bLeading ? 'font-bold' : 'font-medium text-muted-foreground',
+                isScheduled || bLeading ? 'font-bold' : 'font-medium text-muted-foreground',
               )}
             >
               <SideNameWithHint name={nameB} hint={sideTeamHint(sideB)} />
-              {!isLive && bWon && <WinnerCheck />}
+              {!isLive && !isScheduled && bWon && <WinnerCheck />}
             </span>
-            <span
-              className={cn(
-                'font-display leading-none',
-                bLeading ? 'text-4xl font-extrabold' : 'text-4xl font-extrabold text-muted-foreground',
-              )}
-            >
-              {goalsB}
-            </span>
+            {isScheduled ? (
+              <span className="shrink-0 text-xs text-muted-foreground">{sidePlayerCountLabel(sideB)}</span>
+            ) : (
+              <span
+                className={cn(
+                  'font-display leading-none',
+                  bLeading ? 'text-4xl font-extrabold' : 'text-4xl font-extrabold text-muted-foreground',
+                )}
+              >
+                {goalsB}
+              </span>
+            )}
           </div>
         </div>
+
+        {isScheduled && <ScheduledInfoRow startsAt={startsAt} locationText={match.location?.text} />}
 
         {isLive && progressPct !== null && (
           <div className="mt-3 h-1 overflow-hidden rounded-full bg-muted">
@@ -590,7 +670,7 @@ export function FootballFeedCardBody({
           </div>
         )}
 
-        {!isLive && finishedGoals && (
+        {!isLive && !isScheduled && finishedGoals && (
           <FootballScorersBySide
             goals={finishedGoals}
             match={match}
@@ -676,6 +756,7 @@ export function CricketFeedCardBody({
   startsAt: string
   onOpen?: () => void
 }) {
+  const isScheduled = match.status === 'scheduled'
   const format = cricketFormat(match.format)
   const activeScore = liveState ?? finishedScore
   const innings = (sideId: string | undefined) =>
@@ -718,24 +799,30 @@ export function CricketFeedCardBody({
         <span
           className={cn(
             'flex min-w-0 flex-1 items-center gap-2 truncate text-[17px]',
-            headline ? 'font-bold' : 'font-medium text-muted-foreground',
+            isScheduled || headline ? 'font-bold' : 'font-medium text-muted-foreground',
           )}
         >
           <SideNameWithHint name={name} hint={sideTeamHint(side)} />
-          {!isLive && winner && <WinnerCheck />}
+          {!isLive && !isScheduled && winner && <WinnerCheck />}
           {batting && <span className="size-2 shrink-0 rounded-[3px] bg-destructive" aria-label="Batting" />}
         </span>
-        {inn && (
-          <span className="shrink-0 text-[13px] text-muted-foreground">{formatOvers(inn.overs)} ov</span>
+        {isScheduled ? (
+          <span className="shrink-0 text-xs text-muted-foreground">{sidePlayerCountLabel(side)}</span>
+        ) : (
+          <>
+            {inn && (
+              <span className="shrink-0 text-[13px] text-muted-foreground">{formatOvers(inn.overs)} ov</span>
+            )}
+            <span
+              className={cn(
+                'font-display leading-none',
+                headline ? 'text-4xl font-extrabold' : 'text-2xl font-bold text-muted-foreground',
+              )}
+            >
+              {inn ? `${inn.runs}/${inn.wickets}` : 'Yet to bat'}
+            </span>
+          </>
         )}
-        <span
-          className={cn(
-            'font-display leading-none',
-            headline ? 'text-4xl font-extrabold' : 'text-2xl font-bold text-muted-foreground',
-          )}
-        >
-          {inn ? `${inn.runs}/${inn.wickets}` : 'Yet to bat'}
-        </span>
       </div>
     )
   }
@@ -746,7 +833,13 @@ export function CricketFeedCardBody({
         badge={<SportIconBadge sport="cricket" />}
         title={match.name}
         subtitle={subtitle}
-        live={isLive ? <LivePill>LIVE</LivePill> : undefined}
+        live={
+          isLive ? (
+            <LivePill>LIVE</LivePill>
+          ) : isScheduled ? (
+            <ScheduledPill startsAt={startsAt} />
+          ) : undefined
+        }
         onOpen={onOpen}
       />
 
@@ -759,6 +852,8 @@ export function CricketFeedCardBody({
           {row(sideA, nameA, aHeadline, aBatting, !!aWon)}
           {row(sideB, nameB, bHeadline, bBatting, !!bWon)}
         </div>
+
+        {isScheduled && <ScheduledInfoRow startsAt={startsAt} locationText={match.location?.text} />}
 
         {isLive && chase && (
           <p className="mt-2.5 text-sm text-foreground/80">
@@ -849,6 +944,9 @@ export function NetballFeedCardBody({
   startsAt: string
   onOpen?: () => void
 }) {
+  // See `FootballFeedCardBody`'s matching comment — same fabricated
+  // "0–0, Full time" bug for a scheduled match, same fix.
+  const isScheduled = match.status === 'scheduled'
   const goalsForLive = (sideId: string | undefined) =>
     liveState && sideId ? (liveState.score[sideId] ?? 0) : 0
   const goalsA = isLive ? goalsForLive(sideA?.id) : (finishedHeadline?.[sideA?.id ?? ''] ?? 0)
@@ -882,7 +980,13 @@ export function NetballFeedCardBody({
         badge={<SportIconBadge sport="netball" />}
         title={match.name}
         subtitle={subtitle}
-        live={isLive ? <LivePill>{liveState ? netballLiveClockLabel(liveState) : 'LIVE'}</LivePill> : undefined}
+        live={
+          isLive ? (
+            <LivePill>{liveState ? netballLiveClockLabel(liveState) : 'LIVE'}</LivePill>
+          ) : isScheduled ? (
+            <ScheduledPill startsAt={startsAt} />
+          ) : undefined
+        }
         onOpen={onOpen}
       />
 
@@ -891,7 +995,7 @@ export function NetballFeedCardBody({
       )}
 
       <button type="button" onClick={onOpen} className="block w-full px-3.5 pb-4 text-left">
-        {!isLive && (
+        {!isLive && !isScheduled && (
           <p className="mb-1 text-right text-xs font-semibold text-muted-foreground">Full time</p>
         )}
         <div className="flex flex-col gap-1.5">
@@ -900,42 +1004,52 @@ export function NetballFeedCardBody({
             <span
               className={cn(
                 'flex min-w-0 flex-1 items-center gap-1.5 truncate text-lg',
-                aLeading ? 'font-bold' : 'font-medium text-muted-foreground',
+                isScheduled || aLeading ? 'font-bold' : 'font-medium text-muted-foreground',
               )}
             >
               <SideNameWithHint name={nameA} hint={sideTeamHint(sideA)} />
-              {!isLive && aWon && <WinnerCheck />}
+              {!isLive && !isScheduled && aWon && <WinnerCheck />}
             </span>
-            <span
-              className={cn(
-                'font-display leading-none',
-                aLeading ? 'text-4xl font-extrabold' : 'text-4xl font-extrabold text-muted-foreground',
-              )}
-            >
-              {goalsA}
-            </span>
+            {isScheduled ? (
+              <span className="shrink-0 text-xs text-muted-foreground">{sidePlayerCountLabel(sideA)}</span>
+            ) : (
+              <span
+                className={cn(
+                  'font-display leading-none',
+                  aLeading ? 'text-4xl font-extrabold' : 'text-4xl font-extrabold text-muted-foreground',
+                )}
+              >
+                {goalsA}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-3">
             <SideMarkerOrCrest side={sideB} leading={bLeading} selfPlay={selfPlay} />
             <span
               className={cn(
                 'flex min-w-0 flex-1 items-center gap-1.5 truncate text-lg',
-                bLeading ? 'font-bold' : 'font-medium text-muted-foreground',
+                isScheduled || bLeading ? 'font-bold' : 'font-medium text-muted-foreground',
               )}
             >
               <SideNameWithHint name={nameB} hint={sideTeamHint(sideB)} />
-              {!isLive && bWon && <WinnerCheck />}
+              {!isLive && !isScheduled && bWon && <WinnerCheck />}
             </span>
-            <span
-              className={cn(
-                'font-display leading-none',
-                bLeading ? 'text-4xl font-extrabold' : 'text-4xl font-extrabold text-muted-foreground',
-              )}
-            >
-              {goalsB}
-            </span>
+            {isScheduled ? (
+              <span className="shrink-0 text-xs text-muted-foreground">{sidePlayerCountLabel(sideB)}</span>
+            ) : (
+              <span
+                className={cn(
+                  'font-display leading-none',
+                  bLeading ? 'text-4xl font-extrabold' : 'text-4xl font-extrabold text-muted-foreground',
+                )}
+              >
+                {goalsB}
+              </span>
+            )}
           </div>
         </div>
+
+        {isScheduled && <ScheduledInfoRow startsAt={startsAt} locationText={match.location?.text} />}
 
         {isLive && progressPct !== null && (
           <div className="mt-3 h-1 overflow-hidden rounded-full bg-muted">
@@ -966,7 +1080,7 @@ export function NetballFeedCardBody({
           </div>
         )}
 
-        {!isLive && finishedGoals && (
+        {!isLive && !isScheduled && finishedGoals && (
           <NetballScorersBySide
             goals={finishedGoals}
             match={match}
@@ -1091,6 +1205,7 @@ export function TennisFeedCardBody({
   startsAt: string
   onOpen?: () => void
 }) {
+  const isScheduled = match.status === 'scheduled'
   const setsA = score?.entries[sideA?.id ?? ''] ?? []
   const setsB = score?.entries[sideB?.id ?? ''] ?? []
   const setCount = Math.max(setsA.length, setsB.length)
@@ -1151,26 +1266,52 @@ export function TennisFeedCardBody({
         badge={<SportIconBadge sport={sport} />}
         title={match.name}
         subtitle={subtitle}
-        live={isLive ? <LivePill>LIVE</LivePill> : undefined}
+        live={
+          isLive ? (
+            <LivePill>LIVE</LivePill>
+          ) : isScheduled ? (
+            <ScheduledPill startsAt={startsAt} />
+          ) : undefined
+        }
         onOpen={onOpen}
       />
 
       <button type="button" onClick={onOpen} className="block w-full px-3.5 pb-4 text-left">
-        {setCount > 0 && (
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-2 text-[11px] font-bold tracking-wide text-muted-foreground">
-              <span className="min-w-0 flex-1" />
-              {Array.from({ length: setCount }).map((_, i) => (
-                <span key={i} className="w-7 shrink-0 text-center">{`S${i + 1}`}</span>
-              ))}
-              {isLive && <span className="w-9 shrink-0 text-center text-primary">PTS</span>}
+        {isScheduled ? (
+          <div className="flex flex-col gap-2.5">
+            <div className="flex items-center gap-2">
+              {sideA?.roster_preview?.length === 1 && (
+                <Avatar name={nameA} imageUrl={sideA.roster_preview[0].avatar_url} size="sm" />
+              )}
+              <span className="min-w-0 flex-1 truncate text-lg font-bold">{nameA}</span>
             </div>
-            {scoreRow(sideA, nameA, setsA, !!aWon, 'a')}
-            {scoreRow(sideB, nameB, setsB, !!bWon, 'b')}
+            <div className="pl-9 text-xs font-bold tracking-wide text-muted-foreground">VS</div>
+            <div className="flex items-center gap-2">
+              {sideB?.roster_preview?.length === 1 && (
+                <Avatar name={nameB} imageUrl={sideB.roster_preview[0].avatar_url} size="sm" />
+              )}
+              <span className="min-w-0 flex-1 truncate text-lg font-bold">{nameB}</span>
+            </div>
           </div>
+        ) : (
+          setCount > 0 && (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-2 text-[11px] font-bold tracking-wide text-muted-foreground">
+                <span className="min-w-0 flex-1" />
+                {Array.from({ length: setCount }).map((_, i) => (
+                  <span key={i} className="w-7 shrink-0 text-center">{`S${i + 1}`}</span>
+                ))}
+                {isLive && <span className="w-9 shrink-0 text-center text-primary">PTS</span>}
+              </div>
+              {scoreRow(sideA, nameA, setsA, !!aWon, 'a')}
+              {scoreRow(sideB, nameB, setsB, !!bWon, 'b')}
+            </div>
+          )
         )}
 
-        {!isLive && winnerName && setCount > 0 && (
+        {isScheduled && <ScheduledInfoRow startsAt={startsAt} locationText={match.location?.text} />}
+
+        {!isLive && !isScheduled && winnerName && setCount > 0 && (
           <div className="mt-3 flex items-center gap-2.5">
             <div className="flex">
               <Avatar name={nameA} size="sm" className="border-2 border-card" />
@@ -1235,6 +1376,7 @@ export function SquashFeedCardBody({
   startsAt: string
   onOpen?: () => void
 }) {
+  const isScheduled = match.status === 'scheduled'
   const setsA = score?.entries[sideA?.id ?? ''] ?? []
   const setsB = score?.entries[sideB?.id ?? ''] ?? []
   const gameCount = Math.max(setsA.length, setsB.length)
@@ -1296,17 +1438,38 @@ export function SquashFeedCardBody({
         badge={<SportIconBadge sport={sport} />}
         title={match.name}
         subtitle={subtitle}
+        live={isScheduled ? <ScheduledPill startsAt={startsAt} /> : undefined}
         onOpen={onOpen}
       />
 
       <button type="button" onClick={onOpen} className="block w-full px-3.5 pb-4 text-left">
-        {gameCount > 0 && (
-          <div className="flex flex-col gap-3.5">
-            {gameRow(sideA, nameA, setsA, !!aWon, 'a')}
-            <div className="h-px bg-border" />
-            {gameRow(sideB, nameB, setsB, !!bWon, 'b')}
+        {isScheduled ? (
+          <div className="flex flex-col gap-2.5">
+            <div className="flex items-center gap-2">
+              {sideA?.roster_preview?.length === 1 && (
+                <Avatar name={nameA} imageUrl={sideA.roster_preview[0].avatar_url} size="sm" />
+              )}
+              <span className="min-w-0 flex-1 truncate text-lg font-bold">{nameA}</span>
+            </div>
+            <div className="pl-9 text-xs font-bold tracking-wide text-muted-foreground">VS</div>
+            <div className="flex items-center gap-2">
+              {sideB?.roster_preview?.length === 1 && (
+                <Avatar name={nameB} imageUrl={sideB.roster_preview[0].avatar_url} size="sm" />
+              )}
+              <span className="min-w-0 flex-1 truncate text-lg font-bold">{nameB}</span>
+            </div>
           </div>
+        ) : (
+          gameCount > 0 && (
+            <div className="flex flex-col gap-3.5">
+              {gameRow(sideA, nameA, setsA, !!aWon, 'a')}
+              <div className="h-px bg-border" />
+              {gameRow(sideB, nameB, setsB, !!bWon, 'b')}
+            </div>
+          )
         )}
+
+        {isScheduled && <ScheduledInfoRow startsAt={startsAt} locationText={match.location?.text} />}
       </button>
     </>
   )

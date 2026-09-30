@@ -733,6 +733,16 @@ pub enum MatchStatus {
     Cancelled,
 }
 
+/// Sort direction for `GET /matches`'s `starts_at` ordering.
+#[derive(Enum)]
+#[oai(rename_all = "snake_case")]
+pub enum SortOrder {
+    /// Soonest/oldest first.
+    Asc,
+    /// Latest first. The default.
+    Desc,
+}
+
 /// Where a match is played. `text` is always present and is what's shown to
 /// users — free-typed, or (once a Places suggestion is picked) that place's
 /// formatted address. `latitude`/`longitude`/`place_id` are only ever set
@@ -2654,13 +2664,28 @@ impl Api {
         Query(from): Query<Option<chrono::DateTime<chrono::Utc>>>,
         /// Only include items at or before this time (inclusive).
         Query(to): Query<Option<chrono::DateTime<chrono::Utc>>>,
+        /// Only include matches in this lifecycle state — e.g. `scheduled`,
+        /// for "browse the scheduled matches my feed would show". Unlike
+        /// `GET /matches`'s `status`/`match_type` (search-index filters over
+        /// every match in the app), this filters the caller's own fan-out
+        /// feed page in memory post-hydration — the feed has no search index
+        /// of its own, but pages are small (`FEED_MAX_PAGE_LIMIT`) so this
+        /// stays cheap. A page can come back with fewer than `limit` items
+        /// (or none) when most of it doesn't match; page again with
+        /// `next_cursor` as usual, same as the date-range filter above.
+        Query(status): Query<Option<MatchStatus>>,
+        /// Only include matches of this sport. See `status`'s doc comment.
+        Query(match_type): Query<Option<MatchType>>,
     ) -> Result<GetFeedResponse> {
         info!("Getting caller's social feed");
         let uid = self.require_uid(dao, &jwt_data).await?;
 
         // The feed is always the authenticated caller's own social feed (matches
-        // from people/teams they follow). No user_id / sport filtering here —
-        // that is the match-discovery endpoint (GET /matches), served by search.
+        // from people/teams they follow). Free-text search / arbitrary-user
+        // discovery is still `GET /matches` (search-index-backed) — `status`/
+        // `match_type` here only narrow the feed's own audience-scoped items,
+        // for "the scheduled matches my feed would show" (not "every scheduled
+        // match in the app", which `GET /matches` without `participant` gives).
 
         let limit = feed_page_limit(limit);
 
@@ -2757,6 +2782,16 @@ impl Api {
         let mut built: Vec<FeedMatch> = Vec::with_capacity(eligible.len());
         for entry in &eligible {
             if let Some(summary) = summaries.get(&entry.match_id) {
+                if let Some(s) = &status
+                    && summary.match_.status != match_status_str(s)
+                {
+                    continue;
+                }
+                if let Some(mt) = &match_type
+                    && summary.match_.match_type != match_type_tag(mt)
+                {
+                    continue;
+                }
                 let i_liked = liked.contains(&entry.match_id);
                 let known_participants = entry
                     .known_player_ids
@@ -2833,10 +2868,17 @@ impl Api {
         Query(team_match): Query<Option<TeamMatchMode>>,
         /// Only matches of this sport.
         Query(match_type): Query<Option<MatchType>>,
+        /// Only matches in this lifecycle state (e.g. `scheduled`) — powers the
+        /// "all scheduled matches" browse view.
+        Query(status): Query<Option<MatchStatus>>,
         /// Only matches at or after this time (inclusive).
         Query(from): Query<Option<chrono::DateTime<chrono::Utc>>>,
         /// Only matches at or before this time (inclusive).
         Query(to): Query<Option<chrono::DateTime<chrono::Utc>>>,
+        /// Sort order on `starts_at`: `desc` (default, newest first — the
+        /// existing behavior) or `asc` (soonest first, for browsing upcoming
+        /// matches).
+        Query(sort): Query<Option<SortOrder>>,
         /// Opaque cursor from the previous page's `next_cursor`.
         Query(cursor): Query<Option<String>>,
         /// Maximum number of items to return (defaults to 20, capped at 50).
@@ -2882,6 +2924,9 @@ impl Api {
         if let Some(mt) = &match_type {
             clauses.push(format!("sport = \"{}\"", match_type_tag(mt)));
         }
+        if let Some(s) = &status {
+            clauses.push(format!("status = \"{}\"", match_status_str(s)));
+        }
         if let Some(p) = &participant {
             clauses.push(format!("participant_ids = \"{p}\""));
         }
@@ -2913,10 +2958,14 @@ impl Api {
         }
         let filter = (!clauses.is_empty()).then(|| clauses.join(" AND "));
 
+        let sort_dir = match sort {
+            Some(SortOrder::Asc) => "asc",
+            Some(SortOrder::Desc) | None => "desc",
+        };
         let q = agon_core::search::SearchQuery {
             q: query.unwrap_or_default(),
             filter,
-            sort: vec!["starts_at_ts:desc".to_string()],
+            sort: vec![format!("starts_at_ts:{sort_dir}")],
             offset,
             limit: page_limit(limit),
         };

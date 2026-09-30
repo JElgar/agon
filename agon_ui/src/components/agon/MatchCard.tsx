@@ -4,7 +4,7 @@ import { Check, Flame, MailOpen, MessageCircle, Share2 } from 'lucide-react'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { useToggleLike } from '@/hooks/useToggleLike'
-import { relativeTime, scheduledDateTime } from '@/lib/datetime'
+import { isStartingSoon, relativeTime, scheduledDateTime } from '@/lib/datetime'
 import { Avatar } from './Avatar'
 import { Button } from '@/components/ui/button'
 import { SportBadge } from './SportBadge'
@@ -321,6 +321,14 @@ export function MatchCard({
   // pre-existing generic header/score layout below.
   const isRedesignedSport = match.match_type !== 'other'
   const isLiveShadow = isRedesignedSport && isCurrentlyLive
+  // Blue accent for a scheduled tile, per the "Agon redesign" canvas's
+  // scheduled-tile mocks (see `Tiles.dc.html`) — distinct from live's red and
+  // finished's plain border. Within the hour of kickoff, the canvas's
+  // "Scheduled variant B" switches the same accent to amber instead (the
+  // "starting soon" countdown tile — see `ScheduledPill`/`ScheduledInfoRow` in
+  // `RedesignedSportCard`).
+  const isScheduledMatch = isRedesignedSport && match.status === 'scheduled'
+  const isScheduledSoon = isScheduledMatch && isStartingSoon(match.starts_at)
 
   return (
     <div
@@ -328,7 +336,15 @@ export function MatchCard({
         'overflow-hidden rounded-2xl border bg-card text-card-foreground',
         className,
       )}
-      style={isLiveShadow ? { boxShadow: 'inset 0 3px 0 0 var(--destructive)' } : undefined}
+      style={
+        isLiveShadow
+          ? { boxShadow: 'inset 0 3px 0 0 var(--destructive)' }
+          : isScheduledSoon
+            ? { boxShadow: 'inset 0 3px 0 0 var(--warning)' }
+            : isScheduledMatch
+              ? { boxShadow: 'inset 0 3px 0 0 var(--primary)' }
+              : undefined
+      }
       {...props}
     >
       {isRedesignedSport ? (

@@ -1317,6 +1317,7 @@ mod tests {
             side_id: "s".into(),
             team_id: None,
             name: None,
+            colour: None,
             max_players,
             player_count: 0,
             roster_preview: Vec::new(),

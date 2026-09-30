@@ -5,6 +5,7 @@ import { Check, Lock } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { isSetsSport, type MatchType } from '@/lib/sports'
+import { colourFromName, defaultSideColour, nameFromColour } from '@/lib/sideColours'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -136,22 +137,79 @@ export function LogMatchPage() {
   // intra-squad practice match) — `sideANameAllowed`/`sideBNameAllowed`
   // mirror that rule below, and the name is cleared whenever it stops
   // applying.
-  const [sideAName, setSideAName] = useState('')
-  const [sideBName, setSideBName] = useState('')
+  const [sideAName, setSideANameRaw] = useState('')
+  const [sideBName, setSideBNameRaw] = useState('')
   const [sideATeam, setSideATeam] = useState<TeamListItem | null>(null)
   const [sideBTeam, setSideBTeam] = useState<TeamListItem | null>(null)
   const sharedTeam = sideATeam !== null && sideATeam.id === sideBTeam?.id
   const sideANameAllowed = sideATeam === null || sharedTeam
   const sideBNameAllowed = sideBTeam === null || sharedTeam
 
+  // An ad-hoc side's colour (the create-match API requires one whenever
+  // there's no `team_id`) — defaulted up front so it's always valid to
+  // submit, then kept in sync two ways with the side's name: typing a colour
+  // name into the name field (e.g. "The Blues") picks the matching swatch,
+  // and picking a swatch fills in the name if none has been typed yet.
+  // `*Touched` tracks which of the pair the user has set by hand, so the
+  // auto-fill only ever overwrites the field they haven't touched.
+  const [sideAColour, setSideAColourRaw] = useState(() => defaultSideColour())
+  const [sideBColour, setSideBColourRaw] = useState(() => defaultSideColour(sideAColour))
+  const [sideANameTouched, setSideANameTouched] = useState(false)
+  const [sideBNameTouched, setSideBNameTouched] = useState(false)
+  const [sideAColourTouched, setSideAColourTouched] = useState(false)
+  const [sideBColourTouched, setSideBColourTouched] = useState(false)
+
+  const setSideAName = (v: string) => {
+    setSideANameRaw(v)
+    setSideANameTouched(true)
+    if (!sideAColourTouched) {
+      const inferred = colourFromName(v)
+      if (inferred) setSideAColourRaw(inferred)
+    }
+  }
+  const setSideBName = (v: string) => {
+    setSideBNameRaw(v)
+    setSideBNameTouched(true)
+    if (!sideBColourTouched) {
+      const inferred = colourFromName(v)
+      if (inferred) setSideBColourRaw(inferred)
+    }
+  }
+  const setSideAColour = (hex: string) => {
+    setSideAColourRaw(hex)
+    setSideAColourTouched(true)
+    if (!sideANameTouched) {
+      const label = nameFromColour(hex)
+      if (label) setSideANameRaw(label)
+    }
+  }
+  const setSideBColour = (hex: string) => {
+    setSideBColourRaw(hex)
+    setSideBColourTouched(true)
+    if (!sideBNameTouched) {
+      const label = nameFromColour(hex)
+      if (label) setSideBNameRaw(label)
+    }
+  }
+
   // Clear a side's custom name the moment it stops being allowed (a team was
   // just linked, and the other side isn't the same team) — so a name typed
-  // earlier can't linger into the submitted payload.
+  // earlier can't linger into the submitted payload. Colour is dropped the
+  // same way: a linked team is the colour's source of truth, and the create
+  // API rejects a colour alongside a `team_id`.
   useEffect(() => {
-    if (!sideANameAllowed) setSideAName('')
+    if (!sideANameAllowed) {
+      setSideANameRaw('')
+      setSideANameTouched(false)
+      setSideAColourTouched(false)
+    }
   }, [sideANameAllowed])
   useEffect(() => {
-    if (!sideBNameAllowed) setSideBName('')
+    if (!sideBNameAllowed) {
+      setSideBNameRaw('')
+      setSideBNameTouched(false)
+      setSideBColourTouched(false)
+    }
   }, [sideBNameAllowed])
 
   // Scheduled (upcoming, no score) vs Completed (already played, with a score).
@@ -430,6 +488,10 @@ export function LogMatchPage() {
           client_id: SIDE_A,
           name: sideAName.trim() || undefined,
           team_id: sideATeam?.id,
+          // Required whenever there's no team_id; also allowed (the same
+          // derby exception as name) once a team's linked but shared with
+          // the other side — `sideANameAllowed` already tracks exactly that.
+          colour: sideANameAllowed ? sideAColour : undefined,
           max_players: sideAMaxPlayers.trim() ? Number(sideAMaxPlayers) : undefined,
           team_join_enabled: sideATeam ? sideATeamJoinEnabled : undefined,
         },
@@ -437,6 +499,7 @@ export function LogMatchPage() {
           client_id: SIDE_B,
           name: sideBName.trim() || undefined,
           team_id: sideBTeam?.id,
+          colour: sideBNameAllowed ? sideBColour : undefined,
           max_players: sideBMaxPlayers.trim() ? Number(sideBMaxPlayers) : undefined,
           team_join_enabled: sideBTeam ? sideBTeamJoinEnabled : undefined,
         },
@@ -526,6 +589,8 @@ export function LogMatchPage() {
             name={sideAName}
             onNameChange={setSideAName}
             nameFieldVisible={sideANameAllowed}
+            colour={sideAColour}
+            onColourChange={setSideAColour}
             team={sideATeam}
             onTeamChange={(team) => {
               setSideATeam(team)
@@ -551,6 +616,8 @@ export function LogMatchPage() {
             name={sideBName}
             onNameChange={setSideBName}
             nameFieldVisible={sideBNameAllowed}
+            colour={sideBColour}
+            onColourChange={setSideBColour}
             team={sideBTeam}
             onTeamChange={(team) => {
               setSideBTeam(team)

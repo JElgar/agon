@@ -418,6 +418,14 @@ struct MatchSide {
     /// belongs to; `team_name` lets a caller show that alongside it. `None`
     /// for an ad-hoc side or one whose linked team has since been deleted.
     team_name: Option<String>,
+    /// This side's own colour (a hex string, e.g. `"#2952D9"`), set for an
+    /// ad-hoc side with no `team_id`, or one sharing its `team_id` with
+    /// another side (a derby) — a linked team's colour (once teams have one)
+    /// is otherwise the source of truth instead. Required by the
+    /// create-match API for a side without a team; the client picks one
+    /// automatically (inferring it from a colour name typed into the side's
+    /// `name`, where possible) rather than asking the creator to.
+    colour: Option<String>,
     /// This side's full roster, when small enough to show directly instead of
     /// just `name`/`team_id`'s logo (1v1, doubles, a small squad). `None`
     /// when the side has more players than that — render `name`/the team's
@@ -983,6 +991,13 @@ struct CreateMatchSideInput {
     /// the team is normally the source of truth for the side's name, but two
     /// sides sharing one team need a name each to be told apart.
     name: Option<String>,
+    /// This side's colour (a hex string, e.g. `"#2952D9"`). Required unless
+    /// `team_id` is set (a linked team is the source of truth for colour
+    /// instead) — rejected (validation error) alongside a `team_id` unless
+    /// another side in the same request shares that team, the same derby
+    /// exception `name` gets (two sides sharing one team need a colour each
+    /// to be told apart too).
+    colour: Option<String>,
     /// Cap on this side's roster. `None` = uncapped.
     max_players: Option<u32>,
     /// Whether an accepted member of `team_id` may join this side directly,
@@ -3015,6 +3030,31 @@ impl Api {
             }
         }
 
+        // Colour is only for an ad-hoc side: a linked team is normally the
+        // source of truth for colour instead — except the same derby
+        // exception as name, since two sides sharing one team need a colour
+        // each to be told apart the same way they need a name each. An
+        // ad-hoc side always needs one, having no team to fall back on.
+        for side in &input.sides {
+            if side.colour.is_none() && side.team_id.is_none() {
+                return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
+                    "side `{}` needs a colour when it has no team",
+                    side.client_id
+                ))));
+            }
+            if side.colour.is_some() && side.team_id.is_some() {
+                let team_shared = input.sides.iter().any(|other| {
+                    other.client_id != side.client_id && other.team_id == side.team_id
+                });
+                if !team_shared {
+                    return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
+                        "side `{}` can't have both a colour and a team unless another side shares that team",
+                        side.client_id
+                    ))));
+                }
+            }
+        }
+
         // A supplied format must be for this match's own sport — a football
         // match can't carry cricket's overs-per-innings setting, say.
         if let Some(fmt) = &input.format {
@@ -3067,6 +3107,8 @@ impl Api {
                     // team, or alongside a team shared with another side (to
                     // tell the two apart) — never a lone team-assigned side.
                     name: side.name.clone(),
+                    // Validated above: set exactly when there's no `team_id`.
+                    colour: side.colour.clone(),
                     max_players: side.max_players,
                     team_join_enabled: side.team_join_enabled.unwrap_or(false),
                     // `Dao::create_match` recomputes both from the players
@@ -8961,6 +9003,7 @@ fn mock_match(id: String) -> Match {
                 id: String::from("side_red"),
                 team_id: Some(String::from("team_red")),
                 name: Some(String::from("Red Team")),
+                colour: None,
                 team_logo: None,
                 team_name: None,
                 roster_preview: None,
@@ -8972,6 +9015,7 @@ fn mock_match(id: String) -> Match {
                 id: String::from("side_blue"),
                 team_id: Some(String::from("team_blue")),
                 name: Some(String::from("Blue Team")),
+                colour: None,
                 team_logo: None,
                 team_name: None,
                 roster_preview: None,

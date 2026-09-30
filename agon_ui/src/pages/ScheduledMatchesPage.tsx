@@ -14,6 +14,8 @@ import { cn } from '@/lib/utils'
 import { sportIcon, sportLabel, type MatchType } from '@/lib/sports'
 
 type SearchMatch = components['schemas']['SearchMatch']
+type FeedMatch = components['schemas']['FeedMatch']
+type ScheduledItem = SearchMatch | FeedMatch
 
 /** The sports offered as filter chips, in the same order as `SportPicker`. */
 const SPORTS: MatchType[] = [
@@ -39,6 +41,17 @@ const PAGE_SIZE = 20
  * too (same as the feed strip, see `FeedPage`'s `upcomingCutoff`) — the
  * "Include past games" toggle lifts that so a stale/never-scored scheduled
  * match can still be found.
+ *
+ * "My games" is a `GET /matches` search (participant = the viewer), which
+ * supports full-text search plus a soonest-first sort — it's fine for this to
+ * search the whole app since it's scoped to the viewer's own matches anyway.
+ * "Everyone's" deliberately does NOT search across every match in the app
+ * (that's what `GET /matches` without `participant` would do) — it's meant to
+ * be "the scheduled matches my feed would show", so it calls `GET /feed`
+ * instead (the same follows-scoped audience `FeedPage` reads), filtered to
+ * `status=scheduled`. `GET /feed` has no free-text search or sort-order
+ * param of its own (see its doc comment), so the search box is hidden and
+ * results are sorted by `starts_at` client-side, per loaded page.
  */
 export function ScheduledMatchesPage() {
   const navigate = useNavigate()
@@ -66,22 +79,40 @@ export function ScheduledMatchesPage() {
   const query = useInfiniteQuery({
     queryKey: [
       'scheduled-matches',
+      scope,
       scope === 'mine' ? currentUserId : null,
-      debounced,
+      scope === 'mine' ? debounced : '',
       sport,
       effectiveFrom,
       effectiveTo,
     ],
     enabled: !!currentUserId,
     initialPageParam: undefined as string | undefined,
-    queryFn: async ({ pageParam }) => {
-      const { data, error } = await fetchClient.GET('/matches', {
+    queryFn: async ({ pageParam }): Promise<{ items: ScheduledItem[]; next_cursor?: string | null }> => {
+      if (scope === 'mine') {
+        const { data, error } = await fetchClient.GET('/matches', {
+          params: {
+            query: {
+              participant: currentUserId,
+              status: 'scheduled',
+              sort: 'asc',
+              q: debounced || undefined,
+              match_type: sport ?? undefined,
+              from: effectiveFrom,
+              to: effectiveTo,
+              cursor: pageParam,
+              limit: PAGE_SIZE,
+            },
+          },
+        })
+        if (error || !data) throw new Error('Failed to load scheduled matches')
+        return data
+      }
+
+      const { data, error } = await fetchClient.GET('/feed', {
         params: {
           query: {
-            participant: scope === 'mine' ? currentUserId : undefined,
             status: 'scheduled',
-            sort: 'asc',
-            q: debounced || undefined,
             match_type: sport ?? undefined,
             from: effectiveFrom,
             to: effectiveTo,
@@ -91,12 +122,19 @@ export function ScheduledMatchesPage() {
         },
       })
       if (error || !data) throw new Error('Failed to load scheduled matches')
-      return data
+      // `GET /feed` orders by fan-out time, not kickoff — resort each page so
+      // "soonest first" still holds within what's been loaded so far.
+      return {
+        ...data,
+        items: [...data.items].sort(
+          (a, b) => new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime(),
+        ),
+      }
     },
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
   })
 
-  const items: SearchMatch[] = (query.data?.pages ?? []).flatMap((page) => page.items)
+  const items: ScheduledItem[] = (query.data?.pages ?? []).flatMap((page) => page.items)
 
   return (
     <div className="mx-auto flex w-full max-w-xl flex-col gap-4 md:max-w-2xl md:gap-6">
@@ -115,16 +153,18 @@ export function ScheduledMatchesPage() {
         </h1>
       </div>
 
-      <div className="relative">
-        <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          value={term}
-          onChange={(e) => setTerm(e.target.value)}
-          placeholder="Search by match name…"
-          className="h-12 rounded-2xl pl-10"
-          aria-label="Search scheduled matches"
-        />
-      </div>
+      {scope === 'mine' && (
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={term}
+            onChange={(e) => setTerm(e.target.value)}
+            placeholder="Search by match name…"
+            className="h-12 rounded-2xl pl-10"
+            aria-label="Search scheduled matches"
+          />
+        </div>
+      )}
 
       <div className="inline-flex w-fit rounded-full border bg-card p-1">
         {(['mine', 'everyone'] as const).map((s) => (
@@ -249,8 +289,8 @@ function endOfDay(dateStr: string): string {
 }
 
 interface ResultsProps {
-  query: ReturnType<typeof useInfiniteQuery<components['schemas']['MatchPage']>>
-  items: SearchMatch[]
+  query: ReturnType<typeof useInfiniteQuery<{ items: ScheduledItem[]; next_cursor?: string | null }>>
+  items: ScheduledItem[]
   currentUserId?: string
   navigate: ReturnType<typeof useNavigate>
 }

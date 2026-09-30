@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { CalendarPlus, ChevronLeft, Clock, Link2, MailOpen, MapPin, MoreHorizontal, Pencil, Radio, Share, UserPlus } from 'lucide-react'
+import { CalendarPlus, ChevronLeft, Link2, MailOpen, MapPin, MoreHorizontal, Pencil, Radio, Share, UserPlus } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
@@ -9,8 +9,7 @@ import { scheduledDateTime } from '@/lib/datetime'
 import { directionsUrl } from '@/lib/location'
 import { downloadMatchIcs } from '@/lib/calendar'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardTitle } from '@/components/ui/card'
-import { Avatar } from '@/components/agon/Avatar'
+import { WaitlistSection } from '@/components/agon/WaitlistSection'
 import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
 import { ScoreConfirmationBar } from '@/components/agon/ScoreConfirmationBar'
 import { useLiveEvents } from '@/hooks/useLiveScore'
@@ -53,6 +52,7 @@ import { InvitePlayers } from '@/components/agon/InvitePlayers'
 import { MatchComments } from '@/components/agon/MatchComments'
 import { useToggleLike } from '@/hooks/useToggleLike'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
+import { ScheduledMatchInvite } from '@/components/agon/invite/ScheduledMatchInvite'
 import { InvitePromptDialog } from '@/components/agon/InvitePromptDialog'
 import { useInvitePrompt } from '@/hooks/useInvitePrompt'
 import { cricketFormat, footballFormat, netballFormat } from '@/lib/matchFormat'
@@ -309,6 +309,11 @@ function MatchDetail({
       : scoreInfo
         ? 'finished'
         : 'scheduled'
+  // The redesigned pre-match/RSVP view (`Invite.dc.html`) takes over the whole
+  // page instead of the hero-card summary for every sport, football included
+  // — the hero card's "vs" + "N going" caption is a fallback for the live/
+  // finished states, not a substitute for the full RSVP screen.
+  const isScheduledInvite = matchView === 'scheduled'
   // Football keeps the sides in their stored order (not viewer-first) so each
   // side's kit colour stays the same for everyone looking at the match.
   const [kitSideA, kitSideB] = match.sides
@@ -424,6 +429,22 @@ function MatchDetail({
       )}
     </>
   )
+
+  if (isScheduledInvite) {
+    return (
+      <div className="mx-auto flex max-w-xl flex-col gap-4 xl:max-w-[1040px]">
+        <ScheduledMatchInvite
+          match={match}
+          currentUserId={currentUserId}
+          canEdit={canEdit}
+          onBack={onBack}
+          onShare={() => shareMatch(match)}
+          onEdit={() => setEditingDetails(true)}
+        />
+        {editingDetails && <MatchDetailsEditor match={match} onDone={() => setEditingDetails(false)} />}
+      </div>
+    )
+  }
 
   const titleBlock = (
     <div className={cn('flex flex-col px-1', match.header_photos.length > 0 ? 'gap-1.5 pt-1' : 'gap-2')}>
@@ -595,9 +616,7 @@ function MatchDetail({
         />
       ) : (
         <section className="rounded-[20px] border bg-card px-[18px] py-6 text-center text-sm text-muted-foreground">
-          {matchView === 'scheduled'
-            ? 'Goals and fouls will show up here once the match starts.'
-            : 'No goal-by-goal events were recorded for this match.'}
+          No goal-by-goal events were recorded for this match.
         </section>
       )
     ) : footballEventSource ? (
@@ -609,9 +628,7 @@ function MatchDetail({
       />
     ) : (
       <section className="rounded-[20px] border bg-card px-[18px] py-6 text-center text-sm text-muted-foreground">
-        {matchView === 'scheduled'
-          ? 'Goals, cards and subs will show up here once the match kicks off.'
-          : 'No events were recorded for this match.'}
+        No events were recorded for this match.
       </section>
     ))
   const playersView = (layout: PlayersLayout = 'stack') =>
@@ -665,17 +682,7 @@ function MatchDetail({
         <Pencil className="size-5" /> Add result
       </button>
     ) : !isLiveSport ? (
-      matchView === 'scheduled' ? (
-        <button
-          type="button"
-          className={primaryActionClass}
-          onClick={() => downloadMatchIcs(match, { title: match.name, description: `${nameA} vs ${nameB}` })}
-        >
-          <CalendarPlus className="size-5" /> Add to calendar
-        </button>
-      ) : (
-        <KudosButton liked={match.social.i_liked} onToggle={() => toggleLike.mutate(!match.social.i_liked)} />
-      )
+      <KudosButton liked={match.social.i_liked} onToggle={() => toggleLike.mutate(!match.social.i_liked)} />
     ) : canEdit && !cancelled && !isCricket && matchTab === 'timeline' && match.status === 'in_progress' ? (
       <AddEventButton to={liveEntryPath} />
     ) : canEdit && !cancelled && match.status === 'in_progress' ? (
@@ -686,14 +693,6 @@ function MatchDetail({
       <Link to={liveEntryPath} className={primaryActionClass}>
         <Radio className="size-5" /> Start scoring
       </Link>
-    ) : matchView === 'scheduled' ? (
-      <button
-        type="button"
-        className={primaryActionClass}
-        onClick={() => downloadMatchIcs(match, { title: match.name, description: `${nameA} vs ${nameB}` })}
-      >
-        <CalendarPlus className="size-5" /> Add to calendar
-      </button>
     ) : (
       <KudosButton liked={match.social.i_liked} onToggle={() => toggleLike.mutate(!match.social.i_liked)} />
     )
@@ -771,7 +770,7 @@ function MatchDetail({
               </>
             )}
             {!isLiveSport && !singles && (
-              <WhoPlayedCard match={match} title={matchView === 'scheduled' ? "Who's playing" : 'Who played'} />
+              <WhoPlayedCard match={match} title="Who played" />
             )}
             {commentsCard}
           </div>
@@ -852,7 +851,7 @@ function MatchDetail({
           {banners}
           {yourGameCard}
           {statCards}
-          {!singles && <WhoPlayedCard match={match} title={matchView === 'scheduled' ? "Who's playing" : 'Who played'} />}
+          {!singles && <WhoPlayedCard match={match} title="Who played" />}
           {commentsCard}
           {rulesCard}
           {adminFooter}
@@ -998,140 +997,6 @@ function InviteBanner({
         onSuccess={handleResponded}
       />
     </>
-  )
-}
-
-/**
- * Who's queued for a spot on this match/side that wasn't free when they
- * tried to join or accept an invite onto it — `GET /matches/:id/waitlist`,
- * longest-waiting first. Renders nothing while empty; a match with no one
- * waiting shouldn't carry an always-there "no one waiting" placeholder.
- *
- * `canManage` (mirrors `MatchDetailPage`'s own `canEdit`) gates "Move in" —
- * admin-only, and only works once a spot is actually free (the same typed
- * conflict `join` returns). Removing an entry ("Leave"/"Remove") is open to
- * the waiting player themselves or a match admin, same split the server
- * enforces.
- */
-function WaitlistSection({
-  match,
-  currentUserId,
-  canManage,
-}: {
-  match: Match
-  currentUserId?: string
-  canManage: boolean
-}) {
-  const queryClient = useQueryClient()
-  const waitlistKey = ['waitlist', match.id]
-
-  const query = useQuery({
-    queryKey: waitlistKey,
-    queryFn: async (): Promise<components['schemas']['WaitlistEntry'][]> => {
-      const { data, error } = await fetchClient.GET('/matches/{match_id}/waitlist', {
-        params: { path: { match_id: match.id } },
-      })
-      if (error || !data) throw new Error('Failed to load the waitlist')
-      return data
-    },
-  })
-
-  const moveIn = useMutation({
-    mutationFn: async (userId: string) => {
-      const { error } = await fetchClient.POST(
-        '/matches/{match_id}/waitlist/{user_id}/move-in',
-        { params: { path: { match_id: match.id, user_id: userId } } },
-      )
-      if (error) throw new Error('Failed to move that player in')
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: waitlistKey })
-      queryClient.invalidateQueries({ queryKey: ['match', match.id] })
-      queryClient.invalidateQueries({ queryKey: ['feed'] })
-    },
-  })
-
-  const leave = useMutation({
-    mutationFn: async (userId: string) => {
-      const { error } = await fetchClient.DELETE('/matches/{match_id}/waitlist/{user_id}', {
-        params: { path: { match_id: match.id, user_id: userId } },
-      })
-      if (error) throw new Error('Failed to remove that waitlist entry')
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: waitlistKey })
-    },
-  })
-
-  const entries = query.data ?? []
-  if (entries.length === 0) return null
-
-  return (
-    <Card>
-      <CardContent className="p-4">
-        <div className="mb-3 flex items-center gap-2">
-          <Clock className="size-4 text-muted-foreground" />
-          <CardTitle className="text-sm">Waiting list</CardTitle>
-        </div>
-        <div className="space-y-2">
-          {entries.map((entry) => {
-            const side = match.sides.find((s) => s.id === entry.side_id)
-            const isMe = entry.user_id === currentUserId
-            const canRemove = isMe || canManage
-            return (
-              <div
-                key={entry.user_id}
-                className="flex items-center justify-between gap-2 rounded-xl bg-accent/60 px-2.5 py-2"
-              >
-                <div className="flex min-w-0 items-center gap-2">
-                  <Avatar name={entry.name} imageUrl={entry.avatar_url} size="sm" />
-                  <div className="min-w-0">
-                    <span className="block truncate text-sm font-medium">
-                      {entry.name}
-                      {isMe && ' (you)'}
-                    </span>
-                    <span className="block truncate text-xs text-muted-foreground">
-                      #{entry.position} · {sideName(side, 'Unassigned')}
-                    </span>
-                  </div>
-                </div>
-                <div className="flex shrink-0 gap-1.5">
-                  {canManage && (
-                    <Button
-                      size="sm"
-                      shape="pill"
-                      disabled={moveIn.isPending}
-                      onClick={() => moveIn.mutate(entry.user_id)}
-                    >
-                      Move in
-                    </Button>
-                  )}
-                  {canRemove && (
-                    <Button
-                      size="sm"
-                      shape="pill"
-                      variant="outline"
-                      disabled={leave.isPending}
-                      onClick={() => leave.mutate(entry.user_id)}
-                    >
-                      {isMe ? 'Leave' : 'Remove'}
-                    </Button>
-                  )}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-        {moveIn.isError && (
-          <p className="mt-2 text-xs text-destructive">
-            Couldn't move that player in — check there's actually a free spot.
-          </p>
-        )}
-        {leave.isError && (
-          <p className="mt-2 text-xs text-destructive">Something went wrong. Try again.</p>
-        )}
-      </CardContent>
-    </Card>
   )
 }
 

@@ -46,6 +46,7 @@ export function ScheduledMatchesPage() {
 
   const [term, setTerm] = useState('')
   const [debounced, setDebounced] = useState('')
+  const [scope, setScope] = useState<'mine' | 'everyone'>('mine')
   const [sport, setSport] = useState<MatchType | null>(null)
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState('')
@@ -65,7 +66,7 @@ export function ScheduledMatchesPage() {
   const query = useInfiniteQuery({
     queryKey: [
       'scheduled-matches',
-      currentUserId,
+      scope === 'mine' ? currentUserId : null,
       debounced,
       sport,
       effectiveFrom,
@@ -77,7 +78,7 @@ export function ScheduledMatchesPage() {
       const { data, error } = await fetchClient.GET('/matches', {
         params: {
           query: {
-            participant: currentUserId,
+            participant: scope === 'mine' ? currentUserId : undefined,
             status: 'scheduled',
             sort: 'asc',
             q: debounced || undefined,
@@ -123,6 +124,25 @@ export function ScheduledMatchesPage() {
           className="h-12 rounded-2xl pl-10"
           aria-label="Search scheduled matches"
         />
+      </div>
+
+      <div className="inline-flex w-fit rounded-full border bg-card p-1">
+        {(['mine', 'everyone'] as const).map((s) => (
+          <button
+            key={s}
+            type="button"
+            aria-pressed={scope === s}
+            onClick={() => setScope(s)}
+            className={cn(
+              'h-8 rounded-full px-3.5 text-sm font-semibold transition-colors',
+              scope === s
+                ? 'bg-accent text-accent-foreground'
+                : 'text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {s === 'mine' ? 'My games' : "Everyone's"}
+          </button>
+        ))}
       </div>
 
       <div className="flex flex-wrap gap-2">

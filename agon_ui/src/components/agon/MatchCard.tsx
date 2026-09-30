@@ -321,6 +321,10 @@ export function MatchCard({
   // pre-existing generic header/score layout below.
   const isRedesignedSport = match.match_type !== 'other'
   const isLiveShadow = isRedesignedSport && isCurrentlyLive
+  // Blue accent for a scheduled tile, per the "Agon redesign" canvas's
+  // scheduled-tile mocks (see `Tiles.dc.html`) — distinct from live's red and
+  // finished's plain border.
+  const isScheduledShadow = isRedesignedSport && match.status === 'scheduled'
 
   return (
     <div
@@ -328,7 +332,13 @@ export function MatchCard({
         'overflow-hidden rounded-2xl border bg-card text-card-foreground',
         className,
       )}
-      style={isLiveShadow ? { boxShadow: 'inset 0 3px 0 0 var(--destructive)' } : undefined}
+      style={
+        isLiveShadow
+          ? { boxShadow: 'inset 0 3px 0 0 var(--destructive)' }
+          : isScheduledShadow
+            ? { boxShadow: 'inset 0 3px 0 0 var(--primary)' }
+            : undefined
+      }
       {...props}
     >
       {isRedesignedSport ? (

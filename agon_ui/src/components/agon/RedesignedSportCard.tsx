@@ -2,7 +2,7 @@ import { Check } from 'lucide-react'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { Avatar } from './Avatar'
-import { initials, sideTeamHint } from '@/lib/members'
+import { initials, sidePlayerCountLabel, sideTeamHint } from '@/lib/members'
 import type { ScorePlayers } from '@/lib/members'
 import { sportLabel, SPORT_ICON_TINT, type MatchType } from '@/lib/sports'
 import { shortDate } from '@/lib/datetime'
@@ -471,6 +471,11 @@ export function FootballFeedCardBody({
   startsAt: string
   onOpen?: () => void
 }) {
+  // A scheduled match has no score yet — it falls into neither `isLive` nor
+  // "finished" (`!isLive` used to mean "finished" alone, so a scheduled game
+  // rendered as a fabricated "0–0, Full time"; see the roster-count/"vs"
+  // treatment below, matching `FootballMatchView`'s existing scheduled state).
+  const isScheduled = match.status === 'scheduled'
   const goalsForLive = (sideId: string | undefined) =>
     liveState && sideId ? (liveState.score[sideId] ?? 0) : 0
   const goalsA = isLive ? goalsForLive(sideA?.id) : (finishedHeadline?.[sideA?.id ?? ''] ?? 0)
@@ -510,7 +515,7 @@ export function FootballFeedCardBody({
       )}
 
       <button type="button" onClick={onOpen} className="block w-full px-3.5 pb-4 text-left">
-        {!isLive && (
+        {!isLive && !isScheduled && (
           <p className="mb-1 text-right text-xs font-semibold text-muted-foreground">Full time</p>
         )}
         <div className="flex flex-col gap-1.5">
@@ -519,42 +524,54 @@ export function FootballFeedCardBody({
             <span
               className={cn(
                 'flex min-w-0 flex-1 items-center gap-1.5 truncate text-lg',
-                aLeading ? 'font-bold' : 'font-medium text-muted-foreground',
+                isScheduled || aLeading ? 'font-bold' : 'font-medium text-muted-foreground',
               )}
             >
               <SideNameWithHint name={nameA} hint={sideTeamHint(sideA)} />
-              {!isLive && aWon && <WinnerCheck />}
+              {!isLive && !isScheduled && aWon && <WinnerCheck />}
             </span>
-            <span
-              className={cn(
-                'font-display leading-none',
-                aLeading ? 'text-4xl font-extrabold' : 'text-4xl font-extrabold text-muted-foreground',
-              )}
-            >
-              {goalsA}
-            </span>
+            {isScheduled ? (
+              <span className="shrink-0 text-xs text-muted-foreground">{sidePlayerCountLabel(sideA)}</span>
+            ) : (
+              <span
+                className={cn(
+                  'font-display leading-none',
+                  aLeading ? 'text-4xl font-extrabold' : 'text-4xl font-extrabold text-muted-foreground',
+                )}
+              >
+                {goalsA}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-3">
             <SideMarkerOrCrest side={sideB} leading={bLeading} selfPlay={selfPlay} />
             <span
               className={cn(
                 'flex min-w-0 flex-1 items-center gap-1.5 truncate text-lg',
-                bLeading ? 'font-bold' : 'font-medium text-muted-foreground',
+                isScheduled || bLeading ? 'font-bold' : 'font-medium text-muted-foreground',
               )}
             >
               <SideNameWithHint name={nameB} hint={sideTeamHint(sideB)} />
-              {!isLive && bWon && <WinnerCheck />}
+              {!isLive && !isScheduled && bWon && <WinnerCheck />}
             </span>
-            <span
-              className={cn(
-                'font-display leading-none',
-                bLeading ? 'text-4xl font-extrabold' : 'text-4xl font-extrabold text-muted-foreground',
-              )}
-            >
-              {goalsB}
-            </span>
+            {isScheduled ? (
+              <span className="shrink-0 text-xs text-muted-foreground">{sidePlayerCountLabel(sideB)}</span>
+            ) : (
+              <span
+                className={cn(
+                  'font-display leading-none',
+                  bLeading ? 'text-4xl font-extrabold' : 'text-4xl font-extrabold text-muted-foreground',
+                )}
+              >
+                {goalsB}
+              </span>
+            )}
           </div>
         </div>
+
+        {isScheduled && match.location?.text && (
+          <p className="mt-2.5 truncate text-[13px] text-muted-foreground">{match.location.text}</p>
+        )}
 
         {isLive && progressPct !== null && (
           <div className="mt-3 h-1 overflow-hidden rounded-full bg-muted">
@@ -590,7 +607,7 @@ export function FootballFeedCardBody({
           </div>
         )}
 
-        {!isLive && finishedGoals && (
+        {!isLive && !isScheduled && finishedGoals && (
           <FootballScorersBySide
             goals={finishedGoals}
             match={match}
@@ -849,6 +866,9 @@ export function NetballFeedCardBody({
   startsAt: string
   onOpen?: () => void
 }) {
+  // See `FootballFeedCardBody`'s matching comment — same fabricated
+  // "0–0, Full time" bug for a scheduled match, same fix.
+  const isScheduled = match.status === 'scheduled'
   const goalsForLive = (sideId: string | undefined) =>
     liveState && sideId ? (liveState.score[sideId] ?? 0) : 0
   const goalsA = isLive ? goalsForLive(sideA?.id) : (finishedHeadline?.[sideA?.id ?? ''] ?? 0)
@@ -891,7 +911,7 @@ export function NetballFeedCardBody({
       )}
 
       <button type="button" onClick={onOpen} className="block w-full px-3.5 pb-4 text-left">
-        {!isLive && (
+        {!isLive && !isScheduled && (
           <p className="mb-1 text-right text-xs font-semibold text-muted-foreground">Full time</p>
         )}
         <div className="flex flex-col gap-1.5">
@@ -900,42 +920,54 @@ export function NetballFeedCardBody({
             <span
               className={cn(
                 'flex min-w-0 flex-1 items-center gap-1.5 truncate text-lg',
-                aLeading ? 'font-bold' : 'font-medium text-muted-foreground',
+                isScheduled || aLeading ? 'font-bold' : 'font-medium text-muted-foreground',
               )}
             >
               <SideNameWithHint name={nameA} hint={sideTeamHint(sideA)} />
-              {!isLive && aWon && <WinnerCheck />}
+              {!isLive && !isScheduled && aWon && <WinnerCheck />}
             </span>
-            <span
-              className={cn(
-                'font-display leading-none',
-                aLeading ? 'text-4xl font-extrabold' : 'text-4xl font-extrabold text-muted-foreground',
-              )}
-            >
-              {goalsA}
-            </span>
+            {isScheduled ? (
+              <span className="shrink-0 text-xs text-muted-foreground">{sidePlayerCountLabel(sideA)}</span>
+            ) : (
+              <span
+                className={cn(
+                  'font-display leading-none',
+                  aLeading ? 'text-4xl font-extrabold' : 'text-4xl font-extrabold text-muted-foreground',
+                )}
+              >
+                {goalsA}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-3">
             <SideMarkerOrCrest side={sideB} leading={bLeading} selfPlay={selfPlay} />
             <span
               className={cn(
                 'flex min-w-0 flex-1 items-center gap-1.5 truncate text-lg',
-                bLeading ? 'font-bold' : 'font-medium text-muted-foreground',
+                isScheduled || bLeading ? 'font-bold' : 'font-medium text-muted-foreground',
               )}
             >
               <SideNameWithHint name={nameB} hint={sideTeamHint(sideB)} />
-              {!isLive && bWon && <WinnerCheck />}
+              {!isLive && !isScheduled && bWon && <WinnerCheck />}
             </span>
-            <span
-              className={cn(
-                'font-display leading-none',
-                bLeading ? 'text-4xl font-extrabold' : 'text-4xl font-extrabold text-muted-foreground',
-              )}
-            >
-              {goalsB}
-            </span>
+            {isScheduled ? (
+              <span className="shrink-0 text-xs text-muted-foreground">{sidePlayerCountLabel(sideB)}</span>
+            ) : (
+              <span
+                className={cn(
+                  'font-display leading-none',
+                  bLeading ? 'text-4xl font-extrabold' : 'text-4xl font-extrabold text-muted-foreground',
+                )}
+              >
+                {goalsB}
+              </span>
+            )}
           </div>
         </div>
+
+        {isScheduled && match.location?.text && (
+          <p className="mt-2.5 truncate text-[13px] text-muted-foreground">{match.location.text}</p>
+        )}
 
         {isLive && progressPct !== null && (
           <div className="mt-3 h-1 overflow-hidden rounded-full bg-muted">
@@ -966,7 +998,7 @@ export function NetballFeedCardBody({
           </div>
         )}
 
-        {!isLive && finishedGoals && (
+        {!isLive && !isScheduled && finishedGoals && (
           <NetballScorersBySide
             goals={finishedGoals}
             match={match}

@@ -93,7 +93,10 @@ export function FeedPage() {
     />
   )
 
-  // Scheduled matches the viewer is playing in or following, soonest first —
+  // "Coming up" is the viewer's OWN upcoming games — `viewer_side_id` is only
+  // set on a feed entry when the viewer is on one of its sides (see
+  // `UpcomingMatchCard`'s "Going"/"I'm in" pill, which reads the same field) —
+  // not every scheduled match from people/teams they follow. Soonest first,
   // a horizontal strip above the day-grouped activity below. Naturally empty
   // (and hidden) until the feed query resolves, same as `banner` above. A
   // match stays `scheduled` even once its kickoff has passed (until someone
@@ -101,7 +104,12 @@ export function FeedPage() {
   // games nobody ever played — drop anything more than 24h past `starts_at`.
   const upcomingCutoff = Date.now() - 24 * 60 * 60 * 1000
   const upcoming = [...serverItems]
-    .filter((m) => m.status === 'scheduled' && new Date(m.starts_at).getTime() >= upcomingCutoff)
+    .filter(
+      (m) =>
+        m.status === 'scheduled' &&
+        m.viewer_side_id != null &&
+        new Date(m.starts_at).getTime() >= upcomingCutoff,
+    )
     .sort((a, b) => new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime())
 
   const comingUp = upcoming.length > 0 && (
@@ -119,7 +127,7 @@ export function FeedPage() {
           className="h-auto p-0 text-sm font-semibold text-primary hover:bg-transparent"
           onClick={() => navigate('/matches/scheduled')}
         >
-          See all
+          See all scheduled games
         </Button>
       </div>
       {/* A horizontal snap-scroll strip below `xl`; a plain vertical stack
@@ -165,7 +173,16 @@ export function FeedPage() {
   // that's in both — mid-reconciliation — renders once, from the server copy).
   const serverIds = new Set(serverItems.map((i) => i.id))
   const pendingItems: Match[] = pending.filter((m) => !serverIds.has(m.id))
-  const items: FeedCardItem[] = [...pendingItems, ...serverItems]
+  const mergedItems: FeedCardItem[] = [...pendingItems, ...serverItems]
+
+  // The day-grouped feed itself only shows games "scheduled soon" — a
+  // scheduled match starting more than 24h from now belongs in "Coming up"/
+  // "See all scheduled games" instead, not the main activity list (in_progress
+  // and completed matches are unaffected).
+  const feedSoonCutoff = Date.now() + 24 * 60 * 60 * 1000
+  const items = mergedItems.filter(
+    (item) => item.status !== 'scheduled' || new Date(item.starts_at).getTime() <= feedSoonCutoff,
+  )
 
   if (items.length === 0) {
     return (

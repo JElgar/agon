@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, Flame, MailOpen, MessageCircle, Share2 } from 'lucide-react'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
+import { isSetsSport } from '@/lib/sports'
 import { useToggleLike } from '@/hooks/useToggleLike'
 import { relativeTime, scheduledDateTime } from '@/lib/datetime'
 import { Avatar } from './Avatar'
@@ -579,8 +580,12 @@ export function MatchCard({
 
       {/* "You follow Sofia, Raj +1" — who among the match's participants the
           viewer follows. Only a feed card's `FeedMatch` carries this (a
-          per-viewer fan-out concept); `Match`/`SearchMatch` don't. */}
-      {'known_participants' in match && (
+          per-viewer fan-out concept); `Match`/`SearchMatch` don't. Skipped for
+          the sets sports (tennis/badminton/squash/table tennis): there, the
+          headline above is already the player's own name, so this would just
+          repeat it — it only earns its place once the headline is a side/team
+          name instead of a person's. */}
+      {'known_participants' in match && !isSetsSport(match.match_type) && (
         <KnownPlayersRow
           participants={match.known_participants}
           count={match.known_participants_count}

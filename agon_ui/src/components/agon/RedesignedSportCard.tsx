@@ -278,7 +278,15 @@ function SportGlyph({ sport, stroke }: { sport: MatchType; stroke: string }) {
 /** A side's colored score-row marker — filled primary square for the
  *  leading/winning side, a bordered white square for the other. Shared shape
  *  between football's square markers and could extend to other sports later. */
-function SideMarker({ leading }: { leading: boolean }) {
+/** `colour`, when the side has one (an ad-hoc side, or a derby side sharing
+ *  its team with the other side — see `MatchSide.colour`'s doc comment),
+ *  renders as the dot's actual fill; otherwise falls back to the old
+ *  leading/trailing treatment (a plain team-less side predates this field,
+ *  or one linked to a team with no colour of its own). */
+function SideMarker({ leading, colour }: { leading: boolean; colour?: string }) {
+  if (colour) {
+    return <span className="size-3.5 shrink-0 rounded-[5px]" style={{ backgroundColor: colour }} />
+  }
   return (
     <span
       className={cn(
@@ -328,14 +336,16 @@ function teamCrestColor(teamId: string): string {
 /** 22×22 team crest — the team's own logo image if it has one, else its
  *  initials on a solid, deterministically-colored circle (`teamCrestColor`).
  *  `cornerTag`, when given, adds the small 9px kit-colour tag used for the
- *  "a team playing itself" case (`leading` picks the same primary-filled vs.
- *  white-bordered coloring `SideMarker` uses for the plain dot). */
+ *  "a team playing itself" case — filled with `colour` when this derby side
+ *  has its own (see `MatchSide.colour`), else falling back to the same
+ *  primary-filled vs. white-bordered coloring `SideMarker` uses for the plain
+ *  dot (`leading`). */
 function TeamCrestBadge({
   side,
   cornerTag,
 }: {
   side: MatchSide | undefined
-  cornerTag?: { leading: boolean }
+  cornerTag?: { leading: boolean; colour?: string }
 }) {
   const teamId = side?.team_id ?? ''
   const label = initials(side?.team_name ?? side?.name)
@@ -360,8 +370,9 @@ function TeamCrestBadge({
       <span
         className={cn(
           'absolute -bottom-[3px] -right-[3px] size-[9px] rounded-[3px] border-2 border-card',
-          cornerTag.leading ? 'bg-primary' : 'border-muted-foreground/30 bg-card',
+          !cornerTag.colour && (cornerTag.leading ? 'bg-primary' : 'border-muted-foreground/30 bg-card'),
         )}
+        style={cornerTag.colour ? { backgroundColor: cornerTag.colour } : undefined}
       />
     </span>
   )
@@ -382,9 +393,14 @@ function SideMarkerOrCrest({
   selfPlay?: boolean
 }) {
   if (side?.team_id) {
-    return <TeamCrestBadge side={side} cornerTag={selfPlay ? { leading } : undefined} />
+    return (
+      <TeamCrestBadge
+        side={side}
+        cornerTag={selfPlay ? { leading, colour: side.colour } : undefined}
+      />
+    )
   }
-  return <SideMarker leading={leading} />
+  return <SideMarker leading={leading} colour={side?.colour} />
 }
 
 /** The muted "playing itself" note shown between the header and the score

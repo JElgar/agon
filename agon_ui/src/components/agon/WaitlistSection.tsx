@@ -4,6 +4,7 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Avatar } from '@/components/agon/Avatar'
 import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardTitle } from '@/components/ui/card'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -77,67 +78,70 @@ export function WaitlistSection({
   if (entries.length === 0) return null
 
   return (
-    <div className="rounded-2xl border p-4">
-      <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
-        <Clock className="size-4 text-muted-foreground" />
-        Waiting list
-      </div>
-      <div className="space-y-2">
-        {entries.map((entry) => {
-          const side = match.sides.find((s) => s.id === entry.side_id)
-          const isMe = entry.user_id === currentUserId
-          const canRemove = isMe || canManage
-          return (
-            <div
-              key={entry.user_id}
-              className="flex items-center justify-between gap-2 rounded-lg border bg-muted/30 px-2.5 py-2"
-            >
-              <div className="flex min-w-0 items-center gap-2">
-                <Avatar name={entry.name} imageUrl={entry.avatar_url} size="sm" />
-                <div className="min-w-0">
-                  <span className="block truncate text-sm font-medium">
-                    {entry.name}
-                    {isMe && ' (you)'}
-                  </span>
-                  <span className="block truncate text-xs text-muted-foreground">
-                    #{entry.position} · {sideName(side, 'Unassigned')}
-                  </span>
+    <Card>
+      <CardContent className="p-4">
+        <div className="mb-3 flex items-center gap-2">
+          <Clock className="size-4 text-muted-foreground" />
+          <CardTitle className="text-sm">Waiting list</CardTitle>
+        </div>
+        <div className="space-y-2">
+          {entries.map((entry) => {
+            const side = match.sides.find((s) => s.id === entry.side_id)
+            const isMe = entry.user_id === currentUserId
+            const canRemove = isMe || canManage
+            return (
+              <div
+                key={entry.user_id}
+                className="flex items-center justify-between gap-2 rounded-xl bg-accent/60 px-2.5 py-2"
+              >
+                <div className="flex min-w-0 items-center gap-2">
+                  <Avatar name={entry.name} imageUrl={entry.avatar_url} size="sm" />
+                  <div className="min-w-0">
+                    <span className="block truncate text-sm font-medium">
+                      {entry.name}
+                      {isMe && ' (you)'}
+                    </span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      #{entry.position} · {sideName(side, 'Unassigned')}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex shrink-0 gap-1.5">
+                  {canManage && (
+                    <Button
+                      size="sm"
+                      shape="pill"
+                      disabled={moveIn.isPending}
+                      onClick={() => moveIn.mutate(entry.user_id)}
+                    >
+                      Move in
+                    </Button>
+                  )}
+                  {canRemove && (
+                    <Button
+                      size="sm"
+                      shape="pill"
+                      variant="outline"
+                      disabled={leave.isPending}
+                      onClick={() => leave.mutate(entry.user_id)}
+                    >
+                      {isMe ? 'Leave' : 'Remove'}
+                    </Button>
+                  )}
                 </div>
               </div>
-              <div className="flex shrink-0 gap-1">
-                {canManage && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={moveIn.isPending}
-                    onClick={() => moveIn.mutate(entry.user_id)}
-                  >
-                    Move in
-                  </Button>
-                )}
-                {canRemove && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={leave.isPending}
-                    onClick={() => leave.mutate(entry.user_id)}
-                  >
-                    {isMe ? 'Leave' : 'Remove'}
-                  </Button>
-                )}
-              </div>
-            </div>
-          )
-        })}
-      </div>
-      {moveIn.isError && (
-        <p className="mt-2 text-xs text-destructive">
-          Couldn't move that player in — check there's actually a free spot.
-        </p>
-      )}
-      {leave.isError && (
-        <p className="mt-2 text-xs text-destructive">Something went wrong. Try again.</p>
-      )}
-    </div>
+            )
+          })}
+        </div>
+        {moveIn.isError && (
+          <p className="mt-2 text-xs text-destructive">
+            Couldn't move that player in — check there's actually a free spot.
+          </p>
+        )}
+        {leave.isError && (
+          <p className="mt-2 text-xs text-destructive">Something went wrong. Try again.</p>
+        )}
+      </CardContent>
+    </Card>
   )
 }

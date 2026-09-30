@@ -52,67 +52,89 @@ export function CreateProfileForm({ email, onProfileCreated }: CreateProfileForm
 
   return (
     <div className="w-full max-w-md mx-auto p-6">
-      <div className="text-center mb-6">
-        <h2 className="text-2xl font-bold mb-2">Complete your profile</h2>
-        <p className="text-muted-foreground">
-          Tell us your name so others can recognize you.
-        </p>
+      {/* Wordmark + tagline */}
+      <div className="flex flex-col items-center gap-1.5 mb-9">
+        <span className="font-serif text-4xl font-semibold italic leading-none text-foreground">
+          Agon
+        </span>
+        <span className="text-sm text-muted-foreground">
+          Track every match. Never miss a game.
+        </span>
       </div>
 
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <Label htmlFor="email">Email</Label>
-          <Input
-            id="email"
-            type="email"
-            value={email}
-            disabled
-            className="bg-muted text-muted-foreground"
-          />
+      <div className="space-y-3.5">
+        <div className="text-center">
+          <h2 className="font-display text-xl font-bold text-foreground">
+            Complete your profile
+          </h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Tell us your name so others can recognize you.
+          </p>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <Label htmlFor="first-name">First name</Label>
+        <form onSubmit={handleSubmit} className="space-y-3.5">
+          <div className="space-y-1.5">
+            <Label htmlFor="email" className="pl-0.5 text-[13px] font-bold text-foreground/85">
+              Email
+            </Label>
             <Input
-              id="first-name"
-              type="text"
-              value={firstName}
-              onChange={(e) => setFirstName(e.target.value)}
-              placeholder="First name"
-              required
+              id="email"
+              type="email"
+              value={email}
+              disabled
+              className="h-12 rounded-2xl px-3.5 text-[15px] font-medium bg-muted text-muted-foreground"
             />
           </div>
 
-          <div>
-            <Label htmlFor="last-name">Last name</Label>
-            <Input
-              id="last-name"
-              type="text"
-              value={lastName}
-              onChange={(e) => setLastName(e.target.value)}
-              placeholder="Last name"
-              required
-            />
-          </div>
-        </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="first-name" className="pl-0.5 text-[13px] font-bold text-foreground/85">
+                First name
+              </Label>
+              <Input
+                id="first-name"
+                type="text"
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                placeholder="First name"
+                required
+                className="h-12 rounded-2xl px-3.5 text-[15px] font-medium"
+              />
+            </div>
 
-        {createUser.isError && (
-          <div className="p-4 bg-red-50 border border-red-200 rounded-md">
-            <p className="text-red-800 text-sm">
+            <div className="space-y-1.5">
+              <Label htmlFor="last-name" className="pl-0.5 text-[13px] font-bold text-foreground/85">
+                Last name
+              </Label>
+              <Input
+                id="last-name"
+                type="text"
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                placeholder="Last name"
+                required
+                className="h-12 rounded-2xl px-3.5 text-[15px] font-medium"
+              />
+            </div>
+          </div>
+
+          {createUser.isError && (
+            <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm font-medium text-destructive">
               {createUser.error?.toString() || 'Failed to create profile'}
-            </p>
-          </div>
-        )}
+            </div>
+          )}
 
-        <Button
-          type="submit"
-          disabled={createUser.isPending || !canSubmit}
-          className="w-full"
-        >
-          {createUser.isPending ? 'Creating profile…' : 'Create profile'}
-        </Button>
-      </form>
+          <Button
+            type="submit"
+            disabled={createUser.isPending || !canSubmit}
+            shape="pill"
+            size="lg"
+            className="w-full"
+          >
+            {createUser.isPending ? 'Creating profile…' : 'Create profile'}
+          </Button>
+        </form>
+      </div>
     </div>
   )
 }

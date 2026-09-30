@@ -309,10 +309,11 @@ function MatchDetail({
       : scoreInfo
         ? 'finished'
         : 'scheduled'
-  // Every other sport's redesigned pre-match/RSVP view (`Invite.dc.html`) takes
-  // over the whole page instead of the hero-card summary — football's own
-  // scheduled state already reads fine as the hero card above, so it keeps it.
-  const isScheduledInvite = match.match_type !== 'football' && matchView === 'scheduled'
+  // The redesigned pre-match/RSVP view (`Invite.dc.html`) takes over the whole
+  // page instead of the hero-card summary for every sport, football included
+  // — the hero card's "vs" + "N going" caption is a fallback for the live/
+  // finished states, not a substitute for the full RSVP screen.
+  const isScheduledInvite = matchView === 'scheduled'
   // Football keeps the sides in their stored order (not viewer-first) so each
   // side's kit colour stays the same for everyone looking at the match.
   const [kitSideA, kitSideB] = match.sides
@@ -615,9 +616,7 @@ function MatchDetail({
         />
       ) : (
         <section className="rounded-[20px] border bg-card px-[18px] py-6 text-center text-sm text-muted-foreground">
-          {matchView === 'scheduled'
-            ? 'Goals and fouls will show up here once the match starts.'
-            : 'No goal-by-goal events were recorded for this match.'}
+          No goal-by-goal events were recorded for this match.
         </section>
       )
     ) : footballEventSource ? (
@@ -629,9 +628,7 @@ function MatchDetail({
       />
     ) : (
       <section className="rounded-[20px] border bg-card px-[18px] py-6 text-center text-sm text-muted-foreground">
-        {matchView === 'scheduled'
-          ? 'Goals, cards and subs will show up here once the match kicks off.'
-          : 'No events were recorded for this match.'}
+        No events were recorded for this match.
       </section>
     ))
   const playersView = (layout: PlayersLayout = 'stack') =>
@@ -685,17 +682,7 @@ function MatchDetail({
         <Pencil className="size-5" /> Add result
       </button>
     ) : !isLiveSport ? (
-      matchView === 'scheduled' ? (
-        <button
-          type="button"
-          className={primaryActionClass}
-          onClick={() => downloadMatchIcs(match, { title: match.name, description: `${nameA} vs ${nameB}` })}
-        >
-          <CalendarPlus className="size-5" /> Add to calendar
-        </button>
-      ) : (
-        <KudosButton liked={match.social.i_liked} onToggle={() => toggleLike.mutate(!match.social.i_liked)} />
-      )
+      <KudosButton liked={match.social.i_liked} onToggle={() => toggleLike.mutate(!match.social.i_liked)} />
     ) : canEdit && !cancelled && !isCricket && matchTab === 'timeline' && match.status === 'in_progress' ? (
       <AddEventButton to={liveEntryPath} />
     ) : canEdit && !cancelled && match.status === 'in_progress' ? (
@@ -706,14 +693,6 @@ function MatchDetail({
       <Link to={liveEntryPath} className={primaryActionClass}>
         <Radio className="size-5" /> Start scoring
       </Link>
-    ) : matchView === 'scheduled' ? (
-      <button
-        type="button"
-        className={primaryActionClass}
-        onClick={() => downloadMatchIcs(match, { title: match.name, description: `${nameA} vs ${nameB}` })}
-      >
-        <CalendarPlus className="size-5" /> Add to calendar
-      </button>
     ) : (
       <KudosButton liked={match.social.i_liked} onToggle={() => toggleLike.mutate(!match.social.i_liked)} />
     )
@@ -791,7 +770,7 @@ function MatchDetail({
               </>
             )}
             {!isLiveSport && !singles && (
-              <WhoPlayedCard match={match} title={matchView === 'scheduled' ? "Who's playing" : 'Who played'} />
+              <WhoPlayedCard match={match} title="Who played" />
             )}
             {commentsCard}
           </div>
@@ -872,7 +851,7 @@ function MatchDetail({
           {banners}
           {yourGameCard}
           {statCards}
-          {!singles && <WhoPlayedCard match={match} title={matchView === 'scheduled' ? "Who's playing" : 'Who played'} />}
+          {!singles && <WhoPlayedCard match={match} title="Who played" />}
           {commentsCard}
           {rulesCard}
           {adminFooter}

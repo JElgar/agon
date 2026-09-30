@@ -95,13 +95,11 @@ function OrganizerRow({ organiser }: { organiser: MatchPlayer }) {
  * grid with a progress bar toward the cap, a teams note, who organised it,
  * and either a sticky mobile bottom bar or (at the `xl` desktop breakpoint,
  * alongside the app shell's sidebar) a right-hand action card replacing it.
- * Used for every non-football sport while `match.status === 'scheduled'` —
- * football has its own redesigned scheduled state (`FootballHeroCard`)
- * already. Also carries the admin roster tools (edit roster/invite/join
- * links), the waitlist and comments — none of which the single-viewport
- * mocks show, but this is the only view a scheduled non-football match
- * renders, so they need to live here rather than "below" a summary that
- * doesn't exist for this state.
+ * Used for every sport while `match.status === 'scheduled'`. Also carries
+ * the admin roster tools (edit roster/invite/join links), the waitlist and
+ * comments — none of which the single-viewport mocks show, but this is the
+ * only view a scheduled match renders, so they need to live here rather
+ * than "below" a summary that doesn't exist for this state.
  */
 export function ScheduledMatchInvite({
   match,

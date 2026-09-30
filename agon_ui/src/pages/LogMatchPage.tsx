@@ -488,9 +488,10 @@ export function LogMatchPage() {
           client_id: SIDE_A,
           name: sideAName.trim() || undefined,
           team_id: sideATeam?.id,
-          // Required by the server whenever there's no team_id; rejected
-          // alongside one, so never send it once a team's linked.
-          colour: sideATeam ? undefined : sideAColour,
+          // Required whenever there's no team_id; also allowed (the same
+          // derby exception as name) once a team's linked but shared with
+          // the other side — `sideANameAllowed` already tracks exactly that.
+          colour: sideANameAllowed ? sideAColour : undefined,
           max_players: sideAMaxPlayers.trim() ? Number(sideAMaxPlayers) : undefined,
           team_join_enabled: sideATeam ? sideATeamJoinEnabled : undefined,
         },
@@ -498,7 +499,7 @@ export function LogMatchPage() {
           client_id: SIDE_B,
           name: sideBName.trim() || undefined,
           team_id: sideBTeam?.id,
-          colour: sideBTeam ? undefined : sideBColour,
+          colour: sideBNameAllowed ? sideBColour : undefined,
           max_players: sideBMaxPlayers.trim() ? Number(sideBMaxPlayers) : undefined,
           team_join_enabled: sideBTeam ? sideBTeamJoinEnabled : undefined,
         },

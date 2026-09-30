@@ -7,6 +7,8 @@ import { Avatar } from './Avatar'
 import { TeamPicker } from './TeamPicker'
 import { Combobox, ComboboxContent, ComboboxInput, ComboboxItem, ComboboxList } from '@/components/ui/combobox'
 import { InputGroupAddon } from '@/components/ui/input-group'
+import { SIDE_COLOURS } from '@/lib/sideColours'
+import { cn } from '@/lib/utils'
 
 type UserProfile = components['schemas']['UserProfile']
 type TeamListItem = components['schemas']['TeamListItem']
@@ -57,6 +59,12 @@ export interface PlayerSideEditorProps {
    *  players/a typed name as its identity. */
   team?: TeamListItem | null
   onTeamChange?: (team: TeamListItem | null) => void
+  /** This side's colour, for an ad-hoc side (the create-match API requires
+   *  one whenever there's no `team_id`). Rendered alongside the name field —
+   *  hidden by the same `nameFieldVisible` a linked team hides it behind,
+   *  since a linked team is the colour's source of truth instead. */
+  colour?: string
+  onColourChange?: (hex: string) => void
 }
 
 /** How long to wait after typing stops before hitting `/users/search`. */
@@ -80,6 +88,8 @@ export function PlayerSideEditor({
   nameFieldVisible = true,
   team = null,
   onTeamChange,
+  colour,
+  onColourChange,
 }: PlayerSideEditorProps) {
   const [term, setTerm] = useState('')
   const [debounced, setDebounced] = useState('')
@@ -177,6 +187,28 @@ export function PlayerSideEditor({
           Linked to {team.name} — link the other side to the same team to give
           each a custom name.
         </p>
+      )}
+
+      {onColourChange && nameFieldVisible && (
+        <div className="flex items-center gap-1.5 px-1" role="radiogroup" aria-label={`${title} colour`}>
+          {SIDE_COLOURS.map((c) => (
+            <button
+              key={c.hex}
+              type="button"
+              role="radio"
+              aria-checked={colour === c.hex}
+              aria-label={c.label}
+              onClick={() => onColourChange(c.hex)}
+              className={cn(
+                'size-6 shrink-0 rounded-full border transition-shadow',
+                colour === c.hex
+                  ? 'ring-2 ring-primary ring-offset-1 ring-offset-card'
+                  : 'border-border/60',
+              )}
+              style={{ backgroundColor: c.hex }}
+            />
+          ))}
+        </div>
       )}
 
       <div className="flex flex-col gap-3 rounded-2xl border bg-card p-3.5">

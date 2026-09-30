@@ -591,6 +591,16 @@ pub struct MatchSideRecord {
     pub team_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// This side's own colour (a hex string, e.g. `"#2952D9"`), for an ad-hoc
+    /// side with no `team_id` — a linked team's own colour (once teams have
+    /// one) is the source of truth there instead, so the two are mutually
+    /// exclusive rather than one falling back to the other. Required by the
+    /// create-match API for a side without a team (the client always picks
+    /// one, inferring it from a colour name in the side's own name where
+    /// possible); `#[serde(default)]` covers sides written before this field
+    /// existed, which have neither a colour nor a team either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour: Option<String>,
     /// Cap on this side's roster. `None` = uncapped. When every side of a
     /// match has one set, the match's overall cap is derived as their sum
     /// (see `MatchAggregate::effective_max_players`) rather than stored

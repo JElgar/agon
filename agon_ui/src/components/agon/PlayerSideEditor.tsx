@@ -65,6 +65,10 @@ export interface PlayerSideEditorProps {
    *  since a linked team is the colour's source of truth instead. */
   colour?: string
   onColourChange?: (hex: string) => void
+  /** The other side's colour, if it has one — greyed out and unclickable
+   *  here so the two sides can't end up sharing a colour (the server
+   *  rejects that too). */
+  disabledColour?: string
 }
 
 /** How long to wait after typing stops before hitting `/users/search`. */
@@ -90,6 +94,7 @@ export function PlayerSideEditor({
   onTeamChange,
   colour,
   onColourChange,
+  disabledColour,
 }: PlayerSideEditorProps) {
   const [term, setTerm] = useState('')
   const [debounced, setDebounced] = useState('')
@@ -191,23 +196,30 @@ export function PlayerSideEditor({
 
       {onColourChange && nameFieldVisible && (
         <div className="flex items-center gap-1.5 px-1" role="radiogroup" aria-label={`${title} colour`}>
-          {SIDE_COLOURS.map((c) => (
-            <button
-              key={c.hex}
-              type="button"
-              role="radio"
-              aria-checked={colour === c.hex}
-              aria-label={c.label}
-              onClick={() => onColourChange(c.hex)}
-              className={cn(
-                'size-6 shrink-0 rounded-full border transition-shadow',
-                colour === c.hex
-                  ? 'ring-2 ring-primary ring-offset-1 ring-offset-card'
-                  : 'border-border/60',
-              )}
-              style={{ backgroundColor: c.hex }}
-            />
-          ))}
+          {SIDE_COLOURS.map((c) => {
+            const disabled = disabledColour === c.hex
+            return (
+              <button
+                key={c.hex}
+                type="button"
+                role="radio"
+                aria-checked={colour === c.hex}
+                aria-label={c.label}
+                disabled={disabled}
+                title={disabled ? 'Already used by the other side' : undefined}
+                onClick={() => onColourChange(c.hex)}
+                className={cn(
+                  'size-6 shrink-0 rounded-full border transition-shadow',
+                  disabled
+                    ? 'cursor-not-allowed opacity-25'
+                    : colour === c.hex
+                      ? 'ring-2 ring-primary ring-offset-1 ring-offset-card'
+                      : 'border-border/60',
+                )}
+                style={{ backgroundColor: c.hex }}
+              />
+            )
+          })}
         </div>
       )}
 

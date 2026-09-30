@@ -3071,6 +3071,23 @@ impl Api {
             }
         }
 
+        // Two sides with the same colour would render indistinguishably on
+        // whatever shows it (e.g. `SideMarker`'s dot) — the whole point of
+        // picking one.
+        {
+            let mut seen_colours: Vec<&str> = Vec::new();
+            for side in &input.sides {
+                if let Some(c) = side.colour.as_deref() {
+                    if seen_colours.contains(&c) {
+                        return Ok(CreateMatchResponse::ValidationError(PlainText(
+                            "two sides can't have the same colour".to_string(),
+                        )));
+                    }
+                    seen_colours.push(c);
+                }
+            }
+        }
+
         // A supplied format must be for this match's own sport — a football
         // match can't carry cricket's overs-per-innings setting, say.
         if let Some(fmt) = &input.format {
@@ -3614,6 +3631,27 @@ impl Api {
                     }
                     _ => {}
                 }
+            }
+
+            // Two sides can't end up sharing a colour — project each side's
+            // resulting colour (this request's update, if any, else its
+            // current one) and check the same way `create_match` does.
+            let mut final_colours: std::collections::HashMap<&str, Option<&str>> = agg
+                .sides
+                .iter()
+                .map(|s| (s.side_id.as_str(), s.colour.as_deref()))
+                .collect();
+            for update in colours {
+                final_colours.insert(update.side_id.as_str(), update.colour.as_deref());
+            }
+            let mut seen_colours: Vec<&str> = Vec::new();
+            for c in final_colours.values().flatten() {
+                if seen_colours.contains(c) {
+                    return Ok(UpdateMatchResponse::ValidationError(PlainText(
+                        "two sides can't have the same colour".to_string(),
+                    )));
+                }
+                seen_colours.push(c);
             }
         }
 

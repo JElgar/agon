@@ -9,15 +9,19 @@ import { DateTimePicker } from '@/components/ui/date-time-picker'
 import { isoToDateTimeLocal } from '@/lib/datetime'
 import { MultiImageUploadField } from '@/components/agon/MultiImageUploadField'
 import { LocationField, type LocationValue } from '@/components/agon/LocationField'
+import { SIDE_COLOURS, defaultSideColour } from '@/lib/sideColours'
+import { cn } from '@/lib/utils'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
 type UpdateMatchSideNameInput = components['schemas']['UpdateMatchSideNameInput']
+type UpdateMatchSideColourInput = components['schemas']['UpdateMatchSideColourInput']
 
-/** Whether a side can be given its own custom name: an ad-hoc side (no team)
- *  always can; a team-linked side only when another side shares that same
- *  team (otherwise the team's own name is the source of truth) — mirrors the
- *  server's create/update validation. */
+/** Whether a side can be given its own custom name/colour: an ad-hoc side (no
+ *  team) always can; a team-linked side only when another side shares that
+ *  same team (otherwise the team's own identity is the source of truth) —
+ *  mirrors the server's create/update validation for both `name` and
+ *  `colour`. */
 function isRenameable(side: MatchSide, sides: MatchSide[]): boolean {
   if (!side.team_id) return true
   return sides.some((other) => other.id !== side.id && other.team_id === side.team_id)
@@ -73,6 +77,21 @@ export function MatchDetailsEditor({
     Object.fromEntries(match.sides.map((s) => [s.id, s.name ?? ''])),
   )
 
+  // Seeded from each side's current colour. A renameable ad-hoc side (no
+  // team) that has none yet — only possible for a match created before this
+  // field existed — is seeded with a real default rather than left blank,
+  // since the server requires one for a team-less side; a renameable derby
+  // side (team shared with another side) is left unset if it has none,
+  // since a colour there is optional.
+  const [sideColours, setSideColours] = useState<Record<string, string | undefined>>(
+    Object.fromEntries(
+      match.sides.map((s) => [
+        s.id,
+        s.colour ?? (isRenameable(s, match.sides) && !s.team_id ? defaultSideColour() : undefined),
+      ]),
+    ),
+  )
+
   const nameError = name.trim().length === 0 ? 'A match needs a name' : null
   const timeError = Number.isNaN(new Date(startsAt).getTime())
     ? 'Pick a valid date and time'
@@ -107,6 +126,18 @@ export function MatchDetailsEditor({
         sideNameUpdates.push(next ? { side_id: side.id, name: next } : { side_id: side.id })
       }
       if (sideNameUpdates.length > 0) body.side_names = sideNameUpdates
+
+      const sideColourUpdates: UpdateMatchSideColourInput[] = []
+      for (const side of match.sides) {
+        if (!isRenameable(side, match.sides)) continue
+        const original = side.colour ?? undefined
+        const next = sideColours[side.id]
+        if (next === original) continue
+        // Omitting `colour` clears it (only valid for a derby side — a
+        // team-less one is never left unset, see the picker below).
+        sideColourUpdates.push(next ? { side_id: side.id, colour: next } : { side_id: side.id })
+      }
+      if (sideColourUpdates.length > 0) body.side_colours = sideColourUpdates
 
       if (Object.keys(body).length === 0) return // nothing changed
 
@@ -184,16 +215,22 @@ export function MatchDetailsEditor({
         />
       </div>
 
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-3">
         {match.sides.map((side, i) => {
           const renameable = isRenameable(side, match.sides)
+          // A derby side (team shared with another side) can clear its
+          // colour back to unset; a team-less side can't — the server
+          // always requires one there.
+          const canClearColour = renameable && !!side.team_id
+          const label =
+            i === 0 ? 'Side A' : i === 1 ? 'Side B' : `Side ${i + 1}`
           return (
             <div key={side.id}>
               <Label
                 htmlFor={`side-name-${side.id}`}
                 className="text-xs text-muted-foreground"
               >
-                {i === 0 ? 'Side A name' : i === 1 ? 'Side B name' : `Side ${i + 1} name`}
+                {label} name
               </Label>
               <Input
                 id={`side-name-${side.id}`}
@@ -209,6 +246,40 @@ export function MatchDetailsEditor({
                 <p className="mt-1 text-xs text-muted-foreground">
                   Linked to a team — rename the team instead.
                 </p>
+              )}
+              {renameable && (
+                <div className="mt-2">
+                  <Label className="text-xs text-muted-foreground">{label} colour</Label>
+                  <div
+                    className="mt-1 flex items-center gap-1.5"
+                    role="radiogroup"
+                    aria-label={`${label} colour`}
+                  >
+                    {SIDE_COLOURS.map((c) => (
+                      <button
+                        key={c.hex}
+                        type="button"
+                        role="radio"
+                        aria-checked={sideColours[side.id] === c.hex}
+                        aria-label={c.label}
+                        onClick={() =>
+                          setSideColours((prev) => ({
+                            ...prev,
+                            [side.id]:
+                              canClearColour && prev[side.id] === c.hex ? undefined : c.hex,
+                          }))
+                        }
+                        className={cn(
+                          'size-6 shrink-0 rounded-full border transition-shadow',
+                          sideColours[side.id] === c.hex
+                            ? 'ring-2 ring-primary ring-offset-1 ring-offset-card'
+                            : 'border-border/60',
+                        )}
+                        style={{ backgroundColor: c.hex }}
+                      />
+                    ))}
+                  </div>
+                </div>
               )}
             </div>
           )

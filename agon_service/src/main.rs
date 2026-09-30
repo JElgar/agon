@@ -978,6 +978,18 @@ struct UpdateMatchSideNameInput {
     name: Option<String>,
 }
 
+/// Set an existing side's colour. `colour: None` clears it, which is only
+/// valid when the side has a `team_id` (the create/update validation
+/// otherwise requires a team-less side to always have one) — the same
+/// derby exception as `UpdateMatchSideNameInput`/create-time validation
+/// applies: `colour: Some(_)` alongside a `team_id` is only allowed when
+/// another side shares that team.
+#[derive(Object)]
+struct UpdateMatchSideColourInput {
+    side_id: String,
+    colour: Option<String>,
+}
+
 /// A side to create as part of a new match. The server assigns the real side id;
 /// `client_id` lets the request reference this side from `invites` and `score`.
 #[derive(Object)]
@@ -1099,6 +1111,10 @@ struct UpdateMatchInput {
     /// creation (or a previous edit here). Only the sides listed are
     /// touched; every other side's name is left alone.
     side_names: Option<Vec<UpdateMatchSideNameInput>>,
+    /// Recolour one or more of the match's sides — the colour given at
+    /// creation (or a previous edit here). Only the sides listed are
+    /// touched; every other side's colour is left alone.
+    side_colours: Option<Vec<UpdateMatchSideColourInput>>,
     /// The result. Creates a score submission when changed; for a not-yet-played
     /// match this also completes it. `side_id`s reference the match's sides.
     /// Required to complete a match — there is no server-side fallback if
@@ -3561,6 +3577,46 @@ impl Api {
             }
         }
 
+        // Recolouring a side: every referenced side must exist. Setting a
+        // colour alongside a team mirrors the rename rule above (only
+        // allowed when another side shares that team); clearing a colour
+        // (`colour: None`) is only valid when the side already has a team to
+        // fall back on — mirrors `create_match`'s "needs a colour when it
+        // has no team" rule, since clearing on a team-less side would leave
+        // it without one.
+        if let Some(colours) = &input.side_colours {
+            for update in colours {
+                let Some(side) = agg.sides.iter().find(|s| s.side_id == update.side_id) else {
+                    return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                        "side `{}` is not part of this match",
+                        update.side_id
+                    ))));
+                };
+                match (&side.team_id, &update.colour) {
+                    (Some(team_id), Some(_)) => {
+                        let team_shared = agg.sides.iter().any(|other| {
+                            other.side_id != side.side_id
+                                && other.team_id.as_deref() == Some(team_id.as_str())
+                        });
+                        if !team_shared {
+                            return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                                "side `{}` can't have both a colour and a team unless another \
+                                 side shares that team",
+                                update.side_id
+                            ))));
+                        }
+                    }
+                    (None, None) => {
+                        return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                            "side `{}` needs a colour when it has no team",
+                            update.side_id
+                        ))));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // A side with no players (after this request's roster edits, if any)
         // needs a team or an explicit name to remain identifiable — same rule
         // `create_match` enforces up front. Only worth projecting when this
@@ -3822,7 +3878,14 @@ impl Api {
             .map(|r| (r.side_id.clone(), r.name.clone()))
             .collect();
 
-        // Apply metadata + resolved score + side renames in one update.
+        let side_colour_updates: Vec<(String, Option<String>)> = input
+            .side_colours
+            .iter()
+            .flatten()
+            .map(|r| (r.side_id.clone(), r.colour.clone()))
+            .collect();
+
+        // Apply metadata + resolved score + side renames/recolours in one update.
         dao.update_match_meta(
             &match_id,
             input.name.as_deref(),
@@ -3838,6 +3901,7 @@ impl Api {
             input.format.as_ref().map(match_format_to_record),
             input.location.as_ref().map(location_to_record),
             &side_name_updates,
+            &side_colour_updates,
         )
         .await
         .map_err(|e| match e {
@@ -4240,6 +4304,7 @@ impl Api {
                 None,
                 None,
                 None,
+                &[],
                 &[],
             )
             .await
@@ -4754,6 +4819,7 @@ impl Api {
                     None,
                     None,
                     &[],
+                    &[],
                 )
                 .await
                 .map_err(dao_internal)?;
@@ -4811,6 +4877,7 @@ impl Api {
                         None,
                         None,
                         None,
+                        &[],
                         &[],
                     )
                     .await
@@ -5778,6 +5845,7 @@ impl Api {
                 None,
                 None,
                 None,
+                &[],
                 &[],
             )
             .await

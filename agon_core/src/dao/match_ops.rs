@@ -477,6 +477,12 @@ impl Dao {
     /// `(side_id, None)` removes it, falling back at read time to the
     /// priority chain `Api::resolve_side_names` implements (sole player, then
     /// team, then a neutral default). An empty slice touches no sides.
+    ///
+    /// `side_colours` is the same shape and same atomicity, for `colour`
+    /// instead of `name`: `(side_id, Some(colour))` sets it, `(side_id,
+    /// None)` removes it (only valid when the caller has already checked the
+    /// side has a team to fall back on — see `UpdateMatchSideColourInput`'s
+    /// doc comment).
     #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(skip(self))]
     pub async fn update_match_meta(
@@ -500,6 +506,7 @@ impl Dao {
         // overwrites. No "clear" case yet, same as `format` above.
         location: Option<LocationRecord>,
         side_names: &[(String, Option<String>)],
+        side_colours: &[(String, Option<String>)],
     ) -> DaoResult<()> {
         let mut set: Vec<String> = Vec::new();
         let mut remove: Vec<String> = Vec::new();
@@ -586,6 +593,26 @@ impl Dao {
                     }
                     None => {
                         remove.push(format!("sides.{side_alias}.#name"));
+                    }
+                }
+            }
+        }
+        if !side_colours.is_empty() {
+            names.insert("#colour".into(), "colour".into());
+            for (i, (side_id, side_colour)) in side_colours.iter().enumerate() {
+                // A distinct alias prefix ("#c{i}") from side_names' "#s{i}"
+                // above, so a request updating both a side's name and its
+                // colour doesn't collide on the same side id's alias.
+                let side_alias = format!("#c{i}");
+                names.insert(side_alias.clone(), side_id.clone());
+                match side_colour {
+                    Some(c) => {
+                        let value_alias = format!(":c{i}");
+                        set.push(format!("sides.{side_alias}.#colour = {value_alias}"));
+                        values.insert(value_alias, s(c));
+                    }
+                    None => {
+                        remove.push(format!("sides.{side_alias}.#colour"));
                     }
                 }
             }

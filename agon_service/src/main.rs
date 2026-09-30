@@ -733,6 +733,16 @@ pub enum MatchStatus {
     Cancelled,
 }
 
+/// Sort direction for `GET /matches`'s `starts_at` ordering.
+#[derive(Enum)]
+#[oai(rename_all = "snake_case")]
+pub enum SortOrder {
+    /// Soonest/oldest first.
+    Asc,
+    /// Latest first. The default.
+    Desc,
+}
+
 /// Where a match is played. `text` is always present and is what's shown to
 /// users — free-typed, or (once a Places suggestion is picked) that place's
 /// formatted address. `latitude`/`longitude`/`place_id` are only ever set
@@ -2833,10 +2843,17 @@ impl Api {
         Query(team_match): Query<Option<TeamMatchMode>>,
         /// Only matches of this sport.
         Query(match_type): Query<Option<MatchType>>,
+        /// Only matches in this lifecycle state (e.g. `scheduled`) — powers the
+        /// "all scheduled matches" browse view.
+        Query(status): Query<Option<MatchStatus>>,
         /// Only matches at or after this time (inclusive).
         Query(from): Query<Option<chrono::DateTime<chrono::Utc>>>,
         /// Only matches at or before this time (inclusive).
         Query(to): Query<Option<chrono::DateTime<chrono::Utc>>>,
+        /// Sort order on `starts_at`: `desc` (default, newest first — the
+        /// existing behavior) or `asc` (soonest first, for browsing upcoming
+        /// matches).
+        Query(sort): Query<Option<SortOrder>>,
         /// Opaque cursor from the previous page's `next_cursor`.
         Query(cursor): Query<Option<String>>,
         /// Maximum number of items to return (defaults to 20, capped at 50).
@@ -2882,6 +2899,9 @@ impl Api {
         if let Some(mt) = &match_type {
             clauses.push(format!("sport = \"{}\"", match_type_tag(mt)));
         }
+        if let Some(s) = &status {
+            clauses.push(format!("status = \"{}\"", match_status_str(s)));
+        }
         if let Some(p) = &participant {
             clauses.push(format!("participant_ids = \"{p}\""));
         }
@@ -2913,10 +2933,14 @@ impl Api {
         }
         let filter = (!clauses.is_empty()).then(|| clauses.join(" AND "));
 
+        let sort_dir = match sort {
+            Some(SortOrder::Asc) => "asc",
+            Some(SortOrder::Desc) | None => "desc",
+        };
         let q = agon_core::search::SearchQuery {
             q: query.unwrap_or_default(),
             filter,
-            sort: vec!["starts_at_ts:desc".to_string()],
+            sort: vec![format!("starts_at_ts:{sort_dir}")],
             offset,
             limit: page_limit(limit),
         };

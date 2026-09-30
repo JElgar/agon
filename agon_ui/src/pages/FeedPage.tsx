@@ -95,9 +95,13 @@ export function FeedPage() {
 
   // Scheduled matches the viewer is playing in or following, soonest first —
   // a horizontal strip above the day-grouped activity below. Naturally empty
-  // (and hidden) until the feed query resolves, same as `banner` above.
+  // (and hidden) until the feed query resolves, same as `banner` above. A
+  // match stays `scheduled` even once its kickoff has passed (until someone
+  // scores or cancels it), so this strip would otherwise fill up with stale
+  // games nobody ever played — drop anything more than 24h past `starts_at`.
+  const upcomingCutoff = Date.now() - 24 * 60 * 60 * 1000
   const upcoming = [...serverItems]
-    .filter((m) => m.status === 'scheduled')
+    .filter((m) => m.status === 'scheduled' && new Date(m.starts_at).getTime() >= upcomingCutoff)
     .sort((a, b) => new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime())
 
   const comingUp = upcoming.length > 0 && (
@@ -109,6 +113,14 @@ export function FeedPage() {
             {upcoming.length}
           </span>
         </h2>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-auto p-0 text-sm font-semibold text-primary hover:bg-transparent"
+          onClick={() => navigate('/matches/scheduled')}
+        >
+          See all
+        </Button>
       </div>
       {/* A horizontal snap-scroll strip below `xl`; a plain vertical stack
           in the desktop sidebar, where there's no room to scroll sideways

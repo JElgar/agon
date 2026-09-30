@@ -38,9 +38,9 @@ export function nameFromColour(hex: string): string | undefined {
 
 /** A sensible default colour for a freshly created ad-hoc side, so the
  *  create-match API's now-required `colour` is satisfied even before the
- *  user has touched the picker. `other` (the sibling side's current colour,
- *  if it's also colour-picked) is avoided so the two sides don't default to
- *  the same colour. */
-export function defaultSideColour(other?: string): string {
-  return SIDE_COLOURS.find((c) => c.hex !== other)?.hex ?? SIDE_COLOURS[0].hex
+ *  user has touched the picker. Any `taken` colours (other sides already
+ *  assigned one, if colour-picked) are avoided, so sides don't default to
+ *  the same colour as each other — the server rejects that anyway. */
+export function defaultSideColour(...taken: (string | undefined)[]): string {
+  return SIDE_COLOURS.find((c) => !taken.includes(c.hex))?.hex ?? SIDE_COLOURS[0].hex
 }

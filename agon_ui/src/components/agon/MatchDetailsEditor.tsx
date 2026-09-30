@@ -82,15 +82,19 @@ export function MatchDetailsEditor({
   // field existed — is seeded with a real default rather than left blank,
   // since the server requires one for a team-less side; a renameable derby
   // side (team shared with another side) is left unset if it has none,
-  // since a colour there is optional.
-  const [sideColours, setSideColours] = useState<Record<string, string | undefined>>(
-    Object.fromEntries(
-      match.sides.map((s) => [
-        s.id,
-        s.colour ?? (isRenameable(s, match.sides) && !s.team_id ? defaultSideColour() : undefined),
-      ]),
-    ),
-  )
+  // since a colour there is optional. Defaults are picked one side at a
+  // time so two sides both missing a colour don't default to the same one.
+  const [sideColours, setSideColours] = useState<Record<string, string | undefined>>(() => {
+    const seeded: Record<string, string | undefined> = {}
+    for (const s of match.sides) {
+      seeded[s.id] =
+        s.colour ??
+        (isRenameable(s, match.sides) && !s.team_id
+          ? defaultSideColour(...Object.values(seeded))
+          : undefined)
+    }
+    return seeded
+  })
 
   const nameError = name.trim().length === 0 ? 'A match needs a name' : null
   const timeError = Number.isNaN(new Date(startsAt).getTime())
@@ -255,29 +259,40 @@ export function MatchDetailsEditor({
                     role="radiogroup"
                     aria-label={`${label} colour`}
                   >
-                    {SIDE_COLOURS.map((c) => (
-                      <button
-                        key={c.hex}
-                        type="button"
-                        role="radio"
-                        aria-checked={sideColours[side.id] === c.hex}
-                        aria-label={c.label}
-                        onClick={() =>
-                          setSideColours((prev) => ({
-                            ...prev,
-                            [side.id]:
-                              canClearColour && prev[side.id] === c.hex ? undefined : c.hex,
-                          }))
-                        }
-                        className={cn(
-                          'size-6 shrink-0 rounded-full border transition-shadow',
-                          sideColours[side.id] === c.hex
-                            ? 'ring-2 ring-primary ring-offset-1 ring-offset-card'
-                            : 'border-border/60',
-                        )}
-                        style={{ backgroundColor: c.hex }}
-                      />
-                    ))}
+                    {SIDE_COLOURS.map((c) => {
+                      // Greyed out when another side already has this colour
+                      // — the server rejects two sides sharing one.
+                      const disabled = match.sides.some(
+                        (other) => other.id !== side.id && sideColours[other.id] === c.hex,
+                      )
+                      return (
+                        <button
+                          key={c.hex}
+                          type="button"
+                          role="radio"
+                          aria-checked={sideColours[side.id] === c.hex}
+                          aria-label={c.label}
+                          disabled={disabled}
+                          title={disabled ? 'Already used by another side' : undefined}
+                          onClick={() =>
+                            setSideColours((prev) => ({
+                              ...prev,
+                              [side.id]:
+                                canClearColour && prev[side.id] === c.hex ? undefined : c.hex,
+                            }))
+                          }
+                          className={cn(
+                            'size-6 shrink-0 rounded-full border transition-shadow',
+                            disabled
+                              ? 'cursor-not-allowed opacity-25'
+                              : sideColours[side.id] === c.hex
+                                ? 'ring-2 ring-primary ring-offset-1 ring-offset-card'
+                                : 'border-border/60',
+                          )}
+                          style={{ backgroundColor: c.hex }}
+                        />
+                      )
+                    })}
                   </div>
                 </div>
               )}

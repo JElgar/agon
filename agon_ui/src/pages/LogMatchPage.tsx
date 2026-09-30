@@ -164,7 +164,10 @@ export function LogMatchPage() {
     setSideANameTouched(true)
     if (!sideAColourTouched) {
       const inferred = colourFromName(v)
-      if (inferred) setSideAColourRaw(inferred)
+      // Skip a would-be duplicate of the other side's colour — same rule
+      // the swatch picker enforces by greying it out, just reached here via
+      // typing a colour word into the name instead of clicking a swatch.
+      if (inferred && inferred !== sideBColour) setSideAColourRaw(inferred)
     }
   }
   const setSideBName = (v: string) => {
@@ -172,7 +175,7 @@ export function LogMatchPage() {
     setSideBNameTouched(true)
     if (!sideBColourTouched) {
       const inferred = colourFromName(v)
-      if (inferred) setSideBColourRaw(inferred)
+      if (inferred && inferred !== sideAColour) setSideBColourRaw(inferred)
     }
   }
   const setSideAColour = (hex: string) => {
@@ -591,6 +594,7 @@ export function LogMatchPage() {
             nameFieldVisible={sideANameAllowed}
             colour={sideAColour}
             onColourChange={setSideAColour}
+            disabledColour={sideBNameAllowed ? sideBColour : undefined}
             team={sideATeam}
             onTeamChange={(team) => {
               setSideATeam(team)
@@ -618,6 +622,7 @@ export function LogMatchPage() {
             nameFieldVisible={sideBNameAllowed}
             colour={sideBColour}
             onColourChange={setSideBColour}
+            disabledColour={sideANameAllowed ? sideAColour : undefined}
             team={sideBTeam}
             onTeamChange={(team) => {
               setSideBTeam(team)

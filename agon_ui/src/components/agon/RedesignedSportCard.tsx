@@ -756,6 +756,7 @@ export function CricketFeedCardBody({
   startsAt: string
   onOpen?: () => void
 }) {
+  const isScheduled = match.status === 'scheduled'
   const format = cricketFormat(match.format)
   const activeScore = liveState ?? finishedScore
   const innings = (sideId: string | undefined) =>
@@ -798,24 +799,30 @@ export function CricketFeedCardBody({
         <span
           className={cn(
             'flex min-w-0 flex-1 items-center gap-2 truncate text-[17px]',
-            headline ? 'font-bold' : 'font-medium text-muted-foreground',
+            isScheduled || headline ? 'font-bold' : 'font-medium text-muted-foreground',
           )}
         >
           <SideNameWithHint name={name} hint={sideTeamHint(side)} />
-          {!isLive && winner && <WinnerCheck />}
+          {!isLive && !isScheduled && winner && <WinnerCheck />}
           {batting && <span className="size-2 shrink-0 rounded-[3px] bg-destructive" aria-label="Batting" />}
         </span>
-        {inn && (
-          <span className="shrink-0 text-[13px] text-muted-foreground">{formatOvers(inn.overs)} ov</span>
+        {isScheduled ? (
+          <span className="shrink-0 text-xs text-muted-foreground">{sidePlayerCountLabel(side)}</span>
+        ) : (
+          <>
+            {inn && (
+              <span className="shrink-0 text-[13px] text-muted-foreground">{formatOvers(inn.overs)} ov</span>
+            )}
+            <span
+              className={cn(
+                'font-display leading-none',
+                headline ? 'text-4xl font-extrabold' : 'text-2xl font-bold text-muted-foreground',
+              )}
+            >
+              {inn ? `${inn.runs}/${inn.wickets}` : 'Yet to bat'}
+            </span>
+          </>
         )}
-        <span
-          className={cn(
-            'font-display leading-none',
-            headline ? 'text-4xl font-extrabold' : 'text-2xl font-bold text-muted-foreground',
-          )}
-        >
-          {inn ? `${inn.runs}/${inn.wickets}` : 'Yet to bat'}
-        </span>
       </div>
     )
   }
@@ -826,7 +833,13 @@ export function CricketFeedCardBody({
         badge={<SportIconBadge sport="cricket" />}
         title={match.name}
         subtitle={subtitle}
-        live={isLive ? <LivePill>LIVE</LivePill> : undefined}
+        live={
+          isLive ? (
+            <LivePill>LIVE</LivePill>
+          ) : isScheduled ? (
+            <ScheduledPill startsAt={startsAt} />
+          ) : undefined
+        }
         onOpen={onOpen}
       />
 
@@ -839,6 +852,8 @@ export function CricketFeedCardBody({
           {row(sideA, nameA, aHeadline, aBatting, !!aWon)}
           {row(sideB, nameB, bHeadline, bBatting, !!bWon)}
         </div>
+
+        {isScheduled && <ScheduledInfoRow startsAt={startsAt} locationText={match.location?.text} />}
 
         {isLive && chase && (
           <p className="mt-2.5 text-sm text-foreground/80">
@@ -1190,6 +1205,7 @@ export function TennisFeedCardBody({
   startsAt: string
   onOpen?: () => void
 }) {
+  const isScheduled = match.status === 'scheduled'
   const setsA = score?.entries[sideA?.id ?? ''] ?? []
   const setsB = score?.entries[sideB?.id ?? ''] ?? []
   const setCount = Math.max(setsA.length, setsB.length)
@@ -1250,26 +1266,52 @@ export function TennisFeedCardBody({
         badge={<SportIconBadge sport={sport} />}
         title={match.name}
         subtitle={subtitle}
-        live={isLive ? <LivePill>LIVE</LivePill> : undefined}
+        live={
+          isLive ? (
+            <LivePill>LIVE</LivePill>
+          ) : isScheduled ? (
+            <ScheduledPill startsAt={startsAt} />
+          ) : undefined
+        }
         onOpen={onOpen}
       />
 
       <button type="button" onClick={onOpen} className="block w-full px-3.5 pb-4 text-left">
-        {setCount > 0 && (
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-2 text-[11px] font-bold tracking-wide text-muted-foreground">
-              <span className="min-w-0 flex-1" />
-              {Array.from({ length: setCount }).map((_, i) => (
-                <span key={i} className="w-7 shrink-0 text-center">{`S${i + 1}`}</span>
-              ))}
-              {isLive && <span className="w-9 shrink-0 text-center text-primary">PTS</span>}
+        {isScheduled ? (
+          <div className="flex flex-col gap-2.5">
+            <div className="flex items-center gap-2">
+              {sideA?.roster_preview?.length === 1 && (
+                <Avatar name={nameA} imageUrl={sideA.roster_preview[0].avatar_url} size="sm" />
+              )}
+              <span className="min-w-0 flex-1 truncate text-lg font-bold">{nameA}</span>
             </div>
-            {scoreRow(sideA, nameA, setsA, !!aWon, 'a')}
-            {scoreRow(sideB, nameB, setsB, !!bWon, 'b')}
+            <div className="pl-9 text-xs font-bold tracking-wide text-muted-foreground">VS</div>
+            <div className="flex items-center gap-2">
+              {sideB?.roster_preview?.length === 1 && (
+                <Avatar name={nameB} imageUrl={sideB.roster_preview[0].avatar_url} size="sm" />
+              )}
+              <span className="min-w-0 flex-1 truncate text-lg font-bold">{nameB}</span>
+            </div>
           </div>
+        ) : (
+          setCount > 0 && (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-2 text-[11px] font-bold tracking-wide text-muted-foreground">
+                <span className="min-w-0 flex-1" />
+                {Array.from({ length: setCount }).map((_, i) => (
+                  <span key={i} className="w-7 shrink-0 text-center">{`S${i + 1}`}</span>
+                ))}
+                {isLive && <span className="w-9 shrink-0 text-center text-primary">PTS</span>}
+              </div>
+              {scoreRow(sideA, nameA, setsA, !!aWon, 'a')}
+              {scoreRow(sideB, nameB, setsB, !!bWon, 'b')}
+            </div>
+          )
         )}
 
-        {!isLive && winnerName && setCount > 0 && (
+        {isScheduled && <ScheduledInfoRow startsAt={startsAt} locationText={match.location?.text} />}
+
+        {!isLive && !isScheduled && winnerName && setCount > 0 && (
           <div className="mt-3 flex items-center gap-2.5">
             <div className="flex">
               <Avatar name={nameA} size="sm" className="border-2 border-card" />
@@ -1334,6 +1376,7 @@ export function SquashFeedCardBody({
   startsAt: string
   onOpen?: () => void
 }) {
+  const isScheduled = match.status === 'scheduled'
   const setsA = score?.entries[sideA?.id ?? ''] ?? []
   const setsB = score?.entries[sideB?.id ?? ''] ?? []
   const gameCount = Math.max(setsA.length, setsB.length)
@@ -1395,17 +1438,38 @@ export function SquashFeedCardBody({
         badge={<SportIconBadge sport={sport} />}
         title={match.name}
         subtitle={subtitle}
+        live={isScheduled ? <ScheduledPill startsAt={startsAt} /> : undefined}
         onOpen={onOpen}
       />
 
       <button type="button" onClick={onOpen} className="block w-full px-3.5 pb-4 text-left">
-        {gameCount > 0 && (
-          <div className="flex flex-col gap-3.5">
-            {gameRow(sideA, nameA, setsA, !!aWon, 'a')}
-            <div className="h-px bg-border" />
-            {gameRow(sideB, nameB, setsB, !!bWon, 'b')}
+        {isScheduled ? (
+          <div className="flex flex-col gap-2.5">
+            <div className="flex items-center gap-2">
+              {sideA?.roster_preview?.length === 1 && (
+                <Avatar name={nameA} imageUrl={sideA.roster_preview[0].avatar_url} size="sm" />
+              )}
+              <span className="min-w-0 flex-1 truncate text-lg font-bold">{nameA}</span>
+            </div>
+            <div className="pl-9 text-xs font-bold tracking-wide text-muted-foreground">VS</div>
+            <div className="flex items-center gap-2">
+              {sideB?.roster_preview?.length === 1 && (
+                <Avatar name={nameB} imageUrl={sideB.roster_preview[0].avatar_url} size="sm" />
+              )}
+              <span className="min-w-0 flex-1 truncate text-lg font-bold">{nameB}</span>
+            </div>
           </div>
+        ) : (
+          gameCount > 0 && (
+            <div className="flex flex-col gap-3.5">
+              {gameRow(sideA, nameA, setsA, !!aWon, 'a')}
+              <div className="h-px bg-border" />
+              {gameRow(sideB, nameB, setsB, !!bWon, 'b')}
+            </div>
+          )
         )}
+
+        {isScheduled && <ScheduledInfoRow startsAt={startsAt} locationText={match.location?.text} />}
       </button>
     </>
   )

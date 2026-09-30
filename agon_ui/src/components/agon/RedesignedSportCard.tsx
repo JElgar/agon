@@ -1,11 +1,11 @@
-import { Check } from 'lucide-react'
+import { Check, Clock, MapPin } from 'lucide-react'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { Avatar } from './Avatar'
 import { initials, sidePlayerCountLabel, sideTeamHint } from '@/lib/members'
 import type { ScorePlayers } from '@/lib/members'
 import { sportLabel, SPORT_ICON_TINT, type MatchType } from '@/lib/sports'
-import { shortDate } from '@/lib/datetime'
+import { countdownLabel, isStartingSoon, shortDate, timeOfDay } from '@/lib/datetime'
 import { cricketFormat, cricketFormatLabel, type CricketFormat } from '@/lib/matchFormat'
 import {
   currentMinute,
@@ -64,6 +64,65 @@ function LivePill({ children }: { children: React.ReactNode }) {
       <span className="size-1.5 rounded-full bg-destructive-foreground" />
       {children}
     </span>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled tiles — the "Agon redesign" canvas's "More feed tiles" board
+// (`Tiles.dc.html`): a quiet blue "SCHEDULED" pill normally, switching to an
+// amber "KICKS OFF IN …" countdown pill (same pulsing-dot treatment as
+// `LivePill`, but amber — amber never means "live") inside the hour, plus a
+// matching info row (plain location, or "Kicks off at HH:mm · location" once
+// it's counting down).
+// ---------------------------------------------------------------------------
+
+/** The header's right-side pill for a scheduled match — swaps to the
+ *  starting-soon countdown once `isStartingSoon(startsAt)`. */
+function ScheduledPill({ startsAt }: { startsAt: string }) {
+  if (isStartingSoon(startsAt)) {
+    return (
+      <span className="flex h-6 shrink-0 items-center gap-1.5 rounded-full bg-warning px-2.5 text-[11px] font-bold tracking-wide text-warning-foreground">
+        <span className="size-1.5 rounded-full bg-warning-foreground" />
+        KICKS OFF IN {countdownLabel(startsAt)}
+      </span>
+    )
+  }
+  return (
+    <span className="flex h-6 shrink-0 items-center rounded-full bg-accent px-2.5 text-[11px] font-bold tracking-wide text-accent-foreground">
+      SCHEDULED
+    </span>
+  )
+}
+
+/** The location row under a scheduled match's side rows — a plain location
+ *  line normally, or (starting soon) an amber-tinted "Kicks off at HH:mm ·
+ *  location" line that restates the countdown's headline fact. Renders
+ *  nothing when there's neither a location nor a soon-enough kickoff to call
+ *  out. */
+function ScheduledInfoRow({
+  startsAt,
+  locationText,
+}: {
+  startsAt: string
+  locationText?: string
+}) {
+  if (isStartingSoon(startsAt)) {
+    return (
+      <div className="mt-2.5 flex items-center gap-2 rounded-xl bg-warning/15 px-3 py-2.5 text-sm text-warning-foreground">
+        <Clock className="size-4 shrink-0" />
+        <span className="truncate">
+          Kicks off at {timeOfDay(startsAt)}
+          {locationText && ` · ${locationText}`}
+        </span>
+      </div>
+    )
+  }
+  if (!locationText) return null
+  return (
+    <div className="mt-2.5 flex items-center gap-2 rounded-xl bg-muted/50 px-3 py-2.5 text-sm text-muted-foreground">
+      <MapPin className="size-4 shrink-0" />
+      <span className="truncate">{locationText}</span>
+    </div>
   )
 }
 
@@ -506,7 +565,13 @@ export function FootballFeedCardBody({
         badge={<SportIconBadge sport="football" />}
         title={match.name}
         subtitle={subtitle}
-        live={isLive ? <LivePill>{liveState ? liveClockLabel(liveState) : 'LIVE'}</LivePill> : undefined}
+        live={
+          isLive ? (
+            <LivePill>{liveState ? liveClockLabel(liveState) : 'LIVE'}</LivePill>
+          ) : isScheduled ? (
+            <ScheduledPill startsAt={startsAt} />
+          ) : undefined
+        }
         onOpen={onOpen}
       />
 
@@ -569,9 +634,7 @@ export function FootballFeedCardBody({
           </div>
         </div>
 
-        {isScheduled && match.location?.text && (
-          <p className="mt-2.5 truncate text-[13px] text-muted-foreground">{match.location.text}</p>
-        )}
+        {isScheduled && <ScheduledInfoRow startsAt={startsAt} locationText={match.location?.text} />}
 
         {isLive && progressPct !== null && (
           <div className="mt-3 h-1 overflow-hidden rounded-full bg-muted">
@@ -902,7 +965,13 @@ export function NetballFeedCardBody({
         badge={<SportIconBadge sport="netball" />}
         title={match.name}
         subtitle={subtitle}
-        live={isLive ? <LivePill>{liveState ? netballLiveClockLabel(liveState) : 'LIVE'}</LivePill> : undefined}
+        live={
+          isLive ? (
+            <LivePill>{liveState ? netballLiveClockLabel(liveState) : 'LIVE'}</LivePill>
+          ) : isScheduled ? (
+            <ScheduledPill startsAt={startsAt} />
+          ) : undefined
+        }
         onOpen={onOpen}
       />
 
@@ -965,9 +1034,7 @@ export function NetballFeedCardBody({
           </div>
         </div>
 
-        {isScheduled && match.location?.text && (
-          <p className="mt-2.5 truncate text-[13px] text-muted-foreground">{match.location.text}</p>
-        )}
+        {isScheduled && <ScheduledInfoRow startsAt={startsAt} locationText={match.location?.text} />}
 
         {isLive && progressPct !== null && (
           <div className="mt-3 h-1 overflow-hidden rounded-full bg-muted">

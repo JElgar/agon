@@ -247,6 +247,14 @@
   * {
     @apply border-border outline-ring/50;
   }
+  /* iOS rubber-bands past the end of the scrollable page — without this,
+   * that bounce drags the page content (including our pinned bottom bars)
+   * up past the fixed bottom nav, exposing a gap of the browser's own
+   * canvas underneath for the duration of the bounce. */
+  html {
+    @apply bg-background;
+    overscroll-behavior-y: none;
+  }
   body {
     @apply bg-background text-foreground font-sans;
   }

@@ -1204,7 +1204,7 @@ export function MatchActionBar({
   onShare: () => void
 }) {
   return (
-    <div className="sticky bottom-[72px] z-10 -mx-4 mt-2 flex gap-2.5 border-t bg-card px-4 py-3 md:bottom-0 md:mx-0 md:rounded-2xl md:border">
+    <div className="sticky bottom-[var(--mobile-nav-height,72px)] z-10 -mx-4 mt-2 flex gap-2.5 border-t bg-card px-4 py-3 md:bottom-0 md:mx-0 md:rounded-2xl md:border">
       {primary}
       <button
         type="button"

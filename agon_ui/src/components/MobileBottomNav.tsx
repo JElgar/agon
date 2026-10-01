@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Home, Plus, User } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -9,15 +10,36 @@ import { cn } from '@/lib/utils'
  * (search, notifications, teams, sign out) lives behind the icons in the
  * mobile top bar or on the profile page itself. Hidden at the `md` breakpoint,
  * where the fixed sidebar takes over.
+ *
+ * Publishes its own rendered height (icon/label row plus the safe-area
+ * inset) as `--mobile-nav-height` on the root element, so pinned bars like
+ * `MatchActionBar` can sit flush above it instead of guessing a pixel value
+ * that drifts out of sync whenever this nav's content or the device's safe
+ * area changes.
  */
 export function MobileBottomNav() {
   const location = useLocation()
   const navigate = useNavigate()
+  const navRef = useRef<HTMLElement>(null)
 
   const isActive = (to: string) => location.pathname === to
 
+  useLayoutEffect(() => {
+    const nav = navRef.current
+    if (!nav) return
+    const setHeight = () =>
+      document.documentElement.style.setProperty('--mobile-nav-height', `${nav.getBoundingClientRect().height}px`)
+    setHeight()
+    const observer = new ResizeObserver(setHeight)
+    observer.observe(nav)
+    return () => observer.disconnect()
+  }, [])
+
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-20 border-t bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80 md:hidden">
+    <nav
+      ref={navRef}
+      className="fixed inset-x-0 bottom-0 z-20 border-t bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80 md:hidden"
+    >
       <div
         className="mx-auto flex max-w-xl items-center justify-around px-6"
         style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}

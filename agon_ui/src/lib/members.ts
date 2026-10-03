@@ -330,6 +330,23 @@ export function sideTeamHint(side: MatchSide | undefined): string | undefined {
   return team !== side?.name?.trim() ? team : undefined
 }
 
+/** Whether every side's display name is already a specific person's own name
+ *  rather than a team/side name — true when each side has exactly one player
+ *  on its roster, since the backend's name-resolution priority chain (see
+ *  `MatchSide.name`'s doc comment / `resolve_side_names`) hands a side its
+ *  sole player's name ahead of its team's name whenever there's no explicit
+ *  custom name. Independent of sport: a singles racket match satisfies this
+ *  the same way a genuinely 1-a-side kickabout would, and a doubles racket
+ *  match does not (its sides fall through to a team/generic name, same as
+ *  any other multi-player side) — so callers use this instead of keying off
+ *  `match.match_type` to decide whether a name is already shown. */
+export function sidesShowPlayerNames(
+  sideA: MatchSide | undefined,
+  sideB: MatchSide | undefined,
+): boolean {
+  return sideA?.player_count === 1 && sideB?.player_count === 1
+}
+
 /** "4/10 players" (capped) or "4 players" (uncapped) — how a side's roster is
  *  filling up, shown in place of a score before a scheduled match has a
  *  result to show. `player_count` is always present (unlike `roster_preview`,

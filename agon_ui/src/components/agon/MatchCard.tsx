@@ -50,6 +50,7 @@ import {
   mySideId,
   orderSidesForViewer,
   sidePlayerCountLabel,
+  sidesShowPlayerNames,
   sideTeamHint,
 } from '@/lib/members'
 
@@ -595,8 +596,14 @@ export function MatchCard({
 
       {/* "You follow Sofia, Raj +1" — who among the match's participants the
           viewer follows. Only a feed card's `FeedMatch` carries this (a
-          per-viewer fan-out concept); `Match`/`SearchMatch` don't. */}
-      {'known_participants' in match && (
+          per-viewer fan-out concept); `Match`/`SearchMatch` don't. Skipped
+          when both sides are already showing a sole player's own name as the
+          headline (a singles racket match, or any genuinely 1-a-side game) —
+          this would just repeat it. Keyed off roster size via
+          `sidesShowPlayerNames`, not sport, since e.g. a doubles racket match
+          falls through to a team/generic side name same as any other
+          multi-player side, and still wants this row. */}
+      {'known_participants' in match && !sidesShowPlayerNames(sideA, sideB) && (
         <KnownPlayersRow
           participants={match.known_participants}
           count={match.known_participants_count}

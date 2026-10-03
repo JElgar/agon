@@ -26,7 +26,7 @@ export interface SportPickerProps {
  */
 export function SportPicker({ value, onChange }: SportPickerProps) {
   return (
-    <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+    <div className="flex flex-wrap gap-2">
       {SPORTS.map((sport) => {
         const Icon = sportIcon(sport)
         const selected = value === sport
@@ -37,14 +37,14 @@ export function SportPicker({ value, onChange }: SportPickerProps) {
             aria-pressed={selected}
             onClick={() => onChange(sport)}
             className={cn(
-              'flex flex-col items-center gap-1.5 rounded-lg border bg-muted/40 p-3 transition-colors',
+              'inline-flex h-9 items-center gap-2 rounded-full border px-3.5 text-sm font-semibold transition-colors',
               selected
                 ? 'border-primary bg-accent text-accent-foreground'
-                : 'text-muted-foreground hover:bg-muted',
+                : 'border-input bg-card text-muted-foreground hover:bg-accent/50',
             )}
           >
-            <Icon className={cn('size-6', selected && 'text-primary')} />
-            <span className="text-xs font-medium">{sportLabel(sport)}</span>
+            <Icon className={cn('size-4', selected && 'text-primary')} />
+            {sportLabel(sport)}
           </button>
         )
       })}

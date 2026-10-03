@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { UserPlus, X } from 'lucide-react'
+import { Plus, UserPlus, X } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Avatar } from './Avatar'
 import { TeamPicker } from './TeamPicker'
 import { Combobox, ComboboxContent, ComboboxInput, ComboboxItem, ComboboxList } from '@/components/ui/combobox'
+import { InputGroupAddon } from '@/components/ui/input-group'
+import { SIDE_COLOURS } from '@/lib/sideColours'
+import { cn } from '@/lib/utils'
 
 type UserProfile = components['schemas']['UserProfile']
 type TeamListItem = components['schemas']['TeamListItem']
@@ -56,6 +59,12 @@ export interface PlayerSideEditorProps {
    *  players/a typed name as its identity. */
   team?: TeamListItem | null
   onTeamChange?: (team: TeamListItem | null) => void
+  /** This side's colour, for an ad-hoc side (the create-match API requires
+   *  one whenever there's no `team_id`). Rendered alongside the name field —
+   *  hidden by the same `nameFieldVisible` a linked team hides it behind,
+   *  since a linked team is the colour's source of truth instead. */
+  colour?: string
+  onColourChange?: (hex: string) => void
 }
 
 /** How long to wait after typing stops before hitting `/users/search`. */
@@ -79,6 +88,8 @@ export function PlayerSideEditor({
   nameFieldVisible = true,
   team = null,
   onTeamChange,
+  colour,
+  onColourChange,
 }: PlayerSideEditorProps) {
   const [term, setTerm] = useState('')
   const [debounced, setDebounced] = useState('')
@@ -156,10 +167,8 @@ export function PlayerSideEditor({
   const nothingFound = !isLoading && items.length === 0 && trimmed.length > 0
 
   return (
-    <div className="rounded-lg border bg-muted/40 p-3">
-      <p className="mb-2 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-        {title}
-      </p>
+    <div className="flex flex-col gap-2">
+      <p className="px-1 font-display text-[15px] font-bold">{title}</p>
 
       {onTeamChange && <TeamPicker team={team} onChange={onTeamChange} />}
 
@@ -170,115 +179,147 @@ export function PlayerSideEditor({
           onChange={(e) => onNameChange(e.target.value)}
           placeholder="Name this side (optional)"
           maxLength={60}
-          className="mb-2 w-full rounded-md border bg-card px-2.5 py-1.5 text-sm outline-none placeholder:text-muted-foreground"
+          className="w-full rounded-xl border bg-card px-3 py-2 text-sm outline-none placeholder:text-muted-foreground"
         />
       )}
       {onNameChange && !nameFieldVisible && team && (
-        <p className="mb-2 text-xs text-muted-foreground">
+        <p className="text-xs text-muted-foreground">
           Linked to {team.name} — link the other side to the same team to give
           each a custom name.
         </p>
       )}
 
-      <div className="flex flex-col gap-1.5">
-        {players.length === 0 && (
+      {onColourChange && nameFieldVisible && (
+        <div className="flex items-center gap-1.5 px-1" role="radiogroup" aria-label={`${title} colour`}>
+          {SIDE_COLOURS.map((c) => (
+            <button
+              key={c.hex}
+              type="button"
+              role="radio"
+              aria-checked={colour === c.hex}
+              aria-label={c.label}
+              onClick={() => onColourChange(c.hex)}
+              className={cn(
+                'size-6 shrink-0 rounded-full border transition-shadow',
+                colour === c.hex
+                  ? 'ring-2 ring-primary ring-offset-1 ring-offset-card'
+                  : 'border-border/60',
+              )}
+              style={{ backgroundColor: c.hex }}
+            />
+          ))}
+        </div>
+      )}
+
+      <div className="flex flex-col gap-3 rounded-2xl border bg-card p-3.5">
+        {players.length === 0 ? (
           <p className="px-1 py-1 text-xs text-muted-foreground">
             No players yet.
           </p>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {players.map((p, i) => {
+              const isYou = p.kind === 'user' && p.id === currentUserId
+              return (
+                <div
+                  key={taggedPlayerKey(p)}
+                  className="inline-flex h-10 items-center gap-2 rounded-full bg-secondary py-1 pl-1 pr-3"
+                >
+                  {p.kind === 'user' ? (
+                    <Avatar
+                      name={p.name}
+                      imageUrl={p.imageUrl}
+                      size="md"
+                      ring={isYou ? 'you' : 'none'}
+                    />
+                  ) : (
+                    <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-full border border-dashed border-muted-foreground/50 bg-muted text-[10px] font-medium text-muted-foreground">
+                      {p.name.slice(0, 2).toUpperCase()}
+                    </span>
+                  )}
+                  {/* data-testid: a tagged player's name has no other stable
+                      accessible hook — their "Remove" button is labelled by it,
+                      but that's an action, not the name itself. See
+                      agon_ui/e2e/README.md's locator guidance. */}
+                  <span className="truncate text-sm font-medium" data-testid="tagged-player-name">
+                    {p.name}
+                  </span>
+                  {isYou && (
+                    <span className="text-[10px] font-medium text-primary">(you)</span>
+                  )}
+                  {p.kind === 'external' && (
+                    <span className="text-[10px] text-muted-foreground">Not on Agon</span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => removeAt(i)}
+                    className="text-muted-foreground transition-colors hover:text-foreground"
+                    aria-label={`Remove ${p.name}`}
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                </div>
+              )
+            })}
+          </div>
         )}
 
-        {players.map((p, i) => {
-          const isYou = p.kind === 'user' && p.id === currentUserId
-          return (
-            <div
-              key={taggedPlayerKey(p)}
-              className="flex items-center gap-2 rounded-md bg-card px-2 py-1.5"
-            >
-              {p.kind === 'user' ? (
-                <Avatar
-                  name={p.name}
-                  imageUrl={p.imageUrl}
-                  size="md"
-                  ring={isYou ? 'you' : 'none'}
-                />
-              ) : (
-                <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-full border border-dashed border-muted-foreground/50 bg-muted text-[10px] font-medium text-muted-foreground">
-                  {p.name.slice(0, 2).toUpperCase()}
-                </span>
-              )}
-              {/* data-testid: a tagged player's name has no other stable
-                  accessible hook — their "Remove" button is labelled by it,
-                  but that's an action, not the name itself. See
-                  agon_ui/e2e/README.md's locator guidance. */}
-              <span className="flex-1 truncate text-sm" data-testid="tagged-player-name">{p.name}</span>
-              {isYou && (
-                <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-                  you
-                </span>
-              )}
-              {p.kind === 'external' && (
-                <span className="text-[10px] text-muted-foreground">Not on Agon</span>
-              )}
-              <button
-                type="button"
-                onClick={() => removeAt(i)}
-                className="text-muted-foreground transition-colors hover:text-foreground"
-                aria-label={`Remove ${p.name}`}
-              >
-                <X className="size-4" />
-              </button>
-            </div>
-          )
-        })}
+        {/* Search / add */}
+        <Combobox
+          items={items}
+          filter={null}
+          autoHighlight
+          inputValue={term}
+          onInputValueChange={setTerm}
+          // Without this, selecting an item makes the combobox fill the input
+          // with a stringified dump of the selected `SearchItem` object (no
+          // natural label) right after `onValueChange` below clears it back to
+          // "" — the two land in the same batch and the fill wins, leaving the
+          // box showing `{"kind":"user",...}` and re-querying `/users/search`
+          // for that garbage. We always want it blank post-select (the picked
+          // player becomes a tagged row, not text in the box), so just say so.
+          itemToStringLabel={() => ''}
+          onValueChange={(next) => {
+            const item = next as SearchItem | null
+            if (!item) return
+            if (item.kind === 'user') addUser(item.user)
+            else addExternal(item.name)
+          }}
+        >
+          <ComboboxInput
+            placeholder={searchPlaceholder}
+            showTrigger={false}
+            className="h-11 rounded-2xl border-dashed bg-transparent shadow-none"
+          >
+            <InputGroupAddon align="inline-start" className="text-muted-foreground">
+              <Plus className="size-4" />
+            </InputGroupAddon>
+          </ComboboxInput>
+          <ComboboxContent>
+            {isLoading && <p className="px-3 py-2 text-xs text-muted-foreground">Searching…</p>}
+            {nothingFound && <p className="px-3 py-2 text-xs text-muted-foreground">No matches.</p>}
+            <ComboboxList>
+              {(item: SearchItem) =>
+                item.kind === 'user' ? (
+                  <ComboboxItem key={item.user.id} value={item}>
+                    <Avatar name={item.user.name} imageUrl={item.user.profile_image?.image_url} size="md" />
+                    <span className="flex-1 truncate">{item.user.name}</span>
+                  </ComboboxItem>
+                ) : (
+                  <ComboboxItem key="guest" value={item}>
+                    <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                      <UserPlus className="size-3.5" />
+                    </span>
+                    <span className="flex-1 truncate">
+                      Add "<span className="font-medium">{item.name}</span>" as guest
+                    </span>
+                  </ComboboxItem>
+                )
+              }
+            </ComboboxList>
+          </ComboboxContent>
+        </Combobox>
       </div>
-
-      {/* Search / add */}
-      <Combobox
-        items={items}
-        filter={null}
-        autoHighlight
-        inputValue={term}
-        onInputValueChange={setTerm}
-        // Without this, selecting an item makes the combobox fill the input
-        // with a stringified dump of the selected `SearchItem` object (no
-        // natural label) right after `onValueChange` below clears it back to
-        // "" — the two land in the same batch and the fill wins, leaving the
-        // box showing `{"kind":"user",...}` and re-querying `/users/search`
-        // for that garbage. We always want it blank post-select (the picked
-        // player becomes a tagged row, not text in the box), so just say so.
-        itemToStringLabel={() => ''}
-        onValueChange={(next) => {
-          const item = next as SearchItem | null
-          if (!item) return
-          if (item.kind === 'user') addUser(item.user)
-          else addExternal(item.name)
-        }}
-      >
-        <ComboboxInput placeholder={searchPlaceholder} showTrigger={false} className="mt-2" />
-        <ComboboxContent>
-          {isLoading && <p className="px-3 py-2 text-xs text-muted-foreground">Searching…</p>}
-          {nothingFound && <p className="px-3 py-2 text-xs text-muted-foreground">No matches.</p>}
-          <ComboboxList>
-            {(item: SearchItem) =>
-              item.kind === 'user' ? (
-                <ComboboxItem key={item.user.id} value={item}>
-                  <Avatar name={item.user.name} imageUrl={item.user.profile_image?.image_url} size="md" />
-                  <span className="flex-1 truncate">{item.user.name}</span>
-                </ComboboxItem>
-              ) : (
-                <ComboboxItem key="guest" value={item}>
-                  <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
-                    <UserPlus className="size-3.5" />
-                  </span>
-                  <span className="flex-1 truncate">
-                    Add "<span className="font-medium">{item.name}</span>" as guest
-                  </span>
-                </ComboboxItem>
-              )
-            }
-          </ComboboxList>
-        </ComboboxContent>
-      </Combobox>
     </div>
   )
 }

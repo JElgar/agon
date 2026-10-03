@@ -12,6 +12,7 @@ import { relativeTime, scheduledDateTime } from '@/lib/datetime'
 import { sidePlayerCountLabel, sideTeamHint } from '@/lib/members'
 import { offersWaitlist, type RosterConflict } from '@/lib/waitlist'
 import { Avatar } from '@/components/agon/Avatar'
+import { LinkLandingCard } from '@/components/agon/LinkLandingCard'
 import { SportBadge } from '@/components/agon/SportBadge'
 
 type JoinLinkPreview = components['schemas']['JoinLinkPreview']
@@ -156,41 +157,46 @@ export function JoinMatchPage() {
   const conflict = join.data && join.data !== 'joined' ? join.data : null
 
   if (preview.isLoading || (matchId && matchQuery.isLoading) || match?.viewer_role != null) {
-    return <JoinCard>Loading this game…</JoinCard>
+    return <LinkLandingCard description="Loading this game…" />
   }
 
   if (preview.isError || !preview.data || matchQuery.isError || !match || !choice) {
     return (
-      <JoinCard>
-        <h2 className="mb-2 text-xl font-semibold">Link not found</h2>
-        <p className="mb-6 text-sm text-muted-foreground">
-          This join link is invalid, has been revoked, or the game is gone.
-        </p>
-        <Button variant="outline" onClick={() => navigate('/feed', { replace: true })}>
+      <LinkLandingCard
+        heading="Link not found"
+        description="This join link is invalid, has been revoked, or the game is gone."
+      >
+        <Button
+          variant="outline"
+          shape="pill"
+          size="lg"
+          className="w-full"
+          onClick={() => navigate('/feed', { replace: true })}
+        >
           Go to your feed
         </Button>
-      </JoinCard>
+      </LinkLandingCard>
     )
   }
 
   return (
-    <JoinCard>
-      <div className="mb-4 flex size-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-        <Swords className="size-7" />
-      </div>
-      <h2 className="mb-1 text-xl font-semibold">Join this game</h2>
-      <p className="mb-3 text-sm text-muted-foreground">
-        <strong className="font-medium text-foreground">{preview.data.match_name}</strong>
-        {/* `!= null` (not `!== undefined`): the server serializes a Rust
-            `Option::None` here as JSON `null`, not an absent key. */}
-        {preview.data.max_players != null && (
-          <>
-            {' '}
-            · {preview.data.total_player_count}/{preview.data.max_players} joined
-          </>
-        )}
-      </p>
-
+    <LinkLandingCard
+      icon={<Swords className="size-7" />}
+      heading="Join this game"
+      description={
+        <>
+          <strong className="font-medium text-foreground">{preview.data.match_name}</strong>
+          {/* `!= null` (not `!== undefined`): the server serializes a Rust
+              `Option::None` here as JSON `null`, not an absent key. */}
+          {preview.data.max_players != null && (
+            <>
+              {' '}
+              · {preview.data.total_player_count}/{preview.data.max_players} joined
+            </>
+          )}
+        </>
+      }
+    >
       <div className="mb-4 w-full space-y-2 text-left text-sm">
         <div className="flex flex-wrap items-center gap-2">
           <SportBadge sport={match.match_type} />
@@ -219,7 +225,7 @@ export function JoinMatchPage() {
             same info the picker's options carry, but visible even when
             there's nothing to pick (a single forced side, or unassigned-only). */}
         {pickableSides.length > 0 && (
-          <div className="space-y-1.5 rounded-lg border bg-muted/30 p-2.5">
+          <div className="space-y-1.5 rounded-xl bg-accent/60 p-2.5">
             {pickableSides.map((side, i) => {
               const name = side.name?.trim() || `Side ${i + 1}`
               return (
@@ -278,7 +284,7 @@ export function JoinMatchPage() {
       {join.isError && (
         <p className="mb-3 text-sm text-destructive">Something went wrong. Try again.</p>
       )}
-      {conflict && (
+      {conflict && !offersWaitlist(conflict) && (
         <p className="mb-3 text-sm text-destructive">{conflict.message}</p>
       )}
       {joinWaitlist.isError && (
@@ -288,17 +294,32 @@ export function JoinMatchPage() {
       )}
 
       {conflict && offersWaitlist(conflict) ? (
-        <Button
-          className="w-full"
-          variant="outline"
-          disabled={joinWaitlist.isPending}
-          onClick={() => joinWaitlist.mutate()}
-        >
-          {joinWaitlist.isPending ? 'Joining waiting list…' : 'Join the waiting list'}
-        </Button>
+        <div className="mb-4 w-full space-y-3">
+          <div className="flex items-center gap-2 rounded-xl bg-destructive/10 p-2.5 text-left">
+            <span className="shrink-0 rounded-full bg-destructive/15 px-2 py-0.5 text-xs font-semibold text-destructive">
+              Full
+            </span>
+            <p className="text-sm text-destructive">{conflict.message}</p>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            You'll be added automatically if a spot opens up.
+          </p>
+          <Button
+            className="w-full"
+            variant="outline"
+            shape="pill"
+            size="lg"
+            disabled={joinWaitlist.isPending}
+            onClick={() => joinWaitlist.mutate()}
+          >
+            {joinWaitlist.isPending ? 'Joining waiting list…' : 'Join the waiting list'}
+          </Button>
+        </div>
       ) : (
         <Button
           className="w-full"
+          shape="pill"
+          size="lg"
           disabled={join.isPending || !canSubmit}
           onClick={() => join.mutate()}
         >
@@ -316,15 +337,6 @@ export function JoinMatchPage() {
       >
         View match
       </Button>
-    </JoinCard>
-  )
-}
-
-/** Centered card chrome, mirroring `AcceptInvitePage`'s `InviteCard`. */
-function JoinCard({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="mx-auto flex max-w-md flex-col items-center rounded-2xl border bg-card p-8 text-center">
-      {children}
-    </div>
+    </LinkLandingCard>
   )
 }

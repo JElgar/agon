@@ -47,6 +47,23 @@ export function sportIcon(type: MatchType): LucideIcon {
   return SPORT_ICONS[type] ?? Circle
 }
 
+/**
+ * Icon-badge tint per sport, for the profile "Your sports" rows — matches the
+ * "Agon redesign" canvas's Profile board, which only designs football/cricket;
+ * every other sport falls back to the shared accent tint rather than
+ * inventing an un-designed color. Resolved through the `--sport-*` CSS
+ * variables (`index.css`), each with a `.dark` override, rather than raw hex,
+ * so these move correctly when dark mode is toggled.
+ */
+const SPORT_TINTS: Partial<Record<MatchType, { bg: string; fg: string }>> = {
+  football: { bg: 'var(--sport-football-bg)', fg: 'var(--sport-football-fg)' },
+  cricket: { bg: 'var(--sport-cricket-bg)', fg: 'var(--sport-cricket-fg)' },
+}
+
+export function sportTint(type: MatchType): { bg: string; fg: string } {
+  return SPORT_TINTS[type] ?? { bg: 'var(--accent)', fg: 'var(--accent-foreground)' }
+}
+
 /** Emoji for a sport, used by the compact sport pill (feed cards, match detail). */
 const SPORT_EMOJI: Record<MatchType, string> = {
   tennis: '🎾',
@@ -61,6 +78,31 @@ const SPORT_EMOJI: Record<MatchType, string> = {
 
 export function sportEmoji(type: MatchType): string {
   return SPORT_EMOJI[type] ?? SPORT_EMOJI.other
+}
+
+/**
+ * Pastel icon-badge tint per sport, for the feed card's 40×40 sport-icon
+ * badge — card-local accents from the "Agon redesign" canvas
+ * (`Tiles.dc.html`), not theme colors, so they live here as a plain map
+ * rather than new CSS custom properties. Only the sports with a dedicated
+ * icon badge in the redesigned feed card (currently cricket) need an entry;
+ * football uses a team-initials avatar instead (see `MatchCard`).
+ */
+export const SPORT_ICON_TINT: Partial<Record<MatchType, { bg: string; stroke: string }>> = {
+  cricket: { bg: '#D3E3F0', stroke: '#123E5B' },
+  tennis: { bg: '#E4F0B8', stroke: '#3B5B12' },
+  squash: { bg: '#F7D9C6', stroke: '#6B2F12' },
+  // No mock covers these two — same lavender/pink pastel treatment as the
+  // above, just a fresh pair of tones so all four racket sports read as a
+  // family without colliding with tennis/squash's.
+  badminton: { bg: '#EDE3F5', stroke: '#4B2E68' },
+  table_tennis: { bg: '#FBE0EA', stroke: '#7A1F3D' },
+  // Football's tint/stroke are given verbatim by the "team crests" mock
+  // (`Tiles.dc.html`'s football icon badge).
+  football: { bg: '#EAEFFC', stroke: '#2952D9' },
+  // No mock covers netball (same situation as badminton/table_tennis above)
+  // — a fresh pastel green so it doesn't collide with any other sport's tint.
+  netball: { bg: '#E1F3E8', stroke: '#1F6B42' },
 }
 
 /** Racket sports are scored by sets; everything else by a single points total. */

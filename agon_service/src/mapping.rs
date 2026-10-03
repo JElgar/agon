@@ -968,6 +968,7 @@ pub fn match_side_from_record(rec: &MatchSideRecord) -> MatchSide {
         id: rec.side_id.clone(),
         team_id: rec.team_id.clone(),
         name: rec.name.clone(),
+        colour: rec.colour.clone(),
         max_players: rec.max_players,
         team_join_enabled: rec.team_join_enabled,
         // Live-overwritten for `Match` (`Api::resolve_side_names`); left as
@@ -1192,6 +1193,7 @@ pub fn feed_match_from_records(
             i_liked,
         },
         format: rec.format.as_ref().map(match_format_from_record),
+        total_player_count: rec.total_player_count as u32,
     }
 }
 

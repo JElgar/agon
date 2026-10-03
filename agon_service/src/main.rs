@@ -45,10 +45,11 @@ use mapping::{
     invitation_status_str, join_link_from_record, join_link_scope_from_record,
     join_link_scope_to_record, live_event_from_record, location_to_record, match_format_sport_tag,
     match_format_to_record, match_from_records, match_player_role_from_record,
-    match_score_from_record, match_score_to_record, match_status_str, match_type_tag,
-    new_live_event_to_dao, notification_actor_id, notification_from_record, roster_preview_player,
-    score_submission_from_record, score_to_record, search_match_from_records, team_from_records,
-    team_list_item_from_record, team_member_from_record, user_profile_from_record,
+    match_player_role_to_record, match_score_from_record, match_score_to_record, match_status_str,
+    match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
+    roster_preview_player, score_submission_from_record, score_to_record,
+    search_match_from_records, team_from_records, team_list_item_from_record,
+    team_member_from_record, user_profile_from_record,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -81,8 +82,8 @@ use membership::{
     AddInvitationsInput, AddMatchOrganizerInput, CreateJoinLinkInput, Invitation,
     InvitationContext, InvitationDetail, InvitationKind, InvitationMatchContext, InvitationStatus,
     JoinLink, JoinLinkPreview, JoinMatchInput, MatchOrganizer, MatchPlayerRole, Member,
-    RespondByTokenInput, RespondToInvitationInput, TokenInvitation, TransferMatchOwnershipInput,
-    UserInvitation, UserMember,
+    RespondByTokenInput, RespondToInvitationInput, SetMatchPlayerRoleInput, TokenInvitation,
+    TransferMatchOwnershipInput, UserInvitation, UserMember,
 };
 
 mod team;
@@ -419,6 +420,14 @@ struct MatchSide {
     /// belongs to; `team_name` lets a caller show that alongside it. `None`
     /// for an ad-hoc side or one whose linked team has since been deleted.
     team_name: Option<String>,
+    /// This side's own colour (a hex string, e.g. `"#2952D9"`), set for an
+    /// ad-hoc side with no `team_id`, or one sharing its `team_id` with
+    /// another side (a derby) — a linked team's colour (once teams have one)
+    /// is otherwise the source of truth instead. Required by the
+    /// create-match API for a side without a team; the client picks one
+    /// automatically (inferring it from a colour name typed into the side's
+    /// `name`, where possible) rather than asking the creator to.
+    colour: Option<String>,
     /// This side's full roster, when small enough to show directly instead of
     /// just `name`/`team_id`'s logo (1v1, doubles, a small squad). `None`
     /// when the side has more players than that — render `name`/the team's
@@ -726,6 +735,16 @@ pub enum MatchStatus {
     Cancelled,
 }
 
+/// Sort direction for `GET /matches`'s `starts_at` ordering.
+#[derive(Enum)]
+#[oai(rename_all = "snake_case")]
+pub enum SortOrder {
+    /// Soonest/oldest first.
+    Asc,
+    /// Latest first. The default.
+    Desc,
+}
+
 /// Where a match is played. `text` is always present and is what's shown to
 /// users — free-typed, or (once a Places suggestion is picked) that place's
 /// formatted address. `latitude`/`longitude`/`place_id` are only ever set
@@ -985,6 +1004,18 @@ struct UpdateMatchSideNameInput {
     name: Option<String>,
 }
 
+/// Set an existing side's colour. `colour: None` clears it, which is only
+/// valid when the side has a `team_id` (the create/update validation
+/// otherwise requires a team-less side to always have one) — the same
+/// derby exception as `UpdateMatchSideNameInput`/create-time validation
+/// applies: `colour: Some(_)` alongside a `team_id` is only allowed when
+/// another side shares that team.
+#[derive(Object)]
+struct UpdateMatchSideColourInput {
+    side_id: String,
+    colour: Option<String>,
+}
+
 /// A side to create as part of a new match. The server assigns the real side id;
 /// `client_id` lets the request reference this side from `invites` and `score`.
 #[derive(Object)]
@@ -998,6 +1029,13 @@ struct CreateMatchSideInput {
     /// the team is normally the source of truth for the side's name, but two
     /// sides sharing one team need a name each to be told apart.
     name: Option<String>,
+    /// This side's colour (a hex string, e.g. `"#2952D9"`). Required unless
+    /// `team_id` is set (a linked team is the source of truth for colour
+    /// instead) — rejected (validation error) alongside a `team_id` unless
+    /// another side in the same request shares that team, the same derby
+    /// exception `name` gets (two sides sharing one team need a colour each
+    /// to be told apart too).
+    colour: Option<String>,
     /// Cap on this side's roster. `None` = uncapped.
     max_players: Option<u32>,
     /// Whether an accepted member of `team_id` may join this side directly,
@@ -1099,6 +1137,10 @@ struct UpdateMatchInput {
     /// creation (or a previous edit here). Only the sides listed are
     /// touched; every other side's name is left alone.
     side_names: Option<Vec<UpdateMatchSideNameInput>>,
+    /// Recolour one or more of the match's sides — the colour given at
+    /// creation (or a previous edit here). Only the sides listed are
+    /// touched; every other side's colour is left alone.
+    side_colours: Option<Vec<UpdateMatchSideColourInput>>,
     /// The result. Creates a score submission when changed; for a not-yet-played
     /// match this also completes it. `side_id`s reference the match's sides.
     /// Required to complete a match — there is no server-side fallback if
@@ -1203,6 +1245,11 @@ struct FeedMatch {
     pending_score: Option<PendingScore>,
     social: MatchSocial,
     format: Option<MatchFormat>,
+    /// How many players take a spot on the match in total — every side plus
+    /// anyone still unassigned. Unlike summing `MatchSide.player_count`
+    /// across `sides`, this also covers unassigned players, so it's the
+    /// right figure for a card's "N going" (see `MatchRecord::total_player_count`).
+    total_player_count: u32,
 }
 
 /// One page of the feed. `next_cursor` is an opaque token; when it is
@@ -1889,8 +1936,12 @@ enum ListLiveEventsResponse {
     #[oai(status = 200)]
     Events(Json<LiveEventPage>),
 
+    /// See `ErrorMessage`'s doc comment on why this is JSON, not the
+    /// `PlainText` every other 404 in this file uses — the watch app's
+    /// own undo feature now depends on this endpoint (see
+    /// `docs/garmin-live-scoring.md`), same as the six it already called.
     #[oai(status = 404)]
-    NotFound(PlainText<String>),
+    NotFound(Json<ErrorMessage>),
 }
 
 #[derive(ApiResponse)]
@@ -2206,6 +2257,28 @@ enum TransferMatchOwnershipResponse {
     #[oai(status = 403)]
     Forbidden(PlainText<String>),
 
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// Promote a player to admin, or demote an admin back to a plain player.
+#[derive(ApiResponse)]
+enum SetMatchPlayerRoleResponse {
+    /// The role was changed; the match's own `players`/`viewer_role` already
+    /// reflect it on the next read.
+    #[oai(status = 204)]
+    Ok,
+
+    /// Tried to set (or the target already holds) the `Owner` role — that
+    /// only ever moves via `POST /matches/:match_id/transfer-ownership`.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    /// The match doesn't exist, or the target isn't a player on it.
     #[oai(status = 404)]
     NotFound(PlainText<String>),
 }
@@ -2662,13 +2735,28 @@ impl Api {
         Query(from): Query<Option<chrono::DateTime<chrono::Utc>>>,
         /// Only include items at or before this time (inclusive).
         Query(to): Query<Option<chrono::DateTime<chrono::Utc>>>,
+        /// Only include matches in this lifecycle state — e.g. `scheduled`,
+        /// for "browse the scheduled matches my feed would show". Unlike
+        /// `GET /matches`'s `status`/`match_type` (search-index filters over
+        /// every match in the app), this filters the caller's own fan-out
+        /// feed page in memory post-hydration — the feed has no search index
+        /// of its own, but pages are small (`FEED_MAX_PAGE_LIMIT`) so this
+        /// stays cheap. A page can come back with fewer than `limit` items
+        /// (or none) when most of it doesn't match; page again with
+        /// `next_cursor` as usual, same as the date-range filter above.
+        Query(status): Query<Option<MatchStatus>>,
+        /// Only include matches of this sport. See `status`'s doc comment.
+        Query(match_type): Query<Option<MatchType>>,
     ) -> Result<GetFeedResponse> {
         info!("Getting caller's social feed");
         let uid = self.require_uid(dao, &jwt_data).await?;
 
         // The feed is always the authenticated caller's own social feed (matches
-        // from people/teams they follow). No user_id / sport filtering here —
-        // that is the match-discovery endpoint (GET /matches), served by search.
+        // from people/teams they follow). Free-text search / arbitrary-user
+        // discovery is still `GET /matches` (search-index-backed) — `status`/
+        // `match_type` here only narrow the feed's own audience-scoped items,
+        // for "the scheduled matches my feed would show" (not "every scheduled
+        // match in the app", which `GET /matches` without `participant` gives).
 
         let limit = feed_page_limit(limit);
 
@@ -2765,6 +2853,16 @@ impl Api {
         let mut built: Vec<FeedMatch> = Vec::with_capacity(eligible.len());
         for entry in &eligible {
             if let Some(summary) = summaries.get(&entry.match_id) {
+                if let Some(s) = &status
+                    && summary.match_.status != match_status_str(s)
+                {
+                    continue;
+                }
+                if let Some(mt) = &match_type
+                    && summary.match_.match_type != match_type_tag(mt)
+                {
+                    continue;
+                }
                 let i_liked = liked.contains(&entry.match_id);
                 let known_participants = entry
                     .known_player_ids
@@ -2841,10 +2939,17 @@ impl Api {
         Query(team_match): Query<Option<TeamMatchMode>>,
         /// Only matches of this sport.
         Query(match_type): Query<Option<MatchType>>,
+        /// Only matches in this lifecycle state (e.g. `scheduled`) — powers the
+        /// "all scheduled matches" browse view.
+        Query(status): Query<Option<MatchStatus>>,
         /// Only matches at or after this time (inclusive).
         Query(from): Query<Option<chrono::DateTime<chrono::Utc>>>,
         /// Only matches at or before this time (inclusive).
         Query(to): Query<Option<chrono::DateTime<chrono::Utc>>>,
+        /// Sort order on `starts_at`: `desc` (default, newest first — the
+        /// existing behavior) or `asc` (soonest first, for browsing upcoming
+        /// matches).
+        Query(sort): Query<Option<SortOrder>>,
         /// Opaque cursor from the previous page's `next_cursor`.
         Query(cursor): Query<Option<String>>,
         /// Maximum number of items to return (defaults to 20, capped at 50).
@@ -2890,6 +2995,9 @@ impl Api {
         if let Some(mt) = &match_type {
             clauses.push(format!("sport = \"{}\"", match_type_tag(mt)));
         }
+        if let Some(s) = &status {
+            clauses.push(format!("status = \"{}\"", match_status_str(s)));
+        }
         if let Some(p) = &participant {
             clauses.push(format!("participant_ids = \"{p}\""));
         }
@@ -2921,10 +3029,14 @@ impl Api {
         }
         let filter = (!clauses.is_empty()).then(|| clauses.join(" AND "));
 
+        let sort_dir = match sort {
+            Some(SortOrder::Asc) => "asc",
+            Some(SortOrder::Desc) | None => "desc",
+        };
         let q = agon_core::search::SearchQuery {
             q: query.unwrap_or_default(),
             filter,
-            sort: vec!["starts_at_ts:desc".to_string()],
+            sort: vec![format!("starts_at_ts:{sort_dir}")],
             offset,
             limit: page_limit(limit),
         };
@@ -3054,6 +3166,31 @@ impl Api {
             }
         }
 
+        // Colour is only for an ad-hoc side: a linked team is normally the
+        // source of truth for colour instead — except the same derby
+        // exception as name, since two sides sharing one team need a colour
+        // each to be told apart the same way they need a name each. An
+        // ad-hoc side always needs one, having no team to fall back on.
+        for side in &input.sides {
+            if side.colour.is_none() && side.team_id.is_none() {
+                return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
+                    "side `{}` needs a colour when it has no team",
+                    side.client_id
+                ))));
+            }
+            if side.colour.is_some() && side.team_id.is_some() {
+                let team_shared = input.sides.iter().any(|other| {
+                    other.client_id != side.client_id && other.team_id == side.team_id
+                });
+                if !team_shared {
+                    return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
+                        "side `{}` can't have both a colour and a team unless another side shares that team",
+                        side.client_id
+                    ))));
+                }
+            }
+        }
+
         // A supplied format must be for this match's own sport — a football
         // match can't carry cricket's overs-per-innings setting, say.
         if let Some(fmt) = &input.format {
@@ -3106,6 +3243,8 @@ impl Api {
                     // team, or alongside a team shared with another side (to
                     // tell the two apart) — never a lone team-assigned side.
                     name: side.name.clone(),
+                    // Validated above: set exactly when there's no `team_id`.
+                    colour: side.colour.clone(),
                     max_players: side.max_players,
                     team_join_enabled: side.team_join_enabled.unwrap_or(false),
                     // `Dao::create_match` recomputes both from the players
@@ -3590,6 +3729,46 @@ impl Api {
             }
         }
 
+        // Recolouring a side: every referenced side must exist. Setting a
+        // colour alongside a team mirrors the rename rule above (only
+        // allowed when another side shares that team); clearing a colour
+        // (`colour: None`) is only valid when the side already has a team to
+        // fall back on — mirrors `create_match`'s "needs a colour when it
+        // has no team" rule, since clearing on a team-less side would leave
+        // it without one.
+        if let Some(colours) = &input.side_colours {
+            for update in colours {
+                let Some(side) = agg.sides.iter().find(|s| s.side_id == update.side_id) else {
+                    return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                        "side `{}` is not part of this match",
+                        update.side_id
+                    ))));
+                };
+                match (&side.team_id, &update.colour) {
+                    (Some(team_id), Some(_)) => {
+                        let team_shared = agg.sides.iter().any(|other| {
+                            other.side_id != side.side_id
+                                && other.team_id.as_deref() == Some(team_id.as_str())
+                        });
+                        if !team_shared {
+                            return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                                "side `{}` can't have both a colour and a team unless another \
+                                 side shares that team",
+                                update.side_id
+                            ))));
+                        }
+                    }
+                    (None, None) => {
+                        return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                            "side `{}` needs a colour when it has no team",
+                            update.side_id
+                        ))));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // A side with no players (after this request's roster edits, if any)
         // needs a team or an explicit name to remain identifiable — same rule
         // `create_match` enforces up front. Only worth projecting when this
@@ -3851,7 +4030,14 @@ impl Api {
             .map(|r| (r.side_id.clone(), r.name.clone()))
             .collect();
 
-        // Apply metadata + resolved score + side renames in one update.
+        let side_colour_updates: Vec<(String, Option<String>)> = input
+            .side_colours
+            .iter()
+            .flatten()
+            .map(|r| (r.side_id.clone(), r.colour.clone()))
+            .collect();
+
+        // Apply metadata + resolved score + side renames/recolours in one update.
         dao.update_match_meta(
             &match_id,
             input.name.as_deref(),
@@ -3867,6 +4053,7 @@ impl Api {
             input.format.as_ref().map(match_format_to_record),
             input.location.as_ref().map(location_to_record),
             &side_name_updates,
+            &side_colour_updates,
         )
         .await
         .map_err(|e| match e {
@@ -4278,6 +4465,7 @@ impl Api {
                 None,
                 None,
                 &[],
+                &[],
             )
             .await
             .map_err(dao_internal)?;
@@ -4449,22 +4637,28 @@ impl Api {
     async fn list_live_events(
         &self,
         Data(dao): Data<&dao::Dao>,
-        AuthSchema(_jwt_data): AuthSchema,
+        AuthSchema(jwt_data): AuthSchema,
         Path(match_id): Path<String>,
         /// Opaque cursor from the previous page's `next_cursor`. Omit for the first page.
         Query(cursor): Query<Option<String>>,
         /// Maximum number of items to return (defaults to 20, capped at 50).
         Query(limit): Query<Option<u32>>,
     ) -> Result<ListLiveEventsResponse> {
+        // Scoped, same as the rest of the live-scoring surface a paired
+        // device can reach — the watch app's own undo feature drains
+        // this to find the log's real physical tip (see
+        // docs/garmin-live-scoring.md), the same reason `agon_ui`'s own
+        // undo button already needs it.
+        check_scope(&jwt_data, Some(SCOPE_LIVE_SCORING))?;
         if dao
             .get_match(&match_id)
             .await
             .map_err(dao_internal)?
             .is_none()
         {
-            return Ok(ListLiveEventsResponse::NotFound(PlainText(
-                "match not found".into(),
-            )));
+            return Ok(ListLiveEventsResponse::NotFound(Json(ErrorMessage {
+                message: "match not found".into(),
+            })));
         }
 
         let page = dao
@@ -4785,6 +4979,7 @@ impl Api {
                     None,
                     None,
                     &[],
+                    &[],
                 )
                 .await
                 .map_err(dao_internal)?;
@@ -4842,6 +5037,7 @@ impl Api {
                         None,
                         None,
                         None,
+                        &[],
                         &[],
                     )
                     .await
@@ -5810,6 +6006,7 @@ impl Api {
                 None,
                 None,
                 &[],
+                &[],
             )
             .await
             .map_err(dao_internal)?;
@@ -6396,6 +6593,59 @@ impl Api {
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m, &uid).await?;
         Ok(RemoveMatchOrganizerResponse::Match(Json(m)))
+    }
+
+    /// Promote a player to admin, or demote an admin back to a plain player.
+    ///
+    /// Match-admin only (see `caller_is_match_admin`). Can't be used to set
+    /// or remove the `Owner` role, or to change the current owner's own
+    /// role — `POST /matches/:match_id/transfer-ownership` is the only way
+    /// either of those moves.
+    #[oai(path = "/matches/:match_id/players/:player_id/role", method = "post")]
+    async fn set_match_player_role(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        Path(player_id): Path<String>,
+        input: Json<SetMatchPlayerRoleInput>,
+    ) -> Result<SetMatchPlayerRoleResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let role = input.0.role;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(SetMatchPlayerRoleResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(SetMatchPlayerRoleResponse::Forbidden(PlainText(
+                "only a match admin can change a player's role".into(),
+            )));
+        }
+        if role == MatchPlayerRole::Owner {
+            return Ok(SetMatchPlayerRoleResponse::ValidationError(PlainText(
+                "transfer ownership instead of setting the owner role here".into(),
+            )));
+        }
+        let Some(target) = agg.players.iter().find(|p| p.player_id == player_id) else {
+            return Ok(SetMatchPlayerRoleResponse::NotFound(PlainText(
+                "player not found".into(),
+            )));
+        };
+        if target.role == dao::records::MatchPlayerRole::Owner {
+            return Ok(SetMatchPlayerRoleResponse::ValidationError(PlainText(
+                "transfer ownership instead of changing the owner's role".into(),
+            )));
+        }
+
+        dao.set_match_player_role(&match_id, &player_id, match_player_role_to_record(role))
+            .await
+            .map_err(dao_internal)?;
+        Ok(SetMatchPlayerRoleResponse::Ok)
     }
 
     /// Leave a match.
@@ -9214,6 +9464,7 @@ fn mock_match(id: String) -> Match {
                 id: String::from("side_red"),
                 team_id: Some(String::from("team_red")),
                 name: Some(String::from("Red Team")),
+                colour: None,
                 team_logo: None,
                 team_name: None,
                 roster_preview: None,
@@ -9225,6 +9476,7 @@ fn mock_match(id: String) -> Match {
                 id: String::from("side_blue"),
                 team_id: Some(String::from("team_blue")),
                 name: Some(String::from("Blue Team")),
+                colour: None,
                 team_logo: None,
                 team_name: None,
                 roster_preview: None,

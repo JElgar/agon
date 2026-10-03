@@ -281,3 +281,11 @@ pub struct MatchOrganizer {
 pub struct AddMatchOrganizerInput {
     pub user_id: String,
 }
+
+/// Promote a player to admin, or demote an admin back to a plain player.
+/// Can't be used to set or remove the `Owner` role — that only ever moves
+/// via `POST /matches/:match_id/transfer-ownership`.
+#[derive(Object)]
+pub struct SetMatchPlayerRoleInput {
+    pub role: MatchPlayerRole,
+}

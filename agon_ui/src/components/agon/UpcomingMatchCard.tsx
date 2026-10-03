@@ -41,7 +41,7 @@ export function UpcomingMatchCard({
 }) {
   const { weekday, day } = dateParts(match.starts_at)
   const going = match.viewer_side_id != null
-  const totalGoing = match.sides.reduce((sum, s) => sum + s.player_count, 0)
+  const totalGoing = match.total_player_count
   const people = match.sides
     .flatMap((s) => s.roster_preview ?? [])
     .map((p) => ({ name: p.name, imageUrl: p.avatar_url }))

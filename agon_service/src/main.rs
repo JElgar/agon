@@ -1229,6 +1229,11 @@ struct FeedMatch {
     pending_score: Option<PendingScore>,
     social: MatchSocial,
     format: Option<MatchFormat>,
+    /// How many players take a spot on the match in total — every side plus
+    /// anyone still unassigned. Unlike summing `MatchSide.player_count`
+    /// across `sides`, this also covers unassigned players, so it's the
+    /// right figure for a card's "N going" (see `MatchRecord::total_player_count`).
+    total_player_count: u32,
 }
 
 /// One page of the feed. `next_cursor` is an opaque token; when it is

@@ -1172,6 +1172,7 @@ pub fn feed_match_from_records(
             i_liked,
         },
         format: rec.format.as_ref().map(match_format_from_record),
+        total_player_count: rec.total_player_count as u32,
     }
 }
 

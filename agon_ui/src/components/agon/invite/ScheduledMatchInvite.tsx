@@ -38,6 +38,7 @@ import {
   CommentsPreviewCard,
 } from '@/components/agon/football/FootballMatchView'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
+import { LeaveMatchDialog } from '@/components/agon/invite/LeaveMatchDialog'
 import { WaitlistSection } from '@/components/agon/WaitlistSection'
 import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
@@ -214,19 +215,7 @@ export function ScheduledMatchInvite({
     onSuccess: () => queryClient.invalidateQueries({ queryKey: matchKey }),
   })
 
-  const leaveMatch = useMutation({
-    mutationFn: async () => {
-      const { error } = await fetchClient.POST('/matches/{match_id}/leave', {
-        params: { path: { match_id: match.id } },
-      })
-      if (error) throw new Error('Failed to leave the match')
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: matchKey })
-      queryClient.invalidateQueries({ queryKey: ['feed'] })
-      queryClient.invalidateQueries({ queryKey: ['profile-activity'] })
-    },
-  })
+  const [leaveDialogOpen, setLeaveDialogOpen] = useState(false)
 
   const respond = useMutation({
     mutationFn: async (response: components['schemas']['InvitationResponse']) => {
@@ -289,13 +278,12 @@ export function ScheduledMatchInvite({
           >
             <Share className="size-[22px]" />
           </button>
-          {myPlayer && myPlayer.role !== 'owner' && (
+          {myPlayer && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
                   aria-label="More options"
-                  disabled={leaveMatch.isPending}
                   className="flex size-11 items-center justify-center rounded-full text-foreground hover:bg-muted"
                 >
                   <MoreVertical className="size-[22px]" />
@@ -303,9 +291,8 @@ export function ScheduledMatchInvite({
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem
-                  disabled={leaveMatch.isPending}
                   className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                  onSelect={() => leaveMatch.mutate()}
+                  onSelect={() => setLeaveDialogOpen(true)}
                 >
                   <LogOut /> Leave match
                 </DropdownMenuItem>
@@ -622,6 +609,17 @@ export function ScheduledMatchInvite({
           queryClient.invalidateQueries({ queryKey: ['profile-activity'] })
         }}
       />
+
+      {myPlayer && (
+        <LeaveMatchDialog
+          open={leaveDialogOpen}
+          onOpenChange={setLeaveDialogOpen}
+          match={match}
+          myPlayer={myPlayer}
+          going={going}
+          onLeft={() => setLeaveDialogOpen(false)}
+        />
+      )}
 
       <Sheet open={commentsOpen} onOpenChange={setCommentsOpen}>
         <SheetContent side="bottom" className="max-h-[85vh] overflow-y-auto rounded-t-[20px] bg-background p-4">

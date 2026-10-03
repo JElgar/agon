@@ -530,14 +530,27 @@ export function ScoreFlowCard({
 }
 
 /** "Who played" — overlapping avatar stacks per side. */
-export function WhoPlayedCard({ match, title = 'Who played' }: { match: Match; title?: string }) {
+export function WhoPlayedCard({
+  match,
+  title = 'Who played',
+  onClick,
+}: {
+  match: Match
+  title?: string
+  onClick?: () => void
+}) {
   const rows = match.sides.slice(0, 2).map((side) => ({
     side,
     players: match.players.filter((p) => p.side_id === side.id && p.member.invitation?.status !== 'pending'),
   }))
   if (rows.every((r) => r.players.length === 0)) return null
+  const Container = onClick ? 'button' : 'section'
   return (
-    <section className={cn(cardClass, 'flex flex-col gap-3')}>
+    <Container
+      type={onClick ? 'button' : undefined}
+      onClick={onClick}
+      className={cn(cardClass, 'flex flex-col gap-3', onClick && 'text-left transition-opacity active:opacity-70')}
+    >
       <span className="text-[15px] font-bold">{title}</span>
       {rows.map(({ side, players }) => (
         <div key={side.id} className="flex items-center gap-3">
@@ -562,7 +575,7 @@ export function WhoPlayedCard({ match, title = 'Who played' }: { match: Match; t
           </span>
         </div>
       ))}
-    </section>
+    </Container>
   )
 }
 

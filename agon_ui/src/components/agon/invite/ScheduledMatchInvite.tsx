@@ -6,6 +6,7 @@ import {
   CalendarPlus,
   ChevronLeft,
   Link2,
+  LogOut,
   MoreVertical,
   Pencil,
   MapPin,
@@ -213,6 +214,20 @@ export function ScheduledMatchInvite({
     onSuccess: () => queryClient.invalidateQueries({ queryKey: matchKey }),
   })
 
+  const leaveMatch = useMutation({
+    mutationFn: async () => {
+      const { error } = await fetchClient.POST('/matches/{match_id}/leave', {
+        params: { path: { match_id: match.id } },
+      })
+      if (error) throw new Error('Failed to leave the match')
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: matchKey })
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
+      queryClient.invalidateQueries({ queryKey: ['profile-activity'] })
+    },
+  })
+
   const respond = useMutation({
     mutationFn: async (response: components['schemas']['InvitationResponse']) => {
       if (!invitation) return
@@ -367,21 +382,21 @@ export function ScheduledMatchInvite({
                             <span className="block text-xs text-muted-foreground capitalize">{p.role}</span>
                           )}
                         </div>
-                        {canEdit && !isOwnerRow && (
+                        {!isOwnerRow && (isYou || canEdit) && (
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Button
                                 variant="ghost"
                                 size="icon"
                                 className="size-8 shrink-0"
-                                disabled={setPlayerRole.isPending}
+                                disabled={setPlayerRole.isPending || leaveMatch.isPending}
                                 aria-label={`${memberName(p.member)} options`}
                               >
                                 <MoreVertical className="size-4" />
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent>
-                              {p.role === 'admin' ? (
+                              {canEdit && !isYou && (p.role === 'admin' ? (
                                 <DropdownMenuItem
                                   disabled={setPlayerRole.isPending}
                                   onSelect={() => setPlayerRole.mutate({ playerId: id, role: 'player' })}
@@ -394,6 +409,15 @@ export function ScheduledMatchInvite({
                                   onSelect={() => setPlayerRole.mutate({ playerId: id, role: 'admin' })}
                                 >
                                   <ShieldPlus /> Make admin
+                                </DropdownMenuItem>
+                              ))}
+                              {isYou && (
+                                <DropdownMenuItem
+                                  disabled={leaveMatch.isPending}
+                                  className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                                  onSelect={() => leaveMatch.mutate()}
+                                >
+                                  <LogOut /> Leave match
                                 </DropdownMenuItem>
                               )}
                             </DropdownMenuContent>

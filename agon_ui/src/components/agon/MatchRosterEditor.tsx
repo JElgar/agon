@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { memo, useMemo, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   DndContext,
@@ -352,8 +352,12 @@ function DraggablePlayer({
   )
 }
 
-/** The visual row shared by a column's live chip and the drag overlay clone. */
-function PlayerChip({
+/** The visual row shared by a column's live chip and the drag overlay clone.
+ *  Memoized: every `useDraggable`/`useDroppable` consumer in the tree
+ *  re-renders on each drag-move frame, so this needs to bail out on
+ *  unchanged props to keep that from re-rendering every other player's
+ *  avatar and chip on every pointer move. */
+const PlayerChip = memo(function PlayerChip({
   player,
   onRemove,
   overlay = false,
@@ -392,4 +396,4 @@ function PlayerChip({
       )}
     </div>
   )
-}
+})

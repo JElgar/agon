@@ -39,7 +39,7 @@ export function MobileBottomNav() {
   return (
     <nav
       ref={navRef}
-      className="fixed inset-x-0 bottom-0 z-20 bg-card/95 shadow-[0_-1px_8px_rgba(0,0,0,0.06)] backdrop-blur supports-[backdrop-filter]:bg-card/80 md:hidden"
+      className="fixed inset-x-0 bottom-0 z-20 bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80 md:hidden"
     >
       <div
         className="mx-auto flex max-w-xl items-center justify-around px-6"

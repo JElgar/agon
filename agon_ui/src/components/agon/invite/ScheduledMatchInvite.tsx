@@ -42,6 +42,7 @@ import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
 import { MatchJoinLinksDialog } from '@/components/agon/MatchJoinLinksDialog'
 import { MatchComments } from '@/components/agon/MatchComments'
+import { teamCrestColor } from '@/components/agon/RedesignedSportCard'
 import {
   memberAvatarUrl,
   memberName,
@@ -111,6 +112,19 @@ function OrganizerRow({ organiser }: { organiser: MatchPlayer }) {
   )
 }
 
+/** The Teams tab's own side identity dot: a team-linked side's colour
+ *  (`teamCrestColor`, the same deterministic colour its crest uses
+ *  elsewhere — the schema has no real team-colour field) or an ad-hoc/derby
+ *  side's own stored `colour`, falling back to the plain index-based
+ *  `SideSwatch` only when neither is set. */
+function TeamRosterSwatch({ side, index }: { side: MatchSide | undefined; index: number }) {
+  const colour = side?.team_id ? teamCrestColor(side.team_id) : side?.colour
+  if (colour) {
+    return <span className="inline-block size-3.5 shrink-0 rounded-[5px]" style={{ backgroundColor: colour }} />
+  }
+  return <SideSwatch index={index} size={14} />
+}
+
 /** One side's roster on the Teams tab — read-only; editing who's on which
  *  side happens through `MatchRosterEditor`, surfaced alongside this via the
  *  "Edit roster" button rather than inline here. */
@@ -128,7 +142,7 @@ function TeamRosterCard({
   return (
     <Card className="flex flex-col gap-1 p-[18px]">
       <div className="flex items-center gap-2.5 pb-2">
-        <SideSwatch index={index} size={14} />
+        <TeamRosterSwatch side={side} index={index} />
         <span className="font-display flex-grow text-[18px] font-extrabold">{sideLabel(side, fallback)}</span>
         <span className="text-[13px] text-muted-foreground">{players.length} players</span>
       </div>

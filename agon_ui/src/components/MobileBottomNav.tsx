@@ -3,6 +3,12 @@ import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Home, Plus, User } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
+/** The floating "log a match" button pokes up above the nav row itself
+ *  (negative margin, so it's a circle overlapping the row's top edge) — a
+ *  couple of pixels of clearance on top of its own measured top keeps a
+ *  pinned bar's bottom edge from clipping into its ring. */
+const FLOATING_BUTTON_CLEARANCE_PX = 6
+
 /**
  * The mobile navigation: a fixed bottom tab bar replacing the sidebar sheet
  * on small screens, where a slide-in panel is an awkward reach. Three stops —
@@ -11,27 +17,34 @@ import { cn } from '@/lib/utils'
  * mobile top bar or on the profile page itself. Hidden at the `md` breakpoint,
  * where the fixed sidebar takes over.
  *
- * Publishes its own rendered height (icon/label row plus the safe-area
- * inset) as `--mobile-nav-height` on the root element, so pinned bars like
- * `MatchActionBar` can sit flush above it instead of guessing a pixel value
- * that drifts out of sync whenever this nav's content or the device's safe
- * area changes.
+ * Publishes its own full visual height — the icon/label row, the safe-area
+ * inset, and the floating button's upward overflow — as `--mobile-nav-height`
+ * on the root element, so pinned bars like `MatchActionBar` can sit flush
+ * above it (clearing the floating button too) instead of guessing a pixel
+ * value that drifts out of sync whenever this nav's content, the floating
+ * button, or the device's safe area changes.
  */
 export function MobileBottomNav() {
   const location = useLocation()
   const navigate = useNavigate()
   const navRef = useRef<HTMLElement>(null)
+  const logMatchRef = useRef<HTMLButtonElement>(null)
 
   const isActive = (to: string) => location.pathname === to
 
   useLayoutEffect(() => {
     const nav = navRef.current
-    if (!nav) return
-    const setHeight = () =>
-      document.documentElement.style.setProperty('--mobile-nav-height', `${nav.getBoundingClientRect().height}px`)
+    const logMatchButton = logMatchRef.current
+    if (!nav || !logMatchButton) return
+    const setHeight = () => {
+      const visualTop = Math.min(nav.getBoundingClientRect().top, logMatchButton.getBoundingClientRect().top)
+      const height = window.innerHeight - visualTop + FLOATING_BUTTON_CLEARANCE_PX
+      document.documentElement.style.setProperty('--mobile-nav-height', `${height}px`)
+    }
     setHeight()
     const observer = new ResizeObserver(setHeight)
     observer.observe(nav)
+    observer.observe(logMatchButton)
     return () => observer.disconnect()
   }, [])
 
@@ -56,6 +69,7 @@ export function MobileBottomNav() {
         </Link>
 
         <button
+          ref={logMatchRef}
           type="button"
           onClick={() => navigate('/matches/new')}
           aria-label="Log a match"

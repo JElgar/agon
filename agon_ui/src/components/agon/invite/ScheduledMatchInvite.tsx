@@ -378,7 +378,7 @@ export function ScheduledMatchInvite({
         </div>
       </div>
 
-      <div className="sticky bottom-[var(--mobile-nav-height,72px)] z-10 -mx-4 mt-auto flex flex-col gap-2 bg-card/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-card/80 md:mt-2 xl:hidden">
+      <div className="sticky bottom-0 z-10 -mx-4 mt-auto flex flex-col gap-2 bg-card/95 px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))] backdrop-blur supports-[backdrop-filter]:bg-card/80 md:mt-2 xl:hidden">
         <div className="flex gap-2.5">
           {invitation ? (
             <Button

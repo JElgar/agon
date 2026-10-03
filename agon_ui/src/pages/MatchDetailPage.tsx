@@ -432,7 +432,7 @@ function MatchDetail({
 
   if (isScheduledInvite) {
     return (
-      <div className="mx-auto mb-[calc(var(--mobile-nav-height,72px)_-_7rem)] flex min-h-[calc(100dvh_-_6rem_-_var(--mobile-nav-height,72px))] max-w-xl flex-col gap-4 md:mb-0 md:min-h-0 xl:max-w-[1040px]">
+      <div className="mx-auto -mb-28 flex min-h-[calc(100dvh_-_6rem)] max-w-xl flex-col gap-4 md:mb-0 md:min-h-0 xl:max-w-[1040px]">
         <ScheduledMatchInvite
           match={match}
           currentUserId={currentUserId}
@@ -792,7 +792,7 @@ function MatchDetail({
   }
 
   return (
-    <div className="mx-auto mb-[calc(var(--mobile-nav-height,72px)_-_7rem)] flex min-h-[calc(100dvh_-_6rem_-_var(--mobile-nav-height,72px))] max-w-xl flex-col gap-4 md:mb-0 md:min-h-0">
+    <div className="mx-auto -mb-28 flex min-h-[calc(100dvh_-_6rem)] max-w-xl flex-col gap-4 md:mb-0 md:min-h-0">
       {/* Every sport follows the redesign mocks: `Match.dc.html` (photo
           hero, live cricket), `MatchFootball.dc.html` /
           `EventsFootball.dc.html` / `PlayersFootball.dc.html` and

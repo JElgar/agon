@@ -1,4 +1,3 @@
-import { useLayoutEffect, useRef } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Home, Plus, User } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -9,38 +8,17 @@ import { cn } from '@/lib/utils'
  * Feed, Add (logging a match), and Profile — everything else (search,
  * notifications, teams, sign out) lives behind the icons in the mobile top
  * bar or on the profile page itself. Hidden at the `md` breakpoint, where
- * the fixed sidebar takes over.
- *
- * Publishes its own height as `--mobile-nav-height` on the root element, so
- * pinned bars like `MatchActionBar` can sit flush above it instead of
- * guessing a pixel value that drifts out of sync whenever this nav's
- * content or the device's safe area changes.
+ * the fixed sidebar takes over, and on match detail pages, which pin their
+ * own action bar to the bottom instead (see `isNestedMatchPage` in `App.tsx`).
  */
 export function MobileBottomNav() {
   const location = useLocation()
   const navigate = useNavigate()
-  const navRef = useRef<HTMLElement>(null)
 
   const isActive = (to: string) => location.pathname === to
 
-  useLayoutEffect(() => {
-    const nav = navRef.current
-    if (!nav) return
-    const setHeight = () => {
-      const height = window.innerHeight - nav.getBoundingClientRect().top
-      document.documentElement.style.setProperty('--mobile-nav-height', `${height}px`)
-    }
-    setHeight()
-    const observer = new ResizeObserver(setHeight)
-    observer.observe(nav)
-    return () => observer.disconnect()
-  }, [])
-
   return (
-    <nav
-      ref={navRef}
-      className="fixed inset-x-0 bottom-0 z-20 bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80 md:hidden"
-    >
+    <nav className="fixed inset-x-0 bottom-0 z-20 bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80 md:hidden">
       <div
         className="mx-auto flex max-w-xl items-center justify-around px-6"
         style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}

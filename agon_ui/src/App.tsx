@@ -67,8 +67,18 @@ function ComingSoon({ title }: { title: string }) {
  *  ≥1280px), a top bar + floating pill nav at the tablet breakpoint
  *  (`md`–`xl`, ~768–1279px), and a top bar + bottom tab bar below that,
  *  wrapping the routed content. */
+/** Match detail pages pin their own "Give kudos" / RSVP action bar to the
+ *  bottom of the screen; the bottom tab bar would just compete with it for
+ *  the same strip of screen, so it's hidden there (but not on `/matches/new`
+ *  or `/matches/scheduled`, which have no pinned bar of their own). */
+function isNestedMatchPage(pathname: string): boolean {
+  return /^\/matches\/[^/]+$/.test(pathname)
+}
+
 function AppShell({ onSignOut }: { onSignOut: () => void }) {
   const { data: unread } = useUnreadNotificationsCount()
+  const location = useLocation()
+  const showMobileBottomNav = !isNestedMatchPage(location.pathname)
 
   return (
     <div className="min-h-screen bg-background">
@@ -138,7 +148,7 @@ function AppShell({ onSignOut }: { onSignOut: () => void }) {
           </Routes>
           </main>
 
-        <MobileBottomNav />
+        {showMobileBottomNav && <MobileBottomNav />}
         <TabletFloatingNav />
       </div>
     </div>

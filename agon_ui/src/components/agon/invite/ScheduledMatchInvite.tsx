@@ -1,15 +1,41 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Calendar, CalendarPlus, ChevronLeft, Link2, Pencil, MapPin, Share, UserPlus } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import {
+  Calendar,
+  CalendarPlus,
+  ChevronLeft,
+  Link2,
+  MoreVertical,
+  Pencil,
+  MapPin,
+  Radio,
+  Share,
+  ShieldMinus,
+  ShieldPlus,
+  UserPlus,
+} from 'lucide-react'
 import type { components } from '@/types/api'
+import { fetchClient } from '@/lib/api-client'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { scheduledDateTime } from '@/lib/datetime'
 import { directionsUrl } from '@/lib/location'
 import { addMatchToCalendar } from '@/lib/calendar'
 import { respondToInvitation } from '@/lib/invitations'
-import { PersonAvatar, SideSwatch, CommentsPreviewCard } from '@/components/agon/football/FootballMatchView'
+import {
+  MatchTabBar,
+  PersonAvatar,
+  SideSwatch,
+  CommentsPreviewCard,
+} from '@/components/agon/football/FootballMatchView'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
 import { WaitlistSection } from '@/components/agon/WaitlistSection'
 import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
@@ -20,7 +46,7 @@ import {
   memberAvatarUrl,
   memberName,
   myPendingInvitation,
-  sideTeamHint,
+  playerId,
   withInvitationStatus,
 } from '@/lib/members'
 
@@ -50,6 +76,19 @@ function sideLabel(side: MatchSide | undefined, fallback: string): string {
   return side?.name?.trim() || fallback
 }
 
+type InviteTab = 'details' | 'teams'
+const INVITE_TABS: { id: InviteTab; label: string }[] = [
+  { id: 'details', label: 'Details' },
+  { id: 'teams', label: 'Teams' },
+]
+
+/** Sport that records live events as it's played (the other sports are
+ *  scored after the fact via `LogMatchPage`) — the only ones with
+ *  somewhere for "Start scoring" to actually send an admin. */
+function isLiveScoredSport(matchType: Match['match_type']): boolean {
+  return matchType === 'football' || matchType === 'cricket' || matchType === 'netball'
+}
+
 /** "MON" / "29" — the desktop layout's mini date tile (`DesktopInvite.dc.html`). */
 function dateTileParts(startsAt: string): { month: string; day: string } {
   const d = new Date(startsAt)
@@ -59,25 +98,8 @@ function dateTileParts(startsAt: string): { month: string; day: string } {
   }
 }
 
-/** "Teams get picked on the night" note — shared between the mobile flow and
- *  the desktop layout's right-hand column. */
-function TeamsCard({ sideA, sideB }: { sideA: MatchSide | undefined; sideB: MatchSide | undefined }) {
-  return (
-    <Card className="flex flex-col gap-3 p-[18px]">
-      <span className="text-[13px] font-semibold text-muted-foreground">Teams</span>
-      <div className="flex items-center gap-2.5">
-        <SideSwatch index={0} size={14} />
-        <span className="text-[17px] font-bold">{sideLabel(sideA, 'Side A')}</span>
-        <span className="px-1 text-sm text-muted-foreground">vs</span>
-        <SideSwatch index={1} size={14} />
-        <span className="text-[17px] font-bold">{sideLabel(sideB, 'Side B')}</span>
-      </div>
-      <span className="text-sm text-muted-foreground">Teams get picked on the night.</span>
-    </Card>
-  )
-}
-
-/** "Organised by ..." row — shared the same way as `TeamsCard`. */
+/** "Organised by ..." row — shared the same way the going list and teams
+ *  tab are between the mobile flow and the desktop layout. */
 function OrganizerRow({ organiser }: { organiser: MatchPlayer }) {
   return (
     <div className="flex items-center gap-3 px-1">
@@ -89,17 +111,53 @@ function OrganizerRow({ organiser }: { organiser: MatchPlayer }) {
   )
 }
 
+/** One side's roster on the Teams tab — read-only; editing who's on which
+ *  side happens through `MatchRosterEditor`, surfaced alongside this via the
+ *  "Edit roster" button rather than inline here. */
+function TeamRosterCard({
+  side,
+  index,
+  fallback,
+  players,
+}: {
+  side: MatchSide | undefined
+  index: number
+  fallback: string
+  players: MatchPlayer[]
+}) {
+  return (
+    <Card className="flex flex-col gap-1 p-[18px]">
+      <div className="flex items-center gap-2.5 pb-2">
+        <SideSwatch index={index} size={14} />
+        <span className="font-display flex-grow text-[18px] font-extrabold">{sideLabel(side, fallback)}</span>
+        <span className="text-[13px] text-muted-foreground">{players.length} players</span>
+      </div>
+      {players.length === 0 ? (
+        <p className="py-2 text-sm text-muted-foreground">
+          No one assigned yet — teams get picked on the night.
+        </p>
+      ) : (
+        players.map((p) => (
+          <div key={p.member.id} className="flex items-center gap-2.5 border-t border-border/60 py-2 first:border-t-0">
+            <PersonAvatar name={memberName(p.member)} imageUrl={memberAvatarUrl(p.member)} size={32} />
+            <span className="truncate text-sm font-medium">{memberName(p.member)}</span>
+          </div>
+        ))
+      )}
+    </Card>
+  )
+}
+
 /**
- * The redesigned "Invite" screen (`Invite.dc.html` / `DesktopInvite.dc.html`)
- * — a scheduled match's pre-match view: title/when/where, a "going" attendee
- * grid with a progress bar toward the cap, a teams note, who organised it,
- * and either a sticky mobile bottom bar or (at the `xl` desktop breakpoint,
+ * The redesigned "Invite" screen (`Invite.dc.html` / `DesktopInvite.dc.html`,
+ * plus the Teams-tab state in `InviteTeams.dc.html`/`DesktopInviteTeams.dc.html`)
+ * — a scheduled match's pre-match view, split into a "Details" tab
+ * (title/when/where, a "going" list with a progress bar toward the cap and
+ * admin role controls, the waitlist, who organised it) and a "Teams" tab
+ * (each side's roster, plus the roster/invite/join-link admin tools), with
+ * either a sticky mobile bottom bar or (at the `xl` desktop breakpoint,
  * alongside the app shell's sidebar) a right-hand action card replacing it.
- * Used for every sport while `match.status === 'scheduled'`. Also carries
- * the admin roster tools (edit roster/invite/join links), the waitlist and
- * comments — none of which the single-viewport mocks show, but this is the
- * only view a scheduled match renders, so they need to live here rather
- * than "below" a summary that doesn't exist for this state.
+ * Used for every sport while `match.status === 'scheduled'`.
  */
 export function ScheduledMatchInvite({
   match,
@@ -122,23 +180,38 @@ export function ScheduledMatchInvite({
   const cap = overallCap(match)
   const spotsLeft = cap != null ? Math.max(cap - going.length, 0) : undefined
   const pct = cap ? Math.min(100, Math.round((going.length / cap) * 100)) : 0
-  // A side counts as "picked on the night" (no fixed roster split yet) once
-  // neither side is linked to a real team — the same signal `sideTeamHint`
-  // uses to tell a persistent team from an ad-hoc one.
-  const adHocTeams = match.sides.length === 2 && !sideTeamHint(sideA) && !sideTeamHint(sideB)
   const organiser = match.players.find((p) => p.role === 'owner')
   const metaTeamSide = match.sides.find((s) => s.team_name)
   const viewerGoing = going.some((p) => p.member.type === 'User' && p.member.user_id === currentUserId)
   const { month, day } = dateTileParts(match.starts_at)
   const description = `${sideLabel(sideA, 'Side A')} vs ${sideLabel(sideB, 'Side B')}`
+  // Football/netball gate the clock behind a short pre-match setup screen;
+  // cricket has no equivalent step and goes straight into scoring — same
+  // split `MatchDetailPage` uses for its own "Start scoring" entry.
+  const liveEntryPath =
+    match.match_type === 'cricket' || match.match_type === 'netball'
+      ? `/matches/${match.id}/live`
+      : `/matches/${match.id}/live/setup`
 
   const invitation = myPendingInvitation(match, currentUserId)
+  const [tab, setTab] = useState<InviteTab>('details')
   const [action, setAction] = useState<'accept' | 'decline' | null>(null)
   const [editingRoster, setEditingRoster] = useState(false)
   const [inviting, setInviting] = useState(false)
   const [commentsOpen, setCommentsOpen] = useState(false)
   const myPlayer = match.players.find((p) => p.member.type === 'User' && p.member.user_id === currentUserId)
   const matchKey = ['match', match.id]
+
+  const setPlayerRole = useMutation({
+    mutationFn: async ({ playerId: pid, role }: { playerId: string; role: 'admin' | 'player' }) => {
+      const { error } = await fetchClient.POST('/matches/{match_id}/players/{player_id}/role', {
+        params: { path: { match_id: match.id, player_id: pid } },
+        body: { role },
+      })
+      if (error) throw new Error('Failed to update role')
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: matchKey }),
+  })
 
   const respond = useMutation({
     mutationFn: async (response: components['schemas']['InvitationResponse']) => {
@@ -240,66 +313,145 @@ export function ScheduledMatchInvite({
             </div>
           </div>
 
-          <Card className="flex flex-col gap-3.5 p-[18px]">
-            <div className="flex items-baseline gap-2">
-              <span className="font-display text-[30px] font-extrabold">{going.length} going</span>
-              {cap != null && <span className="flex-grow text-[15px] text-muted-foreground">of {cap}</span>}
-              {spotsLeft != null && (
-                <span className="text-sm font-semibold text-primary">
-                  {spotsLeft} {spotsLeft === 1 ? 'spot' : 'spots'} left
-                </span>
-              )}
-            </div>
-            {cap != null && (
-              <div className="h-2 overflow-hidden rounded-full bg-muted">
-                <div className="h-2 rounded-full bg-primary" style={{ width: `${pct}%` }} />
-              </div>
-            )}
-            {going.length > 0 && (
-              <div className="grid grid-cols-2 gap-x-2.5 gap-y-3 pt-1">
-                {going.map((p) => (
-                  <div key={p.member.id} className="flex items-center gap-2.5">
-                    <PersonAvatar name={memberName(p.member)} imageUrl={memberAvatarUrl(p.member)} size={32} />
-                    <span className="truncate text-sm font-medium">{memberName(p.member)}</span>
+          <MatchTabBar tabs={INVITE_TABS} value={tab} onChange={setTab} />
+
+          {tab === 'details' && (
+            <>
+              <Card className="flex flex-col gap-3.5 p-[18px]">
+                <div className="flex items-baseline gap-2">
+                  <span className="font-display text-[30px] font-extrabold">{going.length} going</span>
+                  {cap != null && <span className="flex-grow text-[15px] text-muted-foreground">of {cap}</span>}
+                  {spotsLeft != null && (
+                    <span className="text-sm font-semibold text-primary">
+                      {spotsLeft} {spotsLeft === 1 ? 'spot' : 'spots'} left
+                    </span>
+                  )}
+                </div>
+                {cap != null && (
+                  <div className="h-2 overflow-hidden rounded-full bg-muted">
+                    <div className="h-2 rounded-full bg-primary" style={{ width: `${pct}%` }} />
                   </div>
-                ))}
-              </div>
-            )}
-          </Card>
+                )}
+              </Card>
 
-          <WaitlistSection match={match} currentUserId={currentUserId} canManage={canEdit} />
-
-          {/* Below the fold on mobile; on desktop these move into the action
-              card's column instead (right-hand `xl:flex` below). */}
-          <div className="flex flex-col gap-4 xl:hidden">
-            {adHocTeams && <TeamsCard sideA={sideA} sideB={sideB} />}
-            {organiser && <OrganizerRow organiser={organiser} />}
-          </div>
-
-          {/* Admin roster tools and comments: not shown on the single-viewport
-              mocks, but still need to be reachable from this view — the mocks
-              just don't need to show everything the page can do. */}
-          {canEdit && (
-            <div className="flex flex-wrap gap-2">
-              <Button variant="outline" className="gap-1.5 rounded-full" onClick={() => setEditingRoster(true)}>
-                <Pencil className="size-4" /> Edit roster
-              </Button>
-              {!inviting && (
-                <Button variant="outline" className="gap-1.5 rounded-full" onClick={() => setInviting(true)}>
-                  <UserPlus className="size-4" /> Invite players
-                </Button>
+              {canEdit && isLiveScoredSport(match.match_type) && (
+                <Link
+                  to={liveEntryPath}
+                  className="flex h-12 items-center justify-center gap-2 rounded-2xl bg-foreground text-base font-bold text-background transition-opacity hover:opacity-90"
+                >
+                  <Radio className="size-5" /> Start scoring
+                </Link>
               )}
-              <MatchJoinLinksDialog match={match}>
-                <Button variant="outline" className="gap-1.5 rounded-full">
-                  <Link2 className="size-4" /> Join links
-                </Button>
-              </MatchJoinLinksDialog>
-            </div>
+
+              {going.length > 0 && (
+                <Card className="flex flex-col p-0">
+                  <span className="px-[18px] pt-3 pb-1 text-[13px] font-semibold text-muted-foreground">
+                    Who's going
+                  </span>
+                  {going.map((p) => {
+                    const id = playerId(p)
+                    const isOwnerRow = p.role === 'owner'
+                    const isYou = myPlayer && id === playerId(myPlayer)
+                    return (
+                      <div
+                        key={id}
+                        className="flex items-center gap-2.5 border-t border-border/60 px-[18px] py-2.5 first:border-t-0"
+                      >
+                        <PersonAvatar name={memberName(p.member)} imageUrl={memberAvatarUrl(p.member)} size={36} />
+                        <div className="min-w-0 flex-1">
+                          <span className="block truncate text-[15px] font-medium">
+                            {memberName(p.member)}
+                            {isYou && ' (you)'}
+                          </span>
+                          {p.role !== 'player' && (
+                            <span className="block text-xs text-muted-foreground capitalize">{p.role}</span>
+                          )}
+                        </div>
+                        {canEdit && !isOwnerRow && (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="size-8 shrink-0"
+                                disabled={setPlayerRole.isPending}
+                                aria-label={`${memberName(p.member)} options`}
+                              >
+                                <MoreVertical className="size-4" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent>
+                              {p.role === 'admin' ? (
+                                <DropdownMenuItem
+                                  disabled={setPlayerRole.isPending}
+                                  onSelect={() => setPlayerRole.mutate({ playerId: id, role: 'player' })}
+                                >
+                                  <ShieldMinus /> Remove admin
+                                </DropdownMenuItem>
+                              ) : (
+                                <DropdownMenuItem
+                                  disabled={setPlayerRole.isPending}
+                                  onSelect={() => setPlayerRole.mutate({ playerId: id, role: 'admin' })}
+                                >
+                                  <ShieldPlus /> Make admin
+                                </DropdownMenuItem>
+                              )}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        )}
+                      </div>
+                    )
+                  })}
+                </Card>
+              )}
+
+              <WaitlistSection match={match} currentUserId={currentUserId} canManage={canEdit} />
+
+              {/* Below the fold on mobile; on desktop this moves into the
+                  action card's column instead (right-hand `xl:flex` below). */}
+              {organiser && (
+                <div className="xl:hidden">
+                  <OrganizerRow organiser={organiser} />
+                </div>
+              )}
+            </>
           )}
-          {canEdit && editingRoster && (
-            <MatchRosterEditor match={match} onDone={() => setEditingRoster(false)} />
+
+          {tab === 'teams' && (
+            <>
+              {match.sides.map((side, i) => (
+                <TeamRosterCard
+                  key={side.id}
+                  side={side}
+                  index={i}
+                  fallback={i === 0 ? 'Side A' : 'Side B'}
+                  players={going.filter((p) => p.side_id === side.id)}
+                />
+              ))}
+
+              {canEdit && (
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" className="gap-1.5 rounded-full" onClick={() => setEditingRoster(true)}>
+                    <Pencil className="size-4" /> Edit roster
+                  </Button>
+                  {!inviting && (
+                    <Button variant="outline" className="gap-1.5 rounded-full" onClick={() => setInviting(true)}>
+                      <UserPlus className="size-4" /> Invite players
+                    </Button>
+                  )}
+                  <MatchJoinLinksDialog match={match}>
+                    <Button variant="outline" className="gap-1.5 rounded-full">
+                      <Link2 className="size-4" /> Join links
+                    </Button>
+                  </MatchJoinLinksDialog>
+                </div>
+              )}
+              {canEdit && editingRoster && (
+                <MatchRosterEditor match={match} onDone={() => setEditingRoster(false)} />
+              )}
+              {canEdit && inviting && <InvitePlayers match={match} onDone={() => setInviting(false)} />}
+            </>
           )}
-          {canEdit && inviting && <InvitePlayers match={match} onDone={() => setInviting(false)} />}
 
           <CommentsPreviewCard
             match={match}
@@ -373,7 +525,6 @@ export function ScheduledMatchInvite({
               </button>
             </div>
           </Card>
-          {adHocTeams && <TeamsCard sideA={sideA} sideB={sideB} />}
           {organiser && <OrganizerRow organiser={organiser} />}
         </div>
       </div>

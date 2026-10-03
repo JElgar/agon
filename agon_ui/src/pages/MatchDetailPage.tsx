@@ -7,7 +7,7 @@ import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { scheduledDateTime } from '@/lib/datetime'
 import { directionsUrl } from '@/lib/location'
-import { downloadMatchIcs } from '@/lib/calendar'
+import { addMatchToCalendar } from '@/lib/calendar'
 import { Button } from '@/components/ui/button'
 import { WaitlistSection } from '@/components/agon/WaitlistSection'
 import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
@@ -363,7 +363,7 @@ function MatchDetail({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-52">
         <DropdownMenuItem
-          onSelect={() => downloadMatchIcs(match, { title: match.name, description: `${nameA} vs ${nameB}` })}
+          onSelect={() => addMatchToCalendar(match, { title: match.name, description: `${nameA} vs ${nameB}` })}
         >
           <CalendarPlus className="size-4" /> Add to calendar
         </DropdownMenuItem>

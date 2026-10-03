@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { scheduledDateTime } from '@/lib/datetime'
 import { directionsUrl } from '@/lib/location'
-import { downloadMatchIcs } from '@/lib/calendar'
+import { addMatchToCalendar } from '@/lib/calendar'
 import { respondToInvitation } from '@/lib/invitations'
 import { PersonAvatar, SideSwatch, CommentsPreviewCard } from '@/components/agon/football/FootballMatchView'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
@@ -166,7 +166,7 @@ export function ScheduledMatchInvite({
     },
   })
 
-  const addToCalendar = () => downloadMatchIcs(match, { title: match.name, description })
+  const addToCalendar = () => addMatchToCalendar(match, { title: match.name, description })
 
   return (
     <>

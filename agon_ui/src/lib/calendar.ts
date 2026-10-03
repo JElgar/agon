@@ -52,12 +52,19 @@ function formatIcsDate(date: Date): string {
  * "You vs Opposition"), so this stays independent of how the detail page
  * labels sides.
  */
+/** The event's start/end instants, shared by every calendar format this
+ *  module produces. */
+function matchEventWindow(match: Match): { start: Date; end: Date } {
+  const start = new Date(match.starts_at)
+  const end = new Date(start.getTime() + estimatedDurationMinutes(match) * 60_000)
+  return { start, end }
+}
+
 export function buildMatchIcs(
   match: Match,
   { title, description }: { title: string; description: string },
 ): string {
-  const start = new Date(match.starts_at)
-  const end = new Date(start.getTime() + estimatedDurationMinutes(match) * 60_000)
+  const { start, end } = matchEventWindow(match)
   const location = match.location
 
   const lines = [
@@ -83,13 +90,10 @@ export function buildMatchIcs(
   return lines.join('\r\n')
 }
 
-/** Trigger a browser download of the match's `.ics` file. Most desktop
- *  browsers save it; mobile browsers typically open it straight into the
- *  device's own "add to calendar" flow. */
-export function downloadMatchIcs(
-  match: Match,
-  labels: { title: string; description: string },
-): void {
+/** Trigger a browser download of the match's `.ics` file. Desktop browsers
+ *  save it for a double-click open; iOS Safari hands it straight to the
+ *  Calendar app's own add-event sheet. */
+function downloadMatchIcs(match: Match, labels: { title: string; description: string }): void {
   const ics = buildMatchIcs(match, labels)
   const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' })
   const url = URL.createObjectURL(blob)
@@ -100,4 +104,40 @@ export function downloadMatchIcs(
   link.click()
   document.body.removeChild(link)
   URL.revokeObjectURL(url)
+}
+
+/** A Google Calendar "add event" link — opens straight into the Google
+ *  Calendar app (or its web add-event page) instead of prompting to save a
+ *  file, which is what Android's browsers do with a `.ics` download since
+ *  there's no OS-level calendar file association like iOS has. */
+function googleCalendarUrl(match: Match, { title, description }: { title: string; description: string }): string {
+  const { start, end } = matchEventWindow(match)
+  const params = new URLSearchParams({
+    action: 'TEMPLATE',
+    text: title,
+    dates: `${formatIcsDate(start)}/${formatIcsDate(end)}`,
+    details: description,
+  })
+  if (match.location) params.set('location', match.location.text)
+  return `https://calendar.google.com/calendar/render?${params.toString()}`
+}
+
+function isAndroidDevice(): boolean {
+  return /android/i.test(window.navigator.userAgent)
+}
+
+/**
+ * Add a match to the user's personal calendar. On Android there's no `.ics`
+ * file association to hand off to, so a downloaded file just sits in
+ * Downloads — a Google Calendar link opens straight into the app (or its
+ * web add-event page) instead. Everywhere else (iOS, desktop) the `.ics`
+ * download is the more universal choice, working with whatever calendar
+ * app/client the browser is already associated with.
+ */
+export function addMatchToCalendar(match: Match, labels: { title: string; description: string }): void {
+  if (isAndroidDevice()) {
+    window.open(googleCalendarUrl(match, labels), '_blank', 'noopener')
+    return
+  }
+  downloadMatchIcs(match, labels)
 }

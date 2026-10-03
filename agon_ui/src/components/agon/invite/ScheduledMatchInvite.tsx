@@ -289,6 +289,29 @@ export function ScheduledMatchInvite({
           >
             <Share className="size-[22px]" />
           </button>
+          {myPlayer && myPlayer.role !== 'owner' && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="More options"
+                  disabled={leaveMatch.isPending}
+                  className="flex size-11 items-center justify-center rounded-full text-foreground hover:bg-muted"
+                >
+                  <MoreVertical className="size-[22px]" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  disabled={leaveMatch.isPending}
+                  className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                  onSelect={() => leaveMatch.mutate()}
+                >
+                  <LogOut /> Leave match
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
       </div>
 
@@ -382,21 +405,21 @@ export function ScheduledMatchInvite({
                             <span className="block text-xs text-muted-foreground capitalize">{p.role}</span>
                           )}
                         </div>
-                        {!isOwnerRow && (isYou || canEdit) && (
+                        {canEdit && !isOwnerRow && (
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Button
                                 variant="ghost"
                                 size="icon"
                                 className="size-8 shrink-0"
-                                disabled={setPlayerRole.isPending || leaveMatch.isPending}
+                                disabled={setPlayerRole.isPending}
                                 aria-label={`${memberName(p.member)} options`}
                               >
                                 <MoreVertical className="size-4" />
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent>
-                              {canEdit && !isYou && (p.role === 'admin' ? (
+                              {p.role === 'admin' ? (
                                 <DropdownMenuItem
                                   disabled={setPlayerRole.isPending}
                                   onSelect={() => setPlayerRole.mutate({ playerId: id, role: 'player' })}
@@ -409,15 +432,6 @@ export function ScheduledMatchInvite({
                                   onSelect={() => setPlayerRole.mutate({ playerId: id, role: 'admin' })}
                                 >
                                   <ShieldPlus /> Make admin
-                                </DropdownMenuItem>
-                              ))}
-                              {isYou && (
-                                <DropdownMenuItem
-                                  disabled={leaveMatch.isPending}
-                                  className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                                  onSelect={() => leaveMatch.mutate()}
-                                >
-                                  <LogOut /> Leave match
                                 </DropdownMenuItem>
                               )}
                             </DropdownMenuContent>

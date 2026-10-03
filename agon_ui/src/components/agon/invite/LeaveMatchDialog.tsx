@@ -11,7 +11,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog'
-import { cn } from '@/lib/utils'
+import { Combobox, ComboboxContent, ComboboxInput, ComboboxItem, ComboboxList } from '@/components/ui/combobox'
 import { memberName, memberAvatarUrl, playerId } from '@/lib/members'
 
 type Match = components['schemas']['Match']
@@ -151,28 +151,27 @@ export function LeaveMatchDialog({
               As owner, you need to hand the role to someone else before you
               can leave. Pick who takes over:
             </p>
-            <ul className="flex max-h-64 flex-col divide-y overflow-y-auto rounded-lg border">
-              {candidates.map((p) => {
-                const id = playerId(p)
-                const selected = selectedPlayerId === id
-                return (
-                  <li key={id}>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedPlayerId(id)}
-                      className={cn(
-                        'flex w-full items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-muted',
-                        selected && 'bg-muted',
-                      )}
-                    >
+            <Combobox
+              items={candidates}
+              itemToStringLabel={(p: MatchPlayer) => memberName(p.member)}
+              onValueChange={(next) => {
+                const p = next as MatchPlayer | null
+                setSelectedPlayerId(p ? playerId(p) : null)
+              }}
+            >
+              <ComboboxInput placeholder="Search players…" showTrigger={false} />
+              <ComboboxContent>
+                <ComboboxList>
+                  {(p: MatchPlayer) => (
+                    <ComboboxItem key={playerId(p)} value={p}>
                       <PersonAvatar name={memberName(p.member)} imageUrl={memberAvatarUrl(p.member)} size={32} />
-                      <span className="flex-1 truncate text-sm">{memberName(p.member)}</span>
+                      <span className="flex-1 truncate">{memberName(p.member)}</span>
                       <span className="text-xs capitalize text-muted-foreground">{p.role}</span>
-                    </button>
-                  </li>
-                )
-              })}
-            </ul>
+                    </ComboboxItem>
+                  )}
+                </ComboboxList>
+              </ComboboxContent>
+            </Combobox>
           </>
         )}
 

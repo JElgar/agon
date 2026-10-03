@@ -37,10 +37,10 @@ export function MobileBottomNav() {
         <button
           type="button"
           onClick={() => navigate('/matches/new')}
-          className="flex flex-1 flex-col items-center gap-0.5 py-2 text-[11px] font-medium text-muted-foreground"
+          aria-label="Log a match"
+          className="-mt-6 flex size-14 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg ring-4 ring-background transition-transform active:scale-95"
         >
-          <Plus className="size-5" />
-          Add
+          <Plus className="size-6" />
         </button>
 
         <Link

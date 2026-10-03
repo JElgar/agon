@@ -15,7 +15,8 @@ use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_pk, s, to_item}
 use super::keys::{Pk, Sk};
 use super::records::{
     ConfirmedScoreRecord, HeaderPhotoRecord, LocationRecord, MatchFormatRecord, MatchPlayerRecord,
-    MatchRecord, MatchScoreRecord, MatchSideRecord, PendingScoreRecord, SideRosterMemberRecord,
+    MatchPlayerRole, MatchRecord, MatchScoreRecord, MatchSideRecord, PendingScoreRecord,
+    SideRosterMemberRecord,
 };
 
 pub const TYPE_MATCH: &str = "match";
@@ -800,6 +801,51 @@ impl Dao {
             Err(e) if super::is_transaction_conditional_failure(&e) => Err(DaoError::NotFound(
                 format!("player {from_player_id} or {to_player_id} on match {match_id}"),
             )),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// Set a single player's role to `Admin` or `Player` — the `Owner` role
+    /// only ever moves via [`Self::transfer_match_ownership`], which keeps
+    /// the one-owner invariant atomic; the caller is responsible for
+    /// rejecting `Owner` here and for checking the target isn't already the
+    /// owner before calling this. `NotFound` if the player doesn't exist.
+    #[tracing::instrument(skip(self))]
+    pub async fn set_match_player_role(
+        &self,
+        match_id: &str,
+        player_id: &str,
+        role: MatchPlayerRole,
+    ) -> DaoResult<()> {
+        let role_value = match role {
+            MatchPlayerRole::Admin => "admin",
+            MatchPlayerRole::Player => "player",
+            MatchPlayerRole::Owner => {
+                return Err(DaoError::Dynamo(
+                    "set_match_player_role can't set the owner role".into(),
+                ));
+            }
+        };
+
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Player(player_id.into()).to_string()))
+            .update_expression("SET #role = :role")
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#role", "role")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_values(":role", s(role_value))
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => Err(DaoError::NotFound(format!(
+                "player {player_id} on match {match_id}"
+            ))),
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
     }

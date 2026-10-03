@@ -45,10 +45,11 @@ use mapping::{
     invitation_status_str, join_link_from_record, join_link_scope_from_record,
     join_link_scope_to_record, live_event_from_record, location_to_record, match_format_sport_tag,
     match_format_to_record, match_from_records, match_player_role_from_record,
-    match_score_from_record, match_score_to_record, match_status_str, match_type_tag,
-    new_live_event_to_dao, notification_actor_id, notification_from_record, roster_preview_player,
-    score_submission_from_record, score_to_record, search_match_from_records, team_from_records,
-    team_list_item_from_record, team_member_from_record, user_profile_from_record,
+    match_player_role_to_record, match_score_from_record, match_score_to_record, match_status_str,
+    match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
+    roster_preview_player, score_submission_from_record, score_to_record,
+    search_match_from_records, team_from_records, team_list_item_from_record,
+    team_member_from_record, user_profile_from_record,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -81,7 +82,8 @@ use membership::{
     AddInvitationsInput, CreateJoinLinkInput, Invitation, InvitationContext, InvitationDetail,
     InvitationKind, InvitationMatchContext, InvitationStatus, JoinLink, JoinLinkPreview,
     JoinMatchInput, MatchPlayerRole, Member, RespondByTokenInput, RespondToInvitationInput,
-    TokenInvitation, TransferMatchOwnershipInput, UserInvitation, UserMember,
+    SetMatchPlayerRoleInput, TokenInvitation, TransferMatchOwnershipInput, UserInvitation,
+    UserMember,
 };
 
 mod team;
@@ -2241,6 +2243,28 @@ enum TransferMatchOwnershipResponse {
     #[oai(status = 403)]
     Forbidden(PlainText<String>),
 
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// Promote a player to admin, or demote an admin back to a plain player.
+#[derive(ApiResponse)]
+enum SetMatchPlayerRoleResponse {
+    /// The role was changed; the match's own `players`/`viewer_role` already
+    /// reflect it on the next read.
+    #[oai(status = 204)]
+    Ok,
+
+    /// Tried to set (or the target already holds) the `Owner` role — that
+    /// only ever moves via `POST /matches/:match_id/transfer-ownership`.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    /// The match doesn't exist, or the target isn't a player on it.
     #[oai(status = 404)]
     NotFound(PlainText<String>),
 }
@@ -6352,6 +6376,59 @@ impl Api {
             .await
             .map_err(dao_internal)?;
         Ok(TransferMatchOwnershipResponse::Ok)
+    }
+
+    /// Promote a player to admin, or demote an admin back to a plain player.
+    ///
+    /// Match-admin only (see `caller_is_match_admin`). Can't be used to set
+    /// or remove the `Owner` role, or to change the current owner's own
+    /// role — `POST /matches/:match_id/transfer-ownership` is the only way
+    /// either of those moves.
+    #[oai(path = "/matches/:match_id/players/:player_id/role", method = "post")]
+    async fn set_match_player_role(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        Path(player_id): Path<String>,
+        input: Json<SetMatchPlayerRoleInput>,
+    ) -> Result<SetMatchPlayerRoleResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let role = input.0.role;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(SetMatchPlayerRoleResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(SetMatchPlayerRoleResponse::Forbidden(PlainText(
+                "only a match admin can change a player's role".into(),
+            )));
+        }
+        if role == MatchPlayerRole::Owner {
+            return Ok(SetMatchPlayerRoleResponse::ValidationError(PlainText(
+                "transfer ownership instead of setting the owner role here".into(),
+            )));
+        }
+        let Some(target) = agg.players.iter().find(|p| p.player_id == player_id) else {
+            return Ok(SetMatchPlayerRoleResponse::NotFound(PlainText(
+                "player not found".into(),
+            )));
+        };
+        if target.role == dao::records::MatchPlayerRole::Owner {
+            return Ok(SetMatchPlayerRoleResponse::ValidationError(PlainText(
+                "transfer ownership instead of changing the owner's role".into(),
+            )));
+        }
+
+        dao.set_match_player_role(&match_id, &player_id, match_player_role_to_record(role))
+            .await
+            .map_err(dao_internal)?;
+        Ok(SetMatchPlayerRoleResponse::Ok)
     }
 
     /// Leave a match.

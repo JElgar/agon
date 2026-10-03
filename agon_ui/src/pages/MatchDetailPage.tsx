@@ -770,7 +770,7 @@ function MatchDetail({
               </>
             )}
             {!isLiveSport && !singles && (
-              <WhoPlayedCard match={match} title="Who played" />
+              <WhoPlayedCard match={match} title="Who played" onClick={() => setMatchTab('players')} />
             )}
             {commentsCard}
           </div>
@@ -851,7 +851,7 @@ function MatchDetail({
           {banners}
           {yourGameCard}
           {statCards}
-          {!singles && <WhoPlayedCard match={match} title="Who played" />}
+          {!singles && <WhoPlayedCard match={match} title="Who played" onClick={() => setMatchTab('players')} />}
           {commentsCard}
           {rulesCard}
           {adminFooter}

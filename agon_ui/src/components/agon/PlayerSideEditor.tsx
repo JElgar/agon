@@ -65,6 +65,11 @@ export interface PlayerSideEditorProps {
    *  since a linked team is the colour's source of truth instead. */
   colour?: string
   onColourChange?: (hex: string) => void
+  /** Caps how many players this side can hold before the add box gives way
+   *  to a hint instead — the server's own default for an ad-hoc (no team,
+   *  no custom name) side of an individual sport, which it can't display as
+   *  anything but its players' own names past 2 of them. Omit for no cap. */
+  maxPlayers?: number
 }
 
 /** How long to wait after typing stops before hitting `/users/search`. */
@@ -90,6 +95,7 @@ export function PlayerSideEditor({
   onTeamChange,
   colour,
   onColourChange,
+  maxPlayers,
 }: PlayerSideEditorProps) {
   const [term, setTerm] = useState('')
   const [debounced, setDebounced] = useState('')
@@ -165,6 +171,7 @@ export function PlayerSideEditor({
   ]
   const isLoading = searching && search.isLoading
   const nothingFound = !isLoading && items.length === 0 && trimmed.length > 0
+  const atCap = maxPlayers !== undefined && players.length >= maxPlayers
 
   return (
     <div className="flex flex-col gap-2">
@@ -265,60 +272,66 @@ export function PlayerSideEditor({
         )}
 
         {/* Search / add */}
-        <Combobox
-          items={items}
-          filter={null}
-          autoHighlight
-          inputValue={term}
-          onInputValueChange={setTerm}
-          // Without this, selecting an item makes the combobox fill the input
-          // with a stringified dump of the selected `SearchItem` object (no
-          // natural label) right after `onValueChange` below clears it back to
-          // "" — the two land in the same batch and the fill wins, leaving the
-          // box showing `{"kind":"user",...}` and re-querying `/users/search`
-          // for that garbage. We always want it blank post-select (the picked
-          // player becomes a tagged row, not text in the box), so just say so.
-          itemToStringLabel={() => ''}
-          onValueChange={(next) => {
-            const item = next as SearchItem | null
-            if (!item) return
-            if (item.kind === 'user') addUser(item.user)
-            else addExternal(item.name)
-          }}
-        >
-          <ComboboxInput
-            placeholder={searchPlaceholder}
-            showTrigger={false}
-            className="h-11 rounded-2xl border-dashed bg-transparent shadow-none"
+        {atCap ? (
+          <p className="px-1 py-1 text-xs text-muted-foreground">
+            Name this side to add more players.
+          </p>
+        ) : (
+          <Combobox
+            items={items}
+            filter={null}
+            autoHighlight
+            inputValue={term}
+            onInputValueChange={setTerm}
+            // Without this, selecting an item makes the combobox fill the input
+            // with a stringified dump of the selected `SearchItem` object (no
+            // natural label) right after `onValueChange` below clears it back to
+            // "" — the two land in the same batch and the fill wins, leaving the
+            // box showing `{"kind":"user",...}` and re-querying `/users/search`
+            // for that garbage. We always want it blank post-select (the picked
+            // player becomes a tagged row, not text in the box), so just say so.
+            itemToStringLabel={() => ''}
+            onValueChange={(next) => {
+              const item = next as SearchItem | null
+              if (!item) return
+              if (item.kind === 'user') addUser(item.user)
+              else addExternal(item.name)
+            }}
           >
-            <InputGroupAddon align="inline-start" className="text-muted-foreground">
-              <Plus className="size-4" />
-            </InputGroupAddon>
-          </ComboboxInput>
-          <ComboboxContent>
-            {isLoading && <p className="px-3 py-2 text-xs text-muted-foreground">Searching…</p>}
-            {nothingFound && <p className="px-3 py-2 text-xs text-muted-foreground">No matches.</p>}
-            <ComboboxList>
-              {(item: SearchItem) =>
-                item.kind === 'user' ? (
-                  <ComboboxItem key={item.user.id} value={item}>
-                    <Avatar name={item.user.name} imageUrl={item.user.profile_image?.image_url} size="md" />
-                    <span className="flex-1 truncate">{item.user.name}</span>
-                  </ComboboxItem>
-                ) : (
-                  <ComboboxItem key="guest" value={item}>
-                    <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
-                      <UserPlus className="size-3.5" />
-                    </span>
-                    <span className="flex-1 truncate">
-                      Add "<span className="font-medium">{item.name}</span>" as guest
-                    </span>
-                  </ComboboxItem>
-                )
-              }
-            </ComboboxList>
-          </ComboboxContent>
-        </Combobox>
+            <ComboboxInput
+              placeholder={searchPlaceholder}
+              showTrigger={false}
+              className="h-11 rounded-2xl border-dashed bg-transparent shadow-none"
+            >
+              <InputGroupAddon align="inline-start" className="text-muted-foreground">
+                <Plus className="size-4" />
+              </InputGroupAddon>
+            </ComboboxInput>
+            <ComboboxContent>
+              {isLoading && <p className="px-3 py-2 text-xs text-muted-foreground">Searching…</p>}
+              {nothingFound && <p className="px-3 py-2 text-xs text-muted-foreground">No matches.</p>}
+              <ComboboxList>
+                {(item: SearchItem) =>
+                  item.kind === 'user' ? (
+                    <ComboboxItem key={item.user.id} value={item}>
+                      <Avatar name={item.user.name} imageUrl={item.user.profile_image?.image_url} size="md" />
+                      <span className="flex-1 truncate">{item.user.name}</span>
+                    </ComboboxItem>
+                  ) : (
+                    <ComboboxItem key="guest" value={item}>
+                      <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                        <UserPlus className="size-3.5" />
+                      </span>
+                      <span className="flex-1 truncate">
+                        Add "<span className="font-medium">{item.name}</span>" as guest
+                      </span>
+                    </ComboboxItem>
+                  )
+                }
+              </ComboboxList>
+            </ComboboxContent>
+          </Combobox>
+        )}
       </div>
     </div>
   )

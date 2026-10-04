@@ -42,12 +42,12 @@ use mapping::{
     assignable_team_role_str, comment_from_record, dao_internal, deleted_user_profile,
     derive_live_score, device_platform_to_record, feed_match_from_records,
     invitation_detail_from_record, invitation_from_record, invitation_status_from_str,
-    invitation_status_str, join_link_from_record, join_link_scope_from_record,
+    invitation_status_str, is_individual_sport, join_link_from_record, join_link_scope_from_record,
     join_link_scope_to_record, live_event_from_record, location_to_record, match_format_sport_tag,
     match_format_to_record, match_from_records, match_player_role_from_record,
     match_player_role_to_record, match_score_from_record, match_score_to_record, match_status_str,
     match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
-    roster_preview_player, score_submission_from_record, score_to_record,
+    roster_identity_name, roster_preview_player, score_submission_from_record, score_to_record,
     search_match_from_records, team_from_records, team_list_item_from_record,
     team_member_from_record, user_profile_from_record,
 };
@@ -2839,6 +2839,7 @@ impl Api {
                 );
                 Self::resolve_side_names_from_cache(
                     &mut m.sides,
+                    &m.match_type,
                     entry.viewer_side_id.as_deref(),
                     &team_metas,
                 );
@@ -3049,7 +3050,7 @@ impl Api {
                 );
                 // No per-viewer `viewer_side_id` for a search hit, so no
                 // "Your side"/"Opposition" — falls to team name / Team A/B.
-                Self::resolve_side_names_from_cache(&mut m.sides, None, &team_metas);
+                Self::resolve_side_names_from_cache(&mut m.sides, &m.match_type, None, &team_metas);
                 sign_search_match_headers(assets, &mut m);
                 items.push(m);
             }
@@ -3186,12 +3187,30 @@ impl Api {
         // mapping so invites and the score can be re-pointed at real ids.
         // Keyed by side_id (not a Vec) — sides are embedded on the match
         // record as a map, see `MatchRecord::sides`.
+        let individual_sport = is_individual_sport(&input.match_type);
         let mut side_ids: std::collections::HashMap<String, String> = Default::default();
         let mut sides: std::collections::HashMap<String, dao::records::MatchSideRecord> =
             Default::default();
         for side in &input.sides {
             let side_id = new_id();
             side_ids.insert(side.client_id.clone(), side_id.clone());
+            let has_name = side
+                .name
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|n| !n.is_empty());
+            // An individual sport (tennis/badminton/squash/table_tennis) is
+            // played 1v1 or 2v2 — a side's roster *is* its identity once
+            // there's no team or custom name to show instead (see
+            // `roster_identity_name`), and that identity stops making sense
+            // past 2 players. Rather than rejecting a 3rd player outright,
+            // cap the side at 2 by default so the existing `max_players`
+            // capacity check (just below, and every later join/accept) does
+            // the rejecting — explicitly naming the side or setting
+            // `max_players` lifts it, same as any other side.
+            let max_players = side
+                .max_players
+                .or_else(|| (individual_sport && side.team_id.is_none() && !has_name).then_some(2));
             sides.insert(
                 side_id.clone(),
                 dao::records::MatchSideRecord {
@@ -3203,7 +3222,7 @@ impl Api {
                     name: side.name.clone(),
                     // Validated above: set exactly when there's no `team_id`.
                     colour: side.colour.clone(),
-                    max_players: side.max_players,
+                    max_players,
                     team_join_enabled: side.team_join_enabled.unwrap_or(false),
                     // `Dao::create_match` recomputes both from the players
                     // list it's given, in the same transaction — placeholders.
@@ -3291,11 +3310,11 @@ impl Api {
             }
         }
 
-        // A side with no players has no player to fall back on for its display
+        // A side with no players has no roster to fall back on for its display
         // name (see `Api::resolve_side_names`'s priority chain: custom name ->
-        // sole player's name -> team's name -> ...), so it needs a team or an
-        // explicit name to be identifiable at all — e.g. recording a result
-        // against an opposition you don't know the roster of.
+        // team's name -> an individual sport's roster identity -> ...), so it
+        // needs a team or an explicit name to be identifiable at all — e.g.
+        // recording a result against an opposition you don't know the roster of.
         for side in &input.sides {
             let side_id = &side_ids[&side.client_id];
             let has_players = player_records
@@ -7795,6 +7814,7 @@ impl Api {
             Member::User(u) if u.user_id == viewer_uid => p.side_id.clone(),
             _ => None,
         });
+        let individual_sport = is_individual_sport(&m.match_type);
 
         for (i, side) in m.sides.iter_mut().enumerate() {
             let on_side: Vec<&MatchPlayer> = m
@@ -7802,13 +7822,17 @@ impl Api {
                 .iter()
                 .filter(|p| p.side_id.as_deref() == Some(side.id.as_str()))
                 .collect();
-            let sole_player_name = match on_side.as_slice() {
-                [p] => Some(match &p.member {
-                    Member::User(u) => u.name.clone(),
-                    Member::External(e) => e.display_name.clone(),
-                }),
-                _ => None,
-            };
+            // Only meaningful for an individual sport's ad-hoc (no-team)
+            // side — see `roster_identity_name`'s doc comment for why this
+            // isn't just "however many players happen to be on the side".
+            let roster_identity_name = individual_sport
+                .then(|| {
+                    roster_identity_name(on_side.iter().map(|p| match &p.member {
+                        Member::User(u) => u.name.as_str(),
+                        Member::External(e) => e.display_name.as_str(),
+                    }))
+                })
+                .flatten();
             side.player_count = on_side.len() as u32;
             // Same "small enough to show players directly" call the feed
             // makes from its denormalized cache (`ROSTER_PREVIEW_CAP`) — here
@@ -7853,23 +7877,29 @@ impl Api {
             });
 
             side.name = Some(match custom_name {
-                // An explicit name always wins, over both the sole player's
-                // name and the team's own name — it's there specifically
+                // An explicit name always wins, over the team's own name and
+                // a roster-derived identity alike — it's there specifically
                 // because the creator wanted something other than either
                 // default (e.g. to tell two sides sharing one team apart).
                 Some(name) => name.to_string(),
-                None => match sole_player_name {
-                    Some(name) => name,
-                    None => match team {
-                        Some(team) => team.name.clone(),
-                        // The team was deleted (`DELETE /teams/{team_id}`)
-                        // but the side's `team_id` snapshot outlives it —
-                        // same "outlives the record it points to, resolve
-                        // the gap at read time" shape as
-                        // `deleted_user_profile`. `team_id` itself is left
-                        // as-is (not scrubbed) rather than cleared. Only hit
-                        // when `side.team_id` was set but not found above.
-                        None if side.team_id.is_some() => "Deleted team".to_string(),
+                None => match team {
+                    Some(team) => team.name.clone(),
+                    // The team was deleted (`DELETE /teams/{team_id}`) but
+                    // the side's `team_id` snapshot outlives it — same
+                    // "outlives the record it points to, resolve the gap at
+                    // read time" shape as `deleted_user_profile`. `team_id`
+                    // itself is left as-is (not scrubbed) rather than
+                    // cleared. Only hit when `side.team_id` was set but not
+                    // found above.
+                    None if side.team_id.is_some() => "Deleted team".to_string(),
+                    // No team at all: an individual sport's 1-2-player side
+                    // takes its identity from its roster; everything else
+                    // (a team sport with no team linked yet, or any side
+                    // once it's grown past what a roster-derived name could
+                    // read as) falls to the neutral "Your side"/"Opposition"
+                    // or "Team A"/"Team B".
+                    None => match roster_identity_name {
+                        Some(name) => name,
                         None => match &viewer_side_id {
                             Some(vs) if vs == &side.id => "Your side".to_string(),
                             Some(_) => "Opposition".to_string(),
@@ -7883,27 +7913,37 @@ impl Api {
     }
 
     /// The same side-name priority chain as [`Self::resolve_side_names`]
-    /// (custom name → sole player's name → team name → "Your
-    /// side"/"Opposition" → neutral "Team A"/"Team B"), plus the same
+    /// (custom name → team name → an individual sport's roster identity →
+    /// "Your side"/"Opposition" → neutral "Team A"/"Team B"), plus the same
     /// `team_logo` resolution, for a `FeedMatch` or `SearchMatch` — which
     /// never have the full player list to scan.
     ///
     /// `roster_preview` already gives the *complete* roster whenever a side
-    /// has one player, so "the sole player's name" is recovered from it
-    /// (`Some([p])`) rather than the live roster — same fact, cheaper source.
-    /// `viewer_side_id` is `None` for a search hit (not derived from a
-    /// per-viewer fan-out, so there's no "Your side" to resolve) and
+    /// is small enough to have one at all, so the roster identity is
+    /// recovered from it rather than the live roster — same fact, cheaper
+    /// source. `viewer_side_id` is `None` for a search hit (not derived from
+    /// a per-viewer fan-out, so there's no "Your side" to resolve) and
     /// `Some`/`None` per feed entry for a feed card.
     fn resolve_side_names_from_cache(
         sides: &mut [MatchSide],
+        match_type: &MatchType,
         viewer_side_id: Option<&str>,
         team_metas: &std::collections::HashMap<String, dao::records::TeamRecord>,
     ) {
+        let individual_sport = is_individual_sport(match_type);
         for (i, side) in sides.iter_mut().enumerate() {
-            let sole_player_name = match side.roster_preview.as_deref() {
-                Some([p]) => Some(p.name.clone()),
-                _ => None,
-            };
+            // Same "only an individual sport's ad-hoc side gets a
+            // roster-derived identity" gate as `resolve_side_names`.
+            let roster_identity_name = individual_sport
+                .then(|| {
+                    roster_identity_name(
+                        side.roster_preview
+                            .iter()
+                            .flatten()
+                            .map(|p| p.name.as_str()),
+                    )
+                })
+                .flatten();
             let custom_name = side
                 .name
                 .as_deref()
@@ -7921,15 +7961,15 @@ impl Api {
 
             side.name = Some(match custom_name {
                 // Same priority as `resolve_side_names`: an explicit name
-                // always wins over the sole player's name.
+                // always wins.
                 Some(name) => name.to_string(),
-                None => match sole_player_name {
-                    Some(name) => name,
-                    None => match team {
-                        Some(team) => team.name.clone(),
-                        // Same "team was deleted" fallback as
-                        // `resolve_side_names` above.
-                        None if side.team_id.is_some() => "Deleted team".to_string(),
+                None => match team {
+                    Some(team) => team.name.clone(),
+                    // Same "team was deleted" fallback as
+                    // `resolve_side_names` above.
+                    None if side.team_id.is_some() => "Deleted team".to_string(),
+                    None => match roster_identity_name {
+                        Some(name) => name,
                         None => match viewer_side_id {
                             Some(vs) if vs == side.id => "Your side".to_string(),
                             Some(_) => "Opposition".to_string(),

@@ -125,6 +125,36 @@ pub fn match_type_tag(mt: &MatchType) -> &'static str {
     }
 }
 
+/// Whether `mt` is played 1v1 or 2v2 (the racket sports) rather than as a
+/// full squad — the same sport split the UI's `isSetsSport` makes, since a
+/// side's roster *is* its whole identity for these sports, unlike a
+/// football/cricket/netball side which is still "the team" long before
+/// everyone's joined.
+pub fn is_individual_sport(mt: &MatchType) -> bool {
+    matches!(
+        mt,
+        MatchType::Tennis | MatchType::Badminton | MatchType::Squash | MatchType::TableTennis
+    )
+}
+
+/// A side's identity derived purely from who's on it: the lone player's
+/// name for a 1v1 side, or both players' names joined with "&" for a 2v2
+/// side. Only meaningful for [`is_individual_sport`]'s sports — a
+/// football/cricket/netball side with one early joiner isn't "that player's
+/// side", it just hasn't filled up yet, so callers must gate this behind
+/// that check themselves rather than calling it whenever a side happens to
+/// have 1-2 players right now. `None` for any other roster size, since at
+/// that point joining names together stops reading as an identity and
+/// starts reading as an arbitrary truncation.
+pub fn roster_identity_name<'a>(names: impl Iterator<Item = &'a str>) -> Option<String> {
+    let names: Vec<&str> = names.collect();
+    match names.as_slice() {
+        [a] => Some(a.to_string()),
+        [a, b] => Some(format!("{a} & {b}")),
+        _ => None,
+    }
+}
+
 /// Map the API's device-platform enum to the DAO-owned one.
 pub fn device_platform_to_record(p: &DevicePlatform) -> DevicePlatformRecord {
     match p {

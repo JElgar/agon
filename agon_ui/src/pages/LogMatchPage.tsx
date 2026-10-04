@@ -600,6 +600,7 @@ export function LogMatchPage() {
               // whatever was left over from the previous team.
               if (!team) setSideATeamJoinEnabled(true)
             }}
+            maxPlayers={setsPlayable && !sideATeam && !sideAName.trim() ? 2 : undefined}
           />
           <div className="flex items-center justify-center">
             <span className="rounded-full border border-primary/30 bg-accent px-3 py-0.5 text-[11px] font-semibold text-primary">
@@ -623,6 +624,7 @@ export function LogMatchPage() {
               setSideBTeam(team)
               if (!team) setSideBTeamJoinEnabled(true)
             }}
+            maxPlayers={setsPlayable && !sideBTeam && !sideBName.trim() ? 2 : undefined}
           />
           {sideB.length === 0 && sideBName.trim().length === 0 && !sideBTeam && (
             <p className="px-1 text-xs text-muted-foreground">

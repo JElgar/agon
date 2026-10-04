@@ -386,7 +386,7 @@ const TEAM_CREST_PALETTE = [
   '#1E3FA8',
 ]
 
-function teamCrestColor(teamId: string): string {
+export function teamCrestColor(teamId: string): string {
   let sum = 0
   for (let i = 0; i < teamId.length; i++) sum += teamId.charCodeAt(i)
   return TEAM_CREST_PALETTE[sum % TEAM_CREST_PALETTE.length]

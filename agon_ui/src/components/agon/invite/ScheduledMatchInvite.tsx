@@ -112,13 +112,15 @@ function OrganizerRow({ organiser }: { organiser: MatchPlayer }) {
   )
 }
 
-/** The Teams tab's own side identity dot: a team-linked side's colour
- *  (`teamCrestColor`, the same deterministic colour its crest uses
- *  elsewhere — the schema has no real team-colour field) or an ad-hoc/derby
- *  side's own stored `colour`, falling back to the plain index-based
- *  `SideSwatch` only when neither is set. */
+/** The Teams tab's own side identity dot: an ad-hoc or derby side's own
+ *  stored `colour` first (the server only ever sets it for those — see
+ *  `MatchSide.colour`'s doc comment), else a team-linked side's
+ *  `teamCrestColor` (the same deterministic colour its crest uses
+ *  elsewhere — the schema has no real team-colour field), falling back to
+ *  the plain index-based `SideSwatch` only when neither is set. Checking
+ *  `colour` before `team_id` matters for a derby side, which has both. */
 function TeamRosterSwatch({ side, index }: { side: MatchSide | undefined; index: number }) {
-  const colour = side?.team_id ? teamCrestColor(side.team_id) : side?.colour
+  const colour = side?.colour ?? (side?.team_id ? teamCrestColor(side.team_id) : undefined)
   if (colour) {
     return <span className="inline-block size-3.5 shrink-0 rounded-[5px]" style={{ backgroundColor: colour }} />
   }

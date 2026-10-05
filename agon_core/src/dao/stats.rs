@@ -7,6 +7,7 @@ use aws_sdk_dynamodb::types::{AttributeValue, Delete, Put, TransactWriteItem, Up
 
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
+use super::is_update_conditional_failure;
 use super::item::{ATTR_PK, ATTR_SK, from_item, item_sk, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::{OversRecord, StatContributionRecord};
@@ -518,22 +519,6 @@ impl Dao {
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
         Ok(())
     }
-}
-
-/// True if a plain (non-transactional) `UpdateItem` failed its
-/// `ConditionExpression` — the expected outcome of a losing "is this a new
-/// best?" check in [`Dao::update_best_figures`], not a real error.
-fn is_update_conditional_failure(
-    err: &aws_sdk_dynamodb::error::SdkError<
-        aws_sdk_dynamodb::operation::update_item::UpdateItemError,
-    >,
-) -> bool {
-    use aws_sdk_dynamodb::error::SdkError;
-    use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
-    matches!(
-        err,
-        SdkError::ServiceError(se) if matches!(se.err(), UpdateItemError::ConditionalCheckFailedException(_))
-    )
 }
 
 /// Per-key delta (`new - old`) over the union of both maps' keys, treating a

@@ -331,7 +331,8 @@ pub struct DevicePairingRecord {
 /// `email` is duplicated here for reads; uniqueness is enforced by a separate
 /// `EMAIL#<email>` guard item. `stats` holds per-sport aggregates inline, so a
 /// profile read/batch-read returns everything in one point read — always
-/// present (all `None` for a brand new user).
+/// present (all `None` for a brand new user). `ratings` and `rating_opt_ins`
+/// ride the same item for the same reason.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UserRecord {
     pub id: String,
@@ -347,7 +348,80 @@ pub struct UserRecord {
     pub unread_count: u64,
     #[serde(default)]
     pub stats: UserStatsRecord,
+    /// Per-ladder ratings, keyed by the `rating::Ladder` string (`"squash"`
+    /// today, `"tennis:doubles"` if a sport is ever split by format).
+    /// `#[serde(default)]` because every profile written before ratings
+    /// existed has no `ratings` attribute at all — and an empty map is exactly
+    /// right for them: nothing rated.
+    ///
+    /// Sits *beside* `stats` rather than inside it, and is a map where
+    /// `UserStatsRecord` uses a named field per sport. Both of those are
+    /// deliberate, and the second one is a deliberate inconsistency, so:
+    ///
+    /// - **Beside**, because the two write paths have nothing in common. Stats
+    ///   are integer counters moved by raw `ADD` deltas
+    ///   (`Dao::stats_delta`); μ and σ are floats the engine *sets* wholesale
+    ///   from its own output — there is no delta to add. Sharing an attribute
+    ///   would drag rating writes through counter machinery they cannot use,
+    ///   and buy nothing on the read side: both ride the same point read that
+    ///   profile, feed and search hydration already do either way.
+    /// - **A map**, because `UserStatsRecord`'s own doc comment justifies its
+    ///   named fields with "the set of sports is closed". The set of
+    ///   *ladders* is deliberately open — that a ladder is a string and not
+    ///   the `Sport` enum is the whole mechanism by which a later
+    ///   singles/doubles split is additive instead of a migration of every
+    ///   stored rating (see `rating::Ladder`). A closed struct here would
+    ///   re-close exactly what that decision opened.
+    ///
+    /// A ladder appears here only once a ranked match on it has been rated,
+    /// so being opted in (`rating_opt_ins`) with no entry yet is normal. The
+    /// reverse — a rating with no opt-in behind it — is what the rating
+    /// pipeline must refuse to produce, by re-checking every participant's
+    /// opt-in before it rates; nothing at this layer enforces it.
+    #[serde(default)]
+    pub ratings: HashMap<String, RatingRecord>,
+    /// The ladders this account has consented to be rated on, each mapped to
+    /// when it did so (RFC 3339). Written by `Dao::opt_in_to_rating` when a
+    /// player ticks "I understand this starts my <sport> rating" on a ranked
+    /// game; read through [`UserRecord::has_opted_in`].
+    ///
+    /// **Entries are never removed.** Opting in is not reversible — a product
+    /// decision, not an omission, and the reason there is no opt-out
+    /// operation — so a ladder seen here once can be relied on from then on.
+    ///
+    /// A map to the consent time rather than a set of ladder names. A
+    /// DynamoDB string set would be the simpler write (`ADD` creates a missing
+    /// set, so there would be no ensure-the-map round trip), but it throws
+    /// away *when* somebody agreed, which is the one fact a consent record
+    /// exists to keep. The map also makes "first tick wins" a single
+    /// `attribute_not_exists` condition on the ladder's path, so ticking the
+    /// box again on a later game never moves the original date.
+    ///
+    /// Keyed by ladder, like `ratings`, and today a ladder is exactly the
+    /// sport tag. If a sport is ever split into several ladders, whether one
+    /// consent covers all of them is for that change to decide; this shape
+    /// does not settle it.
+    ///
+    /// `#[serde(default)]` because no profile written before this field
+    /// existed has it, and an empty map is right for every one of them:
+    /// nobody could opt in before there was anywhere to record it.
+    #[serde(default)]
+    pub rating_opt_ins: HashMap<String, String>,
     pub created_at: String,
+}
+
+impl UserRecord {
+    /// Whether this account has opted in to being rated on `ladder` — the
+    /// check every path into a ranked game makes.
+    ///
+    /// An exact-key lookup. Ladder names can be string prefixes of one
+    /// another (`"tennis"`, `"tennis:doubles"`), and a prefix match would
+    /// quietly decide the open question on `rating_opt_ins` of whether one
+    /// consent covers a split sport.
+    #[must_use]
+    pub fn has_opted_in(&self, ladder: &str) -> bool {
+        self.rating_opt_ins.contains_key(ladder)
+    }
 }
 
 /// `USER#<followeeId>` / `FOLLOWER#<followerId>` — a directed user→user follow
@@ -1688,6 +1762,163 @@ pub struct StatContributionRecord {
     pub counters: HashMap<String, u64>,
 }
 
+// ===========================================================================
+// Ratings
+// ===========================================================================
+
+/// One player's rating on one ladder, stored inline in the `ratings` map on
+/// `USER#<uid>` / `#PROFILE`.
+///
+/// `mu`/`sigma` are the engine's **native** Weng-Lin values (`μ₀ = 25`,
+/// `σ₀ = 8.33`), never the 1500-centred numbers a player reads. Storing
+/// native is what makes `rating::scale` retunable by deploy rather than by
+/// backfill (see its module doc), and it is also the only form the engine
+/// can be fed back for the next match.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RatingRecord {
+    /// Mean estimate of skill — `rating::PlayerRating::mu`.
+    pub mu: f64,
+    /// Standard deviation, i.e. how unsure we are — `rating::PlayerRating::sigma`.
+    pub sigma: f64,
+    /// How many rated matches have been folded into this rating: the
+    /// "· 6 games" shown beside the number from the first rated match on,
+    /// and the cheap check that a repair replay covered the same matches the
+    /// incremental path did.
+    pub matches_rated: u64,
+    /// The `starts_at` of the most recent match folded in — when the newest
+    /// rated match was **played**, not when it was rated. That is the
+    /// comparison the pipeline actually needs: a match arriving with an
+    /// earlier `starts_at` than this is precisely the out-of-order case that
+    /// triggers repair, and confirmation times can't answer it (a Monday game
+    /// is routinely confirmed after a Wednesday one). It is therefore
+    /// directly comparable with `Sk::Rating`'s `played_at` segment.
+    ///
+    /// Written as a *maximum*, never simply as the match just rated. An
+    /// out-of-order match is still applied (its history entry is what the
+    /// repair reads), and overwriting this with its earlier `starts_at` would
+    /// make every later match look out of order too.
+    pub last_rated_at: String,
+}
+
+/// The before/after pair one rated match moved a player through.
+///
+/// Shared by [`RatingHistoryRecord`] and [`RatingContributionRecord`] because
+/// they record the same event from two directions — "what happened to this
+/// player over time" and "what this match did to each participant" — and a
+/// single nested map also makes the optimistic-lock guard on the contribution
+/// item one `movement = :m` condition instead of five (DynamoDB compares
+/// map-typed attributes as a whole; `Dao::reconcile_match_contribution` leans
+/// on the same trick for its `counters` map).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct RatingMovementRecord {
+    pub mu_before: f64,
+    pub sigma_before: f64,
+    pub mu_after: f64,
+    pub sigma_after: f64,
+    /// The movement as the player was shown it — the "+18" on a match card
+    /// (`rating::RatingUpdate::display_delta`).
+    ///
+    /// Stored even though it is fully derivable from `mu_before`/`mu_after`,
+    /// which reads at first glance like a break from storing native values
+    /// only: the displayed rating itself is never stored, and is computed
+    /// through `rating::scale` on every read so that retuning the scale moves
+    /// every profile at once. The distinction is that a displayed rating is a
+    /// statement about the *present*, whereas this is a log entry, and a log
+    /// records what actually happened, including what the player was
+    /// actually told. If `rating::scale` were ever retuned, a recomputed delta
+    /// would quietly rewrite history; this one keeps saying what the match
+    /// card said on the day.
+    pub display_delta: i32,
+}
+
+/// `USER#<uid>` / `RATING#<ladder>#<played_at>#<matchId>` — one match's
+/// effect on one player's rating on one ladder.
+///
+/// Time-ordered by construction (the key sorts on the match's `starts_at`),
+/// which is what lets one item collection be two things at once: the replay
+/// source a repair pages through in played order, and the rating-over-time
+/// chart. Both key fields are duplicated into the item as plain attributes,
+/// normal for a single-table design — see `dao::item`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RatingHistoryRecord {
+    /// The ladder this movement happened on (the `rating::Ladder` string).
+    pub ladder: String,
+    pub match_id: String,
+    /// The match's `starts_at` — the key's ordering segment. See
+    /// `Sk::Rating` on why played order and not confirmation order.
+    pub played_at: String,
+    pub movement: RatingMovementRecord,
+    /// Wall clock at the moment this was applied. Distinct from `played_at`,
+    /// and worth keeping alongside it: the gap between the two is exactly how
+    /// far out of order a result arrived, which is the first thing anyone
+    /// debugging an unexpected repair will want.
+    pub applied_at: String,
+}
+
+/// `MATCH#<mid>` / `RATINGCONTRIB#<userId>` — what this match currently
+/// contributes to one player's rating. Absent => the match has never been
+/// rated for this player.
+///
+/// The direct analogue of [`StatContributionRecord`], and it earns its keep
+/// the same way: the pipeline compares the contribution the match's current
+/// state implies against this stored one, so an unchanged redelivery writes
+/// nothing and a re-score is detected as a change rather than applied twice.
+///
+/// It carries more than the bare delta on purpose. `side_id` and the rating
+/// each player carried *into* the match (`movement`'s `before` half) are what
+/// change detection re-rates from: a match's `RATINGCONTRIB#` collection
+/// keeps the beliefs every participant brought to it, which their current
+/// ratings — having since absorbed later matches — no longer can. See
+/// `dao::rating`'s module doc for the double count that avoids. It is not a
+/// stand-in for the match itself, though: the current winner and roster
+/// still come from the match record, because a re-score or a roster edit is
+/// exactly the change being looked for.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RatingContributionRecord {
+    /// The player's user id — the same value as the sort key's segment,
+    /// carried in the item so `Dao::list_rating_contributions` can return
+    /// whole records without parsing keys.
+    pub user_id: String,
+    /// The ladder the contribution counted under (the match's ladder at the
+    /// time it was applied). Kept for the same reason
+    /// `StatContributionRecord::match_type` is: if a match's sport is edited,
+    /// the contribution has to be backed out of the *old* ladder.
+    pub ladder: String,
+    /// Which side this player played for. A roster edit that moves someone
+    /// across changes it, which is what makes that edit detectable.
+    pub side_id: String,
+    /// The match's `starts_at`. Duplicated from the match record so that
+    /// withdrawing a contribution can address its `RATING#` history item
+    /// (whose key contains it) without re-reading the match.
+    pub played_at: String,
+    pub movement: RatingMovementRecord,
+    /// Wall clock at the moment this was applied. Deliberately *excluded*
+    /// from the "has anything changed?" comparison — see
+    /// [`RatingContributionRecord::has_same_effect_as`].
+    pub applied_at: String,
+}
+
+impl RatingContributionRecord {
+    /// Whether two contributions say the same thing about a match, ignoring
+    /// `applied_at`.
+    ///
+    /// The exclusion is the whole point. `applied_at` is a fresh wall clock on
+    /// every delivery, so comparing it would make every at-least-once
+    /// redelivery look like a change — and a match's `#META` item is rewritten
+    /// by every like and every comment, so redelivery is the common case, not
+    /// the rare one. Including it would mean three item writes and a
+    /// spurious "this match was re-scored" signal every time somebody
+    /// thumbs-ups a finished game.
+    #[must_use]
+    pub fn has_same_effect_as(&self, other: &Self) -> bool {
+        self.user_id == other.user_id
+            && self.ladder == other.ladder
+            && self.side_id == other.side_id
+            && self.played_at == other.played_at
+            && self.movement == other.movement
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1815,5 +2046,196 @@ mod tests {
         assert_eq!(cricket.runs, 0);
         assert_eq!(cricket.balls_faced, 0);
         assert_eq!(cricket.balls_bowled, 0);
+    }
+
+    /// The minimum a stored user profile item can have had before ratings
+    /// existed. Every rating field must default rather than fail the read —
+    /// the whole reason they carry `#[serde(default)]` — because a
+    /// missing-field failure here would 500 every profile read in production
+    /// the moment the fields shipped.
+    fn legacy_user_fields() -> HashMap<String, AttributeValue> {
+        HashMap::from([
+            ("id".to_string(), AttributeValue::S("u1".into())),
+            (
+                "email".to_string(),
+                AttributeValue::S("sofia@example.com".into()),
+            ),
+            ("name".to_string(), AttributeValue::S("Sofia".into())),
+            (
+                "created_at".to_string(),
+                AttributeValue::S("2026-01-01T00:00:00Z".into()),
+            ),
+        ])
+    }
+
+    #[test]
+    fn user_written_before_ratings_existed_is_unrated_and_opted_in_nowhere() {
+        let rec: UserRecord =
+            serde_dynamo::from_attribute_value(AttributeValue::M(legacy_user_fields())).unwrap();
+        assert!(rec.ratings.is_empty(), "nothing rated");
+        assert!(
+            rec.rating_opt_ins.is_empty(),
+            "nobody could opt in before the field existed"
+        );
+        assert!(!rec.has_opted_in("squash"));
+    }
+
+    /// `Dao::opt_in_to_rating` writes the consent time with a raw nested
+    /// `SET rating_opt_ins.#ladder = :opted_in_at` of a string, while this
+    /// side reads `HashMap<String, String>` — two shapes nothing but this test
+    /// ties together. It builds the item the way that write leaves it and
+    /// reads it back. The ladder names are prefixes of one another, to pin
+    /// that `has_opted_in` is an exact-key lookup.
+    #[test]
+    fn an_opt_in_as_the_dao_writes_it_reads_back_for_exactly_that_ladder() {
+        let mut item = legacy_user_fields();
+        item.insert(
+            "rating_opt_ins".to_string(),
+            AttributeValue::M(HashMap::from([(
+                "tennis".to_string(),
+                AttributeValue::S("2026-09-15T10:00:00.000Z".into()),
+            )])),
+        );
+        let rec: UserRecord = serde_dynamo::from_attribute_value(AttributeValue::M(item)).unwrap();
+
+        assert!(rec.has_opted_in("tennis"));
+        assert!(!rec.has_opted_in("tennis:doubles"));
+        assert!(!rec.has_opted_in("squash"));
+        assert_eq!(rec.rating_opt_ins["tennis"], "2026-09-15T10:00:00.000Z");
+    }
+
+    /// A rated, opted-in profile survives the write/read cycle whole — the
+    /// `ratings` map of nested records and the `rating_opt_ins` map of
+    /// strings both, beside the fields that were already there.
+    #[test]
+    fn a_rated_opted_in_profile_round_trips() {
+        let rec = UserRecord {
+            id: "u1".into(),
+            email: "sofia@example.com".into(),
+            name: "Sofia".into(),
+            profile_image_url: None,
+            follower_count: 3,
+            following_count: 1,
+            unread_count: 0,
+            stats: UserStatsRecord::default(),
+            ratings: HashMap::from([(
+                "squash".to_string(),
+                RatingRecord {
+                    mu: 27.638_888_888_888_89,
+                    sigma: 7.171_442_936_549_223,
+                    matches_rated: 6,
+                    last_rated_at: "2026-09-01T19:00:00.000Z".into(),
+                },
+            )]),
+            rating_opt_ins: HashMap::from([
+                ("squash".to_string(), "2026-08-01T12:00:00.000Z".to_string()),
+                ("tennis".to_string(), "2026-09-15T10:00:00.000Z".to_string()),
+            ]),
+            created_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let av: AttributeValue = serde_dynamo::to_attribute_value(&rec).unwrap();
+        let back: UserRecord = serde_dynamo::from_attribute_value(av).unwrap();
+        assert_eq!(back, rec);
+    }
+
+    /// μ and σ are stored native and read back into the engine, so the
+    /// round-trip has to be bit-exact — a rating that drifts on every
+    /// read/write cycle would make every redelivery recompute a different
+    /// movement and look like a re-score, and would make the optimistic lock
+    /// on `ratings.<ladder>` fail against a value it just read.
+    /// (`serde_dynamo` writes an `f64` as its shortest round-tripping decimal,
+    /// which DynamoDB's 38 significant digits hold exactly; this is the test
+    /// that says so out loud.)
+    #[test]
+    fn rating_record_round_trips_mu_and_sigma_exactly() {
+        for (mu, sigma) in [
+            (25.0, 25.0 / 3.0),
+            (27.638_888_888_888_89, 7.171_442_936_549_223),
+            (0.000_001, 0.000_001),
+        ] {
+            let rec = RatingRecord {
+                mu,
+                sigma,
+                matches_rated: 7,
+                last_rated_at: "2026-06-01T10:00:00.000Z".into(),
+            };
+            let av: AttributeValue = serde_dynamo::to_attribute_value(&rec).unwrap();
+            let back: RatingRecord = serde_dynamo::from_attribute_value(av).unwrap();
+            assert_eq!(back, rec);
+        }
+    }
+
+    /// Redelivery must be free. A match's `#META` item is rewritten by every
+    /// like and comment, so the rating pipeline re-runs on finished matches
+    /// constantly; if `applied_at` counted as part of the contribution, each
+    /// of those would look like a re-score and rewrite three items. Every
+    /// *other* field must count, since each is a real change to what the
+    /// match did — `dao::rating`'s write guard compares exactly these.
+    #[test]
+    fn a_redelivered_contribution_differs_only_in_applied_at() {
+        let base = RatingContributionRecord {
+            user_id: "u1".into(),
+            ladder: "squash".into(),
+            side_id: "sideA".into(),
+            played_at: "2026-06-01T10:00:00.000Z".into(),
+            movement: RatingMovementRecord {
+                mu_before: 25.0,
+                sigma_before: 25.0 / 3.0,
+                mu_after: 27.6,
+                sigma_after: 7.1,
+                display_delta: 78,
+            },
+            applied_at: "2026-06-01T11:00:00.000Z".into(),
+        };
+        let redelivered = RatingContributionRecord {
+            applied_at: "2026-06-02T09:30:00.000Z".into(),
+            ..base.clone()
+        };
+        assert!(base.has_same_effect_as(&redelivered));
+
+        let changes = [
+            (
+                "re-score",
+                RatingContributionRecord {
+                    movement: RatingMovementRecord {
+                        mu_after: 22.4,
+                        display_delta: -78,
+                        ..base.movement
+                    },
+                    ..base.clone()
+                },
+            ),
+            (
+                "moved to the other side",
+                RatingContributionRecord {
+                    side_id: "sideB".into(),
+                    ..base.clone()
+                },
+            ),
+            (
+                "rescheduled",
+                RatingContributionRecord {
+                    played_at: "2026-06-08T10:00:00.000Z".into(),
+                    ..base.clone()
+                },
+            ),
+            (
+                "sport edited",
+                RatingContributionRecord {
+                    ladder: "tennis".into(),
+                    ..base.clone()
+                },
+            ),
+            (
+                "another player",
+                RatingContributionRecord {
+                    user_id: "u2".into(),
+                    ..base.clone()
+                },
+            ),
+        ];
+        for (what, changed) in changes {
+            assert!(!base.has_same_effect_as(&changed), "{what}");
+        }
     }
 }

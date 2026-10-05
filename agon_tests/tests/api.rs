@@ -142,6 +142,7 @@ fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
                 client_id: "a".to_string(),
                 team_id: None,
                 name: Some("Side A".to_string()),
+                colour: Some("#2952D9".to_string()),
                 max_players: None,
                 team_join_enabled: None,
             },
@@ -149,6 +150,7 @@ fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
+                colour: Some("#2952D9".to_string()),
                 max_players: None,
                 team_join_enabled: None,
             },
@@ -193,6 +195,7 @@ fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::Create
                 client_id: "a".to_string(),
                 team_id: None,
                 name: Some("Side A".to_string()),
+                colour: Some("#2952D9".to_string()),
                 max_players: None,
                 team_join_enabled: None,
             },
@@ -200,6 +203,7 @@ fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::Create
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
+                colour: Some("#2952D9".to_string()),
                 max_players: None,
                 team_join_enabled: None,
             },
@@ -258,6 +262,7 @@ fn completed_match(invites: Vec<models::CreateMatchInviteInput>) -> models::Crea
                 client_id: "a".to_string(),
                 team_id: None,
                 name: Some("Side A".to_string()),
+                colour: Some("#2952D9".to_string()),
                 max_players: None,
                 team_join_enabled: None,
             },
@@ -265,6 +270,7 @@ fn completed_match(invites: Vec<models::CreateMatchInviteInput>) -> models::Crea
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
+                colour: Some("#2952D9".to_string()),
                 max_players: None,
                 team_join_enabled: None,
             },
@@ -1033,6 +1039,7 @@ async fn patch_match_rename_team_side_without_shared_team_is_rejected() {
     );
     input.sides[0].team_id = Some(team.id.clone());
     input.sides[0].name = None;
+    input.sides[0].colour = None;
     let created = matches_post(&owner_config, input)
         .await
         .expect("create match");
@@ -2202,7 +2209,9 @@ async fn creating_a_match_fans_out_to_a_participants_feed() {
         let config = &invitee_config;
         let match_id = &created.id;
         async move {
-            let page = feed_get(config, None, None, None, None).await.ok()?;
+            let page = feed_get(config, None, None, None, None, None, None)
+                .await
+                .ok()?;
             page.items.into_iter().find(|item| &item.id == match_id)
         }
     })
@@ -2421,6 +2430,7 @@ async fn match_with_a_team_side_fans_out_to_team_followers() {
     // so drop the placeholder name `match_between` set for side "a".
     input.sides[0].team_id = Some(team.id.clone());
     input.sides[0].name = None;
+    input.sides[0].colour = None;
     let created = matches_post(&owner_config, input)
         .await
         .expect("create match");
@@ -3128,8 +3138,10 @@ async fn list_matches_accepts_filters() {
         None,
         None,
         Some(models::MatchType::Tennis),
+        None,
         Some("2026-01-01T00:00:00Z".to_string()),
         Some("2026-12-31T00:00:00Z".to_string()),
+        None,
         None,
         Some(10),
     )
@@ -3149,8 +3161,10 @@ async fn list_matches_rejects_inverted_date_range() {
         None,
         None,
         None,
+        None,
         Some("2026-12-31T00:00:00Z".to_string()),
         Some("2026-01-01T00:00:00Z".to_string()),
+        None,
         None,
         None,
     )
@@ -3220,8 +3234,10 @@ async fn list_matches_filters_by_team() {
     // — drop the placeholders `match_between` sets.
     input.sides[0].team_id = Some(team_a.id.clone());
     input.sides[0].name = None;
+    input.sides[0].colour = None;
     input.sides[1].team_id = Some(team_b.id.clone());
     input.sides[1].name = None;
+    input.sides[1].colour = None;
     let created = matches_post(&owner_config, input)
         .await
         .expect("create match");
@@ -3239,6 +3255,8 @@ async fn list_matches_filters_by_team() {
                 None,
                 None,
                 Some(vec![team_id]),
+                None,
+                None,
                 None,
                 None,
                 None,
@@ -3266,6 +3284,8 @@ async fn list_matches_filters_by_team() {
         None,
         None,
         None,
+        None,
+        None,
     )
     .await
     .expect("list matches (head-to-head)");
@@ -3282,6 +3302,8 @@ async fn list_matches_filters_by_team() {
         None,
         Some(vec![team_a.id.clone(), unrelated_team.id.clone()]),
         Some(models::TeamMatchMode::All),
+        None,
+        None,
         None,
         None,
         None,
@@ -3307,6 +3329,8 @@ async fn list_matches_filters_by_team() {
         None,
         None,
         None,
+        None,
+        None,
     )
     .await
     .expect("list matches (any, with an unrelated team)");
@@ -3321,6 +3345,8 @@ async fn list_matches_filters_by_team() {
         None,
         None,
         Some(vec![unrelated_team.id.clone()]),
+        None,
+        None,
         None,
         None,
         None,
@@ -4540,7 +4566,7 @@ where
 async fn feed_contains(config: &Configuration, match_id: &str) -> bool {
     let mut cursor: Option<String> = None;
     loop {
-        let page = feed_get(config, cursor.as_deref(), Some(50), None, None)
+        let page = feed_get(config, cursor.as_deref(), Some(50), None, None, None, None)
             .await
             .expect("list feed");
         if page.items.iter().any(|item| item.id == match_id) {
@@ -5286,6 +5312,7 @@ async fn deleted_teams_matches_show_deleted_team() {
     let mut input = match_between("Doomed Match", &[], &[&opponent.profile.id]);
     input.sides[0].team_id = Some(team.id.clone());
     input.sides[0].name = None;
+    input.sides[0].colour = None;
     let created = matches_post(&owner_config, input)
         .await
         .expect("create match");
@@ -6341,6 +6368,7 @@ fn joinable_match_input(
                 client_id: "a".to_string(),
                 team_id: None,
                 name: Some("Side A".to_string()),
+                colour: Some("#2952D9".to_string()),
                 max_players: side_a_max,
                 team_join_enabled: None,
             },
@@ -6348,6 +6376,7 @@ fn joinable_match_input(
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
+                colour: Some("#2952D9".to_string()),
                 max_players: side_b_max,
                 team_join_enabled: None,
             },
@@ -7882,6 +7911,7 @@ fn team_joinable_match_input(team_id: &str) -> models::CreateMatchInput {
                 client_id: "a".to_string(),
                 team_id: Some(team_id.to_string()),
                 name: None,
+                colour: None,
                 max_players: None,
                 team_join_enabled: Some(true),
             },
@@ -7889,6 +7919,7 @@ fn team_joinable_match_input(team_id: &str) -> models::CreateMatchInput {
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
+                colour: Some("#2952D9".to_string()),
                 max_players: None,
                 team_join_enabled: None,
             },
@@ -8003,6 +8034,7 @@ async fn team_self_join_requires_the_sides_own_opt_in() {
                     client_id: "a".to_string(),
                     team_id: Some(team.id.clone()),
                     name: None,
+                    colour: None,
                     max_players: None,
                     team_join_enabled: None,
                 },
@@ -8010,6 +8042,7 @@ async fn team_self_join_requires_the_sides_own_opt_in() {
                     client_id: "b".to_string(),
                     team_id: None,
                     name: Some("Side B".to_string()),
+                    colour: Some("#2952D9".to_string()),
                     max_players: None,
                     team_join_enabled: None,
                 },
@@ -8064,6 +8097,7 @@ async fn team_self_join_on_an_intra_squad_match_offers_a_pick_or_unassigned() {
                     client_id: "a".to_string(),
                     team_id: Some(team.id.clone()),
                     name: Some("Side A".to_string()),
+                    colour: None,
                     max_players: None,
                     team_join_enabled: Some(true),
                 },
@@ -8071,6 +8105,7 @@ async fn team_self_join_on_an_intra_squad_match_offers_a_pick_or_unassigned() {
                     client_id: "b".to_string(),
                     team_id: Some(team.id.clone()),
                     name: Some("Side B".to_string()),
+                    colour: None,
                     max_players: None,
                     team_join_enabled: Some(true),
                 },

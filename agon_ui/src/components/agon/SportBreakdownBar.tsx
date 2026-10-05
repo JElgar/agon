@@ -10,19 +10,18 @@ export interface SportBreakdownBarProps {
   className?: string
 }
 
-/** The banner's own background (`--primary`/`--destructive`) is identical in
- *  light/dark mode, so a fixed white-first segment reads fine in both — but
- *  it's still resolved through `--primary-foreground` (equal to white) and
- *  the `--banner-*-accent` tokens (`index.css`) rather than inlined hex, per
- *  the "tokens only" rule. Only two sports are designed (the "white first,
- *  tinted after" treatment from `StatsOptions.dc.html`, option A); a third+
- *  sport fades the same white token via `color-mix` rather than inventing an
- *  undesigned color. */
+/** The banner's own background is now the soft tint (`--banner-tint-bg`/
+ *  `--banner-terracotta-tint-bg`), so the first segment resolves through
+ *  `--link`/`--destructive` instead of white — those already read correctly
+ *  as a fill on both the light tint and the dark navy/brown surface. Only
+ *  two sports are designed (`StatsOptions.dc.html`, option B); a third+
+ *  sport fades the foreground color via `color-mix` rather than inventing
+ *  an undesigned hue. */
 function segmentColor(tone: 'blue' | 'terracotta', index: number): string {
-  if (index === 0) return 'var(--primary-foreground)'
+  if (index === 0) return tone === 'blue' ? 'var(--link)' : 'var(--destructive)'
   if (index === 1) return tone === 'blue' ? 'var(--banner-blue-accent)' : 'var(--banner-terracotta-accent)'
   const opacity = index === 2 ? 55 : 30
-  return `color-mix(in oklch, var(--primary-foreground) ${opacity}%, transparent)`
+  return `color-mix(in oklch, var(--foreground) ${opacity}%, transparent)`
 }
 
 /**
@@ -50,7 +49,12 @@ export function SportBreakdownBar({ entries, tone = 'blue', className }: SportBr
           />
         ))}
       </div>
-      <div className="flex flex-wrap gap-4 text-[13px] text-primary-foreground/80">
+      <div
+        className={cn(
+          'flex flex-wrap gap-4 text-[13px]',
+          tone === 'blue' ? 'text-banner-tint-muted-foreground' : 'text-banner-terracotta-tint-muted-foreground',
+        )}
+      >
         {entries.map((e, i) => (
           <span key={e.sport} className="flex items-center gap-1.5">
             <span

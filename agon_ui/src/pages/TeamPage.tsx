@@ -369,12 +369,12 @@ function TeamStats({ query, record, sportRecords }: TeamStatsProps) {
     <div className="flex flex-col gap-2.5">
       <section
         aria-label="Team stats"
-        className="grid grid-cols-3 gap-2 rounded-2xl bg-primary p-[18px]"
+        className="grid grid-cols-3 gap-2 rounded-2xl border border-banner-tint-border bg-banner-tint p-[18px]"
       >
-        <StatTile tone="inverted" value={record.matches} label="Matches" />
-        <StatTile tone="inverted" value={record.wins} label="Wins" />
+        <StatTile tone="banner-blue" value={record.matches} label="Matches" />
+        <StatTile tone="banner-blue" value={record.wins} label="Wins" />
         <StatTile
-          tone="inverted"
+          tone="banner-blue"
           value={formatWinRate(record.winRatePct)}
           label="Win rate"
         />

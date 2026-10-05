@@ -32,15 +32,22 @@ export function StatBannerCard({
   return (
     <section
       className={cn(
-        'flex flex-col gap-4 rounded-2xl p-[18px] text-primary-foreground',
-        tone === 'blue' ? 'bg-primary' : 'bg-destructive',
+        'flex flex-col gap-4 rounded-2xl border p-[18px] text-foreground',
+        tone === 'blue'
+          ? 'border-banner-tint-border bg-banner-tint'
+          : 'border-banner-terracotta-tint-border bg-banner-terracotta-tint',
         className,
       )}
       {...props}
     >
       <div className="grid grid-cols-3 gap-2">
         {stats.map((s, i) => (
-          <StatTile key={i} value={s.value} label={s.label} tone="inverted" />
+          <StatTile
+            key={i}
+            value={s.value}
+            label={s.label}
+            tone={tone === 'blue' ? 'banner-blue' : 'banner-terracotta'}
+          />
         ))}
       </div>
       {footer}

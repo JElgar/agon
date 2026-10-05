@@ -1058,7 +1058,7 @@ export const firebaseWebConfig = gcp.firebase.getWebAppConfigOutput({
 // ── Google Maps JS API key: Places Autocomplete on a match's location field ─
 // Unlike the Firebase VAPID key pair above, a browser Maps key IS a normal,
 // fully automatable GCP resource (`gcp.projects.ApiKey`) — restricted here to
-// exactly the two APIs the location field needs, and to this deployment's own
+// exactly the APIs the location field needs, and to this deployment's own
 // origin, so it's useless if it ever leaks.
 const mapsBackendApi = new gcp.projects.Service("maps-backend-api", {
 	project: gcpProjectId,
@@ -1072,7 +1072,22 @@ const placesBackendApi = new gcp.projects.Service("places-backend-api", {
 	disableOnDestroy: false,
 });
 
-// Separate from the two API targets above: this is the management API for
+// "Places API (New)" — distinct from the legacy `places-backend.googleapis.com`
+// above. `LocationField` calls `AutocompleteSuggestion.fetchAutocompleteSuggestions`
+// (see agon_ui/src/lib/googleMaps.ts), not the old `google.maps.places.Autocomplete`
+// widget: as of March 1st 2025 Google blocks that legacy widget (and
+// `AutocompleteService`) for any Cloud project that hadn't already used the
+// Places API before that date — ours hadn't (this key was first provisioned in
+// PR #154, September 2026), so the legacy call just throws a generic "This page
+// can't load Google Maps correctly" error. The new Places API needs its own
+// enablement and its own apiTarget on the key.
+const placesNewApi = new gcp.projects.Service("places-new-api", {
+	project: gcpProjectId,
+	service: "places.googleapis.com",
+	disableOnDestroy: false,
+});
+
+// Separate from the API targets above: this is the management API for
 // creating/reading the key resource itself, not an API the key grants access
 // to. Without it, `gcp.projects.ApiKey` create fails with "API Keys API has
 // not been used in project ... or it is disabled".
@@ -1089,12 +1104,13 @@ const googleMapsApiKey = new gcp.projects.ApiKey("agon-ui-maps-key", {
 		apiTargets: [
 			{ service: "maps-backend.googleapis.com" },
 			{ service: "places-backend.googleapis.com" },
+			{ service: "places.googleapis.com" },
 		],
 		browserKeyRestrictions: {
 			allowedReferrers: [`${agonUiUrl}/*`],
 		},
 	},
-}, { dependsOn: [mapsBackendApi, placesBackendApi, apiKeysApi] });
+}, { dependsOn: [mapsBackendApi, placesBackendApi, placesNewApi, apiKeysApi] });
 
 // ── Supabase Google Auth: OAuth consent screen + client ─────────────────────
 // Fully manual, per project — and NOT automatable at all right now, not even

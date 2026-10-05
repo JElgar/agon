@@ -55,8 +55,18 @@ pub struct AudienceMember {
     pub known_player_count: u32,
     /// The side this viewer plays on, if they're themselves a participant —
     /// `None` for a viewer in the audience only via a follow (they're not
-    /// playing) or a participant not yet assigned a side.
+    /// playing) or a participant not yet assigned a side. Do NOT use this to
+    /// decide "is the viewer going" — an unassigned participant (a match with
+    /// `allow_unassigned` whose joiner hasn't picked a side) has this as
+    /// `None` too despite playing. Use `viewer_is_going` for that; this field
+    /// is only for the side-specific score confirm/dispute prompt.
     pub viewer_side_id: Option<String>,
+    /// Whether this viewer is themselves a participant in the match (in the
+    /// `agg.players` loop below), regardless of whether they've been
+    /// assigned a side yet. Unlike `viewer_side_id`, this is `true` for an
+    /// unassigned participant, so it's the right field for "is the viewer
+    /// going" (e.g. a feed card's RSVP state).
+    pub viewer_is_going: bool,
 }
 
 impl Dao {
@@ -79,9 +89,13 @@ impl Dao {
             if let Some(user_id) = &player.user_id {
                 // The participant's own entry: record which side they play
                 // on (their card shows the score prompt, not a "known
-                // players" list — you're never your own follower).
+                // players" list — you're never your own follower). Only a
+                // player who actually occupies a roster spot (no invitation,
+                // or an accepted one) is "going" — a pending invitee isn't,
+                // even though they already have a `user_id`.
                 let entry = audience.entry(user_id.clone()).or_default();
                 entry.viewer_side_id = player.side_id.clone();
+                entry.viewer_is_going = player.occupies_slot();
                 self.collect_user_followers(user_id, &mut audience).await?;
             }
         }

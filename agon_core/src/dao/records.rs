@@ -1480,8 +1480,21 @@ pub struct FeedItemRecord {
     /// participant. Same snapshot/refresh characteristics as
     /// `known_player_ids`. `#[serde(default)]` for feed items written before
     /// this field existed.
+    ///
+    /// Do NOT use this to decide "is the viewer going" — an unassigned
+    /// participant (a match with `allow_unassigned` whose joiner hasn't
+    /// picked a side) has this as `None` too despite playing. Use
+    /// `viewer_is_going` for that.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub viewer_side_id: Option<String>,
+    /// Whether this viewer is themselves a participant in the match,
+    /// regardless of whether they've been assigned a side yet — see
+    /// `viewer_side_id`'s doc comment. Same snapshot/refresh characteristics.
+    /// `#[serde(default)]` for feed items written before this field existed
+    /// (back-fills to `false`, i.e. "not going", until the next fan-out
+    /// re-run refreshes it).
+    #[serde(default)]
+    pub viewer_is_going: bool,
 }
 
 /// A user's lifetime stats, one field per sport — `None` for a sport they've

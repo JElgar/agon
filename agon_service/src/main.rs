@@ -1230,7 +1230,13 @@ struct FeedMatch {
     /// this match — `None` if they're not playing (they're seeing this card
     /// via a follow) or not yet assigned a side. Lets a client resolve the
     /// score confirm/dispute prompt without the full roster `Match` carries.
+    /// NOT the right field for "is the caller going" — see `viewer_is_going`.
     viewer_side_id: Option<String>,
+    /// Whether the caller themselves is a participant in this match, playing
+    /// or not yet assigned a side — unlike `viewer_side_id`, this is `true`
+    /// for an unassigned participant (a match with `allow_unassigned`), so
+    /// it's the right field for a feed card's RSVP state ("Going"/"I'm in").
+    viewer_is_going: bool,
     confirmed_score: Option<ConfirmedScore>,
     pending_score: Option<PendingScore>,
     social: MatchSocial,
@@ -2753,6 +2759,7 @@ impl Api {
             known_player_ids: Vec<String>,
             known_player_count: u32,
             viewer_side_id: Option<String>,
+            viewer_is_going: bool,
         }
         let mut eligible: Vec<EligibleEntry> = Vec::with_capacity(page.items.len());
         for entry in &page.items {
@@ -2770,6 +2777,7 @@ impl Api {
                 known_player_ids: entry.known_player_ids.clone(),
                 known_player_count: entry.known_player_count,
                 viewer_side_id: entry.viewer_side_id.clone(),
+                viewer_is_going: entry.viewer_is_going,
             });
         }
         let match_ids: Vec<String> = eligible.iter().map(|e| e.match_id.clone()).collect();
@@ -2839,6 +2847,7 @@ impl Api {
                     known_participants,
                     entry.known_player_count,
                     entry.viewer_side_id.clone(),
+                    entry.viewer_is_going,
                     i_liked,
                 );
                 Self::hydrate_sides_from_cache(&mut m.sides, &team_metas);

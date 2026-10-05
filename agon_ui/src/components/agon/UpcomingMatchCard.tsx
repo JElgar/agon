@@ -40,7 +40,7 @@ export function UpcomingMatchCard({
   className?: string
 }) {
   const { weekday, day } = dateParts(match.starts_at)
-  const going = match.viewer_side_id != null
+  const going = match.viewer_is_going
   const totalGoing = match.total_player_count
   const people = match.sides
     .flatMap((s) => s.roster_preview ?? [])

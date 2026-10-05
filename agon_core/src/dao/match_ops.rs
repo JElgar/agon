@@ -210,6 +210,7 @@ impl Dao {
                     &match_.created_at,
                     &AudienceMember {
                         viewer_side_id: player.side_id.clone(),
+                        viewer_is_going: true,
                         ..Default::default()
                     },
                 )?;
@@ -931,6 +932,7 @@ impl Dao {
                 now,
                 &AudienceMember {
                     viewer_side_id: player.side_id.clone(),
+                    viewer_is_going: true,
                     ..Default::default()
                 },
             )?;

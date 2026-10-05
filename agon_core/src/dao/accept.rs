@@ -126,6 +126,7 @@ impl Dao {
                     now,
                     &AudienceMember {
                         viewer_side_id: existing.side_id.clone(),
+                        viewer_is_going: !onto_waitlist,
                         ..Default::default()
                     },
                 )?;

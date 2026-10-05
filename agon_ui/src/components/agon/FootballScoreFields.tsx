@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { RecordEventDialog, type EventKind } from '@/components/agon/live/RecordEventDialog'
 import { describeEvent, eventClockLabel, eventEmoji, goalEventsToViews, type FootballEventView } from '@/lib/liveScore'
+import { sideDisplayName } from '@/lib/members'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -28,7 +29,7 @@ export interface FootballScoreFieldsProps {
 }
 
 function sideLabel(side: MatchSide, fallback: string): string {
-  return side.name?.trim() || fallback
+  return sideDisplayName(side) ?? fallback
 }
 
 function seedPoints(initial: Score | undefined, aId: string, bId: string): [string, string] {

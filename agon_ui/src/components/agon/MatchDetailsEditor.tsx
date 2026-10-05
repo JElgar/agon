@@ -10,6 +10,7 @@ import { isoToDateTimeLocal } from '@/lib/datetime'
 import { MultiImageUploadField } from '@/components/agon/MultiImageUploadField'
 import { LocationField, type LocationValue } from '@/components/agon/LocationField'
 import { SIDE_COLOURS, defaultSideColour } from '@/lib/sideColours'
+import { sideDisplayName } from '@/lib/members'
 import { cn } from '@/lib/utils'
 
 type Match = components['schemas']['Match']
@@ -69,10 +70,10 @@ export function MatchDetailsEditor({
   const existingHeaderAssetIds = match.header_photos.map((p) => p.asset_id!)
   const [headerAssetIds, setHeaderAssetIds] = useState<string[]>(existingHeaderAssetIds)
 
-  // Seeded from each side's currently-*displayed* name (server-resolved —
-  // could be a custom name, a team's name, or a computed fallback). Editing
-  // and saving sets that side's custom name explicitly; clearing the field
-  // back to empty reverts to whatever the server would otherwise resolve.
+  // Seeded from each side's custom name (empty if it has none, in which case
+  // it shows its team's or players' names). Editing and saving sets that
+  // side's custom name explicitly; clearing the field back to empty reverts
+  // to that default.
   const [sideNames, setSideNames] = useState<Record<string, string>>(
     Object.fromEntries(match.sides.map((s) => [s.id, s.name ?? ''])),
   )
@@ -122,7 +123,7 @@ export function MatchDetailsEditor({
         if (next === original) continue
         // An empty field clears the custom name (omitting `name` — the
         // server treats a missing key the same as `null`), falling back to
-        // the server-resolved default rather than sending an empty string.
+        // the side's default name rather than sending an empty string.
         sideNameUpdates.push(next ? { side_id: side.id, name: next } : { side_id: side.id })
       }
       if (sideNameUpdates.length > 0) body.side_names = sideNameUpdates
@@ -238,7 +239,11 @@ export function MatchDetailsEditor({
                 onChange={(e) =>
                   setSideNames((prev) => ({ ...prev, [side.id]: e.target.value }))
                 }
-                placeholder={renameable ? 'Optional' : undefined}
+                placeholder={
+                  renameable
+                    ? (sideDisplayName({ ...side, name: undefined }) ?? 'Optional')
+                    : sideDisplayName(side)
+                }
                 disabled={!renameable}
                 className="mt-1"
               />

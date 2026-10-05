@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
-import { memberName } from '@/lib/members'
+import { memberName, sideDisplayName } from '@/lib/members'
 import type { NetballFormat } from '@/lib/matchFormat'
 import {
   eventClockLabel,
@@ -51,7 +51,7 @@ function sideIndex(match: Match, sideId: string | undefined): number {
 }
 
 function sideLabel(match: Match, sideId: string | undefined, fallback = 'This side'): string {
-  return match.sides.find((s) => s.id === sideId)?.name?.trim() || fallback
+  return sideDisplayName(match.sides.find((s) => s.id === sideId)) ?? fallback
 }
 
 function nameFor(match: Match, id: string | undefined, players?: NetballEventSource['players']): string | null {

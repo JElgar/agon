@@ -5,12 +5,13 @@ import type { components } from '@/types/api'
 import { Avatar } from '@/components/agon/Avatar'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardTitle } from '@/components/ui/card'
+import { sideDisplayName } from '@/lib/members'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
 
 function sideName(side: MatchSide | undefined, fallback: string): string {
-  return side?.name?.trim() || fallback
+  return sideDisplayName(side) ?? fallback
 }
 
 /**

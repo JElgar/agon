@@ -1,5 +1,5 @@
 import type { components } from '@/types/api'
-import { memberName, type ScorePlayers } from './members'
+import { memberName, type ScorePlayers, sideDisplayName } from './members'
 import type { CricketFormat } from './matchFormat'
 
 export type CricketDelivery = components['schemas']['CricketDelivery']
@@ -482,7 +482,7 @@ export function topCricketPerformers(
 
 /** Display name for a side id: its name, or a neutral fallback. */
 export function sideNameFor(match: Pick<Match, 'sides'>, sideId: string): string {
-  return match.sides.find((s) => s.id === sideId)?.name?.trim() || 'This side'
+  return sideDisplayName(match.sides.find((s) => s.id === sideId)) ?? 'This side'
 }
 
 /** Player display name for a match-scoped player id — `null` if it can't be

@@ -19,7 +19,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Avatar } from './Avatar'
-import { memberAvatarUrl, memberName, playerId } from '@/lib/members'
+import { memberAvatarUrl, memberName, playerId, sideDisplayName } from '@/lib/members'
 
 /** "Alice", "Alice and Bob", or "Alice, Bob and Charlie" — for the removal
  *  confirmation's "you're removing …" sentence. */
@@ -194,7 +194,7 @@ export function MatchRosterEditor({
             <RosterColumn
               key={side.id}
               id={side.id}
-              title={side.name?.trim() || 'Side'}
+              title={sideDisplayName(side) ?? 'Side'}
               players={columns.get(side.id) ?? []}
               onRemove={remove}
             />

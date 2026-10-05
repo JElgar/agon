@@ -1,21 +1,13 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Plus, UserPlus, X } from 'lucide-react'
-import { fetchClient } from '@/lib/api-client'
+import { X } from 'lucide-react'
 import type { components } from '@/types/api'
 import { Avatar } from './Avatar'
 import { TeamPicker } from './TeamPicker'
-import { Combobox, ComboboxContent, ComboboxInput, ComboboxItem, ComboboxList } from '@/components/ui/combobox'
-import { InputGroupAddon } from '@/components/ui/input-group'
+import { PlayerSearchInput } from './PlayerSearchInput'
+import { taggedPlayerKey } from '@/lib/logMatch'
 import { SIDE_COLOURS } from '@/lib/sideColours'
 import { cn } from '@/lib/utils'
 
-type UserProfile = components['schemas']['UserProfile']
 type TeamListItem = components['schemas']['TeamListItem']
-
-/** One row offered by the add-a-player combobox: a real Agon user (from
- *  `/users/search`) or the option to tag the typed name as a guest instead. */
-type SearchItem = { kind: 'user'; user: UserProfile } | { kind: 'guest'; name: string }
 
 /** A person tagged onto a side: either a registered Agon user or a typed-in guest.
  *  Both carry a stable `id` — the user's own account id for a registered user
@@ -27,11 +19,6 @@ type SearchItem = { kind: 'user'; user: UserProfile } | { kind: 'guest'; name: s
 export type TaggedPlayer =
   | { kind: 'user'; id: string; name: string; imageUrl?: string }
   | { kind: 'external'; id: string; name: string }
-
-/** A stable key for a tagged player, for React keys and de-duping. */
-function taggedPlayerKey(p: TaggedPlayer): string {
-  return p.kind === 'user' ? `user:${p.id}` : `ext:${p.name.toLowerCase()}`
-}
 
 export interface PlayerSideEditorProps {
   /** Section label, e.g. "Your side" / "Opposition". */
@@ -67,9 +54,6 @@ export interface PlayerSideEditorProps {
   onColourChange?: (hex: string) => void
 }
 
-/** How long to wait after typing stops before hitting `/users/search`. */
-const SEARCH_DEBOUNCE_MS = 300
-
 /**
  * One side of a match: the tagged players (the signed-in user, if on this side,
  * is badged "you" but is a normal removable entry) and a search box to add
@@ -91,80 +75,9 @@ export function PlayerSideEditor({
   colour,
   onColourChange,
 }: PlayerSideEditorProps) {
-  const [term, setTerm] = useState('')
-  const [debounced, setDebounced] = useState('')
-
-  useEffect(() => {
-    const t = setTimeout(() => setDebounced(term.trim()), SEARCH_DEBOUNCE_MS)
-    return () => clearTimeout(t)
-  }, [term])
-
-  const search = useQuery({
-    queryKey: ['users-search', debounced],
-    enabled: debounced.length >= 2,
-    queryFn: async (): Promise<UserProfile[]> => {
-      const { data, error } = await fetchClient.GET('/users/search', {
-        params: { query: { q: debounced } },
-      })
-      if (error || !data) throw new Error('Search failed')
-      return data
-    },
-  })
-
-  const taggedKeys = useMemo(
-    () => new Set(players.map(taggedPlayerKey)),
-    [players],
-  )
-
-  const searching = debounced.length >= 2
-  const results = searching
-    ? (search.data ?? []).filter(
-        (u) =>
-          u.id !== currentUserId &&
-          !excludeUserIds.includes(u.id) &&
-          !taggedKeys.has(`user:${u.id}`),
-      )
-    : []
-
-  const addUser = (u: UserProfile) => {
-    onChange([
-      ...players,
-      { kind: 'user', id: u.id, name: u.name, imageUrl: u.profile_image?.image_url },
-    ])
-    setTerm('')
-    setDebounced('')
-  }
-
-  const addExternal = (name: string) => {
-    const trimmed = name.trim()
-    if (!trimmed) return
-    const key = `ext:${trimmed.toLowerCase()}`
-    if (taggedKeys.has(key)) return
-    onChange([...players, { kind: 'external', id: crypto.randomUUID(), name: trimmed }])
-    setTerm('')
-    setDebounced('')
-  }
-
   const removeAt = (index: number) => {
     onChange(players.filter((_, i) => i !== index))
   }
-
-  const trimmed = term.trim()
-  const canAddGuest =
-    trimmed.length >= 1 && !taggedKeys.has(`ext:${trimmed.toLowerCase()}`)
-
-  // Real matches first, the "add as guest" fallback last — standard
-  // create-new-item-last combobox convention. Enter/autoHighlight then
-  // defaults to the top real match when there is one, guest otherwise;
-  // arrow keys reach any other entry. (Previously — before real keyboard
-  // nav existed here — Enter always added a guest, ignoring matches;
-  // selecting a real match required a click either way.)
-  const items: SearchItem[] = [
-    ...(searching ? results.map((u): SearchItem => ({ kind: 'user', user: u })) : []),
-    ...(canAddGuest ? [{ kind: 'guest', name: trimmed } as const] : []),
-  ]
-  const isLoading = searching && search.isLoading
-  const nothingFound = !isLoading && items.length === 0 && trimmed.length > 0
 
   return (
     <div className="flex flex-col gap-2">
@@ -264,61 +177,12 @@ export function PlayerSideEditor({
           </div>
         )}
 
-        {/* Search / add */}
-        <Combobox
-          items={items}
-          filter={null}
-          autoHighlight
-          inputValue={term}
-          onInputValueChange={setTerm}
-          // Without this, selecting an item makes the combobox fill the input
-          // with a stringified dump of the selected `SearchItem` object (no
-          // natural label) right after `onValueChange` below clears it back to
-          // "" — the two land in the same batch and the fill wins, leaving the
-          // box showing `{"kind":"user",...}` and re-querying `/users/search`
-          // for that garbage. We always want it blank post-select (the picked
-          // player becomes a tagged row, not text in the box), so just say so.
-          itemToStringLabel={() => ''}
-          onValueChange={(next) => {
-            const item = next as SearchItem | null
-            if (!item) return
-            if (item.kind === 'user') addUser(item.user)
-            else addExternal(item.name)
-          }}
-        >
-          <ComboboxInput
-            placeholder={searchPlaceholder}
-            showTrigger={false}
-            className="h-11 rounded-2xl border-dashed bg-transparent shadow-none"
-          >
-            <InputGroupAddon align="inline-start" className="text-muted-foreground">
-              <Plus className="size-4" />
-            </InputGroupAddon>
-          </ComboboxInput>
-          <ComboboxContent>
-            {isLoading && <p className="px-3 py-2 text-xs text-muted-foreground">Searching…</p>}
-            {nothingFound && <p className="px-3 py-2 text-xs text-muted-foreground">No matches.</p>}
-            <ComboboxList>
-              {(item: SearchItem) =>
-                item.kind === 'user' ? (
-                  <ComboboxItem key={item.user.id} value={item}>
-                    <Avatar name={item.user.name} imageUrl={item.user.profile_image?.image_url} size="md" />
-                    <span className="flex-1 truncate">{item.user.name}</span>
-                  </ComboboxItem>
-                ) : (
-                  <ComboboxItem key="guest" value={item}>
-                    <span className="inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
-                      <UserPlus className="size-3.5" />
-                    </span>
-                    <span className="flex-1 truncate">
-                      Add "<span className="font-medium">{item.name}</span>" as guest
-                    </span>
-                  </ComboboxItem>
-                )
-              }
-            </ComboboxList>
-          </ComboboxContent>
-        </Combobox>
+        <PlayerSearchInput
+          placeholder={searchPlaceholder}
+          taken={players}
+          excludeUserIds={currentUserId ? [currentUserId, ...excludeUserIds] : excludeUserIds}
+          onAdd={(p) => onChange([...players, p])}
+        />
       </div>
     </div>
   )

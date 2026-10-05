@@ -19,6 +19,16 @@ aws-sdk-dynamodb = "1"
 tokio = { version = "1", features = ["time"] }
 serde_dynamo = { version = "4", features = ["aws-sdk-dynamodb+1"] }
 meilisearch-sdk = { version = "0.33", default-features = false, features = ["reqwest", "tls"] }
+# Weng-Lin / OpenSkill ratings, the engine behind `rating`. MIT/Apache-2.0
+# and unencumbered — TrueSkill, the algorithm it approximates, is patented
+# until 2029 and licensed only for Xbox Live and non-commercial use, which
+# rules it out for a project aiming to go professional.
+#
+# Default features only: the optional `serde` feature derives on the crate's
+# own `WengLinRating`, and we deliberately store our own `mu`/`sigma` on our
+# own record types rather than serializing a third-party struct into the
+# table (see `rating::PlayerRating`).
+skillratings = "0.29"
 # FCM HTTP v1 client (`push`) — auto-generated from Google's own fcm:v1 API
 # schema, so it tracks the API surface (platform-specific payload options)
 # without us hand-maintaining request/response types. Re-exports the

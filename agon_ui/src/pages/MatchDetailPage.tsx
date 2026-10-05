@@ -37,6 +37,7 @@ import {
   myPendingInvitation,
   mySideId,
   orderSidesForViewer,
+  sideDisplayName,
   withInvitationStatus,
 } from '@/lib/members'
 import { respondToInvitation } from '@/lib/invitations'
@@ -103,10 +104,10 @@ import { sportLabel as sportName } from '@/lib/sports'
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
 
-/** Display label for a side: the server-resolved name (always present), or a
- *  neutral fallback for the unlikely case it's missing. */
+/** Display label for a side: `sideDisplayName`, or a neutral fallback for
+ *  the unlikely case it has nothing to show. */
 function sideName(side: MatchSide | undefined, fallback: string): string {
-  return side?.name?.trim() || fallback
+  return sideDisplayName(side) ?? fallback
 }
 
 

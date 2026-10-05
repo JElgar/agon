@@ -3,6 +3,7 @@ import { cn } from '@/lib/utils'
 import { relativeTime } from '@/lib/datetime'
 import { sportLabel } from '@/lib/sports'
 import { displayScore, headlineBySide } from '@/lib/score'
+import { sideDisplayName } from '@/lib/members'
 
 type SearchMatch = components['schemas']['SearchMatch']
 type MatchOutcome = components['schemas']['MatchOutcome']
@@ -63,7 +64,7 @@ export function ProfileMatchRow({
   ...props
 }: ProfileMatchRowProps) {
   const badge = badgeFor(match)
-  const sideNames = match.sides.map((s) => s.name).filter(Boolean).join(' vs ')
+  const sideNames = match.sides.map((s) => sideDisplayName(s)).filter(Boolean).join(' vs ')
 
   return (
     <button

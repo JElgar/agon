@@ -36,7 +36,9 @@ use poem::{
     web::{Data, Html, Path},
 };
 
-use crate::{Api, Match, MatchType, Member, assets::Assets, mapping, sign_match_headers};
+use crate::{
+    Api, Match, MatchSide, MatchType, Member, assets::Assets, mapping, sign_match_headers,
+};
 
 /// The web app's public base URL (`AGON_UI_URL`, trimmed of a trailing
 /// slash), used to build the SPA URL a preview page bounces a real visitor
@@ -164,10 +166,7 @@ async fn match_card(
         &agg.organizers,
         false,
     );
-    // No signed-in viewer for a public preview: side-name resolution falls
-    // straight through to the neutral "Team A"/"Team B" fallback rather than
-    // ever claiming "Your side"/"Opposition" (see `Api::resolve_side_names`).
-    let mut m = Api.hydrate_match(dao, raw, "").await.ok()?;
+    let mut m = Api.hydrate_match(dao, raw).await.ok()?;
     sign_match_headers(assets, &mut m);
     Some(PreviewCard {
         target_url: target_url.to_string(),
@@ -196,14 +195,14 @@ async fn invite_card(
                 &agg.organizers,
                 false,
             );
-            let mut m = Api.hydrate_match(dao, raw, "").await.ok()?;
+            let mut m = Api.hydrate_match(dao, raw).await.ok()?;
             sign_match_headers(assets, &mut m);
 
             let side_name = player_for_invitation(&m, &rec.id).and_then(|p| {
                 p.side_id
                     .as_deref()
                     .and_then(|sid| m.sides.iter().find(|s| s.id == sid))
-                    .and_then(|s| s.name.as_deref())
+                    .and_then(side_display_name)
             });
             let spots = spots_left(&agg.sides, agg.match_.total_player_count);
 
@@ -292,7 +291,7 @@ async fn join_card(
         &agg.organizers,
         false,
     );
-    let mut m = Api.hydrate_match(dao, raw, "").await.ok()?;
+    let mut m = Api.hydrate_match(dao, raw).await.ok()?;
     sign_match_headers(assets, &mut m);
 
     // A scope naming exactly one side auto-assigns it (mirroring
@@ -304,7 +303,7 @@ async fn join_card(
             .sides
             .iter()
             .find(|s| &s.id == only)
-            .and_then(|s| s.name.as_deref()),
+            .and_then(side_display_name),
         _ => None,
     };
     let spots = spots_left(&agg.sides, agg.match_.total_player_count);
@@ -356,11 +355,35 @@ fn spots_left_line(spots: Option<u32>) -> Option<String> {
     })
 }
 
+/// A side's display name, the same chain the apps use (see
+/// `MatchSide::name`): its custom name, else its team's name ("Deleted team"
+/// if that team has gone), else a 1-2-player side's players' names.
+fn side_display_name(side: &MatchSide) -> Option<String> {
+    if let Some(name) = &side.name {
+        return Some(name.clone());
+    }
+    if let Some(team) = &side.team_name {
+        return Some(team.clone());
+    }
+    if side.team_id.is_some() {
+        return Some("Deleted team".to_string());
+    }
+    if !mapping::has_roster_identity(side.max_players) {
+        return None;
+    }
+    mapping::roster_identity_name(
+        side.roster_preview
+            .iter()
+            .flatten()
+            .map(|p| p.name.as_str()),
+    )
+}
+
 /// "{side} vs {side}" for two or more named sides (the common case — every
 /// sport here is played between opposing sides), falling back to the match's
 /// own name when there's nothing to pair up (e.g. a not-yet-populated side).
 fn match_title(m: &Match) -> String {
-    let names: Vec<&str> = m.sides.iter().filter_map(|s| s.name.as_deref()).collect();
+    let names: Vec<String> = m.sides.iter().filter_map(side_display_name).collect();
     if names.len() >= 2 {
         names.join(" vs ")
     } else {

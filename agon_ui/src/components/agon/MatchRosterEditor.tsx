@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   DndContext,
   DragOverlay,
+  MeasuringStrategy,
   PointerSensor,
   useDraggable,
   useDroppable,
@@ -18,7 +19,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Avatar } from './Avatar'
-import { memberAvatarUrl, memberName, playerId } from '@/lib/members'
+import { memberAvatarUrl, memberName, playerId, sideDisplayName } from '@/lib/members'
 
 /** "Alice", "Alice and Bob", or "Alice, Bob and Charlie" — for the removal
  *  confirmation's "you're removing …" sentence. */
@@ -33,6 +34,16 @@ type MatchPlayer = components['schemas']['MatchPlayer']
 /** Drop-zone id for players with no side yet (`side_id` unset). Distinct from
  *  any real side id, which the server mints as an opaque generated string. */
 const UNASSIGNED = '__unassigned__'
+
+/** The roster columns never move or resize mid-drag, so there's no need to
+ *  keep re-measuring their drop-zone rects on every pointer move — dnd-kit's
+ *  default does, and that `getBoundingClientRect` forces a layout reflow
+ *  whose cost scales with how many chips are in the column, which is what
+ *  made dragging within a full side noticeably laggier than an empty
+ *  "Unassigned" one. One measurement at drag start is enough. */
+const measuring = {
+  droppable: { strategy: MeasuringStrategy.BeforeDragging },
+}
 
 /**
  * Pre-game (or any time before it's locked in) roster editor: drag players
@@ -174,6 +185,7 @@ export function MatchRosterEditor({
 
       <DndContext
         sensors={sensors}
+        measuring={measuring}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
       >
@@ -182,7 +194,7 @@ export function MatchRosterEditor({
             <RosterColumn
               key={side.id}
               id={side.id}
-              title={side.name?.trim() || 'Side'}
+              title={sideDisplayName(side) ?? 'Side'}
               players={columns.get(side.id) ?? []}
               onRemove={remove}
             />

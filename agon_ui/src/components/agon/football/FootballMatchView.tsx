@@ -18,7 +18,7 @@ import {
   type FootballEventSource,
   type FootballEventView,
 } from '@/lib/liveScore'
-import { initials, memberAvatarUrl, memberName, type ScorePlayers } from '@/lib/members'
+import { initials, memberAvatarUrl, memberName, type ScorePlayers, sideDisplayName } from '@/lib/members'
 import { FollowButton } from '@/components/agon/FollowButton'
 import { useViewerFollowing } from '@/hooks/useViewerFollowing'
 
@@ -103,7 +103,7 @@ function sideIndex(match: Match, sideId: string | undefined): number {
 }
 
 function sideLabel(side: MatchSide | undefined, fallback: string): string {
-  return side?.name?.trim() || fallback
+  return sideDisplayName(side) ?? fallback
 }
 
 /** Numeric match minute for a goal/event: its live-clock minute when it was

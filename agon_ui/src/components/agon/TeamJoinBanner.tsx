@@ -5,6 +5,7 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { offersWaitlist, type RosterConflict } from '@/lib/waitlist'
+import { sideDisplayName } from '@/lib/members'
 
 type Match = components['schemas']['Match']
 
@@ -96,7 +97,7 @@ export function TeamJoinBanner({ match }: { match: Match }) {
           <p className="text-sm font-medium">
             {needsPick
               ? "You're on a team playing in this game"
-              : `You're on ${pickableSides[0]?.name?.trim() || 'a side'} playing in this game`}
+              : `You're on ${sideDisplayName(pickableSides[0]) ?? 'a side'} playing in this game`}
           </p>
           <p className="text-xs text-muted-foreground">
             {needsPick
@@ -119,7 +120,7 @@ export function TeamJoinBanner({ match }: { match: Match }) {
               )}
               {pickableSides.map((side, i) => (
                 <option key={side.id} value={side.id}>
-                  {side.name?.trim() || `Side ${i + 1}`}
+                  {sideDisplayName(side) ?? `Side ${i + 1}`}
                 </option>
               ))}
             </select>

@@ -2,7 +2,7 @@ import { Check, Clock, MapPin } from 'lucide-react'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { Avatar } from './Avatar'
-import { initials, sidePlayerCountLabel, sideTeamHint } from '@/lib/members'
+import { initials, sideDisplayName, sidePlayerCountLabel, sideTeamHint } from '@/lib/members'
 import type { ScorePlayers } from '@/lib/members'
 import { sportLabel, SPORT_ICON_TINT, type MatchType } from '@/lib/sports'
 import { countdownLabel, isStartingSoon, shortDate, timeOfDay } from '@/lib/datetime'
@@ -386,7 +386,7 @@ const TEAM_CREST_PALETTE = [
   '#1E3FA8',
 ]
 
-function teamCrestColor(teamId: string): string {
+export function teamCrestColor(teamId: string): string {
   let sum = 0
   for (let i = 0; i < teamId.length; i++) sum += teamId.charCodeAt(i)
   return TEAM_CREST_PALETTE[sum % TEAM_CREST_PALETTE.length]
@@ -407,7 +407,7 @@ function TeamCrestBadge({
   cornerTag?: { leading: boolean; colour?: string }
 }) {
   const teamId = side?.team_id ?? ''
-  const label = initials(side?.team_name ?? side?.name)
+  const label = initials(side?.team_name ?? sideDisplayName(side))
   const crest = side?.team_logo?.image_url ? (
     <span className="block size-[22px] shrink-0 overflow-hidden rounded-full">
       <img src={side.team_logo.image_url} alt="" className="size-full object-cover" loading="lazy" />
@@ -542,7 +542,7 @@ export function FootballFeedCardBody({
   const aLeading = isLive ? goalsA > goalsB : !!aWon
   const bLeading = isLive ? goalsB > goalsA : !!bWon
   const selfPlay = !!sideA?.team_id && sideA.team_id === sideB?.team_id
-  const selfPlayTeamName = selfPlay ? (sideA?.team_name ?? sideA?.name ?? '') : null
+  const selfPlayTeamName = selfPlay ? (sideA?.team_name ?? sideDisplayName(sideA) ?? '') : null
 
   const subtitle = isLive
     ? liveState
@@ -768,7 +768,7 @@ export function CricketFeedCardBody({
   const aHeadline = isLive ? aBatting : !!aWon
   const bHeadline = isLive ? bBatting : !!bWon
   const selfPlay = !!sideA?.team_id && sideA.team_id === sideB?.team_id
-  const selfPlayTeamName = selfPlay ? (sideA?.team_name ?? sideA?.name ?? '') : null
+  const selfPlayTeamName = selfPlay ? (sideA?.team_name ?? sideDisplayName(sideA) ?? '') : null
 
   const subtitle = isLive
     ? `${sportLabel('cricket')} · ${cricketFormatLabel(format)} · ${
@@ -954,7 +954,7 @@ export function NetballFeedCardBody({
   const aLeading = isLive ? goalsA > goalsB : !!aWon
   const bLeading = isLive ? goalsB > goalsA : !!bWon
   const selfPlay = !!sideA?.team_id && sideA.team_id === sideB?.team_id
-  const selfPlayTeamName = selfPlay ? (sideA?.team_name ?? sideA?.name ?? '') : null
+  const selfPlayTeamName = selfPlay ? (sideA?.team_name ?? sideDisplayName(sideA) ?? '') : null
 
   const subtitle = isLive
     ? liveState

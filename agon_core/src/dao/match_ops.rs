@@ -33,7 +33,7 @@ pub const TYPE_MATCH_SCORE: &str = "match_score";
 /// empty `roster_preview` already means "show the team instead," by
 /// construction. `agon_service` does need it — to make the same "small
 /// enough to show players" call when resolving a `Match`'s sides *live* from
-/// a full player list (see `Api::resolve_side_names`), so both paths agree.
+/// a full player list (see `Api::hydrate_sides`), so both paths agree.
 pub const ROSTER_PREVIEW_CAP: usize = 4;
 
 /// Group `players` by `side.side_id` and compute the `(player_count,
@@ -495,9 +495,9 @@ impl Dao {
     /// match's `name` and a side's `name` together atomic: either both land
     /// or neither does, instead of one succeeding and the other failing
     /// independently. `(side_id, Some(name))` sets that side's custom name;
-    /// `(side_id, None)` removes it, falling back at read time to the
-    /// priority chain `Api::resolve_side_names` implements (sole player, then
-    /// team, then a neutral default). An empty slice touches no sides.
+    /// `(side_id, None)` removes it, leaving clients to fall back to the
+    /// team's name or a small side's players' names (see `MatchSide::name`).
+    /// An empty slice touches no sides.
     ///
     /// `side_colours` is the same shape and same atomicity, for `colour`
     /// instead of `name`: `(side_id, Some(colour))` sets it, `(side_id,

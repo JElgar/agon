@@ -6,6 +6,7 @@ import {
   CalendarPlus,
   ChevronLeft,
   Link2,
+  LogOut,
   MoreVertical,
   Pencil,
   MapPin,
@@ -37,16 +38,19 @@ import {
   CommentsPreviewCard,
 } from '@/components/agon/football/FootballMatchView'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
+import { LeaveMatchDialog } from '@/components/agon/invite/LeaveMatchDialog'
 import { WaitlistSection } from '@/components/agon/WaitlistSection'
 import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
 import { MatchJoinLinksDialog } from '@/components/agon/MatchJoinLinksDialog'
 import { MatchComments } from '@/components/agon/MatchComments'
+import { teamCrestColor } from '@/components/agon/RedesignedSportCard'
 import {
   memberAvatarUrl,
   memberName,
   myPendingInvitation,
   playerId,
+  sideDisplayName,
   withInvitationStatus,
 } from '@/lib/members'
 
@@ -73,7 +77,7 @@ function overallCap(match: Match): number | undefined {
 }
 
 function sideLabel(side: MatchSide | undefined, fallback: string): string {
-  return side?.name?.trim() || fallback
+  return sideDisplayName(side) ?? fallback
 }
 
 type InviteTab = 'details' | 'teams'
@@ -111,6 +115,21 @@ function OrganizerRow({ organiser }: { organiser: MatchPlayer }) {
   )
 }
 
+/** The Teams tab's own side identity dot: an ad-hoc or derby side's own
+ *  stored `colour` first (the server only ever sets it for those — see
+ *  `MatchSide.colour`'s doc comment), else a team-linked side's
+ *  `teamCrestColor` (the same deterministic colour its crest uses
+ *  elsewhere — the schema has no real team-colour field), falling back to
+ *  the plain index-based `SideSwatch` only when neither is set. Checking
+ *  `colour` before `team_id` matters for a derby side, which has both. */
+function TeamRosterSwatch({ side, index }: { side: MatchSide | undefined; index: number }) {
+  const colour = side?.colour ?? (side?.team_id ? teamCrestColor(side.team_id) : undefined)
+  if (colour) {
+    return <span className="inline-block size-3.5 shrink-0 rounded-[5px]" style={{ backgroundColor: colour }} />
+  }
+  return <SideSwatch index={index} size={14} />
+}
+
 /** One side's roster on the Teams tab — read-only; editing who's on which
  *  side happens through `MatchRosterEditor`, surfaced alongside this via the
  *  "Edit roster" button rather than inline here. */
@@ -128,7 +147,7 @@ function TeamRosterCard({
   return (
     <Card className="flex flex-col gap-1 p-[18px]">
       <div className="flex items-center gap-2.5 pb-2">
-        <SideSwatch index={index} size={14} />
+        <TeamRosterSwatch side={side} index={index} />
         <span className="font-display flex-grow text-[18px] font-extrabold">{sideLabel(side, fallback)}</span>
         <span className="text-[13px] text-muted-foreground">{players.length} players</span>
       </div>
@@ -213,6 +232,8 @@ export function ScheduledMatchInvite({
     onSuccess: () => queryClient.invalidateQueries({ queryKey: matchKey }),
   })
 
+  const [leaveDialogOpen, setLeaveDialogOpen] = useState(false)
+
   const respond = useMutation({
     mutationFn: async (response: components['schemas']['InvitationResponse']) => {
       if (!invitation) return
@@ -274,6 +295,27 @@ export function ScheduledMatchInvite({
           >
             <Share className="size-[22px]" />
           </button>
+          {myPlayer && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="More options"
+                  className="flex size-11 items-center justify-center rounded-full text-foreground hover:bg-muted"
+                >
+                  <MoreVertical className="size-[22px]" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                  onSelect={() => setLeaveDialogOpen(true)}
+                >
+                  <LogOut /> Leave match
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
       </div>
 
@@ -584,6 +626,17 @@ export function ScheduledMatchInvite({
           queryClient.invalidateQueries({ queryKey: ['profile-activity'] })
         }}
       />
+
+      {myPlayer && (
+        <LeaveMatchDialog
+          open={leaveDialogOpen}
+          onOpenChange={setLeaveDialogOpen}
+          match={match}
+          myPlayer={myPlayer}
+          going={going}
+          onLeft={() => setLeaveDialogOpen(false)}
+        />
+      )}
 
       <Sheet open={commentsOpen} onOpenChange={setCommentsOpen}>
         <SheetContent side="bottom" className="max-h-[85vh] overflow-y-auto rounded-t-[20px] bg-background p-4">

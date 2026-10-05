@@ -22,7 +22,7 @@ export interface LoggedFootballMatch {
 }
 
 /**
- * Drives the real "Log a match" flow (`LogMatchPage`) to create a scheduled
+ * Drives the real three-step "Log a match" flow (`LogMatchPage`) to create an upcoming
  * football match with a full-enough roster for live-scoring tests to record
  * goals, an assist, and events on both sides:
  *   - Side A ("Home"): the signed-in user (seeded automatically) plus one
@@ -51,30 +51,40 @@ export async function logFootballMatch(
 
   await page.goto('/matches/new')
 
+  // Step 1: sport & time. The match is upcoming by default, an hour out.
   await page.getByRole('button', { name: 'Football' }).click()
-  await page.getByPlaceholder('e.g. Tuesday night singles').fill(name)
+  await page.getByLabel('Match name').fill(name)
+  await page.getByRole('button', { name: 'Continue', exact: true }).click()
+
+  // Step 2: players. Both sides become one-off sides with typed names.
+  await page
+    .getByRole('radiogroup', { name: 'Your side is' })
+    .getByRole('radio', { name: 'One-off side' })
+    .click()
 
   // The signed-in user is seeded onto "Your side" as soon as their profile
-  // loads — read their name back before adding anyone else, while there's
-  // still exactly one tagged-player row on the page to disambiguate (see
-  // `PlayerSideEditor`'s `tagged-player-name` element).
+  // loads. Their chip reads "You", so read the real name off its
+  // `data-player-name` while it's still the only tagged player.
   const selfRow = page.getByTestId('tagged-player-name').first()
   await expect(selfRow).toBeVisible()
-  const selfName = (await selfRow.innerText()).trim()
+  const selfName = ((await selfRow.getAttribute('data-player-name')) ?? '').trim()
 
-  const sideNameInputs = page.getByPlaceholder('Name this side (optional)')
+  const sideNameInputs = page.getByLabel('Side name')
   await sideNameInputs.nth(0).fill(homeName)
   await sideNameInputs.nth(1).fill(opponentName)
 
-  // The search dropdown is a shadcn `Command` (cmdk) combobox — its rows are
-  // `role="option"`, not buttons.
-  await page.getByPlaceholder('Add a teammate…').fill(teammateName)
+  // The search dropdown is a Base UI combobox: its rows are `role="option"`.
+  const inviteInputs = page.getByPlaceholder('Invite a player or add a guest')
+  await inviteInputs.nth(0).fill(teammateName)
   await page.getByRole('option', { name: `Add "${teammateName}" as guest` }).click()
 
-  await page.getByPlaceholder('Add an opponent…').fill(awayPlayerName)
+  await inviteInputs.nth(1).fill(awayPlayerName)
   await page.getByRole('option', { name: `Add "${awayPlayerName}" as guest` }).click()
 
-  await page.getByRole('button', { name: 'Post match', exact: true }).click()
+  await page.getByRole('button', { name: 'Continue', exact: true }).click()
+
+  // Step 3: review. Guests get no invite, so the button just creates it.
+  await page.getByRole('button', { name: 'Create match', exact: true }).click()
   await expect(page).toHaveURL(/\/feed$/, { timeout: 20_000 })
 
   return { name, homeName, opponentName, selfName, teammateName, awayPlayerName }

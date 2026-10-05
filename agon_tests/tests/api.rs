@@ -817,233 +817,193 @@ async fn clearing_the_name_of_an_empty_side_is_rejected() {
     );
 }
 
-/// Regression test: a team sport's ad-hoc side used to resolve to its one
-/// early joiner's name, as if it were a 1v1 match — only an individual sport
-/// (tennis/badminton/squash/table_tennis) has a side whose roster *is* its
-/// identity (see `is_individual_sport`/`roster_identity_name`). A football
-/// side with no team and no custom name falls to the neutral
-/// "Your side"/"Opposition" instead, however few players have joined.
-#[tokio::test]
-async fn team_sport_side_with_one_player_does_not_show_their_name() {
-    let (owner_config, _owner) = new_user().await;
-    let created = matches_post(
-        &owner_config,
-        models::CreateMatchInput {
-            name: "Test Match".to_string(),
-            description: "A test match".to_string(),
-            match_type: models::MatchType::Football,
-            starts_at: iso_offset_hours(24),
-            location: None,
-            sides: vec![
-                models::CreateMatchSideInput {
-                    client_id: "a".to_string(),
-                    team_id: None,
-                    name: None,
-                    max_players: None,
-                    team_join_enabled: None,
-                },
-                models::CreateMatchSideInput {
-                    client_id: "b".to_string(),
-                    team_id: None,
-                    name: Some("Side B".to_string()),
-                    max_players: None,
-                    team_join_enabled: None,
-                },
-            ],
-            invites: vec![invite_externals("a", &["Alex"])],
-            // Owner plays on side "b", so side "a" (Alex's) resolves as
-            // their opposition rather than "Your side"/neutral "Team A".
-            creator_side_client_id: Some("b".to_string()),
-            score: None,
-            winner_side_id: None,
-            header_photo_asset_ids: None,
-            format: None,
-            allow_unassigned: None,
-        },
-    )
-    .await
-    .expect("create match");
-
-    let side_a_id = created
-        .players
-        .iter()
-        .find_map(|p| match &*p.member {
-            models::Member::External(e) if e.display_name == "Alex" => p.side_id.clone(),
-            _ => None,
-        })
-        .expect("Alex is on a side");
-    let side_a = created.sides.iter().find(|s| s.id == side_a_id).unwrap();
-    assert_eq!(
-        side_a.name.as_deref(),
-        Some("Opposition"),
-        "a football side with one joiner and no name/team should not show that player's name"
-    );
+/// A side with no team, for the side-name rule tests below.
+fn ad_hoc_side(
+    client_id: &str,
+    name: Option<&str>,
+    max_players: Option<i32>,
+) -> models::CreateMatchSideInput {
+    models::CreateMatchSideInput {
+        client_id: client_id.to_string(),
+        team_id: None,
+        name: name.map(str::to_string),
+        colour: Some("#2952D9".to_string()),
+        max_players,
+        team_join_enabled: None,
+    }
 }
 
-/// An individual sport's 1-2-player ad-hoc side takes its identity from its
-/// own roster instead: a 2v2 (doubles) side with no custom name and no team
-/// resolves to both players' names joined with "&".
+/// A match between `side_a` and a named side "b" the owner plays on, with
+/// `side_a_players` invited to `side_a` as guests.
+fn side_name_rule_match(
+    match_type: models::MatchType,
+    side_a: models::CreateMatchSideInput,
+    side_a_players: &[&str],
+) -> models::CreateMatchInput {
+    models::CreateMatchInput {
+        name: "Test Match".to_string(),
+        description: "A test match".to_string(),
+        match_type,
+        starts_at: iso_offset_hours(24),
+        location: None,
+        sides: vec![side_a, ad_hoc_side("b", Some("Side B"), None)],
+        invites: vec![invite_externals("a", side_a_players)],
+        creator_side_client_id: Some("b".to_string()),
+        score: None,
+        winner_side_id: None,
+        header_photo_asset_ids: None,
+        format: None,
+        allow_unassigned: None,
+    }
+}
+
+fn side_of<'a>(m: &'a models::Match, player_name: &str) -> &'a models::MatchSide {
+    let side_id = m
+        .players
+        .iter()
+        .find_map(|p| match &*p.member {
+            models::Member::External(e) if e.display_name == player_name => p.side_id.clone(),
+            _ => None,
+        })
+        .expect("player is on a side");
+    m.sides.iter().find(|s| s.id == side_id).unwrap()
+}
+
+/// A side with no team needs a name unless it's capped at 2 or fewer
+/// players, whatever the sport: the cap, not the sport, says whether its
+/// players' names can stand in for one.
 #[tokio::test]
-async fn doubles_side_with_no_name_resolves_to_joined_player_names() {
+async fn unnamed_side_without_a_small_cap_is_rejected() {
+    let (owner_config, _owner) = new_user().await;
+    for max_players in [None, Some(3)] {
+        let response = matches_post(
+            &owner_config,
+            side_name_rule_match(
+                models::MatchType::Tennis,
+                ad_hoc_side("a", None, max_players),
+                &["Alex"],
+            ),
+        )
+        .await;
+        assert_status_with_content(response, reqwest::StatusCode::BAD_REQUEST, "needs a name");
+    }
+}
+
+/// An unnamed side capped at 2 shows its players' names joined with "&",
+/// in any sport.
+#[tokio::test]
+async fn unnamed_side_capped_at_two_resolves_to_joined_player_names() {
     let (owner_config, _owner) = new_user().await;
     let created = matches_post(
         &owner_config,
-        models::CreateMatchInput {
-            name: "Test Match".to_string(),
-            description: "A test match".to_string(),
-            match_type: models::MatchType::Tennis,
-            starts_at: iso_offset_hours(24),
-            location: None,
-            sides: vec![
-                models::CreateMatchSideInput {
-                    client_id: "a".to_string(),
-                    team_id: None,
-                    name: None,
-                    max_players: None,
-                    team_join_enabled: None,
-                },
-                models::CreateMatchSideInput {
-                    client_id: "b".to_string(),
-                    team_id: None,
-                    name: Some("Side B".to_string()),
-                    max_players: None,
-                    team_join_enabled: None,
-                },
-            ],
-            invites: vec![invite_externals("a", &["Luke Wickenden", "Rob Perry"])],
-            creator_side_client_id: Some("b".to_string()),
-            score: None,
-            winner_side_id: None,
-            header_photo_asset_ids: None,
-            format: None,
-            allow_unassigned: None,
-        },
+        side_name_rule_match(
+            models::MatchType::Football,
+            ad_hoc_side("a", None, Some(2)),
+            &["Luke Wickenden", "Rob Perry"],
+        ),
     )
     .await
     .expect("create match");
 
-    let side_a_id = created
-        .players
-        .iter()
-        .find_map(|p| match &*p.member {
-            models::Member::External(e) if e.display_name == "Luke Wickenden" => {
-                p.side_id.clone()
-            }
-            _ => None,
-        })
-        .expect("Luke is on a side");
-    let side_a = created.sides.iter().find(|s| s.id == side_a_id).unwrap();
-    let name = side_a.name.as_deref().expect("resolved name");
+    let name = side_of(&created, "Luke Wickenden")
+        .name
+        .as_deref()
+        .expect("resolved name");
     assert!(
         name.contains("Luke Wickenden") && name.contains("Rob Perry") && name.contains(" & "),
         "expected both players' names joined with \" & \", got {name:?}"
     );
 }
 
-/// An individual sport's ad-hoc (no team, no name) side defaults to a
-/// max_players of 2 — past that, a roster-derived name stops reading as an
-/// identity, so a 3rd player is rejected unless the creator names the side
-/// or explicitly raises the cap themselves.
+/// An unnamed side capped at 1 shows its one player's name.
 #[tokio::test]
-async fn unnamed_individual_sport_side_caps_at_two_players_by_default() {
-    let (owner_config, _owner) = new_user().await;
-    let response = matches_post(
-        &owner_config,
-        models::CreateMatchInput {
-            name: "Test Match".to_string(),
-            description: "A test match".to_string(),
-            match_type: models::MatchType::Tennis,
-            starts_at: iso_offset_hours(24),
-            location: None,
-            sides: vec![
-                models::CreateMatchSideInput {
-                    client_id: "a".to_string(),
-                    team_id: None,
-                    name: None,
-                    max_players: None,
-                    team_join_enabled: None,
-                },
-                models::CreateMatchSideInput {
-                    client_id: "b".to_string(),
-                    team_id: None,
-                    name: Some("Side B".to_string()),
-                    max_players: None,
-                    team_join_enabled: None,
-                },
-            ],
-            invites: vec![invite_externals("a", &["Luke", "Rob", "Thomas"])],
-            creator_side_client_id: Some("b".to_string()),
-            score: None,
-            winner_side_id: None,
-            header_photo_asset_ids: None,
-            format: None,
-            allow_unassigned: None,
-        },
-    )
-    .await;
-    assert_status_with_content(
-        response,
-        reqwest::StatusCode::BAD_REQUEST,
-        "over its max_players of 2",
-    );
-}
-
-/// The counterpart to the default cap above: explicitly setting
-/// `max_players` on an unnamed individual-sport side overrides the default,
-/// same as naming the side would.
-#[tokio::test]
-async fn unnamed_individual_sport_side_can_raise_the_cap_explicitly() {
+async fn unnamed_side_capped_at_one_resolves_to_player_name() {
     let (owner_config, _owner) = new_user().await;
     let created = matches_post(
         &owner_config,
-        models::CreateMatchInput {
-            name: "Test Match".to_string(),
-            description: "A test match".to_string(),
-            match_type: models::MatchType::Tennis,
-            starts_at: iso_offset_hours(24),
-            location: None,
-            sides: vec![
-                models::CreateMatchSideInput {
-                    client_id: "a".to_string(),
-                    team_id: None,
-                    name: None,
-                    max_players: Some(4),
-                    team_join_enabled: None,
-                },
-                models::CreateMatchSideInput {
-                    client_id: "b".to_string(),
-                    team_id: None,
-                    name: Some("Side B".to_string()),
-                    max_players: None,
-                    team_join_enabled: None,
-                },
-            ],
-            invites: vec![invite_externals("a", &["Luke", "Rob", "Thomas"])],
-            creator_side_client_id: Some("b".to_string()),
-            score: None,
-            winner_side_id: None,
-            header_photo_asset_ids: None,
-            format: None,
-            allow_unassigned: None,
-        },
+        side_name_rule_match(
+            models::MatchType::Squash,
+            ad_hoc_side("a", None, Some(1)),
+            &["Alex"],
+        ),
     )
     .await
     .expect("create match");
+    assert_eq!(side_of(&created, "Alex").name.as_deref(), Some("Alex"));
+}
 
-    let side_a_id = created
-        .players
-        .iter()
-        .find_map(|p| match &*p.member {
-            models::Member::External(e) if e.display_name == "Luke" => p.side_id.clone(),
-            _ => None,
-        })
-        .expect("Luke is on a side");
-    let side_a = created.sides.iter().find(|s| s.id == side_a_id).unwrap();
-    assert_eq!(side_a.max_players, Some(4));
-    // Past 2 players, there's no roster-derived identity left to show, so it
-    // falls to the neutral "Opposition" (same fallback as the team-sport
-    // case above) rather than attempting to list all 3 names.
-    assert_eq!(side_a.name.as_deref(), Some("Opposition"));
+/// A named side with one early joiner shows its name, not that player's,
+/// even when it's small enough that it could have gone without one.
+#[tokio::test]
+async fn named_side_shows_its_name_not_the_player() {
+    let (owner_config, _owner) = new_user().await;
+    let created = matches_post(
+        &owner_config,
+        side_name_rule_match(
+            models::MatchType::Football,
+            ad_hoc_side("a", Some("Blues"), Some(2)),
+            &["Alex"],
+        ),
+    )
+    .await
+    .expect("create match");
+    assert_eq!(side_of(&created, "Alex").name.as_deref(), Some("Blues"));
+}
+
+/// Raising an unnamed side's cap past 2 (or removing it) is rejected until
+/// the side gets a name — in the same request is fine.
+#[tokio::test]
+async fn raising_unnamed_side_cap_needs_a_name() {
+    let (owner_config, _owner) = new_user().await;
+    let created = matches_post(
+        &owner_config,
+        side_name_rule_match(
+            models::MatchType::Tennis,
+            ad_hoc_side("a", None, Some(2)),
+            &["Alex"],
+        ),
+    )
+    .await
+    .expect("create match");
+    let side_id = side_of(&created, "Alex").id.clone();
+    let settings = |max_players| {
+        Some(vec![models::SetSideJoinSettingsInput {
+            side_id: side_id.clone(),
+            max_players,
+            team_join_enabled: false,
+        }])
+    };
+
+    for max_players in [Some(4), None] {
+        let response = matches_match_id_patch(
+            &owner_config,
+            &created.id,
+            models::UpdateMatchInput {
+                side_join_settings: settings(max_players),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_status_with_content(response, reqwest::StatusCode::BAD_REQUEST, "needs a name");
+    }
+
+    let updated = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            side_names: Some(vec![models::UpdateMatchSideNameInput {
+                side_id: side_id.clone(),
+                name: Some("Alex's lot".to_string()),
+            }]),
+            side_join_settings: settings(Some(4)),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("rename and raise the cap together");
+    let side = updated.sides.iter().find(|s| s.id == side_id).unwrap();
+    assert_eq!(side.max_players, Some(4));
+    assert_eq!(side.name.as_deref(), Some("Alex's lot"));
 }
 
 /// Renaming a side that isn't part of the match is rejected.

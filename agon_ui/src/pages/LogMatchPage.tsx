@@ -72,25 +72,36 @@ function firstName(name: string): string {
   return name.trim().split(/\s+/)[0] ?? name
 }
 
+/** The largest side cap at which a side with no team or name is shown by
+ *  its players' names instead (mirrors the server's `has_roster_identity`). */
+const ROSTER_IDENTITY_MAX_PLAYERS = 2
+
 /** A side's display name in this form, in the server's order (see
  *  `Api::resolve_side_names`): its own name, else its team's, else, for a
- *  racket sport only, its one or two players' names; `undefined` when none
+ *  side capped at one or two players, their names; `undefined` when none
  *  apply so callers can use their own fallback. */
 function resolvedSideName(
-  sport: MatchType | null,
   players: TaggedPlayer[],
   customName: string,
   team: TeamListItem | null,
+  cap: number | undefined,
   short = false,
 ): string | undefined {
   const trimmed = customName.trim()
   if (trimmed) return trimmed
   if (team) return team.name
-  if (!sport || !isSetsSport(sport)) return undefined
+  if (cap === undefined || cap > ROSTER_IDENTITY_MAX_PLAYERS) return undefined
   const names = players.map((p) => (short ? firstName(p.name) : p.name))
   if (names.length === 1) return names[0]
   if (names.length === 2) return `${names[0]} & ${names[1]}`
   return undefined
+}
+
+/** Whether a side still needs a name: the server requires one on a side
+ *  with no team unless it's capped small enough to be shown by its
+ *  players' names. */
+function needsName(identity: boolean, team: TeamListItem | null, customName: string, cap: number | undefined) {
+  return identity && !team && !customName.trim() && (cap === undefined || cap > ROSTER_IDENTITY_MAX_PLAYERS)
 }
 
 function defaultScheduledAt(): string {
@@ -208,14 +219,13 @@ export function LogMatchPage() {
     if (!sideBNameTouched) setSideBNameRaw(nameFromColour(hex) ?? '')
   }
 
-  // A team playing itself needs a way to tell the sides apart: name each
-  // untouched side after its kit colour as soon as that happens, so the
+  // A one-off side, or a team playing itself, needs a name: name each
+  // untouched side after its kit colour as soon as it needs one, so the
   // user never has to go back and fill one in.
   useEffect(() => {
-    if (!sharedTeam) return
-    if (!sideANameTouched) setSideANameRaw((n) => n || (nameFromColour(sideAColour) ?? ''))
-    if (!sideBNameTouched) setSideBNameRaw((n) => n || (nameFromColour(sideBColour) ?? ''))
-  }, [sharedTeam, sideANameTouched, sideBNameTouched, sideAColour, sideBColour])
+    if (sideAIdentity && !sideANameTouched) setSideANameRaw((n) => n || (nameFromColour(sideAColour) ?? ''))
+    if (sideBIdentity && !sideBNameTouched) setSideBNameRaw((n) => n || (nameFromColour(sideBColour) ?? ''))
+  }, [sideAIdentity, sideBIdentity, sideANameTouched, sideBNameTouched, sideAColour, sideBColour])
 
   const changeSport = (next: MatchType) => {
     setSport(next)
@@ -279,8 +289,11 @@ export function LogMatchPage() {
     return null
   }
 
-  const sideALabel = resolvedSideName(sport, sideA, sideAIdentity ? sideAName : '', linkedA) ?? 'Your side'
-  const sideBLabel = resolvedSideName(sport, sideB, sideBIdentity ? sideBName : '', linkedB) ?? 'Opposition'
+  const capOf = (maxPlayers: string) => (racket ? racketCap : maxPlayers.trim() ? Number(maxPlayers) : undefined)
+  const sideACap = capOf(sideAMaxPlayers)
+  const sideBCap = capOf(sideBMaxPlayers)
+  const sideALabel = resolvedSideName(sideA, sideAIdentity ? sideAName : '', linkedA, sideACap) ?? 'Your side'
+  const sideBLabel = resolvedSideName(sideB, sideBIdentity ? sideBName : '', linkedB, sideBCap) ?? 'Opposition'
 
   const step2Error = useMemo((): string | null => {
     if (sideA.length === 0) return 'Add at least one player to your side'
@@ -290,12 +303,15 @@ export function LogMatchPage() {
     }
     if (sideAKind === 'team' && !sideATeam) return 'Pick a team for your side, or make it a one-off side'
     if (sideBKind === 'team' && !sideBTeam) return 'Pick a team for the opposition, or make it a one-off side'
+    if (needsName(sideAIdentity, linkedA, sideAName, sideACap)) return 'Give your side a name'
+    if (needsName(sideBIdentity, linkedB, sideBName, sideBCap)) return 'Give the opposition a name'
     if (sideB.length === 0 && !(sideBIdentity && sideBName.trim()) && !linkedB)
       return 'Name the opposition or invite a player'
     return maxError('Your side', sideAMaxPlayers, sideA.length) ?? maxError('Opposition', sideBMaxPlayers, sideB.length)
   }, [
     sideA.length, sideB.length, racket, racketFormat, sideAKind, sideBKind, sideATeam, sideBTeam,
-    sideBIdentity, sideBName, linkedB, sideAMaxPlayers, sideBMaxPlayers,
+    sideAIdentity, sideAName, linkedA, sideACap, sideBIdentity, sideBName, linkedB, sideBCap,
+    sideAMaxPlayers, sideBMaxPlayers,
   ])
 
   const scoreError = useMemo((): string | null => {
@@ -645,14 +661,14 @@ export function LogMatchPage() {
               (() => {
                 const sideAObj: MatchSide = {
                   id: SIDE_A,
-                  name: resolvedSideName(sport, sideA, sideAIdentity ? sideAName : '', linkedA),
+                  name: resolvedSideName(sideA, sideAIdentity ? sideAName : '', linkedA, sideACap),
                   team_id: linkedA?.id,
                   team_join_enabled: false,
                   player_count: 0,
                 }
                 const sideBObj: MatchSide = {
                   id: SIDE_B,
-                  name: resolvedSideName(sport, sideB, sideBIdentity ? sideBName : '', linkedB),
+                  name: resolvedSideName(sideB, sideBIdentity ? sideBName : '', linkedB, sideBCap),
                   team_id: linkedB?.id,
                   team_join_enabled: false,
                   player_count: 0,
@@ -668,8 +684,8 @@ export function LogMatchPage() {
 
             {racket && (
               <SetsScoreEditor
-                sideAName={resolvedSideName(sport, sideA, '', null, true) ?? 'Your side'}
-                sideBName={resolvedSideName(sport, sideB, '', null, true) ?? 'Opposition'}
+                sideAName={resolvedSideName(sideA, '', null, racketCap, true) ?? 'Your side'}
+                sideBName={resolvedSideName(sideB, '', null, racketCap, true) ?? 'Opposition'}
                 rows={sets}
                 onChange={setSets}
               />

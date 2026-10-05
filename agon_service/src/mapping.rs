@@ -125,27 +125,25 @@ pub fn match_type_tag(mt: &MatchType) -> &'static str {
     }
 }
 
-/// Whether `mt` is played 1v1 or 2v2 (the racket sports) rather than as a
-/// full squad — the same sport split the UI's `isSetsSport` makes, since a
-/// side's roster *is* its whole identity for these sports, unlike a
-/// football/cricket/netball side which is still "the team" long before
-/// everyone's joined.
-pub fn is_individual_sport(mt: &MatchType) -> bool {
-    matches!(
-        mt,
-        MatchType::Tennis | MatchType::Badminton | MatchType::Squash | MatchType::TableTennis
-    )
+/// The largest `max_players` at which a side with no team and no custom
+/// name is identified by its players' names ("Sam" or "Sam & Alex"). Past
+/// this a roster-derived name stops reading as an identity, so a bigger
+/// side has to be named (see `create_match`/`update_match`).
+pub const ROSTER_IDENTITY_MAX_PLAYERS: u32 = 2;
+
+/// Whether a side capped at `max_players` is small enough to be identified
+/// by its roster rather than needing a name. An uncapped side never is.
+pub fn has_roster_identity(max_players: Option<u32>) -> bool {
+    max_players.is_some_and(|n| n <= ROSTER_IDENTITY_MAX_PLAYERS)
 }
 
 /// A side's identity derived purely from who's on it: the lone player's
-/// name for a 1v1 side, or both players' names joined with "&" for a 2v2
-/// side. Only meaningful for [`is_individual_sport`]'s sports — a
-/// football/cricket/netball side with one early joiner isn't "that player's
-/// side", it just hasn't filled up yet, so callers must gate this behind
-/// that check themselves rather than calling it whenever a side happens to
-/// have 1-2 players right now. `None` for any other roster size, since at
-/// that point joining names together stops reading as an identity and
-/// starts reading as an arbitrary truncation.
+/// name for a 1-player side, or both players' names joined with "&" for a
+/// 2-player side. Only meaningful for a side whose cap passes
+/// [`has_roster_identity`] — a bigger side with one early joiner isn't "that
+/// player's side", it just hasn't filled up yet, so callers gate this
+/// behind that check rather than calling it whenever a side happens to have
+/// 1-2 players right now. `None` for any other roster size.
 pub fn roster_identity_name<'a>(names: impl Iterator<Item = &'a str>) -> Option<String> {
     let names: Vec<&str> = names.collect();
     match names.as_slice() {

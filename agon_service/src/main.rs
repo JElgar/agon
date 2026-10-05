@@ -47,7 +47,7 @@ use mapping::{
     match_format_to_record, match_from_records, match_player_role_from_record,
     match_player_role_to_record, match_score_from_record, match_score_to_record, match_status_str,
     match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
-    roster_identity_name, roster_preview_player, score_submission_from_record, score_to_record,
+    roster_preview_player, score_submission_from_record, score_to_record,
     search_match_from_records, team_from_records, team_list_item_from_record,
     team_member_from_record, user_profile_from_record,
 };
@@ -398,27 +398,26 @@ struct MatchSide {
     /// Optional link to a persistent Team (drives "Kent vs Surrey" labelling and
     /// the pick-from-squad UI). None = ad-hoc side with manually picked players.
     team_id: Option<String>,
-    /// Display name for this side, resolved fresh on every response (see
-    /// `Api::hydrate_match`) — never None in practice. Priority: a custom
-    /// name the creator gave the side, else the team's name, else (for a
-    /// side capped at 1-2 players) its players' names ("Sam" or "Sam &
-    /// Alex"), else "Your side"/"Opposition" relative to the caller, else a
-    /// neutral "Team A"/"Team B". Computed per-request rather than stored so
-    /// it can't go stale and "your side" always means the caller.
+    /// The custom name the creator gave this side, or `None`. Clients work
+    /// out the display name: this name, else `team_name` (or "Deleted team"
+    /// when `team_id` is set without one), else — for a side whose
+    /// `max_players` is 2 or less — its players' names from
+    /// `roster_preview` ("Sam" or "Sam & Alex"). Create/update validation
+    /// requires a name on any other side with no team, so nothing past that
+    /// chain is needed for new matches.
     name: Option<String>,
-    /// The linked team's logo, resolved fresh alongside `name` (see
+    /// The linked team's logo, resolved fresh alongside `team_name` (see
     /// `Api::hydrate_match`) whenever `team_id` is set and that team has one.
     /// `None` for an ad-hoc side, a team with no logo uploaded, or a
     /// not-yet-resolved side — callers fall back to initials (e.g. `Avatar`'s
     /// `name`-derived placeholder) when this is absent.
     team_logo: Option<Photo>,
     /// The linked team's actual name, resolved fresh alongside `team_logo`
-    /// whenever `team_id` is set and that team still exists — independent of
-    /// what `name` ends up displaying. `name` can be a custom name (e.g. two
-    /// sides sharing a club disambiguated as "1st XI"/"2nd XI") or a solo
-    /// player's own name, in which case it no longer says which team the side
-    /// belongs to; `team_name` lets a caller show that alongside it. `None`
-    /// for an ad-hoc side or one whose linked team has since been deleted.
+    /// whenever `team_id` is set and that team still exists. With no custom
+    /// `name` it's the side's display name; with one (e.g. two sides sharing
+    /// a club told apart as "1st XI"/"2nd XI") a caller can show it
+    /// alongside. `None` for an ad-hoc side or one whose linked team has
+    /// since been deleted.
     team_name: Option<String>,
     /// This side's own colour (a hex string, e.g. `"#2952D9"`), set for an
     /// ad-hoc side with no `team_id`, or one sharing its `team_id` with
@@ -440,7 +439,7 @@ struct MatchSide {
     /// present regardless of roster size, so callers can show "4/10" (with
     /// `max_players`) even once there are too many players to list by name.
     /// On `Match` this is resolved live from `players` (see
-    /// `Api::resolve_side_names`), alongside `roster_preview`; on a feed's
+    /// `Api::hydrate_sides`), alongside `roster_preview`; on a feed's
     /// `FeedMatch`/a search hit's `SearchMatch` it comes from the same
     /// denormalized cache as `roster_preview` (`MatchSideRecord::player_count`),
     /// so it can occasionally lag a just-now roster change the same way.
@@ -981,11 +980,10 @@ struct SetPlayerSideInput {
 
 /// Rename an existing side. `name: None` clears any custom name, falling
 /// back to the priority chain in `MatchSide::name`'s doc comment (the
-/// linked team's name, then a 1-2-player side's player names, then a
-/// neutral default) — the same validation as at create time applies: a
-/// name alongside a `team_id` is only allowed when another side shares that
-/// team, and a side with no team can only drop its name while its
-/// `max_players` is 2 or less.
+/// linked team's name, then a 1-2-player side's player names) — the same
+/// validation as at create time applies: a name alongside a `team_id` is
+/// only allowed when another side shares that team, and a side with no team
+/// can only drop its name while its `max_players` is 2 or less.
 #[derive(Object)]
 struct UpdateMatchSideNameInput {
     side_id: String,
@@ -2843,11 +2841,7 @@ impl Api {
                     entry.viewer_side_id.clone(),
                     i_liked,
                 );
-                Self::resolve_side_names_from_cache(
-                    &mut m.sides,
-                    entry.viewer_side_id.as_deref(),
-                    &team_metas,
-                );
+                Self::hydrate_sides_from_cache(&mut m.sides, &team_metas);
                 sign_feed_match_headers(assets, &mut m);
                 built.push(m);
             }
@@ -3053,9 +3047,7 @@ impl Api {
                     hit.outcome,
                     i_liked,
                 );
-                // No per-viewer `viewer_side_id` for a search hit, so no
-                // "Your side"/"Opposition" — falls to team name / Team A/B.
-                Self::resolve_side_names_from_cache(&mut m.sides, None, &team_metas);
+                Self::hydrate_sides_from_cache(&mut m.sides, &team_metas);
                 sign_search_match_headers(assets, &mut m);
                 items.push(m);
             }
@@ -3318,9 +3310,9 @@ impl Api {
         }
 
         // A side with no players has no roster to fall back on for its display
-        // name (see `Api::resolve_side_names`'s priority chain: custom name ->
-        // team's name -> a small side's roster identity -> ...), so it
-        // needs a team or an explicit name to be identifiable at all — e.g.
+        // name (see `MatchSide::name`'s chain: custom name -> team's name ->
+        // a small side's players' names), so it needs a team or an explicit
+        // name to be identifiable at all — e.g.
         // recording a result against an opposition you don't know the roster of.
         for side in &input.sides {
             let side_id = &side_ids[&side.client_id];
@@ -3491,7 +3483,7 @@ impl Api {
         let mut m = match_from_records(&match_record, &sides_for_response, &player_records, false);
         m.viewer_role = caller_match_role(&player_records, &uid).map(match_player_role_from_record);
         sign_match_headers(assets, &mut m);
-        let m = self.hydrate_match(dao, m, &uid).await?;
+        let m = self.hydrate_match(dao, m).await?;
         Ok(CreateMatchResponse::Match(Json(m)))
     }
 
@@ -3530,7 +3522,7 @@ impl Api {
             m.viewer_team_join_side_ids = (!eligible.is_empty()).then_some(eligible);
         }
         sign_match_headers(assets, &mut m);
-        let m = self.hydrate_match(dao, m, &uid).await?;
+        let m = self.hydrate_match(dao, m).await?;
         Ok(GetMatchResponse::Match(Json(m)))
     }
 
@@ -3681,43 +3673,6 @@ impl Api {
             }
         }
 
-        // `create_match`'s "an ad-hoc side needs a name unless it's capped at
-        // 2" rule, applied to the side as it'll be after this request: a
-        // rename and a cap change in the same request count together. Only
-        // a change that breaks the rule is rejected, so an older unnamed,
-        // uncapped side can still be edited (the UI resubmits every side's
-        // settings on each save).
-        for side in &agg.sides {
-            if side.team_id.is_some() {
-                continue;
-            }
-            let has_name = |name: Option<&str>| name.map(str::trim).is_some_and(|n| !n.is_empty());
-            let name = match input
-                .side_names
-                .iter()
-                .flatten()
-                .find(|r| r.side_id == side.side_id)
-            {
-                Some(rename) => rename.name.as_deref(),
-                None => side.name.as_deref(),
-            };
-            let max_players = match side_join_settings
-                .iter()
-                .find(|(id, _, _)| *id == side.side_id)
-            {
-                Some((_, max, _)) => *max,
-                None => side.max_players,
-            };
-            let ok_before = has_name(side.name.as_deref()) || has_roster_identity(side.max_players);
-            let ok_after = has_name(name) || has_roster_identity(max_players);
-            if ok_before && !ok_after {
-                return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
-                    "side `{}` needs a name unless it has a team or a max_players of 2 or less",
-                    side.side_id
-                ))));
-            }
-        }
-
         // Recolouring a side: every referenced side must exist. Setting a
         // colour alongside a team mirrors the rename rule above (only
         // allowed when another side shares that team); clearing a colour
@@ -3824,6 +3779,43 @@ impl Api {
                         side.side_id
                     ))));
                 }
+            }
+        }
+
+        // `create_match`'s "an ad-hoc side needs a name unless it's capped at
+        // 2" rule, applied to the side as it'll be after this request: a
+        // rename and a cap change in the same request count together. Only
+        // a change that breaks the rule is rejected, so an older unnamed,
+        // uncapped side can still be edited (the UI resubmits every side's
+        // settings on each save).
+        for side in &agg.sides {
+            if side.team_id.is_some() {
+                continue;
+            }
+            let has_name = |name: Option<&str>| name.map(str::trim).is_some_and(|n| !n.is_empty());
+            let name = match input
+                .side_names
+                .iter()
+                .flatten()
+                .find(|r| r.side_id == side.side_id)
+            {
+                Some(rename) => rename.name.as_deref(),
+                None => side.name.as_deref(),
+            };
+            let max_players = match side_join_settings
+                .iter()
+                .find(|(id, _, _)| *id == side.side_id)
+            {
+                Some((_, max, _)) => *max,
+                None => side.max_players,
+            };
+            let ok_before = has_name(side.name.as_deref()) || has_roster_identity(side.max_players);
+            let ok_after = has_name(name) || has_roster_identity(max_players);
+            if ok_before && !ok_after {
+                return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                    "side `{}` needs a name unless it has a team or a max_players of 2 or less",
+                    side.side_id
+                ))));
             }
         }
 
@@ -4145,7 +4137,7 @@ impl Api {
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
         m.viewer_role = caller_match_role(&agg.players, &uid).map(match_player_role_from_record);
         sign_match_headers(assets, &mut m);
-        let m = self.hydrate_match(dao, m, &uid).await?;
+        let m = self.hydrate_match(dao, m).await?;
         Ok(UpdateMatchResponse::Match(Json(m)))
     }
 
@@ -6376,7 +6368,7 @@ impl Api {
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, false);
         m.viewer_role = caller_match_role(&agg.players, &uid).map(match_player_role_from_record);
         sign_match_headers(assets, &mut m);
-        let m = self.hydrate_match(dao, m, &uid).await?;
+        let m = self.hydrate_match(dao, m).await?;
         Ok(JoinMatchResponse::Match(Json(m)))
     }
 
@@ -7724,33 +7716,18 @@ impl Api {
 
     /// Hydrate a single match — see `hydrate_matches`, which does the actual
     /// work; this just wraps/unwraps the one-match case.
-    async fn hydrate_match(&self, dao: &dao::Dao, m: Match, viewer_uid: &str) -> Result<Match> {
-        Ok(self
-            .hydrate_matches(dao, vec![m], viewer_uid)
-            .await?
-            .remove(0))
+    async fn hydrate_match(&self, dao: &dao::Dao, m: Match) -> Result<Match> {
+        Ok(self.hydrate_matches(dao, vec![m]).await?.remove(0))
     }
 
     /// Hydrate every match in `matches` for one response: fill in each `User`
-    /// player's `name`/`avatar_url` from their account, and resolve every
-    /// side's display `name` — a custom name the creator gave the side (an
-    /// ad-hoc side, or one of two sides sharing a team), else the sole
-    /// player's name if there's exactly one, else the assigned team's name,
-    /// else a fallback relative to `viewer_uid` — "Your side"/"Opposition" if
-    /// they're actually playing in the match, else a neutral "Team A"/
-    /// "Team B" by side order — plus, whenever that name is the team's,
-    /// `team_logo` alongside it. Resolved per-request rather than stored, so
-    /// a side's name/logo can't go stale and "your side" always reflects
-    /// whoever is asking. Player and team lookups are each batched exactly
-    /// once across every match passed in, however many that is — a feed/list
-    /// page hands over the whole page at once rather than calling this per
-    /// match.
-    async fn hydrate_matches(
-        &self,
-        dao: &dao::Dao,
-        mut matches: Vec<Match>,
-        viewer_uid: &str,
-    ) -> Result<Vec<Match>> {
+    /// player's `name`/`avatar_url` from their account, and each side's
+    /// roster preview and team name/logo (see `hydrate_sides`). Resolved
+    /// per-request rather than stored, so none of it can go stale. Player and
+    /// team lookups are each batched exactly once across every match passed
+    /// in, however many that is — a feed/list page hands over the whole page
+    /// at once rather than calling this per match.
+    async fn hydrate_matches(&self, dao: &dao::Dao, mut matches: Vec<Match>) -> Result<Vec<Match>> {
         let user_ids: Vec<String> = matches.iter().flat_map(Self::player_user_ids).collect();
         let user_records = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
 
@@ -7762,7 +7739,7 @@ impl Api {
 
         for m in &mut matches {
             Self::apply_player_profiles(m, &user_records);
-            Self::resolve_side_names(m, viewer_uid, &team_metas);
+            Self::hydrate_sides(m, &team_metas);
         }
         Ok(matches)
     }
@@ -7841,42 +7818,25 @@ impl Api {
             .map_err(dao_internal)
     }
 
-    /// Resolve one match's side names (and, wherever the resolved name is
-    /// actually the team's, `team_logo` alongside it), given `team_metas`
-    /// already resolved by the caller. Pure/sync — no DAO calls — so it's
-    /// cheap to run per match after a shared batch team-meta lookup (see
-    /// `hydrate_matches`).
-    fn resolve_side_names(
+    /// Fill in one match's per-side facts that aren't stored on the side
+    /// itself: `player_count` and `roster_preview` from the live roster, and
+    /// `team_name`/`team_logo` from `team_metas` (already resolved by the
+    /// caller). Pure/sync — no DAO calls — so it's cheap to run per match
+    /// after a shared batch team-meta lookup (see `hydrate_matches`).
+    ///
+    /// `name` is left as the creator's custom name (blank becomes `None`):
+    /// clients work out the display name from it, `team_name` and
+    /// `roster_preview` (see `MatchSide::name`).
+    fn hydrate_sides(
         m: &mut Match,
-        viewer_uid: &str,
         team_metas: &std::collections::HashMap<String, dao::records::TeamRecord>,
     ) {
-        // The side the viewer is actually on (by an invite they were placed
-        // on, accepted or not) — used for the "Your side"/"Opposition"
-        // fallback below.
-        let viewer_side_id = m.players.iter().find_map(|p| match &p.member {
-            Member::User(u) if u.user_id == viewer_uid => p.side_id.clone(),
-            _ => None,
-        });
-
-        for (i, side) in m.sides.iter_mut().enumerate() {
+        for side in m.sides.iter_mut() {
             let on_side: Vec<&MatchPlayer> = m
                 .players
                 .iter()
                 .filter(|p| p.side_id.as_deref() == Some(side.id.as_str()))
                 .collect();
-            // Only meaningful for a side capped small enough to be
-            // identified by its players — see `roster_identity_name`'s doc
-            // comment for why this isn't just "however many players happen
-            // to be on the side".
-            let roster_identity_name = has_roster_identity(side.max_players)
-                .then(|| {
-                    roster_identity_name(on_side.iter().map(|p| match &p.member {
-                        Member::User(u) => u.name.as_str(),
-                        Member::External(e) => e.display_name.as_str(),
-                    }))
-                })
-                .flatten();
             side.player_count = on_side.len() as u32;
             // Same "small enough to show players directly" call the feed
             // makes from its denormalized cache (`ROSTER_PREVIEW_CAP`) — here
@@ -7900,127 +7860,41 @@ impl Api {
                     })
                     .collect()
             });
-
-            let custom_name = side
-                .name
-                .as_deref()
-                .map(str::trim)
-                .filter(|n| !n.is_empty());
-
-            // Resolved independently of `name` below, whenever `team_id`
-            // points at a team that still exists — a custom name or a sole
-            // player's name can still take over `name` itself (see the
-            // priority chain below), but the side's actual team affiliation
-            // is a fact of its own that callers may want to show alongside
-            // that (see doc comment on `MatchSide::team_name`).
-            let team = side.team_id.as_ref().and_then(|id| team_metas.get(id));
-            side.team_name = team.map(|t| t.name.clone());
-            side.team_logo = team.and_then(|t| t.logo_url.as_ref()).map(|url| Photo {
-                image_url: url.clone(),
-                asset_id: None,
-            });
-
-            side.name = Some(match custom_name {
-                // An explicit name always wins, over the team's own name and
-                // a roster-derived identity alike — it's there specifically
-                // because the creator wanted something other than either
-                // default (e.g. to tell two sides sharing one team apart).
-                Some(name) => name.to_string(),
-                None => match team {
-                    Some(team) => team.name.clone(),
-                    // The team was deleted (`DELETE /teams/{team_id}`) but
-                    // the side's `team_id` snapshot outlives it — same
-                    // "outlives the record it points to, resolve the gap at
-                    // read time" shape as `deleted_user_profile`. `team_id`
-                    // itself is left as-is (not scrubbed) rather than
-                    // cleared. Only hit when `side.team_id` was set but not
-                    // found above.
-                    None if side.team_id.is_some() => "Deleted team".to_string(),
-                    // No team at all: a side capped at 1-2 players takes its
-                    // identity from its roster; anything else (only older
-                    // matches, since a bigger ad-hoc side now needs a name)
-                    // falls to the neutral "Your side"/"Opposition" or
-                    // "Team A"/"Team B".
-                    None => match roster_identity_name {
-                        Some(name) => name,
-                        None => match &viewer_side_id {
-                            Some(vs) if vs == &side.id => "Your side".to_string(),
-                            Some(_) => "Opposition".to_string(),
-                            None if i == 0 => "Team A".to_string(),
-                            None => "Team B".to_string(),
-                        },
-                    },
-                },
-            });
+            Self::hydrate_side_team(side, team_metas);
         }
     }
 
-    /// The same side-name priority chain as [`Self::resolve_side_names`]
-    /// (custom name → team name → a small side's roster identity →
-    /// "Your side"/"Opposition" → neutral "Team A"/"Team B"), plus the same
-    /// `team_logo` resolution, for a `FeedMatch` or `SearchMatch` — which
-    /// never have the full player list to scan.
-    ///
-    /// `roster_preview` already gives the *complete* roster whenever a side
-    /// is small enough to have one at all, so the roster identity is
-    /// recovered from it rather than the live roster — same fact, cheaper
-    /// source. `viewer_side_id` is `None` for a search hit (not derived from
-    /// a per-viewer fan-out, so there's no "Your side" to resolve) and
-    /// `Some`/`None` per feed entry for a feed card.
-    fn resolve_side_names_from_cache(
+    /// [`Self::hydrate_sides`]'s team half, for a `FeedMatch` or
+    /// `SearchMatch` — which never have the full player list, but already
+    /// carry `player_count`/`roster_preview` from the denormalized cache.
+    fn hydrate_sides_from_cache(
         sides: &mut [MatchSide],
-        viewer_side_id: Option<&str>,
         team_metas: &std::collections::HashMap<String, dao::records::TeamRecord>,
     ) {
-        for (i, side) in sides.iter_mut().enumerate() {
-            // Same "only a side capped at 1-2 players gets a roster-derived
-            // identity" gate as `resolve_side_names`.
-            let roster_identity_name = has_roster_identity(side.max_players)
-                .then(|| {
-                    roster_identity_name(
-                        side.roster_preview
-                            .iter()
-                            .flatten()
-                            .map(|p| p.name.as_str()),
-                    )
-                })
-                .flatten();
-            let custom_name = side
-                .name
-                .as_deref()
-                .map(str::trim)
-                .filter(|n| !n.is_empty());
-
-            // Same "resolved independently of `name`" shape as
-            // `resolve_side_names` above.
-            let team = side.team_id.as_ref().and_then(|id| team_metas.get(id));
-            side.team_name = team.map(|t| t.name.clone());
-            side.team_logo = team.and_then(|t| t.logo_url.as_ref()).map(|url| Photo {
-                image_url: url.clone(),
-                asset_id: None,
-            });
-
-            side.name = Some(match custom_name {
-                // Same priority as `resolve_side_names`: an explicit name
-                // always wins.
-                Some(name) => name.to_string(),
-                None => match team {
-                    Some(team) => team.name.clone(),
-                    // Same "team was deleted" fallback as
-                    // `resolve_side_names` above.
-                    None if side.team_id.is_some() => "Deleted team".to_string(),
-                    None => match roster_identity_name {
-                        Some(name) => name,
-                        None => match viewer_side_id {
-                            Some(vs) if vs == side.id => "Your side".to_string(),
-                            Some(_) => "Opposition".to_string(),
-                            None if i == 0 => "Team A".to_string(),
-                            None => "Team B".to_string(),
-                        },
-                    },
-                },
-            });
+        for side in sides.iter_mut() {
+            Self::hydrate_side_team(side, team_metas);
         }
+    }
+
+    /// `team_name`/`team_logo` for a side whose `team_id` points at a team
+    /// that still exists (`None` for an ad-hoc side or a deleted team — the
+    /// side's `team_id` snapshot outlives a `DELETE /teams/{team_id}`), and
+    /// a blank custom `name` normalized to `None`.
+    fn hydrate_side_team(
+        side: &mut MatchSide,
+        team_metas: &std::collections::HashMap<String, dao::records::TeamRecord>,
+    ) {
+        let team = side.team_id.as_ref().and_then(|id| team_metas.get(id));
+        side.team_name = team.map(|t| t.name.clone());
+        side.team_logo = team.and_then(|t| t.logo_url.as_ref()).map(|url| Photo {
+            image_url: url.clone(),
+            asset_id: None,
+        });
+        side.name = side
+            .name
+            .take()
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty());
     }
 
     /// Fetch a single user's public profile, or `None` if absent. Used to embed

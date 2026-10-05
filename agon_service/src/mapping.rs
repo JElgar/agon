@@ -999,20 +999,20 @@ pub fn match_side_from_record(rec: &MatchSideRecord) -> MatchSide {
         colour: rec.colour.clone(),
         max_players: rec.max_players,
         team_join_enabled: rec.team_join_enabled,
-        // Live-overwritten for `Match` (`Api::resolve_side_names`); left as
+        // Live-overwritten for `Match` (`Api::hydrate_sides`); left as
         // the denormalized cache value for a feed's `FeedMatch`/a search
         // hit's `SearchMatch`, same as `roster_preview` below.
         player_count: rec.player_count,
-        // Filled in afterward, alongside `name`: live team-meta lookup for
-        // `Match` (`Api::resolve_side_names`), or the same batch for a feed's
+        // Filled in afterward: live team-meta lookup for `Match`
+        // (`Api::hydrate_sides`), or the same batch for a feed's
         // `FeedMatch`/a search hit's `SearchMatch`
-        // (`Api::resolve_side_names_from_cache`).
+        // (`Api::hydrate_sides_from_cache`).
         team_logo: None,
         // Filled in afterward, alongside `team_logo`: same live/cached
         // lookup as above.
         team_name: None,
         // Filled in afterward: live from `players` for `Match`
-        // (`Api::resolve_side_names`), or from the denormalized cache for a
+        // (`Api::hydrate_sides`), or from the denormalized cache for a
         // feed's `FeedMatch` (`feed_roster_preview`, below).
         roster_preview: None,
     }
@@ -1020,7 +1020,7 @@ pub fn match_side_from_record(rec: &MatchSideRecord) -> MatchSide {
 
 /// Build a feed side's `roster_preview` from the denormalized cache
 /// (`MatchSideRecord::player_count`/`roster_preview`) — the feed's
-/// counterpart to `Api::resolve_side_names`'s live computation, since a feed
+/// counterpart to `Api::hydrate_sides`'s live computation, since a feed
 /// match never fetches the full player collection. `users` is the page-wide
 /// `batch_get_users` map the caller already built (same one
 /// `known_participants` hydrates from); a linked player's live name/avatar

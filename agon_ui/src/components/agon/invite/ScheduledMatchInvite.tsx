@@ -50,6 +50,7 @@ import {
   memberName,
   myPendingInvitation,
   playerId,
+  sideDisplayName,
   withInvitationStatus,
 } from '@/lib/members'
 
@@ -76,7 +77,7 @@ function overallCap(match: Match): number | undefined {
 }
 
 function sideLabel(side: MatchSide | undefined, fallback: string): string {
-  return side?.name?.trim() || fallback
+  return sideDisplayName(side) ?? fallback
 }
 
 type InviteTab = 'details' | 'teams'

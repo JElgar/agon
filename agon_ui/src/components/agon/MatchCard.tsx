@@ -49,6 +49,7 @@ import {
   myPendingInvitation,
   mySideId,
   orderSidesForViewer,
+  sideDisplayName,
   sidePlayerCountLabel,
   sideTeamHint,
 } from '@/lib/members'
@@ -71,10 +72,10 @@ export interface MatchCardProps extends React.HTMLAttributes<HTMLDivElement> {
   currentUserId?: string
 }
 
-/** Display label for a side: the server-resolved name (always present), or a
- *  neutral fallback for the unlikely case it's missing. */
+/** Display label for a side: `sideDisplayName`, or a neutral fallback for
+ *  the unlikely case it has nothing to show. */
 function sideName(side: MatchSide | undefined, fallback: string): string {
-  return side?.name?.trim() || fallback
+  return sideDisplayName(side) ?? fallback
 }
 
 /**

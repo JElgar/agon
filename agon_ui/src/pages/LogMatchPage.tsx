@@ -25,6 +25,7 @@ import { TeamSideCard, type SideKind } from '@/components/agon/logmatch/TeamSide
 import { SetsScoreEditor } from '@/components/agon/logmatch/SetsScoreEditor'
 import { formatDefaultHint, playedSets, type SetRow } from '@/lib/logMatch'
 import { cn } from '@/lib/utils'
+import { ROSTER_IDENTITY_MAX_PLAYERS, rosterIdentityName } from '@/lib/members'
 import { toDateTimeLocal } from '@/lib/datetime'
 import { addPendingMatch } from '@/hooks/usePendingMatches'
 
@@ -72,14 +73,10 @@ function firstName(name: string): string {
   return name.trim().split(/\s+/)[0] ?? name
 }
 
-/** The largest side cap at which a side with no team or name is shown by
- *  its players' names instead (mirrors the server's `has_roster_identity`). */
-const ROSTER_IDENTITY_MAX_PLAYERS = 2
-
-/** A side's display name in this form, in the server's order (see
- *  `Api::resolve_side_names`): its own name, else its team's, else, for a
- *  side capped at one or two players, their names; `undefined` when none
- *  apply so callers can use their own fallback. */
+/** A side's display name in this form, in `sideDisplayName`'s order: its
+ *  own name, else its team's, else, for a side capped at one or two
+ *  players, their names; `undefined` when none apply so callers can use
+ *  their own fallback. */
 function resolvedSideName(
   players: TaggedPlayer[],
   customName: string,
@@ -91,10 +88,7 @@ function resolvedSideName(
   if (trimmed) return trimmed
   if (team) return team.name
   if (cap === undefined || cap > ROSTER_IDENTITY_MAX_PLAYERS) return undefined
-  const names = players.map((p) => (short ? firstName(p.name) : p.name))
-  if (names.length === 1) return names[0]
-  if (names.length === 2) return `${names[0]} & ${names[1]}`
-  return undefined
+  return rosterIdentityName(players.map((p) => (short ? firstName(p.name) : p.name)))
 }
 
 /** Whether a side still needs a name: the server requires one on a side

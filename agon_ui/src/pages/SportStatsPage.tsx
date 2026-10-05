@@ -18,6 +18,7 @@ import { formatOvers } from '@/lib/cricketScore'
 import { StatInfo } from '@/components/agon/StatInfo'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { cn } from '@/lib/utils'
+import { sideDisplayName } from '@/lib/members'
 
 type BestBowlingFigures = components['schemas']['BestBowlingFigures']
 type UserProfile = components['schemas']['UserProfile']
@@ -531,7 +532,7 @@ function RecentMatches({ query, matches, search, onSearch, filter, onFilter, nav
       if (filter === 'lost' && m.outcome !== 'lost') return false
       if (filter === 'drawn' && m.outcome !== 'draw') return false
       if (needle) {
-        const haystack = [m.name, m.description, ...m.sides.map((s) => s.name ?? '')]
+        const haystack = [m.name, m.description, ...m.sides.map((s) => sideDisplayName(s) ?? '')]
           .join(' ')
           .toLowerCase()
         if (!haystack.includes(needle)) return false
@@ -590,7 +591,7 @@ function RecentMatches({ query, matches, search, onSearch, filter, onFilter, nav
           {shown.map((match) => {
             const badge = outcomeBadge(match)
             const [sideA, sideB] = match.sides
-            const opponent = [sideA?.name, sideB?.name].filter(Boolean).join(' vs ')
+            const opponent = [sideDisplayName(sideA), sideDisplayName(sideB)].filter(Boolean).join(' vs ')
             const score = matchScoreLabel(match)
             return (
               <button

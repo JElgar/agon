@@ -2,13 +2,14 @@ import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { PlayerRow, SideHeading, SideSwatch, cardClass, SidesGrid, type PlayersLayout } from '@/components/agon/football/FootballMatchView'
 import { useViewerFollowing } from '@/hooks/useViewerFollowing'
+import { sideDisplayName } from '@/lib/members'
 
 type Match = components['schemas']['Match']
 type MatchPlayer = components['schemas']['MatchPlayer']
 type Score = components['schemas']['Score']
 
 function sideLabel(match: Match, idx: number): string {
-  return match.sides[idx]?.name?.trim() || (idx === 0 ? 'Side A' : 'Side B')
+  return sideDisplayName(match.sides[idx]) ?? (idx === 0 ? 'Side A' : 'Side B')
 }
 
 /** "Set by set": games per set for each side, the set winner in bold. */

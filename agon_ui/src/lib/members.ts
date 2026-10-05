@@ -314,10 +314,41 @@ export function orderSidesForViewer(
   return reordered
 }
 
+/** The largest side cap at which a side with no team or name is shown by
+ *  its players' names (mirrors the server's `has_roster_identity`, which
+ *  requires a name on any bigger side with no team). */
+export const ROSTER_IDENTITY_MAX_PLAYERS = 2
+
+/** "Sam" for one player, "Sam & Alex" for two; `undefined` otherwise. */
+export function rosterIdentityName(names: string[]): string | undefined {
+  if (names.length === 1) return names[0]
+  if (names.length === 2) return `${names[0]} & ${names[1]}`
+  return undefined
+}
+
+/**
+ * A side's display name. The API only returns the name the creator gave the
+ * side, so the rest of the chain lives here: that name, else its team's
+ * name ("Deleted team" if the team has gone), else, for a side capped at one
+ * or two players, its players' names. `undefined` when none apply, which
+ * the API's validation makes impossible for new matches; callers pick their
+ * own fallback for older ones.
+ */
+export function sideDisplayName(side: MatchSide | undefined): string | undefined {
+  if (!side) return undefined
+  const custom = side.name?.trim()
+  if (custom) return custom
+  const team = side.team_name?.trim()
+  if (team) return team
+  if (side.team_id) return 'Deleted team'
+  if (side.max_players == null || side.max_players > ROSTER_IDENTITY_MAX_PLAYERS) return undefined
+  return rosterIdentityName((side.roster_preview ?? []).map((p) => p.name))
+}
+
 /**
  * The actual team a side is linked to, when that fact isn't already obvious
  * from its display name — i.e. `team_name` is set (see `MatchSide.team_name`'s
- * backend doc comment) and differs from `name` itself. `name` takes over as a
+ * backend doc comment) and differs from the side's display name. `name` takes over as a
  * custom name (two sides sharing one club, told apart as "1st XI"/"2nd XI")
  * or a solo player's own name, either of which otherwise leaves no visible
  * trace of which team the side belongs to. `undefined` for an ad-hoc side, a
@@ -327,7 +358,7 @@ export function orderSidesForViewer(
 export function sideTeamHint(side: MatchSide | undefined): string | undefined {
   const team = side?.team_name?.trim()
   if (!team) return undefined
-  return team !== side?.name?.trim() ? team : undefined
+  return team !== sideDisplayName(side) ? team : undefined
 }
 
 /** "4/10 players" (capped) or "4 players" (uncapped) — how a side's roster is

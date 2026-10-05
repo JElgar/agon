@@ -9,7 +9,7 @@ import { clearPendingInvite } from '@/lib/pendingInvite'
 import { forgetJoinLink, rememberJoinLink } from '@/lib/joinLinkMemory'
 import { joinChoiceFor, sidesFor } from '@/lib/joinLink'
 import { relativeTime, scheduledDateTime } from '@/lib/datetime'
-import { sidePlayerCountLabel, sideTeamHint } from '@/lib/members'
+import { sidePlayerCountLabel, sideTeamHint, sideDisplayName } from '@/lib/members'
 import { offersWaitlist, type RosterConflict } from '@/lib/waitlist'
 import { Avatar } from '@/components/agon/Avatar'
 import { LinkLandingCard } from '@/components/agon/LinkLandingCard'
@@ -227,7 +227,7 @@ export function JoinMatchPage() {
         {pickableSides.length > 0 && (
           <div className="space-y-1.5 rounded-xl bg-accent/60 p-2.5">
             {pickableSides.map((side, i) => {
-              const name = side.name?.trim() || `Side ${i + 1}`
+              const name = sideDisplayName(side) ?? `Side ${i + 1}`
               return (
                 <div key={side.id} className="flex items-center justify-between gap-2">
                   <div className="flex min-w-0 items-center gap-2">
@@ -274,7 +274,7 @@ export function JoinMatchPage() {
             )}
             {pickableSides.map((side, i) => (
               <option key={side.id} value={side.id}>
-                {side.name?.trim() || `Side ${i + 1}`} · {sidePlayerCountLabel(side)}
+                {sideDisplayName(side) ?? `Side ${i + 1}`} · {sidePlayerCountLabel(side)}
               </option>
             ))}
           </select>

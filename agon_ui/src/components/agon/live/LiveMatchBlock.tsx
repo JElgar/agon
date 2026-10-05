@@ -10,6 +10,7 @@ import {
   recentEvents,
   type FootballScore,
 } from '@/lib/liveScore'
+import { sideDisplayName } from '@/lib/members'
 
 /** How often the clock label re-renders. Minute-granularity, so this just
  *  needs to be frequent enough to feel live, not per-second. */
@@ -21,7 +22,7 @@ type SearchMatch = components['schemas']['SearchMatch']
 type MatchSide = components['schemas']['MatchSide']
 
 function sideName(side: MatchSide | undefined, fallback: string): string {
-  return side?.name?.trim() || fallback
+  return sideDisplayName(side) ?? fallback
 }
 
 /**

@@ -6,7 +6,7 @@ import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { joinChoiceFor, sidesFor } from '@/lib/joinLink'
 import { forgetJoinLink, getRememberedJoinLink } from '@/lib/joinLinkMemory'
-import { sidePlayerCountLabel } from '@/lib/members'
+import { sidePlayerCountLabel, sideDisplayName } from '@/lib/members'
 import { offersWaitlist, type RosterConflict } from '@/lib/waitlist'
 
 type Match = components['schemas']['Match']
@@ -137,7 +137,7 @@ export function JoinLinkBanner({ match }: { match: Match }) {
               )}
               {pickableSides.map((side, i) => (
                 <option key={side.id} value={side.id}>
-                  {side.name?.trim() || `Side ${i + 1}`} · {sidePlayerCountLabel(side)}
+                  {sideDisplayName(side) ?? `Side ${i + 1}`} · {sidePlayerCountLabel(side)}
                 </option>
               ))}
             </select>

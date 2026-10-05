@@ -18,6 +18,7 @@ import { confirmationState } from '@/lib/confirmation'
 import { displayScore, headlineBySide, headlineLabel } from '@/lib/score'
 import { cricketScoreFrom, formatOvers, sideNameFor } from '@/lib/cricketScore'
 import { RosterConflictError, offersWaitlist } from '@/lib/waitlist'
+import { sideDisplayName } from '@/lib/members'
 
 type InvitationResponse = components['schemas']['InvitationResponse']
 type Match = components['schemas']['Match']
@@ -163,9 +164,9 @@ export function InvitationResponseDialog({
         {matchId && match && preview && cricketScore && (
           <div className="rounded-lg border bg-muted/40 px-3 py-2.5">
             <span className="text-sm font-medium">
-              {match.sides[0]?.name}
+              {sideDisplayName(match.sides[0]) ?? 'Side A'}
               <span className="text-muted-foreground"> vs </span>
-              {match.sides[1]?.name}
+              {sideDisplayName(match.sides[1]) ?? 'Side B'}
             </span>
             <div className="mt-1.5 space-y-0.5">
               {cricketScore.innings.map((inn, i) => (
@@ -186,9 +187,9 @@ export function InvitationResponseDialog({
           <div className="flex items-center justify-between gap-3 rounded-lg border bg-muted/40 px-3 py-2.5">
             <div className="flex items-center gap-3 text-sm">
               <span className="font-medium">
-                {match.sides[0]?.name}
+                {sideDisplayName(match.sides[0]) ?? 'Side A'}
                 <span className="text-muted-foreground"> vs </span>
-                {match.sides[1]?.name}
+                {sideDisplayName(match.sides[1]) ?? 'Side B'}
               </span>
             </div>
             <div className="text-right">

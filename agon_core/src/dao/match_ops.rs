@@ -505,6 +505,17 @@ impl Dao {
         // Replace the location. `None` leaves it unchanged; `Some(value)`
         // overwrites. No "clear" case yet, same as `format` above.
         location: Option<LocationRecord>,
+        // Switch the match between ranked and friendly. `None` leaves it
+        // unchanged. Written with no condition on the score, status or start
+        // time, even though the API only allows the change while all three
+        // are still open (`ranked_lock_reason_for_update`, judged on the read
+        // `update_match` has just made). A guard here would buy nothing. The
+        // only writes that can land between that read and this one are a
+        // concurrent request's score, status change or new start time, and
+        // every such interleaving ends where "change the flag, *then* send
+        // that request" legally ends anyway: the lock refuses a flag change
+        // that comes after the result, never one that comes before it.
+        ranked: Option<bool>,
         side_names: &[(String, Option<String>)],
         side_colours: &[(String, Option<String>)],
     ) -> DaoResult<()> {
@@ -576,6 +587,11 @@ impl Dao {
             set.push("#loc = :loc".into());
             names.insert("#loc".into(), "location".into());
             values.insert(":loc".into(), to_attr(&loc)?);
+        }
+        if let Some(ranked) = ranked {
+            set.push("#ranked = :ranked".into());
+            names.insert("#ranked".into(), "ranked".into());
+            values.insert(":ranked".into(), AttributeValue::Bool(ranked));
         }
         if !side_names.is_empty() {
             // Same literal attribute name ("name") as the top-level `#name`

@@ -164,6 +164,7 @@ fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
         header_photo_asset_ids: None,
         format: None,
         allow_unassigned: None,
+        ranked: None,
     }
 }
 
@@ -211,6 +212,7 @@ fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::Create
         header_photo_asset_ids: None,
         format: None,
         allow_unassigned: None,
+        ranked: None,
     }
 }
 
@@ -276,6 +278,7 @@ fn completed_match(invites: Vec<models::CreateMatchInviteInput>) -> models::Crea
         header_photo_asset_ids: None,
         format: None,
         allow_unassigned: None,
+        ranked: None,
     }
 }
 
@@ -835,6 +838,7 @@ fn side_name_rule_match(
         header_photo_asset_ids: None,
         format: None,
         allow_unassigned: None,
+        ranked: None,
     }
 }
 
@@ -6359,6 +6363,7 @@ fn joinable_match_input(
         header_photo_asset_ids: None,
         format: None,
         allow_unassigned,
+        ranked: None,
     }
 }
 
@@ -7900,6 +7905,7 @@ fn team_joinable_match_input(team_id: &str) -> models::CreateMatchInput {
         header_photo_asset_ids: None,
         format: None,
         allow_unassigned: None,
+        ranked: None,
     }
 }
 
@@ -8021,6 +8027,7 @@ async fn team_self_join_requires_the_sides_own_opt_in() {
             header_photo_asset_ids: None,
             format: None,
             allow_unassigned: None,
+            ranked: None,
         },
     )
     .await
@@ -8082,6 +8089,7 @@ async fn team_self_join_on_an_intra_squad_match_offers_a_pick_or_unassigned() {
             header_photo_asset_ids: None,
             format: None,
             allow_unassigned: None,
+            ranked: None,
         },
     )
     .await
@@ -8119,5 +8127,606 @@ async fn team_self_join_on_an_intra_squad_match_offers_a_pick_or_unassigned() {
             .unwrap()
             .side_id,
         None
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Ranked matches — the flag, its ladder, and the lock on changing it
+// ---------------------------------------------------------------------------
+
+/// A scheduled (tomorrow) tennis match: the creator plays on side "a", with
+/// `opponent_id` invited onto side "b", ranked or friendly as asked. The
+/// creator being on a side is what lets them submit a score, and the opponent
+/// being on the other is what lets them dispute it — the two moves that close
+/// the lock.
+fn ranked_match_input(opponent_id: &str, ranked: Option<bool>) -> models::CreateMatchInput {
+    let mut input = create_match_input(opponent_id);
+    input.invites = vec![invite_users("b", &[opponent_id])];
+    input.creator_side_client_id = Some("a".to_string());
+    input.ranked = ranked;
+    input
+}
+
+/// Friendly is the default: ratings are opt-in per sport and a ranked match
+/// needs everyone in it opted in, so ranked-by-default would stand in front of
+/// most games. A friendly has no ladder to name.
+#[tokio::test]
+async fn a_match_is_friendly_unless_created_ranked() {
+    let (config, _user) = new_user().await;
+    let (_opponent_config, opponent) = new_user().await;
+
+    let created = matches_post(&config, ranked_match_input(&opponent.profile.id, None))
+        .await
+        .expect("create match");
+    assert!(!created.ranked, "omitting `ranked` must mean friendly");
+    assert_eq!(created.rating_ladder, None);
+
+    let fetched = matches_match_id_get(&config, &created.id)
+        .await
+        .expect("re-read the match");
+    assert!(!fetched.ranked);
+    assert_eq!(fetched.rating_ladder, None);
+}
+
+/// Ranked at creation is stored, and the match names the ladder its result
+/// counts towards — derived from the sport, so tennis rates into "tennis".
+#[tokio::test]
+async fn a_match_created_ranked_shows_its_rating_ladder() {
+    let (config, _user) = new_user().await;
+    let (_opponent_config, opponent) = new_user().await;
+
+    let created = matches_post(
+        &config,
+        ranked_match_input(&opponent.profile.id, Some(true)),
+    )
+    .await
+    .expect("create ranked match");
+    assert!(created.ranked);
+    assert_eq!(created.rating_ladder.as_deref(), Some("tennis"));
+
+    let fetched = matches_match_id_get(&config, &created.id)
+        .await
+        .expect("re-read the match");
+    assert!(fetched.ranked);
+    assert_eq!(fetched.rating_ladder.as_deref(), Some("tennis"));
+}
+
+/// The rating warning has to be possible *before* anyone accepts or joins,
+/// and the accept-by-token and join-link screens render from their public
+/// previews, not from `Match` — so the previews and the inbox carry the flag.
+/// It's read from the match when the response is built: a match switched to
+/// ranked after its invites went out must show as ranked on those invites, or
+/// the warning would be missing exactly when it matters.
+#[tokio::test]
+async fn invitations_and_join_links_show_whether_the_match_is_ranked() {
+    let (config, _user) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+
+    let mut input = ranked_match_input(&opponent.profile.id, None);
+    input.invites.push(models::CreateMatchInviteInput {
+        side_client_id: Some("b".to_string()),
+        invited_user_ids: vec![],
+        invited_externals: vec![models::CreateMatchExternalInviteInput {
+            client_id: "guest".to_string(),
+            name: "Guest".to_string(),
+        }],
+    });
+    let created = matches_post(&config, input).await.expect("create match");
+    let invite_token = external_invite_token(&created);
+    let link = matches_match_id_join_links_post(
+        &config,
+        &created.id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(any_side_scope()),
+        },
+    )
+    .await
+    .expect("create join link");
+
+    // Both previews are public: no bearer token.
+    let public = Configuration {
+        base_path: std::env::var("AGON_SERVICE_URL").expect("AGON_SERVICE_URL must be set"),
+        ..Default::default()
+    };
+    let preview = join_links_by_token_token_get(&public, &link.token)
+        .await
+        .expect("join link preview");
+    assert!(!preview.ranked, "still a friendly when the link was made");
+    assert_eq!(preview.rating_ladder, None);
+
+    matches_match_id_patch(
+        &config,
+        &created.id,
+        models::UpdateMatchInput {
+            ranked: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("switch to ranked with the invites already out");
+
+    let preview = join_links_by_token_token_get(&public, &link.token)
+        .await
+        .expect("join link preview");
+    assert!(preview.ranked);
+    assert_eq!(preview.rating_ladder.as_deref(), Some("tennis"));
+
+    let by_token = invitations_by_token_token_get(&public, &invite_token)
+        .await
+        .expect("invitation preview by token");
+    let models::InvitationContext::Match(ctx) = &*by_token.context else {
+        panic!("expected a match invitation");
+    };
+    assert!(ctx.ranked);
+    assert_eq!(ctx.rating_ladder.as_deref(), Some("tennis"));
+
+    let inbox = users_me_invitations_get(&opponent_config, None, None, None)
+        .await
+        .expect("inbox");
+    let ctx = inbox
+        .items
+        .iter()
+        .find_map(|item| match &*item.context {
+            models::InvitationContext::Match(ctx) if ctx.match_id == created.id => Some(ctx),
+            _ => None,
+        })
+        .expect("the invitation in the invitee's inbox");
+    assert!(ctx.ranked);
+    assert_eq!(ctx.rating_ladder.as_deref(), Some("tennis"));
+}
+
+/// Sport `other` has no rating ladder — it's a bucket of unmodelled sports,
+/// and pooling them would rate one sport's results against another's — so it
+/// can't be ranked, at creation or by switching later. A friendly `other`
+/// match is still fine.
+#[tokio::test]
+async fn a_sport_without_a_ladder_cannot_be_ranked() {
+    let (config, _user) = new_user().await;
+    let (_opponent_config, opponent) = new_user().await;
+
+    let mut input = ranked_match_input(&opponent.profile.id, Some(true));
+    input.match_type = models::MatchType::Other;
+    assert_status_with_content(
+        matches_post(&config, input).await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "no rating ladder",
+    );
+
+    let mut input = ranked_match_input(&opponent.profile.id, None);
+    input.match_type = models::MatchType::Other;
+    let friendly = matches_post(&config, input)
+        .await
+        .expect("a friendly `other` match is fine");
+
+    assert_status_with_content(
+        matches_match_id_patch(
+            &config,
+            &friendly.id,
+            models::UpdateMatchInput {
+                ranked: Some(true),
+                ..Default::default()
+            },
+        )
+        .await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "no rating ladder",
+    );
+    let after = matches_match_id_get(&config, &friendly.id)
+        .await
+        .expect("re-read the match");
+    assert!(
+        !after.ranked,
+        "a refused switch must leave the match friendly"
+    );
+    assert_eq!(after.rating_ladder, None);
+}
+
+/// Before anyone could know the result the choice is free both ways — a
+/// friendly can become ranked, gaining its ladder, and go back — which is how
+/// an organiser corrects a mis-click.
+#[tokio::test]
+async fn a_match_can_be_switched_between_ranked_and_friendly_before_it_is_played() {
+    let (config, _user) = new_user().await;
+    let (_opponent_config, opponent) = new_user().await;
+
+    let created = matches_post(&config, ranked_match_input(&opponent.profile.id, None))
+        .await
+        .expect("create match");
+
+    let ranked = matches_match_id_patch(
+        &config,
+        &created.id,
+        models::UpdateMatchInput {
+            ranked: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("switch to ranked before it is played");
+    assert!(ranked.ranked);
+    assert_eq!(ranked.rating_ladder.as_deref(), Some("tennis"));
+    assert!(
+        matches_match_id_get(&config, &created.id)
+            .await
+            .expect("re-read the match")
+            .ranked,
+        "the switch must be stored, not just echoed"
+    );
+
+    let friendly = matches_match_id_patch(
+        &config,
+        &created.id,
+        models::UpdateMatchInput {
+            ranked: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("and back again");
+    assert!(!friendly.ranked);
+    assert_eq!(friendly.rating_ladder, None);
+}
+
+/// The lock that makes `ranked` trustworthy: once a score is in, nobody gets to
+/// decide after the fact whether the game counted. Refused rather than ignored,
+/// and the stored flag is re-read, because "returns 400" and "changed nothing"
+/// are two claims. The score lands well before the start time — playing early
+/// is ordinary — so it's the score closing the flag here, not the clock.
+#[tokio::test]
+async fn ranked_cannot_be_changed_once_a_score_has_been_submitted() {
+    let (config, _user) = new_user().await;
+    let (_opponent_config, opponent) = new_user().await;
+
+    let scheduled = matches_post(
+        &config,
+        ranked_match_input(&opponent.profile.id, Some(true)),
+    )
+    .await
+    .expect("create ranked match");
+    let side_a = scheduled.sides[0].id.clone();
+    let side_b = scheduled.sides[1].id.clone();
+    matches_match_id_patch(
+        &config,
+        &scheduled.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 3))),
+            winner_side_id: Some(side_a.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("submit a score");
+
+    assert_status_with_content(
+        matches_match_id_patch(
+            &config,
+            &scheduled.id,
+            models::UpdateMatchInput {
+                ranked: Some(false),
+                ..Default::default()
+            },
+        )
+        .await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "a score has already been submitted",
+    );
+    assert!(
+        matches_match_id_get(&config, &scheduled.id)
+            .await
+            .expect("re-read the match")
+            .ranked,
+        "a refused change must leave the flag alone"
+    );
+}
+
+/// A dispute *clears* the pending score, so a scored-then-disputed match has no
+/// score on it at all — and still doesn't start until tomorrow. The lock has to
+/// hold anyway, or it would reopen on exactly the match whose result both sides
+/// have already seen. (It's the status having left `scheduled` that holds it.)
+#[tokio::test]
+async fn ranked_stays_locked_after_a_submitted_score_is_disputed() {
+    let (config, _user) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+
+    let scheduled = matches_post(
+        &config,
+        ranked_match_input(&opponent.profile.id, Some(true)),
+    )
+    .await
+    .expect("create ranked match");
+    accept_match_invitation(&opponent_config, &scheduled.id).await;
+    let side_a = scheduled.sides[0].id.clone();
+    let side_b = scheduled.sides[1].id.clone();
+    let scored = matches_match_id_patch(
+        &config,
+        &scheduled.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 3))),
+            winner_side_id: Some(side_a.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("submit a score");
+    let submission_id = scored
+        .pending_score
+        .as_ref()
+        .expect("the score awaits confirmation")
+        .submission_id
+        .clone();
+
+    matches_match_id_score_submissions_submission_id_respond_post(
+        &opponent_config,
+        &scheduled.id,
+        &submission_id,
+        models::RespondToScoreInput {
+            response: models::ScoreResponseKind::Dispute,
+        },
+    )
+    .await
+    .expect("the opponent disputes the score");
+    let disputed = matches_match_id_get(&config, &scheduled.id)
+        .await
+        .expect("re-read the match");
+    assert!(
+        disputed.pending_score.is_none() && disputed.confirmed_score.is_none(),
+        "the dispute cleared the score, which is what makes this the trap"
+    );
+
+    assert_status_with_content(
+        matches_match_id_patch(
+            &config,
+            &scheduled.id,
+            models::UpdateMatchInput {
+                ranked: Some(false),
+                ..Default::default()
+            },
+        )
+        .await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "no longer scheduled",
+    );
+    assert!(
+        matches_match_id_get(&config, &scheduled.id)
+            .await
+            .expect("re-read the match")
+            .ranked
+    );
+}
+
+/// Past its start time a match is closed even with no score, because by then
+/// the result is knowable whether or not anyone has typed it in. Both routes
+/// there: backdating in the same request as the flag change (refused whole),
+/// and a start time that has already passed.
+#[tokio::test]
+async fn ranked_cannot_be_changed_once_the_match_has_started() {
+    let (config, _user) = new_user().await;
+    let (_opponent_config, opponent) = new_user().await;
+
+    let scheduled = matches_post(&config, ranked_match_input(&opponent.profile.id, None))
+        .await
+        .expect("create friendly match");
+    let past = iso_offset_hours(-2);
+
+    assert_status_with_content(
+        matches_match_id_patch(
+            &config,
+            &scheduled.id,
+            models::UpdateMatchInput {
+                starts_at: Some(past.clone()),
+                ranked: Some(true),
+                ..Default::default()
+            },
+        )
+        .await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "this request moves the start time into the past",
+    );
+    let untouched = matches_match_id_get(&config, &scheduled.id)
+        .await
+        .expect("re-read the match");
+    assert!(!untouched.ranked);
+    assert_eq!(
+        untouched.starts_at, scheduled.starts_at,
+        "the whole request is refused, the start time included"
+    );
+
+    matches_match_id_patch(
+        &config,
+        &scheduled.id,
+        models::UpdateMatchInput {
+            starts_at: Some(past),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("move the start time back on its own");
+    assert_status_with_content(
+        matches_match_id_patch(
+            &config,
+            &scheduled.id,
+            models::UpdateMatchInput {
+                ranked: Some(true),
+                ..Default::default()
+            },
+        )
+        .await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "the match has already started",
+    );
+    assert!(
+        !matches_match_id_get(&config, &scheduled.id)
+            .await
+            .expect("re-read the match")
+            .ranked
+    );
+}
+
+/// **Regression** (from the first ratings branch's review). The lock used to
+/// be judged against the match *as stored* only, which let one PATCH carry
+/// both the result and the flag: this match is still `scheduled` and still
+/// starts tomorrow when the lock runs, so on the stored state alone it passes
+/// — and the same request then records the score. That is exactly "log the
+/// game, see that you lost, then de-rank it", and it needs no trickery,
+/// because playing earlier than the scheduled slot is ordinary.
+#[tokio::test]
+async fn ranked_cannot_be_flipped_by_the_same_request_that_submits_the_score() {
+    let (config, _user) = new_user().await;
+    let (_opponent_config, opponent) = new_user().await;
+
+    let scheduled = matches_post(
+        &config,
+        ranked_match_input(&opponent.profile.id, Some(true)),
+    )
+    .await
+    .expect("create ranked match");
+    let side_a = scheduled.sides[0].id.clone();
+    let side_b = scheduled.sides[1].id.clone();
+
+    assert_status_with_content(
+        matches_match_id_patch(
+            &config,
+            &scheduled.id,
+            models::UpdateMatchInput {
+                score: Some(Box::new(simple_score(&side_a, &side_b, 3, 6))),
+                winner_side_id: Some(side_b.clone()),
+                ranked: Some(false),
+                ..Default::default()
+            },
+        )
+        .await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "this request submits a score",
+    );
+
+    // The whole request is refused, not half of it — validation runs before
+    // any write, so the score didn't land either. A caller who got the score
+    // in and only the flag refused would just need one more request.
+    let after = matches_match_id_get(&config, &scheduled.id)
+        .await
+        .expect("re-read the match");
+    assert!(after.ranked, "the flag must be untouched");
+    assert!(
+        after.pending_score.is_none(),
+        "and the score must not have landed either"
+    );
+}
+
+/// Re-sending the flag a locked match already has isn't a change, and is
+/// accepted along with the rest of the request — otherwise a client that
+/// PATCHes its whole edit form would start failing the moment a match was
+/// scored.
+#[tokio::test]
+async fn re_sending_an_unchanged_ranked_flag_is_accepted_on_a_locked_match() {
+    let (config, _user) = new_user().await;
+    let (_opponent_config, opponent) = new_user().await;
+
+    let scheduled = matches_post(
+        &config,
+        ranked_match_input(&opponent.profile.id, Some(true)),
+    )
+    .await
+    .expect("create ranked match");
+    let side_a = scheduled.sides[0].id.clone();
+    let side_b = scheduled.sides[1].id.clone();
+    matches_match_id_patch(
+        &config,
+        &scheduled.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 3))),
+            winner_side_id: Some(side_a.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("submit a score, locking the flag");
+
+    let renamed = matches_match_id_patch(
+        &config,
+        &scheduled.id,
+        models::UpdateMatchInput {
+            name: Some("Renamed after the fact".to_string()),
+            ranked: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("re-sending the unchanged flag is a no-op, not a rejection");
+    assert_eq!(renamed.name, "Renamed after the fact");
+    assert!(renamed.ranked);
+}
+
+/// Nothing can change a match's sport, and a ranked match depends on that: a
+/// new sport would move its result to another ladder, or (as `other`) off the
+/// ladders altogether. `UpdateMatchInput` has no `match_type`, so this sends
+/// one as raw JSON, the way a hand-rolled client might — on a ranked match
+/// while it is still open and again once a score has locked it — and checks
+/// the match still rates into tennis. Whether the server rejects the unknown
+/// field or ignores it is incidental; this is the test that fails if a sport
+/// edit is ever added without the ranked checks.
+#[tokio::test]
+async fn the_sport_of_a_ranked_match_cannot_be_changed() {
+    let (config, _user) = new_user().await;
+    let (_opponent_config, opponent) = new_user().await;
+
+    let created = matches_post(
+        &config,
+        ranked_match_input(&opponent.profile.id, Some(true)),
+    )
+    .await
+    .expect("create ranked match");
+    let client = reqwest::Client::new();
+    let token = config.bearer_access_token.clone().expect("a bearer token");
+    let url = format!("{}/matches/{}", config.base_path, created.id);
+    let try_changing_sport_to = |sport: &'static str| {
+        client
+            .patch(&url)
+            .bearer_auth(&token)
+            .json(&serde_json::json!({ "match_type": sport }))
+            .send()
+    };
+    let assert_still_ranked_tennis = |m: &models::Match| {
+        assert_eq!(m.match_type, models::MatchType::Tennis);
+        assert!(m.ranked);
+        assert_eq!(m.rating_ladder.as_deref(), Some("tennis"));
+    };
+
+    // Still open: towards a sport with no ladder.
+    let res = try_changing_sport_to("other").await.expect("send PATCH");
+    assert!(
+        res.status().is_success() || res.status() == reqwest::StatusCode::BAD_REQUEST,
+        "unexpected status {}",
+        res.status()
+    );
+    assert_still_ranked_tennis(
+        &matches_match_id_get(&config, &created.id)
+            .await
+            .expect("re-read the match"),
+    );
+
+    // Locked by a score: towards another laddered sport.
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+    matches_match_id_patch(
+        &config,
+        &created.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 3))),
+            winner_side_id: Some(side_a.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("submit a score, locking the flag");
+    let res = try_changing_sport_to("squash").await.expect("send PATCH");
+    assert!(
+        res.status().is_success() || res.status() == reqwest::StatusCode::BAD_REQUEST,
+        "unexpected status {}",
+        res.status()
+    );
+    assert_still_ranked_tennis(
+        &matches_match_id_get(&config, &created.id)
+            .await
+            .expect("re-read the match"),
     );
 }

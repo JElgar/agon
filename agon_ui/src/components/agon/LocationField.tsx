@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { MapPin, Search, X } from 'lucide-react'
 import {
   Combobox,
   ComboboxContent,
@@ -6,6 +7,8 @@ import {
   ComboboxItem,
   ComboboxList,
 } from '@/components/ui/combobox'
+import { InputGroupAddon } from '@/components/ui/input-group'
+import { cn } from '@/lib/utils'
 import {
   isGoogleMapsConfigured,
   loadGoogleMapsPlaces,
@@ -25,13 +28,29 @@ const SEARCH_DEBOUNCE_MS = 250
 /** Google requires the query token to apply this way, not case-sensitively. */
 const MIN_QUERY_LENGTH = 2
 
+/** The place last picked from suggestions — kept separately from `text` so a
+ *  rename afterwards doesn't lose the coordinates/place id it came with. */
+interface LinkedPlace {
+  address: string
+  latitude?: number
+  longitude?: number
+  place_id: string
+}
+
 /**
- * Free-text match location, upgraded to a real place (coordinates + Google
- * Place ID) when Places Autocomplete is configured (`VITE_GOOGLE_MAPS_API_KEY`
- * — see `googleMaps.ts`) and the user picks a suggestion. Typing without
- * picking one still saves fine as plain text; it just won't get a "get
- * directions" link on the match page (see `MatchDetailPage`'s gating on
- * `latitude`/`longitude`).
+ * One field for a match's location, with two states:
+ *
+ * - **Unlinked** — a plain search box. Typing always sets `text`; live
+ *   suggestions (Places API) appear underneath, and picking one links the
+ *   place (saves coordinates + Google Place ID) and switches to the linked
+ *   card below.
+ * - **Linked** — a map-thumbnail card. Its name is a real `<input>`, still
+ *   freely editable (e.g. to rename "Mint Street Pitches" to "Pitch 2") —
+ *   editing it only renames the card, never re-triggers suggestions and
+ *   never touches the saved coordinates/place id. The saved address shows
+ *   underneath whenever it differs from the current name. The cross unlinks
+ *   the place (clearing coordinates/place id) and returns to the unlinked
+ *   search box.
  *
  * Built on `AutocompleteSuggestion.fetchAutocompleteSuggestions` (the "Places
  * API (New)" data-only call), not the older `google.maps.places.Autocomplete`
@@ -41,10 +60,6 @@ const MIN_QUERY_LENGTH = 2
  * #154, September 2026), so they just throw up Google's generic "This page
  * can't load Google Maps correctly" overlay. Suggestions are rendered in our
  * own `Combobox`, not Google's widget, so this field keeps its usual styling.
- *
- * Editing the text after a place was picked falls back to plain text again
- * (clears the coordinates/place id) — the enriched values only ever come
- * from picking a suggestion, never from guessing at freehand edits.
  */
 export function LocationField({
   id,
@@ -60,17 +75,38 @@ export function LocationField({
   className?: string
 }) {
   const [text, setText] = useState(value?.text ?? '')
+  const [linkedPlace, setLinkedPlace] = useState<LinkedPlace | null>(
+    value?.place_id
+      ? {
+          address: value.text,
+          latitude: value.latitude,
+          longitude: value.longitude,
+          place_id: value.place_id,
+        }
+      : null,
+  )
   const [debounced, setDebounced] = useState('')
   const [predictions, setPredictions] = useState<GooglePlacePrediction[]>([])
   const [mapsReady, setMapsReady] = useState(false)
   const sessionTokenRef = useRef<GoogleAutocompleteSessionToken | undefined>(undefined)
 
-  // Re-seed local text when the *record underneath* changes (e.g. this field
+  // Re-seed from the *record underneath* when it changes (e.g. this field
   // gets reused for a different match) — not on every parent re-render,
   // which would fight the user mid-keystroke.
   useEffect(() => {
     setText(value?.text ?? '')
-  }, [value?.text])
+    setLinkedPlace(
+      value?.place_id
+        ? {
+            address: value.text,
+            latitude: value.latitude,
+            longitude: value.longitude,
+            place_id: value.place_id,
+          }
+        : null,
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value?.place_id])
 
   useEffect(() => {
     if (!isGoogleMapsConfigured()) return
@@ -95,7 +131,8 @@ export function LocationField({
   }, [text])
 
   useEffect(() => {
-    if (!mapsReady || debounced.length < MIN_QUERY_LENGTH || !window.google) {
+    // Linked: typing only renames the card, it's never a fresh search.
+    if (linkedPlace || !mapsReady || debounced.length < MIN_QUERY_LENGTH || !window.google) {
       setPredictions([])
       return
     }
@@ -121,7 +158,7 @@ export function LocationField({
     return () => {
       cancelled = true
     }
-  }, [mapsReady, debounced])
+  }, [linkedPlace, mapsReady, debounced])
 
   const pickPrediction = async (prediction: GooglePlacePrediction) => {
     const place = prediction.toPlace()
@@ -132,12 +169,59 @@ export function LocationField({
     // Picking a place ends this search session — the next one gets a fresh
     // token, per Google's session-token billing model.
     sessionTokenRef.current = undefined
-    onChange({
-      text: resolvedText,
-      latitude: place.location?.lat(),
-      longitude: place.location?.lng(),
-      place_id: prediction.placeId,
-    })
+    const latitude = place.location?.lat()
+    const longitude = place.location?.lng()
+    setLinkedPlace({ address: resolvedText, latitude, longitude, place_id: prediction.placeId })
+    onChange({ text: resolvedText, latitude, longitude, place_id: prediction.placeId })
+  }
+
+  const unlink = () => {
+    setLinkedPlace(null)
+    setText('')
+    onChange(null)
+  }
+
+  if (linkedPlace) {
+    return (
+      <div
+        className={cn(
+          'flex items-center gap-3 rounded-2xl border border-input bg-card p-3.5 shadow-xs',
+          className,
+        )}
+      >
+        <span className="relative flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-gradient-to-br from-emerald-100 to-emerald-200/70 dark:from-emerald-900/40 dark:to-emerald-800/30">
+          <MapPin className="size-5 text-primary" fill="currentColor" stroke="white" strokeWidth={1.5} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <input
+            id={id}
+            value={text}
+            onChange={(e) => {
+              const next = e.target.value
+              setText(next)
+              onChange({
+                text: next,
+                latitude: linkedPlace.latitude,
+                longitude: linkedPlace.longitude,
+                place_id: linkedPlace.place_id,
+              })
+            }}
+            className="w-full min-w-0 border-none bg-transparent p-0 text-sm font-semibold text-foreground outline-none"
+          />
+          {linkedPlace.address !== text && (
+            <p className="truncate text-xs text-muted-foreground">{linkedPlace.address}</p>
+          )}
+        </div>
+        <button
+          type="button"
+          aria-label="Remove location"
+          onClick={unlink}
+          className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground hover:bg-muted/80"
+        >
+          <X className="size-3.5" />
+        </button>
+      </div>
+    )
   }
 
   return (
@@ -157,12 +241,11 @@ export function LocationField({
         if (prediction) void pickPrediction(prediction)
       }}
     >
-      <ComboboxInput
-        id={id}
-        placeholder={placeholder}
-        showTrigger={false}
-        className={className}
-      />
+      <ComboboxInput id={id} placeholder={placeholder} showTrigger={false} className={className}>
+        <InputGroupAddon align="inline-start" className="text-muted-foreground">
+          <Search className="size-4" />
+        </InputGroupAddon>
+      </ComboboxInput>
       <ComboboxContent>
         <ComboboxList>
           {(prediction: GooglePlacePrediction) => (

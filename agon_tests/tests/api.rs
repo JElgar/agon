@@ -1505,6 +1505,9 @@ async fn follow_and_unfollow_team() {
     .await
     .expect("create team");
 
+    // The owner already implicitly follows their own team (membership
+    // implies following — see `Dao::follow_team`'s doc comment), so the
+    // count here starts at 1 before this test's own explicit follow.
     let (follower_config, _follower) = new_user().await;
     teams_team_id_follow_post(&follower_config, &team.id)
         .await
@@ -1514,7 +1517,7 @@ async fn follow_and_unfollow_team() {
         .await
         .expect("get team");
     assert!(fetched.is_followed_by_me);
-    assert_eq!(fetched.follower_count, 1);
+    assert_eq!(fetched.follower_count, 2);
 
     teams_team_id_follow_delete(&follower_config, &team.id)
         .await

@@ -263,6 +263,13 @@ impl Dao {
     }
 
     /// Follow a team. Idempotent. Bumps the team's `follower_count`.
+    ///
+    /// Also called (best-effort) whenever someone becomes an accepted team
+    /// member — team creation (the owner), a direct add, or an invitation
+    /// accept — so membership always implies following: a team's matches
+    /// should reach a member's own feed (and fan-out audience) without them
+    /// having to separately opt in. See each call site for why it's
+    /// best-effort there.
     #[tracing::instrument(skip(self))]
     pub async fn follow_team(&self, follower_id: &str, team_id: &str, now: &str) -> DaoResult<()> {
         let edge = TeamFollowRecord {

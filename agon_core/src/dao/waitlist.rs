@@ -110,7 +110,7 @@ impl Dao {
         now: &str,
         entry: &MatchWaitlistEntryRecord,
     ) -> DaoResult<String> {
-        let (match_id, mut items) = self
+        let (match_id, _team_id, mut items) = self
             .accept_invitation_items(invitation_id, accepting_user_id, responded_at, now, true)
             .await?;
         let Some(match_id) = match_id else {

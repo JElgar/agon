@@ -57,10 +57,19 @@ impl Dao {
         responded_at: &str,
         now: &str,
     ) -> DaoResult<Option<String>> {
-        let (match_id, items) = self
+        let (match_id, team_id, items) = self
             .accept_invitation_items(invitation_id, accepting_user_id, responded_at, now, false)
             .await?;
         self.send_transact_items(items).await?;
+        // A team invite's accepter should see the team's matches in their own
+        // feed from here on — see `Dao::follow_team`'s doc comment on why
+        // membership implies following. Best-effort: a missed follow just
+        // means their feed under-shows this team until the next trigger,
+        // same tolerance as the invitation-entity writes elsewhere in this
+        // module.
+        if let Some(team_id) = &team_id {
+            let _ = self.follow_team(accepting_user_id, team_id, now).await;
+        }
         Ok(match_id)
     }
 
@@ -90,7 +99,7 @@ impl Dao {
         responded_at: &str,
         now: &str,
         onto_waitlist: bool,
-    ) -> DaoResult<(Option<String>, Vec<TransactWriteItem>)> {
+    ) -> DaoResult<(Option<String>, Option<String>, Vec<TransactWriteItem>)> {
         let Some(mut inv) = self.get_invitation(invitation_id).await? else {
             return Err(DaoError::NotFound(format!("invitation {invitation_id}")));
         };
@@ -113,7 +122,7 @@ impl Dao {
 
         // 2 + 3. Link (or, onto the waitlist, remove) the roster entry, and
         // (match) the accepter's own feed row + cap-guarded headcount `ADD`.
-        let (roster_write, feed_put, match_id, slot_update) = match &inv.context {
+        let (roster_write, feed_put, match_id, team_id, slot_update) = match &inv.context {
             InvitationContextRecord::Match { match_id, .. } => {
                 let (existing, starts_at, side_max_players, total_max_players) = self
                     .match_player_for_invitation(match_id, invitation_id)
@@ -154,6 +163,7 @@ impl Dao {
                         Some(feed_put),
                         Some(match_id.clone()),
                         None,
+                        None,
                     )
                 } else {
                     let mut linked = existing;
@@ -179,6 +189,7 @@ impl Dao {
                         TransactWriteItem::builder().put(put_roster).build(),
                         Some(feed_put),
                         Some(match_id.clone()),
+                        None,
                         Some(slot_update),
                     )
                 }
@@ -201,6 +212,7 @@ impl Dao {
                     TransactWriteItem::builder().put(put_roster).build(),
                     None,
                     None,
+                    Some(team_id.clone()),
                     None,
                 )
             }
@@ -216,7 +228,7 @@ impl Dao {
         if let Some(slot_update) = slot_update {
             items.push(TransactWriteItem::builder().update(slot_update).build());
         }
-        Ok((match_id, items))
+        Ok((match_id, team_id, items))
     }
 
     /// Send a prebuilt list of writes as one `TransactWriteItems` call.

@@ -1066,16 +1066,10 @@ const mapsBackendApi = new gcp.projects.Service("maps-backend-api", {
 	disableOnDestroy: false,
 });
 
-// "Places API (New)" — not the legacy `places-backend.googleapis.com`.
-// `LocationField` calls `AutocompleteSuggestion.fetchAutocompleteSuggestions`
-// (see agon_ui/src/lib/googleMaps.ts), not the old `google.maps.places.Autocomplete`
-// widget: as of March 1st 2025 Google blocks that legacy widget (and
-// `AutocompleteService`) for any Cloud project that hadn't already used the
-// Places API before that date — ours hadn't (this key was first provisioned in
-// PR #154, September 2026), so the legacy call just throws a generic "This page
-// can't load Google Maps correctly" error. Since nothing in the UI calls the
-// legacy Places API, only this one needs enabling.
-const placesNewApi = new gcp.projects.Service("places-new-api", {
+// "Places API (New)" — `LocationField` calls
+// `AutocompleteSuggestion.fetchAutocompleteSuggestions`
+// (see agon_ui/src/lib/googleMaps.ts), which needs this API enabled.
+const placesApi = new gcp.projects.Service("places-api", {
 	project: gcpProjectId,
 	service: "places.googleapis.com",
 	disableOnDestroy: false,
@@ -1103,7 +1097,7 @@ const googleMapsApiKey = new gcp.projects.ApiKey("agon-ui-maps-key", {
 			allowedReferrers: [`${agonUiUrl}/*`],
 		},
 	},
-}, { dependsOn: [mapsBackendApi, placesNewApi, apiKeysApi] });
+}, { dependsOn: [mapsBackendApi, placesApi, apiKeysApi] });
 
 // ── Supabase Google Auth: OAuth consent screen + client ─────────────────────
 // Fully manual, per project — and NOT automatable at all right now, not even

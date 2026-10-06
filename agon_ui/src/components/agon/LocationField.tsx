@@ -52,14 +52,9 @@ interface LinkedPlace {
  *   the place (clearing coordinates/place id) and returns to the unlinked
  *   search box.
  *
- * Built on `AutocompleteSuggestion.fetchAutocompleteSuggestions` (the "Places
- * API (New)" data-only call), not the older `google.maps.places.Autocomplete`
- * widget — that widget, and its `AutocompleteService` sibling, are blocked
- * for any Google Cloud project that hadn't already used the Places API
- * before March 1st, 2025 (ours hadn't — the key was only provisioned in PR
- * #154, September 2026), so they just throw up Google's generic "This page
- * can't load Google Maps correctly" overlay. Suggestions are rendered in our
- * own `Combobox`, not Google's widget, so this field keeps its usual styling.
+ * Suggestions come from `AutocompleteSuggestion.fetchAutocompleteSuggestions`
+ * (see `googleMaps.ts`) and render in our own `Combobox`, so this field
+ * keeps its usual styling rather than Google's own widget.
  */
 export function LocationField({
   id,

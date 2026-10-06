@@ -128,12 +128,8 @@ impl Dao {
                 // alone doesn't tell a client "you specifically can join
                 // this side".
                 if side.team_join_enabled {
-                    self.collect_team_join_eligible_members(
-                        team_id,
-                        &side.side_id,
-                        &mut audience,
-                    )
-                    .await?;
+                    self.collect_team_join_eligible_members(team_id, &side.side_id, &mut audience)
+                        .await?;
                 }
             }
         }

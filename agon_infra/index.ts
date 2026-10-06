@@ -1066,21 +1066,15 @@ const mapsBackendApi = new gcp.projects.Service("maps-backend-api", {
 	disableOnDestroy: false,
 });
 
-const placesBackendApi = new gcp.projects.Service("places-backend-api", {
-	project: gcpProjectId,
-	service: "places-backend.googleapis.com",
-	disableOnDestroy: false,
-});
-
-// "Places API (New)" — distinct from the legacy `places-backend.googleapis.com`
-// above. `LocationField` calls `AutocompleteSuggestion.fetchAutocompleteSuggestions`
+// "Places API (New)" — not the legacy `places-backend.googleapis.com`.
+// `LocationField` calls `AutocompleteSuggestion.fetchAutocompleteSuggestions`
 // (see agon_ui/src/lib/googleMaps.ts), not the old `google.maps.places.Autocomplete`
 // widget: as of March 1st 2025 Google blocks that legacy widget (and
 // `AutocompleteService`) for any Cloud project that hadn't already used the
 // Places API before that date — ours hadn't (this key was first provisioned in
 // PR #154, September 2026), so the legacy call just throws a generic "This page
-// can't load Google Maps correctly" error. The new Places API needs its own
-// enablement and its own apiTarget on the key.
+// can't load Google Maps correctly" error. Since nothing in the UI calls the
+// legacy Places API, only this one needs enabling.
 const placesNewApi = new gcp.projects.Service("places-new-api", {
 	project: gcpProjectId,
 	service: "places.googleapis.com",
@@ -1103,14 +1097,13 @@ const googleMapsApiKey = new gcp.projects.ApiKey("agon-ui-maps-key", {
 	restrictions: {
 		apiTargets: [
 			{ service: "maps-backend.googleapis.com" },
-			{ service: "places-backend.googleapis.com" },
 			{ service: "places.googleapis.com" },
 		],
 		browserKeyRestrictions: {
 			allowedReferrers: [`${agonUiUrl}/*`],
 		},
 	},
-}, { dependsOn: [mapsBackendApi, placesBackendApi, placesNewApi, apiKeysApi] });
+}, { dependsOn: [mapsBackendApi, placesNewApi, apiKeysApi] });
 
 // ── Supabase Google Auth: OAuth consent screen + client ─────────────────────
 // Fully manual, per project — and NOT automatable at all right now, not even

@@ -21,6 +21,7 @@ export interface LocationValue {
   latitude?: number
   longitude?: number
   place_id?: string
+  address?: string
 }
 
 /** How long to wait after typing stops before hitting the Places API. */
@@ -73,7 +74,7 @@ export function LocationField({
   const [linkedPlace, setLinkedPlace] = useState<LinkedPlace | null>(
     value?.place_id
       ? {
-          address: value.text,
+          address: value.address ?? value.text,
           latitude: value.latitude,
           longitude: value.longitude,
           place_id: value.place_id,
@@ -93,7 +94,7 @@ export function LocationField({
     setLinkedPlace(
       value?.place_id
         ? {
-            address: value.text,
+            address: value.address ?? value.text,
             latitude: value.latitude,
             longitude: value.longitude,
             place_id: value.place_id,
@@ -167,7 +168,7 @@ export function LocationField({
     const latitude = place.location?.lat()
     const longitude = place.location?.lng()
     setLinkedPlace({ address: resolvedText, latitude, longitude, place_id: prediction.placeId })
-    onChange({ text: resolvedText, latitude, longitude, place_id: prediction.placeId })
+    onChange({ text: resolvedText, latitude, longitude, place_id: prediction.placeId, address: resolvedText })
   }
 
   const unlink = () => {
@@ -199,6 +200,7 @@ export function LocationField({
                 latitude: linkedPlace.latitude,
                 longitude: linkedPlace.longitude,
                 place_id: linkedPlace.place_id,
+                address: linkedPlace.address,
               })
             }}
             className="w-full min-w-0 border-none bg-transparent p-0 text-sm font-semibold text-foreground outline-none"

@@ -33,6 +33,10 @@ pub struct LocationRecord {
     /// rather than just a coordinate pin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub place_id: Option<String>,
+    /// The picked place's formatted address, kept so it can still be shown
+    /// after `text` is renamed (e.g. "Pitch 2").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
 }
 
 /// One header photo attached to a match: the asset it was uploaded as (so a

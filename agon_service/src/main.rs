@@ -758,6 +758,9 @@ struct Location {
     /// Google Place ID, when this resolved to a real place — use it to link
     /// to that place's own listing rather than a bare coordinate pin.
     place_id: Option<String>,
+    /// The picked place's formatted address. Set alongside `place_id`, and
+    /// kept when `text` is renamed so the real address can still be shown.
+    address: Option<String>,
 }
 
 #[derive(Object)]
@@ -9156,6 +9159,7 @@ fn mock_match(id: String) -> Match {
             latitude: Some(51.5074),
             longitude: Some(-0.1278),
             place_id: None,
+            address: None,
         }),
         header_photos: vec![Photo {
             image_url: String::from("https://cdn.example.com/matches/match_123/header.jpg"),

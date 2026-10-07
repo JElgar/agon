@@ -42,9 +42,9 @@ export function DirectionsButton({ location }: { location: Location }) {
 
 /**
  * A match's location under its title. A place picked from Google Places
- * gets the green pin chip and, unless `showDirections` is off, a Directions
- * button; a free-typed location is plain text with an outline pin, since
- * there's nothing reliable to route to.
+ * gets the green pin chip, its address when it's been renamed, and (unless
+ * `showDirections` is off) a Directions button; a free-typed location is
+ * plain text with an outline pin, since there's nothing reliable to route to.
  */
 export function MatchLocation({
   location,
@@ -58,6 +58,12 @@ export function MatchLocation({
   className?: string
 }) {
   const linked = directionsUrl(location) !== undefined
+  const address = linked && location.address && location.address !== location.text ? location.address : undefined
+  const name = (
+    <span className={cn('truncate', linked ? 'font-semibold text-foreground' : 'text-muted-foreground')}>
+      {location.text}
+    </span>
+  )
   return (
     <div className={cn('flex min-w-0 items-center', size === 'lg' ? 'gap-3 text-base' : 'gap-2 text-sm', className)}>
       {linked ? (
@@ -67,9 +73,17 @@ export function MatchLocation({
           <MapPin className={cn('text-muted-foreground', size === 'lg' ? 'size-5' : 'size-4')} />
         </span>
       )}
-      <span className={cn('truncate', linked ? 'font-semibold text-foreground' : 'text-muted-foreground')}>
-        {location.text}
-      </span>
+      {size === 'lg' ? (
+        <div className="flex min-w-0 flex-1 flex-col">
+          {name}
+          {address && <span className="truncate text-[13px] text-muted-foreground">{address}</span>}
+        </div>
+      ) : (
+        <>
+          {name}
+          {address && <span className="min-w-0 flex-1 truncate text-muted-foreground">· {address}</span>}
+        </>
+      )}
       {linked && showDirections && <DirectionsButton location={location} />}
     </div>
   )

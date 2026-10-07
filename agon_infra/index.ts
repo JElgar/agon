@@ -1058,7 +1058,7 @@ export const firebaseWebConfig = gcp.firebase.getWebAppConfigOutput({
 // ── Google Maps JS API key: Places Autocomplete on a match's location field ─
 // Unlike the Firebase VAPID key pair above, a browser Maps key IS a normal,
 // fully automatable GCP resource (`gcp.projects.ApiKey`) — restricted here to
-// exactly the two APIs the location field needs, and to this deployment's own
+// exactly the APIs the location field needs, and to this deployment's own
 // origin, so it's useless if it ever leaks.
 const mapsBackendApi = new gcp.projects.Service("maps-backend-api", {
 	project: gcpProjectId,
@@ -1066,13 +1066,16 @@ const mapsBackendApi = new gcp.projects.Service("maps-backend-api", {
 	disableOnDestroy: false,
 });
 
-const placesBackendApi = new gcp.projects.Service("places-backend-api", {
+// "Places API (New)" — `LocationField` calls
+// `AutocompleteSuggestion.fetchAutocompleteSuggestions`
+// (see agon_ui/src/lib/googleMaps.ts), which needs this API enabled.
+const placesApi = new gcp.projects.Service("places-api", {
 	project: gcpProjectId,
-	service: "places-backend.googleapis.com",
+	service: "places.googleapis.com",
 	disableOnDestroy: false,
 });
 
-// Separate from the two API targets above: this is the management API for
+// Separate from the API targets above: this is the management API for
 // creating/reading the key resource itself, not an API the key grants access
 // to. Without it, `gcp.projects.ApiKey` create fails with "API Keys API has
 // not been used in project ... or it is disabled".
@@ -1088,13 +1091,13 @@ const googleMapsApiKey = new gcp.projects.ApiKey("agon-ui-maps-key", {
 	restrictions: {
 		apiTargets: [
 			{ service: "maps-backend.googleapis.com" },
-			{ service: "places-backend.googleapis.com" },
+			{ service: "places.googleapis.com" },
 		],
 		browserKeyRestrictions: {
 			allowedReferrers: [`${agonUiUrl}/*`],
 		},
 	},
-}, { dependsOn: [mapsBackendApi, placesBackendApi, apiKeysApi] });
+}, { dependsOn: [mapsBackendApi, placesApi, apiKeysApi] });
 
 // ── Supabase Google Auth: OAuth consent screen + client ─────────────────────
 // Fully manual, per project — and NOT automatable at all right now, not even

@@ -1086,6 +1086,7 @@ pub fn location_to_record(loc: &Location) -> LocationRecord {
         latitude: loc.latitude,
         longitude: loc.longitude,
         place_id: loc.place_id.clone(),
+        address: loc.address.clone(),
     }
 }
 
@@ -1095,6 +1096,7 @@ pub fn location_from_record(rec: &LocationRecord) -> Location {
         latitude: rec.latitude,
         longitude: rec.longitude,
         place_id: rec.place_id.clone(),
+        address: rec.address.clone(),
     }
 }
 

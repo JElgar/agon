@@ -63,6 +63,7 @@ export function MatchDetailsEditor({
           latitude: match.location.latitude,
           longitude: match.location.longitude,
           place_id: match.location.place_id,
+          address: match.location.address,
         }
       : null,
   )

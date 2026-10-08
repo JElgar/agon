@@ -9,7 +9,6 @@ import {
   LogOut,
   MoreVertical,
   Pencil,
-  MapPin,
   Radio,
   Share,
   ShieldMinus,
@@ -28,7 +27,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { scheduledDateTime } from '@/lib/datetime'
-import { directionsUrl } from '@/lib/location'
+import { MatchLocation } from '@/components/agon/MatchLocation'
 import { addMatchToCalendar } from '@/lib/calendar'
 import { respondToInvitation } from '@/lib/invitations'
 import {
@@ -336,22 +335,7 @@ export function ScheduledMatchInvite({
                   <b className="font-semibold">{scheduledDateTime(match.starts_at)}</b>
                 </span>
               </div>
-              {match.location && (
-                <div className="flex items-center gap-3 text-base">
-                  <MapPin className="size-5 shrink-0 text-primary" />
-                  <span className="truncate">{match.location.text}</span>
-                  {directionsUrl(match.location) && (
-                    <a
-                      href={directionsUrl(match.location)}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="shrink-0 font-semibold text-primary hover:underline"
-                    >
-                      Directions
-                    </a>
-                  )}
-                </div>
-              )}
+              {match.location && <MatchLocation location={match.location} size="lg" />}
             </div>
           </div>
 

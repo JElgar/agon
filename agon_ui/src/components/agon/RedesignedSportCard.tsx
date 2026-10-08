@@ -1,6 +1,8 @@
 import { Check, Clock, MapPin } from 'lucide-react'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
+import { directionsUrl } from '@/lib/location'
+import { PlaceChip } from './MatchLocation'
 import { Avatar } from './Avatar'
 import { initials, sideDisplayName, sidePlayerCountLabel, sideTeamHint } from '@/lib/members'
 import type { ScorePlayers } from '@/lib/members'
@@ -47,6 +49,7 @@ type Match = components['schemas']['Match']
 type FeedMatch = components['schemas']['FeedMatch']
 type SearchMatch = components['schemas']['SearchMatch']
 type MatchSide = components['schemas']['MatchSide']
+type Location = components['schemas']['Location']
 type MatchLike = Match | FeedMatch | SearchMatch
 type FootballGoalEvent = components['schemas']['FootballGoalEvent']
 type NetballGoalEvent = components['schemas']['NetballGoalEvent']
@@ -101,11 +104,12 @@ function ScheduledPill({ startsAt }: { startsAt: string }) {
  *  out. */
 function ScheduledInfoRow({
   startsAt,
-  locationText,
+  location,
 }: {
   startsAt: string
-  locationText?: string
+  location?: Location | null
 }) {
+  const locationText = location?.text
   if (isStartingSoon(startsAt)) {
     return (
       <div className="mt-2.5 flex items-center gap-2 rounded-xl bg-warning/15 px-3 py-2.5 text-sm text-warning-foreground">
@@ -118,10 +122,11 @@ function ScheduledInfoRow({
     )
   }
   if (!locationText) return null
+  const linked = directionsUrl(location) !== undefined
   return (
     <div className="mt-2.5 flex items-center gap-2 rounded-xl bg-muted/50 px-3 py-2.5 text-sm text-muted-foreground">
-      <MapPin className="size-4 shrink-0" />
-      <span className="truncate">{locationText}</span>
+      {linked ? <PlaceChip /> : <MapPin className="size-4 shrink-0" />}
+      <span className={cn('truncate', linked && 'font-semibold text-foreground')}>{locationText}</span>
     </div>
   )
 }
@@ -130,12 +135,14 @@ function CardHeader({
   badge,
   title,
   subtitle,
+  locationText,
   live,
   onOpen,
 }: {
   badge: React.ReactNode
   title: string
   subtitle: string
+  locationText?: string
   live?: React.ReactNode
   onOpen?: () => void
 }) {
@@ -145,6 +152,12 @@ function CardHeader({
       <div className="min-w-0 flex-1">
         <p className="truncate text-base font-bold leading-tight">{title}</p>
         <p className="truncate text-[13px] text-muted-foreground">{subtitle}</p>
+        {locationText && (
+          <p className="flex items-center gap-1 text-[13px] text-muted-foreground">
+            <MapPin className="size-3 shrink-0" />
+            <span className="truncate">{locationText}</span>
+          </p>
+        )}
       </div>
       {live && <div className="shrink-0">{live}</div>}
     </button>
@@ -565,6 +578,7 @@ export function FootballFeedCardBody({
         badge={<SportIconBadge sport="football" />}
         title={match.name}
         subtitle={subtitle}
+        locationText={isScheduled ? undefined : match.location?.text}
         live={
           isLive ? (
             <LivePill>{liveState ? liveClockLabel(liveState) : 'LIVE'}</LivePill>
@@ -634,7 +648,7 @@ export function FootballFeedCardBody({
           </div>
         </div>
 
-        {isScheduled && <ScheduledInfoRow startsAt={startsAt} locationText={match.location?.text} />}
+        {isScheduled && <ScheduledInfoRow startsAt={startsAt} location={match.location} />}
 
         {isLive && progressPct !== null && (
           <div className="mt-3 h-1 overflow-hidden rounded-full bg-muted">
@@ -833,6 +847,7 @@ export function CricketFeedCardBody({
         badge={<SportIconBadge sport="cricket" />}
         title={match.name}
         subtitle={subtitle}
+        locationText={isScheduled ? undefined : match.location?.text}
         live={
           isLive ? (
             <LivePill>LIVE</LivePill>
@@ -853,7 +868,7 @@ export function CricketFeedCardBody({
           {row(sideB, nameB, bHeadline, bBatting, !!bWon)}
         </div>
 
-        {isScheduled && <ScheduledInfoRow startsAt={startsAt} locationText={match.location?.text} />}
+        {isScheduled && <ScheduledInfoRow startsAt={startsAt} location={match.location} />}
 
         {isLive && chase && (
           <p className="mt-2.5 text-sm text-foreground/80">
@@ -980,6 +995,7 @@ export function NetballFeedCardBody({
         badge={<SportIconBadge sport="netball" />}
         title={match.name}
         subtitle={subtitle}
+        locationText={isScheduled ? undefined : match.location?.text}
         live={
           isLive ? (
             <LivePill>{liveState ? netballLiveClockLabel(liveState) : 'LIVE'}</LivePill>
@@ -1049,7 +1065,7 @@ export function NetballFeedCardBody({
           </div>
         </div>
 
-        {isScheduled && <ScheduledInfoRow startsAt={startsAt} locationText={match.location?.text} />}
+        {isScheduled && <ScheduledInfoRow startsAt={startsAt} location={match.location} />}
 
         {isLive && progressPct !== null && (
           <div className="mt-3 h-1 overflow-hidden rounded-full bg-muted">
@@ -1266,6 +1282,7 @@ export function TennisFeedCardBody({
         badge={<SportIconBadge sport={sport} />}
         title={match.name}
         subtitle={subtitle}
+        locationText={isScheduled ? undefined : match.location?.text}
         live={
           isLive ? (
             <LivePill>LIVE</LivePill>
@@ -1309,7 +1326,7 @@ export function TennisFeedCardBody({
           )
         )}
 
-        {isScheduled && <ScheduledInfoRow startsAt={startsAt} locationText={match.location?.text} />}
+        {isScheduled && <ScheduledInfoRow startsAt={startsAt} location={match.location} />}
 
         {!isLive && !isScheduled && winnerName && setCount > 0 && (
           <div className="mt-3 flex items-center gap-2.5">
@@ -1438,6 +1455,7 @@ export function SquashFeedCardBody({
         badge={<SportIconBadge sport={sport} />}
         title={match.name}
         subtitle={subtitle}
+        locationText={isScheduled ? undefined : match.location?.text}
         live={isScheduled ? <ScheduledPill startsAt={startsAt} /> : undefined}
         onOpen={onOpen}
       />
@@ -1469,7 +1487,7 @@ export function SquashFeedCardBody({
           )
         )}
 
-        {isScheduled && <ScheduledInfoRow startsAt={startsAt} locationText={match.location?.text} />}
+        {isScheduled && <ScheduledInfoRow startsAt={startsAt} location={match.location} />}
       </button>
     </>
   )

@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { CalendarPlus, ChevronLeft, Link2, MailOpen, MapPin, MoreHorizontal, Pencil, Radio, Share, UserPlus } from 'lucide-react'
+import { CalendarPlus, ChevronLeft, Link2, MailOpen, MoreHorizontal, Navigation, Pencil, Radio, Share, UserPlus } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { scheduledDateTime } from '@/lib/datetime'
 import { directionsUrl } from '@/lib/location'
+import { MatchLocation } from '@/components/agon/MatchLocation'
 import { addMatchToCalendar } from '@/lib/calendar'
 import { Button } from '@/components/ui/button'
 import { WaitlistSection } from '@/components/agon/WaitlistSection'
@@ -368,6 +369,13 @@ function MatchDetail({
         >
           <CalendarPlus className="size-4" /> Add to calendar
         </DropdownMenuItem>
+        {matchView === 'finished' && directionsUrl(match.location) && (
+          <DropdownMenuItem asChild>
+            <a href={directionsUrl(match.location)} target="_blank" rel="noreferrer">
+              <Navigation className="size-4" /> Get directions
+            </a>
+          </DropdownMenuItem>
+        )}
         {canEdit && !cancelled && (
           <DropdownMenuItem onSelect={() => setEditingDetails(true)}>
             <Pencil className="size-4" /> Edit match details
@@ -466,20 +474,7 @@ function MatchDetail({
       </div>
       <h1 className="font-display text-[30px] leading-tight font-extrabold tracking-[-0.4px]">{match.name}</h1>
       {match.location && (
-        <p className="flex items-center gap-1 text-sm text-muted-foreground">
-          <MapPin className="size-3.5 shrink-0" />
-          <span className="truncate">{match.location.text}</span>
-          {directionsUrl(match.location) && (
-            <a
-              href={directionsUrl(match.location)}
-              target="_blank"
-              rel="noreferrer"
-              className="shrink-0 font-semibold text-link hover:underline"
-            >
-              Directions
-            </a>
-          )}
-        </p>
+        <MatchLocation location={match.location} showDirections={matchView !== 'finished'} className="mt-1" />
       )}
     </div>
   )

@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button'
 import { DateTimePicker } from '@/components/ui/date-time-picker'
 import { SportPicker } from '@/components/agon/SportPicker'
 import { MultiImageUploadField } from '@/components/agon/MultiImageUploadField'
+import { LocationField, type LocationValue } from '@/components/agon/LocationField'
 import { Avatar } from '@/components/agon/Avatar'
 import type { TaggedPlayer } from '@/components/agon/PlayerSideEditor'
 import { FootballScoreFields } from '@/components/agon/FootballScoreFields'
@@ -135,6 +136,7 @@ export function LogMatchPage() {
   const [format, setFormat] = useState<MatchFormat | null>(null)
   const [mode, setMode] = useState<MatchMode>('scheduled')
   const [startsAt, setStartsAt] = useState<string>(defaultScheduledAt)
+  const [location, setLocation] = useState<LocationValue | null>(null)
   // The name follows the sport and time until the user types their own;
   // clearing the field hands it back to the suggestion.
   const [typedName, setTypedName] = useState('')
@@ -429,6 +431,7 @@ export function LogMatchPage() {
     if (creatorSide) body.creator_side_client_id = creatorSide
     if (headerAssetIds.length > 0) body.header_photo_asset_ids = headerAssetIds
     if (format) body.format = format
+    if (location?.text.trim()) body.location = { ...location, text: location.text.trim() }
     body.allow_unassigned = allowUnassigned
     const scored = buildScore()
     if (scored) {
@@ -503,6 +506,10 @@ export function LogMatchPage() {
               <DateTimePicker id="starts-at" value={startsAt} onChange={setStartsAt} />
               {timeError && <p className="text-xs text-destructive">{timeError}</p>}
             </div>
+          </FormSection>
+
+          <FormSection title="Where" htmlFor="match-location">
+            <LocationField id="match-location" value={location} onChange={setLocation} />
           </FormSection>
 
           <FormSection title="Match name" htmlFor="match-name">
@@ -602,7 +609,7 @@ export function LogMatchPage() {
               <div className="flex min-w-0 flex-col">
                 <span className="truncate font-display text-lg font-extrabold">{name}</span>
                 <span className="text-[13px] text-muted-foreground">
-                  {[whenLabel, formatSummary(format)].filter(Boolean).join(' · ')}
+                  {[whenLabel, location?.text.trim(), formatSummary(format)].filter(Boolean).join(' · ')}
                 </span>
               </div>
             </div>

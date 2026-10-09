@@ -1495,6 +1495,16 @@ pub struct FeedItemRecord {
     /// re-run refreshes it).
     #[serde(default)]
     pub viewer_is_going: bool,
+    /// Whether this viewer has a pending (not yet responded to) invitation
+    /// to the match — see `AudienceMember::viewer_invitation_pending`.
+    /// `#[serde(default)]` for feed items written before this field existed.
+    #[serde(default)]
+    pub viewer_invitation_pending: bool,
+    /// Side ids this viewer could join directly via team membership — see
+    /// `AudienceMember::viewer_can_join_side_ids`. `#[serde(default)]` for
+    /// feed items written before this field existed.
+    #[serde(default)]
+    pub viewer_can_join_side_ids: Vec<String>,
 }
 
 /// A user's lifetime stats, one field per sport — `None` for a sport they've

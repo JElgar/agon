@@ -67,6 +67,17 @@ pub struct AudienceMember {
     /// unassigned participant, so it's the right field for "is the viewer
     /// going" (e.g. a feed card's RSVP state).
     pub viewer_is_going: bool,
+    /// Whether this viewer has a *pending* (not yet responded to) invitation
+    /// to the match — distinct from `viewer_is_going`, which is `false` for
+    /// a pending invitee. Lets "Coming up" surface a match the viewer hasn't
+    /// accepted yet, rather than only matches they're already in.
+    pub viewer_invitation_pending: bool,
+    /// Side ids the viewer may join directly via an accepted membership on
+    /// that side's team (`MatchSideRecord::team_join_enabled`) — see
+    /// `Self::collect_team_join_eligible_members`. Not filtered by whether
+    /// the viewer is already a participant (harmless either way: a client
+    /// checks `viewer_is_going` first).
+    pub viewer_can_join_side_ids: Vec<String>,
 }
 
 impl Dao {
@@ -96,6 +107,10 @@ impl Dao {
                 let entry = audience.entry(user_id.clone()).or_default();
                 entry.viewer_side_id = player.side_id.clone();
                 entry.viewer_is_going = player.occupies_slot();
+                entry.viewer_invitation_pending = player
+                    .invitation
+                    .as_ref()
+                    .is_some_and(|inv| inv.status == "pending");
                 self.collect_user_followers(user_id, &mut audience).await?;
             }
         }
@@ -105,6 +120,17 @@ impl Dao {
         for side in &agg.sides {
             if let Some(team_id) = &side.team_id {
                 self.collect_team_followers(team_id, &mut audience).await?;
+                // A side open to team self-join additionally earns every
+                // accepted team member a `viewer_can_join_side_ids` entry
+                // (see that method's doc comment) — distinct from merely
+                // following the team, which every member already does too
+                // (see `Dao::follow_team_items`'s doc comment), but following
+                // alone doesn't tell a client "you specifically can join
+                // this side".
+                if side.team_join_enabled {
+                    self.collect_team_join_eligible_members(team_id, &side.side_id, &mut audience)
+                        .await?;
+                }
             }
         }
 
@@ -162,6 +188,38 @@ impl Dao {
                 Some(c) => cursor = Some(c),
                 None => break,
             }
+        }
+        Ok(())
+    }
+
+    /// Give every accepted member of `team_id` a `viewer_can_join_side_ids`
+    /// entry for `side_id` — mirrors `caller_team_join_sides`'
+    /// (`agon_service`) single-caller eligibility check, but for the whole
+    /// team at once, since fan-out already needs to visit every member. One
+    /// `get_team` covers every member in one query, same cost class as
+    /// `collect_team_followers`'s own per-team page walk.
+    async fn collect_team_join_eligible_members(
+        &self,
+        team_id: &str,
+        side_id: &str,
+        audience: &mut HashMap<String, AudienceMember>,
+    ) -> DaoResult<()> {
+        let Some(agg) = self.get_team(team_id).await? else {
+            return Ok(());
+        };
+        for member in &agg.members {
+            let Some(user_id) = &member.user_id else {
+                continue;
+            };
+            let accepted = member
+                .invitation
+                .as_ref()
+                .is_none_or(|inv| inv.status == "accepted");
+            if !accepted {
+                continue;
+            }
+            let entry = audience.entry(user_id.clone()).or_default();
+            entry.viewer_can_join_side_ids.push(side_id.to_string());
         }
         Ok(())
     }

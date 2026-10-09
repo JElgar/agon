@@ -93,25 +93,26 @@ export function FeedPage() {
     />
   )
 
-  // "Coming up" is the viewer's OWN upcoming games — `viewer_is_going` is only
-  // true on a feed entry when the viewer is themselves a participant (see
-  // `UpcomingMatchCard`'s "Going"/"I'm in" pill, which reads the same field) —
-  // not every scheduled match from people/teams they follow. This is NOT the
-  // same as `viewer_side_id != null`: a participant who joined an
-  // `allow_unassigned` match without picking a side yet is still going, just
-  // with no side assigned, so `viewer_side_id` alone would wrongly drop them
-  // (and their whole "Coming up" section) here. Soonest first, a horizontal
-  // strip above the day-grouped activity below. Naturally empty (and hidden)
-  // until the feed query resolves, same as `banner` above. A match stays
-  // `scheduled` even once its kickoff has passed (until someone scores or
-  // cancels it), so this strip would otherwise fill up with stale games
-  // nobody ever played — drop anything more than 24h past `starts_at`.
+  // "Coming up" is the viewer's OWN business with a match — going, invited,
+  // or able to self-join via a team — not every scheduled match from people/
+  // teams they follow. `viewer_is_going`/`viewer_invitation_pending`/
+  // `viewer_can_join_side_ids` are all resolved server-side at fan-out time
+  // (see `FeedMatch`'s doc comments); this is NOT the same as
+  // `viewer_side_id != null`, which misses an unassigned-but-going
+  // participant entirely. Soonest first, a horizontal strip above the
+  // day-grouped activity below. Naturally empty (and hidden) until the feed
+  // query resolves, same as `banner` above. A match stays `scheduled` even
+  // once its kickoff has passed (until someone scores or cancels it), so
+  // this strip would otherwise fill up with stale games nobody ever played —
+  // drop anything more than 24h past `starts_at`.
   const upcomingCutoff = Date.now() - 24 * 60 * 60 * 1000
   const upcoming = [...serverItems]
     .filter(
       (m) =>
         m.status === 'scheduled' &&
-        m.viewer_is_going &&
+        (m.viewer_is_going ||
+          m.viewer_invitation_pending ||
+          m.viewer_can_join_side_ids.length > 0) &&
         new Date(m.starts_at).getTime() >= upcomingCutoff,
     )
     .sort((a, b) => new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime())

@@ -124,7 +124,7 @@ impl Dao {
                 // accepted team member a `viewer_can_join_side_ids` entry
                 // (see that method's doc comment) — distinct from merely
                 // following the team, which every member already does too
-                // (see `Dao::follow_team`'s doc comment), but following
+                // (see `Dao::follow_team_items`'s doc comment), but following
                 // alone doesn't tell a client "you specifically can join
                 // this side".
                 if side.team_join_enabled {

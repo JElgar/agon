@@ -57,19 +57,10 @@ impl Dao {
         responded_at: &str,
         now: &str,
     ) -> DaoResult<Option<String>> {
-        let (match_id, team_id, items) = self
+        let (match_id, _team_id, items) = self
             .accept_invitation_items(invitation_id, accepting_user_id, responded_at, now, false)
             .await?;
         self.send_transact_items(items).await?;
-        // A team invite's accepter should see the team's matches in their own
-        // feed from here on — see `Dao::follow_team`'s doc comment on why
-        // membership implies following. Best-effort: a missed follow just
-        // means their feed under-shows this team until the next trigger,
-        // same tolerance as the invitation-entity writes elsewhere in this
-        // module.
-        if let Some(team_id) = &team_id {
-            let _ = self.follow_team(accepting_user_id, team_id, now).await;
-        }
         Ok(match_id)
     }
 
@@ -227,6 +218,19 @@ impl Dao {
         }
         if let Some(slot_update) = slot_update {
             items.push(TransactWriteItem::builder().update(slot_update).build());
+        }
+        // A team invite's accepter should see the team's matches in their own
+        // feed from here on — membership implies following (see
+        // `Dao::follow_team_items`'s doc comment) — folded into this same
+        // transaction rather than a separate best-effort call after the
+        // fact. Checked first and omitted entirely when they already follow
+        // (e.g. they followed explicitly before accepting) — including it
+        // anyway would trip the edge-put's condition and cancel the whole
+        // accept, not just the follow.
+        if let Some(team_id) = &team_id
+            && !self.is_following_team(accepting_user_id, team_id).await?
+        {
+            items.extend(self.follow_team_items(accepting_user_id, team_id, now)?);
         }
         Ok((match_id, team_id, items))
     }

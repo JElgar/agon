@@ -5457,6 +5457,9 @@ impl Api {
             invitation: None,
             created_at: now,
         };
+        // Creates the team, the creator's membership, and the follow that
+        // membership implies (see `Dao::create_team`'s doc comment), all in
+        // one transaction.
         match dao.create_team(&team, &creator).await {
             Ok(()) => {}
             Err(dao::DaoError::Conflict(msg)) => {
@@ -5464,11 +5467,6 @@ impl Api {
             }
             Err(e) => return Err(dao_internal(e)),
         }
-        // Membership implies following (see `Dao::follow_team`'s doc
-        // comment) — best-effort: the team already exists, so a missed
-        // follow just means the creator's feed under-shows it until they
-        // follow explicitly or another trigger re-syncs it.
-        let _ = dao.follow_team(&uid, &team.id, &creator.created_at).await;
 
         // Bundle initial invites into creation — each invitee gets a pending
         // roster slot + standalone invitation, exactly like a later `POST
@@ -5607,12 +5605,11 @@ impl Api {
                 invitation: None,
                 created_at: now.clone(),
             };
-            dao.put_team_member(&team_id, &member)
+            // Adds the member and the follow that membership implies (see
+            // `Dao::add_team_member`'s doc comment) in one transaction.
+            dao.add_team_member(&team_id, &member, &now)
                 .await
                 .map_err(dao_internal)?;
-            // Membership implies following — see `Dao::follow_team`'s doc
-            // comment. Best-effort, same reasoning as the `create_team` call.
-            let _ = dao.follow_team(user_id, &team_id, &now).await;
         }
 
         Ok(AddTeamMembersResponse::Team(Json(team_from_records(

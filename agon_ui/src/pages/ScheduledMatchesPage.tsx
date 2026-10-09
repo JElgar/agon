@@ -97,7 +97,7 @@ export function ScheduledMatchesPage() {
               status: 'scheduled',
               sort: 'asc',
               q: debounced || undefined,
-              match_type: sport ?? undefined,
+              match_type: sport ? [sport] : undefined,
               from: effectiveFrom,
               to: effectiveTo,
               cursor: pageParam,

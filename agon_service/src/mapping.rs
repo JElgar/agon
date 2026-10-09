@@ -1162,6 +1162,9 @@ pub fn feed_match_from_records(
     known_participants: Vec<UserProfile>,
     known_participants_count: u32,
     viewer_side_id: Option<String>,
+    viewer_is_going: bool,
+    viewer_invitation_pending: bool,
+    viewer_can_join_side_ids: Vec<String>,
     i_liked: bool,
 ) -> FeedMatch {
     FeedMatch {
@@ -1191,6 +1194,9 @@ pub fn feed_match_from_records(
         known_participants,
         known_participants_count,
         viewer_side_id,
+        viewer_is_going,
+        viewer_invitation_pending,
+        viewer_can_join_side_ids,
         confirmed_score: rec
             .confirmed_score
             .as_ref()

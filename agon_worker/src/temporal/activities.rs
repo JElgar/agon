@@ -26,6 +26,9 @@ pub struct FeedViewer {
     pub known_player_ids: Vec<String>,
     pub known_player_count: u32,
     pub viewer_side_id: Option<String>,
+    pub viewer_is_going: bool,
+    pub viewer_invitation_pending: bool,
+    pub viewer_can_join_side_ids: Vec<String>,
 }
 
 /// The result of resolving a match's fan-out: who should see it (with their
@@ -88,6 +91,9 @@ impl AgonActivities {
                 known_player_ids: member.known_player_ids,
                 known_player_count: member.known_player_count,
                 viewer_side_id: member.viewer_side_id,
+                viewer_is_going: member.viewer_is_going,
+                viewer_invitation_pending: member.viewer_invitation_pending,
+                viewer_can_join_side_ids: member.viewer_can_join_side_ids,
             })
             .collect();
         Ok(FanoutAudience {
@@ -114,6 +120,9 @@ impl AgonActivities {
                     known_player_ids: v.known_player_ids,
                     known_player_count: v.known_player_count,
                     viewer_side_id: v.viewer_side_id,
+                    viewer_is_going: v.viewer_is_going,
+                    viewer_invitation_pending: v.viewer_invitation_pending,
+                    viewer_can_join_side_ids: v.viewer_can_join_side_ids,
                 },
             })
             .collect();

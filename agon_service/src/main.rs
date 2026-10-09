@@ -1233,7 +1233,25 @@ struct FeedMatch {
     /// this match — `None` if they're not playing (they're seeing this card
     /// via a follow) or not yet assigned a side. Lets a client resolve the
     /// score confirm/dispute prompt without the full roster `Match` carries.
+    /// NOT the right field for "is the caller going" — see `viewer_is_going`.
     viewer_side_id: Option<String>,
+    /// Whether the caller themselves is a participant in this match, playing
+    /// or not yet assigned a side — unlike `viewer_side_id`, this is `true`
+    /// for an unassigned participant (a match with `allow_unassigned`), so
+    /// it's the right field for a feed card's RSVP state ("Going"/"I'm in").
+    viewer_is_going: bool,
+    /// Whether the caller has a pending (not yet responded to) invitation to
+    /// this match. Lets "Coming up" surface a match the caller hasn't
+    /// accepted yet, distinct from `viewer_is_going`.
+    viewer_invitation_pending: bool,
+    /// Side ids the caller could join directly via an accepted membership on
+    /// that side's team (`MatchSide.team_join_enabled`) — the feed's
+    /// cheaper, denormalized counterpart to `Match.viewer_team_join_side_ids`
+    /// (computed per-viewer at fan-out time rather than per-request, since a
+    /// feed page can't afford a team lookup per match). Empty, not `None`,
+    /// when there's nothing to join — simpler for a client to check
+    /// `is_empty()` than unwrap an option.
+    viewer_can_join_side_ids: Vec<String>,
     confirmed_score: Option<ConfirmedScore>,
     pending_score: Option<PendingScore>,
     social: MatchSocial,
@@ -2765,6 +2783,9 @@ impl Api {
             known_player_ids: Vec<String>,
             known_player_count: u32,
             viewer_side_id: Option<String>,
+            viewer_is_going: bool,
+            viewer_invitation_pending: bool,
+            viewer_can_join_side_ids: Vec<String>,
         }
         let mut eligible: Vec<EligibleEntry> = Vec::with_capacity(page.items.len());
         for entry in &page.items {
@@ -2782,6 +2803,9 @@ impl Api {
                 known_player_ids: entry.known_player_ids.clone(),
                 known_player_count: entry.known_player_count,
                 viewer_side_id: entry.viewer_side_id.clone(),
+                viewer_is_going: entry.viewer_is_going,
+                viewer_invitation_pending: entry.viewer_invitation_pending,
+                viewer_can_join_side_ids: entry.viewer_can_join_side_ids.clone(),
             });
         }
         let match_ids: Vec<String> = eligible.iter().map(|e| e.match_id.clone()).collect();
@@ -2851,6 +2875,9 @@ impl Api {
                     known_participants,
                     entry.known_player_count,
                     entry.viewer_side_id.clone(),
+                    entry.viewer_is_going,
+                    entry.viewer_invitation_pending,
+                    entry.viewer_can_join_side_ids.clone(),
                     i_liked,
                 );
                 Self::hydrate_sides_from_cache(&mut m.sides, &team_metas);
@@ -5442,6 +5469,9 @@ impl Api {
             invitation: None,
             created_at: now,
         };
+        // Creates the team, the creator's membership, and the follow that
+        // membership implies (see `Dao::create_team`'s doc comment), all in
+        // one transaction.
         match dao.create_team(&team, &creator).await {
             Ok(()) => {}
             Err(dao::DaoError::Conflict(msg)) => {
@@ -5587,7 +5617,9 @@ impl Api {
                 invitation: None,
                 created_at: now.clone(),
             };
-            dao.put_team_member(&team_id, &member)
+            // Adds the member and the follow that membership implies (see
+            // `Dao::add_team_member`'s doc comment) in one transaction.
+            dao.add_team_member(&team_id, &member, &now)
                 .await
                 .map_err(dao_internal)?;
         }

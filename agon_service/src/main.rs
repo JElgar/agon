@@ -2907,8 +2907,11 @@ impl Api {
         /// involving every one of them (head-to-head between exactly two
         /// teams is the `all` case). Ignored with fewer than two `team_id`s.
         Query(team_match): Query<Option<TeamMatchMode>>,
-        /// Only matches of this sport.
-        Query(match_type): Query<Option<MatchType>>,
+        /// Only matches of these sports (any one of them matches — same
+        /// `Vec` + `default` shape as `team_id` above, for the same reason:
+        /// a plain single-sport caller still passes one value).
+        #[oai(name = "match_type", default)]
+        Query(match_types): Query<Vec<MatchType>>,
         /// Only matches in this lifecycle state (e.g. `scheduled`) — powers the
         /// "all scheduled matches" browse view.
         Query(status): Query<Option<MatchStatus>>,
@@ -2962,8 +2965,15 @@ impl Api {
         // compare the ISO-8601 `starts_at` string (that raised
         // `invalid_search_filter: invalid float literal`).
         let mut clauses: Vec<String> = Vec::new();
-        if let Some(mt) = &match_type {
-            clauses.push(format!("sport = \"{}\"", match_type_tag(mt)));
+        if !match_types.is_empty() {
+            // Same OR-join pattern as `team_ids` below: any one of the
+            // requested sports matches.
+            let sport_clause = match_types
+                .iter()
+                .map(|mt| format!("sport = \"{}\"", match_type_tag(mt)))
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            clauses.push(format!("({sport_clause})"));
         }
         if let Some(s) = &status {
             clauses.push(format!("status = \"{}\"", match_status_str(s)));

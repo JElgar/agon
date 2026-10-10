@@ -90,7 +90,7 @@ export function SportStatsPage() {
     queryFn: async (): Promise<SearchMatch[]> => {
       const { data, error } = await fetchClient.GET('/matches', {
         params: {
-          query: { participant: profileId, match_type: matchType, limit: FETCH_LIMIT },
+          query: { participant: profileId, match_type: [matchType], limit: FETCH_LIMIT },
         },
       })
       if (error || !data) throw new Error('Failed to load matches')

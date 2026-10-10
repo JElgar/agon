@@ -43,7 +43,6 @@ import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
 import { MatchJoinLinksDialog } from '@/components/agon/MatchJoinLinksDialog'
 import { MatchComments } from '@/components/agon/MatchComments'
-import { teamCrestColor } from '@/components/agon/RedesignedSportCard'
 import {
   memberAvatarUrl,
   memberName,
@@ -114,21 +113,6 @@ function OrganizerRow({ organiser }: { organiser: MatchPlayer }) {
   )
 }
 
-/** The Teams tab's own side identity dot: an ad-hoc or derby side's own
- *  stored `colour` first (the server only ever sets it for those — see
- *  `MatchSide.colour`'s doc comment), else a team-linked side's
- *  `teamCrestColor` (the same deterministic colour its crest uses
- *  elsewhere — the schema has no real team-colour field), falling back to
- *  the plain index-based `SideSwatch` only when neither is set. Checking
- *  `colour` before `team_id` matters for a derby side, which has both. */
-function TeamRosterSwatch({ side, index }: { side: MatchSide | undefined; index: number }) {
-  const colour = side?.colour ?? (side?.team_id ? teamCrestColor(side.team_id) : undefined)
-  if (colour) {
-    return <span className="inline-block size-3.5 shrink-0 rounded-[5px]" style={{ backgroundColor: colour }} />
-  }
-  return <SideSwatch index={index} size={14} />
-}
-
 /** One side's roster on the Teams tab — read-only; editing who's on which
  *  side happens through `MatchRosterEditor`, surfaced alongside this via the
  *  "Edit roster" button rather than inline here. */
@@ -146,7 +130,7 @@ function TeamRosterCard({
   return (
     <Card className="flex flex-col gap-1 p-[18px]">
       <div className="flex items-center gap-2.5 pb-2">
-        <TeamRosterSwatch side={side} index={index} />
+        <SideSwatch side={side} index={index} size={14} />
         <span className="font-display flex-grow text-[18px] font-extrabold">{sideLabel(side, fallback)}</span>
         <span className="text-[13px] text-muted-foreground">{players.length} players</span>
       </div>
@@ -323,7 +307,7 @@ export function ScheduledMatchInvite({
           <div className="flex flex-col gap-3.5 px-1">
             {metaTeamSide && (
               <div className="flex items-center gap-2.5">
-                <SideSwatch index={match.sides.indexOf(metaTeamSide)} size={32} />
+                <SideSwatch side={metaTeamSide} index={match.sides.indexOf(metaTeamSide)} size={32} />
                 <span className="text-sm font-semibold text-muted-foreground">{metaTeamSide.team_name}</span>
               </div>
             )}

@@ -24,8 +24,10 @@ import {
   type PlayersLayout,
 } from '@/components/agon/football/FootballMatchView'
 import { useViewerFollowing } from '@/hooks/useViewerFollowing'
+import { resolveSideColour } from '@/lib/sideColours'
 
 type Match = components['schemas']['Match']
+type MatchSide = components['schemas']['MatchSide']
 type MatchPlayer = components['schemas']['MatchPlayer']
 type NetballPosition = components['schemas']['NetballPosition']
 
@@ -114,7 +116,7 @@ export function QuarterScoresCard({ match, score, live }: { match: Match; score:
   const row = (side: typeof a, idx: number, pick: 'a' | 'b', total: number, otherTotal: number) => (
     <div style={grid} className="grid min-h-10 items-center gap-x-1 border-t border-hairline text-sm tabular-nums">
       <span className="flex min-w-0 items-center gap-2 font-semibold">
-        <SideSwatch index={idx} size={10} />
+        <SideSwatch side={side} index={idx} size={10} />
         <span className="truncate">{sideLabel(match, side?.id, idx === 0 ? 'Side A' : 'Side B')}</span>
       </span>
       {perQuarter.map((q) => (
@@ -177,6 +179,8 @@ export function NetballScoreFlowCard({ match, score, format, live }: { match: Ma
   const yb = yFor(pts[end].b)
   const nameA = sideLabel(match, a.id, 'Side A')
   const nameB = sideLabel(match, b.id, 'Side B')
+  const colourA = resolveSideColour(a) ?? 'var(--primary)'
+  const colourB = resolveSideColour(b) ?? KIT_GREY
 
   return (
     <section className={cn(cardClass, 'flex flex-col gap-3')}>
@@ -190,11 +194,11 @@ export function NetballScoreFlowCard({ match, score, format, live }: { match: Ma
       </div>
       <div className="flex gap-3.5 text-xs text-muted-foreground">
         <span className="flex items-center gap-1.5">
-          <span className="h-[3px] w-3.5 rounded-sm bg-primary" />
+          <span className="h-[3px] w-3.5 rounded-sm" style={{ background: colourA }} />
           {nameA}
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="h-[3px] w-3.5 rounded-sm" style={{ background: KIT_GREY }} />
+          <span className="h-[3px] w-3.5 rounded-sm" style={{ background: colourB }} />
           {nameB}
         </span>
       </div>
@@ -215,18 +219,18 @@ export function NetballScoreFlowCard({ match, score, format, live }: { match: Ma
         {Array.from({ length: quarters - 1 }, (_, i) => (
           <line key={i} x1={x0 + ((i + 1) / quarters) * (x1 - x0)} x2={x0 + ((i + 1) / quarters) * (x1 - x0)} y1={yTop} y2={yBase} stroke="var(--gridline)" strokeWidth="1" strokeDasharray={i === 1 ? '3 4' : undefined} />
         ))}
-        <path d={line('b')} fill="none" stroke={KIT_GREY} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
-        <path d={line('a')} fill="none" className="stroke-primary" strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+        <path d={line('b')} fill="none" stroke={colourB} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+        <path d={line('a')} fill="none" stroke={colourA} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
         {pts.slice(1).map((p, i) => (
           <g key={i}>
-            <circle cx={xFor(i + 1)} cy={yFor(p.b)} r="3.5" fill={KIT_GREY} stroke="var(--card)" strokeWidth="1.5" />
-            <circle cx={xFor(i + 1)} cy={yFor(p.a)} r="3.5" className="fill-primary" stroke="var(--card)" strokeWidth="1.5" />
+            <circle cx={xFor(i + 1)} cy={yFor(p.b)} r="3.5" fill={colourB} stroke="var(--card)" strokeWidth="1.5" />
+            <circle cx={xFor(i + 1)} cy={yFor(p.a)} r="3.5" fill={colourA} stroke="var(--card)" strokeWidth="1.5" />
           </g>
         ))}
-        <text x={endX - 8} y={ya - 9} textAnchor="end" fontSize="13" fontWeight="700" className="fill-primary">
+        <text x={endX - 8} y={ya - 9} textAnchor="end" fontSize="13" fontWeight="700" fill={colourA}>
           {pts[end].a}
         </text>
-        <text x={endX - 8} y={Math.abs(ya - yb) < 16 ? yb + 20 : yb - 9} textAnchor="end" fontSize="13" fontWeight="700" className="fill-muted-foreground">
+        <text x={endX - 8} y={Math.abs(ya - yb) < 16 ? yb + 20 : yb - 9} textAnchor="end" fontSize="13" fontWeight="700" fill={colourB}>
           {pts[end].b}
         </text>
       </svg>
@@ -287,7 +291,7 @@ export function TopScorersCard({ match, detail }: { match: Match; detail: Netbal
       {visible.map((r) => (
         <div key={r.key} className={cn(grid, 'min-h-[30px]')}>
           <span className="flex items-center gap-2 overflow-hidden text-sm font-semibold whitespace-nowrap">
-            <SideSwatch index={sideIndex(match, r.sideId)} size={10} />
+            <SideSwatch side={match.sides.find((s) => s.id === r.sideId)} index={sideIndex(match, r.sideId)} size={10} />
             {r.userId ? (
               <Link to={`/users/${r.userId}`} className="truncate text-foreground hover:underline">
                 {r.name}
@@ -297,7 +301,13 @@ export function TopScorersCard({ match, detail }: { match: Match; detail: Netbal
             )}
           </span>
           <span aria-label={plural(r.points, hasTwo ? 'point' : 'goal')} className="flex h-2">
-            <span className={cn('rounded', sideIndex(match, r.sideId) === 0 && 'bg-primary')} style={{ width: `${(r.points / max) * 100}%`, ...(sideIndex(match, r.sideId) === 0 ? {} : { background: KIT_GREY }) }} />
+            <span
+              className="rounded"
+              style={{
+                width: `${(r.points / max) * 100}%`,
+                background: resolveSideColour(match.sides.find((s) => s.id === r.sideId)) ?? (sideIndex(match, r.sideId) === 0 ? 'var(--primary)' : KIT_GREY),
+              }}
+            />
           </span>
           <span className="text-center text-[11px] font-bold text-muted-foreground">{r.position ? POSITION_SHORT[r.position] : ''}</span>
           <span className="text-right font-display text-base font-extrabold">{r.points}</span>
@@ -318,7 +328,7 @@ export function TopScorersCard({ match, detail }: { match: Match; detail: Netbal
 
 type TimelineFilter = 'all' | 'goals' | 'fouls'
 
-function NetIcon({ index, two }: { index: number; two: boolean }) {
+function NetIcon({ side, index, two }: { side?: MatchSide; index: number; two: boolean }) {
   const icon = (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="9" />
@@ -326,6 +336,14 @@ function NetIcon({ index, two }: { index: number; two: boolean }) {
     </svg>
   )
   const label = two ? <span className="text-[11px] font-extrabold">2</span> : icon
+  const colour = resolveSideColour(side)
+  if (colour) {
+    return (
+      <span className="box-border flex size-[30px] shrink-0 items-center justify-center rounded-full border-2 border-card text-white" style={{ background: colour }}>
+        {label}
+      </span>
+    )
+  }
   return index === 0 ? (
     <span className="flex size-[30px] shrink-0 items-center justify-center rounded-full bg-primary text-white">{label}</span>
   ) : (
@@ -495,6 +513,7 @@ export function NetballTimeline({
           }
           const { event, running } = item
           const idx = sideIndex(match, event.side_id)
+          const eventSide = match.sides.find((s) => s.id === event.side_id)
           const isGoal = event.kind !== 'foul'
           const who = nameFor(match, event.player_id, detail.players)
           const mine = !!myPlayerId && isGoal && event.player_id === myPlayerId
@@ -514,13 +533,13 @@ export function NetballTimeline({
               </div>
               <div className="flex flex-col items-center">
                 <span className={cn('w-0.5 flex-1', first ? 'bg-transparent' : 'bg-rule')} />
-                {isGoal ? <NetIcon index={idx} two={event.kind === 'two_point_goal'} /> : <FoulIcon />}
+                {isGoal ? <NetIcon side={eventSide} index={idx} two={event.kind === 'two_point_goal'} /> : <FoulIcon />}
                 <span className={cn('w-0.5 flex-1', last ? 'bg-transparent' : 'bg-rule')} />
               </div>
               <div className="flex min-w-0 flex-col justify-center gap-px py-3">
                 <span className="flex items-baseline text-[15px] leading-snug font-semibold">
                   <span className="mr-1.5 inline-flex shrink-0 -translate-y-px">
-                    <SideSwatch index={idx} size={8} />
+                    <SideSwatch side={eventSide} index={idx} size={8} />
                   </span>
                   <span className="min-w-0">{title}</span>
                 </span>
@@ -618,6 +637,7 @@ export function NetballPlayersTab({
           return (
             <div key={side.id} className="flex flex-col gap-3.5">
               <SideHeading
+                side={side}
                 index={idx}
                 name={sideLabel(match, side.id, idx === 0 ? 'Side A' : 'Side B')}
                 meta={`${res ? `${res} · ` : ''}${plural(players.length, 'player')}`}

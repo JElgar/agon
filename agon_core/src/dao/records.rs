@@ -545,6 +545,10 @@ pub struct MatchRecord {
     pub total_player_count: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<LocationRecord>,
+    /// `None` for an ordinary match; `Some(series_id)` for one generated as
+    /// part of a recurring match series.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub series_id: Option<String>,
     /// This match's sides, keyed by `side_id` — a DynamoDB map, not a list,
     /// so a single side's `player_count`/`roster_preview` can be updated in
     /// place by key (`Dao::refresh_side_roster_previews`) without needing to
@@ -603,6 +607,85 @@ pub struct MatchRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<MatchFormatRecord>,
     pub created_at: String,
+}
+
+/// `SERIES#<seriesId>` / `#META` — a recurring match series' template and
+/// generation state. Every occurrence is generated as its own independent
+/// `MatchRecord` (own id, own roster, own score), linked back only by
+/// `MatchRecord::series_id` — this record is never read by, nor joined
+/// against, the matches it produced.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SeriesRecord {
+    pub id: String,
+    /// The user who created (organizes) the series. Mirrors
+    /// `MatchRecord::created_by_user_id`.
+    pub created_by_user_id: String,
+    /// Sport tag, same meaning as `MatchRecord::match_type`.
+    pub match_type: String,
+    /// Template value each generated occurrence starts from.
+    pub name: String,
+    /// Template value each generated occurrence starts from.
+    pub description: String,
+    /// Template value each generated occurrence starts from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<LocationRecord>,
+    /// How often an occurrence recurs: "weekly" | "fortnightly" | "monthly" |
+    /// "yearly".
+    pub frequency: String,
+    /// The recurrence day: 0 = Sunday .. 6 = Saturday.
+    pub weekday: u8,
+    /// When the series stops generating new occurrences. `Never` means
+    /// indefinite recurrence: occurrences are still generated only a few at
+    /// a time over the series' lifetime (a small materialized-ahead
+    /// window), not all upfront — the generation workflow that does this
+    /// lands in a later change.
+    pub ends: SeriesEndRecord,
+    /// The sides generated for every occurrence of this series. Every
+    /// occurrence is generated with these as team-linked,
+    /// `team_join_enabled` sides — no ad-hoc named sides and no per-player
+    /// invite list in this version of the feature.
+    #[serde(default)]
+    pub sides: Vec<SeriesSideRecord>,
+    /// Lifecycle: "generating" | "active" | "paused" | "ended". "paused"
+    /// stops further generation without touching already-created
+    /// occurrences — meaningful for a `Never`-ending series, which
+    /// otherwise keeps generating indefinitely.
+    pub status: String,
+    /// How many occurrences have been successfully created so far — lets a
+    /// generation workflow resume after a partial failure.
+    #[serde(default)]
+    pub occurrences_generated: u32,
+    pub created_at: String,
+}
+
+/// A side template for a series' generated occurrences — the minimal subset
+/// of `CreateMatchSideInput` needed to recreate team-linked sides on each
+/// occurrence. `client_id` is a caller-chosen id scoped to the series (not a
+/// real `side_id`, which doesn't exist until an occurrence is created) and is
+/// reused as that occurrence's own `CreateMatchSideInput.client_id` at
+/// generation time.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SeriesSideRecord {
+    pub client_id: String,
+    pub team_id: String,
+    /// Only meaningful when two sides in this template share the same
+    /// `team_id` (a derby) — same exception `CreateMatchSideInput.name`
+    /// documents. `None` otherwise; the linked team is the name's source of
+    /// truth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Same derby exception as `name`, mirroring `CreateMatchSideInput.colour`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub colour: Option<String>,
+}
+
+/// Where a [`SeriesRecord`] stops generating new occurrences.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SeriesEndRecord {
+    OnDate { date: String },
+    AfterN { count: u32 },
+    Never,
 }
 
 /// Mirrors `agon_service::match_format::MatchFormat`, sport-first

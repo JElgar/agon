@@ -87,6 +87,8 @@ pub enum Pk {
     /// A one-time device-pairing code (see `dao::device_pairing`).
     /// `DEVPAIR#<code>`
     DevicePairing(String),
+    /// A recurring match series and its generation state. `SERIES#<sid>`
+    Series(String),
 }
 
 impl Pk {
@@ -108,6 +110,7 @@ impl Pk {
             Pk::JoinLink(_) => "JOINLINK",
             Pk::Asset(_) => "ASSET",
             Pk::DevicePairing(_) => "DEVPAIR",
+            Pk::Series(_) => "SERIES",
         }
     }
 
@@ -130,7 +133,8 @@ impl fmt::Display for Pk {
             | Pk::Invitation(v)
             | Pk::JoinLink(v)
             | Pk::Asset(v)
-            | Pk::DevicePairing(v) => v,
+            | Pk::DevicePairing(v)
+            | Pk::Series(v) => v,
         };
         write!(f, "{}{}{}", self.prefix(), DELIMITER, value)
     }
@@ -157,6 +161,7 @@ impl FromStr for Pk {
             "JOINLINK" => Ok(Pk::JoinLink(value.into())),
             "ASSET" => Ok(Pk::Asset(value.into())),
             "DEVPAIR" => Ok(Pk::DevicePairing(value.into())),
+            "SERIES" => Ok(Pk::Series(value.into())),
             other => Err(KeyError::UnknownPrefix(other.into())),
         }
     }
@@ -173,7 +178,7 @@ impl FromStr for Pk {
 pub enum Sk {
     /// User profile item. `#PROFILE`
     Profile,
-    /// Singleton meta item for a team/match/invitation/asset. `#META`
+    /// Singleton meta item for a team/match/invitation/asset/series. `#META`
     Meta,
     /// Uniqueness guard marker (e.g. under an email guard PK). `#GUARD`
     Guard,
@@ -629,6 +634,7 @@ mod tests {
         pk_roundtrip(Pk::JoinLink("jl1".into()), "JOINLINK#jl1");
         pk_roundtrip(Pk::Asset("a1".into()), "ASSET#a1");
         pk_roundtrip(Pk::DevicePairing("ABC123".into()), "DEVPAIR#ABC123");
+        pk_roundtrip(Pk::Series("sr1".into()), "SERIES#sr1");
     }
 
     #[test]

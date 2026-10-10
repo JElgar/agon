@@ -42,6 +42,7 @@ import {
 } from '@/lib/netballScore'
 import { netballFormat } from '@/lib/matchFormat'
 import { type SetsScore } from '@/lib/score'
+import { teamCrestColor } from '@/lib/sideColours'
 import { FootballScorersBySide } from './FootballScorersBySide'
 import { NetballScorersBySide } from './NetballScorersBySide'
 
@@ -381,29 +382,6 @@ function WinnerCheck() {
 // (see `SportIconBadge`'s doc comment) — crests only ever appear here, in the
 // score row.
 // ---------------------------------------------------------------------------
-
-/** A small fixed palette to derive a team's crest color from, since the
- *  schema has no team-colour field at all. Judgment call: hash `team_id`
- *  (sum of char codes, mod palette length) to a deterministic entry, so the
- *  same team always renders the same colour without needing real brand data
- *  — same spirit as this file's other stand-in choices (badminton/
- *  table_tennis's invented tints, netball's icon). */
-const TEAM_CREST_PALETTE = [
-  '#123E5B',
-  '#1F4D3A',
-  '#7A1F3D',
-  '#6B2F12',
-  '#3B5B12',
-  '#4B2E68',
-  '#8A4B08',
-  '#1E3FA8',
-]
-
-export function teamCrestColor(teamId: string): string {
-  let sum = 0
-  for (let i = 0; i < teamId.length; i++) sum += teamId.charCodeAt(i)
-  return TEAM_CREST_PALETTE[sum % TEAM_CREST_PALETTE.length]
-}
 
 /** 22×22 team crest — the team's own logo image if it has one, else its
  *  initials on a solid, deterministically-colored circle (`teamCrestColor`).

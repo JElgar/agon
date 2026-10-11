@@ -677,6 +677,9 @@ pub struct SeriesSideRecord {
     /// Same derby exception as `name`, mirroring `CreateMatchSideInput.colour`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub colour: Option<String>,
+    /// Cap on this side's roster. `None` = uncapped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_players: Option<u32>,
 }
 
 /// Where a [`SeriesRecord`] stops generating new occurrences.

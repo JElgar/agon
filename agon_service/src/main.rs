@@ -3451,6 +3451,7 @@ impl Api {
             // sides' own `player_count`/`roster_preview` above are handled).
             total_player_count: 0,
             location: input.location.as_ref().map(location_to_record),
+            series_id: None,
             header_photos,
             sides,
             confirmed_score: None,

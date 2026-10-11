@@ -70,6 +70,10 @@ pub struct MatchDoc {
     /// Populated only when the confirmed score has no single winner (a tie) —
     /// every participant with an assigned side lands here.
     drawing_participant_ids: Vec<String>,
+    /// The series this match was generated from, if any — lets a "this
+    /// series' matches" filter resolve without hydrating every match.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    series_id: Option<String>,
 }
 
 /// Handle an index-relevant change event. Returns `Ok(())` for events that are
@@ -212,5 +216,6 @@ fn match_doc(agg: &MatchAggregate) -> MatchDoc {
         winning_participant_ids: winning_participant_ids.into_iter().collect(),
         losing_participant_ids: losing_participant_ids.into_iter().collect(),
         drawing_participant_ids: drawing_participant_ids.into_iter().collect(),
+        series_id: m.series_id.clone(),
     }
 }

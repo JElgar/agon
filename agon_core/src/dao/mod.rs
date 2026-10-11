@@ -36,6 +36,7 @@ pub mod match_social;
 pub mod notification;
 pub mod paired_device;
 pub mod rating;
+pub mod series_ops;
 pub mod stats;
 pub mod team;
 pub mod user;

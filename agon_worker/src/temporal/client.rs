@@ -11,8 +11,8 @@ use temporalio_client::{
 };
 use temporalio_common::protos::temporal::api::enums::v1::WorkflowIdConflictPolicy;
 
-use super::workflows::{AcceptInvitation, AcceptInvitationInput, FanOutMatch};
-use super::{TASK_QUEUE, accept_workflow_id, fanout_workflow_id};
+use super::workflows::{AcceptInvitation, AcceptInvitationInput, FanOutMatch, MaterializeSeries};
+use super::{TASK_QUEUE, accept_workflow_id, fanout_workflow_id, materialize_workflow_id};
 
 /// Thin wrapper over a Temporal client for starting Agon workflows.
 #[derive(Clone)]
@@ -60,6 +60,26 @@ impl TemporalClient {
                 AcceptInvitation::run,
                 input,
                 WorkflowStartOptions::new(TASK_QUEUE, id)
+                    .id_conflict_policy(WorkflowIdConflictPolicy::UseExisting)
+                    .build(),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Start (or attach to) a series' materialization — generating its
+    /// remaining occurrences. Idempotent via the deterministic
+    /// `materialize-<series_id>` id + `UseExisting` conflict policy, same as
+    /// `start_fanout`/`start_accept` above.
+    pub async fn start_materialize_series(
+        &self,
+        series_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.client
+            .start_workflow(
+                MaterializeSeries::run,
+                series_id.to_string(),
+                WorkflowStartOptions::new(TASK_QUEUE, materialize_workflow_id(series_id))
                     .id_conflict_policy(WorkflowIdConflictPolicy::UseExisting)
                     .build(),
             )

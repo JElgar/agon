@@ -21,7 +21,7 @@ use futures::future::join_all;
 
 use crate::config::Config;
 use crate::error::{WorkerError, WorkerResult};
-use crate::event::{ChangeEvent, Envelope};
+use crate::event::{ChangeEvent, ChangeKind, Envelope};
 use crate::handlers;
 use agon_core::push::PushClient;
 use agon_core::search::SearchClient;
@@ -193,6 +193,10 @@ impl Consumer {
                 .start_accept(input)
                 .await
                 .map_err(|e| WorkerError::Sqs(format!("start accept saga: {e}")))?,
+            Some(WorkflowStart::MaterializeSeries { series_id }) => temporal
+                .start_materialize_series(&series_id)
+                .await
+                .map_err(|e| WorkerError::Sqs(format!("start materialize series: {e}")))?,
             None => {}
         }
         Ok(())
@@ -223,11 +227,15 @@ enum WorkflowStart {
     FanOut { match_id: String },
     /// Run the invitation-acceptance saga.
     Accept(crate::temporal::workflows::AcceptInvitationInput),
+    /// Generate a newly-created series' remaining occurrences.
+    MaterializeSeries { series_id: String },
 }
 
 /// Decide which workflow (if any) a change event should start:
 /// - a match meta write (not a remove) → fan-out;
-/// - an invitation that just transitioned *into* "accepted" → the accept saga.
+/// - an invitation that just transitioned *into* "accepted" → the accept saga;
+/// - a new series (insert only, not every subsequent modify — see below) →
+///   materialize its remaining occurrences.
 ///
 /// For the invitation case both images deserialize straight into
 /// `InvitationRecord`, so we detect the transition and read the full accepted
@@ -246,6 +254,18 @@ fn workflow_for(event: &ChangeEvent) -> Option<WorkflowStart> {
         (Pk::Match(match_id), Sk::Meta) => Some(WorkflowStart::FanOut {
             match_id: match_id.clone(),
         }),
+        // A series' own insert → materialize its remaining occurrences.
+        // Insert only (not every `Modify`): `materialize_series` itself
+        // writes this same item repeatedly (bumping
+        // `occurrences_generated`, then flipping `status`), and
+        // `UseExisting` would make a start off any of those harmless
+        // anyway, but there is no reason to even try — the workflow this
+        // event would start is already the one doing the writing.
+        (Pk::Series(series_id), Sk::Meta) if event.kind == ChangeKind::Insert => {
+            Some(WorkflowStart::MaterializeSeries {
+                series_id: series_id.clone(),
+            })
+        }
         // An invitation meta write → start the accept saga iff this is a
         // pending → accepted transition.
         (Pk::Invitation(_), Sk::Meta) => {
@@ -360,6 +380,32 @@ mod tests {
     fn non_meta_match_write_starts_nothing() {
         // A side write under the same match partition is not a fan-out trigger.
         let ev = event(ChangeKind::Modify, "MATCH#m1", "SIDE#s1", None, None);
+        assert_eq!(workflow_for(&ev), None);
+    }
+
+    #[test]
+    fn series_meta_insert_starts_materialize() {
+        let ev = event(ChangeKind::Insert, "SERIES#sr1", "#META", None, None);
+        assert_eq!(
+            workflow_for(&ev),
+            Some(WorkflowStart::MaterializeSeries {
+                series_id: "sr1".into()
+            })
+        );
+    }
+
+    #[test]
+    fn series_meta_modify_starts_nothing() {
+        // `materialize_series` itself repeatedly rewrites this same item
+        // (bumping `occurrences_generated`, then flipping `status`) — those
+        // writes must not re-trigger a start.
+        let ev = event(ChangeKind::Modify, "SERIES#sr1", "#META", None, None);
+        assert_eq!(workflow_for(&ev), None);
+    }
+
+    #[test]
+    fn series_meta_remove_starts_nothing() {
+        let ev = event(ChangeKind::Remove, "SERIES#sr1", "#META", None, None);
         assert_eq!(workflow_for(&ev), None);
     }
 

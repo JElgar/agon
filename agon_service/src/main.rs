@@ -45,10 +45,11 @@ use mapping::{
     invitation_status_str, join_link_from_record, join_link_scope_from_record,
     join_link_scope_to_record, live_event_from_record, location_to_record, match_format_sport_tag,
     match_format_to_record, match_from_records, match_player_role_from_record,
-    match_player_role_to_record, match_score_from_record, match_score_to_record, match_status_str,
-    match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
-    roster_preview_player, score_submission_from_record, score_to_record,
-    search_match_from_records, team_from_records, team_list_item_from_record,
+    match_player_role_to_record, match_score_from_record, match_score_to_record,
+    match_series_from_record, match_status_str, match_type_tag, new_live_event_to_dao,
+    notification_actor_id, notification_from_record, roster_preview_player,
+    score_submission_from_record, score_to_record, search_match_from_records,
+    series_end_record_from_input, team_from_records, team_list_item_from_record,
     team_member_from_record, user_profile_from_record,
 };
 
@@ -1095,6 +1096,159 @@ struct CreateMatchInput {
     allow_unassigned: Option<bool>,
 }
 
+// ===========================================================================
+// Recurring match series (`POST /match-series`, `GET /match-series/:id`)
+// ===========================================================================
+//
+// Deliberately a separate endpoint and input type from `CreateMatchInput`
+// above, not a `repeat` field bolted onto it: a series template carries no
+// player/roster/invite fields at all — series creation can't set players yet
+// (team-linked sides only, no invite-list support for a series), so those
+// fields shouldn't even be offered here, not just ignored if present.
+
+/// A side template for a recurring match series. Narrower than
+/// `CreateMatchSideInput` on purpose: `team_id` is required (a series only
+/// supports team-linked sides — no ad-hoc/named-only sides, since there's no
+/// invite-list support for a series template) and there's nothing
+/// player/invite-adjacent at all.
+#[derive(Object)]
+struct CreateMatchSeriesSideInput {
+    /// Caller-chosen temporary id, unique within the request — reused
+    /// verbatim as the `CreateMatchSideInput.client_id` of every occurrence
+    /// generated from this template.
+    client_id: String,
+    team_id: String,
+    /// Derby override, same exception as `CreateMatchSideInput.name`: only
+    /// valid alongside another side in this template sharing the same
+    /// `team_id` (two sides from one team need a name each to be told
+    /// apart) — otherwise the linked team is the name's source of truth, on
+    /// every generated occurrence.
+    name: Option<String>,
+    /// Derby override, same exception as `CreateMatchSideInput.colour`.
+    colour: Option<String>,
+    /// Cap on this side's roster, applied to every generated occurrence.
+    /// `None` = uncapped.
+    max_players: Option<u32>,
+}
+
+/// `ends: OnDate`'s payload — the last calendar date (inclusive) an
+/// occurrence may fall on, as `YYYY-MM-DD`.
+#[derive(Object)]
+struct CreateMatchSeriesEndOnDateInput {
+    date: String,
+}
+
+/// `ends: AfterN`'s payload — the series' total occurrence count (including
+/// the first), `1..=99`.
+#[derive(Object)]
+struct CreateMatchSeriesEndAfterNInput {
+    count: u32,
+}
+
+/// Where a series stops generating new occurrences. Only the two bounded
+/// forms are offered here — indefinite recurrence (`Never`, in
+/// `SeriesEndRecord`) needs a long-running, signal-controlled workflow that's
+/// a separate, later piece of work, so it isn't exposed as an option yet
+/// rather than being accepted and left half-built.
+#[derive(Union)]
+#[oai(one_of, discriminator_name = "type")]
+enum CreateMatchSeriesEndInput {
+    OnDate(CreateMatchSeriesEndOnDateInput),
+    AfterN(CreateMatchSeriesEndAfterNInput),
+}
+
+/// Create a recurring match series: a template plus a cadence, materialized
+/// into independent matches (the series' "occurrences"). The first
+/// occurrence is created synchronously (its id comes back in the response,
+/// alongside the series); the rest are generated asynchronously — see
+/// `GET /match-series/:id`'s `status` field.
+#[derive(Object)]
+struct CreateMatchSeriesInput {
+    match_type: MatchType,
+    /// Template value every generated occurrence starts from.
+    name: String,
+    /// Template value every generated occurrence starts from.
+    description: String,
+    /// Template value every generated occurrence starts from.
+    location: Option<Location>,
+    /// The first occurrence's start time — must be in the future, and its
+    /// own weekday must match `weekday` below (the first occurrence has to
+    /// actually land on the day the series recurs on). Also anchors the
+    /// recurrence: later occurrences advance from this same time-of-day by
+    /// `frequency`.
+    starts_at: chrono::DateTime<chrono::Utc>,
+    /// How often an occurrence recurs: "weekly" | "fortnightly" | "monthly"
+    /// | "yearly".
+    frequency: String,
+    /// The recurrence day: 0 = Sunday .. 6 = Saturday.
+    weekday: u8,
+    /// When the series stops generating new occurrences. The implied
+    /// occurrence count (direct for `AfterN`; computed from `starts_at` and
+    /// `frequency` for `OnDate`) must be `1..=99`.
+    ends: CreateMatchSeriesEndInput,
+    /// The opposing sides' templates, copied onto every generated
+    /// occurrence. At least two are required, same as a one-off match.
+    sides: Vec<CreateMatchSeriesSideInput>,
+}
+
+/// A side template as returned by the API — the same shape as
+/// `CreateMatchSeriesSideInput`, just named for the output side (mirrors
+/// `CreateMatchSideInput`/`MatchSide`).
+#[derive(Object)]
+struct MatchSeriesSide {
+    client_id: String,
+    team_id: String,
+    name: Option<String>,
+    colour: Option<String>,
+    max_players: Option<u32>,
+}
+
+/// Lifecycle of a recurring match series — independent of any one
+/// occurrence's own `MatchStatus`. `Generating` is the brief transient state
+/// right after creation while `materialize_series` is still creating the
+/// rest of the run; it flips to `Active` once that finishes. `Paused`/`Ended`
+/// aren't reachable through any endpoint yet — pausing/ending a series is a
+/// separate, later piece of work.
+#[derive(Enum)]
+#[oai(rename_all = "snake_case")]
+enum MatchSeriesStatus {
+    Generating,
+    Active,
+    Paused,
+    Ended,
+}
+
+#[derive(Object)]
+struct MatchSeries {
+    id: String,
+    created_by_user_id: String,
+    match_type: MatchType,
+    name: String,
+    description: String,
+    location: Option<Location>,
+    frequency: String,
+    weekday: u8,
+    ends: CreateMatchSeriesEndInput,
+    sides: Vec<MatchSeriesSide>,
+    status: MatchSeriesStatus,
+    /// How many occurrences have been created so far (including the first,
+    /// created synchronously). Climbs toward the series' total implied by
+    /// `ends` as `materialize_series` runs, then stops once `status` is
+    /// `Active`.
+    occurrences_generated: u32,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// `POST /match-series`'s response payload: the created series plus the id
+/// of its synchronously-created first occurrence, so the client can
+/// navigate straight to it (the same match it would land on creating a
+/// one-off match today).
+#[derive(Object)]
+struct CreateMatchSeriesResult {
+    series: MatchSeries,
+    first_match_id: String,
+}
+
 /// The organiser's one-stop update for a match: edit metadata, reconcile the
 /// actual line-up, and/or record the result — all in one validated, atomic call.
 /// All fields optional; only supplied fields take effect. The server validates
@@ -1585,6 +1739,24 @@ enum UpdateMatchResponse {
     /// `override_live_score` to submit it anyway.
     #[oai(status = 409)]
     Conflict(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum CreateMatchSeriesResponse {
+    #[oai(status = 200)]
+    Series(Json<CreateMatchSeriesResult>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum GetMatchSeriesResponse {
+    #[oai(status = 200)]
+    Series(Json<MatchSeries>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -4152,6 +4324,285 @@ impl Api {
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m).await?;
         Ok(UpdateMatchResponse::Match(Json(m)))
+    }
+
+    /// Create a recurring match series: a template plus a cadence. Writes
+    /// the series record and its first occurrence (an ordinary match,
+    /// through the same `Dao::create_match` path `POST /matches` uses)
+    /// synchronously, then returns both. The series' remaining occurrences
+    /// are generated asynchronously by the `materialize_series` Temporal
+    /// workflow, started reactively off the series-creation DynamoDB stream
+    /// event — this handler never starts a workflow itself (same
+    /// stream-reactive pattern as fan-out/accept). See
+    /// `GET /match-series/:id`'s `status`/`occurrences_generated` to watch
+    /// that progress.
+    ///
+    /// Deliberately a narrower input than `CreateMatchInput`: a series
+    /// template carries no player/roster/invite fields at all (there's no
+    /// invite-list support for a series yet), and every side must be
+    /// team-linked (no ad-hoc/named-only sides in a series template).
+    ///
+    /// Only bounded series (`ends: OnDate`/`AfterN`, capped at
+    /// `MAX_SERIES_OCCURRENCES`) can be created here — indefinite recurrence
+    /// isn't offered as an input option yet (see `CreateMatchSeriesEndInput`).
+    ///
+    /// Known limitation, not solved here: if `create_series` succeeds but
+    /// the following `create_match` fails, the series record is left behind
+    /// with no occurrences. Fixing that would need a transaction spanning
+    /// two independent `create_*` calls, which is out of scope for this
+    /// change.
+    #[oai(path = "/match-series", method = "post")]
+    async fn create_match_series(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        input: Json<CreateMatchSeriesInput>,
+    ) -> Result<CreateMatchSeriesResponse> {
+        info!("Creating match series {}", input.name);
+        let input = input.0;
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        if input.sides.len() < 2 {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                "a match series must have at least two sides".to_string(),
+            )));
+        }
+
+        // A series only supports team-linked sides (no invite-list support
+        // for a series template yet), so every side needs a real team_id —
+        // the input type requires the field, but an empty string would
+        // technically satisfy that without actually naming a team.
+        for side in &input.sides {
+            if side.team_id.trim().is_empty() {
+                return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                    format!(
+                        "side `{}` needs a team_id — a recurring series only supports team-linked sides",
+                        side.client_id
+                    ),
+                )));
+            }
+        }
+
+        // `name`/`colour` are derby overrides, same exception
+        // `CreateMatchSideInput`'s own fields document: only valid when
+        // another side in the template shares the same team.
+        for side in &input.sides {
+            let team_shared = input
+                .sides
+                .iter()
+                .any(|other| other.client_id != side.client_id && other.team_id == side.team_id);
+            if side.name.is_some() && !team_shared {
+                return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                    format!(
+                        "side `{}` can't have a name unless another side shares its team",
+                        side.client_id
+                    ),
+                )));
+            }
+            if side.colour.is_some() && !team_shared {
+                return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                    format!(
+                        "side `{}` can't have a colour unless another side shares its team",
+                        side.client_id
+                    ),
+                )));
+            }
+        }
+
+        if !matches!(
+            input.frequency.as_str(),
+            "weekly" | "fortnightly" | "monthly" | "yearly"
+        ) {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                format!(
+                    "frequency `{}` must be one of weekly, fortnightly, monthly, yearly",
+                    input.frequency
+                ),
+            )));
+        }
+        if input.weekday > 6 {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                "weekday must be 0..=6 (0 = Sunday .. 6 = Saturday)".to_string(),
+            )));
+        }
+        // The first occurrence IS `starts_at`, so it has to actually fall on
+        // the configured recurrence day — otherwise "every Tuesday" would
+        // start on a Wednesday.
+        use chrono::Datelike;
+        let starts_at_weekday = input.starts_at.weekday().num_days_from_sunday() as u8;
+        if starts_at_weekday != input.weekday {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                format!(
+                    "starts_at falls on weekday {starts_at_weekday}, not the configured weekday {}",
+                    input.weekday
+                ),
+            )));
+        }
+        let now_ts = chrono::Utc::now();
+        if input.starts_at <= now_ts {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                "a series' first occurrence must be in the future".to_string(),
+            )));
+        }
+
+        // The occurrence count implied by `ends` must be 1..=99 — direct for
+        // `AfterN`, computed from the recurrence for `OnDate`.
+        let first_date = input.starts_at.date_naive();
+        let weekday = input.starts_at.weekday();
+        let occurrence_count = match &input.ends {
+            CreateMatchSeriesEndInput::AfterN(n) => n.count,
+            CreateMatchSeriesEndInput::OnDate(d) => {
+                let Ok(end_date) = chrono::NaiveDate::parse_from_str(&d.date, "%Y-%m-%d") else {
+                    return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                        "ends.date must be YYYY-MM-DD".to_string(),
+                    )));
+                };
+                agon_core::series::count_occurrences_through(
+                    first_date,
+                    &input.frequency,
+                    weekday,
+                    end_date,
+                )
+            }
+        };
+        if occurrence_count == 0 || occurrence_count > agon_core::series::MAX_SERIES_OCCURRENCES {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                format!(
+                    "a series must have 1..={} occurrences; this one implies {occurrence_count}",
+                    agon_core::series::MAX_SERIES_OCCURRENCES
+                ),
+            )));
+        }
+
+        let now = now_iso();
+        let series_id = new_id();
+
+        let series_record = dao::records::SeriesRecord {
+            id: series_id.clone(),
+            created_by_user_id: uid.clone(),
+            match_type: match_type_tag(&input.match_type).to_string(),
+            name: input.name.clone(),
+            description: input.description.clone(),
+            location: input.location.as_ref().map(location_to_record),
+            frequency: input.frequency.clone(),
+            weekday: input.weekday,
+            first_occurrence_starts_at: input
+                .starts_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ends: series_end_record_from_input(&input.ends),
+            sides: input
+                .sides
+                .iter()
+                .map(|s| dao::records::SeriesSideRecord {
+                    client_id: s.client_id.clone(),
+                    team_id: s.team_id.clone(),
+                    name: s.name.clone(),
+                    colour: s.colour.clone(),
+                    max_players: s.max_players,
+                })
+                .collect(),
+            // The first occurrence is created synchronously right below, so
+            // it already counts as generated.
+            status: "generating".to_string(),
+            occurrences_generated: 1,
+            created_at: now.clone(),
+        };
+
+        match dao.create_series(&series_record).await {
+            Ok(()) => {}
+            Err(dao::DaoError::Conflict(msg)) => {
+                return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(msg)));
+            }
+            Err(e) => return Err(dao_internal(e)),
+        }
+
+        // The first occurrence is the template itself, created exactly like
+        // any other match — but with no players: a series only configures a
+        // team per side, roster join happens per-occurrence later (no
+        // invite-list support for a series yet).
+        let match_id = new_id();
+        let mut sides: std::collections::HashMap<String, dao::records::MatchSideRecord> =
+            Default::default();
+        for side in &input.sides {
+            let side_id = new_id();
+            sides.insert(
+                side_id.clone(),
+                dao::records::MatchSideRecord {
+                    side_id,
+                    team_id: Some(side.team_id.clone()),
+                    name: side.name.clone(),
+                    colour: side.colour.clone(),
+                    max_players: side.max_players,
+                    team_join_enabled: false,
+                    player_count: 0,
+                    roster_preview: Vec::new(),
+                },
+            );
+        }
+
+        let match_record = dao::records::MatchRecord {
+            id: match_id.clone(),
+            created_by_user_id: uid.clone(),
+            name: input.name,
+            description: input.description,
+            match_type: match_type_tag(&input.match_type).to_string(),
+            status: "scheduled".to_string(),
+            starts_at: input
+                .starts_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            allow_unassigned: true,
+            total_player_count: 0,
+            location: input.location.as_ref().map(location_to_record),
+            series_id: Some(series_id.clone()),
+            header_photos: Vec::new(),
+            sides,
+            confirmed_score: None,
+            pending_score: None,
+            like_count: 0,
+            comment_count: 0,
+            live_seq: 0,
+            live_tip_seq: None,
+            format: None,
+            created_at: now,
+        };
+
+        match dao.create_match(&match_record, &[]).await {
+            Ok(()) => {}
+            Err(dao::DaoError::Conflict(msg)) => {
+                return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(msg)));
+            }
+            Err(e) => return Err(dao_internal(e)),
+        }
+
+        Ok(CreateMatchSeriesResponse::Series(Json(
+            CreateMatchSeriesResult {
+                series: match_series_from_record(&series_record),
+                first_match_id: match_id,
+            },
+        )))
+    }
+
+    /// Fetch a recurring match series by id: its template fields plus
+    /// generation progress (`status`/`occurrences_generated`). Read-only, no
+    /// authority check — any authenticated caller may read any series, the
+    /// same posture as `GET /teams/:team_id`.
+    #[oai(path = "/match-series/:series_id", method = "get")]
+    async fn get_match_series(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(series_id): Path<String>,
+    ) -> Result<GetMatchSeriesResponse> {
+        info!("Getting match series {series_id}");
+        self.require_uid(dao, &jwt_data).await?;
+        match dao.get_series(&series_id).await.map_err(dao_internal)? {
+            Some(series) => Ok(GetMatchSeriesResponse::Series(Json(
+                match_series_from_record(&series),
+            ))),
+            None => Ok(GetMatchSeriesResponse::NotFound(PlainText(
+                "series not found".into(),
+            ))),
+        }
     }
 
     /// Get a match's current score.
@@ -9340,6 +9791,11 @@ fn new_id() -> String {
     // search indexing.
     BASE64_URL_SAFE_NO_PAD.encode(bytes)
 }
+
+// Recurring-series occurrence-date arithmetic (`occurrence_date`,
+// `count_occurrences_through`, `MAX_SERIES_OCCURRENCES`) lives in
+// `agon_core::series` — shared with `agon_worker`'s `materialize_series`
+// workflow so the two can never compute "the next occurrence" differently.
 
 // Device-pairing codes are generated by the device itself now (Monkey C,
 // on the watch — see docs/garmin-live-scoring.md), not minted here; the

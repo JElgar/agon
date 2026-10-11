@@ -634,6 +634,15 @@ pub struct SeriesRecord {
     pub frequency: String,
     /// The recurrence day: 0 = Sunday .. 6 = Saturday.
     pub weekday: u8,
+    /// The first occurrence's `starts_at` (RFC-3339), copied from that
+    /// match at series-creation time. Not surfaced on the API's own
+    /// `MatchSeries` read model (nothing there needs it — the first
+    /// occurrence is itself an ordinary, independently-fetchable match) —
+    /// this exists purely as the anchor `materialize_series` advances from
+    /// (via `agon_core::series::occurrence_date`) to compute every later
+    /// occurrence's date, and so it never has to look the first occurrence
+    /// up by some other means to find it.
+    pub first_occurrence_starts_at: String,
     /// When the series stops generating new occurrences. `Never` means
     /// indefinite recurrence: occurrences are still generated only a few at
     /// a time over the series' lifetime (a small materialized-ahead

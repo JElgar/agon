@@ -42,12 +42,14 @@ use crate::notification::{
 };
 use crate::team::{AssignableTeamRole, Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
-    BestBowlingFigures, BestFigure, Comment, ConfirmedScore, CricketPlayerStats, CricketScore,
+    BestBowlingFigures, BestFigure, Comment, ConfirmedScore, CreateMatchSeriesEndAfterNInput,
+    CreateMatchSeriesEndInput, CreateMatchSeriesEndOnDateInput, CricketPlayerStats, CricketScore,
     CricketScoreInnings, DevicePlatform, FeedMatch, FootballPlayerStats, FootballScore,
-    GenericPlayerStats, Location, Match, MatchOutcome, MatchPlayer, MatchSide, MatchSocial,
-    MatchStatus, MatchType, NetballScore, PendingScore, Photo, RosterPreviewPlayer, Score,
-    ScoreConfirmation, ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse,
-    ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
+    GenericPlayerStats, Location, Match, MatchOutcome, MatchPlayer, MatchSeries, MatchSeriesSide,
+    MatchSeriesStatus, MatchSide, MatchSocial, MatchStatus, MatchType, NetballScore, PendingScore,
+    Photo, RosterPreviewPlayer, Score, ScoreConfirmation, ScoreResponseKind, ScoreSubmission,
+    ScoreSubmissionResponse, ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore,
+    UserProfile, UserStats,
 };
 use agon_core::dao::error::DaoError;
 use agon_core::dao::live_score_ops::NewLiveEvent;
@@ -71,7 +73,8 @@ use agon_core::dao::records::{
     NetballLiveEventRecord, NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord,
     NextBallContextRecord, NotificationKindRecord, NotificationRecord, OversRecord,
     PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord,
-    ScoreSubmissionRecord, TeamMemberRecord, TeamRecord, UserRecord, UserStatsRecord,
+    ScoreSubmissionRecord, SeriesEndRecord, SeriesRecord, SeriesSideRecord, TeamMemberRecord,
+    TeamRecord, UserRecord, UserStatsRecord,
 };
 
 /// Parse an RFC-3339 timestamp string stored by the DAO into a UTC datetime,
@@ -293,6 +296,101 @@ pub fn match_status_str(s: &MatchStatus) -> &'static str {
         MatchStatus::InProgress => "in_progress",
         MatchStatus::Completed => "completed",
         MatchStatus::Cancelled => "cancelled",
+    }
+}
+
+// ===========================================================================
+// Match series: SeriesRecord <-> MatchSeries, and the shared
+// CreateMatchSeriesEndInput <-> SeriesEndRecord / side templates used by both
+// the create input and the `MatchSeries` read model (same reuse pattern as
+// `Score`, which also serves both a create-time input and a read field).
+// ===========================================================================
+
+pub fn match_series_status_from_str(s: &str) -> MatchSeriesStatus {
+    match s {
+        "generating" => MatchSeriesStatus::Generating,
+        "active" => MatchSeriesStatus::Active,
+        "paused" => MatchSeriesStatus::Paused,
+        "ended" => MatchSeriesStatus::Ended,
+        _ => MatchSeriesStatus::Generating,
+    }
+}
+
+pub fn match_series_status_str(s: &MatchSeriesStatus) -> &'static str {
+    match s {
+        MatchSeriesStatus::Generating => "generating",
+        MatchSeriesStatus::Active => "active",
+        MatchSeriesStatus::Paused => "paused",
+        MatchSeriesStatus::Ended => "ended",
+    }
+}
+
+/// `CreateMatchSeriesEndInput` -> `SeriesEndRecord`. Only the two bounded
+/// variants are constructible from the API side (see
+/// `CreateMatchSeriesEndInput`'s doc comment) — `SeriesEndRecord::Never` is
+/// never produced here.
+pub fn series_end_record_from_input(end: &CreateMatchSeriesEndInput) -> SeriesEndRecord {
+    match end {
+        CreateMatchSeriesEndInput::OnDate(d) => SeriesEndRecord::OnDate {
+            date: d.date.clone(),
+        },
+        CreateMatchSeriesEndInput::AfterN(n) => SeriesEndRecord::AfterN { count: n.count },
+    }
+}
+
+/// `SeriesEndRecord` -> `CreateMatchSeriesEndInput` (reused as the `ends`
+/// field's output type too — see this section's doc comment). Panics on
+/// `Never`: no code path in this release ever stores it (series creation
+/// only ever writes `OnDate`/`AfterN` — see `series_end_record_from_input`),
+/// and the output type has no variant to represent it with yet. A future
+/// change that makes `Never` creatable needs to extend the output
+/// representation before it can do so, which is exactly what would need
+/// updating here too.
+pub fn series_end_input_from_record(rec: &SeriesEndRecord) -> CreateMatchSeriesEndInput {
+    match rec {
+        SeriesEndRecord::OnDate { date } => {
+            CreateMatchSeriesEndInput::OnDate(CreateMatchSeriesEndOnDateInput {
+                date: date.clone(),
+            })
+        }
+        SeriesEndRecord::AfterN { count } => {
+            CreateMatchSeriesEndInput::AfterN(CreateMatchSeriesEndAfterNInput { count: *count })
+        }
+        SeriesEndRecord::Never => unreachable!(
+            "Never series aren't creatable yet; no SeriesRecord in this release can carry it"
+        ),
+    }
+}
+
+pub fn match_series_side_from_record(rec: &SeriesSideRecord) -> MatchSeriesSide {
+    MatchSeriesSide {
+        client_id: rec.client_id.clone(),
+        team_id: rec.team_id.clone(),
+        name: rec.name.clone(),
+        colour: rec.colour.clone(),
+        max_players: rec.max_players,
+    }
+}
+
+pub fn match_series_from_record(rec: &SeriesRecord) -> MatchSeries {
+    MatchSeries {
+        id: rec.id.clone(),
+        created_by_user_id: rec.created_by_user_id.clone(),
+        match_type: match_type_from_tag(&rec.match_type),
+        name: rec.name.clone(),
+        description: rec.description.clone(),
+        location: rec.location.as_ref().map(location_from_record),
+        frequency: rec.frequency.clone(),
+        weekday: rec.weekday,
+        ends: series_end_input_from_record(&rec.ends),
+        sides: rec
+            .sides
+            .iter()
+            .map(match_series_side_from_record)
+            .collect(),
+        status: match_series_status_from_str(&rec.status),
+        occurrences_generated: rec.occurrences_generated,
+        created_at: parse_ts(&rec.created_at),
     }
 }
 

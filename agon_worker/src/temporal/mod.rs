@@ -30,3 +30,11 @@ pub fn fanout_workflow_id(match_id: &str) -> String {
 pub fn accept_workflow_id(invitation_id: &str) -> String {
     format!("accept-{invitation_id}")
 }
+
+/// Deterministic workflow id for a series' materialization (generating its
+/// remaining occurrences). A duplicate start (e.g. a redelivered stream
+/// event for the series' creation) attaches to the existing run instead of
+/// double-generating occurrences.
+pub fn materialize_workflow_id(series_id: &str) -> String {
+    format!("materialize-{series_id}")
+}

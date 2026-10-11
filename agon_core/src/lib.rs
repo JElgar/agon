@@ -10,4 +10,5 @@ pub mod error;
 pub mod push;
 pub mod rating;
 pub mod search;
+pub mod series;
 pub mod telemetry;

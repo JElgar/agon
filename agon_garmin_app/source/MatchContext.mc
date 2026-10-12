@@ -168,22 +168,58 @@ class MatchContext {
         return side0Name + " vs " + side1Name;
     }
 
+    //! A side's display name: its custom `name`, else `team_name`
+    //! ("Deleted team" if `team_id` is set without one), else, for a side
+    //! capped at 1 or 2 players, its players' names from `roster_preview`.
+    //! The API only returns the custom name, so this mirrors the web app's
+    //! `sideDisplayName`. `null` when none apply, leaving the Home/Away
+    //! default in place.
+    function sideDisplayName(side as Dictionary) as String? {
+        var name = side.get("name");
+        if (name != null) {
+            return name as String;
+        }
+        var teamName = side.get("team_name");
+        if (teamName != null) {
+            return teamName as String;
+        }
+        if (side.get("team_id") != null) {
+            return "Deleted team";
+        }
+        var maxPlayers = side.get("max_players");
+        if (maxPlayers == null || (maxPlayers as Number) > 2) {
+            return null;
+        }
+        var roster = side.get("roster_preview");
+        if (roster == null) {
+            return null;
+        }
+        var players = roster as Array<Dictionary>;
+        if (players.size() == 1) {
+            return players[0].get("name") as String;
+        }
+        if (players.size() == 2) {
+            return (players[0].get("name") as String) + " & " + (players[1].get("name") as String);
+        }
+        return null;
+    }
+
     function populateSide(side as Dictionary, isFirst as Boolean) as Void {
         var id = side.get("id");
-        var name = side.get("name");
+        var name = sideDisplayName(side);
         if (isFirst) {
             if (id != null) {
                 side0Id = id as String;
             }
             if (name != null) {
-                side0Name = name as String;
+                side0Name = name;
             }
         } else {
             if (id != null) {
                 side1Id = id as String;
             }
             if (name != null) {
-                side1Name = name as String;
+                side1Name = name;
             }
         }
     }

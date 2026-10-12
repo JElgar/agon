@@ -42,12 +42,14 @@ use crate::notification::{
 };
 use crate::team::{AssignableTeamRole, Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
-    BestBowlingFigures, BestFigure, Comment, ConfirmedScore, CricketPlayerStats, CricketScore,
+    BestBowlingFigures, BestFigure, Comment, ConfirmedScore, CreateMatchSeriesEndAfterNInput,
+    CreateMatchSeriesEndInput, CreateMatchSeriesEndOnDateInput, CricketPlayerStats, CricketScore,
     CricketScoreInnings, DevicePlatform, FeedMatch, FootballPlayerStats, FootballScore,
-    GenericPlayerStats, Location, Match, MatchOutcome, MatchPlayer, MatchSide, MatchSocial,
-    MatchStatus, MatchType, NetballScore, PendingScore, Photo, RosterPreviewPlayer, Score,
-    ScoreConfirmation, ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse,
-    ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
+    GenericPlayerStats, Location, Match, MatchOutcome, MatchPlayer, MatchSeries,
+    MatchSeriesOccurrence, MatchSeriesSide, MatchSeriesStatus, MatchSide, MatchSocial, MatchStatus,
+    MatchType, NetballScore, PendingScore, Photo, RosterPreviewPlayer, Score, ScoreConfirmation,
+    ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus,
+    SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
 };
 use agon_core::dao::error::DaoError;
 use agon_core::dao::live_score_ops::NewLiveEvent;
@@ -71,7 +73,8 @@ use agon_core::dao::records::{
     NetballLiveEventRecord, NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord,
     NextBallContextRecord, NotificationKindRecord, NotificationRecord, OversRecord,
     PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord,
-    ScoreSubmissionRecord, TeamMemberRecord, TeamRecord, UserRecord, UserStatsRecord,
+    ScoreSubmissionRecord, SeriesEndRecord, SeriesOccurrenceRecord, SeriesRecord, SeriesSideRecord,
+    TeamMemberRecord, TeamRecord, UserRecord, UserStatsRecord,
 };
 
 /// Parse an RFC-3339 timestamp string stored by the DAO into a UTC datetime,
@@ -122,6 +125,34 @@ pub fn match_type_tag(mt: &MatchType) -> &'static str {
         MatchType::Cricket => "cricket",
         MatchType::Netball => "netball",
         MatchType::Other => "other",
+    }
+}
+
+/// The largest `max_players` at which a side with no team and no custom
+/// name is identified by its players' names ("Sam" or "Sam & Alex"). Past
+/// this a roster-derived name stops reading as an identity, so a bigger
+/// side has to be named (see `create_match`/`update_match`).
+pub const ROSTER_IDENTITY_MAX_PLAYERS: u32 = 2;
+
+/// Whether a side capped at `max_players` is small enough to be identified
+/// by its roster rather than needing a name. An uncapped side never is.
+pub fn has_roster_identity(max_players: Option<u32>) -> bool {
+    max_players.is_some_and(|n| n <= ROSTER_IDENTITY_MAX_PLAYERS)
+}
+
+/// A side's identity derived purely from who's on it: the lone player's
+/// name for a 1-player side, or both players' names joined with "&" for a
+/// 2-player side. Only meaningful for a side whose cap passes
+/// [`has_roster_identity`] — a bigger side with one early joiner isn't "that
+/// player's side", it just hasn't filled up yet, so callers gate this
+/// behind that check rather than calling it whenever a side happens to have
+/// 1-2 players right now. `None` for any other roster size.
+pub fn roster_identity_name<'a>(names: impl Iterator<Item = &'a str>) -> Option<String> {
+    let names: Vec<&str> = names.collect();
+    match names.as_slice() {
+        [a] => Some(a.to_string()),
+        [a, b] => Some(format!("{a} & {b}")),
+        _ => None,
     }
 }
 
@@ -265,6 +296,109 @@ pub fn match_status_str(s: &MatchStatus) -> &'static str {
         MatchStatus::InProgress => "in_progress",
         MatchStatus::Completed => "completed",
         MatchStatus::Cancelled => "cancelled",
+    }
+}
+
+// ===========================================================================
+// Match series: SeriesRecord <-> MatchSeries, and the shared
+// CreateMatchSeriesEndInput <-> SeriesEndRecord / side templates used by both
+// the create input and the `MatchSeries` read model (same reuse pattern as
+// `Score`, which also serves both a create-time input and a read field).
+// ===========================================================================
+
+pub fn match_series_status_from_str(s: &str) -> MatchSeriesStatus {
+    match s {
+        "generating" => MatchSeriesStatus::Generating,
+        "active" => MatchSeriesStatus::Active,
+        "paused" => MatchSeriesStatus::Paused,
+        "ended" => MatchSeriesStatus::Ended,
+        _ => MatchSeriesStatus::Generating,
+    }
+}
+
+pub fn match_series_status_str(s: &MatchSeriesStatus) -> &'static str {
+    match s {
+        MatchSeriesStatus::Generating => "generating",
+        MatchSeriesStatus::Active => "active",
+        MatchSeriesStatus::Paused => "paused",
+        MatchSeriesStatus::Ended => "ended",
+    }
+}
+
+/// `CreateMatchSeriesEndInput` -> `SeriesEndRecord`. Only the two bounded
+/// variants are constructible from the API side (see
+/// `CreateMatchSeriesEndInput`'s doc comment) — `SeriesEndRecord::Never` is
+/// never produced here.
+pub fn series_end_record_from_input(end: &CreateMatchSeriesEndInput) -> SeriesEndRecord {
+    match end {
+        CreateMatchSeriesEndInput::OnDate(d) => SeriesEndRecord::OnDate {
+            date: d.date.clone(),
+        },
+        CreateMatchSeriesEndInput::AfterN(n) => SeriesEndRecord::AfterN { count: n.count },
+    }
+}
+
+/// `SeriesEndRecord` -> `CreateMatchSeriesEndInput` (reused as the `ends`
+/// field's output type too — see this section's doc comment). Panics on
+/// `Never`: no code path in this release ever stores it (series creation
+/// only ever writes `OnDate`/`AfterN` — see `series_end_record_from_input`),
+/// and the output type has no variant to represent it with yet. A future
+/// change that makes `Never` creatable needs to extend the output
+/// representation before it can do so, which is exactly what would need
+/// updating here too.
+pub fn series_end_input_from_record(rec: &SeriesEndRecord) -> CreateMatchSeriesEndInput {
+    match rec {
+        SeriesEndRecord::OnDate { date } => {
+            CreateMatchSeriesEndInput::OnDate(CreateMatchSeriesEndOnDateInput {
+                date: date.clone(),
+            })
+        }
+        SeriesEndRecord::AfterN { count } => {
+            CreateMatchSeriesEndInput::AfterN(CreateMatchSeriesEndAfterNInput { count: *count })
+        }
+        SeriesEndRecord::Never => unreachable!(
+            "Never series aren't creatable yet; no SeriesRecord in this release can carry it"
+        ),
+    }
+}
+
+pub fn match_series_side_from_record(rec: &SeriesSideRecord) -> MatchSeriesSide {
+    MatchSeriesSide {
+        client_id: rec.client_id.clone(),
+        team_id: rec.team_id.clone(),
+        name: rec.name.clone(),
+        colour: rec.colour.clone(),
+        max_players: rec.max_players,
+    }
+}
+
+pub fn match_series_from_record(rec: &SeriesRecord) -> MatchSeries {
+    MatchSeries {
+        id: rec.id.clone(),
+        created_by_user_id: rec.created_by_user_id.clone(),
+        match_type: match_type_from_tag(&rec.match_type),
+        name: rec.name.clone(),
+        description: rec.description.clone(),
+        location: rec.location.as_ref().map(location_from_record),
+        frequency: rec.frequency.clone(),
+        weekday: rec.weekday,
+        ends: series_end_input_from_record(&rec.ends),
+        sides: rec
+            .sides
+            .iter()
+            .map(match_series_side_from_record)
+            .collect(),
+        status: match_series_status_from_str(&rec.status),
+        occurrences_generated: rec.occurrences_generated,
+        created_at: parse_ts(&rec.created_at),
+    }
+}
+
+pub fn match_series_occurrence_from_record(rec: &SeriesOccurrenceRecord) -> MatchSeriesOccurrence {
+    MatchSeriesOccurrence {
+        index: rec.index,
+        starts_at: parse_ts(&rec.starts_at),
+        match_id: rec.match_id.clone(),
     }
 }
 
@@ -968,22 +1102,23 @@ pub fn match_side_from_record(rec: &MatchSideRecord) -> MatchSide {
         id: rec.side_id.clone(),
         team_id: rec.team_id.clone(),
         name: rec.name.clone(),
+        colour: rec.colour.clone(),
         max_players: rec.max_players,
         team_join_enabled: rec.team_join_enabled,
-        // Live-overwritten for `Match` (`Api::resolve_side_names`); left as
+        // Live-overwritten for `Match` (`Api::hydrate_sides`); left as
         // the denormalized cache value for a feed's `FeedMatch`/a search
         // hit's `SearchMatch`, same as `roster_preview` below.
         player_count: rec.player_count,
-        // Filled in afterward, alongside `name`: live team-meta lookup for
-        // `Match` (`Api::resolve_side_names`), or the same batch for a feed's
+        // Filled in afterward: live team-meta lookup for `Match`
+        // (`Api::hydrate_sides`), or the same batch for a feed's
         // `FeedMatch`/a search hit's `SearchMatch`
-        // (`Api::resolve_side_names_from_cache`).
+        // (`Api::hydrate_sides_from_cache`).
         team_logo: None,
         // Filled in afterward, alongside `team_logo`: same live/cached
         // lookup as above.
         team_name: None,
         // Filled in afterward: live from `players` for `Match`
-        // (`Api::resolve_side_names`), or from the denormalized cache for a
+        // (`Api::hydrate_sides`), or from the denormalized cache for a
         // feed's `FeedMatch` (`feed_roster_preview`, below).
         roster_preview: None,
     }
@@ -991,7 +1126,7 @@ pub fn match_side_from_record(rec: &MatchSideRecord) -> MatchSide {
 
 /// Build a feed side's `roster_preview` from the denormalized cache
 /// (`MatchSideRecord::player_count`/`roster_preview`) — the feed's
-/// counterpart to `Api::resolve_side_names`'s live computation, since a feed
+/// counterpart to `Api::hydrate_sides`'s live computation, since a feed
 /// match never fetches the full player collection. `users` is the page-wide
 /// `batch_get_users` map the caller already built (same one
 /// `known_participants` hydrates from); a linked player's live name/avatar
@@ -1057,6 +1192,7 @@ pub fn location_to_record(loc: &Location) -> LocationRecord {
         latitude: loc.latitude,
         longitude: loc.longitude,
         place_id: loc.place_id.clone(),
+        address: loc.address.clone(),
     }
 }
 
@@ -1066,6 +1202,7 @@ pub fn location_from_record(rec: &LocationRecord) -> Location {
         latitude: rec.latitude,
         longitude: rec.longitude,
         place_id: rec.place_id.clone(),
+        address: rec.address.clone(),
     }
 }
 
@@ -1131,6 +1268,9 @@ pub fn feed_match_from_records(
     known_participants: Vec<UserProfile>,
     known_participants_count: u32,
     viewer_side_id: Option<String>,
+    viewer_is_going: bool,
+    viewer_invitation_pending: bool,
+    viewer_can_join_side_ids: Vec<String>,
     i_liked: bool,
 ) -> FeedMatch {
     FeedMatch {
@@ -1160,6 +1300,9 @@ pub fn feed_match_from_records(
         known_participants,
         known_participants_count,
         viewer_side_id,
+        viewer_is_going,
+        viewer_invitation_pending,
+        viewer_can_join_side_ids,
         confirmed_score: rec
             .confirmed_score
             .as_ref()
@@ -1171,6 +1314,7 @@ pub fn feed_match_from_records(
             i_liked,
         },
         format: rec.format.as_ref().map(match_format_from_record),
+        total_player_count: rec.total_player_count as u32,
     }
 }
 

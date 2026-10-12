@@ -5,6 +5,7 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
+import { sideDisplayName } from '@/lib/members'
 
 type Match = components['schemas']['Match']
 
@@ -98,7 +99,7 @@ export function MatchJoinSettingsEditor({
             {match.sides.every((s) => s.max_players == null)
               ? 'No player caps set'
               : `${match.sides
-                  .map((s, i) => `${s.name?.trim() || `Side ${i + 1}`}: ${s.max_players ?? '∞'}`)
+                  .map((s, i) => `${sideDisplayName(s) ?? `Side ${i + 1}`}: ${s.max_players ?? '∞'}`)
                   .join(' · ')}${derivedCap !== undefined ? ` (max ${derivedCap} total)` : ''}`}
           </p>
         </div>
@@ -147,7 +148,7 @@ export function MatchJoinSettingsEditor({
             <div key={side.id} className="flex flex-col gap-1.5 rounded-lg border p-2">
               <div className="flex items-center gap-2">
                 <Label htmlFor={`max-players-${side.id}`} className="flex-1 text-xs">
-                  {side.name?.trim() || `Side ${i + 1}`} — max players
+                  {sideDisplayName(side) ?? `Side ${i + 1}`} — max players
                 </Label>
                 <input
                   id={`max-players-${side.id}`}

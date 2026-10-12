@@ -1,13 +1,13 @@
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { Avatar } from '@/components/agon/Avatar'
-import { memberName, playerId } from '@/lib/members'
+import { memberName, playerId, sideDisplayName } from '@/lib/members'
 
 type MatchSide = components['schemas']['MatchSide']
 type MatchPlayer = components['schemas']['MatchPlayer']
 
 export function sideName(side: MatchSide, fallback: string): string {
-  return side.name?.trim() || fallback
+  return sideDisplayName(side) ?? fallback
 }
 
 /** A row of tappable side tiles — the first step for most live-event entry

@@ -106,3 +106,13 @@ export function setLine(score: Score, sides: MatchSide[]): string[] {
 export function headlineLabel(score: Score): string {
   return score.type === 'Sets' ? 'sets' : 'full time'
 }
+
+/** A racket-sport `Score` — tennis/badminton/squash/table_tennis, whichever
+ *  of them produced it — narrowed the same way `netballScoreFrom` narrows a
+ *  `Score.Netball`. `null` for any other score type, or no score yet. */
+export type SetsScore = Extract<Score, { type: 'Sets' }>
+
+export function setsScoreFrom(score: Score | null | undefined): SetsScore | null {
+  if (!score || score.type !== 'Sets') return null
+  return score
+}

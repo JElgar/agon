@@ -24,7 +24,7 @@ export function UserCard({ user, currentUserId }: UserCardProps) {
   const matches = totalMatches(user.stats)
 
   return (
-    <div className="flex items-center gap-3 px-4 py-3">
+    <div className="flex items-center gap-3 px-4 py-3.5">
       <button
         type="button"
         onClick={() => navigate(`/users/${user.id}`)}
@@ -36,7 +36,7 @@ export function UserCard({ user, currentUserId }: UserCardProps) {
           size="lg"
         />
         <div className="min-w-0">
-          <div className="truncate text-sm font-medium">{user.name}</div>
+          <div className="truncate text-sm font-semibold">{user.name}</div>
           <div className="truncate text-xs text-muted-foreground">
             {user.follower_count.toLocaleString()}{' '}
             {user.follower_count === 1 ? 'follower' : 'followers'} · {matches}{' '}
@@ -50,7 +50,8 @@ export function UserCard({ user, currentUserId }: UserCardProps) {
           userId={user.id}
           isFollowing={user.is_followed_by_me}
           size="sm"
-          className="shrink-0"
+          shape="pill"
+          className="shrink-0 font-semibold"
         />
       )}
     </div>

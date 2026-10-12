@@ -8,11 +8,12 @@ import {
   PlayerSideEditor,
   type TaggedPlayer,
 } from '@/components/agon/PlayerSideEditor'
+import { sideDisplayName } from '@/lib/members'
 
 type Match = components['schemas']['Match']
 
 function sideLabel(match: Match, index: number, fallback: string): string {
-  return match.sides[index]?.name?.trim() || fallback
+  return sideDisplayName(match.sides[index]) ?? fallback
 }
 
 /**

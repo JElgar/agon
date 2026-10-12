@@ -28,10 +28,13 @@ declare global {
     google?: {
       maps: {
         places: {
-          Autocomplete: new (
-            input: HTMLInputElement,
-            opts?: { fields?: string[] },
-          ) => GoogleAutocomplete
+          AutocompleteSuggestion: {
+            fetchAutocompleteSuggestions(request: {
+              input: string
+              sessionToken?: GoogleAutocompleteSessionToken
+            }): Promise<{ suggestions: GoogleAutocompleteSuggestion[] }>
+          }
+          AutocompleteSessionToken: new () => GoogleAutocompleteSessionToken
         }
       }
     }
@@ -39,15 +42,24 @@ declare global {
   }
 }
 
-export interface GoogleAutocompletePlace {
-  formatted_address?: string
-  place_id?: string
-  geometry?: { location?: { lat(): number; lng(): number } }
+/** Opaque — just threaded through to group one search's keystrokes (and the
+ *  place it ends in) into a single Places session for billing purposes. */
+export type GoogleAutocompleteSessionToken = object
+
+export interface GooglePlace {
+  formattedAddress?: string
+  location?: { lat(): number; lng(): number }
+  fetchFields(opts: { fields: string[] }): Promise<{ place: GooglePlace }>
 }
 
-export interface GoogleAutocomplete {
-  addListener(event: string, handler: () => void): void
-  getPlace(): GoogleAutocompletePlace
+export interface GooglePlacePrediction {
+  placeId: string
+  text: { toString(): string }
+  toPlace(): GooglePlace
+}
+
+export interface GoogleAutocompleteSuggestion {
+  placePrediction: GooglePlacePrediction | null
 }
 
 let loadPromise: Promise<void> | undefined

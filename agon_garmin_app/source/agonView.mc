@@ -2,6 +2,7 @@ import Toybox.Graphics;
 import Toybox.Lang;
 import Toybox.WatchUi;
 import Toybox.Timer;
+import Toybox.System;
 
 class agonView extends WatchUi.View {
 
@@ -71,6 +72,16 @@ class agonView extends WatchUi.View {
         var score = getApp().score;
         var centerX = dc.getWidth() / 2;
         var centerY = dc.getHeight() / 2;
+
+        // Small and out of the way at the top — this screen's primary
+        // job is still the score, not telling the time.
+        dc.setColor(Graphics.COLOR_LT_GRAY, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(
+            centerX, 20, Graphics.FONT_XTINY,
+            formatTimeOfDay(),
+            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER
+        );
+        dc.setColor(Graphics.COLOR_WHITE, Graphics.COLOR_TRANSPARENT);
 
         dc.drawText(
             centerX, centerY - 30, Graphics.FONT_NUMBER_MEDIUM,

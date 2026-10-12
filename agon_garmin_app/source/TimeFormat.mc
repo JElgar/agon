@@ -1,4 +1,22 @@
 import Toybox.Lang;
+import Toybox.System;
+
+//! Current wall-clock time of day, e.g. "14:32" or "2:32 PM" — respects
+//! the device's own 12h/24h clock setting (`System.DeviceSettings.
+//! is24Hour`), same as the watch face, rather than hardcoding one format.
+function formatTimeOfDay() as String {
+    var clockTime = System.getClockTime();
+    var hour = clockTime.hour;
+    if (System.getDeviceSettings().is24Hour) {
+        return hour.format("%02d") + ":" + clockTime.min.format("%02d");
+    }
+    var displayHour = hour % 12;
+    if (displayHour == 0) {
+        displayHour = 12;
+    }
+    var suffix = (hour >= 12) ? "PM" : "AM";
+    return displayHour.toString() + ":" + clockTime.min.format("%02d") + " " + suffix;
+}
 
 //! `mm:ss` (or `h:mm:ss` past an hour) for a duration given in whole
 //! seconds — shared by anything drawing a running clock (the score

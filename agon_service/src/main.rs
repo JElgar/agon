@@ -9,7 +9,6 @@
 
 use std::{collections::HashMap, fs::File, io::Write};
 
-use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use clap::{Parser, Subcommand};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use poem::http::Uri;
@@ -40,14 +39,16 @@ use auth::{DeviceTokenSigner, JwtClaims, JwtVerifier, SCOPE_LIVE_SCORING};
 mod mapping;
 use mapping::{
     assignable_team_role_str, comment_from_record, dao_internal, deleted_user_profile,
-    derive_live_score, device_platform_to_record, feed_match_from_records,
+    derive_live_score, device_platform_to_record, feed_match_from_records, has_roster_identity,
     invitation_detail_from_record, invitation_from_record, invitation_status_from_str,
     invitation_status_str, join_link_from_record, join_link_scope_from_record,
     join_link_scope_to_record, live_event_from_record, location_to_record, match_format_sport_tag,
     match_format_to_record, match_from_records, match_player_role_from_record,
-    match_score_from_record, match_score_to_record, match_status_str, match_type_tag,
-    new_live_event_to_dao, notification_actor_id, notification_from_record, roster_preview_player,
-    score_submission_from_record, score_to_record, search_match_from_records, team_from_records,
+    match_player_role_to_record, match_score_from_record, match_score_to_record,
+    match_series_from_record, match_series_occurrence_from_record, match_status_str,
+    match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
+    roster_preview_player, score_submission_from_record, score_to_record,
+    search_match_from_records, series_end_record_from_input, team_from_records,
     team_list_item_from_record, team_member_from_record, user_profile_from_record,
 };
 
@@ -81,7 +82,8 @@ use membership::{
     AddInvitationsInput, CreateJoinLinkInput, Invitation, InvitationContext, InvitationDetail,
     InvitationKind, InvitationMatchContext, InvitationStatus, JoinLink, JoinLinkPreview,
     JoinMatchInput, MatchPlayerRole, Member, RespondByTokenInput, RespondToInvitationInput,
-    TokenInvitation, TransferMatchOwnershipInput, UserInvitation, UserMember,
+    SetMatchPlayerRoleInput, TokenInvitation, TransferMatchOwnershipInput, UserInvitation,
+    UserMember,
 };
 
 mod team;
@@ -396,28 +398,35 @@ struct MatchSide {
     /// Optional link to a persistent Team (drives "Kent vs Surrey" labelling and
     /// the pick-from-squad UI). None = ad-hoc side with manually picked players.
     team_id: Option<String>,
-    /// Display name for this side, resolved fresh on every response (see
-    /// `Api::hydrate_match`) — never None in practice. Priority: a custom
-    /// name the creator gave the side, else the sole player's name if
-    /// there's exactly one, else the team's name, else "Your
-    /// side"/"Opposition" relative to the caller, else a neutral "Team
-    /// A"/"Team B". Computed per-request rather than stored so it can't go
-    /// stale and "your side" always means the caller.
+    /// The custom name the creator gave this side, or `None`. Clients work
+    /// out the display name: this name, else `team_name` (or "Deleted team"
+    /// when `team_id` is set without one), else — for a side whose
+    /// `max_players` is 2 or less — its players' names from
+    /// `roster_preview` ("Sam" or "Sam & Alex"). Create/update validation
+    /// requires a name on any other side with no team, so nothing past that
+    /// chain is needed for new matches.
     name: Option<String>,
-    /// The linked team's logo, resolved fresh alongside `name` (see
+    /// The linked team's logo, resolved fresh alongside `team_name` (see
     /// `Api::hydrate_match`) whenever `team_id` is set and that team has one.
     /// `None` for an ad-hoc side, a team with no logo uploaded, or a
     /// not-yet-resolved side — callers fall back to initials (e.g. `Avatar`'s
     /// `name`-derived placeholder) when this is absent.
     team_logo: Option<Photo>,
     /// The linked team's actual name, resolved fresh alongside `team_logo`
-    /// whenever `team_id` is set and that team still exists — independent of
-    /// what `name` ends up displaying. `name` can be a custom name (e.g. two
-    /// sides sharing a club disambiguated as "1st XI"/"2nd XI") or a solo
-    /// player's own name, in which case it no longer says which team the side
-    /// belongs to; `team_name` lets a caller show that alongside it. `None`
-    /// for an ad-hoc side or one whose linked team has since been deleted.
+    /// whenever `team_id` is set and that team still exists. With no custom
+    /// `name` it's the side's display name; with one (e.g. two sides sharing
+    /// a club told apart as "1st XI"/"2nd XI") a caller can show it
+    /// alongside. `None` for an ad-hoc side or one whose linked team has
+    /// since been deleted.
     team_name: Option<String>,
+    /// This side's own colour (a hex string, e.g. `"#2952D9"`), set for an
+    /// ad-hoc side with no `team_id`, or one sharing its `team_id` with
+    /// another side (a derby) — a linked team's colour (once teams have one)
+    /// is otherwise the source of truth instead. Required by the
+    /// create-match API for a side without a team; the client picks one
+    /// automatically (inferring it from a colour name typed into the side's
+    /// `name`, where possible) rather than asking the creator to.
+    colour: Option<String>,
     /// This side's full roster, when small enough to show directly instead of
     /// just `name`/`team_id`'s logo (1v1, doubles, a small squad). `None`
     /// when the side has more players than that — render `name`/the team's
@@ -430,7 +439,7 @@ struct MatchSide {
     /// present regardless of roster size, so callers can show "4/10" (with
     /// `max_players`) even once there are too many players to list by name.
     /// On `Match` this is resolved live from `players` (see
-    /// `Api::resolve_side_names`), alongside `roster_preview`; on a feed's
+    /// `Api::hydrate_sides`), alongside `roster_preview`; on a feed's
     /// `FeedMatch`/a search hit's `SearchMatch` it comes from the same
     /// denormalized cache as `roster_preview` (`MatchSideRecord::player_count`),
     /// so it can occasionally lag a just-now roster change the same way.
@@ -725,6 +734,16 @@ pub enum MatchStatus {
     Cancelled,
 }
 
+/// Sort direction for `GET /matches`'s `starts_at` ordering.
+#[derive(Enum)]
+#[oai(rename_all = "snake_case")]
+pub enum SortOrder {
+    /// Soonest/oldest first.
+    Asc,
+    /// Latest first. The default.
+    Desc,
+}
+
 /// Where a match is played. `text` is always present and is what's shown to
 /// users — free-typed, or (once a Places suggestion is picked) that place's
 /// formatted address. `latitude`/`longitude`/`place_id` are only ever set
@@ -739,6 +758,9 @@ struct Location {
     /// Google Place ID, when this resolved to a real place — use it to link
     /// to that place's own listing rather than a bare coordinate pin.
     place_id: Option<String>,
+    /// The picked place's formatted address. Set alongside `place_id`, and
+    /// kept when `text` is renamed so the real address can still be shown.
+    address: Option<String>,
 }
 
 #[derive(Object)]
@@ -960,14 +982,27 @@ struct SetPlayerSideInput {
 }
 
 /// Rename an existing side. `name: None` clears any custom name, falling
-/// back to the priority chain in `MatchSide::name`'s doc comment (the sole
-/// player's name, then the linked team's name, then a neutral default) —
-/// the same validation as at create time applies: a name alongside a
-/// `team_id` is only allowed when another side shares that team.
+/// back to the priority chain in `MatchSide::name`'s doc comment (the
+/// linked team's name, then a 1-2-player side's player names) — the same
+/// validation as at create time applies: a name alongside a `team_id` is
+/// only allowed when another side shares that team, and a side with no team
+/// can only drop its name while its `max_players` is 2 or less.
 #[derive(Object)]
 struct UpdateMatchSideNameInput {
     side_id: String,
     name: Option<String>,
+}
+
+/// Set an existing side's colour. `colour: None` clears it, which is only
+/// valid when the side has a `team_id` (the create/update validation
+/// otherwise requires a team-less side to always have one) — the same
+/// derby exception as `UpdateMatchSideNameInput`/create-time validation
+/// applies: `colour: Some(_)` alongside a `team_id` is only allowed when
+/// another side shares that team.
+#[derive(Object)]
+struct UpdateMatchSideColourInput {
+    side_id: String,
+    colour: Option<String>,
 }
 
 /// A side to create as part of a new match. The server assigns the real side id;
@@ -981,8 +1016,18 @@ struct CreateMatchSideInput {
     /// A custom name for this side. Rejected (validation error) alongside a
     /// `team_id` unless another side in the same request shares that team —
     /// the team is normally the source of truth for the side's name, but two
-    /// sides sharing one team need a name each to be told apart.
+    /// sides sharing one team need a name each to be told apart. Required on
+    /// a side with no `team_id` unless its `max_players` is 2 or less, in
+    /// which case the side is shown by its players' names instead ("Sam" or
+    /// "Sam & Alex").
     name: Option<String>,
+    /// This side's colour (a hex string, e.g. `"#2952D9"`). Required unless
+    /// `team_id` is set (a linked team is the source of truth for colour
+    /// instead) — rejected (validation error) alongside a `team_id` unless
+    /// another side in the same request shares that team, the same derby
+    /// exception `name` gets (two sides sharing one team need a colour each
+    /// to be told apart too).
+    colour: Option<String>,
     /// Cap on this side's roster. `None` = uncapped.
     max_players: Option<u32>,
     /// Whether an accepted member of `team_id` may join this side directly,
@@ -1050,6 +1095,172 @@ struct CreateMatchInput {
     allow_unassigned: Option<bool>,
 }
 
+// ===========================================================================
+// Recurring match series (`POST /match-series`, `GET /match-series/:id`)
+// ===========================================================================
+//
+// Deliberately a separate endpoint and input type from `CreateMatchInput`
+// above, not a `repeat` field bolted onto it: a series template carries no
+// player/roster/invite fields at all — series creation can't set players yet
+// (team-linked sides only, no invite-list support for a series), so those
+// fields shouldn't even be offered here, not just ignored if present.
+
+/// A side template for a recurring match series. Narrower than
+/// `CreateMatchSideInput` on purpose: `team_id` is required (a series only
+/// supports team-linked sides — no ad-hoc/named-only sides, since there's no
+/// invite-list support for a series template) and there's nothing
+/// player/invite-adjacent at all.
+#[derive(Object)]
+struct CreateMatchSeriesSideInput {
+    /// Caller-chosen temporary id, unique within the request — reused
+    /// verbatim as the `CreateMatchSideInput.client_id` of every occurrence
+    /// generated from this template.
+    client_id: String,
+    team_id: String,
+    /// Derby override, same exception as `CreateMatchSideInput.name`: only
+    /// valid alongside another side in this template sharing the same
+    /// `team_id` (two sides from one team need a name each to be told
+    /// apart) — otherwise the linked team is the name's source of truth, on
+    /// every generated occurrence.
+    name: Option<String>,
+    /// Derby override, same exception as `CreateMatchSideInput.colour`.
+    colour: Option<String>,
+    /// Cap on this side's roster, applied to every generated occurrence.
+    /// `None` = uncapped.
+    max_players: Option<u32>,
+}
+
+/// `ends: OnDate`'s payload — the last calendar date (inclusive) an
+/// occurrence may fall on, as `YYYY-MM-DD`.
+#[derive(Object)]
+struct CreateMatchSeriesEndOnDateInput {
+    date: String,
+}
+
+/// `ends: AfterN`'s payload — the series' total occurrence count (including
+/// the first), `1..=99`.
+#[derive(Object)]
+struct CreateMatchSeriesEndAfterNInput {
+    count: u32,
+}
+
+/// Where a series stops generating new occurrences. Only the two bounded
+/// forms are offered here — indefinite recurrence (`Never`, in
+/// `SeriesEndRecord`) needs a long-running, signal-controlled workflow that's
+/// a separate, later piece of work, so it isn't exposed as an option yet
+/// rather than being accepted and left half-built.
+#[derive(Union)]
+#[oai(one_of, discriminator_name = "type")]
+enum CreateMatchSeriesEndInput {
+    OnDate(CreateMatchSeriesEndOnDateInput),
+    AfterN(CreateMatchSeriesEndAfterNInput),
+}
+
+/// Create a recurring match series: a template plus a cadence, materialized
+/// into independent matches (the series' "occurrences"). The first
+/// occurrence is created synchronously (its id comes back in the response,
+/// alongside the series); the rest are generated asynchronously — see
+/// `GET /match-series/:id`'s `status` field.
+#[derive(Object)]
+struct CreateMatchSeriesInput {
+    match_type: MatchType,
+    /// Template value every generated occurrence starts from.
+    name: String,
+    /// Template value every generated occurrence starts from.
+    description: String,
+    /// Template value every generated occurrence starts from.
+    location: Option<Location>,
+    /// The first occurrence's start time — must be in the future, and its
+    /// own weekday must match `weekday` below (the first occurrence has to
+    /// actually land on the day the series recurs on). Also anchors the
+    /// recurrence: later occurrences advance from this same time-of-day by
+    /// `frequency`.
+    starts_at: chrono::DateTime<chrono::Utc>,
+    /// How often an occurrence recurs: "weekly" | "fortnightly" | "monthly"
+    /// | "yearly".
+    frequency: String,
+    /// The recurrence day: 0 = Sunday .. 6 = Saturday.
+    weekday: u8,
+    /// When the series stops generating new occurrences. The implied
+    /// occurrence count (direct for `AfterN`; computed from `starts_at` and
+    /// `frequency` for `OnDate`) must be `1..=99`.
+    ends: CreateMatchSeriesEndInput,
+    /// The opposing sides' templates, copied onto every generated
+    /// occurrence. At least two are required, same as a one-off match.
+    sides: Vec<CreateMatchSeriesSideInput>,
+}
+
+/// A side template as returned by the API — the same shape as
+/// `CreateMatchSeriesSideInput`, just named for the output side (mirrors
+/// `CreateMatchSideInput`/`MatchSide`).
+#[derive(Object)]
+struct MatchSeriesSide {
+    client_id: String,
+    team_id: String,
+    name: Option<String>,
+    colour: Option<String>,
+    max_players: Option<u32>,
+}
+
+/// Lifecycle of a recurring match series — independent of any one
+/// occurrence's own `MatchStatus`. `Generating` is the brief transient state
+/// right after creation while `materialize_series` is still creating the
+/// rest of the run; it flips to `Active` once that finishes. `Paused`/`Ended`
+/// aren't reachable through any endpoint yet — pausing/ending a series is a
+/// separate, later piece of work.
+#[derive(Enum)]
+#[oai(rename_all = "snake_case")]
+enum MatchSeriesStatus {
+    Generating,
+    Active,
+    Paused,
+    Ended,
+}
+
+#[derive(Object)]
+struct MatchSeries {
+    id: String,
+    created_by_user_id: String,
+    match_type: MatchType,
+    name: String,
+    description: String,
+    location: Option<Location>,
+    frequency: String,
+    weekday: u8,
+    ends: CreateMatchSeriesEndInput,
+    sides: Vec<MatchSeriesSide>,
+    status: MatchSeriesStatus,
+    /// How many occurrences have been created so far (including the first,
+    /// created synchronously). Climbs toward the series' total implied by
+    /// `ends` as `materialize_series` runs, then stops once `status` is
+    /// `Active`.
+    occurrences_generated: u32,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// `POST /match-series`'s response payload: the created series plus the id
+/// of its synchronously-created first occurrence, so the client can
+/// navigate straight to it (the same match it would land on creating a
+/// one-off match today).
+#[derive(Object)]
+struct CreateMatchSeriesResult {
+    series: MatchSeries,
+    first_match_id: String,
+}
+
+/// One entry of `GET /match-series/:id/occurrences` — an occurrence this
+/// series has generated so far, including the first (created synchronously
+/// at series-creation time).
+#[derive(Object)]
+struct MatchSeriesOccurrence {
+    /// 0-based position in the series.
+    index: u32,
+    starts_at: chrono::DateTime<chrono::Utc>,
+    /// The occurrence's own, independently-fetchable match (`GET
+    /// /matches/:id`).
+    match_id: String,
+}
+
 /// The organiser's one-stop update for a match: edit metadata, reconcile the
 /// actual line-up, and/or record the result — all in one validated, atomic call.
 /// All fields optional; only supplied fields take effect. The server validates
@@ -1084,6 +1295,10 @@ struct UpdateMatchInput {
     /// creation (or a previous edit here). Only the sides listed are
     /// touched; every other side's name is left alone.
     side_names: Option<Vec<UpdateMatchSideNameInput>>,
+    /// Recolour one or more of the match's sides — the colour given at
+    /// creation (or a previous edit here). Only the sides listed are
+    /// touched; every other side's colour is left alone.
+    side_colours: Option<Vec<UpdateMatchSideColourInput>>,
     /// The result. Creates a score submission when changed; for a not-yet-played
     /// match this also completes it. `side_id`s reference the match's sides.
     /// Required to complete a match — there is no server-side fallback if
@@ -1129,7 +1344,8 @@ struct UpdateMatchInput {
     /// a side from this list leaves both settings untouched; an included
     /// entry sets both together (whole-row replace, not a per-field diff) —
     /// `max_players: None` uncaps that side. Rejected if a new cap would be
-    /// below that side's current roster size. Same admin gate as
+    /// below that side's current roster size, or would take a side with no
+    /// team and no name above 2 (it needs a name first). Same admin gate as
     /// `allow_unassigned`.
     side_join_settings: Option<Vec<SetSideJoinSettingsInput>>,
 }
@@ -1183,11 +1399,34 @@ struct FeedMatch {
     /// this match — `None` if they're not playing (they're seeing this card
     /// via a follow) or not yet assigned a side. Lets a client resolve the
     /// score confirm/dispute prompt without the full roster `Match` carries.
+    /// NOT the right field for "is the caller going" — see `viewer_is_going`.
     viewer_side_id: Option<String>,
+    /// Whether the caller themselves is a participant in this match, playing
+    /// or not yet assigned a side — unlike `viewer_side_id`, this is `true`
+    /// for an unassigned participant (a match with `allow_unassigned`), so
+    /// it's the right field for a feed card's RSVP state ("Going"/"I'm in").
+    viewer_is_going: bool,
+    /// Whether the caller has a pending (not yet responded to) invitation to
+    /// this match. Lets "Coming up" surface a match the caller hasn't
+    /// accepted yet, distinct from `viewer_is_going`.
+    viewer_invitation_pending: bool,
+    /// Side ids the caller could join directly via an accepted membership on
+    /// that side's team (`MatchSide.team_join_enabled`) — the feed's
+    /// cheaper, denormalized counterpart to `Match.viewer_team_join_side_ids`
+    /// (computed per-viewer at fan-out time rather than per-request, since a
+    /// feed page can't afford a team lookup per match). Empty, not `None`,
+    /// when there's nothing to join — simpler for a client to check
+    /// `is_empty()` than unwrap an option.
+    viewer_can_join_side_ids: Vec<String>,
     confirmed_score: Option<ConfirmedScore>,
     pending_score: Option<PendingScore>,
     social: MatchSocial,
     format: Option<MatchFormat>,
+    /// How many players take a spot on the match in total — every side plus
+    /// anyone still unassigned. Unlike summing `MatchSide.player_count`
+    /// across `sides`, this also covers unassigned players, so it's the
+    /// right figure for a card's "N going" (see `MatchRecord::total_player_count`).
+    total_player_count: u32,
 }
 
 /// One page of the feed. `next_cursor` is an opaque token; when it is
@@ -1530,6 +1769,33 @@ enum UpdateMatchResponse {
     /// `override_live_score` to submit it anyway.
     #[oai(status = 409)]
     Conflict(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum CreateMatchSeriesResponse {
+    #[oai(status = 200)]
+    Series(Json<CreateMatchSeriesResult>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum GetMatchSeriesResponse {
+    #[oai(status = 200)]
+    Series(Json<MatchSeries>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum ListMatchSeriesOccurrencesResponse {
+    #[oai(status = 200)]
+    Occurrences(Json<Vec<MatchSeriesOccurrence>>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -2199,6 +2465,28 @@ enum TransferMatchOwnershipResponse {
     NotFound(PlainText<String>),
 }
 
+/// Promote a player to admin, or demote an admin back to a plain player.
+#[derive(ApiResponse)]
+enum SetMatchPlayerRoleResponse {
+    /// The role was changed; the match's own `players`/`viewer_role` already
+    /// reflect it on the next read.
+    #[oai(status = 204)]
+    Ok,
+
+    /// Tried to set (or the target already holds) the `Owner` role — that
+    /// only ever moves via `POST /matches/:match_id/transfer-ownership`.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    /// The match doesn't exist, or the target isn't a player on it.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
 #[derive(ApiResponse)]
 enum LeaveMatchResponse {
     /// The caller is no longer on the roster.
@@ -2560,6 +2848,15 @@ impl Api {
             following_count: 0,
             unread_count: 0,
             stats: dao::records::UserStatsRecord::default(),
+            // A brand-new account has played nothing and consented to
+            // nothing: rated on no ladder, opted in to none — the same state a
+            // profile written before ratings existed deserializes into.
+            // Neither is settable at signup. Opting in is ticking the consent
+            // box on a ranked game, and only the rating pipeline writes
+            // `ratings`; both are later changes, and these are here only
+            // because the record now has the fields.
+            ratings: HashMap::new(),
+            rating_opt_ins: HashMap::new(),
             created_at: now_iso(),
         };
         match dao.create_user(&jwt_data.sub, &record).await {
@@ -2623,13 +2920,28 @@ impl Api {
         Query(from): Query<Option<chrono::DateTime<chrono::Utc>>>,
         /// Only include items at or before this time (inclusive).
         Query(to): Query<Option<chrono::DateTime<chrono::Utc>>>,
+        /// Only include matches in this lifecycle state — e.g. `scheduled`,
+        /// for "browse the scheduled matches my feed would show". Unlike
+        /// `GET /matches`'s `status`/`match_type` (search-index filters over
+        /// every match in the app), this filters the caller's own fan-out
+        /// feed page in memory post-hydration — the feed has no search index
+        /// of its own, but pages are small (`FEED_MAX_PAGE_LIMIT`) so this
+        /// stays cheap. A page can come back with fewer than `limit` items
+        /// (or none) when most of it doesn't match; page again with
+        /// `next_cursor` as usual, same as the date-range filter above.
+        Query(status): Query<Option<MatchStatus>>,
+        /// Only include matches of this sport. See `status`'s doc comment.
+        Query(match_type): Query<Option<MatchType>>,
     ) -> Result<GetFeedResponse> {
         info!("Getting caller's social feed");
         let uid = self.require_uid(dao, &jwt_data).await?;
 
         // The feed is always the authenticated caller's own social feed (matches
-        // from people/teams they follow). No user_id / sport filtering here —
-        // that is the match-discovery endpoint (GET /matches), served by search.
+        // from people/teams they follow). Free-text search / arbitrary-user
+        // discovery is still `GET /matches` (search-index-backed) — `status`/
+        // `match_type` here only narrow the feed's own audience-scoped items,
+        // for "the scheduled matches my feed would show" (not "every scheduled
+        // match in the app", which `GET /matches` without `participant` gives).
 
         let limit = feed_page_limit(limit);
 
@@ -2664,6 +2976,9 @@ impl Api {
             known_player_ids: Vec<String>,
             known_player_count: u32,
             viewer_side_id: Option<String>,
+            viewer_is_going: bool,
+            viewer_invitation_pending: bool,
+            viewer_can_join_side_ids: Vec<String>,
         }
         let mut eligible: Vec<EligibleEntry> = Vec::with_capacity(page.items.len());
         for entry in &page.items {
@@ -2681,6 +2996,9 @@ impl Api {
                 known_player_ids: entry.known_player_ids.clone(),
                 known_player_count: entry.known_player_count,
                 viewer_side_id: entry.viewer_side_id.clone(),
+                viewer_is_going: entry.viewer_is_going,
+                viewer_invitation_pending: entry.viewer_invitation_pending,
+                viewer_can_join_side_ids: entry.viewer_can_join_side_ids.clone(),
             });
         }
         let match_ids: Vec<String> = eligible.iter().map(|e| e.match_id.clone()).collect();
@@ -2716,7 +3034,7 @@ impl Api {
         // Side names/logos need the same team-meta fallback `Match` gets (via
         // `hydrate_matches`) — without it a team-linked side with no custom
         // name would render blank. `roster_preview` already covers the
-        // "sole player's name" case, so only team meta needs a batch fetch.
+        // players'-names case, so only team meta needs a batch fetch.
         let team_ids: Vec<String> = summaries
             .values()
             .flat_map(|s| s.sides.iter().filter_map(|s| s.team_id.clone()))
@@ -2726,6 +3044,16 @@ impl Api {
         let mut built: Vec<FeedMatch> = Vec::with_capacity(eligible.len());
         for entry in &eligible {
             if let Some(summary) = summaries.get(&entry.match_id) {
+                if let Some(s) = &status
+                    && summary.match_.status != match_status_str(s)
+                {
+                    continue;
+                }
+                if let Some(mt) = &match_type
+                    && summary.match_.match_type != match_type_tag(mt)
+                {
+                    continue;
+                }
                 let i_liked = liked.contains(&entry.match_id);
                 let known_participants = entry
                     .known_player_ids
@@ -2740,13 +3068,12 @@ impl Api {
                     known_participants,
                     entry.known_player_count,
                     entry.viewer_side_id.clone(),
+                    entry.viewer_is_going,
+                    entry.viewer_invitation_pending,
+                    entry.viewer_can_join_side_ids.clone(),
                     i_liked,
                 );
-                Self::resolve_side_names_from_cache(
-                    &mut m.sides,
-                    entry.viewer_side_id.as_deref(),
-                    &team_metas,
-                );
+                Self::hydrate_sides_from_cache(&mut m.sides, &team_metas);
                 sign_feed_match_headers(assets, &mut m);
                 built.push(m);
             }
@@ -2802,10 +3129,17 @@ impl Api {
         Query(team_match): Query<Option<TeamMatchMode>>,
         /// Only matches of this sport.
         Query(match_type): Query<Option<MatchType>>,
+        /// Only matches in this lifecycle state (e.g. `scheduled`) — powers the
+        /// "all scheduled matches" browse view.
+        Query(status): Query<Option<MatchStatus>>,
         /// Only matches at or after this time (inclusive).
         Query(from): Query<Option<chrono::DateTime<chrono::Utc>>>,
         /// Only matches at or before this time (inclusive).
         Query(to): Query<Option<chrono::DateTime<chrono::Utc>>>,
+        /// Sort order on `starts_at`: `desc` (default, newest first — the
+        /// existing behavior) or `asc` (soonest first, for browsing upcoming
+        /// matches).
+        Query(sort): Query<Option<SortOrder>>,
         /// Opaque cursor from the previous page's `next_cursor`.
         Query(cursor): Query<Option<String>>,
         /// Maximum number of items to return (defaults to 20, capped at 50).
@@ -2851,6 +3185,9 @@ impl Api {
         if let Some(mt) = &match_type {
             clauses.push(format!("sport = \"{}\"", match_type_tag(mt)));
         }
+        if let Some(s) = &status {
+            clauses.push(format!("status = \"{}\"", match_status_str(s)));
+        }
         if let Some(p) = &participant {
             clauses.push(format!("participant_ids = \"{p}\""));
         }
@@ -2882,10 +3219,14 @@ impl Api {
         }
         let filter = (!clauses.is_empty()).then(|| clauses.join(" AND "));
 
+        let sort_dir = match sort {
+            Some(SortOrder::Asc) => "asc",
+            Some(SortOrder::Desc) | None => "desc",
+        };
         let q = agon_core::search::SearchQuery {
             q: query.unwrap_or_default(),
             filter,
-            sort: vec!["starts_at_ts:desc".to_string()],
+            sort: vec![format!("starts_at_ts:{sort_dir}")],
             offset,
             limit: page_limit(limit),
         };
@@ -2938,9 +3279,7 @@ impl Api {
                     hit.outcome,
                     i_liked,
                 );
-                // No per-viewer `viewer_side_id` for a search hit, so no
-                // "Your side"/"Opposition" — falls to team name / Team A/B.
-                Self::resolve_side_names_from_cache(&mut m.sides, None, &team_metas);
+                Self::hydrate_sides_from_cache(&mut m.sides, &team_metas);
                 sign_search_match_headers(assets, &mut m);
                 items.push(m);
             }
@@ -3015,6 +3354,51 @@ impl Api {
             }
         }
 
+        // An ad-hoc side (no team) needs a name unless it's capped small
+        // enough to be identified by its players instead (1v1 or 2v2, see
+        // `has_roster_identity`). This keys off the cap rather than the
+        // sport, so the UI decides what a format means (singles sets 1,
+        // doubles 2) and a bigger racket side or a 2-a-side football game
+        // follow the same rule.
+        for side in &input.sides {
+            let has_name = side
+                .name
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|n| !n.is_empty());
+            if side.team_id.is_none() && !has_name && !has_roster_identity(side.max_players) {
+                return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
+                    "side `{}` needs a name unless it has a team or a max_players of 2 or less",
+                    side.client_id
+                ))));
+            }
+        }
+
+        // Colour is only for an ad-hoc side: a linked team is normally the
+        // source of truth for colour instead — except the same derby
+        // exception as name, since two sides sharing one team need a colour
+        // each to be told apart the same way they need a name each. An
+        // ad-hoc side always needs one, having no team to fall back on.
+        for side in &input.sides {
+            if side.colour.is_none() && side.team_id.is_none() {
+                return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
+                    "side `{}` needs a colour when it has no team",
+                    side.client_id
+                ))));
+            }
+            if side.colour.is_some() && side.team_id.is_some() {
+                let team_shared = input.sides.iter().any(|other| {
+                    other.client_id != side.client_id && other.team_id == side.team_id
+                });
+                if !team_shared {
+                    return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
+                        "side `{}` can't have both a colour and a team unless another side shares that team",
+                        side.client_id
+                    ))));
+                }
+            }
+        }
+
         // A supplied format must be for this match's own sport — a football
         // match can't carry cricket's overs-per-innings setting, say.
         if let Some(fmt) = &input.format {
@@ -3067,6 +3451,8 @@ impl Api {
                     // team, or alongside a team shared with another side (to
                     // tell the two apart) — never a lone team-assigned side.
                     name: side.name.clone(),
+                    // Validated above: set exactly when there's no `team_id`.
+                    colour: side.colour.clone(),
                     max_players: side.max_players,
                     team_join_enabled: side.team_join_enabled.unwrap_or(false),
                     // `Dao::create_match` recomputes both from the players
@@ -3155,11 +3541,11 @@ impl Api {
             }
         }
 
-        // A side with no players has no player to fall back on for its display
-        // name (see `Api::resolve_side_names`'s priority chain: custom name ->
-        // sole player's name -> team's name -> ...), so it needs a team or an
-        // explicit name to be identifiable at all — e.g. recording a result
-        // against an opposition you don't know the roster of.
+        // A side with no players has no roster to fall back on for its display
+        // name (see `MatchSide::name`'s chain: custom name -> team's name ->
+        // a small side's players' names), so it needs a team or an explicit
+        // name to be identifiable at all — e.g.
+        // recording a result against an opposition you don't know the roster of.
         for side in &input.sides {
             let side_id = &side_ids[&side.client_id];
             let has_players = player_records
@@ -3279,6 +3665,7 @@ impl Api {
             // sides' own `player_count`/`roster_preview` above are handled).
             total_player_count: 0,
             location: input.location.as_ref().map(location_to_record),
+            series_id: None,
             header_photos,
             sides,
             confirmed_score,
@@ -3323,7 +3710,7 @@ impl Api {
         let mut m = match_from_records(&match_record, &sides_for_response, &player_records, false);
         m.viewer_role = caller_match_role(&player_records, &uid).map(match_player_role_from_record);
         sign_match_headers(assets, &mut m);
-        let m = self.hydrate_match(dao, m, &uid).await?;
+        let m = self.hydrate_match(dao, m).await?;
         Ok(CreateMatchResponse::Match(Json(m)))
     }
 
@@ -3362,7 +3749,7 @@ impl Api {
             m.viewer_team_join_side_ids = (!eligible.is_empty()).then_some(eligible);
         }
         sign_match_headers(assets, &mut m);
-        let m = self.hydrate_match(dao, m, &uid).await?;
+        let m = self.hydrate_match(dao, m).await?;
         Ok(GetMatchResponse::Match(Json(m)))
     }
 
@@ -3519,6 +3906,46 @@ impl Api {
             }
         }
 
+        // Recolouring a side: every referenced side must exist. Setting a
+        // colour alongside a team mirrors the rename rule above (only
+        // allowed when another side shares that team); clearing a colour
+        // (`colour: None`) is only valid when the side already has a team to
+        // fall back on — mirrors `create_match`'s "needs a colour when it
+        // has no team" rule, since clearing on a team-less side would leave
+        // it without one.
+        if let Some(colours) = &input.side_colours {
+            for update in colours {
+                let Some(side) = agg.sides.iter().find(|s| s.side_id == update.side_id) else {
+                    return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                        "side `{}` is not part of this match",
+                        update.side_id
+                    ))));
+                };
+                match (&side.team_id, &update.colour) {
+                    (Some(team_id), Some(_)) => {
+                        let team_shared = agg.sides.iter().any(|other| {
+                            other.side_id != side.side_id
+                                && other.team_id.as_deref() == Some(team_id.as_str())
+                        });
+                        if !team_shared {
+                            return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                                "side `{}` can't have both a colour and a team unless another \
+                                 side shares that team",
+                                update.side_id
+                            ))));
+                        }
+                    }
+                    (None, None) => {
+                        return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                            "side `{}` needs a colour when it has no team",
+                            update.side_id
+                        ))));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // A side with no players (after this request's roster edits, if any)
         // needs a team or an explicit name to remain identifiable — same rule
         // `create_match` enforces up front. Only worth projecting when this
@@ -3585,6 +4012,43 @@ impl Api {
                         side.side_id
                     ))));
                 }
+            }
+        }
+
+        // `create_match`'s "an ad-hoc side needs a name unless it's capped at
+        // 2" rule, applied to the side as it'll be after this request: a
+        // rename and a cap change in the same request count together. Only
+        // a change that breaks the rule is rejected, so an older unnamed,
+        // uncapped side can still be edited (the UI resubmits every side's
+        // settings on each save).
+        for side in &agg.sides {
+            if side.team_id.is_some() {
+                continue;
+            }
+            let has_name = |name: Option<&str>| name.map(str::trim).is_some_and(|n| !n.is_empty());
+            let name = match input
+                .side_names
+                .iter()
+                .flatten()
+                .find(|r| r.side_id == side.side_id)
+            {
+                Some(rename) => rename.name.as_deref(),
+                None => side.name.as_deref(),
+            };
+            let max_players = match side_join_settings
+                .iter()
+                .find(|(id, _, _)| *id == side.side_id)
+            {
+                Some((_, max, _)) => *max,
+                None => side.max_players,
+            };
+            let ok_before = has_name(side.name.as_deref()) || has_roster_identity(side.max_players);
+            let ok_after = has_name(name) || has_roster_identity(max_players);
+            if ok_before && !ok_after {
+                return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                    "side `{}` needs a name unless it has a team or a max_players of 2 or less",
+                    side.side_id
+                ))));
             }
         }
 
@@ -3797,7 +4261,14 @@ impl Api {
             .map(|r| (r.side_id.clone(), r.name.clone()))
             .collect();
 
-        // Apply metadata + resolved score + side renames in one update.
+        let side_colour_updates: Vec<(String, Option<String>)> = input
+            .side_colours
+            .iter()
+            .flatten()
+            .map(|r| (r.side_id.clone(), r.colour.clone()))
+            .collect();
+
+        // Apply metadata + resolved score + side renames/recolours in one update.
         dao.update_match_meta(
             &match_id,
             input.name.as_deref(),
@@ -3813,6 +4284,7 @@ impl Api {
             input.format.as_ref().map(match_format_to_record),
             input.location.as_ref().map(location_to_record),
             &side_name_updates,
+            &side_colour_updates,
         )
         .await
         .map_err(|e| match e {
@@ -3915,8 +4387,344 @@ impl Api {
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
         m.viewer_role = caller_match_role(&agg.players, &uid).map(match_player_role_from_record);
         sign_match_headers(assets, &mut m);
-        let m = self.hydrate_match(dao, m, &uid).await?;
+        let m = self.hydrate_match(dao, m).await?;
         Ok(UpdateMatchResponse::Match(Json(m)))
+    }
+
+    /// Create a recurring match series: a template plus a cadence. Writes
+    /// the series record and its first occurrence (an ordinary match,
+    /// through the same `Dao::create_match` path `POST /matches` uses)
+    /// synchronously, then returns both. The series' remaining occurrences
+    /// are generated asynchronously by the `materialize_series` Temporal
+    /// workflow, started reactively off the series-creation DynamoDB stream
+    /// event — this handler never starts a workflow itself (same
+    /// stream-reactive pattern as fan-out/accept). See
+    /// `GET /match-series/:id`'s `status`/`occurrences_generated` to watch
+    /// that progress.
+    ///
+    /// Deliberately a narrower input than `CreateMatchInput`: a series
+    /// template carries no player/roster/invite fields at all (there's no
+    /// invite-list support for a series yet), and every side must be
+    /// team-linked (no ad-hoc/named-only sides in a series template).
+    ///
+    /// Only bounded series (`ends: OnDate`/`AfterN`, capped at
+    /// `MAX_SERIES_OCCURRENCES`) can be created here — indefinite recurrence
+    /// isn't offered as an input option yet (see `CreateMatchSeriesEndInput`).
+    ///
+    /// Known limitation, not solved here: if `create_series` succeeds but
+    /// the following `create_match` fails, the series record is left behind
+    /// with no occurrences. Fixing that would need a transaction spanning
+    /// two independent `create_*` calls, which is out of scope for this
+    /// change.
+    #[oai(path = "/match-series", method = "post")]
+    async fn create_match_series(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        input: Json<CreateMatchSeriesInput>,
+    ) -> Result<CreateMatchSeriesResponse> {
+        info!("Creating match series {}", input.name);
+        let input = input.0;
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        if input.sides.len() < 2 {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                "a match series must have at least two sides".to_string(),
+            )));
+        }
+
+        // A series only supports team-linked sides (no invite-list support
+        // for a series template yet), so every side needs a real team_id —
+        // the input type requires the field, but an empty string would
+        // technically satisfy that without actually naming a team.
+        for side in &input.sides {
+            if side.team_id.trim().is_empty() {
+                return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                    format!(
+                        "side `{}` needs a team_id — a recurring series only supports team-linked sides",
+                        side.client_id
+                    ),
+                )));
+            }
+        }
+
+        // `name`/`colour` are derby overrides, same exception
+        // `CreateMatchSideInput`'s own fields document: only valid when
+        // another side in the template shares the same team.
+        for side in &input.sides {
+            let team_shared = input
+                .sides
+                .iter()
+                .any(|other| other.client_id != side.client_id && other.team_id == side.team_id);
+            if side.name.is_some() && !team_shared {
+                return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                    format!(
+                        "side `{}` can't have a name unless another side shares its team",
+                        side.client_id
+                    ),
+                )));
+            }
+            if side.colour.is_some() && !team_shared {
+                return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                    format!(
+                        "side `{}` can't have a colour unless another side shares its team",
+                        side.client_id
+                    ),
+                )));
+            }
+        }
+
+        if !matches!(
+            input.frequency.as_str(),
+            "weekly" | "fortnightly" | "monthly" | "yearly"
+        ) {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                format!(
+                    "frequency `{}` must be one of weekly, fortnightly, monthly, yearly",
+                    input.frequency
+                ),
+            )));
+        }
+        if input.weekday > 6 {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                "weekday must be 0..=6 (0 = Sunday .. 6 = Saturday)".to_string(),
+            )));
+        }
+        // The first occurrence IS `starts_at`, so it has to actually fall on
+        // the configured recurrence day — otherwise "every Tuesday" would
+        // start on a Wednesday.
+        use chrono::Datelike;
+        let starts_at_weekday = input.starts_at.weekday().num_days_from_sunday() as u8;
+        if starts_at_weekday != input.weekday {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                format!(
+                    "starts_at falls on weekday {starts_at_weekday}, not the configured weekday {}",
+                    input.weekday
+                ),
+            )));
+        }
+        let now_ts = chrono::Utc::now();
+        if input.starts_at <= now_ts {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                "a series' first occurrence must be in the future".to_string(),
+            )));
+        }
+
+        // The occurrence count implied by `ends` must be 1..=99 — direct for
+        // `AfterN`, computed from the recurrence for `OnDate`.
+        let first_date = input.starts_at.date_naive();
+        let weekday = input.starts_at.weekday();
+        let occurrence_count = match &input.ends {
+            CreateMatchSeriesEndInput::AfterN(n) => n.count,
+            CreateMatchSeriesEndInput::OnDate(d) => {
+                let Ok(end_date) = chrono::NaiveDate::parse_from_str(&d.date, "%Y-%m-%d") else {
+                    return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                        "ends.date must be YYYY-MM-DD".to_string(),
+                    )));
+                };
+                agon_core::series::count_occurrences_through(
+                    first_date,
+                    &input.frequency,
+                    weekday,
+                    end_date,
+                )
+            }
+        };
+        if occurrence_count == 0 || occurrence_count > agon_core::series::MAX_SERIES_OCCURRENCES {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                format!(
+                    "a series must have 1..={} occurrences; this one implies {occurrence_count}",
+                    agon_core::series::MAX_SERIES_OCCURRENCES
+                ),
+            )));
+        }
+
+        let now = now_iso();
+        let series_id = new_id();
+
+        let series_record = dao::records::SeriesRecord {
+            id: series_id.clone(),
+            created_by_user_id: uid.clone(),
+            match_type: match_type_tag(&input.match_type).to_string(),
+            name: input.name.clone(),
+            description: input.description.clone(),
+            location: input.location.as_ref().map(location_to_record),
+            frequency: input.frequency.clone(),
+            weekday: input.weekday,
+            first_occurrence_starts_at: input
+                .starts_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ends: series_end_record_from_input(&input.ends),
+            sides: input
+                .sides
+                .iter()
+                .map(|s| dao::records::SeriesSideRecord {
+                    client_id: s.client_id.clone(),
+                    team_id: s.team_id.clone(),
+                    name: s.name.clone(),
+                    colour: s.colour.clone(),
+                    max_players: s.max_players,
+                })
+                .collect(),
+            // The first occurrence is created synchronously right below, so
+            // it already counts as generated.
+            status: "generating".to_string(),
+            occurrences_generated: 1,
+            created_at: now.clone(),
+        };
+
+        match dao.create_series(&series_record).await {
+            Ok(()) => {}
+            Err(dao::DaoError::Conflict(msg)) => {
+                return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(msg)));
+            }
+            Err(e) => return Err(dao_internal(e)),
+        }
+
+        // Claim the first occurrence's generation slot before creating its
+        // match — same `Dao::claim_series_occurrence` mechanism
+        // `materialize_series` uses for every later occurrence (see
+        // `agon_core::dao::series_ops`'s doc comment), so `GET
+        // /match-series/:id/occurrences` has one consistent item collection
+        // to list across the whole series, not just the generated tail.
+        let occurrence = dao::records::SeriesOccurrenceRecord {
+            series_id: series_id.clone(),
+            index: 0,
+            starts_at: series_record.first_occurrence_starts_at.clone(),
+            match_id: new_id(),
+            created_at: now.clone(),
+        };
+        let occurrence = dao
+            .claim_series_occurrence(&occurrence)
+            .await
+            .map_err(dao_internal)?;
+
+        // The first occurrence is the template itself, created exactly like
+        // any other match — but with no players: a series only configures a
+        // team per side, roster join happens per-occurrence later (no
+        // invite-list support for a series yet).
+        let match_id = occurrence.match_id;
+        let mut sides: std::collections::HashMap<String, dao::records::MatchSideRecord> =
+            Default::default();
+        for side in &input.sides {
+            let side_id = new_id();
+            sides.insert(
+                side_id.clone(),
+                dao::records::MatchSideRecord {
+                    side_id,
+                    team_id: Some(side.team_id.clone()),
+                    name: side.name.clone(),
+                    colour: side.colour.clone(),
+                    max_players: side.max_players,
+                    team_join_enabled: false,
+                    player_count: 0,
+                    roster_preview: Vec::new(),
+                },
+            );
+        }
+
+        let match_record = dao::records::MatchRecord {
+            id: match_id.clone(),
+            created_by_user_id: uid.clone(),
+            name: input.name,
+            description: input.description,
+            match_type: match_type_tag(&input.match_type).to_string(),
+            status: "scheduled".to_string(),
+            starts_at: input
+                .starts_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            allow_unassigned: true,
+            total_player_count: 0,
+            location: input.location.as_ref().map(location_to_record),
+            series_id: Some(series_id.clone()),
+            header_photos: Vec::new(),
+            sides,
+            confirmed_score: None,
+            pending_score: None,
+            like_count: 0,
+            comment_count: 0,
+            live_seq: 0,
+            live_tip_seq: None,
+            format: None,
+            created_at: now,
+        };
+
+        match dao.create_match(&match_record, &[]).await {
+            Ok(()) => {}
+            Err(dao::DaoError::Conflict(msg)) => {
+                return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(msg)));
+            }
+            Err(e) => return Err(dao_internal(e)),
+        }
+
+        Ok(CreateMatchSeriesResponse::Series(Json(
+            CreateMatchSeriesResult {
+                series: match_series_from_record(&series_record),
+                first_match_id: match_id,
+            },
+        )))
+    }
+
+    /// Fetch a recurring match series by id: its template fields plus
+    /// generation progress (`status`/`occurrences_generated`). Read-only, no
+    /// authority check — any authenticated caller may read any series, the
+    /// same posture as `GET /teams/:team_id`.
+    #[oai(path = "/match-series/:series_id", method = "get")]
+    async fn get_match_series(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(series_id): Path<String>,
+    ) -> Result<GetMatchSeriesResponse> {
+        info!("Getting match series {series_id}");
+        self.require_uid(dao, &jwt_data).await?;
+        match dao.get_series(&series_id).await.map_err(dao_internal)? {
+            Some(series) => Ok(GetMatchSeriesResponse::Series(Json(
+                match_series_from_record(&series),
+            ))),
+            None => Ok(GetMatchSeriesResponse::NotFound(PlainText(
+                "series not found".into(),
+            ))),
+        }
+    }
+
+    /// List a series' generated occurrences (including the first, created
+    /// synchronously at series-creation time), ordered by `starts_at`.
+    /// Straightforward now that occurrences are claimed via their own item
+    /// collection (`Dao::claim_series_occurrence`/`list_series_occurrences`)
+    /// rather than only being derivable by formula — see
+    /// `agon_core::dao::series_ops`'s doc comment. Not paginated: a series is
+    /// capped at `agon_core::series::MAX_SERIES_OCCURRENCES` (99) entries, so
+    /// there's no page worth cutting this into.
+    #[oai(path = "/match-series/:series_id/occurrences", method = "get")]
+    async fn list_match_series_occurrences(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(series_id): Path<String>,
+    ) -> Result<ListMatchSeriesOccurrencesResponse> {
+        info!("Listing occurrences of match series {series_id}");
+        self.require_uid(dao, &jwt_data).await?;
+        if dao
+            .get_series(&series_id)
+            .await
+            .map_err(dao_internal)?
+            .is_none()
+        {
+            return Ok(ListMatchSeriesOccurrencesResponse::NotFound(PlainText(
+                "series not found".into(),
+            )));
+        }
+        let occurrences = dao
+            .list_series_occurrences(&series_id)
+            .await
+            .map_err(dao_internal)?
+            .iter()
+            .map(match_series_occurrence_from_record)
+            .collect();
+        Ok(ListMatchSeriesOccurrencesResponse::Occurrences(Json(
+            occurrences,
+        )))
     }
 
     /// Get a match's current score.
@@ -4215,6 +5023,7 @@ impl Api {
                 None,
                 None,
                 None,
+                &[],
                 &[],
             )
             .await
@@ -4729,6 +5538,7 @@ impl Api {
                     None,
                     None,
                     &[],
+                    &[],
                 )
                 .await
                 .map_err(dao_internal)?;
@@ -4786,6 +5596,7 @@ impl Api {
                         None,
                         None,
                         None,
+                        &[],
                         &[],
                     )
                     .await
@@ -5205,6 +6016,9 @@ impl Api {
             invitation: None,
             created_at: now,
         };
+        // Creates the team, the creator's membership, and the follow that
+        // membership implies (see `Dao::create_team`'s doc comment), all in
+        // one transaction.
         match dao.create_team(&team, &creator).await {
             Ok(()) => {}
             Err(dao::DaoError::Conflict(msg)) => {
@@ -5350,7 +6164,9 @@ impl Api {
                 invitation: None,
                 created_at: now.clone(),
             };
-            dao.put_team_member(&team_id, &member)
+            // Adds the member and the follow that membership implies (see
+            // `Dao::add_team_member`'s doc comment) in one transaction.
+            dao.add_team_member(&team_id, &member, &now)
                 .await
                 .map_err(dao_internal)?;
         }
@@ -5754,6 +6570,7 @@ impl Api {
                 None,
                 None,
                 &[],
+                &[],
             )
             .await
             .map_err(dao_internal)?;
@@ -6142,7 +6959,7 @@ impl Api {
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, false);
         m.viewer_role = caller_match_role(&agg.players, &uid).map(match_player_role_from_record);
         sign_match_headers(assets, &mut m);
-        let m = self.hydrate_match(dao, m, &uid).await?;
+        let m = self.hydrate_match(dao, m).await?;
         Ok(JoinMatchResponse::Match(Json(m)))
     }
 
@@ -6205,6 +7022,59 @@ impl Api {
             .await
             .map_err(dao_internal)?;
         Ok(TransferMatchOwnershipResponse::Ok)
+    }
+
+    /// Promote a player to admin, or demote an admin back to a plain player.
+    ///
+    /// Match-admin only (see `caller_is_match_admin`). Can't be used to set
+    /// or remove the `Owner` role, or to change the current owner's own
+    /// role — `POST /matches/:match_id/transfer-ownership` is the only way
+    /// either of those moves.
+    #[oai(path = "/matches/:match_id/players/:player_id/role", method = "post")]
+    async fn set_match_player_role(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        Path(player_id): Path<String>,
+        input: Json<SetMatchPlayerRoleInput>,
+    ) -> Result<SetMatchPlayerRoleResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let role = input.0.role;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(SetMatchPlayerRoleResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(SetMatchPlayerRoleResponse::Forbidden(PlainText(
+                "only a match admin can change a player's role".into(),
+            )));
+        }
+        if role == MatchPlayerRole::Owner {
+            return Ok(SetMatchPlayerRoleResponse::ValidationError(PlainText(
+                "transfer ownership instead of setting the owner role here".into(),
+            )));
+        }
+        let Some(target) = agg.players.iter().find(|p| p.player_id == player_id) else {
+            return Ok(SetMatchPlayerRoleResponse::NotFound(PlainText(
+                "player not found".into(),
+            )));
+        };
+        if target.role == dao::records::MatchPlayerRole::Owner {
+            return Ok(SetMatchPlayerRoleResponse::ValidationError(PlainText(
+                "transfer ownership instead of changing the owner's role".into(),
+            )));
+        }
+
+        dao.set_match_player_role(&match_id, &player_id, match_player_role_to_record(role))
+            .await
+            .map_err(dao_internal)?;
+        Ok(SetMatchPlayerRoleResponse::Ok)
     }
 
     /// Leave a match.
@@ -7437,33 +8307,18 @@ impl Api {
 
     /// Hydrate a single match — see `hydrate_matches`, which does the actual
     /// work; this just wraps/unwraps the one-match case.
-    async fn hydrate_match(&self, dao: &dao::Dao, m: Match, viewer_uid: &str) -> Result<Match> {
-        Ok(self
-            .hydrate_matches(dao, vec![m], viewer_uid)
-            .await?
-            .remove(0))
+    async fn hydrate_match(&self, dao: &dao::Dao, m: Match) -> Result<Match> {
+        Ok(self.hydrate_matches(dao, vec![m]).await?.remove(0))
     }
 
     /// Hydrate every match in `matches` for one response: fill in each `User`
-    /// player's `name`/`avatar_url` from their account, and resolve every
-    /// side's display `name` — a custom name the creator gave the side (an
-    /// ad-hoc side, or one of two sides sharing a team), else the sole
-    /// player's name if there's exactly one, else the assigned team's name,
-    /// else a fallback relative to `viewer_uid` — "Your side"/"Opposition" if
-    /// they're actually playing in the match, else a neutral "Team A"/
-    /// "Team B" by side order — plus, whenever that name is the team's,
-    /// `team_logo` alongside it. Resolved per-request rather than stored, so
-    /// a side's name/logo can't go stale and "your side" always reflects
-    /// whoever is asking. Player and team lookups are each batched exactly
-    /// once across every match passed in, however many that is — a feed/list
-    /// page hands over the whole page at once rather than calling this per
-    /// match.
-    async fn hydrate_matches(
-        &self,
-        dao: &dao::Dao,
-        mut matches: Vec<Match>,
-        viewer_uid: &str,
-    ) -> Result<Vec<Match>> {
+    /// player's `name`/`avatar_url` from their account, and each side's
+    /// roster preview and team name/logo (see `hydrate_sides`). Resolved
+    /// per-request rather than stored, so none of it can go stale. Player and
+    /// team lookups are each batched exactly once across every match passed
+    /// in, however many that is — a feed/list page hands over the whole page
+    /// at once rather than calling this per match.
+    async fn hydrate_matches(&self, dao: &dao::Dao, mut matches: Vec<Match>) -> Result<Vec<Match>> {
         let user_ids: Vec<String> = matches.iter().flat_map(Self::player_user_ids).collect();
         let user_records = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
 
@@ -7475,7 +8330,7 @@ impl Api {
 
         for m in &mut matches {
             Self::apply_player_profiles(m, &user_records);
-            Self::resolve_side_names(m, viewer_uid, &team_metas);
+            Self::hydrate_sides(m, &team_metas);
         }
         Ok(matches)
     }
@@ -7554,37 +8409,25 @@ impl Api {
             .map_err(dao_internal)
     }
 
-    /// Resolve one match's side names (and, wherever the resolved name is
-    /// actually the team's, `team_logo` alongside it), given `team_metas`
-    /// already resolved by the caller. Pure/sync — no DAO calls — so it's
-    /// cheap to run per match after a shared batch team-meta lookup (see
-    /// `hydrate_matches`).
-    fn resolve_side_names(
+    /// Fill in one match's per-side facts that aren't stored on the side
+    /// itself: `player_count` and `roster_preview` from the live roster, and
+    /// `team_name`/`team_logo` from `team_metas` (already resolved by the
+    /// caller). Pure/sync — no DAO calls — so it's cheap to run per match
+    /// after a shared batch team-meta lookup (see `hydrate_matches`).
+    ///
+    /// `name` is left as the creator's custom name (blank becomes `None`):
+    /// clients work out the display name from it, `team_name` and
+    /// `roster_preview` (see `MatchSide::name`).
+    fn hydrate_sides(
         m: &mut Match,
-        viewer_uid: &str,
         team_metas: &std::collections::HashMap<String, dao::records::TeamRecord>,
     ) {
-        // The side the viewer is actually on (by an invite they were placed
-        // on, accepted or not) — used for the "Your side"/"Opposition"
-        // fallback below.
-        let viewer_side_id = m.players.iter().find_map(|p| match &p.member {
-            Member::User(u) if u.user_id == viewer_uid => p.side_id.clone(),
-            _ => None,
-        });
-
-        for (i, side) in m.sides.iter_mut().enumerate() {
+        for side in m.sides.iter_mut() {
             let on_side: Vec<&MatchPlayer> = m
                 .players
                 .iter()
                 .filter(|p| p.side_id.as_deref() == Some(side.id.as_str()))
                 .collect();
-            let sole_player_name = match on_side.as_slice() {
-                [p] => Some(match &p.member {
-                    Member::User(u) => u.name.clone(),
-                    Member::External(e) => e.display_name.clone(),
-                }),
-                _ => None,
-            };
             side.player_count = on_side.len() as u32;
             // Same "small enough to show players directly" call the feed
             // makes from its denormalized cache (`ROSTER_PREVIEW_CAP`) — here
@@ -7608,114 +8451,41 @@ impl Api {
                     })
                     .collect()
             });
-
-            let custom_name = side
-                .name
-                .as_deref()
-                .map(str::trim)
-                .filter(|n| !n.is_empty());
-
-            // Resolved independently of `name` below, whenever `team_id`
-            // points at a team that still exists — a custom name or a sole
-            // player's name can still take over `name` itself (see the
-            // priority chain below), but the side's actual team affiliation
-            // is a fact of its own that callers may want to show alongside
-            // that (see doc comment on `MatchSide::team_name`).
-            let team = side.team_id.as_ref().and_then(|id| team_metas.get(id));
-            side.team_name = team.map(|t| t.name.clone());
-            side.team_logo = team.and_then(|t| t.logo_url.as_ref()).map(|url| Photo {
-                image_url: url.clone(),
-                asset_id: None,
-            });
-
-            side.name = Some(match custom_name {
-                // An explicit name always wins, over both the sole player's
-                // name and the team's own name — it's there specifically
-                // because the creator wanted something other than either
-                // default (e.g. to tell two sides sharing one team apart).
-                Some(name) => name.to_string(),
-                None => match sole_player_name {
-                    Some(name) => name,
-                    None => match team {
-                        Some(team) => team.name.clone(),
-                        // The team was deleted (`DELETE /teams/{team_id}`)
-                        // but the side's `team_id` snapshot outlives it —
-                        // same "outlives the record it points to, resolve
-                        // the gap at read time" shape as
-                        // `deleted_user_profile`. `team_id` itself is left
-                        // as-is (not scrubbed) rather than cleared. Only hit
-                        // when `side.team_id` was set but not found above.
-                        None if side.team_id.is_some() => "Deleted team".to_string(),
-                        None => match &viewer_side_id {
-                            Some(vs) if vs == &side.id => "Your side".to_string(),
-                            Some(_) => "Opposition".to_string(),
-                            None if i == 0 => "Team A".to_string(),
-                            None => "Team B".to_string(),
-                        },
-                    },
-                },
-            });
+            Self::hydrate_side_team(side, team_metas);
         }
     }
 
-    /// The same side-name priority chain as [`Self::resolve_side_names`]
-    /// (custom name → sole player's name → team name → "Your
-    /// side"/"Opposition" → neutral "Team A"/"Team B"), plus the same
-    /// `team_logo` resolution, for a `FeedMatch` or `SearchMatch` — which
-    /// never have the full player list to scan.
-    ///
-    /// `roster_preview` already gives the *complete* roster whenever a side
-    /// has one player, so "the sole player's name" is recovered from it
-    /// (`Some([p])`) rather than the live roster — same fact, cheaper source.
-    /// `viewer_side_id` is `None` for a search hit (not derived from a
-    /// per-viewer fan-out, so there's no "Your side" to resolve) and
-    /// `Some`/`None` per feed entry for a feed card.
-    fn resolve_side_names_from_cache(
+    /// [`Self::hydrate_sides`]'s team half, for a `FeedMatch` or
+    /// `SearchMatch` — which never have the full player list, but already
+    /// carry `player_count`/`roster_preview` from the denormalized cache.
+    fn hydrate_sides_from_cache(
         sides: &mut [MatchSide],
-        viewer_side_id: Option<&str>,
         team_metas: &std::collections::HashMap<String, dao::records::TeamRecord>,
     ) {
-        for (i, side) in sides.iter_mut().enumerate() {
-            let sole_player_name = match side.roster_preview.as_deref() {
-                Some([p]) => Some(p.name.clone()),
-                _ => None,
-            };
-            let custom_name = side
-                .name
-                .as_deref()
-                .map(str::trim)
-                .filter(|n| !n.is_empty());
-
-            // Same "resolved independently of `name`" shape as
-            // `resolve_side_names` above.
-            let team = side.team_id.as_ref().and_then(|id| team_metas.get(id));
-            side.team_name = team.map(|t| t.name.clone());
-            side.team_logo = team.and_then(|t| t.logo_url.as_ref()).map(|url| Photo {
-                image_url: url.clone(),
-                asset_id: None,
-            });
-
-            side.name = Some(match custom_name {
-                // Same priority as `resolve_side_names`: an explicit name
-                // always wins over the sole player's name.
-                Some(name) => name.to_string(),
-                None => match sole_player_name {
-                    Some(name) => name,
-                    None => match team {
-                        Some(team) => team.name.clone(),
-                        // Same "team was deleted" fallback as
-                        // `resolve_side_names` above.
-                        None if side.team_id.is_some() => "Deleted team".to_string(),
-                        None => match viewer_side_id {
-                            Some(vs) if vs == side.id => "Your side".to_string(),
-                            Some(_) => "Opposition".to_string(),
-                            None if i == 0 => "Team A".to_string(),
-                            None => "Team B".to_string(),
-                        },
-                    },
-                },
-            });
+        for side in sides.iter_mut() {
+            Self::hydrate_side_team(side, team_metas);
         }
+    }
+
+    /// `team_name`/`team_logo` for a side whose `team_id` points at a team
+    /// that still exists (`None` for an ad-hoc side or a deleted team — the
+    /// side's `team_id` snapshot outlives a `DELETE /teams/{team_id}`), and
+    /// a blank custom `name` normalized to `None`.
+    fn hydrate_side_team(
+        side: &mut MatchSide,
+        team_metas: &std::collections::HashMap<String, dao::records::TeamRecord>,
+    ) {
+        let team = side.team_id.as_ref().and_then(|id| team_metas.get(id));
+        side.team_name = team.map(|t| t.name.clone());
+        side.team_logo = team.and_then(|t| t.logo_url.as_ref()).map(|url| Photo {
+            image_url: url.clone(),
+            asset_id: None,
+        });
+        side.name = side
+            .name
+            .take()
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty());
     }
 
     /// Fetch a single user's public profile, or `None` if absent. Used to embed
@@ -8993,6 +9763,7 @@ fn mock_match(id: String) -> Match {
             latitude: Some(51.5074),
             longitude: Some(-0.1278),
             place_id: None,
+            address: None,
         }),
         header_photos: vec![Photo {
             image_url: String::from("https://cdn.example.com/matches/match_123/header.jpg"),
@@ -9003,6 +9774,7 @@ fn mock_match(id: String) -> Match {
                 id: String::from("side_red"),
                 team_id: Some(String::from("team_red")),
                 name: Some(String::from("Red Team")),
+                colour: None,
                 team_logo: None,
                 team_name: None,
                 roster_preview: None,
@@ -9014,6 +9786,7 @@ fn mock_match(id: String) -> Match {
                 id: String::from("side_blue"),
                 team_id: Some(String::from("team_blue")),
                 name: Some(String::from("Blue Team")),
+                colour: None,
                 team_logo: None,
                 team_name: None,
                 roster_preview: None,
@@ -9159,17 +9932,18 @@ mod scope_tests {
     }
 }
 
-/// Generate a new opaque id (base64url of random bytes).
+/// Generate a new opaque id. Thin wrapper over `agon_core::id::new_id` —
+/// shared with `agon_worker`'s series-occurrence generation, which needed the
+/// same random-id generation once it stopped deriving occurrence match ids
+/// from a hash (see `agon_core::dao::series_ops`'s doc comment).
 fn new_id() -> String {
-    use rand::RngCore;
-    let mut bytes = [0u8; 16];
-    rand::rng().fill_bytes(&mut bytes);
-    // NO_PAD: the URL-safe alphabet (`-`/`_`) is fine, but trailing `=` padding is
-    // not — these ids are used verbatim as Meilisearch document ids, and Meili
-    // rejects `=` (only alphanumerics, `-`, `_` are allowed). See agon_worker
-    // search indexing.
-    BASE64_URL_SAFE_NO_PAD.encode(bytes)
+    agon_core::id::new_id()
 }
+
+// Recurring-series occurrence-date arithmetic (`occurrence_date`,
+// `count_occurrences_through`, `MAX_SERIES_OCCURRENCES`) lives in
+// `agon_core::series` — shared with `agon_worker`'s `materialize_series`
+// workflow so the two can never compute "the next occurrence" differently.
 
 // Device-pairing codes are generated by the device itself now (Monkey C,
 // on the watch — see docs/garmin-live-scoring.md), not minted here; the

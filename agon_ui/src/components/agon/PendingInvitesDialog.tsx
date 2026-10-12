@@ -10,7 +10,7 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog'
 import { Avatar } from '@/components/agon/Avatar'
-import { memberName, memberAvatarUrl, pendingInvitees } from '@/lib/members'
+import { memberName, memberAvatarUrl, pendingInvitees, sideDisplayName } from '@/lib/members'
 
 type Match = components['schemas']['Match']
 
@@ -19,7 +19,7 @@ type Match = components['schemas']['Match']
 function sideNameFor(match: Match, sideId: string | null | undefined): string {
   if (!sideId) return 'Unassigned'
   const side = match.sides.find((s) => s.id === sideId)
-  return side?.name?.trim() || 'Unassigned'
+  return sideDisplayName(side) ?? 'Unassigned'
 }
 
 /**

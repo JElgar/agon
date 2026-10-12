@@ -39,4 +39,15 @@ class agonDelegate extends WatchUi.BehaviorDelegate {
         return true;
     }
 
+    //! This is the app's root view (reached via switchToView, so nothing
+    //! sits underneath it in the view stack) — left unoverridden, the
+    //! default Back behavior pops it, and popping the last view exits the
+    //! app, which silently saves/discards via agonApp.onStop's safety net.
+    //! That would close this wearer's activity from a stray Back press;
+    //! only the menu's explicit "End match" item should be able to do
+    //! that (see EndMatchFlow.mc), so swallow Back here instead.
+    function onBack() as Boolean {
+        return true;
+    }
+
 }

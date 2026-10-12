@@ -105,10 +105,13 @@ class agonMenuDelegate extends WatchUi.Menu2InputDelegate {
         if (item == :goal) {
             // Side -> scorer -> assist, handled entirely in GoalFlow.mc —
             // it calls back into app.score.recordGoal itself once done.
-            // switchToView replaces this pushed menu (and agonView below
-            // it) outright, so — unlike every branch below — this one
-            // needs no explicit popView.
-            WatchUi.switchToView(buildSideMenu(), new GoalSideMenuDelegate(), WatchUi.SLIDE_UP);
+            // pushView layers the side menu on top of this one (and
+            // agonView below it) rather than replacing them, so Back
+            // steps out one screen at a time instead of exiting straight
+            // past the whole flow — see GoalFlow.mc's doc comment. Since
+            // nothing is being popped here, this needs no explicit
+            // popView, unlike every branch below.
+            WatchUi.pushView(buildSideMenu(), new GoalSideMenuDelegate(), WatchUi.SLIDE_UP);
             return;
         } else if (item == :activity_toggle) {
             if (app.activityRecorder.isRecording()) {
@@ -158,10 +161,10 @@ class agonMenuDelegate extends WatchUi.Menu2InputDelegate {
             app.score.setPeriod(FootballScore.PERIOD_FULL_TIME);
         } else if (item == :end_match) {
             if (app.activityRecorder.hasSession()) {
-                // Save/Discard choice, replacing this menu (same as :goal
-                // above) so Back from it cancels to the match page rather
-                // than reopening this menu.
-                WatchUi.switchToView(buildEndMatchMenu(), new EndMatchMenuDelegate(), WatchUi.SLIDE_UP);
+                // Save/Discard choice, pushed on top of this menu (same
+                // as :goal above) so Back from it steps back to this menu
+                // rather than skipping past it.
+                WatchUi.pushView(buildEndMatchMenu(), new EndMatchMenuDelegate(), WatchUi.SLIDE_UP);
             } else {
                 // No activity was ever started — nothing to save or
                 // discard, so just leave.

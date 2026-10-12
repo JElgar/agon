@@ -142,6 +142,7 @@ fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
                 client_id: "a".to_string(),
                 team_id: None,
                 name: Some("Side A".to_string()),
+                colour: Some("#2952D9".to_string()),
                 max_players: None,
                 team_join_enabled: None,
             },
@@ -149,6 +150,7 @@ fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
+                colour: Some("#2952D9".to_string()),
                 max_players: None,
                 team_join_enabled: None,
             },
@@ -193,6 +195,7 @@ fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::Create
                 client_id: "a".to_string(),
                 team_id: None,
                 name: Some("Side A".to_string()),
+                colour: Some("#2952D9".to_string()),
                 max_players: None,
                 team_join_enabled: None,
             },
@@ -200,6 +203,7 @@ fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::Create
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
+                colour: Some("#2952D9".to_string()),
                 max_players: None,
                 team_join_enabled: None,
             },
@@ -258,6 +262,7 @@ fn completed_match(invites: Vec<models::CreateMatchInviteInput>) -> models::Crea
                 client_id: "a".to_string(),
                 team_id: None,
                 name: Some("Side A".to_string()),
+                colour: Some("#2952D9".to_string()),
                 max_players: None,
                 team_join_enabled: None,
             },
@@ -265,6 +270,7 @@ fn completed_match(invites: Vec<models::CreateMatchInviteInput>) -> models::Crea
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
+                colour: Some("#2952D9".to_string()),
                 max_players: None,
                 team_join_enabled: None,
             },
@@ -679,18 +685,10 @@ async fn patch_match_updates_name() {
 }
 
 /// A match's ad-hoc side names (given at create time) can be edited afterwards
-/// via `side_names`, and clearing one (`name: None`) falls back to the next
-/// entry in the priority chain rather than staying stuck on the old custom
-/// name.
-///
-/// Side "a" carries both a custom name *and* the sole invited player: an
-/// explicit name always wins over the sole player's name (see
-/// `Api::resolve_side_names`'s priority chain), so it resolves to "Side A"
-/// throughout, and clearing that name falls through to reveal the player's
-/// name underneath. Side "b" has no players, so its resolved name is its
-/// custom name; clearing *that* one is exercised separately (see
-/// `clearing_the_name_of_an_empty_side_is_rejected`) since an empty,
-/// teamless side can't be left without a name at all.
+/// via `side_names`. Both sides here are uncapped with no team, so clearing
+/// side "a"'s name outright is rejected even though it has a player: a side
+/// like that always needs a name. Clearing empty side "b"'s name is
+/// exercised separately (see `clearing_the_name_of_an_empty_side_is_rejected`).
 #[tokio::test]
 async fn patch_match_renames_sides() {
     let (config, _owner) = new_user().await;
@@ -717,8 +715,7 @@ async fn patch_match_renames_sides() {
             .unwrap()
             .name
             .as_deref(),
-        Some("Side A"),
-        "a custom name wins over the sole player's name"
+        Some("Side A")
     );
     assert_eq!(
         created
@@ -753,9 +750,6 @@ async fn patch_match_renames_sides() {
         "a side not named in the request is left alone"
     );
 
-    // Clearing side "a"'s custom name is safe (it still has a player to fall
-    // back on) and reveals the priority chain's next entry: the sole
-    // player's name.
     let cleared = matches_match_id_patch(
         &config,
         &created.id,
@@ -767,20 +761,13 @@ async fn patch_match_renames_sides() {
             ..Default::default()
         },
     )
-    .await
-    .expect("clear side name");
-    let cleared_a = cleared.sides.iter().find(|s| s.id == side_a).unwrap();
-    assert_eq!(
-        cleared_a.name.as_deref(),
-        Some("Test User"),
-        "clearing the custom name falls back to the sole player's name"
-    );
+    .await;
+    assert_status_with_content(cleared, reqwest::StatusCode::BAD_REQUEST, "needs a name");
 }
 
-/// The counterpart to `patch_match_renames_sides`'s side "a" case: side "b"
-/// has no players and no team, so its custom name is the only thing keeping
-/// it identifiable — clearing it (rather than replacing it) is rejected,
-/// same as at create time.
+/// Side "b" has no players and no team, so its custom name is the only thing
+/// keeping it identifiable — clearing it (rather than replacing it) is
+/// rejected, same as at create time.
 #[tokio::test]
 async fn clearing_the_name_of_an_empty_side_is_rejected() {
     let (config, _owner) = new_user().await;
@@ -815,6 +802,183 @@ async fn clearing_the_name_of_an_empty_side_is_rejected() {
         reqwest::StatusCode::BAD_REQUEST,
         "would have no players",
     );
+}
+
+/// A side with no team, for the side-name rule tests below.
+fn ad_hoc_side(
+    client_id: &str,
+    name: Option<&str>,
+    max_players: Option<i32>,
+) -> models::CreateMatchSideInput {
+    models::CreateMatchSideInput {
+        client_id: client_id.to_string(),
+        team_id: None,
+        name: name.map(str::to_string),
+        colour: Some("#2952D9".to_string()),
+        max_players,
+        team_join_enabled: None,
+    }
+}
+
+/// A match between `side_a` and a named side "b" the owner plays on, with
+/// `side_a_players` invited to `side_a` as guests.
+fn side_name_rule_match(
+    match_type: models::MatchType,
+    side_a: models::CreateMatchSideInput,
+    side_a_players: &[&str],
+) -> models::CreateMatchInput {
+    models::CreateMatchInput {
+        name: "Test Match".to_string(),
+        description: "A test match".to_string(),
+        match_type,
+        starts_at: iso_offset_hours(24),
+        location: None,
+        sides: vec![side_a, ad_hoc_side("b", Some("Side B"), None)],
+        invites: vec![invite_externals("a", side_a_players)],
+        creator_side_client_id: Some("b".to_string()),
+        score: None,
+        winner_side_id: None,
+        header_photo_asset_ids: None,
+        format: None,
+        allow_unassigned: None,
+    }
+}
+
+fn side_of<'a>(m: &'a models::Match, player_name: &str) -> &'a models::MatchSide {
+    let side_id = m
+        .players
+        .iter()
+        .find_map(|p| match &*p.member {
+            models::Member::External(e) if e.display_name == player_name => p.side_id.clone(),
+            _ => None,
+        })
+        .expect("player is on a side");
+    m.sides.iter().find(|s| s.id == side_id).unwrap()
+}
+
+/// A side with no team needs a name unless it's capped at 2 or fewer
+/// players, whatever the sport: the cap, not the sport, says whether its
+/// players' names can stand in for one.
+#[tokio::test]
+async fn unnamed_side_without_a_small_cap_is_rejected() {
+    let (owner_config, _owner) = new_user().await;
+    for max_players in [None, Some(3)] {
+        let response = matches_post(
+            &owner_config,
+            side_name_rule_match(
+                models::MatchType::Tennis,
+                ad_hoc_side("a", None, max_players),
+                &["Alex"],
+            ),
+        )
+        .await;
+        assert_status_with_content(response, reqwest::StatusCode::BAD_REQUEST, "needs a name");
+    }
+}
+
+/// An unnamed side capped at 2 is allowed in any sport: the API returns no
+/// name, and the side's roster preview carries both players for clients to
+/// show instead.
+#[tokio::test]
+async fn unnamed_side_capped_at_two_is_allowed_in_any_sport() {
+    let (owner_config, _owner) = new_user().await;
+    let created = matches_post(
+        &owner_config,
+        side_name_rule_match(
+            models::MatchType::Football,
+            ad_hoc_side("a", None, Some(2)),
+            &["Luke Wickenden", "Rob Perry"],
+        ),
+    )
+    .await
+    .expect("create match");
+
+    let side = side_of(&created, "Luke Wickenden");
+    assert_eq!(side.name, None, "the API returns only a custom name");
+    let roster: Vec<&str> = side
+        .roster_preview
+        .iter()
+        .flatten()
+        .map(|p| p.name.as_str())
+        .collect();
+    assert!(
+        roster.contains(&"Luke Wickenden") && roster.contains(&"Rob Perry"),
+        "expected both players in the roster preview, got {roster:?}"
+    );
+}
+
+/// A side's custom name comes back as given, even when the side is small
+/// enough that it could have gone without one.
+#[tokio::test]
+async fn named_side_shows_its_name_not_the_player() {
+    let (owner_config, _owner) = new_user().await;
+    let created = matches_post(
+        &owner_config,
+        side_name_rule_match(
+            models::MatchType::Football,
+            ad_hoc_side("a", Some("Blues"), Some(2)),
+            &["Alex"],
+        ),
+    )
+    .await
+    .expect("create match");
+    assert_eq!(side_of(&created, "Alex").name.as_deref(), Some("Blues"));
+}
+
+/// Raising an unnamed side's cap past 2 (or removing it) is rejected until
+/// the side gets a name — in the same request is fine.
+#[tokio::test]
+async fn raising_unnamed_side_cap_needs_a_name() {
+    let (owner_config, _owner) = new_user().await;
+    let created = matches_post(
+        &owner_config,
+        side_name_rule_match(
+            models::MatchType::Tennis,
+            ad_hoc_side("a", None, Some(2)),
+            &["Alex"],
+        ),
+    )
+    .await
+    .expect("create match");
+    let side_id = side_of(&created, "Alex").id.clone();
+    let settings = |max_players| {
+        Some(vec![models::SetSideJoinSettingsInput {
+            side_id: side_id.clone(),
+            max_players,
+            team_join_enabled: false,
+        }])
+    };
+
+    for max_players in [Some(4), None] {
+        let response = matches_match_id_patch(
+            &owner_config,
+            &created.id,
+            models::UpdateMatchInput {
+                side_join_settings: settings(max_players),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_status_with_content(response, reqwest::StatusCode::BAD_REQUEST, "needs a name");
+    }
+
+    let updated = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            side_names: Some(vec![models::UpdateMatchSideNameInput {
+                side_id: side_id.clone(),
+                name: Some("Alex's lot".to_string()),
+            }]),
+            side_join_settings: settings(Some(4)),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("rename and raise the cap together");
+    let side = updated.sides.iter().find(|s| s.id == side_id).unwrap();
+    assert_eq!(side.max_players, Some(4));
+    assert_eq!(side.name.as_deref(), Some("Alex's lot"));
 }
 
 /// Renaming a side that isn't part of the match is rejected.
@@ -875,6 +1039,7 @@ async fn patch_match_rename_team_side_without_shared_team_is_rejected() {
     );
     input.sides[0].team_id = Some(team.id.clone());
     input.sides[0].name = None;
+    input.sides[0].colour = None;
     let created = matches_post(&owner_config, input)
         .await
         .expect("create match");
@@ -1347,6 +1512,9 @@ async fn follow_and_unfollow_team() {
     .await
     .expect("create team");
 
+    // The owner already implicitly follows their own team (membership
+    // implies following — see `Dao::follow_team`'s doc comment), so the
+    // count here starts at 1 before this test's own explicit follow.
     let (follower_config, _follower) = new_user().await;
     teams_team_id_follow_post(&follower_config, &team.id)
         .await
@@ -1356,7 +1524,7 @@ async fn follow_and_unfollow_team() {
         .await
         .expect("get team");
     assert!(fetched.is_followed_by_me);
-    assert_eq!(fetched.follower_count, 1);
+    assert_eq!(fetched.follower_count, 2);
 
     teams_team_id_follow_delete(&follower_config, &team.id)
         .await
@@ -1971,7 +2139,9 @@ async fn creating_a_match_fans_out_to_a_participants_feed() {
         let config = &invitee_config;
         let match_id = &created.id;
         async move {
-            let page = feed_get(config, None, None, None, None).await.ok()?;
+            let page = feed_get(config, None, None, None, None, None, None)
+                .await
+                .ok()?;
             page.items.into_iter().find(|item| &item.id == match_id)
         }
     })
@@ -2190,6 +2360,7 @@ async fn match_with_a_team_side_fans_out_to_team_followers() {
     // so drop the placeholder name `match_between` set for side "a".
     input.sides[0].team_id = Some(team.id.clone());
     input.sides[0].name = None;
+    input.sides[0].colour = None;
     let created = matches_post(&owner_config, input)
         .await
         .expect("create match");
@@ -2884,8 +3055,10 @@ async fn list_matches_accepts_filters() {
         None,
         None,
         Some(models::MatchType::Tennis),
+        None,
         Some("2026-01-01T00:00:00Z".to_string()),
         Some("2026-12-31T00:00:00Z".to_string()),
+        None,
         None,
         Some(10),
     )
@@ -2905,8 +3078,10 @@ async fn list_matches_rejects_inverted_date_range() {
         None,
         None,
         None,
+        None,
         Some("2026-12-31T00:00:00Z".to_string()),
         Some("2026-01-01T00:00:00Z".to_string()),
+        None,
         None,
         None,
     )
@@ -2976,8 +3151,10 @@ async fn list_matches_filters_by_team() {
     // — drop the placeholders `match_between` sets.
     input.sides[0].team_id = Some(team_a.id.clone());
     input.sides[0].name = None;
+    input.sides[0].colour = None;
     input.sides[1].team_id = Some(team_b.id.clone());
     input.sides[1].name = None;
+    input.sides[1].colour = None;
     let created = matches_post(&owner_config, input)
         .await
         .expect("create match");
@@ -2995,6 +3172,8 @@ async fn list_matches_filters_by_team() {
                 None,
                 None,
                 Some(vec![team_id]),
+                None,
+                None,
                 None,
                 None,
                 None,
@@ -3022,6 +3201,8 @@ async fn list_matches_filters_by_team() {
         None,
         None,
         None,
+        None,
+        None,
     )
     .await
     .expect("list matches (head-to-head)");
@@ -3038,6 +3219,8 @@ async fn list_matches_filters_by_team() {
         None,
         Some(vec![team_a.id.clone(), unrelated_team.id.clone()]),
         Some(models::TeamMatchMode::All),
+        None,
+        None,
         None,
         None,
         None,
@@ -3063,6 +3246,8 @@ async fn list_matches_filters_by_team() {
         None,
         None,
         None,
+        None,
+        None,
     )
     .await
     .expect("list matches (any, with an unrelated team)");
@@ -3077,6 +3262,8 @@ async fn list_matches_filters_by_team() {
         None,
         None,
         Some(vec![unrelated_team.id.clone()]),
+        None,
+        None,
         None,
         None,
         None,
@@ -4296,7 +4483,7 @@ where
 async fn feed_contains(config: &Configuration, match_id: &str) -> bool {
     let mut cursor: Option<String> = None;
     loop {
-        let page = feed_get(config, cursor.as_deref(), Some(50), None, None)
+        let page = feed_get(config, cursor.as_deref(), Some(50), None, None, None, None)
             .await
             .expect("list feed");
         if page.items.iter().any(|item| item.id == match_id) {
@@ -5032,6 +5219,7 @@ async fn deleted_teams_matches_show_deleted_team() {
     let mut input = match_between("Doomed Match", &[], &[&opponent.profile.id]);
     input.sides[0].team_id = Some(team.id.clone());
     input.sides[0].name = None;
+    input.sides[0].colour = None;
     let created = matches_post(&owner_config, input)
         .await
         .expect("create match");
@@ -6087,6 +6275,7 @@ fn joinable_match_input(
                 client_id: "a".to_string(),
                 team_id: None,
                 name: Some("Side A".to_string()),
+                colour: Some("#2952D9".to_string()),
                 max_players: side_a_max,
                 team_join_enabled: None,
             },
@@ -6094,6 +6283,7 @@ fn joinable_match_input(
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
+                colour: Some("#2952D9".to_string()),
                 max_players: side_b_max,
                 team_join_enabled: None,
             },
@@ -7628,6 +7818,7 @@ fn team_joinable_match_input(team_id: &str) -> models::CreateMatchInput {
                 client_id: "a".to_string(),
                 team_id: Some(team_id.to_string()),
                 name: None,
+                colour: None,
                 max_players: None,
                 team_join_enabled: Some(true),
             },
@@ -7635,6 +7826,7 @@ fn team_joinable_match_input(team_id: &str) -> models::CreateMatchInput {
                 client_id: "b".to_string(),
                 team_id: None,
                 name: Some("Side B".to_string()),
+                colour: Some("#2952D9".to_string()),
                 max_players: None,
                 team_join_enabled: None,
             },
@@ -7749,6 +7941,7 @@ async fn team_self_join_requires_the_sides_own_opt_in() {
                     client_id: "a".to_string(),
                     team_id: Some(team.id.clone()),
                     name: None,
+                    colour: None,
                     max_players: None,
                     team_join_enabled: None,
                 },
@@ -7756,6 +7949,7 @@ async fn team_self_join_requires_the_sides_own_opt_in() {
                     client_id: "b".to_string(),
                     team_id: None,
                     name: Some("Side B".to_string()),
+                    colour: Some("#2952D9".to_string()),
                     max_players: None,
                     team_join_enabled: None,
                 },
@@ -7810,6 +8004,7 @@ async fn team_self_join_on_an_intra_squad_match_offers_a_pick_or_unassigned() {
                     client_id: "a".to_string(),
                     team_id: Some(team.id.clone()),
                     name: Some("Side A".to_string()),
+                    colour: None,
                     max_players: None,
                     team_join_enabled: Some(true),
                 },
@@ -7817,6 +8012,7 @@ async fn team_self_join_on_an_intra_squad_match_offers_a_pick_or_unassigned() {
                     client_id: "b".to_string(),
                     team_id: Some(team.id.clone()),
                     name: Some("Side B".to_string()),
+                    colour: None,
                     max_players: None,
                     team_join_enabled: Some(true),
                 },

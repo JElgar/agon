@@ -36,13 +36,14 @@ import {
   type NetballScore,
   type NetballScoringMethod,
 } from '@/lib/netballScore'
+import { sideDisplayName } from '@/lib/members'
 
 type Match = components['schemas']['Match']
 type UpdateMatchInput = components['schemas']['UpdateMatchInput']
 type Score = components['schemas']['Score']
 
 function sideName(match: Match, index: number, fallback: string): string {
-  return match.sides[index]?.name?.trim() || fallback
+  return sideDisplayName(match.sides[index]) ?? fallback
 }
 
 /** The quarter-end markers in play order, extra time last — what
@@ -327,7 +328,7 @@ function NetballEventByEventScoringPage({
           {onBackToPicker && (
             <>
               {' · '}
-              <button type="button" onClick={onBackToPicker} className="text-primary hover:underline">
+              <button type="button" onClick={onBackToPicker} className="text-link hover:underline">
                 Change scoring method
               </button>
             </>
@@ -539,7 +540,7 @@ function NetballQuarterOnlyScoringPage({
           {onBackToPicker && (
             <>
               {' · '}
-              <button type="button" onClick={onBackToPicker} className="text-primary hover:underline">
+              <button type="button" onClick={onBackToPicker} className="text-link hover:underline">
                 Change scoring method
               </button>
             </>

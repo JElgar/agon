@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { RecordNetballEventDialog, type NetballEventKind } from '@/components/agon/live/RecordNetballEventDialog'
 import { describeEvent, eventClockLabel, eventEmoji, goalEventsToViews, type NetballEventView } from '@/lib/netballScore'
+import { sideDisplayName } from '@/lib/members'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -27,7 +28,7 @@ export interface NetballScoreFieldsProps {
 }
 
 function sideLabel(side: MatchSide, fallback: string): string {
-  return side.name?.trim() || fallback
+  return sideDisplayName(side) ?? fallback
 }
 
 function seedPoints(initial: Score | undefined, aId: string, bId: string): [string, string] {

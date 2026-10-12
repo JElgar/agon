@@ -14,6 +14,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { CopyInviteButton } from './CopyInviteButton'
+import { sideDisplayName } from '@/lib/members'
 
 type Match = components['schemas']['Match']
 type JoinLink = components['schemas']['JoinLink']
@@ -53,7 +54,7 @@ function scopeSummary(scope: JoinLinkScope, match: Match): string {
   if (ids.length === 0) return 'Unassigned only'
   const names = ids.map((id, i) => {
     const side = match.sides.find((s) => s.id === id)
-    return side?.name?.trim() || `Side ${i + 1}`
+    return sideDisplayName(side) ?? `Side ${i + 1}`
   })
   const sideLabel = names.length === 1 ? `Side: ${names[0]}` : `Either: ${names.join(', ')}`
   return scope.allow_unassigned ? `${sideLabel}, or unassigned` : sideLabel
@@ -228,7 +229,7 @@ export function MatchJoinLinksDialog({
                     checked={form.sideIds.includes(side.id)}
                     onChange={() => toggleSide(side.id)}
                   />
-                  {side.name?.trim() || `Side ${i + 1}`}
+                  {sideDisplayName(side) ?? `Side ${i + 1}`}
                 </label>
               ))}
               <p className="text-xs text-muted-foreground">

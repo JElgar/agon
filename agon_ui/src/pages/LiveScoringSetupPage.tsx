@@ -16,11 +16,12 @@ import {
   saveTrackPrefs,
   type TrackPrefs,
 } from '@/lib/liveScore'
+import { sideDisplayName } from '@/lib/members'
 
 type Match = components['schemas']['Match']
 
 function sideName(match: Match, index: number, fallback: string): string {
-  return match.sides[index]?.name?.trim() || fallback
+  return sideDisplayName(match.sides[index]) ?? fallback
 }
 
 /** One row in the "track during the match" list — either a real toggle backed

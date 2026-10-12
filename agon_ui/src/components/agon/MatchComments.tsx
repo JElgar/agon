@@ -55,8 +55,8 @@ export function MatchComments({
   const comments = (query.data?.pages ?? []).flatMap((p) => p.items)
 
   return (
-    <div className="rounded-xl border bg-card p-4">
-      <div className="mb-3 flex items-center gap-1.5 text-sm font-medium">
+    <div className="rounded-2xl border bg-card p-4">
+      <div className="mb-3 flex items-center gap-1.5 font-display text-[15px] font-bold">
         <MessageCircle className="size-4" /> Comments
       </div>
 
@@ -67,7 +67,7 @@ export function MatchComments({
       ) : query.isError ? (
         <div className="mt-4 text-sm text-muted-foreground">
           <p className="mb-2">Couldn't load comments.</p>
-          <Button variant="outline" size="sm" onClick={() => query.refetch()}>
+          <Button variant="outline" shape="pill" size="sm" onClick={() => query.refetch()}>
             Retry
           </Button>
         </div>
@@ -91,6 +91,7 @@ export function MatchComments({
       {query.hasNextPage && (
         <Button
           variant="ghost"
+          shape="pill"
           size="sm"
           className="mt-3"
           disabled={query.isFetchingNextPage}
@@ -148,7 +149,7 @@ function CommentThread({
       />
 
       {(replies.length > 0 || replying) && (
-        <div className="mt-2 flex flex-col gap-3 border-l pl-3 ml-3.5">
+        <div className="mt-2 flex flex-col gap-3 border-l pl-3 ml-[18px]">
           {replies.map((reply) => (
             <CommentRow
               key={reply.id}
@@ -160,6 +161,7 @@ function CommentThread({
           {repliesQuery.hasNextPage && (
             <Button
               variant="ghost"
+              shape="pill"
               size="sm"
               className="self-start"
               disabled={repliesQuery.isFetchingNextPage}
@@ -182,7 +184,7 @@ function CommentThread({
   )
 }
 
-/** A single comment (top-level or reply): author, body/tombstone, actions. */
+/** A single comment (top-level or reply): author, speech-bubble body, actions. */
 function CommentRow({
   matchId,
   comment,
@@ -232,57 +234,57 @@ function CommentRow({
         />
       )}
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 text-xs">
-          {authorId ? (
-            <Link to={`/users/${authorId}`} className="font-medium hover:underline">
-              {name}
-            </Link>
-          ) : (
-            <span className="font-medium">{deleted ? 'Deleted' : name}</span>
-          )}
-          <span className="text-muted-foreground">
-            {relativeTime(comment.created_at)}
-          </span>
-          {comment.edited_at && !deleted && (
-            <span className="text-muted-foreground">· edited</span>
-          )}
+        <div className="flex flex-col gap-0.5 rounded-[4px_18px_18px_18px] border bg-card px-3.5 py-2.5">
+          <div className="flex items-center gap-1.5 text-[13px]">
+            {authorId ? (
+              <Link
+                to={`/users/${authorId}`}
+                className="font-bold hover:underline"
+              >
+                {name}
+              </Link>
+            ) : (
+              <span className="font-bold">{deleted ? 'Deleted' : name}</span>
+            )}
+            {comment.edited_at && !deleted && (
+              <span className="text-muted-foreground">· edited</span>
+            )}
+          </div>
+          <p
+            className={cn(
+              'whitespace-pre-wrap break-words text-[15px] leading-snug',
+              deleted && 'italic text-muted-foreground',
+            )}
+          >
+            {deleted ? '[deleted]' : comment.text}
+          </p>
         </div>
-        <p
-          className={cn(
-            'mt-0.5 whitespace-pre-wrap break-words text-sm',
-            deleted && 'italic text-muted-foreground',
-          )}
-        >
-          {deleted ? '[deleted]' : comment.text}
-        </p>
 
-        {!deleted && (onReply || isAuthor) && (
-          <div className="mt-1 flex items-center gap-1 text-muted-foreground">
-            {onReply && (
+        <div className="mt-1 flex items-center gap-1 text-[13px] text-muted-foreground">
+          <span className="pl-3.5 pr-1.5">{relativeTime(comment.created_at)}</span>
+          {!deleted && onReply && (
+            <button
+              type="button"
+              onClick={onReply}
+              className="h-7 rounded-full px-2 text-[13px] font-bold text-muted-foreground hover:bg-accent"
+            >
+              Reply
+            </button>
+          )}
+          {!deleted && isAuthor && (
+            <>
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-6 px-1.5 text-xs"
-                onClick={onReply}
+                className="h-7 gap-1 px-1.5 text-xs"
+                onClick={() => setEditing(true)}
               >
-                Reply
+                <Pencil className="size-3" /> Edit
               </Button>
-            )}
-            {isAuthor && (
-              <>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-6 gap-1 px-1.5 text-xs"
-                  onClick={() => setEditing(true)}
-                >
-                  <Pencil className="size-3" /> Edit
-                </Button>
-                <DeleteComment matchId={matchId} comment={comment} />
-              </>
-            )}
-          </div>
-        )}
+              <DeleteComment matchId={matchId} comment={comment} />
+            </>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -362,16 +364,17 @@ function CommentComposer({
         onChange={(e) => setText(e.target.value)}
         placeholder={placeholder}
         rows={parentId || editing ? 2 : 3}
-        className="w-full resize-y rounded-lg border bg-background px-3 py-2 text-sm outline-none ring-primary/30 focus:ring-2"
+        className="w-full resize-y rounded-2xl border bg-background px-3.5 py-2.5 text-[15px] outline-none ring-primary/30 focus:ring-2"
       />
       {submit.isError && (
-        <p className="mt-1 text-xs text-red-600">
+        <p className="mt-1 text-xs text-destructive">
           Something went wrong. Please try again.
         </p>
       )}
       <div className="mt-2 flex items-center gap-2">
         <Button
           size="sm"
+          shape="pill"
           disabled={disabled}
           onClick={() => submit.mutate()}
         >
@@ -386,6 +389,7 @@ function CommentComposer({
         {onDone && (
           <Button
             variant="ghost"
+            shape="pill"
             size="sm"
             disabled={submit.isPending}
             onClick={onDone}
@@ -435,7 +439,7 @@ function DeleteComment({
       <Button
         variant="ghost"
         size="sm"
-        className="h-6 gap-1 px-1.5 text-xs text-destructive hover:text-destructive"
+        className="h-7 gap-1 px-1.5 text-xs text-destructive hover:text-destructive"
         onClick={() => setConfirming(true)}
       >
         <Trash2 className="size-3" /> Delete
@@ -448,7 +452,7 @@ function DeleteComment({
       <Button
         variant="ghost"
         size="sm"
-        className="h-6 px-1.5 text-xs text-destructive hover:text-destructive"
+        className="h-7 px-1.5 text-xs text-destructive hover:text-destructive"
         disabled={del.isPending}
         onClick={() => del.mutate()}
       >
@@ -457,7 +461,7 @@ function DeleteComment({
       <Button
         variant="ghost"
         size="sm"
-        className="h-6 px-1.5 text-xs"
+        className="h-7 px-1.5 text-xs"
         disabled={del.isPending}
         onClick={() => setConfirming(false)}
       >

@@ -11,8 +11,10 @@ use temporalio_client::{
 };
 use temporalio_common::protos::temporal::api::enums::v1::WorkflowIdConflictPolicy;
 
-use super::workflows::{AcceptInvitation, AcceptInvitationInput, FanOutMatch};
-use super::{TASK_QUEUE, accept_workflow_id, fanout_workflow_id};
+use super::workflows::{
+    AcceptInvitation, AcceptInvitationInput, FanOutMatch, FanOutMatchInput, MaterializeSeries,
+};
+use super::{TASK_QUEUE, accept_workflow_id, fanout_workflow_id, materialize_workflow_id};
 
 /// Thin wrapper over a Temporal client for starting Agon workflows.
 #[derive(Clone)]
@@ -34,12 +36,21 @@ impl TemporalClient {
     /// Start (or attach to) the fan-out workflow for a match. Idempotent via the
     /// deterministic `fanout-<match_id>` id: the `UseExisting` conflict policy
     /// means a duplicate start returns a handle to the running run rather than
-    /// erroring, so a redelivered stream event is a no-op.
-    pub async fn start_fanout(&self, match_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    /// erroring, so a redelivered stream event is a no-op. `old_starts_at` is
+    /// `Some` only when this run was triggered by a reschedule (see
+    /// `FanOutMatchInput`).
+    pub async fn start_fanout(
+        &self,
+        match_id: &str,
+        old_starts_at: Option<String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         self.client
             .start_workflow(
                 FanOutMatch::run,
-                match_id.to_string(),
+                FanOutMatchInput {
+                    match_id: match_id.to_string(),
+                    old_starts_at,
+                },
                 WorkflowStartOptions::new(TASK_QUEUE, fanout_workflow_id(match_id))
                     .id_conflict_policy(WorkflowIdConflictPolicy::UseExisting)
                     .build(),
@@ -60,6 +71,26 @@ impl TemporalClient {
                 AcceptInvitation::run,
                 input,
                 WorkflowStartOptions::new(TASK_QUEUE, id)
+                    .id_conflict_policy(WorkflowIdConflictPolicy::UseExisting)
+                    .build(),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Start (or attach to) a series' materialization — generating its
+    /// remaining occurrences. Idempotent via the deterministic
+    /// `materialize-<series_id>` id + `UseExisting` conflict policy, same as
+    /// `start_fanout`/`start_accept` above.
+    pub async fn start_materialize_series(
+        &self,
+        series_id: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        self.client
+            .start_workflow(
+                MaterializeSeries::run,
+                series_id.to_string(),
+                WorkflowStartOptions::new(TASK_QUEUE, materialize_workflow_id(series_id))
                     .id_conflict_policy(WorkflowIdConflictPolicy::UseExisting)
                     .build(),
             )

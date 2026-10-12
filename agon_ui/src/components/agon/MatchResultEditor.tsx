@@ -11,6 +11,7 @@ import { NetballScoreFields } from '@/components/agon/NetballScoreFields'
 import { displayScore, headlineBySide } from '@/lib/score'
 import { cricketProgressFromScore, matchTotalsBySide } from '@/lib/cricketScore'
 import { PendingInvitesNudge } from '@/components/agon/PendingInvitesNudge'
+import { sideDisplayName } from '@/lib/members'
 
 type Match = components['schemas']['Match']
 type UpdateMatchInput = components['schemas']['UpdateMatchInput']
@@ -33,7 +34,7 @@ interface SetRow {
 }
 
 function sideLabel(match: Match, index: number, fallback: string): string {
-  return match.sides[index]?.name?.trim() || fallback
+  return sideDisplayName(match.sides[index]) ?? fallback
 }
 
 /**

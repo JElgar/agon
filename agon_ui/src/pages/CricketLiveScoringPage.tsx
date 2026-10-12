@@ -16,7 +16,7 @@ import { NoBallDialog } from '@/components/agon/live/NoBallDialog'
 import { TargetReachedDialog } from '@/components/agon/live/TargetReachedDialog'
 import { AllOutDialog } from '@/components/agon/live/AllOutDialog'
 import { OversCompleteDialog } from '@/components/agon/live/OversCompleteDialog'
-import { playersOnSide } from '@/lib/members'
+import { playersOnSide, sideDisplayName } from '@/lib/members'
 import { cricketFormat } from '@/lib/matchFormat'
 import {
   cricketScoreFrom,
@@ -270,7 +270,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
         {header}
         <div>
           <h1 className="text-lg font-semibold">
-            {match.sides[0]?.name?.trim() || 'Side A'} vs {match.sides[1]?.name?.trim() || 'Side B'}
+            {sideDisplayName(match.sides[0]) ?? 'Side A'} vs {sideDisplayName(match.sides[1]) ?? 'Side B'}
           </h1>
           <p className="text-sm text-muted-foreground">
             {allInningsComplete
@@ -286,7 +286,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
               {state.innings.map((inn, i) => (
                 <div key={i}>
                   <p className="mb-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-                    {match.sides.find((s) => s.id === inn.batting_side_id)?.name?.trim() ||
+                    {sideDisplayName(match.sides.find((s) => s.id === inn.batting_side_id)) ??
                       'This side'}
                   </p>
                   <p className="text-2xl font-medium tracking-tight">

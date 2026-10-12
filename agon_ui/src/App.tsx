@@ -14,16 +14,17 @@ import { LoginForm } from '@/components/auth/LoginForm'
 import { CreateProfileForm } from '@/components/auth/CreateProfileForm'
 import { InvitePreviewBanner } from '@/components/auth/InvitePreviewBanner'
 import { IosInstallBanner } from '@/components/IosInstallBanner'
-import { AppSidebar } from '@/components/AppSidebar'
 import { MobileBottomNav } from '@/components/MobileBottomNav'
+import { DesktopNav } from '@/components/DesktopNav'
+import { TabletHeader, TabletFloatingNav } from '@/components/TabletNav'
 import { Logo } from '@/components/agon/Logo'
 import { Button } from '@/components/ui/button'
-import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { ThemeProvider } from '@/hooks/useTheme'
 import { useUnreadNotificationsCount } from '@/hooks/useUnreadCount'
 import { useQuery } from '@tanstack/react-query'
 import { fetchClient } from '@/lib/api-client'
 import { FeedPage } from '@/pages/FeedPage'
+import { ScheduledMatchesPage } from '@/pages/ScheduledMatchesPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { LogMatchPage } from '@/pages/LogMatchPage'
 import { MatchDetailPage } from '@/pages/MatchDetailPage'
@@ -62,48 +63,63 @@ function ComingSoon({ title }: { title: string }) {
   )
 }
 
-/** The signed-in chrome: a fixed sidebar on desktop, a top bar + bottom tab
- *  bar on mobile, wrapping the routed content. */
-function AppShell({ email, onSignOut }: { email: string; onSignOut: () => void }) {
+/** The signed-in chrome: a fixed sidebar at the desktop breakpoint (`xl`,
+ *  ≥1280px), a top bar + floating pill nav at the tablet breakpoint
+ *  (`md`–`xl`, ~768–1279px), and a top bar + bottom tab bar below that,
+ *  wrapping the routed content. */
+/** Match detail pages pin their own "Give kudos" / RSVP action bar to the
+ *  bottom of the screen; the bottom tab bar would just compete with it for
+ *  the same strip of screen, so it's hidden there (but not on `/matches/new`
+ *  or `/matches/scheduled`, which have no pinned bar of their own). */
+function isNestedMatchPage(pathname: string): boolean {
+  return /^\/matches\/[^/]+$/.test(pathname)
+}
+
+function AppShell({ onSignOut }: { onSignOut: () => void }) {
   const { data: unread } = useUnreadNotificationsCount()
+  const location = useLocation()
+  const showMobileBottomNav = !isNestedMatchPage(location.pathname)
 
   return (
-    <SidebarProvider>
-      <AppSidebar email={email} onSignOut={onSignOut} />
-      <SidebarInset>
+    <div className="min-h-screen bg-background">
+      <DesktopNav unread={unread} onSignOut={onSignOut} />
+      <div className="min-h-screen xl:pl-[248px]">
         {/* Mobile top bar: brand + quick links to the two nav destinations
-            that don't fit the bottom tab bar. Hidden on desktop, where the
-            sidebar carries the full nav. */}
-        <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80 md:hidden">
-          <Logo />
-          <div className="flex items-center gap-2">
-            <Button variant="ghost" size="icon" className="rounded-full bg-card" asChild>
-              <Link to="/search" aria-label="Find people">
-                <Search className="size-5" />
-              </Link>
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="relative rounded-full bg-card"
-              asChild
-            >
-              <Link to="/notifications" aria-label="Notifications">
-                <Bell className="size-5" />
-                {!!unread && unread > 0 && (
-                  <span className="absolute right-2 top-2 size-2 rounded-full bg-primary" />
-                )}
-              </Link>
-            </Button>
-          </div>
-        </header>
+              that don't fit the bottom tab bar. Replaced by `TabletHeader`
+              at `md`, and by the sidebar's own nav at `xl`. */}
+          <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80 md:hidden">
+            <Logo />
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" size="icon" className="rounded-full bg-card" asChild>
+                <Link to="/search" aria-label="Find people">
+                  <Search className="size-5" />
+                </Link>
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="relative rounded-full bg-card"
+                asChild
+              >
+                <Link to="/notifications" aria-label="Notifications">
+                  <Bell className="size-5" />
+                  {!!unread && unread > 0 && (
+                    <span className="absolute right-2 top-2 size-2 rounded-full bg-primary" />
+                  )}
+                </Link>
+              </Button>
+            </div>
+          </header>
 
-        <main className="container mx-auto px-4 py-8 pb-28 md:pb-8">
-          <IosInstallBanner />
+          <TabletHeader unread={unread} />
+
+          <main className="container mx-auto px-4 py-8 pb-28 md:pb-32 xl:pb-8">
+            <IosInstallBanner />
           <Routes>
           <Route path="/" element={<HomeRedirect />} />
           <Route path="/feed" element={<FeedPage />} />
           <Route path="/matches/new" element={<LogMatchPage />} />
+          <Route path="/matches/scheduled" element={<ScheduledMatchesPage />} />
           <Route path="/matches/:matchId" element={<MatchDetailPage />} />
           <Route path="/matches/:matchId/live/setup" element={<LiveScoringSetupPage />} />
           <Route path="/matches/:matchId/live" element={<LiveScoringPage />} />
@@ -130,11 +146,12 @@ function AppShell({ email, onSignOut }: { email: string; onSignOut: () => void }
           />
           <Route path="*" element={<HomeRedirect />} />
           </Routes>
-        </main>
+          </main>
 
-        <MobileBottomNav />
-      </SidebarInset>
-    </SidebarProvider>
+        {showMobileBottomNav && <MobileBottomNav />}
+        <TabletFloatingNav />
+      </div>
+    </div>
   )
 }
 
@@ -231,7 +248,6 @@ function AuthenticatedApp() {
     return (
       <CenteredMessage>
         <div className="w-full max-w-md">
-          <h1 className="text-3xl font-bold text-center mb-8">Welcome to Agon</h1>
           {pendingLink && <InvitePreviewBanner {...pendingLink} />}
           <LoginForm />
         </div>
@@ -278,7 +294,7 @@ function AuthenticatedApp() {
 
   return (
     <PushNotificationsProvider>
-      <AppShell email={user.email || ''} onSignOut={signOut} />
+      <AppShell onSignOut={signOut} />
     </PushNotificationsProvider>
   )
 }

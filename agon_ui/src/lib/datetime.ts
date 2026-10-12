@@ -70,6 +70,55 @@ export function scheduledDateTime(iso: string): string {
   })
 }
 
+/**
+ * A short fixed date for an ISO instant, e.g. "Sat 8 Aug" — no time, no year,
+ * no comma. Matches the "Agon redesign" canvas's feed-card subtitle line
+ * (`Tiles.dc.html`'s finished cards), which is more compact than
+ * `scheduledDateTime`'s full "Sat, 12 Sep · 3:00 PM".
+ */
+export function shortDate(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })
+}
+
+/** "19:30" — a bare local time, no date. Used by the "kicks off at" line on a
+ *  starting-soon scheduled tile, which already states the date in its header
+ *  ("Today"), so repeating it here would be redundant. */
+export function timeOfDay(iso: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return ''
+  return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+/** Minutes from now until an ISO instant (negative once it's passed). */
+export function minutesUntil(iso: string): number {
+  return Math.round((new Date(iso).getTime() - Date.now()) / 60000)
+}
+
+/** How soon a scheduled match's kickoff counts as "starting soon" for the
+ *  amber countdown tile on the "Agon redesign" canvas (`Tiles.dc.html`'s
+ *  "Scheduled variant B") — inside an hour of kickoff. */
+const STARTING_SOON_MINUTES = 60
+
+/** Whether a scheduled match's kickoff is imminent (within the next hour,
+ *  and hasn't already passed) — the amber "KICKS OFF IN …" tile treatment vs.
+ *  the plain blue "SCHEDULED" one. */
+export function isStartingSoon(iso: string): boolean {
+  const mins = minutesUntil(iso)
+  return mins >= 0 && mins <= STARTING_SOON_MINUTES
+}
+
+/** "47m" / "1h 5m" / "2h" — the countdown text on a starting-soon tile's
+ *  "KICKS OFF IN …" pill. Assumes `isStartingSoon` (non-negative minutes). */
+export function countdownLabel(iso: string): string {
+  const mins = Math.max(0, minutesUntil(iso))
+  if (mins < 60) return `${mins}m`
+  const hours = Math.floor(mins / 60)
+  const rest = mins % 60
+  return rest > 0 ? `${hours}h ${rest}m` : `${hours}h`
+}
+
 /** Whether two dates fall on the same local calendar day. */
 function isSameDay(a: Date, b: Date): boolean {
   return (

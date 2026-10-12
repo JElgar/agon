@@ -1261,6 +1261,31 @@ struct MatchSeriesOccurrence {
     match_id: String,
 }
 
+/// How far an edit to a series occurrence reaches. Ignored for a match with
+/// no `series_id` — only `Occurrence` is meaningful there, and it's also
+/// this field's default, so an ordinary match's `PATCH` doesn't need to
+/// think about it at all.
+///
+/// Only `name`/`description`/`location`/`format` can be scoped beyond the
+/// one occurrence: every other field on [`UpdateMatchInput`] (roster,
+/// score, status, …) is inherently per-occurrence, so `update_match`
+/// rejects a non-`Occurrence` scope combined with any of those.
+#[derive(Enum)]
+#[oai(rename_all = "snake_case")]
+enum MatchEditScope {
+    /// Edit only this match. The default.
+    Occurrence,
+    /// Edit this occurrence and every later occurrence of the same series
+    /// (by `starts_at`), plus the series template so occurrences generated
+    /// later also pick it up. `format` isn't part of the series template
+    /// (series don't have one), so it only reaches occurrences that already
+    /// exist.
+    ThisAndFuture,
+    /// Edit every occurrence of the series — past and future — plus the
+    /// series template, same `format` caveat as `ThisAndFuture`.
+    Series,
+}
+
 /// The organiser's one-stop update for a match: edit metadata, reconcile the
 /// actual line-up, and/or record the result — all in one validated, atomic call.
 /// All fields optional; only supplied fields take effect. The server validates
@@ -1280,6 +1305,9 @@ struct UpdateMatchInput {
     description: Option<String>,
     starts_at: Option<chrono::DateTime<chrono::Utc>>,
     location: Option<Location>,
+    /// For a match generated from a recurring series, how far this edit
+    /// reaches. Defaults to `occurrence`. See [`MatchEditScope`].
+    scope: Option<MatchEditScope>,
     /// Move the match through its lifecycle (e.g. cancel).
     status: Option<MatchStatus>,
     /// Ad-hoc players who actually played but weren't invited (e.g. ringers).
@@ -3766,6 +3794,39 @@ impl Api {
             )));
         }
 
+        // `scope` beyond a single occurrence needs a series to reach, and
+        // only makes sense for the fields the series template itself
+        // carries (or, for `format`, the other existing occurrences) —
+        // reject any request that mixes it with a field that's inherently
+        // specific to this one occurrence (roster, score, status, …).
+        let scope = input.scope.unwrap_or(MatchEditScope::Occurrence);
+        if !matches!(scope, MatchEditScope::Occurrence) {
+            if agg.match_.series_id.is_none() {
+                return Ok(UpdateMatchResponse::ValidationError(PlainText(
+                    "scope can only be set on a match that belongs to a series".into(),
+                )));
+            }
+            let occurrence_only_field_set = input.starts_at.is_some()
+                || input.status.is_some()
+                || input.added_players.is_some()
+                || input.side_assignments.is_some()
+                || input.removed_player_ids.is_some()
+                || input.side_names.is_some()
+                || input.side_colours.is_some()
+                || input.score.is_some()
+                || input.override_live_score.is_some()
+                || input.winner_side_id.is_some()
+                || input.detailed_score.is_some()
+                || input.header_photo_asset_ids.is_some()
+                || input.allow_unassigned.is_some()
+                || input.side_join_settings.is_some();
+            if occurrence_only_field_set {
+                return Ok(UpdateMatchResponse::ValidationError(PlainText(
+                    "scope can only be used with name/description/location/format edits".into(),
+                )));
+            }
+        }
+
         // A lowered cap can't drop below the side's current roster — reject
         // rather than silently leaving it over-full.
         let side_join_settings: Vec<(String, Option<u32>, bool)> = match &input.side_join_settings {
@@ -4249,6 +4310,62 @@ impl Api {
             }
             other => dao_internal(other),
         })?;
+
+        // `scope` beyond this one occurrence: push the same
+        // name/description/location/format onto the series' other
+        // occurrences (validated above to be the only fields a non-default
+        // scope can carry), and onto the series template so occurrences
+        // generated later pick it up too (`format` isn't part of that
+        // template — see `MatchEditScope::ThisAndFuture`'s doc comment).
+        if !matches!(scope, MatchEditScope::Occurrence)
+            && (input.name.is_some()
+                || input.description.is_some()
+                || input.location.is_some()
+                || input.format.is_some())
+        {
+            // series_id checked present by the validation above.
+            let series_id = agg.match_.series_id.as_deref().unwrap();
+            let occurrences = dao
+                .list_series_occurrences(series_id)
+                .await
+                .map_err(dao_internal)?;
+            let other_match_ids: Vec<&str> = occurrences
+                .iter()
+                .filter(|o| o.match_id != match_id)
+                .filter(|o| match scope {
+                    MatchEditScope::ThisAndFuture => o.starts_at >= agg.match_.starts_at,
+                    MatchEditScope::Series => true,
+                    MatchEditScope::Occurrence => false,
+                })
+                .map(|o| o.match_id.as_str())
+                .collect();
+            for other_id in other_match_ids {
+                dao.update_match_meta(
+                    other_id,
+                    input.name.as_deref(),
+                    input.description.as_deref(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    input.format.as_ref().map(match_format_to_record),
+                    input.location.as_ref().map(location_to_record),
+                    &[],
+                    &[],
+                )
+                .await
+                .map_err(dao_internal)?;
+            }
+            dao.update_series_template(
+                series_id,
+                input.name.as_deref(),
+                input.description.as_deref(),
+                input.location.as_ref().map(location_to_record),
+            )
+            .await
+            .map_err(dao_internal)?;
+        }
 
         // Join settings — validated and admin-gated above. Its own call
         // rather than folded into `update_match_meta`: unlike the side

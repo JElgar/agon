@@ -32,7 +32,7 @@ use super::error::{DaoError, DaoResult};
 use super::is_update_conditional_failure;
 use super::item::{ATTR_PK, ATTR_SK, from_item, s, to_item};
 use super::keys::{Pk, Sk};
-use super::records::{SeriesOccurrenceRecord, SeriesRecord};
+use super::records::{LocationRecord, SeriesOccurrenceRecord, SeriesRecord};
 
 pub const TYPE_SERIES: &str = "series";
 pub const TYPE_SERIES_OCCURRENCE: &str = "series_occurrence";
@@ -241,6 +241,66 @@ impl Dao {
         match result {
             Ok(_) => Ok(()),
             Err(e) if is_update_conditional_failure(&e) => Ok(()),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// Update a series' template fields — `name`/`description`/`location`,
+    /// the subset `PATCH /matches/:id`'s `scope: this_and_future`/`series`
+    /// can reach — so occurrences `materialize_series` generates later pick
+    /// up the same edit the caller made to existing occurrences. `None`
+    /// leaves a field unchanged, same convention as `update_match_meta`. A
+    /// no-op (all `None`) skips the write entirely.
+    #[tracing::instrument(skip(self, location))]
+    pub async fn update_series_template(
+        &self,
+        series_id: &str,
+        name: Option<&str>,
+        description: Option<&str>,
+        location: Option<LocationRecord>,
+    ) -> DaoResult<()> {
+        let mut set: Vec<String> = Vec::new();
+        let mut names: std::collections::HashMap<String, String> = Default::default();
+        let mut values: std::collections::HashMap<String, AttributeValue> = Default::default();
+
+        if let Some(v) = name {
+            set.push("#name = :name".into());
+            names.insert("#name".into(), "name".into());
+            values.insert(":name".into(), s(v));
+        }
+        if let Some(v) = description {
+            set.push("description = :desc".into());
+            values.insert(":desc".into(), s(v));
+        }
+        if let Some(loc) = location {
+            set.push("#loc = :loc".into());
+            names.insert("#loc".into(), "location".into());
+            values.insert(":loc".into(), serde_dynamo::to_attribute_value(&loc)?);
+        }
+
+        if set.is_empty() {
+            return Ok(());
+        }
+        names.insert("#pk".into(), ATTR_PK.into());
+
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Series(series_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .update_expression(format!("SET {}", set.join(", ")))
+            .condition_expression("attribute_exists(#pk)")
+            .set_expression_attribute_names(Some(names))
+            .set_expression_attribute_values(Some(values))
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => {
+                Err(DaoError::NotFound(format!("series {series_id}")))
+            }
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
     }

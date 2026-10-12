@@ -45,11 +45,11 @@ use crate::{
     BestBowlingFigures, BestFigure, Comment, ConfirmedScore, CreateMatchSeriesEndAfterNInput,
     CreateMatchSeriesEndInput, CreateMatchSeriesEndOnDateInput, CricketPlayerStats, CricketScore,
     CricketScoreInnings, DevicePlatform, FeedMatch, FootballPlayerStats, FootballScore,
-    GenericPlayerStats, Location, Match, MatchOutcome, MatchPlayer, MatchSeries, MatchSeriesSide,
-    MatchSeriesStatus, MatchSide, MatchSocial, MatchStatus, MatchType, NetballScore, PendingScore,
-    Photo, RosterPreviewPlayer, Score, ScoreConfirmation, ScoreResponseKind, ScoreSubmission,
-    ScoreSubmissionResponse, ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore,
-    UserProfile, UserStats,
+    GenericPlayerStats, Location, Match, MatchOutcome, MatchPlayer, MatchSeries,
+    MatchSeriesOccurrence, MatchSeriesSide, MatchSeriesStatus, MatchSide, MatchSocial, MatchStatus,
+    MatchType, NetballScore, PendingScore, Photo, RosterPreviewPlayer, Score, ScoreConfirmation,
+    ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus,
+    SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
 };
 use agon_core::dao::error::DaoError;
 use agon_core::dao::live_score_ops::NewLiveEvent;
@@ -73,8 +73,8 @@ use agon_core::dao::records::{
     NetballLiveEventRecord, NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord,
     NextBallContextRecord, NotificationKindRecord, NotificationRecord, OversRecord,
     PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord,
-    ScoreSubmissionRecord, SeriesEndRecord, SeriesRecord, SeriesSideRecord, TeamMemberRecord,
-    TeamRecord, UserRecord, UserStatsRecord,
+    ScoreSubmissionRecord, SeriesEndRecord, SeriesOccurrenceRecord, SeriesRecord, SeriesSideRecord,
+    TeamMemberRecord, TeamRecord, UserRecord, UserStatsRecord,
 };
 
 /// Parse an RFC-3339 timestamp string stored by the DAO into a UTC datetime,
@@ -391,6 +391,14 @@ pub fn match_series_from_record(rec: &SeriesRecord) -> MatchSeries {
         status: match_series_status_from_str(&rec.status),
         occurrences_generated: rec.occurrences_generated,
         created_at: parse_ts(&rec.created_at),
+    }
+}
+
+pub fn match_series_occurrence_from_record(rec: &SeriesOccurrenceRecord) -> MatchSeriesOccurrence {
+    MatchSeriesOccurrence {
+        index: rec.index,
+        starts_at: parse_ts(&rec.starts_at),
+        match_id: rec.match_id.clone(),
     }
 }
 

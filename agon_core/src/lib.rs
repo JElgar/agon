@@ -7,6 +7,7 @@
 
 pub mod dao;
 pub mod error;
+pub mod id;
 pub mod push;
 pub mod rating;
 pub mod search;

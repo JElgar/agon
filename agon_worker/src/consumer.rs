@@ -410,6 +410,21 @@ mod tests {
     }
 
     #[test]
+    fn series_occurrence_insert_starts_nothing() {
+        // An occurrence claim item (`Dao::claim_series_occurrence`) is a
+        // write under the series' own partition too, but only its `#META`
+        // item should ever start `materialize_series`.
+        let ev = event(
+            ChangeKind::Insert,
+            "SERIES#sr1",
+            "OCCURRENCE#2026-06-01T10:00:00Z",
+            None,
+            None,
+        );
+        assert_eq!(workflow_for(&ev), None);
+    }
+
+    #[test]
     fn accept_transition_starts_accept_saga_with_match_id() {
         let old = invitation("pending", match_ctx());
         let new = invitation("accepted", match_ctx());

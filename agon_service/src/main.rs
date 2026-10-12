@@ -9,7 +9,6 @@
 
 use std::{collections::HashMap, fs::File, io::Write};
 
-use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use clap::{Parser, Subcommand};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use poem::http::Uri;
@@ -46,11 +45,11 @@ use mapping::{
     join_link_scope_to_record, live_event_from_record, location_to_record, match_format_sport_tag,
     match_format_to_record, match_from_records, match_player_role_from_record,
     match_player_role_to_record, match_score_from_record, match_score_to_record,
-    match_series_from_record, match_status_str, match_type_tag, new_live_event_to_dao,
-    notification_actor_id, notification_from_record, roster_preview_player,
-    score_submission_from_record, score_to_record, search_match_from_records,
-    series_end_record_from_input, team_from_records, team_list_item_from_record,
-    team_member_from_record, user_profile_from_record,
+    match_series_from_record, match_series_occurrence_from_record, match_status_str,
+    match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
+    roster_preview_player, score_submission_from_record, score_to_record,
+    search_match_from_records, series_end_record_from_input, team_from_records,
+    team_list_item_from_record, team_member_from_record, user_profile_from_record,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -1249,6 +1248,19 @@ struct CreateMatchSeriesResult {
     first_match_id: String,
 }
 
+/// One entry of `GET /match-series/:id/occurrences` — an occurrence this
+/// series has generated so far, including the first (created synchronously
+/// at series-creation time).
+#[derive(Object)]
+struct MatchSeriesOccurrence {
+    /// 0-based position in the series.
+    index: u32,
+    starts_at: chrono::DateTime<chrono::Utc>,
+    /// The occurrence's own, independently-fetchable match (`GET
+    /// /matches/:id`).
+    match_id: String,
+}
+
 /// The organiser's one-stop update for a match: edit metadata, reconcile the
 /// actual line-up, and/or record the result — all in one validated, atomic call.
 /// All fields optional; only supplied fields take effect. The server validates
@@ -1754,6 +1766,15 @@ enum CreateMatchSeriesResponse {
 enum GetMatchSeriesResponse {
     #[oai(status = 200)]
     Series(Json<MatchSeries>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum ListMatchSeriesOccurrencesResponse {
+    #[oai(status = 200)]
+    Occurrences(Json<Vec<MatchSeriesOccurrence>>),
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
@@ -4516,11 +4537,29 @@ impl Api {
             Err(e) => return Err(dao_internal(e)),
         }
 
+        // Claim the first occurrence's generation slot before creating its
+        // match — same `Dao::claim_series_occurrence` mechanism
+        // `materialize_series` uses for every later occurrence (see
+        // `agon_core::dao::series_ops`'s doc comment), so `GET
+        // /match-series/:id/occurrences` has one consistent item collection
+        // to list across the whole series, not just the generated tail.
+        let occurrence = dao::records::SeriesOccurrenceRecord {
+            series_id: series_id.clone(),
+            index: 0,
+            starts_at: series_record.first_occurrence_starts_at.clone(),
+            match_id: new_id(),
+            created_at: now.clone(),
+        };
+        let occurrence = dao
+            .claim_series_occurrence(&occurrence)
+            .await
+            .map_err(dao_internal)?;
+
         // The first occurrence is the template itself, created exactly like
         // any other match — but with no players: a series only configures a
         // team per side, roster join happens per-occurrence later (no
         // invite-list support for a series yet).
-        let match_id = new_id();
+        let match_id = occurrence.match_id;
         let mut sides: std::collections::HashMap<String, dao::records::MatchSideRecord> =
             Default::default();
         for side in &input.sides {
@@ -4603,6 +4642,45 @@ impl Api {
                 "series not found".into(),
             ))),
         }
+    }
+
+    /// List a series' generated occurrences (including the first, created
+    /// synchronously at series-creation time), ordered by `starts_at`.
+    /// Straightforward now that occurrences are claimed via their own item
+    /// collection (`Dao::claim_series_occurrence`/`list_series_occurrences`)
+    /// rather than only being derivable by formula — see
+    /// `agon_core::dao::series_ops`'s doc comment. Not paginated: a series is
+    /// capped at `agon_core::series::MAX_SERIES_OCCURRENCES` (99) entries, so
+    /// there's no page worth cutting this into.
+    #[oai(path = "/match-series/:series_id/occurrences", method = "get")]
+    async fn list_match_series_occurrences(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(series_id): Path<String>,
+    ) -> Result<ListMatchSeriesOccurrencesResponse> {
+        info!("Listing occurrences of match series {series_id}");
+        self.require_uid(dao, &jwt_data).await?;
+        if dao
+            .get_series(&series_id)
+            .await
+            .map_err(dao_internal)?
+            .is_none()
+        {
+            return Ok(ListMatchSeriesOccurrencesResponse::NotFound(PlainText(
+                "series not found".into(),
+            )));
+        }
+        let occurrences = dao
+            .list_series_occurrences(&series_id)
+            .await
+            .map_err(dao_internal)?
+            .iter()
+            .map(match_series_occurrence_from_record)
+            .collect();
+        Ok(ListMatchSeriesOccurrencesResponse::Occurrences(Json(
+            occurrences,
+        )))
     }
 
     /// Get a match's current score.
@@ -9780,16 +9858,12 @@ mod scope_tests {
     }
 }
 
-/// Generate a new opaque id (base64url of random bytes).
+/// Generate a new opaque id. Thin wrapper over `agon_core::id::new_id` —
+/// shared with `agon_worker`'s series-occurrence generation, which needed the
+/// same random-id generation once it stopped deriving occurrence match ids
+/// from a hash (see `agon_core::dao::series_ops`'s doc comment).
 fn new_id() -> String {
-    use rand::RngCore;
-    let mut bytes = [0u8; 16];
-    rand::rng().fill_bytes(&mut bytes);
-    // NO_PAD: the URL-safe alphabet (`-`/`_`) is fine, but trailing `=` padding is
-    // not — these ids are used verbatim as Meilisearch document ids, and Meili
-    // rejects `=` (only alphanumerics, `-`, `_` are allowed). See agon_worker
-    // search indexing.
-    BASE64_URL_SAFE_NO_PAD.encode(bytes)
+    agon_core::id::new_id()
 }
 
 // Recurring-series occurrence-date arithmetic (`occurrence_date`,

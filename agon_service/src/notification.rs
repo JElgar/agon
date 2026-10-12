@@ -53,6 +53,9 @@ pub enum NotificationKind {
     /// A team you belong to may now join a match directly on one of its
     /// sides (`MatchSide.team_join_enabled`) — no invite or link needed.
     TeamMatchJoinable(TeamMatchJoinableNotification),
+    /// A match you're involved with (directly, or through a team on one of
+    /// its sides) is coming up soon.
+    MatchReminder(MatchReminderNotification),
 }
 
 #[derive(Object)]
@@ -169,6 +172,19 @@ pub struct TeamMatchJoinableNotification {
     pub match_id: String,
     /// Display label so the row renders without fetching the match.
     pub match_name: String,
+}
+
+#[derive(Object)]
+pub struct MatchReminderNotification {
+    /// The match's organizer. Not a real "actor" — a reminder fires on a
+    /// timer, not because anyone did anything — but kept for consistency
+    /// with every other notification kind, same reasoning as
+    /// `TeamMatchJoinableNotification::organizer`.
+    pub organizer: UserProfile,
+    pub match_id: String,
+    /// Display label so the row renders without fetching the match.
+    pub match_name: String,
+    pub starts_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// One page of notifications. `next_cursor` absent => end.

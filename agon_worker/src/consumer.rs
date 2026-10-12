@@ -184,23 +184,30 @@ impl Consumer {
             return Ok(());
         };
 
-        match workflow_for(event) {
-            Some(WorkflowStart::FanOut {
-                match_id,
-                old_starts_at,
-            }) => temporal
-                .start_fanout(&match_id, old_starts_at)
-                .await
-                .map_err(|e| WorkerError::Sqs(format!("start fanout: {e}")))?,
-            Some(WorkflowStart::Accept(input)) => temporal
-                .start_accept(input)
-                .await
-                .map_err(|e| WorkerError::Sqs(format!("start accept saga: {e}")))?,
-            Some(WorkflowStart::MaterializeSeries { series_id }) => temporal
-                .start_materialize_series(&series_id)
-                .await
-                .map_err(|e| WorkerError::Sqs(format!("start materialize series: {e}")))?,
-            None => {}
+        for start in workflow_for(event) {
+            match start {
+                WorkflowStart::FanOut {
+                    match_id,
+                    old_starts_at,
+                } => temporal
+                    .start_fanout(&match_id, old_starts_at)
+                    .await
+                    .map_err(|e| WorkerError::Sqs(format!("start fanout: {e}")))?,
+                WorkflowStart::Accept(input) => temporal
+                    .start_accept(input)
+                    .await
+                    .map_err(|e| WorkerError::Sqs(format!("start accept saga: {e}")))?,
+                WorkflowStart::MaterializeSeries { series_id } => temporal
+                    .start_materialize_series(&series_id)
+                    .await
+                    .map_err(|e| WorkerError::Sqs(format!("start materialize series: {e}")))?,
+                WorkflowStart::MatchReminder(input) => {
+                    temporal
+                        .start_match_reminder(input)
+                        .await
+                        .map_err(|e| WorkerError::Sqs(format!("start match reminder: {e}")))?
+                }
+            }
         }
         Ok(())
     }
@@ -238,10 +245,14 @@ enum WorkflowStart {
     Accept(crate::temporal::workflows::AcceptInvitationInput),
     /// Generate a newly-created series' remaining occurrences.
     MaterializeSeries { series_id: String },
+    /// Wait out the reminder window, then notify a match's audience that
+    /// it's coming up.
+    MatchReminder(crate::temporal::workflows::MatchReminderInput),
 }
 
-/// Decide which workflow (if any) a change event should start:
-/// - a match meta write (not a remove) → fan-out;
+/// Decide which workflow(s) (if any) a change event should start:
+/// - a match meta write (not a remove) → fan-out, plus — when this is the
+///   match's creation as a series occurrence — a reminder;
 /// - an invitation that just transitioned *into* "accepted" → the accept saga;
 /// - a new series (insert only, not every subsequent modify — see below) →
 ///   materialize its remaining occurrences.
@@ -250,12 +261,12 @@ enum WorkflowStart {
 /// `InvitationRecord`, so we detect the transition and read the full accepted
 /// record with no extra DynamoDB read. Firing on the *transition* means we start
 /// once, not on every subsequent modify of an already-accepted invitation.
-fn workflow_for(event: &ChangeEvent) -> Option<WorkflowStart> {
+fn workflow_for(event: &ChangeEvent) -> Vec<WorkflowStart> {
     use agon_core::dao::keys::{Pk, Sk};
     use agon_core::dao::records::{InvitationContextRecord, InvitationRecord, MatchRecord};
 
     if event.kind.is_remove() {
-        return None;
+        return Vec::new();
     }
 
     match (&event.pk, &event.sk) {
@@ -264,14 +275,31 @@ fn workflow_for(event: &ChangeEvent) -> Option<WorkflowStart> {
         // so the workflow can clean up the stale rows it leaves behind under
         // the old sort key — see `FanOutMatchInput`.
         (Pk::Match(match_id), Sk::Meta) => {
+            let new = event.new_record::<MatchRecord>();
             let old_starts_at = event
                 .old_record::<MatchRecord>()
-                .zip(event.new_record::<MatchRecord>())
+                .zip(new.as_ref())
                 .and_then(|(old, new)| (old.starts_at != new.starts_at).then_some(old.starts_at));
-            Some(WorkflowStart::FanOut {
+            let mut starts = vec![WorkflowStart::FanOut {
                 match_id: match_id.clone(),
                 old_starts_at,
-            })
+            }];
+            // A series occurrence's own creation (not a later edit) also
+            // gets a pre-kickoff reminder — the only invite-shaped
+            // notification it ever gets, since a series only configures
+            // team-linked sides with no personal invite list (see
+            // `MatchReminder`'s doc comment).
+            if event.kind == ChangeKind::Insert
+                && let Some(new) = new.filter(|new| new.series_id.is_some())
+            {
+                starts.push(WorkflowStart::MatchReminder(
+                    crate::temporal::workflows::MatchReminderInput {
+                        match_id: match_id.clone(),
+                        starts_at: new.starts_at,
+                    },
+                ));
+            }
+            starts
         }
         // A series' own insert → materialize its remaining occurrences.
         // Insert only (not every `Modify`): `materialize_series` itself
@@ -281,14 +309,16 @@ fn workflow_for(event: &ChangeEvent) -> Option<WorkflowStart> {
         // anyway, but there is no reason to even try — the workflow this
         // event would start is already the one doing the writing.
         (Pk::Series(series_id), Sk::Meta) if event.kind == ChangeKind::Insert => {
-            Some(WorkflowStart::MaterializeSeries {
+            vec![WorkflowStart::MaterializeSeries {
                 series_id: series_id.clone(),
-            })
+            }]
         }
         // An invitation meta write → start the accept saga iff this is a
         // pending → accepted transition.
         (Pk::Invitation(_), Sk::Meta) => {
-            let new_inv = event.new_record::<InvitationRecord>()?;
+            let Some(new_inv) = event.new_record::<InvitationRecord>() else {
+                return Vec::new();
+            };
             // Only act on the transition into "accepted", not every modify of an
             // already-accepted invitation.
             let was_accepted = event
@@ -296,27 +326,29 @@ fn workflow_for(event: &ChangeEvent) -> Option<WorkflowStart> {
                 .map(|old| old.status == "accepted")
                 .unwrap_or(false);
             if new_inv.status != "accepted" || was_accepted {
-                return None;
+                return Vec::new();
             }
             // The accepter is the invited user. Skip if unidentified (unresolved
             // token).
-            let accepting_user_id = new_inv.invited_user_id.clone()?;
+            let Some(accepting_user_id) = new_inv.invited_user_id.clone() else {
+                return Vec::new();
+            };
             // Only match invites drive a re-fan-out; team invites have no feed
             // impact.
             let match_id = match &new_inv.context {
                 InvitationContextRecord::Match { match_id, .. } => Some(match_id.clone()),
                 InvitationContextRecord::Team { .. } => None,
             };
-            Some(WorkflowStart::Accept(
+            vec![WorkflowStart::Accept(
                 crate::temporal::workflows::AcceptInvitationInput {
                     invitation_id: new_inv.id.clone(),
                     accepting_user_id,
                     responded_at: new_inv.responded_at.clone().unwrap_or_default(),
                     match_id,
                 },
-            ))
+            )]
         }
-        _ => None,
+        _ => Vec::new(),
     }
 }
 
@@ -404,80 +436,139 @@ mod tests {
         }
     }
 
+    /// Build a `ChangeEvent` for a `MatchRecord` write, going through the same
+    /// attribute-value (de)serialization the stream uses.
+    fn match_event(
+        kind: ChangeKind,
+        old: Option<&agon_core::dao::records::MatchRecord>,
+        new: Option<&agon_core::dao::records::MatchRecord>,
+    ) -> ChangeEvent {
+        let to_image = |r: &agon_core::dao::records::MatchRecord| -> Image {
+            serde_dynamo::to_item(r).unwrap()
+        };
+        ChangeEvent::from_envelope(&Envelope {
+            event: kind,
+            pk: "MATCH#m1".into(),
+            sk: "#META".into(),
+            old_image: old.map(to_image),
+            new_image: new.map(to_image),
+        })
+        .unwrap()
+    }
+
     #[test]
     fn match_meta_write_starts_fanout() {
-        let ev = event(ChangeKind::Insert, "MATCH#m1", "#META", None, None);
+        let new = match_record("2026-07-11T18:00:00Z");
+        let ev = match_event(ChangeKind::Insert, None, Some(&new));
         assert_eq!(
             workflow_for(&ev),
-            Some(WorkflowStart::FanOut {
+            vec![WorkflowStart::FanOut {
                 match_id: "m1".into(),
                 old_starts_at: None,
-            })
+            }]
         );
     }
 
     #[test]
     fn match_reschedule_passes_old_starts_at() {
-        use agon_core::dao::records::MatchRecord;
-
         let old = match_record("2026-07-10T18:00:00Z");
         let new = match_record("2026-07-11T18:00:00Z");
-        let to_image = |r: &MatchRecord| -> Image { serde_dynamo::to_item(r).unwrap() };
-        let ev = ChangeEvent::from_envelope(&Envelope {
-            event: ChangeKind::Modify,
-            pk: "MATCH#m1".into(),
-            sk: "#META".into(),
-            old_image: Some(to_image(&old)),
-            new_image: Some(to_image(&new)),
-        })
-        .unwrap();
+        let ev = match_event(ChangeKind::Modify, Some(&old), Some(&new));
 
         assert_eq!(
             workflow_for(&ev),
-            Some(WorkflowStart::FanOut {
+            vec![WorkflowStart::FanOut {
                 match_id: "m1".into(),
                 old_starts_at: Some("2026-07-10T18:00:00Z".into()),
-            })
+            }]
         );
     }
 
     #[test]
     fn match_non_reschedule_write_has_no_old_starts_at() {
-        use agon_core::dao::records::MatchRecord;
-
         let old = match_record("2026-07-10T18:00:00Z");
         let mut new = match_record("2026-07-10T18:00:00Z");
         new.name = "Renamed".into();
-        let to_image = |r: &MatchRecord| -> Image { serde_dynamo::to_item(r).unwrap() };
-        let ev = ChangeEvent::from_envelope(&Envelope {
-            event: ChangeKind::Modify,
-            pk: "MATCH#m1".into(),
-            sk: "#META".into(),
-            old_image: Some(to_image(&old)),
-            new_image: Some(to_image(&new)),
-        })
-        .unwrap();
+        let ev = match_event(ChangeKind::Modify, Some(&old), Some(&new));
 
         assert_eq!(
             workflow_for(&ev),
-            Some(WorkflowStart::FanOut {
+            vec![WorkflowStart::FanOut {
                 match_id: "m1".into(),
                 old_starts_at: None,
-            })
+            }]
         );
     }
 
     #[test]
     fn match_meta_remove_starts_nothing() {
         let ev = event(ChangeKind::Remove, "MATCH#m1", "#META", None, None);
-        assert_eq!(workflow_for(&ev), None);
+        assert_eq!(workflow_for(&ev), Vec::new());
     }
 
     #[test]
     fn non_meta_match_write_starts_nothing() {
         // A side write under the same match partition is not a fan-out trigger.
         let ev = event(ChangeKind::Modify, "MATCH#m1", "SIDE#s1", None, None);
-        assert_eq!(workflow_for(&ev), None);
+        assert_eq!(workflow_for(&ev), Vec::new());
+    }
+
+    #[test]
+    fn series_occurrence_insert_also_starts_reminder() {
+        // A series occurrence's own creation gets both the usual fan-out and
+        // a pre-kickoff reminder — see `MatchReminder`'s doc comment.
+        let mut new = match_record("2026-07-11T18:00:00Z");
+        new.series_id = Some("sr1".into());
+        let ev = match_event(ChangeKind::Insert, None, Some(&new));
+
+        assert_eq!(
+            workflow_for(&ev),
+            vec![
+                WorkflowStart::FanOut {
+                    match_id: "m1".into(),
+                    old_starts_at: None,
+                },
+                WorkflowStart::MatchReminder(crate::temporal::workflows::MatchReminderInput {
+                    match_id: "m1".into(),
+                    starts_at: "2026-07-11T18:00:00Z".into(),
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn series_occurrence_modify_does_not_restart_reminder() {
+        // Only the occurrence's creation should start the reminder, not every
+        // later edit (e.g. a rename, a score update).
+        let mut old = match_record("2026-07-11T18:00:00Z");
+        old.series_id = Some("sr1".into());
+        let mut new = old.clone();
+        new.name = "Renamed".into();
+        let ev = match_event(ChangeKind::Modify, Some(&old), Some(&new));
+
+        assert_eq!(
+            workflow_for(&ev),
+            vec![WorkflowStart::FanOut {
+                match_id: "m1".into(),
+                old_starts_at: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn non_series_match_insert_has_no_reminder() {
+        // An ad-hoc (non-series) match already has its own invite flow — no
+        // reminder workflow needed.
+        let new = match_record("2026-07-11T18:00:00Z");
+        let ev = match_event(ChangeKind::Insert, None, Some(&new));
+
+        assert_eq!(
+            workflow_for(&ev),
+            vec![WorkflowStart::FanOut {
+                match_id: "m1".into(),
+                old_starts_at: None,
+            }]
+        );
     }
 
     #[test]
@@ -485,9 +576,9 @@ mod tests {
         let ev = event(ChangeKind::Insert, "SERIES#sr1", "#META", None, None);
         assert_eq!(
             workflow_for(&ev),
-            Some(WorkflowStart::MaterializeSeries {
+            vec![WorkflowStart::MaterializeSeries {
                 series_id: "sr1".into()
-            })
+            }]
         );
     }
 
@@ -497,17 +588,17 @@ mod tests {
         // (bumping `occurrences_generated`, then flipping `status`) — those
         // writes must not re-trigger a start.
         let ev = event(ChangeKind::Modify, "SERIES#sr1", "#META", None, None);
-        assert_eq!(workflow_for(&ev), None);
+        assert_eq!(workflow_for(&ev), Vec::new());
     }
 
     #[test]
     fn series_meta_remove_starts_nothing() {
         let ev = event(ChangeKind::Remove, "SERIES#sr1", "#META", None, None);
-        assert_eq!(workflow_for(&ev), None);
+        assert_eq!(workflow_for(&ev), Vec::new());
     }
 
     #[test]
-    fn series_occurrence_insert_starts_nothing() {
+    fn series_occurrence_claim_insert_starts_nothing() {
         // An occurrence claim item (`Dao::claim_series_occurrence`) is a
         // write under the series' own partition too, but only its `#META`
         // item should ever start `materialize_series`.
@@ -518,7 +609,7 @@ mod tests {
             None,
             None,
         );
-        assert_eq!(workflow_for(&ev), None);
+        assert_eq!(workflow_for(&ev), Vec::new());
     }
 
     #[test]
@@ -534,14 +625,14 @@ mod tests {
         );
         assert_eq!(
             workflow_for(&ev),
-            Some(WorkflowStart::Accept(
+            vec![WorkflowStart::Accept(
                 crate::temporal::workflows::AcceptInvitationInput {
                     invitation_id: "inv1".into(),
                     accepting_user_id: "u_guest".into(),
                     responded_at: "2026-07-02T09:00:00Z".into(),
                     match_id: Some("m1".into()),
                 }
-            ))
+            )]
         );
     }
 
@@ -556,9 +647,9 @@ mod tests {
             Some(&old),
             Some(&new),
         );
-        match workflow_for(&ev) {
-            Some(WorkflowStart::Accept(input)) => assert_eq!(input.match_id, None),
-            other => panic!("expected accept saga, got {other:?}"),
+        match workflow_for(&ev).as_slice() {
+            [WorkflowStart::Accept(input)] => assert_eq!(input.match_id, None),
+            other => panic!("expected exactly one accept saga, got {other:?}"),
         }
     }
 
@@ -574,7 +665,7 @@ mod tests {
             Some(&old),
             Some(&new),
         );
-        assert_eq!(workflow_for(&ev), None);
+        assert_eq!(workflow_for(&ev), Vec::new());
     }
 
     #[test]
@@ -588,7 +679,7 @@ mod tests {
             None,
             Some(&new),
         );
-        assert_eq!(workflow_for(&ev), None);
+        assert_eq!(workflow_for(&ev), Vec::new());
     }
 
     #[test]
@@ -604,6 +695,6 @@ mod tests {
             None,
             Some(&new),
         );
-        assert_eq!(workflow_for(&ev), None);
+        assert_eq!(workflow_for(&ev), Vec::new());
     }
 }

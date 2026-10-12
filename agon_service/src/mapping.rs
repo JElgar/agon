@@ -36,9 +36,9 @@ use crate::membership::{
 };
 use crate::notification::{
     CommentNotification, FollowNotification, InvitationAcceptedNotification, LikeNotification,
-    MatchInvitationNotification, Notification, NotificationKind, ReplyNotification,
-    ScoreConfirmedNotification, ScoreSubmittedNotification, TeamInvitationNotification,
-    TeamMatchJoinableNotification,
+    MatchInvitationNotification, MatchReminderNotification, Notification, NotificationKind,
+    ReplyNotification, ScoreConfirmedNotification, ScoreSubmittedNotification,
+    TeamInvitationNotification, TeamMatchJoinableNotification,
 };
 use crate::team::{AssignableTeamRole, Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
@@ -2214,6 +2214,7 @@ pub fn notification_actor_id(kind: &NotificationKindRecord) -> &str {
         NotificationKindRecord::ScoreSubmitted { actor_user_id, .. } => actor_user_id,
         NotificationKindRecord::ScoreConfirmed { actor_user_id, .. } => actor_user_id,
         NotificationKindRecord::TeamMatchJoinable { actor_user_id, .. } => actor_user_id,
+        NotificationKindRecord::MatchReminder { actor_user_id, .. } => actor_user_id,
     }
 }
 
@@ -2359,6 +2360,17 @@ pub fn notification_from_record(rec: &NotificationRecord, actor: UserProfile) ->
             team_name: team_name.clone(),
             match_id: match_id.clone(),
             match_name: match_name.clone(),
+        }),
+        NotificationKindRecord::MatchReminder {
+            match_id,
+            match_name,
+            starts_at,
+            ..
+        } => NotificationKind::MatchReminder(MatchReminderNotification {
+            organizer: actor,
+            match_id: match_id.clone(),
+            match_name: match_name.clone(),
+            starts_at: parse_ts(starts_at),
         }),
     };
     Notification {

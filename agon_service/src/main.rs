@@ -95,8 +95,8 @@ use team::{
 mod notification;
 use notification::{
     CommentNotification, FollowNotification, InvitationAcceptedNotification, LikeNotification,
-    MatchInvitationNotification, Notification, NotificationKind, NotificationPage,
-    ReplyNotification, ScoreConfirmedNotification, ScoreSubmittedNotification,
+    MatchInvitationNotification, MatchReminderNotification, Notification, NotificationKind,
+    NotificationPage, ReplyNotification, ScoreConfirmedNotification, ScoreSubmittedNotification,
     TeamInvitationNotification, TeamMatchJoinableNotification, UnreadCount,
 };
 
@@ -10075,6 +10075,17 @@ fn mock_notifications() -> Vec<Notification> {
                 team_name: String::from("Kent"),
                 match_id: String::from("match_456"),
                 match_name: String::from("Kent vs Surrey"),
+            }),
+        },
+        Notification {
+            id: String::from("notif_match_reminder"),
+            is_read: false,
+            created_at: mock_timestamp(),
+            kind: NotificationKind::MatchReminder(MatchReminderNotification {
+                organizer: actor("user_2", "Raj Patel"),
+                match_id: String::from("match_456"),
+                match_name: String::from("Kent vs Surrey"),
+                starts_at: mock_timestamp(),
             }),
         },
     ]

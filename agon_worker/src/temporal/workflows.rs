@@ -25,6 +25,10 @@ use super::activities::{
     AgonActivities, DeleteFeedChunk, GenerateSeriesOccurrence, LinkAccepted, WriteFeedChunk,
 };
 
+/// How long before a match's `starts_at` its reminder notification fires —
+/// see `MatchReminder`.
+const REMINDER_LEAD: Duration = Duration::from_secs(24 * 3600);
+
 /// How many feed rows to write per activity invocation. Each chunk is a
 /// separately-retryable, checkpointed step — the whole point of running fan-out
 /// on Temporal (a mid-way failure resumes, not restarts).
@@ -368,6 +372,77 @@ impl MaterializeSeries {
         // 4. Done — flip the series from "generating" to "active".
         ctx.start_activity(AgonActivities::activate_series, series_id, activity_opts())
             .await?;
+
+        Ok(())
+    }
+}
+
+// ===========================================================================
+// MatchReminder — a pre-kickoff heads-up for a match.
+// ===========================================================================
+
+/// Inputs to the reminder workflow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatchReminderInput {
+    pub match_id: String,
+    /// RFC-3339; the match's `starts_at` as of the write that started this
+    /// workflow. Not re-read if the match is rescheduled afterwards — a
+    /// reschedule re-fans-out (see `FanOutMatch`) but doesn't restart this
+    /// workflow, so a reminder can fire relative to a since-changed kickoff
+    /// time. Acceptable for a first cut: rescheduling a match close enough
+    /// to its reminder window to matter is rare, and the activity itself
+    /// re-reads the match's *current* state before sending anything.
+    pub starts_at: String,
+}
+
+/// Wait until `REMINDER_LEAD` before a match's kickoff, then send everyone
+/// who might play in it a heads-up. Started off the same `#META` insert that
+/// triggers `FanOutMatch` for any match created as part of a series (see
+/// `workflow_for` in `agon_worker::consumer`) — a series occurrence has no
+/// personal invite list of its own, so this is the only advance notice its
+/// audience gets. Workflow id: `reminder-<match_id>`.
+///
+/// One-shot: waits out a single timer, sends one activity call, and ends —
+/// no checkpointing needed beyond Temporal's own durable timer (a worker
+/// crash mid-wait just resumes the same timer on replay).
+#[workflow]
+#[derive(Default)]
+pub struct MatchReminder;
+
+#[workflow_methods]
+impl MatchReminder {
+    #[run]
+    pub async fn run(
+        ctx: &mut WorkflowContext<Self>,
+        input: MatchReminderInput,
+    ) -> WorkflowResult<()> {
+        let Ok(starts_at) = input.starts_at.parse::<chrono::DateTime<chrono::Utc>>() else {
+            return Ok(());
+        };
+        let now = ctx
+            .workflow_time()
+            .map(chrono::DateTime::<chrono::Utc>::from)
+            .unwrap_or_else(chrono::Utc::now);
+        // The match has already started (or is about to) by the time this
+        // workflow got to run — too late for a "coming up" reminder to make
+        // sense.
+        if now >= starts_at {
+            return Ok(());
+        }
+
+        let fire_at = starts_at - chrono::Duration::from_std(REMINDER_LEAD).unwrap();
+        if fire_at > now
+            && let Ok(wait) = (fire_at - now).to_std()
+        {
+            ctx.timer(wait).await;
+        }
+
+        ctx.start_activity(
+            AgonActivities::send_match_reminder,
+            input.match_id,
+            activity_opts(),
+        )
+        .await?;
 
         Ok(())
     }

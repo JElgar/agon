@@ -13,6 +13,7 @@ import {
   Share,
   ShieldMinus,
   ShieldPlus,
+  UserMinus,
   UserPlus,
 } from 'lucide-react'
 import type { components } from '@/types/api'
@@ -218,6 +219,21 @@ export function ScheduledMatchInvite({
 
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false)
   const [removingAdmin, setRemovingAdmin] = useState<MatchPlayer | null>(null)
+  const [removingPlayer, setRemovingPlayer] = useState<MatchPlayer | null>(null)
+
+  const removePlayer = useMutation({
+    mutationFn: async (pid: string) => {
+      const { error } = await fetchClient.PATCH('/matches/{match_id}', {
+        params: { path: { match_id: match.id } },
+        body: { removed_player_ids: [pid] },
+      })
+      if (error) throw new Error('Failed to remove player')
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: matchKey })
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
+    },
+  })
 
   const respond = useMutation({
     mutationFn: async (response: components['schemas']['InvitationResponse']) => {
@@ -406,6 +422,15 @@ export function ScheduledMatchInvite({
                                   onSelect={() => setPlayerRole.mutate({ playerId: id, role: 'admin' })}
                                 >
                                   <ShieldPlus /> Make admin
+                                </DropdownMenuItem>
+                              )}
+                              {!isYou && (
+                                <DropdownMenuItem
+                                  className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                                  disabled={removePlayer.isPending}
+                                  onSelect={() => setRemovingPlayer(p)}
+                                >
+                                  <UserMinus /> Remove from match
                                 </DropdownMenuItem>
                               )}
                             </DropdownMenuContent>
@@ -621,6 +646,33 @@ export function ScheduledMatchInvite({
               }}
             >
               {setPlayerRole.isPending ? 'Removing…' : 'Remove admin'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={removingPlayer !== null} onOpenChange={(open) => !open && setRemovingPlayer(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Remove from match?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {removingPlayer && memberName(removingPlayer.member)} will be removed from the match and will need to be
+            invited again to rejoin.
+          </p>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setRemovingPlayer(null)} disabled={removePlayer.isPending}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={removePlayer.isPending}
+              onClick={() => {
+                if (!removingPlayer) return
+                removePlayer.mutate(playerId(removingPlayer), { onSuccess: () => setRemovingPlayer(null) })
+              }}
+            >
+              {removePlayer.isPending ? 'Removing…' : 'Remove from match'}
             </Button>
           </DialogFooter>
         </DialogContent>

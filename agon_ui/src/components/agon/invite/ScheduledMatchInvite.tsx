@@ -412,7 +412,14 @@ export function ScheduledMatchInvite({
                               {p.role === 'admin' ? (
                                 <DropdownMenuItem
                                   disabled={setPlayerRole.isPending}
-                                  onSelect={() => setRemovingAdmin(p)}
+                                  onSelect={(e) => {
+                                    // Opening a Dialog synchronously from a DropdownMenuItem's
+                                    // onSelect races Radix's own close/cleanup of the menu —
+                                    // deferring to the next tick lets the menu finish unmounting
+                                    // first (https://github.com/radix-ui/primitives/issues/1836).
+                                    e.preventDefault()
+                                    setTimeout(() => setRemovingAdmin(p), 0)
+                                  }}
                                 >
                                   <ShieldMinus /> Remove admin
                                 </DropdownMenuItem>
@@ -428,7 +435,10 @@ export function ScheduledMatchInvite({
                                 <DropdownMenuItem
                                   className="text-destructive focus:bg-destructive/10 focus:text-destructive"
                                   disabled={removePlayer.isPending}
-                                  onSelect={() => setRemovingPlayer(p)}
+                                  onSelect={(e) => {
+                                    e.preventDefault()
+                                    setTimeout(() => setRemovingPlayer(p), 0)
+                                  }}
                                 >
                                   <UserMinus /> Remove from match
                                 </DropdownMenuItem>

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { CalendarPlus, ChevronLeft, Link2, MailOpen, MoreHorizontal, Navigation, Pencil, Radio, Share, UserPlus } from 'lucide-react'
+import { CalendarPlus, ChevronLeft, Flag, Link2, MailOpen, MoreHorizontal, Navigation, Pencil, Radio, Share, UserPlus } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
@@ -235,12 +235,26 @@ function MatchDetail({
   // The viewer's own side, when they're playing, reads first in the
   // calendar entry's "A vs B" — mirrors the feed card (`MatchCard`). The page
   // itself keeps the stored side order so each side's kit colour is stable.
-  const orderedSides = orderSidesForViewer(match.sides, mySideId(match, currentUserId))
+  const myOwnSideId = mySideId(match, currentUserId)
+  const orderedSides = orderSidesForViewer(match.sides, myOwnSideId)
   const [sideA, sideB] = orderedSides
   const nameA = sideName(sideA, 'Side A')
   const nameB = sideName(sideB, 'Side B')
   const scoreInfo = displayScore(match)
   const headline = scoreInfo ? headlineBySide(scoreInfo.score) : {}
+
+  // A confirmed score is accepted by default — any assigned participant,
+  // not just an admin, may dispute it (the server allows a non-admin a
+  // score-only PATCH; see `is_score_only_update`). Only offered once it's
+  // actually settled (a `pending_score` already means a challenge is under
+  // way — `ScoreConfirmationBar` covers that) and not to an admin, who
+  // already has the "Edit result"/"Add result" button for the same editor.
+  const canDisputeScore =
+    Boolean(myOwnSideId) &&
+    !canEdit &&
+    !cancelled &&
+    Boolean(match.confirmed_score) &&
+    !match.pending_score
 
   // Live, in-progress score only — a completed match reads its scorecard
   // straight off `confirmed_score`/`pending_score` instead (see
@@ -394,6 +408,16 @@ function MatchDetail({
             }}
           >
             <Pencil className="size-4" /> {scoreInfo ? 'Edit result' : 'Add result'}
+          </DropdownMenuItem>
+        )}
+        {canDisputeScore && (
+          <DropdownMenuItem
+            onSelect={() => {
+              setMatchTab('summary')
+              setEditingResult(true)
+            }}
+          >
+            <Flag className="size-4" /> Dispute score
           </DropdownMenuItem>
         )}
         {canEdit && !cancelled && (

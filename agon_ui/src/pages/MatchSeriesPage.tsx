@@ -5,7 +5,7 @@ import { fetchClient } from '@/lib/api-client'
 import { Button } from '@/components/ui/button'
 import { sportIcon } from '@/lib/sports'
 import { scheduledDateTime } from '@/lib/datetime'
-import { seriesCadenceLabel, seriesEndLabel, seriesStatusLabel } from '@/lib/matchSeries'
+import { seriesCadenceLabel, seriesEndLabel, seriesGeneratingLabel, seriesStatusLabel } from '@/lib/matchSeries'
 
 /** A series' cadence hasn't finished generating occurrences while its
  *  `status` is `generating` — poll until it flips to `active`. */
@@ -84,9 +84,7 @@ export function MatchSeriesPage() {
                 className="ml-auto inline-flex h-6 shrink-0 items-center rounded-full bg-accent px-2.5 text-[11px] font-bold text-accent-foreground"
                 aria-label={`Series status: ${seriesStatusLabel(series.status)}`}
               >
-                {series.status === 'generating'
-                  ? `Generating ${series.occurrences_generated}…`
-                  : seriesStatusLabel(series.status)}
+                {series.status === 'generating' ? seriesGeneratingLabel(series) : seriesStatusLabel(series.status)}
               </span>
             </div>
           </div>

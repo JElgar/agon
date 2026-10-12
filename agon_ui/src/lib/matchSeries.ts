@@ -28,6 +28,14 @@ export function seriesEndLabel(ends: MatchSeries['ends']): string {
     : `until ${d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}`
 }
 
+/** The status chip's text while a series is still generating its
+ *  occurrences, e.g. "Generating 3 of 10" ("Generating 3…" when the series
+ *  ends on a date, so the total isn't known client-side). */
+export function seriesGeneratingLabel(series: MatchSeries): string {
+  const so_far = series.occurrences_generated
+  return series.ends.type === 'AfterN' ? `Generating ${so_far} of ${series.ends.count}` : `Generating ${so_far}…`
+}
+
 export function seriesStatusLabel(status: MatchSeries['status']): string {
   switch (status) {
     case 'generating':

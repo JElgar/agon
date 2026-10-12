@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { CalendarClock, CalendarPlus, ChevronLeft, Clock, Flame, Link2, MailOpen, MapPin, Pencil, Radio, ShieldPlus, UserPlus } from 'lucide-react'
+import { CalendarClock, CalendarPlus, ChevronLeft, Clock, Flame, Flag, Link2, MailOpen, MapPin, MoreVertical, Pencil, Radio, ShieldPlus, UserPlus } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
@@ -9,6 +9,12 @@ import { scheduledDateTime } from '@/lib/datetime'
 import { directionsUrl } from '@/lib/location'
 import { downloadMatchIcs } from '@/lib/calendar'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Avatar } from '@/components/agon/Avatar'
 import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
 import { SportBadge } from '@/components/agon/SportBadge'
@@ -174,7 +180,8 @@ function MatchDetail({
   // this instead of `match` keeps them in sync with the score box without
   // touching their internals (everything they key off is side id, not
   // array position).
-  const orderedSides = orderSidesForViewer(match.sides, mySideId(match, currentUserId))
+  const myOwnSideId = mySideId(match, currentUserId)
+  const orderedSides = orderSidesForViewer(match.sides, myOwnSideId)
   const orderedMatch = { ...match, sides: orderedSides }
   const [sideA, sideB] = orderedSides
   const nameA = sideName(sideA, 'Side A')
@@ -190,6 +197,19 @@ function MatchDetail({
   const sets = scoreInfo ? setLine(scoreInfo.score, orderedSides) : []
   const aWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideA?.id
   const bWon = scoreInfo?.winnerSideId && scoreInfo.winnerSideId === sideB?.id
+
+  // A confirmed score is accepted by default — any assigned participant,
+  // not just an admin, may dispute it (the server allows a non-admin a
+  // score-only PATCH; see `is_score_only_update`). Only offered once it's
+  // actually settled (a `pending_score` already means a challenge is under
+  // way — `ScoreConfirmationBar` covers that) and not to an admin, who
+  // already has the "Edit result"/"Add result" button for the same editor.
+  const canDisputeScore =
+    Boolean(myOwnSideId) &&
+    !canEdit &&
+    !cancelled &&
+    Boolean(match.confirmed_score) &&
+    !match.pending_score
 
   // Live, in-progress score only — a completed match reads its scorecard
   // straight off `confirmed_score`/`pending_score` instead (see
@@ -473,6 +493,26 @@ function MatchDetail({
                 >
                   {scoreInfo ? 'Edit result' : 'Add result'}
                 </Button>
+              )}
+              {canDisputeScore && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-7 shrink-0 text-muted-foreground"
+                      aria-label="Score options"
+                    >
+                      <MoreVertical className="size-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => setEditingResult(true)}>
+                      <Flag />
+                      Dispute score
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               )}
             </div>
           </div>

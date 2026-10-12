@@ -11,7 +11,7 @@ use temporalio_client::{
 };
 use temporalio_common::protos::temporal::api::enums::v1::WorkflowIdConflictPolicy;
 
-use super::workflows::{AcceptInvitation, AcceptInvitationInput, FanOutMatch};
+use super::workflows::{AcceptInvitation, AcceptInvitationInput, FanOutMatch, FanOutMatchInput};
 use super::{TASK_QUEUE, accept_workflow_id, fanout_workflow_id};
 
 /// Thin wrapper over a Temporal client for starting Agon workflows.
@@ -34,12 +34,21 @@ impl TemporalClient {
     /// Start (or attach to) the fan-out workflow for a match. Idempotent via the
     /// deterministic `fanout-<match_id>` id: the `UseExisting` conflict policy
     /// means a duplicate start returns a handle to the running run rather than
-    /// erroring, so a redelivered stream event is a no-op.
-    pub async fn start_fanout(&self, match_id: &str) -> Result<(), Box<dyn std::error::Error>> {
+    /// erroring, so a redelivered stream event is a no-op. `old_starts_at` is
+    /// `Some` only when this run was triggered by a reschedule (see
+    /// `FanOutMatchInput`).
+    pub async fn start_fanout(
+        &self,
+        match_id: &str,
+        old_starts_at: Option<String>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         self.client
             .start_workflow(
                 FanOutMatch::run,
-                match_id.to_string(),
+                FanOutMatchInput {
+                    match_id: match_id.to_string(),
+                    old_starts_at,
+                },
                 WorkflowStartOptions::new(TASK_QUEUE, fanout_workflow_id(match_id))
                     .id_conflict_policy(WorkflowIdConflictPolicy::UseExisting)
                     .build(),

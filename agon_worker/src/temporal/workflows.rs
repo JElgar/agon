@@ -21,7 +21,9 @@ use serde::{Deserialize, Serialize};
 use temporalio_macros::{workflow, workflow_methods};
 use temporalio_sdk::{ActivityOptions, WorkflowContext, WorkflowResult};
 
-use super::activities::{AgonActivities, GenerateSeriesOccurrence, LinkAccepted, WriteFeedChunk};
+use super::activities::{
+    AgonActivities, DeleteFeedChunk, GenerateSeriesOccurrence, LinkAccepted, WriteFeedChunk,
+};
 
 /// How many feed rows to write per activity invocation. Each chunk is a
 /// separately-retryable, checkpointed step — the whole point of running fan-out
@@ -45,6 +47,19 @@ fn workflow_now(ctx: &WorkflowContext<impl Sized>) -> String {
 // FanOutMatch — fan a match into its audience's feeds.
 // ===========================================================================
 
+/// Inputs to the fan-out workflow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FanOutMatchInput {
+    pub match_id: String,
+    /// The match's `starts_at` before this write, when this run was triggered
+    /// by a change that moved it (a reschedule). `starts_at` is part of the
+    /// feed row's sort key (see `agon_core::dao::feed`), so a re-fan-out after
+    /// a reschedule writes a *new* row rather than updating the old one in
+    /// place — `None` for every other trigger (creation, an invitation
+    /// acceptance, any other meta edit) skips the cleanup step below.
+    pub old_starts_at: Option<String>,
+}
+
 /// Fan a match into the feeds of everyone who should see it. Started when a
 /// match is created / completed. Workflow id: `fanout-<match_id>`.
 #[workflow]
@@ -54,7 +69,15 @@ pub struct FanOutMatch;
 #[workflow_methods]
 impl FanOutMatch {
     #[run]
-    pub async fn run(ctx: &mut WorkflowContext<Self>, match_id: String) -> WorkflowResult<()> {
+    pub async fn run(
+        ctx: &mut WorkflowContext<Self>,
+        input: FanOutMatchInput,
+    ) -> WorkflowResult<()> {
+        let FanOutMatchInput {
+            match_id,
+            old_starts_at,
+        } = input;
+
         // 1. Resolve the audience + the match start time.
         let audience = ctx
             .start_activity(
@@ -83,6 +106,30 @@ impl FanOutMatch {
                 activity_opts(),
             )
             .await?;
+        }
+
+        // 2b. A reschedule moved `starts_at`: the rows just written above live
+        //     under the new sort key, so delete the stale rows left behind
+        //     under the old one (otherwise the match shows twice in the
+        //     affected viewers' feeds).
+        if let Some(old_starts_at) = old_starts_at.filter(|old| *old != audience.starts_at) {
+            let viewer_ids: Vec<String> = audience
+                .viewers
+                .iter()
+                .map(|v| v.viewer_id.clone())
+                .collect();
+            for chunk in viewer_ids.chunks(FEED_CHUNK) {
+                ctx.start_activity(
+                    AgonActivities::delete_stale_feed_chunk,
+                    DeleteFeedChunk {
+                        viewer_ids: chunk.to_vec(),
+                        match_id: match_id.clone(),
+                        old_starts_at: old_starts_at.clone(),
+                    },
+                    activity_opts(),
+                )
+                .await?;
+            }
         }
 
         // 3. Ensure the match is searchable (idempotent; complements the inline

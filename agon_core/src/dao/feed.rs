@@ -11,13 +11,13 @@
 //! written efficiently; the caller (the fan-out workflow) chunks the audience so
 //! a mid-way failure resumes rather than restarts.
 
-use aws_sdk_dynamodb::types::{PutRequest, WriteRequest};
+use aws_sdk_dynamodb::types::{DeleteRequest, PutRequest, WriteRequest};
 
 use super::audience::AudienceMember;
 use super::batch::BATCH_WRITE_MAX;
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
-use super::item::{ItemBuilder, to_item};
+use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, s, to_item};
 use super::keys::{Pk, Sk};
 use super::page::Page;
 use super::records::FeedItemRecord;
@@ -107,6 +107,52 @@ impl Dao {
             &record,
         )?)
         .build())
+    }
+
+    /// Delete one stale feed entry per viewer for a match, at a given
+    /// `starts_at` — used when a reschedule changes the match's `starts_at`,
+    /// since that's part of the sort key (see the module doc comment): the
+    /// re-fan-out this triggers writes a *new* row under the new `starts_at`
+    /// rather than updating the old one in place, so the row left behind
+    /// under the previous `starts_at` must be deleted explicitly or the match
+    /// shows twice in affected viewers' feeds. A no-op `DeleteItem` for a
+    /// viewer who never had a row at that key (e.g. a follower added after
+    /// the reschedule) is harmless.
+    #[tracing::instrument(skip(self))]
+    pub async fn delete_feed_items(
+        &self,
+        viewer_ids: &[String],
+        match_id: &str,
+        old_starts_at: &str,
+    ) -> DaoResult<()> {
+        for chunk in viewer_ids.chunks(BATCH_WRITE_MAX) {
+            let mut requests = Vec::with_capacity(chunk.len());
+            for viewer_id in chunk {
+                let key = [
+                    (
+                        ATTR_PK.to_string(),
+                        s(Pk::UserFeed(viewer_id.clone()).to_string()),
+                    ),
+                    (
+                        ATTR_SK.to_string(),
+                        s(Sk::Feed {
+                            starts_at: old_starts_at.into(),
+                            match_id: match_id.into(),
+                        }
+                        .to_string()),
+                    ),
+                ]
+                .into_iter()
+                .collect();
+                let delete = DeleteRequest::builder()
+                    .set_key(Some(key))
+                    .build()
+                    .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+                requests.push(WriteRequest::builder().delete_request(delete).build());
+            }
+            self.flush_batch_write(requests).await?;
+        }
+        Ok(())
     }
 
     /// List a viewer's feed newest-first (by match `starts_at`), paginated.

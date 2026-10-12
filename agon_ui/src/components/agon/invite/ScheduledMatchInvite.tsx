@@ -13,6 +13,7 @@ import {
   Share,
   ShieldMinus,
   ShieldPlus,
+  UserMinus,
   UserPlus,
 } from 'lucide-react'
 import type { components } from '@/types/api'
@@ -25,6 +26,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { scheduledDateTime } from '@/lib/datetime'
 import { MatchLocation } from '@/components/agon/MatchLocation'
@@ -216,6 +218,22 @@ export function ScheduledMatchInvite({
   })
 
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false)
+  const [removingAdmin, setRemovingAdmin] = useState<MatchPlayer | null>(null)
+  const [removingPlayer, setRemovingPlayer] = useState<MatchPlayer | null>(null)
+
+  const removePlayer = useMutation({
+    mutationFn: async (pid: string) => {
+      const { error } = await fetchClient.PATCH('/matches/{match_id}', {
+        params: { path: { match_id: match.id } },
+        body: { removed_player_ids: [pid] },
+      })
+      if (error) throw new Error('Failed to remove player')
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: matchKey })
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
+    },
+  })
 
   const respond = useMutation({
     mutationFn: async (response: components['schemas']['InvitationResponse']) => {
@@ -394,7 +412,14 @@ export function ScheduledMatchInvite({
                               {p.role === 'admin' ? (
                                 <DropdownMenuItem
                                   disabled={setPlayerRole.isPending}
-                                  onSelect={() => setPlayerRole.mutate({ playerId: id, role: 'player' })}
+                                  onSelect={(e) => {
+                                    // Opening a Dialog synchronously from a DropdownMenuItem's
+                                    // onSelect races Radix's own close/cleanup of the menu —
+                                    // deferring to the next tick lets the menu finish unmounting
+                                    // first (https://github.com/radix-ui/primitives/issues/1836).
+                                    e.preventDefault()
+                                    setTimeout(() => setRemovingAdmin(p), 0)
+                                  }}
                                 >
                                   <ShieldMinus /> Remove admin
                                 </DropdownMenuItem>
@@ -404,6 +429,18 @@ export function ScheduledMatchInvite({
                                   onSelect={() => setPlayerRole.mutate({ playerId: id, role: 'admin' })}
                                 >
                                   <ShieldPlus /> Make admin
+                                </DropdownMenuItem>
+                              )}
+                              {!isYou && (
+                                <DropdownMenuItem
+                                  className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                                  disabled={removePlayer.isPending}
+                                  onSelect={(e) => {
+                                    e.preventDefault()
+                                    setTimeout(() => setRemovingPlayer(p), 0)
+                                  }}
+                                >
+                                  <UserMinus /> Remove from match
                                 </DropdownMenuItem>
                               )}
                             </DropdownMenuContent>
@@ -594,6 +631,62 @@ export function ScheduledMatchInvite({
           queryClient.invalidateQueries({ queryKey: ['profile-activity'] })
         }}
       />
+
+      <Dialog open={removingAdmin !== null} onOpenChange={(open) => !open && setRemovingAdmin(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Remove admin?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {removingAdmin && memberName(removingAdmin.member)} will no longer be able to manage this match.
+          </p>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setRemovingAdmin(null)} disabled={setPlayerRole.isPending}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={setPlayerRole.isPending}
+              onClick={() => {
+                if (!removingAdmin) return
+                setPlayerRole.mutate(
+                  { playerId: playerId(removingAdmin), role: 'player' },
+                  { onSuccess: () => setRemovingAdmin(null) },
+                )
+              }}
+            >
+              {setPlayerRole.isPending ? 'Removing…' : 'Remove admin'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={removingPlayer !== null} onOpenChange={(open) => !open && setRemovingPlayer(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Remove from match?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {removingPlayer && memberName(removingPlayer.member)} will be removed from the match and will need to be
+            invited again to rejoin.
+          </p>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setRemovingPlayer(null)} disabled={removePlayer.isPending}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={removePlayer.isPending}
+              onClick={() => {
+                if (!removingPlayer) return
+                removePlayer.mutate(playerId(removingPlayer), { onSuccess: () => setRemovingPlayer(null) })
+              }}
+            >
+              {removePlayer.isPending ? 'Removing…' : 'Remove from match'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {myPlayer && (
         <LeaveMatchDialog

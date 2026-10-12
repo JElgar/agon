@@ -48,6 +48,16 @@ pub struct WriteFeedChunk {
     pub now: String,
 }
 
+/// One chunk of stale feed-row deletes: a reschedule's old `starts_at` plus
+/// the viewers (by id only — no audience data needed to delete) who may still
+/// have a row under it. See `Dao::delete_feed_items`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteFeedChunk {
+    pub viewer_ids: Vec<String>,
+    pub match_id: String,
+    pub old_starts_at: String,
+}
+
 /// Inputs for linking an accepted invitation to its roster entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LinkAccepted {
@@ -272,6 +282,21 @@ impl AgonActivities {
             .collect();
         self.dao
             .write_feed_items(&viewers, &chunk.match_id, &chunk.starts_at, &chunk.now)
+            .await
+            .map_err(activity_err)
+    }
+
+    /// Delete one chunk of stale feed rows left behind under a match's
+    /// previous `starts_at` after a reschedule. Idempotent — deleting an
+    /// already-gone row is a no-op.
+    #[activity]
+    pub async fn delete_stale_feed_chunk(
+        self: std::sync::Arc<Self>,
+        _ctx: ActivityContext,
+        chunk: DeleteFeedChunk,
+    ) -> Result<(), ActivityError> {
+        self.dao
+            .delete_feed_items(&chunk.viewer_ids, &chunk.match_id, &chunk.old_starts_at)
             .await
             .map_err(activity_err)
     }

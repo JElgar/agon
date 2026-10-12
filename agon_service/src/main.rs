@@ -819,6 +819,9 @@ struct Match {
     /// every other `Match`-returning response, not because it doesn't
     /// apply, just because nothing reads it there.
     viewer_team_join_side_ids: Option<Vec<String>>,
+    /// The recurring series this match was generated from, if any
+    /// (`GET /match-series/:id` fetches the series itself).
+    series_id: Option<String>,
 }
 
 /// Social engagement summary for a match. Counts plus whether the requesting
@@ -9778,6 +9781,7 @@ fn mock_match(id: String) -> Match {
         allow_unassigned: true,
         viewer_role: Some(MatchPlayerRole::Owner),
         viewer_team_join_side_ids: None,
+        series_id: None,
     }
 }
 

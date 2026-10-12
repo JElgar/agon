@@ -28,6 +28,7 @@ import { ScheduledMatchesPage } from '@/pages/ScheduledMatchesPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { LogMatchPage } from '@/pages/LogMatchPage'
 import { MatchDetailPage } from '@/pages/MatchDetailPage'
+import { MatchSeriesPage } from '@/pages/MatchSeriesPage'
 import { LiveScoringSetupPage } from '@/pages/LiveScoringSetupPage'
 import { LiveScoringPage } from '@/pages/LiveScoringPage'
 import { NotificationsPage } from '@/pages/NotificationsPage'
@@ -121,6 +122,7 @@ function AppShell({ onSignOut }: { onSignOut: () => void }) {
           <Route path="/matches/new" element={<LogMatchPage />} />
           <Route path="/matches/scheduled" element={<ScheduledMatchesPage />} />
           <Route path="/matches/:matchId" element={<MatchDetailPage />} />
+          <Route path="/match-series/:seriesId" element={<MatchSeriesPage />} />
           <Route path="/matches/:matchId/live/setup" element={<LiveScoringSetupPage />} />
           <Route path="/matches/:matchId/live" element={<LiveScoringPage />} />
           <Route path="/teams" element={<TeamsPage />} />

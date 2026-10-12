@@ -634,6 +634,15 @@ pub struct SeriesRecord {
     pub frequency: String,
     /// The recurrence day: 0 = Sunday .. 6 = Saturday.
     pub weekday: u8,
+    /// The first occurrence's `starts_at` (RFC-3339), copied from that
+    /// match at series-creation time. Not surfaced on the API's own
+    /// `MatchSeries` read model (nothing there needs it — the first
+    /// occurrence is itself an ordinary, independently-fetchable match) —
+    /// this exists purely as the anchor `materialize_series` advances from
+    /// (via `agon_core::series::occurrence_date`) to compute every later
+    /// occurrence's date, and so it never has to look the first occurrence
+    /// up by some other means to find it.
+    pub first_occurrence_starts_at: String,
     /// When the series stops generating new occurrences. `Never` means
     /// indefinite recurrence: occurrences are still generated only a few at
     /// a time over the series' lifetime (a small materialized-ahead
@@ -655,6 +664,30 @@ pub struct SeriesRecord {
     /// generation workflow resume after a partial failure.
     #[serde(default)]
     pub occurrences_generated: u32,
+    pub created_at: String,
+}
+
+/// `SERIES#<seriesId>` / `OCCURRENCE#<startsAt>` — a claim on one series
+/// occurrence's generation slot. Written by `materialize_series` (and, for
+/// the first occurrence, by the series-creation handler) before the
+/// occurrence's match is created, via `Dao::claim_series_occurrence`'s
+/// conditional put: this is the idempotency guard that lets a retried
+/// generation attempt discover the match id an earlier attempt already
+/// committed to, rather than every attempt minting its own. Kept around
+/// after generation too, as the item collection `Dao::list_series_occurrences`
+/// reads to answer "what has this series generated, and when."
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SeriesOccurrenceRecord {
+    pub series_id: String,
+    /// 0-based occurrence index — matches the `occurrences_generated` value
+    /// this occurrence's generation is conditioned on. Stored for display
+    /// only; `starts_at` (the SK) is what actually orders the collection and
+    /// what the conditional put is keyed on.
+    pub index: u32,
+    pub starts_at: String,
+    /// The occurrence's match id — whichever attempt's conditional put won
+    /// the claim is the one every subsequent read/retry converges on.
+    pub match_id: String,
     pub created_at: String,
 }
 

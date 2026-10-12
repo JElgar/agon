@@ -197,6 +197,18 @@ pub enum Sk {
     /// at most one entry per (match, user), so this doubles as the
     /// "already waitlisted" uniqueness guard.
     WaitlistEntry(String),
+    /// A claim on one series occurrence's generation slot, in the series'
+    /// own partition. `OCCURRENCE#<startsAt>` — keyed on the occurrence's
+    /// `starts_at` (not its 0-based index) so that two occurrences a date-math
+    /// bug computed onto the same instant collide on this key instead of
+    /// silently both generating (an index-keyed scheme couldn't catch that).
+    /// A conditional put here (`attribute_not_exists`) is what makes
+    /// `materialize_series` safe to retry: it is written *before* the
+    /// occurrence's match is created, carrying the match id that attempt
+    /// offered, and a retry that loses the put falls back to whatever match
+    /// id the winning attempt's item holds instead of minting a second one.
+    /// See `Dao::claim_series_occurrence`.
+    Occurrence(String),
     /// A match's live-scoring score record, keyed by sport — the score as
     /// derived from the event log, live or finished, but never itself the
     /// agreed result. Named `LIVESCORE#<sport>` rather than `SCORE#` to keep
@@ -306,6 +318,7 @@ impl Sk {
             Sk::Side(_) => "SIDE",
             Sk::Player(_) => "PLAYER",
             Sk::WaitlistEntry(_) => "WAITLIST",
+            Sk::Occurrence(_) => "OCCURRENCE",
             Sk::Score(_) => "LIVESCORE",
             Sk::Like(_) => "LIKE",
             Sk::LiveEvent(_) => "LIVEEVT",
@@ -366,6 +379,11 @@ impl Sk {
     /// Lists a match's waitlist entries: `WAITLIST#`.
     pub fn waitlist_prefix() -> String {
         format!("{}{DELIMITER}", Sk::WaitlistEntry(String::new()).prefix())
+    }
+
+    /// Lists a series' claimed occurrences, ordered by `starts_at`: `OCCURRENCE#`.
+    pub fn occurrence_prefix() -> String {
+        format!("{}{DELIMITER}", Sk::Occurrence(String::new()).prefix())
     }
 
     /// Lists a match's likes: `LIKE#`.
@@ -488,6 +506,7 @@ impl fmt::Display for Sk {
             | Sk::Side(v)
             | Sk::Player(v)
             | Sk::WaitlistEntry(v)
+            | Sk::Occurrence(v)
             | Sk::Score(v)
             | Sk::Like(v)
             | Sk::ScoreSubmission(v)
@@ -571,6 +590,7 @@ impl FromStr for Sk {
             "SIDE" => Ok(Sk::Side(rest.into())),
             "PLAYER" => Ok(Sk::Player(rest.into())),
             "WAITLIST" => Ok(Sk::WaitlistEntry(rest.into())),
+            "OCCURRENCE" => Ok(Sk::Occurrence(rest.into())),
             "LIVESCORE" => Ok(Sk::Score(rest.into())),
             "LIKE" => Ok(Sk::Like(rest.into())),
             "LIVEEVT" => rest
@@ -673,6 +693,10 @@ mod tests {
         sk_roundtrip(Sk::Side("side_red".into()), "SIDE#side_red");
         sk_roundtrip(Sk::Player("p1".into()), "PLAYER#p1");
         sk_roundtrip(Sk::WaitlistEntry("w1".into()), "WAITLIST#w1");
+        sk_roundtrip(
+            Sk::Occurrence("2026-06-01T10:00:00Z".into()),
+            "OCCURRENCE#2026-06-01T10:00:00Z",
+        );
         sk_roundtrip(Sk::Score("cricket".into()), "LIVESCORE#cricket");
         sk_roundtrip(Sk::Like("u3".into()), "LIKE#u3");
         // Id-addressed (time-ordered) items now use id-only base SKs.
@@ -868,6 +892,7 @@ mod tests {
         assert_eq!(Sk::side_prefix(), "SIDE#");
         assert_eq!(Sk::player_prefix(), "PLAYER#");
         assert_eq!(Sk::waitlist_prefix(), "WAITLIST#");
+        assert_eq!(Sk::occurrence_prefix(), "OCCURRENCE#");
         assert_eq!(Sk::like_prefix(), "LIKE#");
         assert_eq!(Sk::live_event_prefix(), "LIVEEVT#");
         assert_eq!(Sk::stat_contribution_prefix(), "STATCONTRIB#");
@@ -909,6 +934,7 @@ mod tests {
             Sk::side_prefix(),
             Sk::player_prefix(),
             Sk::waitlist_prefix(),
+            Sk::occurrence_prefix(),
             Sk::like_prefix(),
             Sk::live_event_prefix(),
             Sk::stat_contribution_prefix(),

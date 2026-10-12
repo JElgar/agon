@@ -25,6 +25,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { scheduledDateTime } from '@/lib/datetime'
 import { MatchLocation } from '@/components/agon/MatchLocation'
@@ -216,6 +217,7 @@ export function ScheduledMatchInvite({
   })
 
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false)
+  const [removingAdmin, setRemovingAdmin] = useState<MatchPlayer | null>(null)
 
   const respond = useMutation({
     mutationFn: async (response: components['schemas']['InvitationResponse']) => {
@@ -394,7 +396,7 @@ export function ScheduledMatchInvite({
                               {p.role === 'admin' ? (
                                 <DropdownMenuItem
                                   disabled={setPlayerRole.isPending}
-                                  onSelect={() => setPlayerRole.mutate({ playerId: id, role: 'player' })}
+                                  onSelect={() => setRemovingAdmin(p)}
                                 >
                                   <ShieldMinus /> Remove admin
                                 </DropdownMenuItem>
@@ -594,6 +596,35 @@ export function ScheduledMatchInvite({
           queryClient.invalidateQueries({ queryKey: ['profile-activity'] })
         }}
       />
+
+      <Dialog open={removingAdmin !== null} onOpenChange={(open) => !open && setRemovingAdmin(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Remove admin?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {removingAdmin && memberName(removingAdmin.member)} will no longer be able to manage this match.
+          </p>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setRemovingAdmin(null)} disabled={setPlayerRole.isPending}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={setPlayerRole.isPending}
+              onClick={() => {
+                if (!removingAdmin) return
+                setPlayerRole.mutate(
+                  { playerId: playerId(removingAdmin), role: 'player' },
+                  { onSuccess: () => setRemovingAdmin(null) },
+                )
+              }}
+            >
+              {setPlayerRole.isPending ? 'Removing…' : 'Remove admin'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {myPlayer && (
         <LeaveMatchDialog

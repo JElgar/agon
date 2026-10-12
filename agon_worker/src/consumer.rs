@@ -185,8 +185,11 @@ impl Consumer {
         };
 
         match workflow_for(event) {
-            Some(WorkflowStart::FanOut { match_id }) => temporal
-                .start_fanout(&match_id)
+            Some(WorkflowStart::FanOut {
+                match_id,
+                old_starts_at,
+            }) => temporal
+                .start_fanout(&match_id, old_starts_at)
                 .await
                 .map_err(|e| WorkerError::Sqs(format!("start fanout: {e}")))?,
             Some(WorkflowStart::Accept(input)) => temporal
@@ -219,8 +222,14 @@ impl Consumer {
 /// no live Temporal client — and can be asserted directly in unit tests.
 #[derive(Debug, Clone, PartialEq)]
 enum WorkflowStart {
-    /// (Re)fan a match into feeds.
-    FanOut { match_id: String },
+    /// (Re)fan a match into feeds. `old_starts_at` is `Some` when this write
+    /// moved the match's `starts_at` (a reschedule), so the workflow can
+    /// delete the stale feed rows left behind under the old value — see
+    /// `FanOutMatchInput`.
+    FanOut {
+        match_id: String,
+        old_starts_at: Option<String>,
+    },
     /// Run the invitation-acceptance saga.
     Accept(crate::temporal::workflows::AcceptInvitationInput),
 }
@@ -235,17 +244,27 @@ enum WorkflowStart {
 /// once, not on every subsequent modify of an already-accepted invitation.
 fn workflow_for(event: &ChangeEvent) -> Option<WorkflowStart> {
     use agon_core::dao::keys::{Pk, Sk};
-    use agon_core::dao::records::{InvitationContextRecord, InvitationRecord};
+    use agon_core::dao::records::{InvitationContextRecord, InvitationRecord, MatchRecord};
 
     if event.kind.is_remove() {
         return None;
     }
 
     match (&event.pk, &event.sk) {
-        // A match was created or updated → (re)fan it into feeds.
-        (Pk::Match(match_id), Sk::Meta) => Some(WorkflowStart::FanOut {
-            match_id: match_id.clone(),
-        }),
+        // A match was created or updated → (re)fan it into feeds. If this
+        // write moved `starts_at` (a reschedule), pass the old value along
+        // so the workflow can clean up the stale rows it leaves behind under
+        // the old sort key — see `FanOutMatchInput`.
+        (Pk::Match(match_id), Sk::Meta) => {
+            let old_starts_at = event
+                .old_record::<MatchRecord>()
+                .zip(event.new_record::<MatchRecord>())
+                .and_then(|(old, new)| (old.starts_at != new.starts_at).then_some(old.starts_at));
+            Some(WorkflowStart::FanOut {
+                match_id: match_id.clone(),
+                old_starts_at,
+            })
+        }
         // An invitation meta write → start the accept saga iff this is a
         // pending → accepted transition.
         (Pk::Invitation(_), Sk::Meta) => {
@@ -339,13 +358,91 @@ mod tests {
         }
     }
 
+    fn match_record(starts_at: &str) -> agon_core::dao::records::MatchRecord {
+        agon_core::dao::records::MatchRecord {
+            id: "m1".into(),
+            created_by_user_id: "u_host".into(),
+            name: "Tennis".into(),
+            description: String::new(),
+            match_type: "tennis".into(),
+            status: "scheduled".into(),
+            starts_at: starts_at.into(),
+            allow_unassigned: true,
+            total_player_count: 0,
+            location: None,
+            series_id: None,
+            sides: Default::default(),
+            header_photos: Vec::new(),
+            confirmed_score: None,
+            pending_score: None,
+            like_count: 0,
+            comment_count: 0,
+            live_seq: 0,
+            live_tip_seq: None,
+            format: None,
+            created_at: "2026-07-01T10:00:00Z".into(),
+        }
+    }
+
     #[test]
     fn match_meta_write_starts_fanout() {
         let ev = event(ChangeKind::Insert, "MATCH#m1", "#META", None, None);
         assert_eq!(
             workflow_for(&ev),
             Some(WorkflowStart::FanOut {
-                match_id: "m1".into()
+                match_id: "m1".into(),
+                old_starts_at: None,
+            })
+        );
+    }
+
+    #[test]
+    fn match_reschedule_passes_old_starts_at() {
+        use agon_core::dao::records::MatchRecord;
+
+        let old = match_record("2026-07-10T18:00:00Z");
+        let new = match_record("2026-07-11T18:00:00Z");
+        let to_image = |r: &MatchRecord| -> Image { serde_dynamo::to_item(r).unwrap() };
+        let ev = ChangeEvent::from_envelope(&Envelope {
+            event: ChangeKind::Modify,
+            pk: "MATCH#m1".into(),
+            sk: "#META".into(),
+            old_image: Some(to_image(&old)),
+            new_image: Some(to_image(&new)),
+        })
+        .unwrap();
+
+        assert_eq!(
+            workflow_for(&ev),
+            Some(WorkflowStart::FanOut {
+                match_id: "m1".into(),
+                old_starts_at: Some("2026-07-10T18:00:00Z".into()),
+            })
+        );
+    }
+
+    #[test]
+    fn match_non_reschedule_write_has_no_old_starts_at() {
+        use agon_core::dao::records::MatchRecord;
+
+        let old = match_record("2026-07-10T18:00:00Z");
+        let mut new = match_record("2026-07-10T18:00:00Z");
+        new.name = "Renamed".into();
+        let to_image = |r: &MatchRecord| -> Image { serde_dynamo::to_item(r).unwrap() };
+        let ev = ChangeEvent::from_envelope(&Envelope {
+            event: ChangeKind::Modify,
+            pk: "MATCH#m1".into(),
+            sk: "#META".into(),
+            old_image: Some(to_image(&old)),
+            new_image: Some(to_image(&new)),
+        })
+        .unwrap();
+
+        assert_eq!(
+            workflow_for(&ev),
+            Some(WorkflowStart::FanOut {
+                match_id: "m1".into(),
+                old_starts_at: None,
             })
         );
     }

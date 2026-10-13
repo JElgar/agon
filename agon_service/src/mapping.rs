@@ -43,13 +43,13 @@ use crate::notification::{
 use crate::team::{AssignableTeamRole, Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
     BestBowlingFigures, BestFigure, Comment, ConfirmedScore, CreateMatchSeriesEndAfterNInput,
-    CreateMatchSeriesEndInput, CreateMatchSeriesEndOnDateInput, CricketPlayerStats, CricketScore,
-    CricketScoreInnings, DevicePlatform, FeedMatch, FootballPlayerStats, FootballScore,
-    GenericPlayerStats, Location, Match, MatchOutcome, MatchPlayer, MatchSeries,
-    MatchSeriesOccurrence, MatchSeriesSide, MatchSeriesStatus, MatchSide, MatchSocial, MatchStatus,
-    MatchType, NetballScore, PendingScore, Photo, RosterPreviewPlayer, Score, ScoreConfirmation,
-    ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus,
-    SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
+    CreateMatchSeriesEndInput, CreateMatchSeriesEndNeverInput, CreateMatchSeriesEndOnDateInput,
+    CricketPlayerStats, CricketScore, CricketScoreInnings, DevicePlatform, FeedMatch,
+    FootballPlayerStats, FootballScore, GenericPlayerStats, Location, Match, MatchOutcome,
+    MatchPlayer, MatchSeries, MatchSeriesOccurrence, MatchSeriesSide, MatchSeriesStatus, MatchSide,
+    MatchSocial, MatchStatus, MatchType, NetballScore, PendingScore, Photo, RosterPreviewPlayer,
+    Score, ScoreConfirmation, ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse,
+    ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
 };
 use agon_core::dao::error::DaoError;
 use agon_core::dao::live_score_ops::NewLiveEvent;
@@ -325,27 +325,19 @@ pub fn match_series_status_str(s: &MatchSeriesStatus) -> &'static str {
     }
 }
 
-/// `CreateMatchSeriesEndInput` -> `SeriesEndRecord`. Only the two bounded
-/// variants are constructible from the API side (see
-/// `CreateMatchSeriesEndInput`'s doc comment) — `SeriesEndRecord::Never` is
-/// never produced here.
+/// `CreateMatchSeriesEndInput` -> `SeriesEndRecord`.
 pub fn series_end_record_from_input(end: &CreateMatchSeriesEndInput) -> SeriesEndRecord {
     match end {
         CreateMatchSeriesEndInput::OnDate(d) => SeriesEndRecord::OnDate {
             date: d.date.clone(),
         },
         CreateMatchSeriesEndInput::AfterN(n) => SeriesEndRecord::AfterN { count: n.count },
+        CreateMatchSeriesEndInput::Never(_) => SeriesEndRecord::Never,
     }
 }
 
 /// `SeriesEndRecord` -> `CreateMatchSeriesEndInput` (reused as the `ends`
-/// field's output type too — see this section's doc comment). Panics on
-/// `Never`: no code path in this release ever stores it (series creation
-/// only ever writes `OnDate`/`AfterN` — see `series_end_record_from_input`),
-/// and the output type has no variant to represent it with yet. A future
-/// change that makes `Never` creatable needs to extend the output
-/// representation before it can do so, which is exactly what would need
-/// updating here too.
+/// field's output type too — see this section's doc comment).
 pub fn series_end_input_from_record(rec: &SeriesEndRecord) -> CreateMatchSeriesEndInput {
     match rec {
         SeriesEndRecord::OnDate { date } => {
@@ -356,9 +348,9 @@ pub fn series_end_input_from_record(rec: &SeriesEndRecord) -> CreateMatchSeriesE
         SeriesEndRecord::AfterN { count } => {
             CreateMatchSeriesEndInput::AfterN(CreateMatchSeriesEndAfterNInput { count: *count })
         }
-        SeriesEndRecord::Never => unreachable!(
-            "Never series aren't creatable yet; no SeriesRecord in this release can carry it"
-        ),
+        SeriesEndRecord::Never => {
+            CreateMatchSeriesEndInput::Never(CreateMatchSeriesEndNeverInput {})
+        }
     }
 }
 

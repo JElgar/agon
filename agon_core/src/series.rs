@@ -74,6 +74,21 @@ fn nth_weekday_of_month_offset(
         .copied()
 }
 
+/// The full `starts_at` of the occurrence at `index` — [`occurrence_date`]
+/// plus the time-of-day component every occurrence keeps fixed from `first`
+/// (which here is the first occurrence's own full `starts_at`, not just its
+/// date). `None` under the same conditions `occurrence_date` returns `None`
+/// for.
+pub fn occurrence_starts_at(
+    first: chrono::DateTime<chrono::Utc>,
+    frequency: &str,
+    weekday: chrono::Weekday,
+    index: u32,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let date = occurrence_date(first.date_naive(), frequency, weekday, index)?;
+    Some(date.and_time(first.time()).and_utc())
+}
+
 /// The `chrono::Weekday` for this codebase's `0 = Sunday .. 6 = Saturday`
 /// convention (`SeriesRecord::weekday`, `CreateMatchSeriesInput::weekday`) —
 /// *not* `chrono::Weekday`'s own ISO numbering, which starts the week on
@@ -216,6 +231,31 @@ mod tests {
         assert_eq!(
             count_occurrences_through(first, "weekly", Weekday::Tue, end),
             4
+        );
+    }
+
+    #[test]
+    fn occurrence_starts_at_keeps_the_first_occurrences_time_of_day() {
+        let first = "2026-06-02T18:30:00Z"
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap();
+        let next = occurrence_starts_at(first, "weekly", Weekday::Tue, 1).unwrap();
+        assert_eq!(
+            next,
+            "2026-06-09T18:30:00Z"
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn occurrence_starts_at_is_none_for_an_unrecognised_frequency() {
+        let first = "2026-06-02T18:30:00Z"
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap();
+        assert_eq!(
+            occurrence_starts_at(first, "biweekly", Weekday::Tue, 1),
+            None
         );
     }
 

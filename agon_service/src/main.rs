@@ -1144,16 +1144,23 @@ struct CreateMatchSeriesEndAfterNInput {
     count: u32,
 }
 
-/// Where a series stops generating new occurrences. Only the two bounded
-/// forms are offered here — indefinite recurrence (`Never`, in
-/// `SeriesEndRecord`) needs a long-running, signal-controlled workflow that's
-/// a separate, later piece of work, so it isn't exposed as an option yet
-/// rather than being accepted and left half-built.
+/// `ends: Never`'s payload — empty; `Never` carries no data of its own, only
+/// the discriminator.
+#[derive(Object)]
+struct CreateMatchSeriesEndNeverInput {}
+
+/// Where a series stops generating new occurrences. `OnDate`/`AfterN` are
+/// bounded (capped at `agon_core::series::MAX_SERIES_OCCURRENCES` occurrences
+/// total); `Never` is indefinite — `materialize_series` just keeps a rolling
+/// window of occurrences generated ahead of time until the series is
+/// paused/ended (see that workflow's doc comment), rather than generating
+/// everything upfront the way a bounded series effectively still can.
 #[derive(Union)]
 #[oai(one_of, discriminator_name = "type")]
 enum CreateMatchSeriesEndInput {
     OnDate(CreateMatchSeriesEndOnDateInput),
     AfterN(CreateMatchSeriesEndAfterNInput),
+    Never(CreateMatchSeriesEndNeverInput),
 }
 
 /// Create a recurring match series: a template plus a cadence, materialized
@@ -1181,9 +1188,10 @@ struct CreateMatchSeriesInput {
     frequency: String,
     /// The recurrence day: 0 = Sunday .. 6 = Saturday.
     weekday: u8,
-    /// When the series stops generating new occurrences. The implied
-    /// occurrence count (direct for `AfterN`; computed from `starts_at` and
-    /// `frequency` for `OnDate`) must be `1..=99`.
+    /// When the series stops generating new occurrences. For `AfterN`/
+    /// `OnDate` the implied occurrence count (direct for `AfterN`; computed
+    /// from `starts_at` and `frequency` for `OnDate`) must be `1..=99`.
+    /// `Never` recurs indefinitely, with no count to validate.
     ends: CreateMatchSeriesEndInput,
     /// The opposing sides' templates, copied onto every generated
     /// occurrence. At least two are required, same as a one-off match.
@@ -1204,10 +1212,14 @@ struct MatchSeriesSide {
 
 /// Lifecycle of a recurring match series — independent of any one
 /// occurrence's own `MatchStatus`. `Generating` is the brief transient state
-/// right after creation while `materialize_series` is still creating the
-/// rest of the run; it flips to `Active` once that finishes. `Paused`/`Ended`
-/// aren't reachable through any endpoint yet — pausing/ending a series is a
-/// separate, later piece of work.
+/// right after creation while `materialize_series` tops up its first rolling
+/// window of occurrences; it flips to `Active` once that happens (for an
+/// indefinite series, generation then just keeps going in the background).
+/// `Paused`/`Ended` aren't settable through any endpoint in this change —
+/// that's a separate piece of work — but `materialize_series` already reacts
+/// to both once something else sets them: `Paused` stops generation without
+/// touching occurrences already created, `Ended` stops the workflow for
+/// good.
 #[derive(Enum)]
 #[oai(rename_all = "snake_case")]
 enum MatchSeriesStatus {
@@ -1231,9 +1243,11 @@ struct MatchSeries {
     sides: Vec<MatchSeriesSide>,
     status: MatchSeriesStatus,
     /// How many occurrences have been created so far (including the first,
-    /// created synchronously). Climbs toward the series' total implied by
-    /// `ends` as `materialize_series` runs, then stops once `status` is
-    /// `Active`.
+    /// created synchronously). For a bounded series (`ends: OnDate`/
+    /// `AfterN`), climbs toward the total `ends` implies and then stops. For
+    /// an indefinite series (`ends: Never`), keeps climbing for as long as
+    /// `materialize_series` keeps its rolling window topped up — there's no
+    /// total to stop at.
     occurrences_generated: u32,
     created_at: chrono::DateTime<chrono::Utc>,
 }
@@ -4400,9 +4414,9 @@ impl Api {
     /// invite-list support for a series yet), and every side must be
     /// team-linked (no ad-hoc/named-only sides in a series template).
     ///
-    /// Only bounded series (`ends: OnDate`/`AfterN`, capped at
-    /// `MAX_SERIES_OCCURRENCES`) can be created here — indefinite recurrence
-    /// isn't offered as an input option yet (see `CreateMatchSeriesEndInput`).
+    /// Both bounded series (`ends: OnDate`/`AfterN`, capped at
+    /// `MAX_SERIES_OCCURRENCES` occurrences total) and indefinite series
+    /// (`ends: Never`) can be created here — see `CreateMatchSeriesEndInput`.
     ///
     /// Known limitation, not solved here: if `create_series` succeeds but
     /// the following `create_match` fails, the series record is left behind
@@ -4503,33 +4517,48 @@ impl Api {
             )));
         }
 
-        // The occurrence count implied by `ends` must be 1..=99 — direct for
-        // `AfterN`, computed from the recurrence for `OnDate`.
+        // The occurrence count implied by a *bounded* `ends` must be
+        // 1..=99 — direct for `AfterN`, computed from the recurrence for
+        // `OnDate`. `Never` has no count to bound: an indefinite series just
+        // keeps recurring until something pauses/ends it.
         let first_date = input.starts_at.date_naive();
         let weekday = input.starts_at.weekday();
-        let occurrence_count = match &input.ends {
-            CreateMatchSeriesEndInput::AfterN(n) => n.count,
+        match &input.ends {
+            CreateMatchSeriesEndInput::Never(_) => {}
+            CreateMatchSeriesEndInput::AfterN(n) => {
+                if n.count == 0 || n.count > agon_core::series::MAX_SERIES_OCCURRENCES {
+                    return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                        format!(
+                            "a series must have 1..={} occurrences; this one implies {}",
+                            agon_core::series::MAX_SERIES_OCCURRENCES,
+                            n.count
+                        ),
+                    )));
+                }
+            }
             CreateMatchSeriesEndInput::OnDate(d) => {
                 let Ok(end_date) = chrono::NaiveDate::parse_from_str(&d.date, "%Y-%m-%d") else {
                     return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
                         "ends.date must be YYYY-MM-DD".to_string(),
                     )));
                 };
-                agon_core::series::count_occurrences_through(
+                let occurrence_count = agon_core::series::count_occurrences_through(
                     first_date,
                     &input.frequency,
                     weekday,
                     end_date,
-                )
+                );
+                if occurrence_count == 0
+                    || occurrence_count > agon_core::series::MAX_SERIES_OCCURRENCES
+                {
+                    return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                        format!(
+                            "a series must have 1..={} occurrences; this one implies {occurrence_count}",
+                            agon_core::series::MAX_SERIES_OCCURRENCES
+                        ),
+                    )));
+                }
             }
-        };
-        if occurrence_count == 0 || occurrence_count > agon_core::series::MAX_SERIES_OCCURRENCES {
-            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
-                format!(
-                    "a series must have 1..={} occurrences; this one implies {occurrence_count}",
-                    agon_core::series::MAX_SERIES_OCCURRENCES
-                ),
-            )));
         }
 
         let now = now_iso();

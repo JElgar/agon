@@ -379,6 +379,78 @@ impl AgonActivities {
             .await
             .map_err(activity_err)
     }
+
+    /// Send a "match coming up" reminder notification, fired by the
+    /// `MatchReminder` workflow a fixed time before kickoff. Recipients are
+    /// every accepted member of every team linked to one of the match's
+    /// sides (the same audience `notify_team_match_joinable` would offer a
+    /// join to) — the only invite-shaped notification a series occurrence
+    /// ever gets, since a series only configures team-linked sides with no
+    /// personal invite list. Idempotent: the notification id is
+    /// deterministic per (match, recipient), so a retried/redelivered run is
+    /// a harmless no-op. A no-op if the match is gone, or no longer
+    /// `scheduled` (cancelled, already started, or moved up before the
+    /// reminder fired).
+    #[activity]
+    pub async fn send_match_reminder(
+        self: std::sync::Arc<Self>,
+        _ctx: ActivityContext,
+        match_id: String,
+    ) -> Result<(), ActivityError> {
+        let Some(agg) = self.dao.get_match(&match_id).await.map_err(activity_err)? else {
+            return Ok(());
+        };
+        if agg.match_.status != "scheduled" {
+            return Ok(());
+        }
+
+        let team_ids: std::collections::BTreeSet<&str> = agg
+            .match_
+            .sides
+            .values()
+            .filter_map(|side| side.team_id.as_deref())
+            .collect();
+
+        let mut recipients = std::collections::BTreeSet::new();
+        for team_id in team_ids {
+            let Some(team_agg) = self.dao.get_team(team_id).await.map_err(activity_err)? else {
+                continue;
+            };
+            for member in &team_agg.members {
+                let Some(user_id) = &member.user_id else {
+                    continue;
+                };
+                let accepted = member
+                    .invitation
+                    .as_ref()
+                    .is_none_or(|inv| inv.status == "accepted");
+                if accepted {
+                    recipients.insert(user_id.clone());
+                }
+            }
+        }
+
+        let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        for user_id in recipients {
+            let notif = agon_core::dao::records::NotificationRecord {
+                id: format!("notif-matchreminder-{match_id}-{user_id}"),
+                user_id,
+                is_read: false,
+                created_at: now.clone(),
+                kind: agon_core::dao::records::NotificationKindRecord::MatchReminder {
+                    actor_user_id: agg.match_.created_by_user_id.clone(),
+                    match_id: match_id.clone(),
+                    match_name: agg.match_.name.clone(),
+                    starts_at: agg.match_.starts_at.clone(),
+                },
+            };
+            self.dao
+                .create_notification(&notif)
+                .await
+                .map_err(activity_err)?;
+        }
+        Ok(())
+    }
 }
 
 /// Map a DAO error into a Temporal `ActivityError` (an Application error, so the

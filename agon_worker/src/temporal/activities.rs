@@ -198,7 +198,7 @@ impl AgonActivities {
             created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         };
 
-        match self.dao.create_match(&match_record, &[]).await {
+        match self.dao.create_match(&match_record, &[], &[]).await {
             Ok(()) => {}
             Err(agon_core::dao::error::DaoError::Conflict(_)) => {
                 // Already generated — by this attempt's own earlier try, or

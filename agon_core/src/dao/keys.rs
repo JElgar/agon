@@ -191,6 +191,11 @@ pub enum Sk {
     Side(String),
     /// A match player. `PLAYER#<playerId>`
     Player(String),
+    /// A match's authority holder — an Owner/Admin who need not have a
+    /// roster row (see `MatchAuthorityRecord`). `AUTHORITY#<userId>`, one
+    /// per user: unlike `Player`, this is keyed by user id, not a minted
+    /// player id, since authority is a fact about a user, not a roster slot.
+    Authority(String),
     /// A match waitlist entry — someone queued for a spot that wasn't free
     /// when they tried to join/accept, kept apart from the roster proper
     /// (`Player`) until a match admin moves them in. `WAITLIST#<userId>` —
@@ -317,6 +322,7 @@ impl Sk {
             Sk::Member(_) => "MEMBER",
             Sk::Side(_) => "SIDE",
             Sk::Player(_) => "PLAYER",
+            Sk::Authority(_) => "AUTHORITY",
             Sk::WaitlistEntry(_) => "WAITLIST",
             Sk::Occurrence(_) => "OCCURRENCE",
             Sk::Score(_) => "LIVESCORE",
@@ -374,6 +380,11 @@ impl Sk {
     /// Lists a match's players: `PLAYER#`.
     pub fn player_prefix() -> String {
         format!("{}{DELIMITER}", Sk::Player(String::new()).prefix())
+    }
+
+    /// Lists a match's authority holders: `AUTHORITY#`.
+    pub fn authority_prefix() -> String {
+        format!("{}{DELIMITER}", Sk::Authority(String::new()).prefix())
     }
 
     /// Lists a match's waitlist entries: `WAITLIST#`.
@@ -505,6 +516,7 @@ impl fmt::Display for Sk {
             | Sk::Member(v)
             | Sk::Side(v)
             | Sk::Player(v)
+            | Sk::Authority(v)
             | Sk::WaitlistEntry(v)
             | Sk::Occurrence(v)
             | Sk::Score(v)
@@ -589,6 +601,7 @@ impl FromStr for Sk {
             "MEMBER" => Ok(Sk::Member(rest.into())),
             "SIDE" => Ok(Sk::Side(rest.into())),
             "PLAYER" => Ok(Sk::Player(rest.into())),
+            "AUTHORITY" => Ok(Sk::Authority(rest.into())),
             "WAITLIST" => Ok(Sk::WaitlistEntry(rest.into())),
             "OCCURRENCE" => Ok(Sk::Occurrence(rest.into())),
             "LIVESCORE" => Ok(Sk::Score(rest.into())),
@@ -692,6 +705,7 @@ mod tests {
         sk_roundtrip(Sk::Member("mem1".into()), "MEMBER#mem1");
         sk_roundtrip(Sk::Side("side_red".into()), "SIDE#side_red");
         sk_roundtrip(Sk::Player("p1".into()), "PLAYER#p1");
+        sk_roundtrip(Sk::Authority("u5".into()), "AUTHORITY#u5");
         sk_roundtrip(Sk::WaitlistEntry("w1".into()), "WAITLIST#w1");
         sk_roundtrip(
             Sk::Occurrence("2026-06-01T10:00:00Z".into()),
@@ -891,6 +905,7 @@ mod tests {
         assert_eq!(Sk::member_prefix(), "MEMBER#");
         assert_eq!(Sk::side_prefix(), "SIDE#");
         assert_eq!(Sk::player_prefix(), "PLAYER#");
+        assert_eq!(Sk::authority_prefix(), "AUTHORITY#");
         assert_eq!(Sk::waitlist_prefix(), "WAITLIST#");
         assert_eq!(Sk::occurrence_prefix(), "OCCURRENCE#");
         assert_eq!(Sk::like_prefix(), "LIKE#");
@@ -933,6 +948,7 @@ mod tests {
             Sk::member_prefix(),
             Sk::side_prefix(),
             Sk::player_prefix(),
+            Sk::authority_prefix(),
             Sk::waitlist_prefix(),
             Sk::occurrence_prefix(),
             Sk::like_prefix(),

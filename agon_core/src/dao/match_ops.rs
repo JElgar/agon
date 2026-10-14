@@ -10,12 +10,14 @@ use super::audience::AudienceMember;
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::is_update_conditional_failure;
-use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_pk, s, to_item};
+use super::item::{
+    ATTR_GSI3PK, ATTR_GSI3SK, ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_pk, s, to_item,
+};
 use super::keys::{Pk, Sk};
 use super::records::{
     ConfirmedScoreRecord, HeaderPhotoRecord, LocationRecord, MatchFormatRecord, MatchPlayerRecord,
-    MatchPlayerRole, MatchRecord, MatchScoreRecord, MatchSideRecord, PendingScoreRecord,
-    SideRosterMemberRecord,
+    MatchPlayerRole, MatchRankedPromptRecord, MatchRecord, MatchScoreRecord, MatchSideRecord,
+    PendingScoreRecord, RankedPromptRecord, SideRosterMemberRecord,
 };
 
 pub const TYPE_MATCH: &str = "match";
@@ -1045,6 +1047,138 @@ impl Dao {
         if let Some(update) = headcount_delta_update(self.table(), match_id, 0, &side_deltas)? {
             items.push(TransactWriteItem::builder().update(update).build());
         }
+        self.send_transact_items(items).await
+    }
+
+    /// Make a match ranked and ask the players who still need to opt in, in
+    /// one transaction: the meta item gets `ranked = true`, the ask itself
+    /// (`ranked_prompt`) and the due-index stamp, and every row in `prompted`
+    /// gets its own copy of the ask.
+    ///
+    /// **One write, because a half-done switch is a broken match.** A ranked
+    /// match whose players were never asked would rate people who never
+    /// consented — the one thing the whole design exists to prevent — and an
+    /// ask on a match that stayed friendly would pester people for nothing.
+    /// So `ranked` moves with the prompts or not at all, and `update_match`
+    /// leaves `ranked` out of its own meta update on this path.
+    ///
+    /// Conditional on the match having no outstanding ask
+    /// (`attribute_not_exists(ranked_prompt)`), which makes two admins
+    /// switching at once resolve to one ask rather than two interleaved sets
+    /// of prompts; the loser gets `DaoError::Conflict`. Each player row is
+    /// conditional on still existing, so someone removed between the read and
+    /// this write fails the transaction instead of being silently asked.
+    ///
+    /// The due-index stamp (`GSI3PK`/`GSI3SK` =
+    /// [`MatchRankedPromptRecord::DUE_GSI3PK`] / the deadline) is what makes
+    /// "which asks are overdue?" a single Query. Nothing reads it yet — the
+    /// deadline timer does the expiring — it is here so the backstop sweep and
+    /// the repair job are a small PR later rather than a backfill.
+    ///
+    /// DynamoDB caps a transaction at 100 items, so this handles 99 prompted
+    /// players beside the meta update — the same caveat `create_match` and
+    /// `remove_match_players` already carry, and far past any real roster.
+    #[tracing::instrument(skip(self, ask, prompted), fields(prompted = prompted.len()))]
+    pub async fn open_ranked_prompts_tx(
+        &self,
+        match_id: &str,
+        ask: &MatchRankedPromptRecord,
+        prompted: &[(String, RankedPromptRecord)],
+    ) -> DaoResult<()> {
+        let mut items: Vec<TransactWriteItem> = Vec::with_capacity(prompted.len() + 1);
+
+        let meta = Update::builder()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .update_expression(
+                "SET #ranked = :ranked, #prompt = :prompt, #gsipk = :gsipk, #gsisk = :gsisk",
+            )
+            .condition_expression("attribute_exists(#pk) AND attribute_not_exists(#prompt)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_names("#ranked", "ranked")
+            .expression_attribute_names("#prompt", "ranked_prompt")
+            .expression_attribute_names("#gsipk", ATTR_GSI3PK)
+            .expression_attribute_names("#gsisk", ATTR_GSI3SK)
+            .expression_attribute_values(":ranked", AttributeValue::Bool(true))
+            .expression_attribute_values(":prompt", to_attr(ask)?)
+            .expression_attribute_values(
+                ":gsipk",
+                s(MatchRankedPromptRecord::DUE_GSI3PK.to_string()),
+            )
+            .expression_attribute_values(":gsisk", s(ask.deadline.clone()))
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        items.push(TransactWriteItem::builder().update(meta).build());
+
+        for (player_id, prompt) in prompted {
+            let row = Update::builder()
+                .table_name(self.table())
+                .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+                .key(ATTR_SK, s(Sk::Player(player_id.clone()).to_string()))
+                .update_expression("SET #prompt = :prompt")
+                .condition_expression("attribute_exists(#pk)")
+                .expression_attribute_names("#pk", ATTR_PK)
+                .expression_attribute_names("#prompt", "ranked_prompt")
+                .expression_attribute_values(":prompt", to_attr(prompt)?)
+                .build()
+                .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+            items.push(TransactWriteItem::builder().update(row).build());
+        }
+
+        self.send_transact_items(items).await
+    }
+
+    /// Make a match friendly again and withdraw any outstanding ask, in one
+    /// transaction: `ranked = false`, the ask and its due-index stamp removed
+    /// from the meta item, and `ranked_prompt` removed from each row in
+    /// `prompted`.
+    ///
+    /// `prompted` is the player ids currently carrying a prompt, read from the
+    /// same aggregate the switch was judged on. Missing one would leave a
+    /// stale prompt on a row, which is harmless — every reader asks whether a
+    /// row awaits the match's *current* ask
+    /// ([`MatchPlayerRecord::awaits_ranked_prompt`]), and a withdrawn match
+    /// has none — but tidy is better than harmless.
+    ///
+    /// Unconditional on the meta item beyond its existence: whatever the ask
+    /// says now, a request that legitimately reverts the flag wants it gone.
+    #[tracing::instrument(skip(self, prompted), fields(prompted = prompted.len()))]
+    pub async fn clear_ranked_prompts_tx(
+        &self,
+        match_id: &str,
+        prompted: &[String],
+    ) -> DaoResult<()> {
+        let mut items: Vec<TransactWriteItem> = Vec::with_capacity(prompted.len() + 1);
+
+        let meta = Update::builder()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .update_expression("SET #ranked = :ranked REMOVE #prompt, #gsipk, #gsisk")
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_names("#ranked", "ranked")
+            .expression_attribute_names("#prompt", "ranked_prompt")
+            .expression_attribute_names("#gsipk", ATTR_GSI3PK)
+            .expression_attribute_names("#gsisk", ATTR_GSI3SK)
+            .expression_attribute_values(":ranked", AttributeValue::Bool(false))
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        items.push(TransactWriteItem::builder().update(meta).build());
+
+        for player_id in prompted {
+            let row = Update::builder()
+                .table_name(self.table())
+                .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+                .key(ATTR_SK, s(Sk::Player(player_id.clone()).to_string()))
+                .update_expression("REMOVE #prompt")
+                .expression_attribute_names("#prompt", "ranked_prompt")
+                .build()
+                .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+            items.push(TransactWriteItem::builder().update(row).build());
+        }
+
         self.send_transact_items(items).await
     }
 

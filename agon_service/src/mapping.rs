@@ -47,8 +47,8 @@ use crate::{
     CricketScoreInnings, DevicePlatform, FeedMatch, FootballPlayerStats, FootballScore,
     GenericPlayerStats, Location, Match, MatchOutcome, MatchPlayer, MatchSeries,
     MatchSeriesOccurrence, MatchSeriesSide, MatchSeriesStatus, MatchSide, MatchSocial, MatchStatus,
-    MatchType, NetballScore, PendingScore, Photo, RatingOptIn, RosterPreviewPlayer, Score,
-    ScoreConfirmation, ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse,
+    MatchType, NetballScore, PendingScore, Photo, RankedPrompt, RatingOptIn, RosterPreviewPlayer,
+    Score, ScoreConfirmation, ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse,
     ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
 };
 use agon_core::dao::error::DaoError;
@@ -68,13 +68,14 @@ use agon_core::dao::records::{
     InvitationContextRecord, InvitationKindRecord, InvitationRecord, JoinLinkRecord,
     JoinLinkScopeRecord, LiveEventPayloadRecord, LiveEventRecord, LocationRecord,
     MatchFormatRecord, MatchLikeRecord, MatchPlayerRecord,
-    MatchPlayerRole as MatchPlayerRoleRecord, MatchRecord, MatchScoreRecord, MatchSideRecord,
-    NetballFormatRecord, NetballFoulEventRecord, NetballFoulKindRecord, NetballGoalEventRecord,
-    NetballLiveEventRecord, NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord,
-    NextBallContextRecord, NotificationKindRecord, NotificationRecord, OversRecord,
-    PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord,
-    ScoreSubmissionRecord, SeriesEndRecord, SeriesOccurrenceRecord, SeriesRecord, SeriesSideRecord,
-    TeamMemberRecord, TeamRecord, UserRecord, UserStatsRecord,
+    MatchPlayerRole as MatchPlayerRoleRecord, MatchRankedPromptRecord, MatchRecord,
+    MatchScoreRecord, MatchSideRecord, NetballFormatRecord, NetballFoulEventRecord,
+    NetballFoulKindRecord, NetballGoalEventRecord, NetballLiveEventRecord,
+    NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord, NextBallContextRecord,
+    NotificationKindRecord, NotificationRecord, OversRecord, PendingScoreRecord,
+    ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord, ScoreSubmissionRecord,
+    SeriesEndRecord, SeriesOccurrenceRecord, SeriesRecord, SeriesSideRecord, TeamMemberRecord,
+    TeamRecord, UserRecord, UserStatsRecord,
 };
 use agon_core::rating::ladder_for_tag;
 
@@ -1342,6 +1343,7 @@ pub fn match_from_records(
         format: rec.format.as_ref().map(match_format_from_record),
         ranked: rec.ranked,
         rating_ladder: rating_ladder(rec),
+        ranked_prompt: rec.ranked_prompt.as_ref().map(ranked_prompt_from_record),
         // Set by the caller right after this call, from the same aggregate
         // this function already consumed (see `caller_match_role`'s call
         // sites in `main.rs`) — a placeholder here, since this pure mapping
@@ -1566,59 +1568,150 @@ pub fn ranked_added_players_reason(ladder: &str, unratable: &UnratablePlayers) -
     None
 }
 
-/// The refusal for switching a match to ranked, or `None` if everyone it
-/// would rate or could move in can be rated on `ladder`.
+/// The refusal for switching a match to ranked, or `None` if the switch can go
+/// ahead — which, since prompts exist, is nearly always.
 ///
-/// `in_a_spot` is judged because those are the players the match would rate.
-/// Pending invitees aren't: they're asked for consent when they accept.
+/// Only one thing still refuses a switch outright: **a player in a spot with no
+/// Agon account.** Nobody can consent on their behalf and there is no profile
+/// to hold a rating, so there is no prompt we could even send them. They have
+/// to come out of the match first.
 ///
-/// `waitlisted` is judged too, which a first version of this rule left out.
-/// A player waiting on a friendly that turns ranked would otherwise have no
-/// way to consent on it: joining the waitlist again is a 409, an invite-derived
-/// entry's invitation is already accepted so there's nothing left to accept,
-/// and move-in refuses them because an admin can't consent for them. Refusing
-/// the switch instead keeps a ranked match's waitlist to opted-in players only.
-/// The organiser can remove the entry, and the player can come back by a way
-/// in that asks them. (Recording an opt-in as a side effect of the repeat
-/// waitlist join was the alternative, and was rejected as surprising.)
+/// Players in a spot who simply haven't opted in used to refuse it too, and
+/// no longer do: they are *asked*, and keep their spot while they answer
+/// (`MatchPlayerRecord::ranked_prompt`). That was the whole point of the
+/// prompt — an organiser who forgot to tick ranked could previously only
+/// chase people or remove them, and the error text was the entire UI.
 ///
-/// Players in a spot are reported ahead of the waitlist, and within each,
-/// players without an account ahead of the not-opted-in, because nothing a
-/// not-opted-in player could do (be invited, opt in) helps the former.
+/// The waitlist is no longer judged at all, which deletes a rule rather than
+/// adding one. The old reasoning was that a player waiting on a friendly that
+/// turned ranked had no way to consent on it, so the switch had to be refused
+/// to keep a ranked match's waitlist opted-in only. But a waitlisted player
+/// holds no spot — they have no roster row at all — so there is nothing for
+/// the switch to take away from them, and [`ranked_move_in_reason`] already
+/// refuses to move them in until they have opted in. They are told the match
+/// is ranked now; nothing of theirs is at stake until someone tries to move
+/// them in.
+///
+/// Pending invitees aren't judged either, as before: they're asked for consent
+/// when they accept.
 #[must_use]
-pub fn switch_to_ranked_reason(
-    ladder: &str,
-    in_a_spot: &UnratablePlayers,
-    waitlisted: &UnratablePlayers,
-) -> Option<String> {
+pub fn switch_to_ranked_reason(in_a_spot: &UnratablePlayers) -> Option<String> {
     if !in_a_spot.without_account.is_empty() {
         return Some(format!(
             "a match with players who have no Agon account can't be ranked; remove them first: {}",
             in_a_spot.without_account.join(", ")
         ));
     }
-    if !in_a_spot.not_opted_in.is_empty() {
-        return Some(format!(
-            "a match can't become ranked until everyone taking a spot in it has opted in to \
-             {ladder} ratings, and these players haven't: {}",
-            in_a_spot.not_opted_in.join(", ")
-        ));
-    }
-    if !waitlisted.is_empty() {
-        let names: Vec<&str> = waitlisted
-            .without_account
-            .iter()
-            .chain(&waitlisted.not_opted_in)
-            .map(String::as_str)
-            .collect();
-        return Some(format!(
-            "a match can't become ranked while players on its waitlist haven't opted in to \
-             {ladder} ratings, because nobody could move them in; remove them from the waitlist \
-             first, and they'll be asked to agree when they next join or accept an invitation: {}",
-            names.join(", ")
-        ));
-    }
     None
+}
+
+/// A match's outstanding ask, for the API.
+///
+/// `awaiting_you` is left `false` here and set by the caller from the same
+/// aggregate, the way `Match::viewer_role` is: this function has no viewer to
+/// resolve it against, and the answer is one
+/// [`MatchPlayerRecord::awaits_ranked_prompt`] call on the caller's own row.
+#[must_use]
+pub fn ranked_prompt_from_record(rec: &MatchRankedPromptRecord) -> RankedPrompt {
+    RankedPrompt {
+        prompt_id: rec.id.clone(),
+        ladder: rec.ladder.clone(),
+        deadline: parse_ts(&rec.deadline),
+        pending: rec.pending,
+        awaiting_you: false,
+    }
+}
+
+/// The players a switch to ranked has to ask, as `(player_id, user_id)` pairs:
+/// everyone taking a spot who hasn't opted in to `ladder` yet.
+///
+/// `users` holds the linked players' profiles, from the same
+/// `batch_get_users` [`unratable_players`] uses. A player with no profile in
+/// the map counts as not opted in — nothing says they are, and asking someone
+/// we know nothing about is the safe direction (the worst case is a prompt
+/// they answer).
+///
+/// Three groups are deliberately *not* asked:
+///
+/// - **Players already opted in to this ladder.** The prompt exists to collect
+///   consent that is missing, not to re-confirm consent that exists. Asking
+///   them would invent a new way to lose a spot in a match you had already
+///   joined, for a sport you had already agreed to be rated in — and it would
+///   kill the no-prompt path for an established group, where everyone is
+///   opted in and the switch should simply happen. They get told instead.
+/// - **Pending or declined invitees**, who take no spot
+///   ([`MatchPlayerRecord::occupies_slot`]) and are asked on accept.
+/// - **Players with no account**, who can't be asked at all and refuse the
+///   whole switch via [`switch_to_ranked_reason`] before this is called.
+#[must_use]
+pub fn players_to_prompt(
+    ladder: &str,
+    players: &[MatchPlayerRecord],
+    users: &std::collections::HashMap<String, UserRecord>,
+) -> Vec<(String, String)> {
+    players
+        .iter()
+        .filter(|p| p.occupies_slot())
+        .filter_map(|p| p.user_id.as_ref().map(|uid| (p.player_id.clone(), uid)))
+        .filter(|(_, uid)| !users.get(*uid).is_some_and(|u| u.has_opted_in(ladder)))
+        .map(|(player_id, uid)| (player_id, uid.clone()))
+        .collect()
+}
+
+/// The shortest window a defaulted deadline ever leaves people, before the
+/// match's own start time takes over. See [`ranked_prompt_deadline`].
+const MIN_PROMPT_WINDOW: chrono::Duration = chrono::Duration::hours(1);
+
+/// How far before kickoff unanswered prompts expire, when the organiser
+/// doesn't say.
+const DEFAULT_PROMPT_LEAD: chrono::Duration = chrono::Duration::hours(24);
+
+/// When the prompts this switch opens should expire, as a stored timestamp —
+/// or the refusal for a `ranked_prompt_deadline` that doesn't make sense.
+///
+/// Defaulted to [`DEFAULT_PROMPT_LEAD`] before kickoff, which gives the
+/// organiser a working day to refill the spots of anyone who says no or says
+/// nothing. On a match starting sooner than that, the default collapses
+/// towards kickoff but keeps at least [`MIN_PROMPT_WINDOW`] where kickoff
+/// allows it; on a match starting within the hour the deadline *is* kickoff,
+/// which is where [`ranked_lock_reason`] closes the question anyway.
+///
+/// A requested deadline is validated rather than clamped, because silently
+/// moving a time the organiser typed is worse than telling them it won't
+/// work: it has to be in the future and no later than kickoff. Expiring
+/// people *after* kickoff would decide a rating question with the result
+/// already known, which is the one thing the deadline exists to prevent.
+///
+/// **The result is fixed for the life of the ask.** Nothing recomputes it —
+/// not an edit, not a reschedule — which is what lets the deadline timer be a
+/// single sleep with no need to re-read (see the design doc's §6.3). An
+/// organiser who wants to give people longer reverts the match to friendly
+/// and switches it again, which asks exactly the players who still haven't
+/// opted in.
+pub fn ranked_prompt_deadline(
+    requested: Option<chrono::DateTime<chrono::Utc>>,
+    starts_at: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<String, String> {
+    let deadline = match requested {
+        Some(requested) => {
+            if requested <= now {
+                return Err(
+                    "a deadline for confirming a ranked match has to be in the future".into(),
+                );
+            }
+            if requested > starts_at {
+                return Err(format!(
+                    "a deadline for confirming a ranked match can't be after the match starts \
+                     ({}): nobody can be asked to agree once the result is knowable",
+                    starts_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                ));
+            }
+            requested
+        }
+        None => (starts_at - DEFAULT_PROMPT_LEAD).max((now + MIN_PROMPT_WINDOW).min(starts_at)),
+    };
+    Ok(deadline.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
 
 /// The refusal for moving a waitlisted player into a spot on a ranked match,
@@ -3584,7 +3677,7 @@ mod tests {
     fn the_roster_refusals_name_who_and_what_to_do() {
         let nobody = UnratablePlayers::default();
         assert_eq!(ranked_added_players_reason("squash", &nobody), None);
-        assert_eq!(switch_to_ranked_reason("squash", &nobody, &nobody), None);
+        assert_eq!(switch_to_ranked_reason(&nobody), None);
         assert_eq!(ranked_move_in_reason("squash", &nobody), None);
 
         let not_opted_in = UnratablePlayers {
@@ -3594,9 +3687,11 @@ mod tests {
         let added = ranked_added_players_reason("squash", &not_opted_in).unwrap();
         assert!(added.contains("invite them instead"), "{added}");
         assert!(added.contains("Sam"), "{added}");
-        let switch = switch_to_ranked_reason("squash", &not_opted_in, &nobody).unwrap();
-        assert!(switch.contains("opted in to squash ratings"), "{switch}");
-        assert!(switch.contains("Sam"), "{switch}");
+        assert_eq!(
+            switch_to_ranked_reason(&not_opted_in),
+            None,
+            "a player who hasn't opted in is asked, not refused"
+        );
         let move_in = ranked_move_in_reason("squash", &not_opted_in).unwrap();
         assert!(move_in.starts_with("Sam hasn't opted in"), "{move_in}");
         assert!(move_in.contains("invite them"), "{move_in}");
@@ -3607,7 +3702,7 @@ mod tests {
         };
         for reason in [
             ranked_added_players_reason("squash", &both).unwrap(),
-            switch_to_ranked_reason("squash", &both, &nobody).unwrap(),
+            switch_to_ranked_reason(&both).unwrap(),
         ] {
             assert!(reason.contains("Agon account"), "{reason}");
             assert!(reason.contains("Ringer"), "{reason}");
@@ -3620,33 +3715,169 @@ mod tests {
         );
     }
 
-    /// The gap the re-port onto the separate waitlist closed: a player waiting
-    /// on a friendly has no way to consent on it once it turns ranked (a
-    /// repeat waitlist join is a 409, and an invite-derived entry has no
-    /// invitation left to accept), and move-in would then refuse them for
-    /// good. So switching to ranked refuses while anyone waiting isn't opted
-    /// in, naming them and the way out. It's a refusal of its own, reported
-    /// only once everyone in a spot is fine, so the organiser fixes the roster
-    /// first and the waitlist second rather than seeing one message for both.
+    /// Who a switch asks, and — more importantly — who it leaves alone.
+    ///
+    /// Only players taking a spot who haven't opted in are asked. An
+    /// already-opted-in player isn't (the prompt collects missing consent, it
+    /// doesn't re-confirm existing consent, and asking them would invent a new
+    /// way to lose a place in a match they'd already joined). A pending
+    /// invitee isn't (they take no spot and are asked on accept). An
+    /// account-less player isn't (nothing could be sent to them —
+    /// `switch_to_ranked_reason` refuses the whole switch first).
+    ///
+    /// A linked player with no profile in the map is asked: nothing says
+    /// they've opted in, and the worst case of asking is a prompt they answer.
     #[test]
-    fn switching_to_ranked_also_judges_the_waitlist() {
-        let nobody = UnratablePlayers::default();
-        let waiting = UnratablePlayers {
-            without_account: Vec::new(),
-            not_opted_in: vec!["Wendy".to_string()],
-        };
-        let reason = switch_to_ranked_reason("squash", &nobody, &waiting).unwrap();
-        assert!(reason.contains("waitlist"), "{reason}");
-        assert!(reason.contains("squash"), "{reason}");
-        assert!(reason.contains("Wendy"), "{reason}");
+    fn a_switch_asks_only_the_players_in_a_spot_who_still_need_to_opt_in() {
+        let users = HashMap::from([
+            (
+                "in".to_string(),
+                user_opted_in_to("in", "Opted In", &["squash"]),
+            ),
+            (
+                "out".to_string(),
+                user_opted_in_to("out", "Not Opted", &["tennis"]),
+            ),
+        ]);
+        let player =
+            |player_id: &str, user_id: Option<&str>, invitation: Option<&str>| MatchPlayerRecord {
+                player_id: player_id.to_string(),
+                user_id: user_id.map(str::to_string),
+                display_name: Some("Ringer".to_string()),
+                side_id: None,
+                is_member_of_team: None,
+                invitation: invitation.map(|status| EmbeddedInvitationRecord {
+                    id: "inv".to_string(),
+                    status: status.to_string(),
+                    invited_by_user_id: "host".to_string(),
+                    invited_at: "2026-10-01T00:00:00.000Z".to_string(),
+                    responded_at: None,
+                    kind: InvitationKindRecord::User {
+                        invited_user_id: user_id.unwrap_or("u").to_string(),
+                    },
+                }),
+                role: MatchPlayerRoleRecord::Player,
+                joined_via: None,
+                ranked_prompt: None,
+            };
+        let roster = vec![
+            player("p_in", Some("in"), None),
+            player("p_out", Some("out"), None),
+            player("p_accepted", Some("ghost"), Some("accepted")),
+            player("p_pending", Some("out"), Some("pending")),
+            player("p_declined", Some("out"), Some("declined")),
+            player("p_guest", None, None),
+        ];
 
-        let in_a_spot = UnratablePlayers {
+        let asked = players_to_prompt("squash", &roster, &users);
+        assert_eq!(
+            asked,
+            vec![
+                ("p_out".to_string(), "out".to_string()),
+                ("p_accepted".to_string(), "ghost".to_string()),
+            ],
+            "not opted in and in a spot — including a linked user we hold no profile for"
+        );
+        assert!(
+            players_to_prompt("tennis", &roster, &users)
+                .iter()
+                .all(|(id, _)| id != "p_out"),
+            "opted in to tennis, so a tennis switch asks them nothing"
+        );
+    }
+
+    /// The deadline a switch sets. Defaulted to a day before kickoff, which
+    /// leaves time to refill the spots of anyone who says no or says nothing;
+    /// squeezed towards kickoff on a match starting sooner, and never past it,
+    /// because expiring people after the result is knowable is the one thing
+    /// the deadline exists to prevent.
+    ///
+    /// A requested deadline is validated rather than clamped — silently moving
+    /// a time someone typed is worse than telling them it won't work.
+    #[test]
+    fn a_defaulted_deadline_is_a_day_before_kickoff_but_never_past_it() {
+        let now = parse_ts("2026-10-14T09:00:00.000Z");
+        let in_a_week = now + chrono::Duration::days(7);
+        assert_eq!(
+            ranked_prompt_deadline(None, in_a_week, now).unwrap(),
+            "2026-10-20T09:00:00.000Z",
+            "24h before kickoff"
+        );
+
+        // Kickoff is in 6h, so "24h before" is long past: players get the
+        // minimum window instead.
+        let in_six_hours = now + chrono::Duration::hours(6);
+        assert_eq!(
+            ranked_prompt_deadline(None, in_six_hours, now).unwrap(),
+            "2026-10-14T10:00:00.000Z",
+            "an hour, not a time in the past"
+        );
+
+        // Kickoff is in 20 minutes: the deadline is kickoff, which is where
+        // the ranked lock closes the question anyway.
+        let soon = now + chrono::Duration::minutes(20);
+        assert_eq!(
+            ranked_prompt_deadline(None, soon, now).unwrap(),
+            "2026-10-14T09:20:00.000Z"
+        );
+    }
+
+    #[test]
+    fn a_requested_deadline_is_refused_rather_than_clamped() {
+        let now = parse_ts("2026-10-14T09:00:00.000Z");
+        let starts_at = now + chrono::Duration::days(7);
+
+        let ok = now + chrono::Duration::days(2);
+        assert_eq!(
+            ranked_prompt_deadline(Some(ok), starts_at, now).unwrap(),
+            "2026-10-16T09:00:00.000Z",
+            "a time of the organiser's own is kept exactly"
+        );
+        assert_eq!(
+            ranked_prompt_deadline(Some(starts_at), starts_at, now).unwrap(),
+            starts_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            "kickoff itself is allowed — the lock takes over there"
+        );
+
+        let past = now - chrono::Duration::hours(1);
+        let err = ranked_prompt_deadline(Some(past), starts_at, now).unwrap_err();
+        assert!(err.contains("in the future"), "{err}");
+
+        let after_kickoff = starts_at + chrono::Duration::minutes(1);
+        let err = ranked_prompt_deadline(Some(after_kickoff), starts_at, now).unwrap_err();
+        assert!(err.contains("after the match starts"), "{err}");
+        assert!(err.contains("result is knowable"), "{err}");
+    }
+
+    /// What a switch to ranked no longer refuses, which is the whole point of
+    /// the prompt. A player in a spot who hasn't opted in is *asked* and keeps
+    /// their place while they answer; a player on the waitlist isn't judged at
+    /// all, because they hold no spot for the switch to take away and
+    /// `ranked_move_in_reason` still refuses to move them in until they've
+    /// opted in. Only an account-less player in a spot still refuses it: there
+    /// is no prompt anyone could send them.
+    ///
+    /// Before this, both of those refused the switch, and an organiser who had
+    /// forgotten to tick ranked could only chase people or remove them.
+    #[test]
+    fn switching_to_ranked_only_refuses_players_who_cant_be_asked() {
+        let not_opted_in = UnratablePlayers {
             without_account: Vec::new(),
+            not_opted_in: vec!["Sam".to_string(), "Wendy".to_string()],
+        };
+        assert_eq!(switch_to_ranked_reason(&not_opted_in), None);
+
+        let no_account = UnratablePlayers {
+            without_account: vec!["Ringer".to_string()],
             not_opted_in: vec!["Sam".to_string()],
         };
-        let reason = switch_to_ranked_reason("squash", &in_a_spot, &waiting).unwrap();
-        assert!(reason.contains("Sam"), "{reason}");
-        assert!(!reason.contains("Wendy"), "{reason}");
+        let reason = switch_to_ranked_reason(&no_account).unwrap();
+        assert!(reason.contains("Agon account"), "{reason}");
+        assert!(reason.contains("Ringer"), "{reason}");
+        assert!(
+            !reason.contains("Sam"),
+            "the askable player isn't part of the refusal: {reason}"
+        );
     }
 
     /// `/users/me` lists opt-ins in ladder order with their stored dates,

@@ -3695,6 +3695,7 @@ impl Api {
                 // for that case — see `MatchRecord`'s doc comment on it).
                 role: dao::records::MatchPlayerRole::Owner,
                 joined_via: None,
+                ranked_prompt: None,
             });
         }
         for invite in &input.invites {
@@ -3880,6 +3881,11 @@ impl Api {
             // `CreateMatchInput::ranked` has the full argument, including the
             // gap confirmation doesn't close.
             ranked: input.ranked.unwrap_or(false),
+            // A match created ranked never opens prompts: every player in a
+            // spot at creation is the caller (who consents inline, above) or
+            // an invitee, who is asked when they accept. Prompts exist only
+            // for a *switch*, which finds players already in place.
+            ranked_prompt: None,
             created_at: now.clone(),
         };
 
@@ -4641,6 +4647,7 @@ impl Api {
                     invitation: None,
                     role: dao::records::MatchPlayerRole::Player,
                     joined_via: None,
+                    ranked_prompt: None,
                 };
                 dao.add_match_player_tx(&match_id, &player)
                     .await
@@ -4973,6 +4980,7 @@ impl Api {
             // single occurrence to ranked afterwards, which asks everyone in
             // it. A ranked *series* needs its own consent design first.
             ranked: false,
+            ranked_prompt: None,
             created_at: now,
         };
 
@@ -7257,6 +7265,11 @@ impl Api {
             invitation: None,
             role: dao::records::MatchPlayerRole::Player,
             joined_via: Some(joined_via),
+            // `settle_rating_consent` above means a joiner of a ranked match
+            // is opted in by the time this row exists, so there is nothing to
+            // ask them — even if the match has an open switch-to-ranked ask
+            // that other players still owe an answer to.
+            ranked_prompt: None,
         };
 
         if let Err(e) = dao
@@ -7781,6 +7794,7 @@ impl Api {
             invitation: None,
             role: dao::records::MatchPlayerRole::Player,
             joined_via: Some(dao::records::JoinSourceRecord::Waitlist),
+            ranked_prompt: None,
         };
         if let Err(e) = dao
             .move_in_from_waitlist_tx(
@@ -9892,6 +9906,7 @@ fn build_invited_player(
         invitation: Some(embedded),
         role: dao::records::MatchPlayerRole::Player,
         joined_via: None,
+        ranked_prompt: None,
     };
 
     let invitation = dao::records::InvitationRecord {

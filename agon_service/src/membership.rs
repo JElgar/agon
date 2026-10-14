@@ -112,6 +112,19 @@ pub enum InvitationContext {
 pub struct InvitationMatchContext {
     pub match_id: String,
     pub match_name: String,
+    /// Whether the match counts towards ratings — `Match.ranked`, here so an
+    /// invitee can be told *before* accepting that playing it starts their
+    /// rating in that sport (the by-token accept screen has nothing else to
+    /// read it from).
+    ///
+    /// Read from the match whenever the response is built, never copied onto
+    /// the invitation: the organiser can still switch a match to ranked after
+    /// inviting people, until the flag locks, and a copy taken at invite time
+    /// would then show "friendly" on a ranked match.
+    pub ranked: bool,
+    /// The ladder a ranked match rates into, e.g. `"tennis"`; `None` for a
+    /// friendly. Same as `Match.rating_ladder`.
+    pub rating_ladder: Option<String>,
 }
 
 #[derive(Object)]
@@ -239,6 +252,13 @@ pub struct JoinLinkPreview {
     /// comment for the unrelated unassigned-vs-capacity distinction).
     /// `None` = uncapped.
     pub max_players: Option<u32>,
+    /// Whether joining means playing a ranked match — `Match.ranked`, here so
+    /// the join screen can say that joining starts the viewer's rating in
+    /// that sport before they sign in, not after they've joined.
+    pub ranked: bool,
+    /// The ladder a ranked match rates into; `None` for a friendly. Same as
+    /// `Match.rating_ladder`.
+    pub rating_ladder: Option<String>,
 }
 
 /// Join a match — via a join link's token, or (omitting `token`) by virtue of

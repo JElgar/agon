@@ -4,13 +4,12 @@
 
 use std::collections::HashMap;
 
-use aws_sdk_dynamodb::error::SdkError;
-use aws_sdk_dynamodb::operation::update_item::UpdateItemError;
 use aws_sdk_dynamodb::types::{AttributeValue, Delete, Put, TransactWriteItem, Update};
 
 use super::audience::AudienceMember;
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
+use super::is_update_conditional_failure;
 use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_pk, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::{
@@ -217,6 +216,7 @@ impl Dao {
                     &match_.created_at,
                     &AudienceMember {
                         viewer_side_id: player.side_id.clone(),
+                        viewer_is_going: true,
                         ..Default::default()
                     },
                 )?;
@@ -526,6 +526,17 @@ impl Dao {
         // Replace the location. `None` leaves it unchanged; `Some(value)`
         // overwrites. No "clear" case yet, same as `format` above.
         location: Option<LocationRecord>,
+        // Switch the match between ranked and friendly. `None` leaves it
+        // unchanged. Written with no condition on the score, status or start
+        // time, even though the API only allows the change while all three
+        // are still open (`ranked_lock_reason_for_update`, judged on the read
+        // `update_match` has just made). A guard here would buy nothing. The
+        // only writes that can land between that read and this one are a
+        // concurrent request's score, status change or new start time, and
+        // every such interleaving ends where "change the flag, *then* send
+        // that request" legally ends anyway: the lock refuses a flag change
+        // that comes after the result, never one that comes before it.
+        ranked: Option<bool>,
         side_names: &[(String, Option<String>)],
         side_colours: &[(String, Option<String>)],
     ) -> DaoResult<()> {
@@ -597,6 +608,11 @@ impl Dao {
             set.push("#loc = :loc".into());
             names.insert("#loc".into(), "location".into());
             values.insert(":loc".into(), to_attr(&loc)?);
+        }
+        if let Some(ranked) = ranked {
+            set.push("#ranked = :ranked".into());
+            names.insert("#ranked".into(), "ranked".into());
+            values.insert(":ranked".into(), AttributeValue::Bool(ranked));
         }
         if !side_names.is_empty() {
             // Same literal attribute name ("name") as the top-level `#name`
@@ -951,6 +967,7 @@ impl Dao {
                 now,
                 &AudienceMember {
                     viewer_side_id: player.side_id.clone(),
+                    viewer_is_going: true,
                     ..Default::default()
                 },
             )?;
@@ -1443,14 +1460,6 @@ fn headcount_delta_update(
         .build()
         .map(Some)
         .map_err(|e| DaoError::Dynamo(e.to_string()))
-}
-
-fn is_update_conditional_failure(err: &SdkError<UpdateItemError>) -> bool {
-    matches!(
-        err,
-        SdkError::ServiceError(se)
-            if matches!(se.err(), UpdateItemError::ConditionalCheckFailedException(_))
-    )
 }
 
 #[cfg(test)]

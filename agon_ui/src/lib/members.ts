@@ -189,8 +189,9 @@ export function withTeamMemberInvitationStatus(
  * `LeaveMatchDialog`). Pending/declined invitees are not participants.
  *
  * Also accepts a feed's `FeedMatch` (see `myPendingInvitation`'s doc comment)
- * — always `false` there; check `FeedMatch.viewer_side_id` instead if you
- * need "is the viewer playing" from a feed card.
+ * — always `false` there; check `FeedMatch.viewer_is_going` instead if you
+ * need "is the viewer playing" from a feed card (NOT `viewer_side_id`, which
+ * is `undefined`/`null` for a participant who hasn't been assigned a side).
  */
 export function isParticipant(
   match: MatchLike,

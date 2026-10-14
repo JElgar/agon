@@ -26,6 +26,9 @@ pub struct FeedViewer {
     pub known_player_ids: Vec<String>,
     pub known_player_count: u32,
     pub viewer_side_id: Option<String>,
+    pub viewer_is_going: bool,
+    pub viewer_invitation_pending: bool,
+    pub viewer_can_join_side_ids: Vec<String>,
 }
 
 /// The result of resolving a match's fan-out: who should see it (with their
@@ -48,6 +51,16 @@ pub struct WriteFeedChunk {
     pub now: String,
 }
 
+/// One chunk of stale feed-row deletes: a reschedule's old `starts_at` plus
+/// the viewers (by id only — no audience data needed to delete) who may still
+/// have a row under it. See `Dao::delete_feed_items`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteFeedChunk {
+    pub viewer_ids: Vec<String>,
+    pub match_id: String,
+    pub old_starts_at: String,
+}
+
 /// Inputs for linking an accepted invitation to its roster entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LinkAccepted {
@@ -56,8 +69,168 @@ pub struct LinkAccepted {
     pub responded_at: String,
 }
 
+/// Inputs for generating one occurrence of a series, passed in full each
+/// call (mirrors `WriteFeedChunk`'s own shape) rather than making the
+/// activity re-fetch anything the workflow already has in hand.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerateSeriesOccurrence {
+    pub series_id: String,
+    /// 0-based occurrence index — also the exact `occurrences_generated`
+    /// value this occurrence's generation is conditioned on (see
+    /// `Dao::bump_series_occurrences_generated`): generating occurrence
+    /// `index` requires the series' counter to currently read `index`.
+    pub index: u32,
+    /// This occurrence's full start time (already advanced from the
+    /// series' first occurrence by the workflow's pure date math — see
+    /// `agon_core::series::occurrence_date`), RFC-3339.
+    pub starts_at: String,
+    pub created_by_user_id: String,
+    pub match_type: String,
+    pub name: String,
+    pub description: String,
+    pub location: Option<agon_core::dao::records::LocationRecord>,
+    pub sides: Vec<agon_core::dao::records::SeriesSideRecord>,
+}
+
 #[activities]
 impl AgonActivities {
+    /// Fetch a series by id. `None` if it's gone (the workflow no-ops).
+    #[activity]
+    pub async fn get_series(
+        self: std::sync::Arc<Self>,
+        _ctx: ActivityContext,
+        series_id: String,
+    ) -> Result<Option<agon_core::dao::records::SeriesRecord>, ActivityError> {
+        self.dao.get_series(&series_id).await.map_err(activity_err)
+    }
+
+    /// Generate one occurrence of a series: claim its generation slot, create
+    /// its match (team-linked sides only, no players — a series only
+    /// configures a team per side; roster join happens per-occurrence
+    /// later), then bump the series' `occurrences_generated` counter. Every
+    /// step is individually idempotent, so a retry of this whole activity —
+    /// for an occurrence this activity (or an earlier attempt) already fully
+    /// or partially generated — is always safe:
+    /// - `claim_series_occurrence` is a conditional put keyed on
+    ///   `(series_id, starts_at)`: if this attempt loses the race, it gets
+    ///   back whichever match id the winning attempt offered, and uses that
+    ///   one instead of the fresh id it generated for itself (see
+    ///   `agon_core::dao::series_ops`'s doc comment — this is what replaced
+    ///   the old hash-derived match id).
+    /// - `create_match` on the claimed match id hits `Conflict` if that
+    ///   occurrence's match already exists (the common case on a retry —
+    ///   either this attempt won the claim and created it before, or it lost
+    ///   the claim to an attempt that already created it), treated as
+    ///   already-done rather than an error. If the claim was written but the
+    ///   match never got created (a crash in between), this call still
+    ///   creates it now, under the same claimed id.
+    /// - `bump_series_occurrences_generated` is itself conditioned on the
+    ///   counter still reading `index` (see
+    ///   `Dao::bump_series_occurrences_generated`'s doc comment), so a
+    ///   retry that already bumped it is a no-op rather than a double count.
+    #[activity]
+    pub async fn generate_series_occurrence(
+        self: std::sync::Arc<Self>,
+        _ctx: ActivityContext,
+        input: GenerateSeriesOccurrence,
+    ) -> Result<(), ActivityError> {
+        let claim = agon_core::dao::records::SeriesOccurrenceRecord {
+            series_id: input.series_id.clone(),
+            index: input.index,
+            starts_at: input.starts_at.clone(),
+            match_id: agon_core::id::new_id(),
+            created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        };
+        let claimed = self
+            .dao
+            .claim_series_occurrence(&claim)
+            .await
+            .map_err(activity_err)?;
+        let match_id = claimed.match_id;
+
+        let mut sides: std::collections::HashMap<String, agon_core::dao::records::MatchSideRecord> =
+            Default::default();
+        for side in &input.sides {
+            let side_id = agon_core::id::new_id();
+            sides.insert(
+                side_id.clone(),
+                agon_core::dao::records::MatchSideRecord {
+                    side_id,
+                    team_id: Some(side.team_id.clone()),
+                    name: side.name.clone(),
+                    colour: side.colour.clone(),
+                    max_players: side.max_players,
+                    team_join_enabled: false,
+                    player_count: 0,
+                    roster_preview: Vec::new(),
+                },
+            );
+        }
+
+        let match_record = agon_core::dao::records::MatchRecord {
+            id: match_id.clone(),
+            created_by_user_id: input.created_by_user_id,
+            name: input.name,
+            description: input.description,
+            match_type: input.match_type,
+            status: "scheduled".to_string(),
+            starts_at: input.starts_at,
+            allow_unassigned: true,
+            total_player_count: 0,
+            location: input.location,
+            series_id: Some(input.series_id.clone()),
+            header_photos: Vec::new(),
+            sides,
+            confirmed_score: None,
+            pending_score: None,
+            like_count: 0,
+            comment_count: 0,
+            live_seq: 0,
+            live_tip_seq: None,
+            format: None,
+            // A series occurrence is always friendly. `SeriesRecord` has no
+            // `ranked` of its own, and generation puts *other* people's
+            // players into spots without asking them — which is the one thing
+            // a rating needs (see `rating_consent`). An organiser can switch a
+            // single occurrence to ranked afterwards, which asks everyone in
+            // it. A ranked *series* needs its own consent design first.
+            ranked: false,
+            created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        };
+
+        match self.dao.create_match(&match_record, &[], &[]).await {
+            Ok(()) => {}
+            Err(agon_core::dao::error::DaoError::Conflict(_)) => {
+                // Already generated — by this attempt's own earlier try, or
+                // by whichever attempt won the claim above. Fall through to
+                // (re-)bump the counter, which is itself a no-op if that
+                // earlier attempt already did it too.
+            }
+            Err(e) => return Err(activity_err(e)),
+        }
+
+        self.dao
+            .bump_series_occurrences_generated(&input.series_id, input.index)
+            .await
+            .map_err(activity_err)
+    }
+
+    /// Flip a series' status once generation finishes. Idempotent: guarded
+    /// on the series still reading `"generating"` (see
+    /// `Dao::update_series_status`), so a replay/retry of this final step
+    /// after it already landed is a no-op.
+    #[activity]
+    pub async fn activate_series(
+        self: std::sync::Arc<Self>,
+        _ctx: ActivityContext,
+        series_id: String,
+    ) -> Result<(), ActivityError> {
+        self.dao
+            .update_series_status(&series_id, "generating", "active")
+            .await
+            .map_err(activity_err)
+    }
+
     /// Resolve the deduplicated fan-out audience for a match and its start time.
     /// Returns `match_exists = false` if the match is gone (workflow no-ops).
     #[activity]
@@ -88,6 +261,9 @@ impl AgonActivities {
                 known_player_ids: member.known_player_ids,
                 known_player_count: member.known_player_count,
                 viewer_side_id: member.viewer_side_id,
+                viewer_is_going: member.viewer_is_going,
+                viewer_invitation_pending: member.viewer_invitation_pending,
+                viewer_can_join_side_ids: member.viewer_can_join_side_ids,
             })
             .collect();
         Ok(FanoutAudience {
@@ -114,11 +290,29 @@ impl AgonActivities {
                     known_player_ids: v.known_player_ids,
                     known_player_count: v.known_player_count,
                     viewer_side_id: v.viewer_side_id,
+                    viewer_is_going: v.viewer_is_going,
+                    viewer_invitation_pending: v.viewer_invitation_pending,
+                    viewer_can_join_side_ids: v.viewer_can_join_side_ids,
                 },
             })
             .collect();
         self.dao
             .write_feed_items(&viewers, &chunk.match_id, &chunk.starts_at, &chunk.now)
+            .await
+            .map_err(activity_err)
+    }
+
+    /// Delete one chunk of stale feed rows left behind under a match's
+    /// previous `starts_at` after a reschedule. Idempotent — deleting an
+    /// already-gone row is a no-op.
+    #[activity]
+    pub async fn delete_stale_feed_chunk(
+        self: std::sync::Arc<Self>,
+        _ctx: ActivityContext,
+        chunk: DeleteFeedChunk,
+    ) -> Result<(), ActivityError> {
+        self.dao
+            .delete_feed_items(&chunk.viewer_ids, &chunk.match_id, &chunk.old_starts_at)
             .await
             .map_err(activity_err)
     }

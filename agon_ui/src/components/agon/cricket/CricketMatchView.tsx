@@ -38,6 +38,7 @@ import {
 } from '@/components/agon/football/FootballMatchView'
 import { useViewerFollowing } from '@/hooks/useViewerFollowing'
 import { plural } from './cricketMeta'
+import { resolveSideColour } from '@/lib/sideColours'
 
 type Match = components['schemas']['Match']
 type MatchPlayer = components['schemas']['MatchPlayer']
@@ -303,7 +304,7 @@ export function CricketScoreStrip({ match, score, live }: { match: Match; score:
         .join(' & ') || '–'
     const row = (side: typeof a, idx: number, lost: boolean) => (
       <div className={cn('flex items-center gap-2 text-[15px]', lost ? 'font-medium text-muted-foreground' : 'font-bold')}>
-        <SideSwatch index={idx} size={12} />
+        <SideSwatch side={side} index={idx} size={12} />
         <span className="min-w-0 flex-1 truncate">{sideNameFor(match, side?.id ?? '')}</span>
         <span className="shrink-0 font-display text-xl font-extrabold" style={lost ? { color: LOSER_GREY } : undefined}>
           {text(side?.id)}
@@ -484,7 +485,8 @@ export function RunsOverTimeCard({
   const endYs = series.map((s) => yFor(s.inn.runs))
   const labelY = (si: number, y: number) =>
     endYs.some((o, oi) => oi < si && Math.abs(o - y) < 22) ? y + 22 : y - 12
-  const colorFor = (sideId: string) => (sideIndex(match, sideId) === 0 ? 'var(--primary)' : KIT_GREY)
+  const colorFor = (sideId: string) =>
+    resolveSideColour(match.sides.find((s) => s.id === sideId)) ?? (sideIndex(match, sideId) === 0 ? 'var(--primary)' : KIT_GREY)
 
   return (
     <section className="flex flex-col gap-3 rounded-[20px] border bg-card px-[18px] py-4">
@@ -653,6 +655,7 @@ export function CricketScorecardTab({
         return (
           <div key={`${inn.batting_side_id}-${idx}`} className="flex flex-col gap-3.5">
             <SideHeading
+              side={match.sides.find((s) => s.id === inn.batting_side_id)}
               index={sideIndex(match, inn.batting_side_id)}
               name={sideNameFor(match, inn.batting_side_id)}
               meta={`${inn.runs}/${inn.wickets}${inn.declared ? 'd' : ''} · ${formatOvers(inn.overs)} ov`}
@@ -1209,6 +1212,7 @@ export function CricketPlayersTab({
           return (
             <div key={side.id} className="flex flex-col gap-3.5">
               <SideHeading
+                side={side}
                 index={idx}
                 name={sideNameFor(match, side.id)}
                 meta={`${res ? `${res} · ` : ''}${plural(players.length, 'player')}`}

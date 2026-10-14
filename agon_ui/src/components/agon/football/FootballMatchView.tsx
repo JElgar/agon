@@ -19,6 +19,7 @@ import {
   type FootballEventView,
 } from '@/lib/liveScore'
 import { initials, memberAvatarUrl, memberName, type ScorePlayers, sideDisplayName } from '@/lib/members'
+import { resolveSideColour } from '@/lib/sideColours'
 import { FollowButton } from '@/components/agon/FollowButton'
 import { useViewerFollowing } from '@/hooks/useViewerFollowing'
 
@@ -71,12 +72,18 @@ export function PersonAvatar({
   )
 }
 
-/** A side's kit mark: the team crest when it has one, else side A's solid
- *  blue disc / side B's white disc with a grey ring. */
+/** A side's kit mark: the team crest when it has one, else its real
+ *  colour (`side.colour`, or a team-linked side's `teamCrestColor`) as a
+ *  solid disc, falling back to side A's solid blue / side B's white disc
+ *  with a grey ring only when neither resolves. */
 export function SideDisc({ side, index, size = 44 }: { side: MatchSide | undefined; index: number; size?: number }) {
   const style = { width: size, height: size }
   if (side?.team_logo?.image_url) {
     return <img src={side.team_logo.image_url} alt="" style={style} className="shrink-0 rounded-full border object-cover" />
+  }
+  const colour = resolveSideColour(side)
+  if (colour) {
+    return <span style={{ ...style, background: colour }} className="box-border shrink-0 rounded-full border-2 border-card" />
   }
   return index === 0 ? (
     <span style={style} className="shrink-0 rounded-full bg-primary" />
@@ -85,9 +92,16 @@ export function SideDisc({ side, index, size = 44 }: { side: MatchSide | undefin
   )
 }
 
-/** Small rounded-square kit swatch used in legends, rows and headings. */
-export function SideSwatch({ index, size = 10 }: { index: number; size?: number }) {
+/** Small rounded-square swatch used in legends, rows and headings: a
+ *  side's real colour, falling back to the generic blue (index 0) / white
+ *  with a grey ring (index 1) only when neither it nor its team resolves
+ *  one. */
+export function SideSwatch({ side, index, size = 10 }: { side?: MatchSide; index: number; size?: number }) {
   const radius = size >= 12 ? Math.round(size / 3) : Math.max(2, Math.round(size / 3.5))
+  const colour = resolveSideColour(side)
+  if (colour) {
+    return <span style={{ width: size, height: size, borderRadius: radius, background: colour }} className="inline-block shrink-0" />
+  }
   return index === 0 ? (
     <span style={{ width: size, height: size, borderRadius: radius }} className="inline-block shrink-0 bg-primary" />
   ) : (
@@ -220,7 +234,7 @@ export function FootballScoreStrip({ match, goalsA, goalsB, hasScore }: { match:
   return (
     <div className="flex items-center gap-3 rounded-2xl border bg-card px-4 py-3">
       <span className={cn('flex min-w-0 flex-1 items-center gap-2 text-[15px]', aLost ? 'font-medium text-muted-foreground' : 'font-bold')}>
-        <SideSwatch index={0} size={12} />
+        <SideSwatch side={sideA} index={0} size={12} />
         <span className="truncate">{sideLabel(sideA, 'Side A')}</span>
       </span>
       <span className="font-display text-2xl font-extrabold">{hasScore ? `${goalsA}–${goalsB}` : 'vs'}</span>
@@ -231,7 +245,7 @@ export function FootballScoreStrip({ match, goalsA, goalsB, hasScore }: { match:
         )}
       >
         <span className="truncate">{sideLabel(sideB, 'Side B')}</span>
-        <SideSwatch index={1} size={12} />
+        <SideSwatch side={sideB} index={1} size={12} />
       </span>
     </div>
   )
@@ -369,7 +383,7 @@ export function GoalsAssistsCard({ match, detail }: { match: Match; detail: Foot
       {visible.map((r) => (
         <div key={r.key} className={cn(grid, 'min-h-[30px]')}>
           <span className="flex items-center gap-2 overflow-hidden text-sm font-semibold whitespace-nowrap">
-            <SideSwatch index={sideIndex(match, r.side_id)} size={10} />
+            <SideSwatch side={match.sides.find((s) => s.id === r.side_id)} index={sideIndex(match, r.side_id)} size={10} />
             {r.userId ? (
               <Link to={`/users/${r.userId}`} className="truncate text-foreground hover:underline">
                 {r.name}
@@ -460,6 +474,8 @@ export function ScoreFlowCard({
   }
   const nameA = sideLabel(sideA, 'Side A')
   const nameB = sideLabel(sideB, 'Side B')
+  const colourA = resolveSideColour(sideA) ?? 'var(--primary)'
+  const colourB = resolveSideColour(sideB) ?? KIT_GREY
 
   return (
     <section className={cn(cardClass, 'flex flex-col gap-3')}>
@@ -473,11 +489,11 @@ export function ScoreFlowCard({
       </div>
       <div className="flex gap-3.5 text-xs text-muted-foreground">
         <span className="flex items-center gap-1.5">
-          <span className="h-[3px] w-3.5 rounded-sm bg-primary" />
+          <span className="h-[3px] w-3.5 rounded-sm" style={{ background: colourA }} />
           {nameA}
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="h-[3px] w-3.5 rounded-sm" style={{ background: KIT_GREY }} />
+          <span className="h-[3px] w-3.5 rounded-sm" style={{ background: colourB }} />
           {nameB}
         </span>
       </div>
@@ -509,9 +525,9 @@ export function ScoreFlowCard({
             </text>
           </>
         )}
-        <path d={path(sideB.id)} fill="none" stroke={KIT_GREY} strokeWidth="2.5" strokeLinejoin="round" />
-        <path d={path(sideA.id)} fill="none" className="stroke-primary" strokeWidth="2.5" strokeLinejoin="round" />
-        <text x={endX - 4} y={yFor(totalA) - 7} textAnchor="end" fontSize="13" fontWeight="700" className="fill-primary">
+        <path d={path(sideB.id)} fill="none" stroke={colourB} strokeWidth="2.5" strokeLinejoin="round" />
+        <path d={path(sideA.id)} fill="none" stroke={colourA} strokeWidth="2.5" strokeLinejoin="round" />
+        <text x={endX - 4} y={yFor(totalA) - 7} textAnchor="end" fontSize="13" fontWeight="700" fill={colourA}>
           {totalA}
         </text>
         <text
@@ -520,7 +536,7 @@ export function ScoreFlowCard({
           textAnchor="end"
           fontSize="13"
           fontWeight="700"
-          className="fill-muted-foreground"
+          fill={colourB}
         >
           {totalB}
         </text>
@@ -681,8 +697,19 @@ function SubIcon() {
   )
 }
 
-function EventIcon({ kind, index }: { kind: FootballEventKind; index: number }) {
+function EventIcon({ kind, side, index }: { kind: FootballEventKind; side?: MatchSide; index: number }) {
   if (GOAL_KINDS.includes(kind)) {
+    const colour = resolveSideColour(side)
+    if (colour) {
+      return (
+        <span
+          className="box-border flex size-[30px] shrink-0 items-center justify-center rounded-full border-2 border-card text-white"
+          style={{ background: colour }}
+        >
+          <BallIcon />
+        </span>
+      )
+    }
     return index === 0 ? (
       <span className="flex size-[30px] shrink-0 items-center justify-center rounded-full bg-primary text-white">
         <BallIcon />
@@ -864,6 +891,7 @@ export function FootballTimeline({
           }
           const { event, running } = item
           const idx = sideIndex(match, event.side_id)
+          const eventSide = match.sides.find((s) => s.id === event.side_id)
           const isGoal = GOAL_KINDS.includes(event.kind)
           const scorerName = event.kind === 'own_goal' ? nameOf(event.player_id) : nameOf(event.player_id)
           const mine = !!myPlayerId && isGoal && event.kind !== 'own_goal' && event.player_id === myPlayerId
@@ -884,13 +912,13 @@ export function FootballTimeline({
               </div>
               <div className="flex flex-col items-center">
                 <span className={cn('w-0.5 flex-1', first ? 'bg-transparent' : 'bg-rule')} />
-                <EventIcon kind={event.kind} index={idx} />
+                <EventIcon kind={event.kind} side={eventSide} index={idx} />
                 <span className={cn('w-0.5 flex-1', last ? 'bg-transparent' : 'bg-rule')} />
               </div>
               <div className="flex min-w-0 flex-col justify-center gap-px py-3">
                 <span className="flex items-baseline text-[15px] leading-snug font-semibold">
                   <span className="mr-1.5 inline-flex shrink-0 -translate-y-px">
-                    <SideSwatch index={idx} size={8} />
+                    <SideSwatch side={eventSide} index={idx} size={8} />
                   </span>
                   <span className="min-w-0">{title}</span>
                 </span>
@@ -1045,6 +1073,7 @@ export function FootballPlayersTab({
           return (
             <div key={side.id} className="flex flex-col gap-3.5">
               <SideHeading
+                side={side}
                 index={idx}
                 name={sideLabel(side, idx === 0 ? 'Side A' : 'Side B')}
                 meta={`${res ? `${res} · ` : ''}${players.length} ${players.length === 1 ? 'player' : 'players'}`}
@@ -1191,10 +1220,10 @@ export function TopPerformerCard({ player, detail, value }: { player: MatchPlaye
 }
 
 /** Kit swatch + side name + a short meta line, above a side's roster card. */
-export function SideHeading({ index, name, meta }: { index: number; name: string; meta?: string }) {
+export function SideHeading({ side, index, name, meta }: { side?: MatchSide; index: number; name: string; meta?: string }) {
   return (
     <div className="mt-1.5 flex items-center gap-2.5 px-1">
-      <SideSwatch index={index} size={14} />
+      <SideSwatch side={side} index={index} size={14} />
       <span className="flex-1 truncate font-display text-[19px] font-bold">{name}</span>
       {meta && <span className="text-[13px] text-muted-foreground">{meta}</span>}
     </div>

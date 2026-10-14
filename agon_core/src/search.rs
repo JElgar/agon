@@ -54,6 +54,7 @@ impl Index {
                 "team_ids",
                 "starts_at_ts",
                 "status",
+                "series_id",
             ],
             Index::Users | Index::Teams => &[],
         }

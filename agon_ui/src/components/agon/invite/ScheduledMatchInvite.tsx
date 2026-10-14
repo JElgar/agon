@@ -9,11 +9,11 @@ import {
   LogOut,
   MoreVertical,
   Pencil,
-  MapPin,
   Radio,
   Share,
   ShieldMinus,
   ShieldPlus,
+  UserMinus,
   UserPlus,
 } from 'lucide-react'
 import type { components } from '@/types/api'
@@ -26,9 +26,10 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { scheduledDateTime } from '@/lib/datetime'
-import { directionsUrl } from '@/lib/location'
+import { MatchLocation } from '@/components/agon/MatchLocation'
 import { addMatchToCalendar } from '@/lib/calendar'
 import { respondToInvitation } from '@/lib/invitations'
 import {
@@ -44,7 +45,6 @@ import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
 import { MatchJoinLinksDialog } from '@/components/agon/MatchJoinLinksDialog'
 import { MatchComments } from '@/components/agon/MatchComments'
-import { teamCrestColor } from '@/components/agon/RedesignedSportCard'
 import {
   memberAvatarUrl,
   memberName,
@@ -115,21 +115,6 @@ function OrganizerRow({ organiser }: { organiser: MatchPlayer }) {
   )
 }
 
-/** The Teams tab's own side identity dot: an ad-hoc or derby side's own
- *  stored `colour` first (the server only ever sets it for those — see
- *  `MatchSide.colour`'s doc comment), else a team-linked side's
- *  `teamCrestColor` (the same deterministic colour its crest uses
- *  elsewhere — the schema has no real team-colour field), falling back to
- *  the plain index-based `SideSwatch` only when neither is set. Checking
- *  `colour` before `team_id` matters for a derby side, which has both. */
-function TeamRosterSwatch({ side, index }: { side: MatchSide | undefined; index: number }) {
-  const colour = side?.colour ?? (side?.team_id ? teamCrestColor(side.team_id) : undefined)
-  if (colour) {
-    return <span className="inline-block size-3.5 shrink-0 rounded-[5px]" style={{ backgroundColor: colour }} />
-  }
-  return <SideSwatch index={index} size={14} />
-}
-
 /** One side's roster on the Teams tab — read-only; editing who's on which
  *  side happens through `MatchRosterEditor`, surfaced alongside this via the
  *  "Edit roster" button rather than inline here. */
@@ -147,7 +132,7 @@ function TeamRosterCard({
   return (
     <Card className="flex flex-col gap-1 p-[18px]">
       <div className="flex items-center gap-2.5 pb-2">
-        <TeamRosterSwatch side={side} index={index} />
+        <SideSwatch side={side} index={index} size={14} />
         <span className="font-display flex-grow text-[18px] font-extrabold">{sideLabel(side, fallback)}</span>
         <span className="text-[13px] text-muted-foreground">{players.length} players</span>
       </div>
@@ -233,6 +218,22 @@ export function ScheduledMatchInvite({
   })
 
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false)
+  const [removingAdmin, setRemovingAdmin] = useState<MatchPlayer | null>(null)
+  const [removingPlayer, setRemovingPlayer] = useState<MatchPlayer | null>(null)
+
+  const removePlayer = useMutation({
+    mutationFn: async (pid: string) => {
+      const { error } = await fetchClient.PATCH('/matches/{match_id}', {
+        params: { path: { match_id: match.id } },
+        body: { removed_player_ids: [pid] },
+      })
+      if (error) throw new Error('Failed to remove player')
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: matchKey })
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
+    },
+  })
 
   const respond = useMutation({
     mutationFn: async (response: components['schemas']['InvitationResponse']) => {
@@ -324,7 +325,7 @@ export function ScheduledMatchInvite({
           <div className="flex flex-col gap-3.5 px-1">
             {metaTeamSide && (
               <div className="flex items-center gap-2.5">
-                <SideSwatch index={match.sides.indexOf(metaTeamSide)} size={32} />
+                <SideSwatch side={metaTeamSide} index={match.sides.indexOf(metaTeamSide)} size={32} />
                 <span className="text-sm font-semibold text-muted-foreground">{metaTeamSide.team_name}</span>
               </div>
             )}
@@ -336,22 +337,7 @@ export function ScheduledMatchInvite({
                   <b className="font-semibold">{scheduledDateTime(match.starts_at)}</b>
                 </span>
               </div>
-              {match.location && (
-                <div className="flex items-center gap-3 text-base">
-                  <MapPin className="size-5 shrink-0 text-primary" />
-                  <span className="truncate">{match.location.text}</span>
-                  {directionsUrl(match.location) && (
-                    <a
-                      href={directionsUrl(match.location)}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="shrink-0 font-semibold text-primary hover:underline"
-                    >
-                      Directions
-                    </a>
-                  )}
-                </div>
-              )}
+              {match.location && <MatchLocation location={match.location} size="lg" />}
             </div>
           </div>
 
@@ -426,7 +412,14 @@ export function ScheduledMatchInvite({
                               {p.role === 'admin' ? (
                                 <DropdownMenuItem
                                   disabled={setPlayerRole.isPending}
-                                  onSelect={() => setPlayerRole.mutate({ playerId: id, role: 'player' })}
+                                  onSelect={(e) => {
+                                    // Opening a Dialog synchronously from a DropdownMenuItem's
+                                    // onSelect races Radix's own close/cleanup of the menu —
+                                    // deferring to the next tick lets the menu finish unmounting
+                                    // first (https://github.com/radix-ui/primitives/issues/1836).
+                                    e.preventDefault()
+                                    setTimeout(() => setRemovingAdmin(p), 0)
+                                  }}
                                 >
                                   <ShieldMinus /> Remove admin
                                 </DropdownMenuItem>
@@ -436,6 +429,18 @@ export function ScheduledMatchInvite({
                                   onSelect={() => setPlayerRole.mutate({ playerId: id, role: 'admin' })}
                                 >
                                   <ShieldPlus /> Make admin
+                                </DropdownMenuItem>
+                              )}
+                              {!isYou && (
+                                <DropdownMenuItem
+                                  className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                                  disabled={removePlayer.isPending}
+                                  onSelect={(e) => {
+                                    e.preventDefault()
+                                    setTimeout(() => setRemovingPlayer(p), 0)
+                                  }}
+                                >
+                                  <UserMinus /> Remove from match
                                 </DropdownMenuItem>
                               )}
                             </DropdownMenuContent>
@@ -626,6 +631,62 @@ export function ScheduledMatchInvite({
           queryClient.invalidateQueries({ queryKey: ['profile-activity'] })
         }}
       />
+
+      <Dialog open={removingAdmin !== null} onOpenChange={(open) => !open && setRemovingAdmin(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Remove admin?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {removingAdmin && memberName(removingAdmin.member)} will no longer be able to manage this match.
+          </p>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setRemovingAdmin(null)} disabled={setPlayerRole.isPending}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={setPlayerRole.isPending}
+              onClick={() => {
+                if (!removingAdmin) return
+                setPlayerRole.mutate(
+                  { playerId: playerId(removingAdmin), role: 'player' },
+                  { onSuccess: () => setRemovingAdmin(null) },
+                )
+              }}
+            >
+              {setPlayerRole.isPending ? 'Removing…' : 'Remove admin'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={removingPlayer !== null} onOpenChange={(open) => !open && setRemovingPlayer(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Remove from match?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {removingPlayer && memberName(removingPlayer.member)} will be removed from the match and will need to be
+            invited again to rejoin.
+          </p>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setRemovingPlayer(null)} disabled={removePlayer.isPending}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={removePlayer.isPending}
+              onClick={() => {
+                if (!removingPlayer) return
+                removePlayer.mutate(playerId(removingPlayer), { onSuccess: () => setRemovingPlayer(null) })
+              }}
+            >
+              {removePlayer.isPending ? 'Removing…' : 'Remove from match'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {myPlayer && (
         <LeaveMatchDialog

@@ -29,7 +29,7 @@ export function SetsCard({ match, score }: { match: Match; score: Score }) {
   const row = (idx: number, mine: number[], theirs: number[], sets: number, otherSets: number) => (
     <div style={grid} className="grid min-h-11 items-center gap-x-1 border-t border-hairline text-sm tabular-nums">
       <span className="flex min-w-0 items-center gap-2 font-semibold">
-        <SideSwatch index={idx} size={10} />
+        <SideSwatch side={match.sides[idx]} index={idx} size={10} />
         <span className="truncate">{sideLabel(match, idx)}</span>
       </span>
       {Array.from({ length: count }, (_, i) => {
@@ -94,7 +94,7 @@ export function RosterTab({
           const res = result?.[side.id]
           return (
             <div key={side.id} className="flex flex-col gap-3.5">
-              <SideHeading index={idx} name={sideLabel(match, idx)} meta={`${res ? `${res} · ` : ''}${count(players.length)}`} />
+              <SideHeading side={side} index={idx} name={sideLabel(match, idx)} meta={`${res ? `${res} · ` : ''}${count(players.length)}`} />
               <section className="flex flex-col overflow-hidden rounded-[20px] border bg-card">
                 {players.length === 0 && <p className="px-4 py-5 text-sm text-muted-foreground">No players yet.</p>}
                 {players.map(row)}

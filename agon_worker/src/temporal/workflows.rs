@@ -21,7 +21,9 @@ use serde::{Deserialize, Serialize};
 use temporalio_macros::{workflow, workflow_methods};
 use temporalio_sdk::{ActivityOptions, WorkflowContext, WorkflowResult};
 
-use super::activities::{AgonActivities, LinkAccepted, WriteFeedChunk};
+use super::activities::{
+    AgonActivities, DeleteFeedChunk, GenerateSeriesOccurrence, LinkAccepted, WriteFeedChunk,
+};
 
 /// How many feed rows to write per activity invocation. Each chunk is a
 /// separately-retryable, checkpointed step — the whole point of running fan-out
@@ -45,6 +47,19 @@ fn workflow_now(ctx: &WorkflowContext<impl Sized>) -> String {
 // FanOutMatch — fan a match into its audience's feeds.
 // ===========================================================================
 
+/// Inputs to the fan-out workflow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FanOutMatchInput {
+    pub match_id: String,
+    /// The match's `starts_at` before this write, when this run was triggered
+    /// by a change that moved it (a reschedule). `starts_at` is part of the
+    /// feed row's sort key (see `agon_core::dao::feed`), so a re-fan-out after
+    /// a reschedule writes a *new* row rather than updating the old one in
+    /// place — `None` for every other trigger (creation, an invitation
+    /// acceptance, any other meta edit) skips the cleanup step below.
+    pub old_starts_at: Option<String>,
+}
+
 /// Fan a match into the feeds of everyone who should see it. Started when a
 /// match is created / completed. Workflow id: `fanout-<match_id>`.
 #[workflow]
@@ -54,7 +69,15 @@ pub struct FanOutMatch;
 #[workflow_methods]
 impl FanOutMatch {
     #[run]
-    pub async fn run(ctx: &mut WorkflowContext<Self>, match_id: String) -> WorkflowResult<()> {
+    pub async fn run(
+        ctx: &mut WorkflowContext<Self>,
+        input: FanOutMatchInput,
+    ) -> WorkflowResult<()> {
+        let FanOutMatchInput {
+            match_id,
+            old_starts_at,
+        } = input;
+
         // 1. Resolve the audience + the match start time.
         let audience = ctx
             .start_activity(
@@ -83,6 +106,30 @@ impl FanOutMatch {
                 activity_opts(),
             )
             .await?;
+        }
+
+        // 2b. A reschedule moved `starts_at`: the rows just written above live
+        //     under the new sort key, so delete the stale rows left behind
+        //     under the old one (otherwise the match shows twice in the
+        //     affected viewers' feeds).
+        if let Some(old_starts_at) = old_starts_at.filter(|old| *old != audience.starts_at) {
+            let viewer_ids: Vec<String> = audience
+                .viewers
+                .iter()
+                .map(|v| v.viewer_id.clone())
+                .collect();
+            for chunk in viewer_ids.chunks(FEED_CHUNK) {
+                ctx.start_activity(
+                    AgonActivities::delete_stale_feed_chunk,
+                    DeleteFeedChunk {
+                        viewer_ids: chunk.to_vec(),
+                        match_id: match_id.clone(),
+                        old_starts_at: old_starts_at.clone(),
+                    },
+                    activity_opts(),
+                )
+                .await?;
+            }
         }
 
         // 3. Ensure the match is searchable (idempotent; complements the inline
@@ -195,6 +242,132 @@ impl AcceptInvitation {
                     .await?;
             }
         }
+
+        Ok(())
+    }
+}
+
+// ===========================================================================
+// MaterializeSeries — generate a bounded series' remaining occurrences.
+// ===========================================================================
+
+/// Generate a bounded series' (`OnDate`/`AfterN`) remaining occurrences —
+/// everything past the first, which the API already created synchronously
+/// (see `CreateMatchSeriesInput`'s handler, `agon_service`). One-shot and
+/// reactive: started once off the series-creation DynamoDB stream event,
+/// runs to completion, and ends — the same shape as `FanOutMatch`/
+/// `AcceptInvitation`, not a long-running loop (that's only needed for
+/// indefinite, `Never`-ending series, a separate later piece of work).
+/// Workflow id: `materialize-<series_id>`.
+///
+/// Resumable by construction rather than by any workflow-level
+/// checkpointing: the loop below re-derives "how many occurrences are left"
+/// from the series record's own `occurrences_generated` every run, so a
+/// worker crash mid-run just means the next attempt (via `UseExisting`
+/// re-attaching a redelivered stream event to this same workflow id, or a
+/// Temporal-level retry of this run) picks up wherever the series record
+/// says generation actually got to — never past it, and never from
+/// scratch.
+///
+/// Indefinite (`Never`) series are out of scope for this workflow — series
+/// creation rejects `Never` at the API input level (see
+/// `CreateMatchSeriesEndInput`), so no `SeriesRecord` this workflow is ever
+/// started for should carry it. The `Never` arm below is defensive-only:
+/// reached only by a hand-written or future-schema record, where ending the
+/// run without generating anything (leaving `status` at `"generating"`) is
+/// safer than guessing at a policy this workflow was never built for.
+#[workflow]
+#[derive(Default)]
+pub struct MaterializeSeries;
+
+#[workflow_methods]
+impl MaterializeSeries {
+    #[run]
+    pub async fn run(ctx: &mut WorkflowContext<Self>, series_id: String) -> WorkflowResult<()> {
+        // 1. Load the series. Gone, or already past "generating" (a replay,
+        //    or a redelivered start attaching to a run that already
+        //    finished) → nothing to do.
+        let Some(series) = ctx
+            .start_activity(
+                AgonActivities::get_series,
+                series_id.clone(),
+                activity_opts(),
+            )
+            .await?
+        else {
+            return Ok(());
+        };
+        if series.status != "generating" {
+            return Ok(());
+        }
+
+        // 2. Anchor + total occurrence count — the same computation
+        //    `agon_service`'s create handler validated at creation time,
+        //    via the same `agon_core::series` functions, so the two can
+        //    never disagree on what "the next occurrence" means.
+        let Ok(first_starts_at) = series
+            .first_occurrence_starts_at
+            .parse::<chrono::DateTime<chrono::Utc>>()
+        else {
+            return Ok(());
+        };
+        let first_date = first_starts_at.date_naive();
+        let Some(weekday) = agon_core::series::weekday_from_sunday_index(series.weekday) else {
+            return Ok(());
+        };
+        let total = match &series.ends {
+            agon_core::dao::records::SeriesEndRecord::AfterN { count } => *count,
+            agon_core::dao::records::SeriesEndRecord::OnDate { date } => {
+                match chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d") {
+                    Ok(end_date) => agon_core::series::count_occurrences_through(
+                        first_date,
+                        &series.frequency,
+                        weekday,
+                        end_date,
+                    ),
+                    Err(_) => return Ok(()),
+                }
+            }
+            // Defensive-only — see this workflow's doc comment.
+            agon_core::dao::records::SeriesEndRecord::Never => return Ok(()),
+        };
+
+        // 3. Generate every occurrence from `occurrences_generated` (the
+        //    next one actually needed) up to `total`, one activity call
+        //    each — a checkpointed step per occurrence, same reasoning as
+        //    `FanOutMatch`'s per-chunk feed writes.
+        for index in series.occurrences_generated..total {
+            let Some(date) =
+                agon_core::series::occurrence_date(first_date, &series.frequency, weekday, index)
+            else {
+                break;
+            };
+            let starts_at = date
+                .and_time(first_starts_at.time())
+                .and_utc()
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
+            ctx.start_activity(
+                AgonActivities::generate_series_occurrence,
+                GenerateSeriesOccurrence {
+                    series_id: series_id.clone(),
+                    index,
+                    starts_at,
+                    created_by_user_id: series.created_by_user_id.clone(),
+                    match_type: series.match_type.clone(),
+                    name: series.name.clone(),
+                    description: series.description.clone(),
+                    location: series.location.clone(),
+                    sides: series.sides.clone(),
+                },
+                activity_opts(),
+            )
+            .await?;
+        }
+
+        // 4. Done — flip the series from "generating" to "active".
+        ctx.start_activity(AgonActivities::activate_series, series_id, activity_opts())
+            .await?;
 
         Ok(())
     }

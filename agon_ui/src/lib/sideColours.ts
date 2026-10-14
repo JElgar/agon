@@ -44,3 +44,33 @@ export function nameFromColour(hex: string): string | undefined {
 export function defaultSideColour(other?: string): string {
   return SIDE_COLOURS.find((c) => c.hex !== other)?.hex ?? SIDE_COLOURS[0].hex
 }
+
+/** A small fixed palette to derive a team's crest color from, since the
+ *  schema has no team-colour field at all. Judgment call: hash `team_id`
+ *  (sum of char codes, mod palette length) to a deterministic entry, so the
+ *  same team always renders the same colour without needing real brand data. */
+const TEAM_CREST_PALETTE = [
+  '#123E5B',
+  '#1F4D3A',
+  '#7A1F3D',
+  '#6B2F12',
+  '#3B5B12',
+  '#4B2E68',
+  '#8A4B08',
+  '#1E3FA8',
+]
+
+export function teamCrestColor(teamId: string): string {
+  let sum = 0
+  for (let i = 0; i < teamId.length; i++) sum += teamId.charCodeAt(i)
+  return TEAM_CREST_PALETTE[sum % TEAM_CREST_PALETTE.length]
+}
+
+/** A side's real identity colour: its own stored `colour` first (ad-hoc and
+ *  derby sides carry one), else a team-linked side's `teamCrestColor`,
+ *  else `undefined` when neither applies. Checking `colour` before
+ *  `team_id` matters for a derby side (two sides sharing one `team_id`),
+ *  which has both. */
+export function resolveSideColour(side: { colour?: string | null; team_id?: string | null } | undefined): string | undefined {
+  return side?.colour ?? (side?.team_id ? teamCrestColor(side.team_id) : undefined)
+}

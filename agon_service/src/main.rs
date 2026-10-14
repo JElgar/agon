@@ -9,7 +9,6 @@
 
 use std::{collections::HashMap, fs::File, io::Write};
 
-use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use clap::{Parser, Subcommand};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use poem::http::Uri;
@@ -41,15 +40,17 @@ mod mapping;
 use mapping::{
     assignable_team_role_str, comment_from_record, dao_internal, deleted_user_profile,
     derive_live_score, device_platform_to_record, feed_match_from_records, has_roster_identity,
-    invitation_detail_from_record, invitation_from_record, invitation_status_from_str,
-    invitation_status_str, join_link_from_record, join_link_scope_from_record,
-    join_link_scope_to_record, live_event_from_record, location_to_record, match_format_sport_tag,
-    match_format_to_record, match_from_records, match_player_role_from_record,
-    match_player_role_to_record, match_score_from_record, match_score_to_record, match_status_str,
-    match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
-    roster_preview_player, score_submission_from_record, score_to_record,
-    search_match_from_records, team_from_records, team_list_item_from_record,
-    team_member_from_record, user_profile_from_record,
+    invitation_context_match_id, invitation_detail_from_record, invitation_from_record,
+    invitation_status_from_str, invitation_status_str, join_link_from_record,
+    join_link_scope_from_record, join_link_scope_to_record, live_event_from_record,
+    location_to_record, match_format_sport_tag, match_format_to_record, match_from_records,
+    match_player_role_from_record, match_player_role_to_record, match_score_from_record,
+    match_score_to_record, match_series_from_record, match_series_occurrence_from_record,
+    match_status_str, match_type_tag, new_live_event_to_dao, notification_actor_id,
+    notification_from_record, ranked_lock_reason_for_update, rating_ladder, roster_preview_player,
+    score_submission_from_record, score_to_record, search_match_from_records,
+    series_end_record_from_input, team_from_records, team_list_item_from_record,
+    team_member_from_record, unrankable_sport_reason, user_profile_from_record,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -758,6 +759,9 @@ struct Location {
     /// Google Place ID, when this resolved to a real place — use it to link
     /// to that place's own listing rather than a bare coordinate pin.
     place_id: Option<String>,
+    /// The picked place's formatted address. Set alongside `place_id`, and
+    /// kept when `text` is renamed so the real address can still be shown.
+    address: Option<String>,
 }
 
 #[derive(Object)]
@@ -830,6 +834,16 @@ struct Match {
     /// `caller_is_match_owner`. Only true for an accepted roster `Owner` or
     /// an `Owner`-role organizer.
     viewer_is_owner: bool,
+    /// Whether this match counts towards its players' ratings; `false` is a
+    /// friendly, which is what every match is unless its organiser chose
+    /// ranked. Can only change until the result could be known — see
+    /// `UpdateMatchInput.ranked`.
+    ranked: bool,
+    /// The rating ladder this match's result counts towards, e.g. `"tennis"`
+    /// — `Some` exactly when `ranked`. Ladders are per sport and this is
+    /// derived from `match_type` on every read, so a client never maps sports
+    /// to ladders itself.
+    rating_ladder: Option<String>,
 }
 
 /// Social engagement summary for a match. Counts plus whether the requesting
@@ -1104,6 +1118,199 @@ struct CreateMatchInput {
     /// Whether a self-serve joiner may ever land unassigned. Omit for the
     /// default (`true`) — see `Match.allow_unassigned`'s doc comment.
     allow_unassigned: Option<bool>,
+    /// Whether the result should count towards everyone's rating. Omit for a
+    /// friendly, the default. Refused (400) for a sport with no rating ladder
+    /// (`other`).
+    ///
+    /// Friendly by default because ratings are opt-in, per sport, and a
+    /// ranked match needs everyone playing in it to have opted in. Ranked by
+    /// default would put that requirement in front of most games, which are
+    /// casual; ranked is the organiser's explicit choice instead.
+    ///
+    /// **Creation is deliberately unconstrained, including for a match that
+    /// has already been played.** This endpoint accepts a completed match with
+    /// a score and a past start time, so somebody logging last night's game
+    /// picks this flag knowing how it went. The lock on
+    /// `UpdateMatchInput.ranked` doesn't cover that and couldn't: logging after
+    /// the fact has no moment "before the result was knowable", and refusing
+    /// to rate results logged afterwards would refuse most amateur sport — the
+    /// ladders' whole input.
+    ///
+    /// What limits it is confirmation, not this field: nothing is rated
+    /// without a confirmed score, so every other side has agreed to the result.
+    /// The gap that leaves is real and known — the opponent confirms the
+    /// **score**, never the **flag**, so a creator could log their wins ranked
+    /// and their losses friendly. The principled fix is making `ranked` part
+    /// of what the other side confirms, which changes the confirmation flow
+    /// rather than restricting creation, and isn't worth building before
+    /// anyone is seen doing it.
+    ranked: Option<bool>,
+}
+
+// ===========================================================================
+// Recurring match series (`POST /match-series`, `GET /match-series/:id`)
+// ===========================================================================
+//
+// Deliberately a separate endpoint and input type from `CreateMatchInput`
+// above, not a `repeat` field bolted onto it: a series template carries no
+// player/roster/invite fields at all — series creation can't set players yet
+// (team-linked sides only, no invite-list support for a series), so those
+// fields shouldn't even be offered here, not just ignored if present.
+
+/// A side template for a recurring match series. Narrower than
+/// `CreateMatchSideInput` on purpose: `team_id` is required (a series only
+/// supports team-linked sides — no ad-hoc/named-only sides, since there's no
+/// invite-list support for a series template) and there's nothing
+/// player/invite-adjacent at all.
+#[derive(Object)]
+struct CreateMatchSeriesSideInput {
+    /// Caller-chosen temporary id, unique within the request — reused
+    /// verbatim as the `CreateMatchSideInput.client_id` of every occurrence
+    /// generated from this template.
+    client_id: String,
+    team_id: String,
+    /// Derby override, same exception as `CreateMatchSideInput.name`: only
+    /// valid alongside another side in this template sharing the same
+    /// `team_id` (two sides from one team need a name each to be told
+    /// apart) — otherwise the linked team is the name's source of truth, on
+    /// every generated occurrence.
+    name: Option<String>,
+    /// Derby override, same exception as `CreateMatchSideInput.colour`.
+    colour: Option<String>,
+    /// Cap on this side's roster, applied to every generated occurrence.
+    /// `None` = uncapped.
+    max_players: Option<u32>,
+}
+
+/// `ends: OnDate`'s payload — the last calendar date (inclusive) an
+/// occurrence may fall on, as `YYYY-MM-DD`.
+#[derive(Object)]
+struct CreateMatchSeriesEndOnDateInput {
+    date: String,
+}
+
+/// `ends: AfterN`'s payload — the series' total occurrence count (including
+/// the first), `1..=99`.
+#[derive(Object)]
+struct CreateMatchSeriesEndAfterNInput {
+    count: u32,
+}
+
+/// Where a series stops generating new occurrences. Only the two bounded
+/// forms are offered here — indefinite recurrence (`Never`, in
+/// `SeriesEndRecord`) needs a long-running, signal-controlled workflow that's
+/// a separate, later piece of work, so it isn't exposed as an option yet
+/// rather than being accepted and left half-built.
+#[derive(Union)]
+#[oai(one_of, discriminator_name = "type")]
+enum CreateMatchSeriesEndInput {
+    OnDate(CreateMatchSeriesEndOnDateInput),
+    AfterN(CreateMatchSeriesEndAfterNInput),
+}
+
+/// Create a recurring match series: a template plus a cadence, materialized
+/// into independent matches (the series' "occurrences"). The first
+/// occurrence is created synchronously (its id comes back in the response,
+/// alongside the series); the rest are generated asynchronously — see
+/// `GET /match-series/:id`'s `status` field.
+#[derive(Object)]
+struct CreateMatchSeriesInput {
+    match_type: MatchType,
+    /// Template value every generated occurrence starts from.
+    name: String,
+    /// Template value every generated occurrence starts from.
+    description: String,
+    /// Template value every generated occurrence starts from.
+    location: Option<Location>,
+    /// The first occurrence's start time — must be in the future, and its
+    /// own weekday must match `weekday` below (the first occurrence has to
+    /// actually land on the day the series recurs on). Also anchors the
+    /// recurrence: later occurrences advance from this same time-of-day by
+    /// `frequency`.
+    starts_at: chrono::DateTime<chrono::Utc>,
+    /// How often an occurrence recurs: "weekly" | "fortnightly" | "monthly"
+    /// | "yearly".
+    frequency: String,
+    /// The recurrence day: 0 = Sunday .. 6 = Saturday.
+    weekday: u8,
+    /// When the series stops generating new occurrences. The implied
+    /// occurrence count (direct for `AfterN`; computed from `starts_at` and
+    /// `frequency` for `OnDate`) must be `1..=99`.
+    ends: CreateMatchSeriesEndInput,
+    /// The opposing sides' templates, copied onto every generated
+    /// occurrence. At least two are required, same as a one-off match.
+    sides: Vec<CreateMatchSeriesSideInput>,
+}
+
+/// A side template as returned by the API — the same shape as
+/// `CreateMatchSeriesSideInput`, just named for the output side (mirrors
+/// `CreateMatchSideInput`/`MatchSide`).
+#[derive(Object)]
+struct MatchSeriesSide {
+    client_id: String,
+    team_id: String,
+    name: Option<String>,
+    colour: Option<String>,
+    max_players: Option<u32>,
+}
+
+/// Lifecycle of a recurring match series — independent of any one
+/// occurrence's own `MatchStatus`. `Generating` is the brief transient state
+/// right after creation while `materialize_series` is still creating the
+/// rest of the run; it flips to `Active` once that finishes. `Paused`/`Ended`
+/// aren't reachable through any endpoint yet — pausing/ending a series is a
+/// separate, later piece of work.
+#[derive(Enum)]
+#[oai(rename_all = "snake_case")]
+enum MatchSeriesStatus {
+    Generating,
+    Active,
+    Paused,
+    Ended,
+}
+
+#[derive(Object)]
+struct MatchSeries {
+    id: String,
+    created_by_user_id: String,
+    match_type: MatchType,
+    name: String,
+    description: String,
+    location: Option<Location>,
+    frequency: String,
+    weekday: u8,
+    ends: CreateMatchSeriesEndInput,
+    sides: Vec<MatchSeriesSide>,
+    status: MatchSeriesStatus,
+    /// How many occurrences have been created so far (including the first,
+    /// created synchronously). Climbs toward the series' total implied by
+    /// `ends` as `materialize_series` runs, then stops once `status` is
+    /// `Active`.
+    occurrences_generated: u32,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// `POST /match-series`'s response payload: the created series plus the id
+/// of its synchronously-created first occurrence, so the client can
+/// navigate straight to it (the same match it would land on creating a
+/// one-off match today).
+#[derive(Object)]
+struct CreateMatchSeriesResult {
+    series: MatchSeries,
+    first_match_id: String,
+}
+
+/// One entry of `GET /match-series/:id/occurrences` — an occurrence this
+/// series has generated so far, including the first (created synchronously
+/// at series-creation time).
+#[derive(Object)]
+struct MatchSeriesOccurrence {
+    /// 0-based position in the series.
+    index: u32,
+    starts_at: chrono::DateTime<chrono::Utc>,
+    /// The occurrence's own, independently-fetchable match (`GET
+    /// /matches/:id`).
+    match_id: String,
 }
 
 /// The organiser's one-stop update for a match: edit metadata, reconcile the
@@ -1193,6 +1400,37 @@ struct UpdateMatchInput {
     /// team and no name above 2 (it needs a name first). Same admin gate as
     /// `allow_unassigned`.
     side_join_settings: Option<Vec<SetSideJoinSettingsInput>>,
+    /// Switch the match between ranked and friendly — **only while nobody
+    /// could know the result yet**. Refused (400), not ignored, once a score
+    /// has been submitted (even one later disputed), the start time has
+    /// passed, or the match has left `scheduled`; refused at any time for
+    /// switching on a sport with no rating ladder (`other`).
+    ///
+    /// The lock is a correctness requirement, not a nicety: without it you
+    /// could log a game, see that you won, and only *then* put it on the
+    /// ladder. It's judged against the match as stored **and** the state this
+    /// request would leave it in, because either alone is exploitable in one
+    /// call: stored-only lets `{ score, ranked: false }` through on a
+    /// not-yet-started match and then records the result, while resulting-only
+    /// lets a request push `starts_at` back into the future to unlock a match
+    /// that has already been played. So a PATCH that submits a score, moves
+    /// the status on, or backdates the start time can't also change this flag
+    /// — change the flag first, on its own.
+    ///
+    /// Re-sending the value the match already has is always accepted, locked
+    /// or not: a client that PATCHes its whole edit form mustn't be refused
+    /// for mentioning a flag it isn't changing.
+    ///
+    /// This constrains *changing* the flag only. Choosing it at creation is
+    /// unconstrained even for an already-played match; see
+    /// `CreateMatchInput.ranked` for why, and for what limits it instead.
+    ranked: Option<bool>,
+    // Note: no `match_type`. A match's sport is fixed at creation, and a
+    // ranked match relies on that: a new sport would move its result to
+    // another ladder, or off the ladders altogether. A sport edit, if one is
+    // ever added, needs the two checks `ranked` gets in `update_match` —
+    // refused on a ranked match while `ranked_lock_reason_for_update` says it
+    // is locked, and refused for a ladderless sport whenever it is ranked.
 }
 
 #[derive(Object)]
@@ -1244,7 +1482,25 @@ struct FeedMatch {
     /// this match — `None` if they're not playing (they're seeing this card
     /// via a follow) or not yet assigned a side. Lets a client resolve the
     /// score confirm/dispute prompt without the full roster `Match` carries.
+    /// NOT the right field for "is the caller going" — see `viewer_is_going`.
     viewer_side_id: Option<String>,
+    /// Whether the caller themselves is a participant in this match, playing
+    /// or not yet assigned a side — unlike `viewer_side_id`, this is `true`
+    /// for an unassigned participant (a match with `allow_unassigned`), so
+    /// it's the right field for a feed card's RSVP state ("Going"/"I'm in").
+    viewer_is_going: bool,
+    /// Whether the caller has a pending (not yet responded to) invitation to
+    /// this match. Lets "Coming up" surface a match the caller hasn't
+    /// accepted yet, distinct from `viewer_is_going`.
+    viewer_invitation_pending: bool,
+    /// Side ids the caller could join directly via an accepted membership on
+    /// that side's team (`MatchSide.team_join_enabled`) — the feed's
+    /// cheaper, denormalized counterpart to `Match.viewer_team_join_side_ids`
+    /// (computed per-viewer at fan-out time rather than per-request, since a
+    /// feed page can't afford a team lookup per match). Empty, not `None`,
+    /// when there's nothing to join — simpler for a client to check
+    /// `is_empty()` than unwrap an option.
+    viewer_can_join_side_ids: Vec<String>,
     confirmed_score: Option<ConfirmedScore>,
     pending_score: Option<PendingScore>,
     social: MatchSocial,
@@ -1596,6 +1852,33 @@ enum UpdateMatchResponse {
     /// `override_live_score` to submit it anyway.
     #[oai(status = 409)]
     Conflict(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum CreateMatchSeriesResponse {
+    #[oai(status = 200)]
+    Series(Json<CreateMatchSeriesResult>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum GetMatchSeriesResponse {
+    #[oai(status = 200)]
+    Series(Json<MatchSeries>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum ListMatchSeriesOccurrencesResponse {
+    #[oai(status = 200)]
+    Occurrences(Json<Vec<MatchSeriesOccurrence>>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -2676,6 +2959,15 @@ impl Api {
             following_count: 0,
             unread_count: 0,
             stats: dao::records::UserStatsRecord::default(),
+            // A brand-new account has played nothing and consented to
+            // nothing: rated on no ladder, opted in to none — the same state a
+            // profile written before ratings existed deserializes into.
+            // Neither is settable at signup. Opting in is ticking the consent
+            // box on a ranked game, and only the rating pipeline writes
+            // `ratings`; both are later changes, and these are here only
+            // because the record now has the fields.
+            ratings: HashMap::new(),
+            rating_opt_ins: HashMap::new(),
             created_at: now_iso(),
         };
         match dao.create_user(&jwt_data.sub, &record).await {
@@ -2795,6 +3087,9 @@ impl Api {
             known_player_ids: Vec<String>,
             known_player_count: u32,
             viewer_side_id: Option<String>,
+            viewer_is_going: bool,
+            viewer_invitation_pending: bool,
+            viewer_can_join_side_ids: Vec<String>,
         }
         let mut eligible: Vec<EligibleEntry> = Vec::with_capacity(page.items.len());
         for entry in &page.items {
@@ -2812,6 +3107,9 @@ impl Api {
                 known_player_ids: entry.known_player_ids.clone(),
                 known_player_count: entry.known_player_count,
                 viewer_side_id: entry.viewer_side_id.clone(),
+                viewer_is_going: entry.viewer_is_going,
+                viewer_invitation_pending: entry.viewer_invitation_pending,
+                viewer_can_join_side_ids: entry.viewer_can_join_side_ids.clone(),
             });
         }
         let match_ids: Vec<String> = eligible.iter().map(|e| e.match_id.clone()).collect();
@@ -2881,6 +3179,9 @@ impl Api {
                     known_participants,
                     entry.known_player_count,
                     entry.viewer_side_id.clone(),
+                    entry.viewer_is_going,
+                    entry.viewer_invitation_pending,
+                    entry.viewer_can_join_side_ids.clone(),
                     i_liked,
                 );
                 Self::hydrate_sides_from_cache(&mut m.sides, &team_metas);
@@ -2937,8 +3238,11 @@ impl Api {
         /// involving every one of them (head-to-head between exactly two
         /// teams is the `all` case). Ignored with fewer than two `team_id`s.
         Query(team_match): Query<Option<TeamMatchMode>>,
-        /// Only matches of this sport.
-        Query(match_type): Query<Option<MatchType>>,
+        /// Only matches of these sports (any one of them matches — same
+        /// `Vec` + `default` shape as `team_id` above, for the same reason:
+        /// a plain single-sport caller still passes one value).
+        #[oai(name = "match_type", default)]
+        Query(match_types): Query<Vec<MatchType>>,
         /// Only matches in this lifecycle state (e.g. `scheduled`) — powers the
         /// "all scheduled matches" browse view.
         Query(status): Query<Option<MatchStatus>>,
@@ -2992,8 +3296,15 @@ impl Api {
         // compare the ISO-8601 `starts_at` string (that raised
         // `invalid_search_filter: invalid float literal`).
         let mut clauses: Vec<String> = Vec::new();
-        if let Some(mt) = &match_type {
-            clauses.push(format!("sport = \"{}\"", match_type_tag(mt)));
+        if !match_types.is_empty() {
+            // Same OR-join pattern as `team_ids` below: any one of the
+            // requested sports matches.
+            let sport_clause = match_types
+                .iter()
+                .map(|mt| format!("sport = \"{}\"", match_type_tag(mt)))
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            clauses.push(format!("({sport_clause})"));
         }
         if let Some(s) = &status {
             clauses.push(format!("status = \"{}\"", match_status_str(s)));
@@ -3219,6 +3530,16 @@ impl Api {
                     match_type_tag(&input.match_type)
                 ))));
             }
+        }
+
+        // Ranked needs a ladder to rate into, and a sport without one
+        // (`other`, deliberately — see `rating::ladder_for`) would make a
+        // ranked match nothing ever rates. There is no lock to check here, and
+        // none to add: see `CreateMatchInput::ranked`.
+        if input.ranked == Some(true)
+            && let Some(reason) = unrankable_sport_reason(match_type_tag(&input.match_type))
+        {
+            return Ok(CreateMatchResponse::ValidationError(PlainText(reason)));
         }
 
         // The `starts_at` time must be consistent with whether a result is being
@@ -3481,6 +3802,7 @@ impl Api {
             // sides' own `player_count`/`roster_preview` above are handled).
             total_player_count: 0,
             location: input.location.as_ref().map(location_to_record),
+            series_id: None,
             header_photos,
             sides,
             confirmed_score: None,
@@ -3490,6 +3812,14 @@ impl Api {
             live_seq: 0,
             live_tip_seq: None,
             format: input.format.as_ref().map(match_format_to_record),
+            // Friendly unless the organiser asked for ranked. Unconstrained on
+            // purpose, even for an already-played match (a score and a past
+            // `starts_at`) whose creator picks this knowing the result: there
+            // is no earlier moment to have picked it at, and refusing to rate
+            // after-the-fact results would refuse most amateur sport.
+            // `CreateMatchInput::ranked` has the full argument, including the
+            // gap confirmation doesn't close.
+            ranked: input.ranked.unwrap_or(false),
             created_at: now.clone(),
         };
 
@@ -3683,6 +4013,49 @@ impl Api {
             }
         }
 
+        // The state this request would leave the match in, needed by both the
+        // ranked lock just below and the score validation further down —
+        // computed once so the two can't disagree about what this PATCH does.
+        let resulting_status = input
+            .status
+            .as_ref()
+            .map(match_status_str)
+            .unwrap_or(agg.match_.status.as_str());
+        let resulting_starts_at = input
+            .starts_at
+            .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+
+        // Only a genuine *change* of `ranked` is judged. Re-sending the flag
+        // the match already has is a no-op, so a client PATCHing its whole
+        // edit form keeps working once the match has been played.
+        let ranked_change = input.ranked.filter(|r| *r != agg.match_.ranked);
+        if ranked_change == Some(true)
+            && let Some(reason) = unrankable_sport_reason(&agg.match_.match_type)
+        {
+            return Ok(UpdateMatchResponse::ValidationError(PlainText(reason)));
+        }
+        // Ranked/friendly locks once the result could be known — see
+        // `ranked_lock_reason_for_update` for the rule, and for why it is
+        // judged against the stored record *and* this request's resulting
+        // state rather than either alone. Refused rather than ignored: a
+        // caller who asked to put a played match on the ladder needs to be
+        // told it didn't happen. Checked before anything below writes.
+        if ranked_change.is_some()
+            && let Some(reason) = ranked_lock_reason_for_update(
+                &agg.match_,
+                resulting_status,
+                resulting_starts_at
+                    .as_deref()
+                    .unwrap_or(&agg.match_.starts_at),
+                input.score.is_some(),
+                chrono::Utc::now(),
+            )
+        {
+            return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                "a match can no longer be changed between ranked and friendly: {reason}"
+            ))));
+        }
+
         // Resolve any replacement header images to asset id + stored URL
         // (must be uploaded, owned by the caller, `match_header` purpose).
         // `None` = leave unchanged. The caller sends the *complete* desired
@@ -3705,11 +4078,6 @@ impl Api {
         };
 
         // A cancelled match can't be scored.
-        let resulting_status = input
-            .status
-            .as_ref()
-            .map(match_status_str)
-            .unwrap_or(agg.match_.status.as_str());
         if resulting_status == "cancelled" && input.score.is_some() {
             return Ok(UpdateMatchResponse::ValidationError(PlainText(
                 "a cancelled match cannot be scored".into(),
@@ -4098,15 +4466,13 @@ impl Api {
             input.name.as_deref(),
             input.description.as_deref(),
             status_override,
-            input
-                .starts_at
-                .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
-                .as_deref(),
+            resulting_starts_at.as_deref(),
             None,
             pending_score.map(Some),
             header_photos,
             input.format.as_ref().map(match_format_to_record),
             input.location.as_ref().map(location_to_record),
+            ranked_change,
             &side_name_updates,
             &side_colour_updates,
         )
@@ -4221,6 +4587,349 @@ impl Api {
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m).await?;
         Ok(UpdateMatchResponse::Match(Json(m)))
+    }
+
+    /// Create a recurring match series: a template plus a cadence. Writes
+    /// the series record and its first occurrence (an ordinary match,
+    /// through the same `Dao::create_match` path `POST /matches` uses)
+    /// synchronously, then returns both. The series' remaining occurrences
+    /// are generated asynchronously by the `materialize_series` Temporal
+    /// workflow, started reactively off the series-creation DynamoDB stream
+    /// event — this handler never starts a workflow itself (same
+    /// stream-reactive pattern as fan-out/accept). See
+    /// `GET /match-series/:id`'s `status`/`occurrences_generated` to watch
+    /// that progress.
+    ///
+    /// Deliberately a narrower input than `CreateMatchInput`: a series
+    /// template carries no player/roster/invite fields at all (there's no
+    /// invite-list support for a series yet), and every side must be
+    /// team-linked (no ad-hoc/named-only sides in a series template).
+    ///
+    /// Only bounded series (`ends: OnDate`/`AfterN`, capped at
+    /// `MAX_SERIES_OCCURRENCES`) can be created here — indefinite recurrence
+    /// isn't offered as an input option yet (see `CreateMatchSeriesEndInput`).
+    ///
+    /// Known limitation, not solved here: if `create_series` succeeds but
+    /// the following `create_match` fails, the series record is left behind
+    /// with no occurrences. Fixing that would need a transaction spanning
+    /// two independent `create_*` calls, which is out of scope for this
+    /// change.
+    #[oai(path = "/match-series", method = "post")]
+    async fn create_match_series(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        input: Json<CreateMatchSeriesInput>,
+    ) -> Result<CreateMatchSeriesResponse> {
+        info!("Creating match series {}", input.name);
+        let input = input.0;
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        if input.sides.len() < 2 {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                "a match series must have at least two sides".to_string(),
+            )));
+        }
+
+        // A series only supports team-linked sides (no invite-list support
+        // for a series template yet), so every side needs a real team_id —
+        // the input type requires the field, but an empty string would
+        // technically satisfy that without actually naming a team.
+        for side in &input.sides {
+            if side.team_id.trim().is_empty() {
+                return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                    format!(
+                        "side `{}` needs a team_id — a recurring series only supports team-linked sides",
+                        side.client_id
+                    ),
+                )));
+            }
+        }
+
+        // `name`/`colour` are derby overrides, same exception
+        // `CreateMatchSideInput`'s own fields document: only valid when
+        // another side in the template shares the same team.
+        for side in &input.sides {
+            let team_shared = input
+                .sides
+                .iter()
+                .any(|other| other.client_id != side.client_id && other.team_id == side.team_id);
+            if side.name.is_some() && !team_shared {
+                return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                    format!(
+                        "side `{}` can't have a name unless another side shares its team",
+                        side.client_id
+                    ),
+                )));
+            }
+            if side.colour.is_some() && !team_shared {
+                return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                    format!(
+                        "side `{}` can't have a colour unless another side shares its team",
+                        side.client_id
+                    ),
+                )));
+            }
+        }
+
+        if !matches!(
+            input.frequency.as_str(),
+            "weekly" | "fortnightly" | "monthly" | "yearly"
+        ) {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                format!(
+                    "frequency `{}` must be one of weekly, fortnightly, monthly, yearly",
+                    input.frequency
+                ),
+            )));
+        }
+        if input.weekday > 6 {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                "weekday must be 0..=6 (0 = Sunday .. 6 = Saturday)".to_string(),
+            )));
+        }
+        // The first occurrence IS `starts_at`, so it has to actually fall on
+        // the configured recurrence day — otherwise "every Tuesday" would
+        // start on a Wednesday.
+        use chrono::Datelike;
+        let starts_at_weekday = input.starts_at.weekday().num_days_from_sunday() as u8;
+        if starts_at_weekday != input.weekday {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                format!(
+                    "starts_at falls on weekday {starts_at_weekday}, not the configured weekday {}",
+                    input.weekday
+                ),
+            )));
+        }
+        let now_ts = chrono::Utc::now();
+        if input.starts_at <= now_ts {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                "a series' first occurrence must be in the future".to_string(),
+            )));
+        }
+
+        // The occurrence count implied by `ends` must be 1..=99 — direct for
+        // `AfterN`, computed from the recurrence for `OnDate`.
+        let first_date = input.starts_at.date_naive();
+        let weekday = input.starts_at.weekday();
+        let occurrence_count = match &input.ends {
+            CreateMatchSeriesEndInput::AfterN(n) => n.count,
+            CreateMatchSeriesEndInput::OnDate(d) => {
+                let Ok(end_date) = chrono::NaiveDate::parse_from_str(&d.date, "%Y-%m-%d") else {
+                    return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                        "ends.date must be YYYY-MM-DD".to_string(),
+                    )));
+                };
+                agon_core::series::count_occurrences_through(
+                    first_date,
+                    &input.frequency,
+                    weekday,
+                    end_date,
+                )
+            }
+        };
+        if occurrence_count == 0 || occurrence_count > agon_core::series::MAX_SERIES_OCCURRENCES {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                format!(
+                    "a series must have 1..={} occurrences; this one implies {occurrence_count}",
+                    agon_core::series::MAX_SERIES_OCCURRENCES
+                ),
+            )));
+        }
+
+        let now = now_iso();
+        let series_id = new_id();
+
+        let series_record = dao::records::SeriesRecord {
+            id: series_id.clone(),
+            created_by_user_id: uid.clone(),
+            match_type: match_type_tag(&input.match_type).to_string(),
+            name: input.name.clone(),
+            description: input.description.clone(),
+            location: input.location.as_ref().map(location_to_record),
+            frequency: input.frequency.clone(),
+            weekday: input.weekday,
+            first_occurrence_starts_at: input
+                .starts_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            ends: series_end_record_from_input(&input.ends),
+            sides: input
+                .sides
+                .iter()
+                .map(|s| dao::records::SeriesSideRecord {
+                    client_id: s.client_id.clone(),
+                    team_id: s.team_id.clone(),
+                    name: s.name.clone(),
+                    colour: s.colour.clone(),
+                    max_players: s.max_players,
+                })
+                .collect(),
+            // The first occurrence is created synchronously right below, so
+            // it already counts as generated.
+            status: "generating".to_string(),
+            occurrences_generated: 1,
+            created_at: now.clone(),
+        };
+
+        match dao.create_series(&series_record).await {
+            Ok(()) => {}
+            Err(dao::DaoError::Conflict(msg)) => {
+                return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(msg)));
+            }
+            Err(e) => return Err(dao_internal(e)),
+        }
+
+        // Claim the first occurrence's generation slot before creating its
+        // match — same `Dao::claim_series_occurrence` mechanism
+        // `materialize_series` uses for every later occurrence (see
+        // `agon_core::dao::series_ops`'s doc comment), so `GET
+        // /match-series/:id/occurrences` has one consistent item collection
+        // to list across the whole series, not just the generated tail.
+        let occurrence = dao::records::SeriesOccurrenceRecord {
+            series_id: series_id.clone(),
+            index: 0,
+            starts_at: series_record.first_occurrence_starts_at.clone(),
+            match_id: new_id(),
+            created_at: now.clone(),
+        };
+        let occurrence = dao
+            .claim_series_occurrence(&occurrence)
+            .await
+            .map_err(dao_internal)?;
+
+        // The first occurrence is the template itself, created exactly like
+        // any other match — but with no players: a series only configures a
+        // team per side, roster join happens per-occurrence later (no
+        // invite-list support for a series yet).
+        let match_id = occurrence.match_id;
+        let mut sides: std::collections::HashMap<String, dao::records::MatchSideRecord> =
+            Default::default();
+        for side in &input.sides {
+            let side_id = new_id();
+            sides.insert(
+                side_id.clone(),
+                dao::records::MatchSideRecord {
+                    side_id,
+                    team_id: Some(side.team_id.clone()),
+                    name: side.name.clone(),
+                    colour: side.colour.clone(),
+                    max_players: side.max_players,
+                    team_join_enabled: false,
+                    player_count: 0,
+                    roster_preview: Vec::new(),
+                },
+            );
+        }
+
+        let match_record = dao::records::MatchRecord {
+            id: match_id.clone(),
+            created_by_user_id: uid.clone(),
+            name: input.name,
+            description: input.description,
+            match_type: match_type_tag(&input.match_type).to_string(),
+            status: "scheduled".to_string(),
+            starts_at: input
+                .starts_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            allow_unassigned: true,
+            total_player_count: 0,
+            location: input.location.as_ref().map(location_to_record),
+            series_id: Some(series_id.clone()),
+            header_photos: Vec::new(),
+            sides,
+            confirmed_score: None,
+            pending_score: None,
+            like_count: 0,
+            comment_count: 0,
+            live_seq: 0,
+            live_tip_seq: None,
+            format: None,
+            // A series occurrence is always friendly. `SeriesRecord` has no
+            // `ranked` of its own, and generation puts *other* people's
+            // players into spots without asking them — which is the one thing
+            // a rating needs (see `rating_consent`). An organiser can switch a
+            // single occurrence to ranked afterwards, which asks everyone in
+            // it. A ranked *series* needs its own consent design first.
+            ranked: false,
+            created_at: now,
+        };
+
+        match dao.create_match(&match_record, &[], &[]).await {
+            Ok(()) => {}
+            Err(dao::DaoError::Conflict(msg)) => {
+                return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(msg)));
+            }
+            Err(e) => return Err(dao_internal(e)),
+        }
+
+        Ok(CreateMatchSeriesResponse::Series(Json(
+            CreateMatchSeriesResult {
+                series: match_series_from_record(&series_record),
+                first_match_id: match_id,
+            },
+        )))
+    }
+
+    /// Fetch a recurring match series by id: its template fields plus
+    /// generation progress (`status`/`occurrences_generated`). Read-only, no
+    /// authority check — any authenticated caller may read any series, the
+    /// same posture as `GET /teams/:team_id`.
+    #[oai(path = "/match-series/:series_id", method = "get")]
+    async fn get_match_series(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(series_id): Path<String>,
+    ) -> Result<GetMatchSeriesResponse> {
+        info!("Getting match series {series_id}");
+        self.require_uid(dao, &jwt_data).await?;
+        match dao.get_series(&series_id).await.map_err(dao_internal)? {
+            Some(series) => Ok(GetMatchSeriesResponse::Series(Json(
+                match_series_from_record(&series),
+            ))),
+            None => Ok(GetMatchSeriesResponse::NotFound(PlainText(
+                "series not found".into(),
+            ))),
+        }
+    }
+
+    /// List a series' generated occurrences (including the first, created
+    /// synchronously at series-creation time), ordered by `starts_at`.
+    /// Straightforward now that occurrences are claimed via their own item
+    /// collection (`Dao::claim_series_occurrence`/`list_series_occurrences`)
+    /// rather than only being derivable by formula — see
+    /// `agon_core::dao::series_ops`'s doc comment. Not paginated: a series is
+    /// capped at `agon_core::series::MAX_SERIES_OCCURRENCES` (99) entries, so
+    /// there's no page worth cutting this into.
+    #[oai(path = "/match-series/:series_id/occurrences", method = "get")]
+    async fn list_match_series_occurrences(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(series_id): Path<String>,
+    ) -> Result<ListMatchSeriesOccurrencesResponse> {
+        info!("Listing occurrences of match series {series_id}");
+        self.require_uid(dao, &jwt_data).await?;
+        if dao
+            .get_series(&series_id)
+            .await
+            .map_err(dao_internal)?
+            .is_none()
+        {
+            return Ok(ListMatchSeriesOccurrencesResponse::NotFound(PlainText(
+                "series not found".into(),
+            )));
+        }
+        let occurrences = dao
+            .list_series_occurrences(&series_id)
+            .await
+            .map_err(dao_internal)?
+            .iter()
+            .map(match_series_occurrence_from_record)
+            .collect();
+        Ok(ListMatchSeriesOccurrencesResponse::Occurrences(Json(
+            occurrences,
+        )))
     }
 
     /// Get a match's current score.
@@ -4513,6 +5222,7 @@ impl Api {
                 None,
                 None,
                 Some("in_progress"),
+                None,
                 None,
                 None,
                 None,
@@ -5033,6 +5743,7 @@ impl Api {
                     None,
                     None,
                     None,
+                    None,
                     &[],
                     &[],
                 )
@@ -5089,6 +5800,7 @@ impl Api {
                         None,
                         Some(confirmed),
                         Some(None),
+                        None,
                         None,
                         None,
                         None,
@@ -5512,6 +6224,9 @@ impl Api {
             invitation: None,
             created_at: now,
         };
+        // Creates the team, the creator's membership, and the follow that
+        // membership implies (see `Dao::create_team`'s doc comment), all in
+        // one transaction.
         match dao.create_team(&team, &creator).await {
             Ok(()) => {}
             Err(dao::DaoError::Conflict(msg)) => {
@@ -5657,7 +6372,9 @@ impl Api {
                 invitation: None,
                 created_at: now.clone(),
             };
-            dao.put_team_member(&team_id, &member)
+            // Adds the member and the follow that membership implies (see
+            // `Dao::add_team_member`'s doc comment) in one transaction.
+            dao.add_team_member(&team_id, &member, &now)
                 .await
                 .map_err(dao_internal)?;
         }
@@ -6060,6 +6777,7 @@ impl Api {
                 None,
                 None,
                 None,
+                None,
                 &[],
                 &[],
             )
@@ -6287,6 +7005,8 @@ impl Api {
             scope: join_link_scope_from_record(&link.scope),
             total_player_count: agg.match_.total_player_count as u32,
             max_players: agg.effective_max_players(),
+            ranked: agg.match_.ranked,
+            rating_ladder: rating_ladder(&agg.match_),
         })))
     }
 
@@ -7162,10 +7882,23 @@ impl Api {
             .list_user_invitations(&uid, status_str, cursor.as_deref(), page_limit(limit))
             .await
             .map_err(dao_internal)?;
+        // One batched read for the matches this page's invitations point at,
+        // so each match context says whether the match is ranked as of now —
+        // see `invitation_context_from_record`.
+        let match_ids: Vec<String> = page
+            .items
+            .iter()
+            .filter_map(|rec| invitation_context_match_id(&rec.context))
+            .map(str::to_owned)
+            .collect();
+        let matches = dao
+            .batch_get_match_metas(&match_ids)
+            .await
+            .map_err(dao_internal)?;
         let items = page
             .items
             .iter()
-            .map(invitation_detail_from_record)
+            .map(|rec| invitation_detail_from_record(rec, &matches))
             .collect();
         Ok(ListInvitationsResponse::Invitations(Json(InvitationPage {
             items,
@@ -7203,6 +7936,26 @@ impl Api {
             .await
             .map_err(dao_internal)?;
 
+        // Likewise one batched read for the matches behind accepted-invitation
+        // notifications: their context says whether the match is ranked, read
+        // from the match as it is now (see `invitation_context_from_record`).
+        // No request at all on a page without any.
+        let match_ids: Vec<String> = page
+            .items
+            .iter()
+            .filter_map(|rec| match &rec.kind {
+                dao::records::NotificationKindRecord::InvitationAccepted { context, .. } => {
+                    invitation_context_match_id(context)
+                }
+                _ => None,
+            })
+            .map(str::to_owned)
+            .collect();
+        let matches = dao
+            .batch_get_match_metas(&match_ids)
+            .await
+            .map_err(dao_internal)?;
+
         let mut items = Vec::with_capacity(page.items.len());
         for rec in page.items {
             // A notification outlives its actor by design (see
@@ -7214,7 +7967,7 @@ impl Api {
                 Some(record) => user_profile_from_record(record, false),
                 None => deleted_user_profile(actor_id),
             };
-            items.push(notification_from_record(&rec, actor));
+            items.push(notification_from_record(&rec, actor, &matches));
         }
 
         Ok(ListNotificationsResponse::Notifications(Json(
@@ -7474,7 +8227,7 @@ impl Api {
             .map_err(dao_internal)?
         {
             Some(rec) => Ok(GetInvitationResponse::Invitation(Json(
-                invitation_detail_from_record(&rec),
+                invitation_detail(dao, &rec).await?,
             ))),
             None => Ok(GetInvitationResponse::NotFound(PlainText(
                 "invitation not found".into(),
@@ -7501,7 +8254,7 @@ impl Api {
             .map_err(dao_internal)?
         {
             Some(rec) => Ok(GetInvitationResponse::Invitation(Json(
-                invitation_detail_from_record(&rec),
+                invitation_detail(dao, &rec).await?,
             ))),
             None => Ok(GetInvitationResponse::NotFound(PlainText(
                 "invitation not found".into(),
@@ -9209,6 +9962,26 @@ fn asset_status_from_str(s: &str) -> AssetStatus {
     }
 }
 
+/// One standalone invitation as its API `InvitationDetail`, with a match
+/// context resolved against the match's current record — see
+/// `mapping::invitation_context_from_record` for why that is read at response
+/// time. One extra read for a match invitation, none for a team invitation
+/// (an empty batch sends no request).
+async fn invitation_detail(
+    dao: &dao::Dao,
+    rec: &dao::records::InvitationRecord,
+) -> Result<InvitationDetail> {
+    let match_ids: Vec<String> = invitation_context_match_id(&rec.context)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let matches = dao
+        .batch_get_match_metas(&match_ids)
+        .await
+        .map_err(dao_internal)?;
+    Ok(invitation_detail_from_record(rec, &matches))
+}
+
 /// Build the API `Asset` from a stored record. Pending assets get a freshly
 /// generated S3 presigned PUT (short-lived, so regenerated on each read — that is
 /// the upload-retry mechanism); uploaded assets carry their serving `url` and no
@@ -9409,6 +10182,7 @@ fn mock_match(id: String) -> Match {
             latitude: Some(51.5074),
             longitude: Some(-0.1278),
             place_id: None,
+            address: None,
         }),
         header_photos: vec![Photo {
             image_url: String::from("https://cdn.example.com/matches/match_123/header.jpg"),
@@ -9500,6 +10274,8 @@ fn mock_match(id: String) -> Match {
         viewer_team_join_side_ids: None,
         viewer_is_admin: true,
         viewer_is_owner: true,
+        ranked: true,
+        rating_ladder: Some(String::from("football")),
     }
 }
 
@@ -9580,17 +10356,18 @@ mod scope_tests {
     }
 }
 
-/// Generate a new opaque id (base64url of random bytes).
+/// Generate a new opaque id. Thin wrapper over `agon_core::id::new_id` —
+/// shared with `agon_worker`'s series-occurrence generation, which needed the
+/// same random-id generation once it stopped deriving occurrence match ids
+/// from a hash (see `agon_core::dao::series_ops`'s doc comment).
 fn new_id() -> String {
-    use rand::RngCore;
-    let mut bytes = [0u8; 16];
-    rand::rng().fill_bytes(&mut bytes);
-    // NO_PAD: the URL-safe alphabet (`-`/`_`) is fine, but trailing `=` padding is
-    // not — these ids are used verbatim as Meilisearch document ids, and Meili
-    // rejects `=` (only alphanumerics, `-`, `_` are allowed). See agon_worker
-    // search indexing.
-    BASE64_URL_SAFE_NO_PAD.encode(bytes)
+    agon_core::id::new_id()
 }
+
+// Recurring-series occurrence-date arithmetic (`occurrence_date`,
+// `count_occurrences_through`, `MAX_SERIES_OCCURRENCES`) lives in
+// `agon_core::series` — shared with `agon_worker`'s `materialize_series`
+// workflow so the two can never compute "the next occurrence" differently.
 
 // Device-pairing codes are generated by the device itself now (Monkey C,
 // on the watch — see docs/garmin-live-scoring.md), not minted here; the
@@ -9677,6 +10454,8 @@ fn mock_invitation_detail() -> InvitationDetail {
         context: InvitationContext::Match(InvitationMatchContext {
             match_id: String::from("match_123"),
             match_name: String::from("Sunday League 5-a-side"),
+            ranked: true,
+            rating_ladder: Some(String::from("football")),
         }),
     }
 }
@@ -9719,6 +10498,8 @@ fn mock_notifications() -> Vec<Notification> {
                 context: InvitationContext::Match(InvitationMatchContext {
                     match_id: String::from("match_123"),
                     match_name: String::from("Tennis vs Raj"),
+                    ranked: false,
+                    rating_ladder: None,
                 }),
             }),
         },

@@ -3,9 +3,11 @@ import { cn } from '@/lib/utils'
 export interface StatTileProps extends React.HTMLAttributes<HTMLDivElement> {
   value: React.ReactNode
   label: string
-  /** `inverted` is for placing the tile directly on the primary-blue stat
-   *  banner; `default` is for a white/muted surface. */
-  tone?: 'default' | 'inverted'
+  /** `banner-blue`/`banner-terracotta` are for placing the tile on the
+   *  matching soft-tint stat banner (its label uses that banner's own muted
+   *  tone instead of the generic `--muted-foreground`); `default` is for a
+   *  white/muted surface. */
+  tone?: 'default' | 'banner-blue' | 'banner-terracotta'
 }
 
 /**
@@ -22,18 +24,13 @@ export function StatTile({
 }: StatTileProps) {
   return (
     <div className={cn('flex flex-col gap-0.5', className)} {...props}>
-      <span
-        className={cn(
-          'font-display text-3xl leading-none font-extrabold',
-          tone === 'inverted' ? 'text-primary-foreground' : 'text-foreground',
-        )}
-      >
-        {value}
-      </span>
+      <span className="font-display text-3xl leading-none font-extrabold text-foreground">{value}</span>
       <span
         className={cn(
           'text-xs',
-          tone === 'inverted' ? 'text-primary-foreground/80' : 'text-muted-foreground',
+          tone === 'banner-blue' && 'text-banner-tint-muted-foreground',
+          tone === 'banner-terracotta' && 'text-banner-terracotta-tint-muted-foreground',
+          tone === 'default' && 'text-muted-foreground',
         )}
       >
         {label}

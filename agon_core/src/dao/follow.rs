@@ -262,9 +262,26 @@ impl Dao {
         .await
     }
 
-    /// Follow a team. Idempotent. Bumps the team's `follower_count`.
-    #[tracing::instrument(skip(self))]
-    pub async fn follow_team(&self, follower_id: &str, team_id: &str, now: &str) -> DaoResult<()> {
+    /// Build the writes that make `follower_id` a follower of `team_id`: an
+    /// edge put (conditioned on absence, so it doesn't double-count a repeat)
+    /// plus the team's `follower_count` bump. Doesn't send anything — a
+    /// caller folds these into its own membership transaction so "join the
+    /// team" and "follow the team" land atomically, rather than as a
+    /// separate best-effort call after the fact (see `Dao::create_team`,
+    /// `Dao::add_team_member`, `Dao::accept_invitation_items`). Membership
+    /// always implies following: a team's matches should reach a member's
+    /// own feed (and fan-out audience) without them having to separately
+    /// opt in. Callers that might already be following (anyone but a brand
+    /// new team's own creation) should check `is_following_team` first and
+    /// skip these items entirely rather than relying on the condition to
+    /// fail — a failed condition cancels the *whole* transaction, including
+    /// the membership write it's bundled with.
+    pub(super) fn follow_team_items(
+        &self,
+        follower_id: &str,
+        team_id: &str,
+        now: &str,
+    ) -> DaoResult<Vec<TransactWriteItem>> {
         let edge = TeamFollowRecord {
             team_id: team_id.into(),
             follower_id: follower_id.into(),
@@ -291,24 +308,32 @@ impl Dao {
             .build()
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
 
-        let result = self
-            .client
-            .transact_write_items()
-            .transact_items(TransactWriteItem::builder().put(put_edge).build())
-            .transact_items(
-                TransactWriteItem::builder()
-                    .update(counter_delta(
-                        self.table(),
-                        &Pk::Team(team_id.into()),
-                        "follower_count",
-                        1,
-                    )?)
-                    .build(),
-            )
-            .send()
-            .await;
+        Ok(vec![
+            TransactWriteItem::builder().put(put_edge).build(),
+            TransactWriteItem::builder()
+                .update(counter_delta(
+                    self.table(),
+                    &Pk::Team(team_id.into()),
+                    "follower_count",
+                    1,
+                )?)
+                .build(),
+        ])
+    }
 
-        match result {
+    /// Follow a team. Idempotent. Bumps the team's `follower_count`. For the
+    /// explicit "follow this team" action — membership implies following
+    /// too, but that's folded directly into the membership write instead of
+    /// going through this method (see `follow_team_items`).
+    #[tracing::instrument(skip(self))]
+    pub async fn follow_team(&self, follower_id: &str, team_id: &str, now: &str) -> DaoResult<()> {
+        let items = self.follow_team_items(follower_id, team_id, now)?;
+        let mut tx = self.client.transact_write_items();
+        for item in items {
+            tx = tx.transact_items(item);
+        }
+
+        match tx.send().await {
             Ok(_) => Ok(()),
             Err(e) if super::is_transaction_conditional_failure(&e) => Ok(()),
             Err(e) => Err(DaoError::Dynamo(e.to_string())),

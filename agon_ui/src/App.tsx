@@ -25,6 +25,7 @@ import { useQuery } from '@tanstack/react-query'
 import { fetchClient } from '@/lib/api-client'
 import { FeedPage } from '@/pages/FeedPage'
 import { ScheduledMatchesPage } from '@/pages/ScheduledMatchesPage'
+import { BrowseMatchesPage } from '@/pages/BrowseMatchesPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { LogMatchPage } from '@/pages/LogMatchPage'
 import { MatchDetailPage } from '@/pages/MatchDetailPage'
@@ -120,6 +121,7 @@ function AppShell({ onSignOut }: { onSignOut: () => void }) {
           <Route path="/feed" element={<FeedPage />} />
           <Route path="/matches/new" element={<LogMatchPage />} />
           <Route path="/matches/scheduled" element={<ScheduledMatchesPage />} />
+          <Route path="/matches/search" element={<BrowseMatchesPage />} />
           <Route path="/matches/:matchId" element={<MatchDetailPage />} />
           <Route path="/matches/:matchId/live/setup" element={<LiveScoringSetupPage />} />
           <Route path="/matches/:matchId/live" element={<LiveScoringPage />} />

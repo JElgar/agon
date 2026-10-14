@@ -62,6 +62,12 @@
   --color-assist-foreground: var(--assist-foreground);
   --color-wicket-tint: var(--wicket-tint);
   --color-wicket-foreground: var(--wicket-foreground);
+  --color-banner-tint: var(--banner-tint-bg);
+  --color-banner-tint-border: var(--banner-tint-border);
+  --color-banner-tint-muted-foreground: var(--banner-tint-muted-foreground);
+  --color-banner-terracotta-tint: var(--banner-terracotta-tint-bg);
+  --color-banner-terracotta-tint-border: var(--banner-terracotta-tint-border);
+  --color-banner-terracotta-tint-muted-foreground: var(--banner-terracotta-tint-muted-foreground);
   --color-spotlight: var(--spotlight);
   --color-spotlight-foreground: var(--spotlight-foreground);
   --color-spotlight-muted: var(--spotlight-muted);
@@ -126,12 +132,22 @@
   --sport-football-fg: #1e3fa8;
   --sport-cricket-bg: #d3e3f0;
   --sport-cricket-fg: #123e5b;
-  /* The second segment of the profile head-to-head/playing-together
-   * banners' per-sport breakdown bar (see `SportBreakdownBar`). The
-   * banner's own background (`--primary`/`--destructive`) is identical in
-   * light/dark, so these need no `.dark` override either. */
-  --banner-blue-accent: #ffc9a8;
-  --banner-terracotta-accent: #ffe0c7;
+  /* The stats banner's own soft-tint surface (feed/home/team/profile "your
+   * season so far"/head-to-head/playing-together cards) — replaces the
+   * earlier solid brand-blue/terracotta fill. */
+  --banner-tint-bg: #eaeffc;
+  --banner-tint-border: #d6def8;
+  --banner-tint-muted-foreground: #4a5270;
+  --banner-terracotta-tint-bg: #fbe7de;
+  --banner-terracotta-tint-border: #f3cdbb;
+  --banner-terracotta-tint-muted-foreground: #6b4a3e;
+  /* The second segment of the stats banners' per-sport breakdown bar (see
+   * `SportBreakdownBar`/`StatBanner`) — the first segment resolves through
+   * `--link`/`--destructive` instead, since those already read correctly on
+   * both the light tint and the dark navy surface. These accent hexes read
+   * the same on both surfaces too, so need no `.dark` override. */
+  --banner-blue-accent: #e07a4f;
+  --banner-terracotta-accent: #e9a07f;
   --sidebar: oklch(1 0 0);
   --sidebar-foreground: oklch(0.205 0.006 271.1);
   --sidebar-primary: oklch(0.5 0.211 265.8);
@@ -212,6 +228,16 @@
   --sport-football-fg: oklch(0.748 0.129 270.8);
   --sport-cricket-bg: oklch(0.28 0.02 230);
   --sport-cricket-fg: oklch(0.75 0.03 220);
+  /* The stats banner's soft tint becomes a deep navy/brown on dark, per the
+   * canvas's `LightMainDark.dc.html` board (blue tone) — the terracotta
+   * tone has no dedicated dark board, so follows the same hue family as
+   * `--wicket-tint`/`--wicket-foreground` above. */
+  --banner-tint-bg: #1a2240;
+  --banner-tint-border: #27325a;
+  --banner-tint-muted-foreground: #aeb8da;
+  --banner-terracotta-tint-bg: #3a241c;
+  --banner-terracotta-tint-border: #4a332b;
+  --banner-terracotta-tint-muted-foreground: #d9b29e;
   --sidebar: oklch(0.232 0.01 276.6);
   --sidebar-foreground: oklch(0.958 0.005 95.1);
   --sidebar-primary: oklch(0.5 0.211 265.8);

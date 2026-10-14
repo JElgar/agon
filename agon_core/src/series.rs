@@ -9,10 +9,6 @@
 
 use chrono::Datelike;
 
-/// Every bounded series (`OnDate`/`AfterN`) is capped at this many
-/// occurrences total, including the first.
-pub const MAX_SERIES_OCCURRENCES: u32 = 99;
-
 /// The calendar date of a series' occurrence at `index` (0-based; index 0 is
 /// `first` itself), advancing from `first` at `frequency`. `None` for an
 /// unrecognised frequency — callers validate `frequency` (one of "weekly" |
@@ -107,11 +103,28 @@ pub fn weekday_from_sunday_index(n: u8) -> Option<chrono::Weekday> {
     }
 }
 
+/// A pure defensive guard against a pathological `end` in
+/// [`count_occurrences_through`] — e.g. an `OnDate` series ending in the
+/// year 9999, which would otherwise make that function iterate date-by-date
+/// (well, occurrence-by-occurrence; cheap per step, but still) hundreds of
+/// thousands of times, repeated on every `materialize_series` cycle for that
+/// series.
+///
+/// This is *not* a feature limit on how many occurrences a series may have
+/// — there is none; a bounded series just keeps being windowed-generated
+/// like any other until its `end` is reached, however far off that is — so
+/// it stays private and uninvolved in anything create-time validation does.
+/// Generous enough that no real `end` date should ever hit it (10,000
+/// weekly occurrences alone is ~192 years), so a series whose true implied
+/// count exceeds this is already in "data entry mistake" territory; such a
+/// series would simply stop generating once this count is reached, which is
+/// an acceptable defensive trade-off against an unbounded loop.
+const COUNT_THROUGH_ITERATION_CAP: u32 = 10_000;
+
 /// How many occurrences of `weekday` at `frequency`, starting at `first`
-/// (inclusive, counted as occurrence 1), fall on or before `end`. Capped at
-/// `MAX_SERIES_OCCURRENCES + 1` iterations so a far-future `end` can't make
-/// this loop run away — anything that hits the cap is rejected by the
-/// caller anyway, so the exact count past it is never needed.
+/// (inclusive, counted as occurrence 1), fall on or before `end`. See
+/// [`COUNT_THROUGH_ITERATION_CAP`] for why this can't loop forever even for
+/// a far-future `end`.
 pub fn count_occurrences_through(
     first: chrono::NaiveDate,
     frequency: &str,
@@ -119,7 +132,7 @@ pub fn count_occurrences_through(
     end: chrono::NaiveDate,
 ) -> u32 {
     let mut count = 0u32;
-    while count <= MAX_SERIES_OCCURRENCES {
+    while count <= COUNT_THROUGH_ITERATION_CAP {
         let Some(date) = occurrence_date(first, frequency, weekday, count) else {
             break;
         };
@@ -272,6 +285,6 @@ mod tests {
         let first = date(2000, 1, 1);
         let far_future = date(9999, 1, 1);
         let count = count_occurrences_through(first, "weekly", first.weekday(), far_future);
-        assert_eq!(count, MAX_SERIES_OCCURRENCES + 1);
+        assert_eq!(count, COUNT_THROUGH_ITERATION_CAP + 1);
     }
 }

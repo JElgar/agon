@@ -3152,7 +3152,7 @@ async fn list_matches_accepts_filters() {
         None,
         None,
         None,
-        Some(models::MatchType::Tennis),
+        Some(vec![models::MatchType::Tennis]),
         None,
         Some("2026-01-01T00:00:00Z".to_string()),
         Some("2026-12-31T00:00:00Z".to_string()),
@@ -9513,15 +9513,23 @@ async fn added_players_are_judged_against_the_ranked_flag_the_request_leaves() {
     assert!(!friendly.ranked);
 }
 
-/// A match can only become ranked once everyone in a spot could be rated: no
-/// player without an account, and every linked player opted in to the sport.
-/// A pending invitee doesn't count, because they're asked when they accept.
-/// Each refusal leaves the match friendly, and the switch goes through once
-/// the last player in a spot has opted in.
+/// Switching a friendly to ranked **asks** the players who haven't opted in to
+/// the sport, instead of refusing until they have. They keep their spot while
+/// they answer, which is the whole point: an organiser who forgot to tick
+/// ranked used to be able to do nothing but chase people or remove them.
+///
+/// What still refuses the switch outright is a player in a spot with no Agon
+/// account — nobody can consent for them and there's no profile to hold a
+/// rating, so there's no prompt to send.
+///
+/// The caller is asked inline (`rating_consent`) rather than prompted about
+/// their own switch, so an organiser can't be the one holding up their own
+/// match. A pending invitee is neither asked nor counted; they're asked when
+/// they accept.
 #[tokio::test]
-async fn switching_to_ranked_needs_everyone_in_a_spot_opted_in() {
+async fn switching_to_ranked_asks_the_players_who_havent_opted_in() {
     let (owner_config, owner) = new_user().await;
-    let (player_config, _player) = new_user().await;
+    let (player_config, player) = new_user().await;
     let (_invitee_config, invitee) = new_user().await;
 
     let mut input = joinable_match_input(None, None, None);
@@ -9535,17 +9543,20 @@ async fn switching_to_ranked_needs_everyone_in_a_spot_opted_in() {
         .await
         .expect("takes a spot on side b; a friendly asks nothing");
 
-    let switch = || {
+    let switch_with = |consent: Option<bool>| {
         matches_match_id_patch(
             &owner_config,
             &created.id,
             models::UpdateMatchInput {
                 ranked: Some(true),
+                rating_consent: consent,
                 ..Default::default()
             },
         )
     };
 
+    // A player with no account can't be asked at all, so the switch is still
+    // refused while they're in a spot.
     let with_ringer = matches_match_id_patch(
         &owner_config,
         &created.id,
@@ -9561,7 +9572,7 @@ async fn switching_to_ranked_needs_everyone_in_a_spot_opted_in() {
     .await
     .expect("a friendly may have a player without an account");
     assert_status_with_content(
-        switch().await,
+        switch_with(Some(true)).await,
         reqwest::StatusCode::BAD_REQUEST,
         "no Agon account",
     );
@@ -9584,16 +9595,12 @@ async fn switching_to_ranked_needs_everyone_in_a_spot_opted_in() {
     .await
     .expect("remove the ringer");
 
+    // The caller plays and hasn't opted in, so they're asked inline — and
+    // until they agree, nothing is written.
     assert_status_with_content(
-        switch().await,
-        reqwest::StatusCode::BAD_REQUEST,
-        "opted in to tennis ratings",
-    );
-    opt_in_to_ratings(&owner_config, models::MatchType::Tennis).await;
-    assert_status_with_content(
-        switch().await,
-        reqwest::StatusCode::BAD_REQUEST,
-        "opted in to tennis ratings",
+        switch_with(None).await,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+        "starts your tennis rating",
     );
     assert!(
         !matches_match_id_get(&owner_config, &created.id)
@@ -9603,26 +9610,187 @@ async fn switching_to_ranked_needs_everyone_in_a_spot_opted_in() {
         "a refused switch leaves the match friendly"
     );
 
-    opt_in_to_ratings(&player_config, models::MatchType::Tennis).await;
-    let ranked = switch()
+    let ranked = switch_with(Some(true)).await.expect("the switch goes through");
+    assert!(ranked.ranked, "ranked straight away, not pending");
+    let ask = ranked.ranked_prompt.as_deref().expect("an ask was opened");
+    assert_eq!(ask.ladder, "tennis");
+    assert_eq!(
+        ask.pending, 1,
+        "the other player in a spot; the caller consented inline and the \
+         pending invitee isn't asked until they accept"
+    );
+    assert!(
+        !ask.awaiting_you,
+        "the caller answered their own switch inline"
+    );
+    let deadline = chrono::DateTime::parse_from_rfc3339(&ask.deadline)
+        .expect("the deadline comes back as RFC 3339")
+        .to_utc();
+    let kickoff = chrono::DateTime::parse_from_rfc3339(&ranked.starts_at)
+        .expect("the match's start time")
+        .to_utc();
+    assert!(
+        deadline < kickoff,
+        "the deadline falls before kickoff ({deadline} vs {kickoff})"
+    );
+
+    // The player who hasn't opted in sees the same ask, pointed at them.
+    let theirs = matches_match_id_get(&player_config, &created.id)
         .await
-        .expect("everyone in a spot is opted in; the pending invitee doesn't count yet");
-    assert!(ranked.ranked);
+        .expect("the asked player reads the match");
+    let their_ask = theirs.ranked_prompt.as_deref().expect("same ask");
+    assert_eq!(their_ask.prompt_id, ask.prompt_id);
+    assert!(
+        their_ask.awaiting_you,
+        "they're the one who still owes an answer"
+    );
+    assert_eq!(
+        theirs
+            .players
+            .iter()
+            .filter(|p| match &*p.member {
+                models::Member::User(u) => u.user_id == player.profile.id,
+                _ => false,
+            })
+            .count(),
+        1,
+        "and they still have their spot while they decide"
+    );
+
+    // Reverting withdraws the ask rather than leaving it hanging.
+    let friendly = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            ranked: Some(false),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("back to friendly");
+    assert!(!friendly.ranked);
+    assert!(
+        friendly.ranked_prompt.is_none(),
+        "the ask goes with the flag"
+    );
+    assert!(
+        matches_match_id_get(&player_config, &created.id)
+            .await
+            .expect("get match")
+            .ranked_prompt
+            .is_none(),
+        "and nobody is still being asked"
+    );
 }
 
-/// The gap the separate waitlist opened, closed by this rule: someone waiting
-/// on a friendly that turns ranked would have no way to consent on it (joining
-/// the waitlist again is a 409, and an invite-derived entry has no invitation
-/// left to accept), and moving them in would then be refused for good. So the
-/// switch also needs everyone *waiting* opted in, self-served and
-/// invite-derived alike. An opted-in player waiting doesn't block it, and once
-/// the organiser removes the others from the waitlist it goes through.
+/// Nobody in a spot needs asking when they're all opted in already, which is
+/// the common case for a group that plays ranked together: the switch is then
+/// just the flag, with no ask for anyone to act on.
 #[tokio::test]
-async fn switching_to_ranked_needs_everyone_on_the_waitlist_opted_in() {
+async fn switching_to_ranked_asks_nothing_when_everyone_is_opted_in() {
+    let (owner_config, owner) = new_user().await;
+    let (player_config, _player) = new_user().await;
+    opt_in_to_ratings(&owner_config, models::MatchType::Tennis).await;
+    opt_in_to_ratings(&player_config, models::MatchType::Tennis).await;
+
+    let created = matches_post(&owner_config, joinable_match_input(None, None, None))
+        .await
+        .expect("create a friendly");
+    let side_b = other_side_id(&created, &side_id_for_user(&created, &owner.profile.id));
+    let link = join_link_for(&owner_config, &created.id, Some(vec![side_b])).await;
+    join_match_with_consent(&player_config, &created.id, Some(&link.token), None)
+        .await
+        .expect("takes a spot on side b");
+
+    let ranked = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            ranked: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("no consent flag needed: the caller is already opted in");
+    assert!(ranked.ranked);
+    assert!(
+        ranked.ranked_prompt.is_none(),
+        "nothing to ask, so no ask: {:?}",
+        ranked.ranked_prompt
+    );
+}
+
+/// A deadline the organiser sets is kept; one that would land after kickoff is
+/// refused rather than quietly moved, because expiring people once the result
+/// is knowable is the thing the deadline exists to prevent.
+#[tokio::test]
+async fn a_switch_can_set_its_own_confirmation_deadline() {
+    let (owner_config, owner) = new_user().await;
+    let (player_config, _player) = new_user().await;
+    opt_in_to_ratings(&owner_config, models::MatchType::Tennis).await;
+
+    let created = matches_post(&owner_config, joinable_match_input(None, None, None))
+        .await
+        .expect("create a friendly");
+    let side_b = other_side_id(&created, &side_id_for_user(&created, &owner.profile.id));
+    let link = join_link_for(&owner_config, &created.id, Some(vec![side_b])).await;
+    join_match_with_consent(&player_config, &created.id, Some(&link.token), None)
+        .await
+        .expect("takes a spot on side b");
+
+    let starts_at = chrono::DateTime::parse_from_rfc3339(&created.starts_at)
+        .expect("the match's start time")
+        .to_utc();
+    let after_kickoff = starts_at + chrono::Duration::hours(1);
+    assert_status_with_content(
+        matches_match_id_patch(
+            &owner_config,
+            &created.id,
+            models::UpdateMatchInput {
+                ranked: Some(true),
+                ranked_prompt_deadline: Some(after_kickoff.to_rfc3339()),
+                ..Default::default()
+            },
+        )
+        .await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "after the match starts",
+    );
+
+    let chosen = starts_at - chrono::Duration::hours(2);
+    let ranked = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            ranked: Some(true),
+            ranked_prompt_deadline: Some(chosen.to_rfc3339()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("a deadline before kickoff is kept");
+    let ask = ranked.ranked_prompt.as_deref().expect("an ask was opened");
+    let stored = chrono::DateTime::parse_from_rfc3339(&ask.deadline)
+        .expect("the deadline comes back as RFC 3339")
+        .to_utc();
+    assert_eq!(stored, chosen, "kept exactly, not clamped");
+}
+
+/// The waitlist no longer has a say in whether a match can be ranked, which
+/// deletes a rule rather than adding one.
+///
+/// It used to refuse the switch while anyone waiting hadn't opted in, on the
+/// grounds that they would have no way to consent once it was ranked. But a
+/// waitlisted player holds no spot — they have no roster row at all — so the
+/// switch takes nothing from them, and moving them in is still refused until
+/// they have opted in. So the switch goes through, the waitlist is left
+/// exactly as it was, and the only thing that changes for someone waiting is
+/// that being moved in now needs their consent first.
+#[tokio::test]
+async fn switching_to_ranked_leaves_the_waitlist_alone() {
     let (owner_config, owner) = new_user().await;
     let (filler_config, _filler) = new_user().await;
     let (stranger_config, stranger) = new_user().await;
-    let (invitee_config, invitee) = new_user().await;
     let (keen_config, keen) = new_user().await;
     opt_in_to_ratings(&owner_config, models::MatchType::Tennis).await;
     opt_in_to_ratings(&filler_config, models::MatchType::Tennis).await;
@@ -9641,60 +9809,50 @@ async fn switching_to_ranked_needs_everyone_on_the_waitlist_opted_in() {
             .await
             .expect("self-serve onto the waitlist; a friendly asks nothing");
     }
-    matches_match_id_invitations_post(
+
+    let ranked = matches_match_id_patch(
         &owner_config,
         &created.id,
-        models::AddInvitationsInput {
-            invited_user_ids: vec![invitee.profile.id.clone()],
-            invited_external_names: vec![],
-            side_id: Some(side_b),
-            role: None,
+        models::UpdateMatchInput {
+            ranked: Some(true),
+            ..Default::default()
         },
     )
     .await
-    .expect("invite onto the full side b");
-    join_waitlist_with_consent(&invitee_config, &created.id, None, None)
-        .await
-        .expect("accept the invitation onto the waitlist");
+    .expect("the waitlist doesn't block the switch");
+    assert!(ranked.ranked);
+    assert!(
+        ranked.ranked_prompt.is_none(),
+        "everyone in a spot was opted in, so nobody is asked"
+    );
 
-    let switch = || {
-        matches_match_id_patch(
+    let mut waiting = waitlisted_user_ids(&owner_config, &created.id).await;
+    waiting.sort();
+    let mut expected = vec![stranger.profile.id.clone(), keen.profile.id.clone()];
+    expected.sort();
+    assert_eq!(waiting, expected, "both are still waiting, untouched");
+
+    // Move-in checks capacity before consent, so free the spot first —
+    // otherwise the full match answers 409 before the rating rule is reached.
+    matches_match_id_leave_post(&filler_config, &created.id)
+        .await
+        .expect("the player in side b's only spot leaves");
+
+    // The one who never opted in still can't be moved in — the backstop that
+    // makes refusing the switch unnecessary.
+    assert_status_with_content(
+        matches_match_id_waitlist_user_id_move_in_post(
             &owner_config,
             &created.id,
-            models::UpdateMatchInput {
-                ranked: Some(true),
-                ..Default::default()
-            },
+            &stranger.profile.id,
         )
-    };
-    assert_status_with_content(
-        switch().await,
+        .await,
         reqwest::StatusCode::BAD_REQUEST,
-        "players on its waitlist haven't opted in to tennis ratings",
+        "hasn't opted in to tennis ratings",
     );
-
-    matches_match_id_waitlist_user_id_delete(&owner_config, &created.id, &stranger.profile.id)
+    matches_match_id_waitlist_user_id_move_in_post(&owner_config, &created.id, &keen.profile.id)
         .await
-        .expect("the organiser removes the self-served entry");
-    assert_status_with_content(switch().await, reqwest::StatusCode::BAD_REQUEST, "waitlist");
-    assert!(
-        !matches_match_id_get(&owner_config, &created.id)
-            .await
-            .expect("get match")
-            .ranked,
-        "still friendly while the invite-derived entry is waiting"
-    );
-
-    matches_match_id_waitlist_user_id_delete(&owner_config, &created.id, &invitee.profile.id)
-        .await
-        .expect("and the invite-derived one");
-    let ranked = switch().await.expect("everyone left waiting is opted in");
-    assert!(ranked.ranked);
-    assert_eq!(
-        waitlisted_user_ids(&owner_config, &created.id).await,
-        vec![keen.profile.id.clone()],
-        "the opted-in player is still waiting"
-    );
+        .expect("the opted-in waiter can be moved in");
 }
 
 /// Joining a full ranked match is a 409 before consent comes into it: there's

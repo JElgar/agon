@@ -9,10 +9,6 @@
 
 use chrono::Datelike;
 
-/// Every bounded series (`OnDate`/`AfterN`) is capped at this many
-/// occurrences total, including the first.
-pub const MAX_SERIES_OCCURRENCES: u32 = 99;
-
 /// The calendar date of a series' occurrence at `index` (0-based; index 0 is
 /// `first` itself), advancing from `first` at `frequency`. `None` for an
 /// unrecognised frequency — callers validate `frequency` (one of "weekly" |
@@ -92,6 +88,21 @@ pub fn series_status_transition_allowed(current: &str, target: &str) -> bool {
     }
 }
 
+/// The full `starts_at` of the occurrence at `index` — [`occurrence_date`]
+/// plus the time-of-day component every occurrence keeps fixed from `first`
+/// (which here is the first occurrence's own full `starts_at`, not just its
+/// date). `None` under the same conditions `occurrence_date` returns `None`
+/// for.
+pub fn occurrence_starts_at(
+    first: chrono::DateTime<chrono::Utc>,
+    frequency: &str,
+    weekday: chrono::Weekday,
+    index: u32,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let date = occurrence_date(first.date_naive(), frequency, weekday, index)?;
+    Some(date.and_time(first.time()).and_utc())
+}
+
 /// The `chrono::Weekday` for this codebase's `0 = Sunday .. 6 = Saturday`
 /// convention (`SeriesRecord::weekday`, `CreateMatchSeriesInput::weekday`) —
 /// *not* `chrono::Weekday`'s own ISO numbering, which starts the week on
@@ -110,11 +121,28 @@ pub fn weekday_from_sunday_index(n: u8) -> Option<chrono::Weekday> {
     }
 }
 
+/// A pure defensive guard against a pathological `end` in
+/// [`count_occurrences_through`] — e.g. an `OnDate` series ending in the
+/// year 9999, which would otherwise make that function iterate date-by-date
+/// (well, occurrence-by-occurrence; cheap per step, but still) hundreds of
+/// thousands of times, repeated on every `materialize_series` cycle for that
+/// series.
+///
+/// This is *not* a feature limit on how many occurrences a series may have
+/// — there is none; a bounded series just keeps being windowed-generated
+/// like any other until its `end` is reached, however far off that is — so
+/// it stays private and uninvolved in anything create-time validation does.
+/// Generous enough that no real `end` date should ever hit it (10,000
+/// weekly occurrences alone is ~192 years), so a series whose true implied
+/// count exceeds this is already in "data entry mistake" territory; such a
+/// series would simply stop generating once this count is reached, which is
+/// an acceptable defensive trade-off against an unbounded loop.
+const COUNT_THROUGH_ITERATION_CAP: u32 = 10_000;
+
 /// How many occurrences of `weekday` at `frequency`, starting at `first`
-/// (inclusive, counted as occurrence 1), fall on or before `end`. Capped at
-/// `MAX_SERIES_OCCURRENCES + 1` iterations so a far-future `end` can't make
-/// this loop run away — anything that hits the cap is rejected by the
-/// caller anyway, so the exact count past it is never needed.
+/// (inclusive, counted as occurrence 1), fall on or before `end`. See
+/// [`COUNT_THROUGH_ITERATION_CAP`] for why this can't loop forever even for
+/// a far-future `end`.
 pub fn count_occurrences_through(
     first: chrono::NaiveDate,
     frequency: &str,
@@ -122,7 +150,7 @@ pub fn count_occurrences_through(
     end: chrono::NaiveDate,
 ) -> u32 {
     let mut count = 0u32;
-    while count <= MAX_SERIES_OCCURRENCES {
+    while count <= COUNT_THROUGH_ITERATION_CAP {
         let Some(date) = occurrence_date(first, frequency, weekday, count) else {
             break;
         };
@@ -255,6 +283,31 @@ mod tests {
     }
 
     #[test]
+    fn occurrence_starts_at_keeps_the_first_occurrences_time_of_day() {
+        let first = "2026-06-02T18:30:00Z"
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap();
+        let next = occurrence_starts_at(first, "weekly", Weekday::Tue, 1).unwrap();
+        assert_eq!(
+            next,
+            "2026-06-09T18:30:00Z"
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn occurrence_starts_at_is_none_for_an_unrecognised_frequency() {
+        let first = "2026-06-02T18:30:00Z"
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap();
+        assert_eq!(
+            occurrence_starts_at(first, "biweekly", Weekday::Tue, 1),
+            None
+        );
+    }
+
+    #[test]
     fn weekday_from_sunday_index_matches_convention() {
         assert_eq!(weekday_from_sunday_index(0), Some(Weekday::Sun));
         assert_eq!(weekday_from_sunday_index(1), Some(Weekday::Mon));
@@ -267,6 +320,6 @@ mod tests {
         let first = date(2000, 1, 1);
         let far_future = date(9999, 1, 1);
         let count = count_occurrences_through(first, "weekly", first.weekday(), far_future);
-        assert_eq!(count, MAX_SERIES_OCCURRENCES + 1);
+        assert_eq!(count, COUNT_THROUGH_ITERATION_CAP + 1);
     }
 }

@@ -26,6 +26,9 @@ pub struct FeedViewer {
     pub known_player_ids: Vec<String>,
     pub known_player_count: u32,
     pub viewer_side_id: Option<String>,
+    pub viewer_is_going: bool,
+    pub viewer_invitation_pending: bool,
+    pub viewer_can_join_side_ids: Vec<String>,
 }
 
 /// The result of resolving a match's fan-out: who should see it (with their
@@ -185,6 +188,13 @@ impl AgonActivities {
             live_seq: 0,
             live_tip_seq: None,
             format: None,
+            // A series occurrence is always friendly. `SeriesRecord` has no
+            // `ranked` of its own, and generation puts *other* people's
+            // players into spots without asking them — which is the one thing
+            // a rating needs (see `rating_consent`). An organiser can switch a
+            // single occurrence to ranked afterwards, which asks everyone in
+            // it. A ranked *series* needs its own consent design first.
+            ranked: false,
             created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         };
 
@@ -251,6 +261,9 @@ impl AgonActivities {
                 known_player_ids: member.known_player_ids,
                 known_player_count: member.known_player_count,
                 viewer_side_id: member.viewer_side_id,
+                viewer_is_going: member.viewer_is_going,
+                viewer_invitation_pending: member.viewer_invitation_pending,
+                viewer_can_join_side_ids: member.viewer_can_join_side_ids,
             })
             .collect();
         Ok(FanoutAudience {
@@ -277,6 +290,9 @@ impl AgonActivities {
                     known_player_ids: v.known_player_ids,
                     known_player_count: v.known_player_count,
                     viewer_side_id: v.viewer_side_id,
+                    viewer_is_going: v.viewer_is_going,
+                    viewer_invitation_pending: v.viewer_invitation_pending,
+                    viewer_can_join_side_ids: v.viewer_can_join_side_ids,
                 },
             })
             .collect();

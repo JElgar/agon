@@ -820,6 +820,9 @@ struct Match {
     /// every other `Match`-returning response, not because it doesn't
     /// apply, just because nothing reads it there.
     viewer_team_join_side_ids: Option<Vec<String>>,
+    /// The recurring series this match was generated from, if any
+    /// (`GET /match-series/:id` fetches the series itself).
+    series_id: Option<String>,
     /// Whether this match counts towards its players' ratings; `false` is a
     /// friendly, which is what every match is unless its organiser chose
     /// ranked. Can only change until the result could be known — see
@@ -10067,6 +10070,7 @@ fn mock_match(id: String) -> Match {
         allow_unassigned: true,
         viewer_role: Some(MatchPlayerRole::Owner),
         viewer_team_join_side_ids: None,
+        series_id: None,
         ranked: true,
         rating_ladder: Some(String::from("football")),
     }

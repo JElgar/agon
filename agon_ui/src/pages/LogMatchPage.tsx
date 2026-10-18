@@ -532,6 +532,7 @@ export function LogMatchPage() {
       description: '',
       location: location?.text.trim() ? { ...location, text: location.text.trim() } : undefined,
       starts_at: new Date(startsAt).toISOString(),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       frequency,
       weekday: new Date(startsAt).getDay(),
       ends: ends as unknown as CreateMatchSeriesInput['ends'],

@@ -332,6 +332,7 @@ enum MaterializeOutcome {
 /// this cycle generates anything at all.
 fn plan_materialize_cycle(
     first_starts_at: chrono::DateTime<chrono::Utc>,
+    timezone: chrono_tz::Tz,
     frequency: &str,
     weekday: chrono::Weekday,
     occurrences_generated: u32,
@@ -341,8 +342,14 @@ fn plan_materialize_cycle(
     let not_yet_started = (0..occurrences_generated)
         .rev()
         .take_while(|&index| {
-            agon_core::series::occurrence_starts_at(first_starts_at, frequency, weekday, index)
-                .is_some_and(|starts_at| starts_at > now)
+            agon_core::series::occurrence_starts_at(
+                first_starts_at,
+                timezone,
+                frequency,
+                weekday,
+                index,
+            )
+            .is_some_and(|starts_at| starts_at > now)
         })
         .count() as u32;
 
@@ -352,8 +359,14 @@ fn plan_materialize_cycle(
     let mut next_index = occurrences_generated;
     let mut window = not_yet_started;
     while window < MATERIALIZE_WINDOW && total.is_none_or(|total| next_index < total) {
-        if agon_core::series::occurrence_starts_at(first_starts_at, frequency, weekday, next_index)
-            .is_none()
+        if agon_core::series::occurrence_starts_at(
+            first_starts_at,
+            timezone,
+            frequency,
+            weekday,
+            next_index,
+        )
+        .is_none()
         {
             break;
         }
@@ -372,6 +385,7 @@ fn plan_materialize_cycle(
         let oldest_pending_index = occurrences_generated - not_yet_started;
         match agon_core::series::occurrence_starts_at(
             first_starts_at,
+            timezone,
             frequency,
             weekday,
             oldest_pending_index,
@@ -478,12 +492,15 @@ impl MaterializeSeries {
         let Some(weekday) = agon_core::series::weekday_from_sunday_index(series.weekday) else {
             return Ok(());
         };
+        let Ok(timezone) = series.timezone.parse::<chrono_tz::Tz>() else {
+            return Ok(());
+        };
         let total = match &series.ends {
             agon_core::dao::records::SeriesEndRecord::AfterN { count } => Some(*count),
             agon_core::dao::records::SeriesEndRecord::OnDate { date } => {
                 match chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d") {
                     Ok(end_date) => Some(agon_core::series::count_occurrences_through(
-                        first_starts_at.date_naive(),
+                        first_starts_at.with_timezone(&timezone).date_naive(),
                         &series.frequency,
                         weekday,
                         end_date,
@@ -497,6 +514,7 @@ impl MaterializeSeries {
         // 4. Decide this cycle's work.
         let cycle = plan_materialize_cycle(
             first_starts_at,
+            timezone,
             &series.frequency,
             weekday,
             series.occurrences_generated,
@@ -511,6 +529,7 @@ impl MaterializeSeries {
         for index in cycle.generate {
             let Some(starts_at) = agon_core::series::occurrence_starts_at(
                 first_starts_at,
+                timezone,
                 &series.frequency,
                 weekday,
                 index,
@@ -582,7 +601,7 @@ mod materialize_tests {
         // point here is checking it lines up with `first`, not the cap
         // (`sleep_is_capped_even_for_a_distant_next_occurrence` covers that).
         let now = dt("2026-06-02T10:00:00Z");
-        let cycle = plan_materialize_cycle(first, "weekly", chrono::Weekday::Tue, 1, None, now);
+        let cycle = plan_materialize_cycle(first, chrono_tz::UTC, "weekly", chrono::Weekday::Tue, 1, None, now);
         assert_eq!(cycle.generate, vec![1, 2, 3]);
         match cycle.outcome {
             MaterializeOutcome::SleepThenContinue(sleep) => {
@@ -599,7 +618,7 @@ mod materialize_tests {
         let first = dt("2026-06-02T18:00:00Z");
         let now = dt("2026-05-01T00:00:00Z");
         // 4 generated (indices 0..=3), none of which have started yet.
-        let cycle = plan_materialize_cycle(first, "weekly", chrono::Weekday::Tue, 4, None, now);
+        let cycle = plan_materialize_cycle(first, chrono_tz::UTC, "weekly", chrono::Weekday::Tue, 4, None, now);
         assert_eq!(cycle.generate, Vec::<u32>::new());
     }
 
@@ -613,7 +632,7 @@ mod materialize_tests {
         // two have started (June 2, June 9), leaving only indices 2 and 3
         // still pending.
         let now = dt("2026-06-10T00:00:00Z");
-        let cycle = plan_materialize_cycle(first, "weekly", chrono::Weekday::Tue, 4, None, now);
+        let cycle = plan_materialize_cycle(first, chrono_tz::UTC, "weekly", chrono::Weekday::Tue, 4, None, now);
         assert_eq!(cycle.generate, vec![4, 5]);
     }
 
@@ -624,7 +643,7 @@ mod materialize_tests {
     fn finishes_a_bounded_series_once_its_total_is_reached() {
         let first = dt("2026-06-02T18:00:00Z");
         let now = dt("2026-05-01T00:00:00Z");
-        let cycle = plan_materialize_cycle(first, "weekly", chrono::Weekday::Tue, 1, Some(2), now);
+        let cycle = plan_materialize_cycle(first, chrono_tz::UTC, "weekly", chrono::Weekday::Tue, 1, Some(2), now);
         assert_eq!(cycle.generate, vec![1]);
         assert_eq!(cycle.outcome, MaterializeOutcome::Finish);
     }
@@ -635,7 +654,7 @@ mod materialize_tests {
     fn finishes_immediately_if_the_bounded_total_is_already_generated() {
         let first = dt("2026-06-02T18:00:00Z");
         let now = dt("2026-05-01T00:00:00Z");
-        let cycle = plan_materialize_cycle(first, "weekly", chrono::Weekday::Tue, 2, Some(2), now);
+        let cycle = plan_materialize_cycle(first, chrono_tz::UTC, "weekly", chrono::Weekday::Tue, 2, Some(2), now);
         assert_eq!(cycle.generate, Vec::<u32>::new());
         assert_eq!(cycle.outcome, MaterializeOutcome::Finish);
     }
@@ -646,7 +665,7 @@ mod materialize_tests {
     fn an_indefinite_series_never_finishes() {
         let first = dt("2026-06-02T18:00:00Z");
         let now = dt("2026-05-01T00:00:00Z");
-        let cycle = plan_materialize_cycle(first, "yearly", chrono::Weekday::Tue, 1, None, now);
+        let cycle = plan_materialize_cycle(first, chrono_tz::UTC, "yearly", chrono::Weekday::Tue, 1, None, now);
         assert!(matches!(
             cycle.outcome,
             MaterializeOutcome::SleepThenContinue(_)
@@ -659,7 +678,7 @@ mod materialize_tests {
     fn sleep_is_capped_even_for_a_distant_next_occurrence() {
         let first = dt("2026-06-02T18:00:00Z");
         let now = dt("2026-05-01T00:00:00Z");
-        let cycle = plan_materialize_cycle(first, "yearly", chrono::Weekday::Tue, 1, None, now);
+        let cycle = plan_materialize_cycle(first, chrono_tz::UTC, "yearly", chrono::Weekday::Tue, 1, None, now);
         match cycle.outcome {
             MaterializeOutcome::SleepThenContinue(sleep) => {
                 assert_eq!(sleep, materialize_poll_cap());

@@ -7,7 +7,7 @@
 //! kept in one place deliberately, so the two can never drift apart on what
 //! "the next occurrence" means for a given frequency.
 
-use chrono::Datelike;
+use chrono::{Datelike, TimeZone};
 
 /// The calendar date of a series' occurrence at `index` (0-based; index 0 is
 /// `first` itself), advancing from `first` at `frequency`. `None` for an
@@ -73,16 +73,65 @@ fn nth_weekday_of_month_offset(
 /// The full `starts_at` of the occurrence at `index` — [`occurrence_date`]
 /// plus the time-of-day component every occurrence keeps fixed from `first`
 /// (which here is the first occurrence's own full `starts_at`, not just its
-/// date). `None` under the same conditions `occurrence_date` returns `None`
-/// for.
+/// date), both read in `timezone` (the series creator's own IANA zone, e.g.
+/// `Europe/London`) rather than UTC — so "every Monday at 7pm" stays 7pm
+/// local on both sides of a DST transition instead of drifting by the
+/// transition's offset. `None` under the same conditions `occurrence_date`
+/// returns `None` for.
+///
+/// Advancing in local time is the whole point: advancing in UTC (as this
+/// used to) keeps the UTC time-of-day fixed and lets the *local* time-of-day
+/// drift by whatever the zone's offset changes by across the transition —
+/// e.g. a series anchored at 19:00 BST (UTC+1) would land its first
+/// post-DST-end occurrence at 19:00 UTC, which reads back as 18:00 GMT
+/// (UTC+0) to anyone in that zone.
 pub fn occurrence_starts_at(
     first: chrono::DateTime<chrono::Utc>,
+    timezone: chrono_tz::Tz,
     frequency: &str,
     weekday: chrono::Weekday,
     index: u32,
 ) -> Option<chrono::DateTime<chrono::Utc>> {
-    let date = occurrence_date(first.date_naive(), frequency, weekday, index)?;
-    Some(date.and_time(first.time()).and_utc())
+    let first_local = first.with_timezone(&timezone);
+    let date = occurrence_date(first_local.date_naive(), frequency, weekday, index)?;
+    let naive = date.and_time(first_local.time());
+    Some(local_naive_to_utc(naive, timezone))
+}
+
+/// Resolve a local wall-clock `naive` time in `timezone` to its UTC instant,
+/// handling the two ways a DST transition can make that ambiguous:
+/// - **Fall back** (clocks go back, e.g. 01:30 BST -> 00:30 GMT): `naive`
+///   names two different instants. We take the earlier one (the
+///   first/standard-offset occurrence of that wall-clock time) — an
+///   arbitrary but stable tie-break; which one a reader would "mean" isn't
+///   otherwise specified anywhere in the data model.
+/// - **Spring forward** (clocks go forward, e.g. 00:30 -> 01:30 skips
+///   00:30-01:00 entirely): `naive` names no instant at all. We shift
+///   forward an hour at a time until we find one that exists — the
+///   conventional resolution (e.g. what most calendar apps do with a
+///   recurring event whose time falls in that gap).
+fn local_naive_to_utc(
+    naive: chrono::NaiveDateTime,
+    timezone: chrono_tz::Tz,
+) -> chrono::DateTime<chrono::Utc> {
+    match timezone.from_local_datetime(&naive) {
+        chrono::LocalResult::Single(dt) => dt.with_timezone(&chrono::Utc),
+        chrono::LocalResult::Ambiguous(earliest, _latest) => earliest.with_timezone(&chrono::Utc),
+        chrono::LocalResult::None => {
+            // Bounded: real DST gaps are an hour (occasionally half an hour);
+            // this just guards against ever looping on a pathological input.
+            for hours in 1..=24 {
+                let shifted = naive + chrono::Duration::hours(hours);
+                if let chrono::LocalResult::Single(dt) = timezone.from_local_datetime(&shifted) {
+                    return dt.with_timezone(&chrono::Utc);
+                }
+            }
+            // Unreachable in practice (see above) — UTC has no DST, so
+            // interpreting the naive time as UTC always succeeds and is a
+            // safe fallback rather than panicking.
+            naive.and_utc()
+        }
+    }
 }
 
 /// The `chrono::Weekday` for this codebase's `0 = Sunday .. 6 = Saturday`
@@ -252,7 +301,7 @@ mod tests {
         let first = "2026-06-02T18:30:00Z"
             .parse::<chrono::DateTime<chrono::Utc>>()
             .unwrap();
-        let next = occurrence_starts_at(first, "weekly", Weekday::Tue, 1).unwrap();
+        let next = occurrence_starts_at(first, chrono_tz::UTC, "weekly", Weekday::Tue, 1).unwrap();
         assert_eq!(
             next,
             "2026-06-09T18:30:00Z"
@@ -267,8 +316,49 @@ mod tests {
             .parse::<chrono::DateTime<chrono::Utc>>()
             .unwrap();
         assert_eq!(
-            occurrence_starts_at(first, "biweekly", Weekday::Tue, 1),
+            occurrence_starts_at(first, chrono_tz::UTC, "biweekly", Weekday::Tue, 1),
             None
+        );
+    }
+
+    #[test]
+    fn occurrence_starts_at_keeps_local_wall_clock_time_across_dst_fall_back() {
+        // "Monday night football", weekly, 19:00 Europe/London — first
+        // occurrence 2026-10-19 (BST, UTC+1, so 18:00 UTC); UK clocks go
+        // back on 2026-10-25, so the occurrence on 2026-10-26 should still
+        // read as 19:00 *local* (now GMT, UTC+0 -> 19:00 UTC), not 18:00 UTC
+        // (which would read back as 18:00 local, an hour early).
+        let first = "2026-10-19T18:00:00Z"
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap();
+        let london: chrono_tz::Tz = "Europe/London".parse().unwrap();
+        let next = occurrence_starts_at(first, london, "weekly", Weekday::Mon, 1).unwrap();
+        assert_eq!(
+            next,
+            "2026-10-26T19:00:00Z"
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn occurrence_starts_at_keeps_local_wall_clock_time_across_dst_spring_forward() {
+        // US clocks go forward on 2027-03-14; the occurrence that would fall
+        // the week before, at 19:00 local on Monday 2027-03-08 (EST, UTC-5
+        // -> 2027-03-09T00:00:00Z), should land the week after still at
+        // 19:00 local on Monday 2027-03-15 (now EDT, UTC-4 ->
+        // 2027-03-15T23:00:00Z), not at the same UTC time-of-day (which
+        // would read back as 18:00 local, an hour early).
+        let first = "2027-03-09T00:00:00Z"
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap();
+        let ny: chrono_tz::Tz = "America/New_York".parse().unwrap();
+        let next = occurrence_starts_at(first, ny, "weekly", Weekday::Mon, 1).unwrap();
+        assert_eq!(
+            next,
+            "2027-03-15T23:00:00Z"
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap()
         );
     }
 

@@ -26,9 +26,13 @@ pub struct TeamAggregate {
 }
 
 impl Dao {
-    /// Create a team and its creator's membership in one transaction. The
+    /// Create a team, its creator's membership, and the creator's follow of
+    /// their own team (membership implies following — see
+    /// `Dao::follow_team_items`'s doc comment), all in one transaction. The
     /// creator becomes the `owner` member. `Conflict` if the team id already
-    /// exists.
+    /// exists. Unlike `Dao::add_team_member`, this never needs to check
+    /// whether the creator already follows first — the team doesn't exist
+    /// yet, so there's no edge to collide with.
     #[tracing::instrument(skip(self, team, creator), fields(team_id = %team.id))]
     pub async fn create_team(
         &self,
@@ -54,11 +58,18 @@ impl Dao {
             .build()
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
 
+        let mut items = vec![
+            TransactWriteItem::builder().put(put_meta).build(),
+            TransactWriteItem::builder().put(put_member).build(),
+        ];
+        if let Some(owner_id) = &creator.user_id {
+            items.extend(self.follow_team_items(owner_id, &team.id, &creator.created_at)?);
+        }
+
         let result = self
             .client
             .transact_write_items()
-            .transact_items(TransactWriteItem::builder().put(put_meta).build())
-            .transact_items(TransactWriteItem::builder().put(put_member).build())
+            .set_transact_items(Some(items))
             .send()
             .await;
 
@@ -290,7 +301,10 @@ impl Dao {
     }
 
     /// Add (or overwrite) a single team member. Used for both single adds and
-    /// the fan-out of a bulk invite (call per member).
+    /// the fan-out of a bulk invite (call per member) — i.e. for a *pending*
+    /// invite's placeholder entry, which doesn't follow until it's accepted.
+    /// For an already-accepted direct add, use `Dao::add_team_member`
+    /// instead, which also folds in the follow that membership implies.
     #[tracing::instrument(skip(self, member), fields(membership_id = %member.membership_id))]
     pub async fn put_team_member(&self, team_id: &str, member: &TeamMemberRecord) -> DaoResult<()> {
         let item = self.team_member_item(team_id, member)?;
@@ -298,6 +312,46 @@ impl Dao {
             .put_item()
             .table_name(self.table())
             .set_item(Some(item))
+            .send()
+            .await
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Add an already-accepted (real-user) team member and the follow edge
+    /// membership implies (see `Dao::follow_team_items`'s doc comment), as
+    /// one transaction — so a direct add's "join the team" and "follow the
+    /// team" land together, not as a separate best-effort call after the
+    /// fact. Checks `is_following_team` first and omits the follow items
+    /// entirely when they're already a follower (e.g. they followed
+    /// explicitly before being added) — including them anyway would trip
+    /// the edge-put's condition and cancel the whole transaction, including
+    /// the membership write.
+    #[tracing::instrument(skip(self, member), fields(membership_id = %member.membership_id))]
+    pub async fn add_team_member(
+        &self,
+        team_id: &str,
+        member: &TeamMemberRecord,
+        now: &str,
+    ) -> DaoResult<()> {
+        use aws_sdk_dynamodb::types::{Put, TransactWriteItem};
+
+        let put_member = Put::builder()
+            .table_name(self.table())
+            .set_item(Some(self.team_member_item(team_id, member)?))
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        let mut items = vec![TransactWriteItem::builder().put(put_member).build()];
+        if let Some(user_id) = &member.user_id
+            && !self.is_following_team(user_id, team_id).await?
+        {
+            items.extend(self.follow_team_items(user_id, team_id, now)?);
+        }
+
+        self.client
+            .transact_write_items()
+            .set_transact_items(Some(items))
             .send()
             .await
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;

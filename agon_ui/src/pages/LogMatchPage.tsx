@@ -154,7 +154,10 @@ export function LogMatchPage() {
   const [startsAt, setStartsAt] = useState<string>(defaultScheduledAt)
   const [location, setLocation] = useState<LocationValue | null>(null)
   // The name follows the sport and time until the user types their own;
-  // clearing the field hands it back to the suggestion.
+  // clearing the field hands it back to the suggestion. The input itself
+  // only ever shows what was typed, with the suggestion as a placeholder,
+  // so clearing it leaves the field empty to type into rather than
+  // snapping back to the suggested text.
   const [typedName, setTypedName] = useState('')
   const suggestedName = suggestMatchName(sport, startsAt) ?? ''
   const name = typedName.trim() ? typedName : suggestedName
@@ -698,9 +701,9 @@ export function LogMatchPage() {
           <FormSection title="Match name" htmlFor="match-name">
             <input
               id="match-name"
-              value={typedName.trim() ? typedName : suggestedName}
+              value={typedName}
               onChange={(e) => setTypedName(e.target.value)}
-              placeholder="e.g. Tuesday night singles"
+              placeholder={suggestedName || 'e.g. Tuesday night singles'}
               maxLength={80}
               className="h-12 rounded-[14px] border bg-card px-3.5 text-[15px] font-semibold outline-none placeholder:font-normal placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
             />

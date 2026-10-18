@@ -96,6 +96,9 @@ impl Dao {
             known_player_ids: audience.known_player_ids.clone(),
             known_player_count: audience.known_player_count,
             viewer_side_id: audience.viewer_side_id.clone(),
+            viewer_is_going: audience.viewer_is_going,
+            viewer_invitation_pending: audience.viewer_invitation_pending,
+            viewer_can_join_side_ids: audience.viewer_can_join_side_ids.clone(),
         };
         Ok(ItemBuilder::new(to_item(
             &Pk::UserFeed(viewer_id.into()),

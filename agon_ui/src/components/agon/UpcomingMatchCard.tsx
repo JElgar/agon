@@ -25,10 +25,17 @@ function timeLabel(iso: string): string {
 
 /**
  * A compact upcoming-match card for the feed's "Coming up" list — date box,
- * title, time/location, who's playing, and the viewer's own RSVP state. A
- * fixed-width card in the horizontal snap-scroll strip below `xl`, full-width
- * in the desktop sidebar's vertical stack at `xl` and up. See the "Agon
- * redesign" canvas's `Main.dc.html`/`DesktopHome.dc.html`.
+ * title, time/location, who's playing, and the viewer's own RSVP state:
+ * "Going" (`viewer_is_going`), "Invited" (a pending invitation,
+ * `viewer_invitation_pending`), or "I'm in" (not yet in, but could self-join
+ * via a team — `viewer_can_join_side_ids`; see `FeedPage`'s "Coming up"
+ * filter, which is what keeps every other match out of this list). Tapping
+ * the card only opens the match detail page — none of these three pills is
+ * its own button, so none of them joins/accepts on tap; the detail page is
+ * where that action actually lives. A fixed-width card in the horizontal
+ * snap-scroll strip below `xl`, full-width in the desktop sidebar's vertical
+ * stack at `xl` and up. See the "Agon redesign" canvas's
+ * `Main.dc.html`/`DesktopHome.dc.html`.
  */
 export function UpcomingMatchCard({
   match,
@@ -40,7 +47,8 @@ export function UpcomingMatchCard({
   className?: string
 }) {
   const { weekday, day } = dateParts(match.starts_at)
-  const going = match.viewer_side_id != null
+  const going = match.viewer_is_going
+  const invited = match.viewer_invitation_pending
   const totalGoing = match.total_player_count
   const people = match.sides
     .flatMap((s) => s.roster_preview ?? [])
@@ -77,6 +85,10 @@ export function UpcomingMatchCard({
       {going ? (
         <span className="flex h-8 shrink-0 items-center gap-1 rounded-full bg-success/15 px-2.5 text-xs font-bold text-success">
           <Check className="size-3.5" /> Going
+        </span>
+      ) : invited ? (
+        <span className="flex h-10 shrink-0 items-center rounded-full bg-primary px-3.5 text-sm font-bold text-primary-foreground">
+          Invited
         </span>
       ) : (
         <span className="flex h-10 shrink-0 items-center rounded-full bg-primary px-3.5 text-sm font-bold text-primary-foreground">

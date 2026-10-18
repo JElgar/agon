@@ -606,6 +606,28 @@ pub struct MatchRecord {
     /// configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<MatchFormatRecord>,
+    /// Whether this match counts towards its players' ratings; `false` is a
+    /// friendly. The organiser's explicit choice — omitted at creation means
+    /// friendly (see `CreateMatchInput::ranked` for why, and why creation is
+    /// unconstrained).
+    ///
+    /// `#[serde(default)]` → `false` for matches written before ratings
+    /// existed, and it has to stay `false` whatever the product default ever
+    /// becomes. Ratings are computed from a match's `#META` stream image, and
+    /// that item is rewritten by far more than an edit: every like and every
+    /// comment `ADD`s a counter on it. A `true` default would enrol the whole
+    /// back catalogue into the ladders, one old match per like, rating
+    /// players who never opted in — when opting in is the one thing a rating
+    /// requires. Please don't "fix" this to match a create-time default.
+    ///
+    /// A ranked match always has a rating ladder (`rating::ladder_for_tag` on
+    /// `match_type`), so sport `other` is never ranked. The API enforces that
+    /// rather than this record, and it can't be undone later because nothing
+    /// changes `match_type` after creation. The flag locks against *change*
+    /// once a score is submitted, the match starts, or it leaves `scheduled` —
+    /// see `ranked_lock_reason` in `agon_service`'s mapping.
+    #[serde(default)]
+    pub ranked: bool,
     pub created_at: String,
 }
 
@@ -644,10 +666,12 @@ pub struct SeriesRecord {
     /// up by some other means to find it.
     pub first_occurrence_starts_at: String,
     /// When the series stops generating new occurrences. `Never` means
-    /// indefinite recurrence: occurrences are still generated only a few at
-    /// a time over the series' lifetime (a small materialized-ahead
-    /// window), not all upfront — the generation workflow that does this
-    /// lands in a later change.
+    /// indefinite recurrence: `materialize_series` generates occurrences
+    /// only a few at a time, keeping a small rolling window materialized
+    /// ahead of the series' current progress rather than ever generating
+    /// everything upfront — true for a bounded (`OnDate`/`AfterN`) series
+    /// too, which just additionally stops once its implied total is
+    /// reached.
     pub ends: SeriesEndRecord,
     /// The sides generated for every occurrence of this series. Every
     /// occurrence is generated with these as team-linked,
@@ -1677,8 +1701,31 @@ pub struct FeedItemRecord {
     /// participant. Same snapshot/refresh characteristics as
     /// `known_player_ids`. `#[serde(default)]` for feed items written before
     /// this field existed.
+    ///
+    /// Do NOT use this to decide "is the viewer going" — an unassigned
+    /// participant (a match with `allow_unassigned` whose joiner hasn't
+    /// picked a side) has this as `None` too despite playing. Use
+    /// `viewer_is_going` for that.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub viewer_side_id: Option<String>,
+    /// Whether this viewer is themselves a participant in the match,
+    /// regardless of whether they've been assigned a side yet — see
+    /// `viewer_side_id`'s doc comment. Same snapshot/refresh characteristics.
+    /// `#[serde(default)]` for feed items written before this field existed
+    /// (back-fills to `false`, i.e. "not going", until the next fan-out
+    /// re-run refreshes it).
+    #[serde(default)]
+    pub viewer_is_going: bool,
+    /// Whether this viewer has a pending (not yet responded to) invitation
+    /// to the match — see `AudienceMember::viewer_invitation_pending`.
+    /// `#[serde(default)]` for feed items written before this field existed.
+    #[serde(default)]
+    pub viewer_invitation_pending: bool,
+    /// Side ids this viewer could join directly via team membership — see
+    /// `AudienceMember::viewer_can_join_side_ids`. `#[serde(default)]` for
+    /// feed items written before this field existed.
+    #[serde(default)]
+    pub viewer_can_join_side_ids: Vec<String>,
 }
 
 /// A user's lifetime stats, one field per sport — `None` for a sport they've
@@ -2140,6 +2187,35 @@ mod tests {
             ScoreRecord::Football { score, .. } => assert!(score.is_empty()),
             _ => panic!("expected football"),
         }
+    }
+
+    /// A match written before ratings existed has no `ranked` attribute, and
+    /// must read back as a friendly. Guards `MatchRecord::ranked`'s serde
+    /// default against being "aligned" with some create-time default: every
+    /// like or comment rewrites `#META`, so a `true` here would enrol the old
+    /// match into its ladder on its next like, rating players who never opted
+    /// in.
+    #[test]
+    fn a_match_written_before_ratings_reads_back_as_friendly() {
+        let meta = AttributeValue::M(HashMap::from([
+            ("id".to_string(), AttributeValue::S("m1".into())),
+            ("name".to_string(), AttributeValue::S("Tuesday".into())),
+            ("description".to_string(), AttributeValue::S(String::new())),
+            ("match_type".to_string(), AttributeValue::S("tennis".into())),
+            ("status".to_string(), AttributeValue::S("completed".into())),
+            (
+                "starts_at".to_string(),
+                AttributeValue::S("2025-01-01T18:00:00.000Z".into()),
+            ),
+            ("sides".to_string(), AttributeValue::M(HashMap::new())),
+            ("like_count".to_string(), AttributeValue::N("4".into())),
+            (
+                "created_at".to_string(),
+                AttributeValue::S("2025-01-01T00:00:00.000Z".into()),
+            ),
+        ]));
+        let rec: MatchRecord = serde_dynamo::from_attribute_value(meta).unwrap();
+        assert!(!rec.ranked);
     }
 
     /// `stats.<sport>` is only ever populated with the counters that have

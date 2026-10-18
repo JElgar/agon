@@ -32,6 +32,7 @@ use super::error::{DaoError, DaoResult};
 use super::is_update_conditional_failure;
 use super::item::{ATTR_PK, ATTR_SK, from_item, s, to_item};
 use super::keys::{Pk, Sk};
+use super::page::Page;
 use super::records::{SeriesOccurrenceRecord, SeriesRecord};
 
 pub const TYPE_SERIES: &str = "series";
@@ -156,56 +157,36 @@ impl Dao {
         }
     }
 
-    /// List a series' claimed occurrences, ordered by `starts_at` (the SK) —
-    /// "what has this series generated, and when." Includes the first
-    /// occurrence (claimed synchronously at series-creation time) alongside
-    /// every one `materialize_series` has generated so far.
+    /// List a series' claimed occurrences, ordered by `starts_at` (the SK),
+    /// paginated — "what has this series generated, and when." Includes the
+    /// first occurrence (claimed synchronously at series-creation time)
+    /// alongside every one `materialize_series` has generated so far.
+    ///
+    /// Paginated because this collection isn't bounded in practice: an
+    /// indefinite (`Never`) series keeps generating claims for as long as it
+    /// runs, and nothing ever prunes a bounded series' claims either — so a
+    /// long-lived series' occurrence count has no ceiling to size an
+    /// unpaginated read against. Same `query_page` + begins_with pattern as
+    /// `Dao::list_team_members`/`Dao::list_feed`.
     #[tracing::instrument(skip(self))]
     pub async fn list_series_occurrences(
         &self,
         series_id: &str,
-    ) -> DaoResult<Vec<SeriesOccurrenceRecord>> {
-        self.query_series_collection(series_id, &Sk::occurrence_prefix())
-            .await
-    }
-
-    /// Read every item in a series' partition whose SK starts with
-    /// `sk_prefix` (currently only `OCCURRENCE#`), draining all query pages.
-    /// Mirrors `match_ops::query_match_collection`, scoped to `Pk::Series`
-    /// instead — kept as its own copy rather than generalized over `Pk`,
-    /// since nothing else needs that generality yet.
-    async fn query_series_collection<T: serde::de::DeserializeOwned>(
-        &self,
-        series_id: &str,
-        sk_prefix: &str,
-    ) -> DaoResult<Vec<T>> {
-        let pk = Pk::Series(series_id.into()).to_string();
-        let mut items = Vec::new();
-        let mut start_key = None;
-        loop {
-            let out = self
-                .client
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> DaoResult<Page<SeriesOccurrenceRecord>> {
+        self.query_page(
+            self.client
                 .query()
                 .table_name(self.table())
                 .key_condition_expression("#pk = :pk AND begins_with(SK, :sk)")
                 .expression_attribute_names("#pk", ATTR_PK)
-                .expression_attribute_values(":pk", s(pk.clone()))
-                .expression_attribute_values(":sk", s(sk_prefix))
-                .set_exclusive_start_key(start_key)
-                .send()
-                .await
-                .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-
-            for item in out.items.unwrap_or_default() {
-                items.push(from_item(item)?);
-            }
-
-            match out.last_evaluated_key {
-                Some(k) => start_key = Some(k),
-                None => break,
-            }
-        }
-        Ok(items)
+                .expression_attribute_values(":pk", s(Pk::Series(series_id.into()).to_string()))
+                .expression_attribute_values(":sk", s(Sk::occurrence_prefix())),
+            cursor,
+            limit,
+        )
+        .await
     }
 
     /// Bump `occurrences_generated` from `expected` to `expected + 1`,

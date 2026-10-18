@@ -31,11 +31,28 @@ import { toDateTimeLocal } from '@/lib/datetime'
 import { addPendingMatch } from '@/hooks/usePendingMatches'
 
 type CreateMatchInput = components['schemas']['CreateMatchInput']
+type CreateMatchSeriesInput = components['schemas']['CreateMatchSeriesInput']
 type UserProfile = components['schemas']['UserProfile']
 type MatchSide = components['schemas']['MatchSide']
 type MatchPlayer = components['schemas']['MatchPlayer']
 type Score = components['schemas']['Score']
 type TeamListItem = components['schemas']['TeamListItem']
+
+type SeriesFrequency = 'weekly' | 'fortnightly' | 'monthly' | 'yearly'
+type SeriesEndMode = 'after' | 'on_date' | 'never'
+
+const FREQUENCY_OPTIONS: { value: SeriesFrequency; label: string }[] = [
+  { value: 'weekly', label: 'Weekly' },
+  { value: 'fortnightly', label: 'Fortnightly' },
+  { value: 'monthly', label: 'Monthly' },
+  { value: 'yearly', label: 'Yearly' },
+]
+
+const END_MODE_OPTIONS: { value: SeriesEndMode; label: string }[] = [
+  { value: 'after', label: 'After N matches' },
+  { value: 'on_date', label: 'On a date' },
+  { value: 'never', label: 'Never' },
+]
 
 /** A tagged side's players, reshaped into the API's `MatchPlayer` so the
  *  football/cricket/netball score editors (built for a real match's roster)
@@ -168,6 +185,12 @@ export function LogMatchPage() {
   const [allowUnassigned, setAllowUnassigned] = useState(true)
   const [headerAssetIds, setHeaderAssetIds] = useState<string[]>([])
 
+  const [repeatEnabled, setRepeatEnabled] = useState(false)
+  const [frequency, setFrequency] = useState<SeriesFrequency>('weekly')
+  const [endMode, setEndMode] = useState<SeriesEndMode>('after')
+  const [endAfterCount, setEndAfterCount] = useState('10')
+  const [endOnDate, setEndOnDate] = useState('')
+
   const [sets, setSets] = useState<SetRow[]>([
     { a: '', b: '' },
     { a: '', b: '' },
@@ -294,7 +317,54 @@ export function LogMatchPage() {
   const sideALabel = resolvedSideName(sideA, sideAIdentity ? sideAName : '', linkedA, sideACap) ?? 'Your side'
   const sideBLabel = resolvedSideName(sideB, sideBIdentity ? sideBName : '', linkedB, sideBCap) ?? 'Opposition'
 
+  // A series template only supports team-linked sides, with no players or
+  // invites (see `CreateMatchSeriesSideInput`) — racket sports don't have
+  // team sides at all, and a series can only ever be upcoming.
+  const canRepeat = sport !== null && !racket && mode === 'scheduled'
+  useEffect(() => {
+    if (!canRepeat && repeatEnabled) setRepeatEnabled(false)
+  }, [canRepeat, repeatEnabled])
+
+  // Repeat is decided on step 1, before sides exist, so lock both sides to
+  // "Existing team" the moment it's turned on rather than letting the user
+  // reach step 2 with a one-off side that a series can't accept.
+  useEffect(() => {
+    if (repeatEnabled) {
+      setSideAKind('team')
+      setSideBKind('team')
+    }
+  }, [repeatEnabled])
+
+  const weekdayName = useMemo(() => {
+    const d = new Date(startsAt)
+    return Number.isNaN(d.getTime()) ? '' : formatDate(d, 'EEEE')
+  }, [startsAt])
+
+  const seriesError = useMemo((): string | null => {
+    if (!repeatEnabled) return null
+    if (endMode === 'never') return null
+    if (endMode === 'after') {
+      const n = Number(endAfterCount)
+      if (!endAfterCount.trim() || !Number.isInteger(n) || n < 1 || n > 99) {
+        return 'Enter how many matches the series should run for (1–99)'
+      }
+      return null
+    }
+    if (!endOnDate) return 'Pick the date the series ends on'
+    if (new Date(endOnDate).getTime() < new Date(startsAt).setHours(0, 0, 0, 0)) {
+      return 'The end date must be on or after the first match'
+    }
+    return null
+  }, [repeatEnabled, endMode, endAfterCount, endOnDate, startsAt])
+
   const step2Error = useMemo((): string | null => {
+    if (repeatEnabled) {
+      if (!sideATeam) return 'Pick a team for your side'
+      if (!sideBTeam) return 'Pick a team for the opposition'
+      if (needsName(sideAIdentity, linkedA, sideAName, sideACap)) return 'Give your side a name'
+      if (needsName(sideBIdentity, linkedB, sideBName, sideBCap)) return 'Give the opposition a name'
+      return null
+    }
     if (sideA.length === 0) return 'Add at least one player to your side'
     if (racket) {
       if (sideB.length === 0) return racketFormat === 'singles' ? 'Invite an opponent' : 'Add at least one opponent'
@@ -308,7 +378,7 @@ export function LogMatchPage() {
       return 'Name the opposition or invite a player'
     return maxError('Your side', sideAMaxPlayers, sideA.length) ?? maxError('Opposition', sideBMaxPlayers, sideB.length)
   }, [
-    sideA.length, sideB.length, racket, racketFormat, sideAKind, sideBKind, sideATeam, sideBTeam,
+    repeatEnabled, sideA.length, sideB.length, racket, racketFormat, sideAKind, sideBKind, sideATeam, sideBTeam,
     sideAIdentity, sideAName, linkedA, sideACap, sideBIdentity, sideBName, linkedB, sideBCap,
     sideAMaxPlayers, sideBMaxPlayers,
   ])
@@ -324,7 +394,12 @@ export function LogMatchPage() {
     return null
   }, [mode, isFootball, isCricket, isNetball, detailBuilt, racket, sets, pointsA, pointsB])
 
-  const stepError = step === 0 ? step1Error : step === 1 ? step2Error : (step1Error ?? step2Error ?? scoreError)
+  const stepError =
+    step === 0
+      ? (step1Error ?? seriesError)
+      : step === 1
+        ? step2Error
+        : (step1Error ?? seriesError ?? step2Error ?? scoreError)
 
   const mutation = useMutation({
     mutationFn: async (body: CreateMatchInput) => {
@@ -336,6 +411,18 @@ export function LogMatchPage() {
       addPendingMatch(queryClient, created)
       queryClient.invalidateQueries({ queryKey: ['feed'] })
       navigate('/feed')
+    },
+  })
+
+  const seriesMutation = useMutation({
+    mutationFn: async (body: CreateMatchSeriesInput) => {
+      const { data, error } = await fetchClient.POST('/match-series', { body })
+      if (error || !data) throw new Error(typeof error === 'string' ? error : 'Failed to create the series')
+      return data
+    },
+    onSuccess: async (created) => {
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
+      navigate(`/match-series/${created.series.id}`)
     },
   })
 
@@ -417,8 +504,50 @@ export function LogMatchPage() {
     }
   }
 
+  const seriesSideInput = (
+    clientId: string,
+    identity: boolean,
+    customName: string,
+    colour: string,
+    team: TeamListItem,
+    maxPlayers: string,
+  ): CreateMatchSeriesInput['sides'][number] => ({
+    client_id: clientId,
+    team_id: team.id,
+    name: identity ? customName.trim() || undefined : undefined,
+    colour: identity ? colour : undefined,
+    max_players: maxPlayers.trim() ? Number(maxPlayers) : undefined,
+  })
+
+  const buildSeriesBody = (): CreateMatchSeriesInput => {
+    const ends =
+      endMode === 'after'
+        ? { type: 'AfterN', count: Number(endAfterCount) }
+        : endMode === 'on_date'
+          ? { type: 'OnDate', date: endOnDate }
+          : { type: 'Never' }
+    return {
+      match_type: sport!,
+      name: name.trim(),
+      description: '',
+      location: location?.text.trim() ? { ...location, text: location.text.trim() } : undefined,
+      starts_at: new Date(startsAt).toISOString(),
+      frequency,
+      weekday: new Date(startsAt).getDay(),
+      ends: ends as unknown as CreateMatchSeriesInput['ends'],
+      sides: [
+        seriesSideInput(SIDE_A, sideAIdentity, sideAName, sideAColour, linkedA!, sideAMaxPlayers),
+        seriesSideInput(SIDE_B, sideBIdentity, sideBName, sideBColour, linkedB!, sideBMaxPlayers),
+      ],
+    }
+  }
+
   const handleSubmit = () => {
     if (!sport || stepError) return
+    if (repeatEnabled) {
+      seriesMutation.mutate(buildSeriesBody())
+      return
+    }
     const body: CreateMatchInput = {
       name: name.trim(),
       description: '',
@@ -450,12 +579,21 @@ export function LogMatchPage() {
   const whenLabel = Number.isNaN(startsDate.getTime()) ? '' : formatDate(startsDate, 'EEE d MMM · HH:mm')
 
   const goBack = () => (step === 0 ? navigate('/feed') : setStep(step - 1))
-  const submitLabel =
-    mode === 'completed'
+  const submitLabel = repeatEnabled
+    ? 'Create series'
+    : mode === 'completed'
       ? 'Post match'
       : invitedUserCount > 0
         ? `Create and send ${invitedUserCount} ${invitedUserCount === 1 ? 'invite' : 'invites'}`
         : 'Create match'
+  const submitPending = repeatEnabled ? seriesMutation.isPending : mutation.isPending
+  const submitErrorMessage = repeatEnabled
+    ? seriesMutation.isError
+      ? (seriesMutation.error as Error).message
+      : null
+    : mutation.isError
+      ? (mutation.error as Error).message
+      : null
 
   const summaryChip = (
     <div className="flex items-center justify-between gap-3">
@@ -510,6 +648,57 @@ export function LogMatchPage() {
               {timeError && <p className="text-xs text-destructive">{timeError}</p>}
             </div>
           </FormSection>
+
+          {canRepeat && (
+            <FormSection title="Repeat" aside="Optional">
+              <div className={cn(CARD, 'gap-3')}>
+                <ToggleRow
+                  label="Make this a recurring match"
+                  hint={weekdayName ? `Repeats every ${weekdayName}` : undefined}
+                  checked={repeatEnabled}
+                  onChange={setRepeatEnabled}
+                />
+                {repeatEnabled && (
+                  <>
+                    <p className="-mt-1 text-xs text-muted-foreground">
+                      A recurring match can only be between two existing teams — no one-off sides or invited
+                      players, since each generated match fills its own roster separately.
+                    </p>
+                    <Segmented label="Frequency" options={FREQUENCY_OPTIONS} value={frequency} onChange={setFrequency} />
+                    <Segmented label="Ends" options={END_MODE_OPTIONS} value={endMode} onChange={setEndMode} />
+                    {endMode === 'after' ? (
+                      <label className="flex items-center justify-between gap-3 text-sm font-semibold">
+                        <span>Number of matches</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={99}
+                          inputMode="numeric"
+                          value={endAfterCount}
+                          onChange={(e) => setEndAfterCount(e.target.value)}
+                          className="h-10 w-20 rounded-xl border bg-card text-center font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        />
+                      </label>
+                    ) : endMode === 'on_date' ? (
+                      <label className="flex items-center justify-between gap-3 text-sm font-semibold">
+                        <span>Last match on</span>
+                        <input
+                          type="date"
+                          value={endOnDate}
+                          onChange={(e) => setEndOnDate(e.target.value)}
+                          min={toDateTimeLocal(new Date(startsAt)).slice(0, 10)}
+                          className="h-10 rounded-xl border bg-card px-2 text-sm font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        />
+                      </label>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">Keeps generating matches indefinitely.</p>
+                    )}
+                    {seriesError && <p className="text-xs text-destructive">{seriesError}</p>}
+                  </>
+                )}
+              </div>
+            </FormSection>
+          )}
 
           <FormSection title="Where" htmlFor="match-location">
             <LocationField id="match-location" value={location} onChange={setLocation} />
@@ -569,6 +758,7 @@ export function LogMatchPage() {
                 currentUserId={currentUserId}
                 maxPlayers={sideAMaxPlayers}
                 onMaxPlayersChange={setSideAMaxPlayers}
+                seriesMode={repeatEnabled}
               />
               <TeamSideCard
                 title="Opposition"
@@ -596,6 +786,7 @@ export function LogMatchPage() {
                 currentUserId={currentUserId}
                 maxPlayers={sideBMaxPlayers}
                 onMaxPlayersChange={setSideBMaxPlayers}
+                seriesMode={repeatEnabled}
               />
             </>
           )}
@@ -623,6 +814,7 @@ export function LogMatchPage() {
                 colour={racket ? undefined : sideAIdentity ? sideAColour : undefined}
                 players={sideA}
                 currentUserId={currentUserId}
+                seriesMode={repeatEnabled}
               />
               <span className="text-xs font-bold text-muted-foreground">v</span>
               <SideSummary
@@ -631,6 +823,7 @@ export function LogMatchPage() {
                 colour={racket ? undefined : sideBIdentity ? sideBColour : undefined}
                 players={sideB}
                 currentUserId={currentUserId}
+                seriesMode={repeatEnabled}
               />
             </div>
           </section>
@@ -640,20 +833,24 @@ export function LogMatchPage() {
             <span>No score yet. You can score it live from the match page when it starts, or add the result afterwards.</span>
           </div>
 
-          <FormSection title="Who can join">
-            <div className={cn(CARD, 'py-1.5')}>
-              <ToggleRow
-                label="Join without picking a side"
-                hint="For people who use a join link"
-                checked={allowUnassigned}
-                onChange={setAllowUnassigned}
-              />
-            </div>
-          </FormSection>
+          {!repeatEnabled && (
+            <FormSection title="Who can join">
+              <div className={cn(CARD, 'py-1.5')}>
+                <ToggleRow
+                  label="Join without picking a side"
+                  hint="For people who use a join link"
+                  checked={allowUnassigned}
+                  onChange={setAllowUnassigned}
+                />
+              </div>
+            </FormSection>
+          )}
 
-          <FormSection title="Header images" aside="Optional">
-            <MultiImageUploadField purpose="match_header" label="Add header images" onChange={setHeaderAssetIds} />
-          </FormSection>
+          {!repeatEnabled && (
+            <FormSection title="Header images" aside="Optional">
+              <MultiImageUploadField purpose="match_header" label="Add header images" onChange={setHeaderAssetIds} />
+            </FormSection>
+          )}
         </>
       )}
 
@@ -734,7 +931,7 @@ export function LogMatchPage() {
 
       <div className="sticky bottom-0 z-10 -mx-4 mt-auto flex flex-col gap-2 border-t bg-card/95 px-4 pt-3 pb-[max(16px,env(safe-area-inset-bottom))] backdrop-blur supports-[backdrop-filter]:bg-card/80 md:mx-0 md:rounded-2xl md:border">
         {stepError && step > 0 && <p className="text-xs text-muted-foreground">{stepError}</p>}
-        {mutation.isError && <p className="text-sm text-destructive">{(mutation.error as Error).message}</p>}
+        {submitErrorMessage && <p className="text-sm text-destructive">{submitErrorMessage}</p>}
         {step < 2 ? (
           <Button
             className="h-13 rounded-2xl text-base"
@@ -748,10 +945,10 @@ export function LogMatchPage() {
           <Button
             className="h-13 rounded-2xl text-base"
             size="lg"
-            disabled={!!stepError || mutation.isPending}
+            disabled={!!stepError || submitPending}
             onClick={handleSubmit}
           >
-            {mutation.isPending ? 'Posting…' : submitLabel}
+            {submitPending ? 'Posting…' : submitLabel}
           </Button>
         )}
       </div>
@@ -766,21 +963,27 @@ function SideSummary({
   colour,
   players,
   currentUserId,
+  seriesMode,
 }: {
   label: string
   team: TeamListItem | null
   colour?: string
   players: TaggedPlayer[]
   currentUserId?: string
+  /** A series has no roster at creation time — each generated match fills
+   *  its own, so the usual in/invited/guest counts don't apply. */
+  seriesMode?: boolean
 }) {
   const inCount = players.filter((p) => p.kind === 'user' && p.id === currentUserId).length
   const invited = players.filter((p) => p.kind === 'user' && p.id !== currentUserId).length
   const guests = players.filter((p) => p.kind === 'external').length
-  const counts = [
-    inCount > 0 && `${inCount} in`,
-    invited > 0 && `${invited} invited`,
-    guests > 0 && `${guests} ${guests === 1 ? 'guest' : 'guests'}`,
-  ].filter(Boolean)
+  const counts = seriesMode
+    ? []
+    : [
+        inCount > 0 && `${inCount} in`,
+        invited > 0 && `${invited} invited`,
+        guests > 0 && `${guests} ${guests === 1 ? 'guest' : 'guests'}`,
+      ].filter(Boolean)
   return (
     <div className="flex min-w-0 flex-col items-center gap-1.5 text-center">
       {team ? (
@@ -795,7 +998,9 @@ function SideSummary({
         </span>
       )}
       <span className="max-w-full truncate text-sm font-bold">{label}</span>
-      <span className="text-xs text-muted-foreground">{counts.join(' · ') || 'No players yet'}</span>
+      <span className="text-xs text-muted-foreground">
+        {seriesMode ? 'Joins each match' : counts.join(' · ') || 'No players yet'}
+      </span>
     </div>
   )
 }

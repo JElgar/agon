@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { CalendarPlus, ChevronLeft, Link2, MailOpen, MoreHorizontal, Navigation, Pencil, Radio, Share, UserPlus } from 'lucide-react'
+import { CalendarPlus, ChevronLeft, Link2, MailOpen, MoreHorizontal, Navigation, Pencil, Radio, Repeat, Share, UserPlus } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
@@ -473,6 +473,15 @@ function MatchDetail({
         </span>
       </div>
       <h1 className="font-display text-[30px] leading-tight font-extrabold tracking-[-0.4px]">{match.name}</h1>
+      {match.series_id && (
+        <Link
+          to={`/match-series/${match.series_id}`}
+          className="inline-flex w-fit items-center gap-1.5 text-xs font-semibold text-muted-foreground hover:text-foreground"
+        >
+          <Repeat className="size-3.5" />
+          Part of a recurring series
+        </Link>
+      )}
       {match.location && (
         <MatchLocation location={match.location} showDirections={matchView !== 'finished'} className="mt-1" />
       )}

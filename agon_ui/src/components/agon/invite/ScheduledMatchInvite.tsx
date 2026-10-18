@@ -10,6 +10,7 @@ import {
   MoreVertical,
   Pencil,
   Radio,
+  Repeat,
   Share,
   ShieldMinus,
   ShieldPlus,
@@ -330,6 +331,15 @@ export function ScheduledMatchInvite({
               </div>
             )}
             <h1 className="font-display text-[34px] leading-[1.05] font-extrabold tracking-[-0.5px]">{match.name}</h1>
+            {match.series_id && (
+              <Link
+                to={`/match-series/${match.series_id}`}
+                className="inline-flex w-fit items-center gap-1.5 text-sm font-semibold text-muted-foreground hover:text-foreground"
+              >
+                <Repeat className="size-4" />
+                Part of a recurring series
+              </Link>
+            )}
             <div className="flex flex-col gap-2.5">
               <div className="flex items-center gap-3 text-base">
                 <Calendar className="size-5 shrink-0 text-primary" />

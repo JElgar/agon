@@ -70,6 +70,24 @@ fn nth_weekday_of_month_offset(
         .copied()
 }
 
+/// Whether a series may move from `current` to `target` (both one of
+/// `SeriesRecord::status`'s values: "generating" | "active" | "paused" |
+/// "ended"). `agon_service`'s `PATCH /match-series/:id` handler is the only
+/// caller — kept here, pure, so the lifecycle rules are unit-testable
+/// without the DAO/API plumbing around them.
+///
+/// `"generating"` is never a valid `target` — it's an internal transient
+/// state the `materialize_series` workflow owns, not something a caller
+/// sets. `"ended"` is terminal: nothing moves out of it.
+pub fn series_status_transition_allowed(current: &str, target: &str) -> bool {
+    match target {
+        "paused" => matches!(current, "active" | "generating"),
+        "active" => current == "paused",
+        "ended" => current != "ended",
+        _ => false,
+    }
+}
+
 /// The full `starts_at` of the occurrence at `index` — [`occurrence_date`]
 /// plus the time-of-day component every occurrence keeps fixed from `first`
 /// (which here is the first occurrence's own full `starts_at`, not just its
@@ -245,6 +263,23 @@ mod tests {
             count_occurrences_through(first, "weekly", Weekday::Tue, end),
             4
         );
+    }
+
+    #[test]
+    fn series_status_transitions() {
+        assert!(series_status_transition_allowed("active", "paused"));
+        assert!(series_status_transition_allowed("generating", "paused"));
+        assert!(series_status_transition_allowed("paused", "active"));
+        assert!(series_status_transition_allowed("active", "ended"));
+        assert!(series_status_transition_allowed("generating", "ended"));
+        assert!(series_status_transition_allowed("paused", "ended"));
+
+        assert!(!series_status_transition_allowed("ended", "ended"));
+        assert!(!series_status_transition_allowed("ended", "paused"));
+        assert!(!series_status_transition_allowed("ended", "active"));
+        assert!(!series_status_transition_allowed("active", "active"));
+        assert!(!series_status_transition_allowed("paused", "paused"));
+        assert!(!series_status_transition_allowed("active", "generating"));
     }
 
     #[test]

@@ -46,11 +46,12 @@ use mapping::{
     location_to_record, match_format_sport_tag, match_format_to_record, match_from_records,
     match_player_role_from_record, match_player_role_to_record, match_score_from_record,
     match_score_to_record, match_series_from_record, match_series_occurrence_from_record,
-    match_status_str, match_type_tag, new_live_event_to_dao, notification_actor_id,
-    notification_from_record, ranked_lock_reason_for_update, rating_ladder, roster_preview_player,
-    score_submission_from_record, score_to_record, search_match_from_records,
-    series_end_record_from_input, team_from_records, team_list_item_from_record,
-    team_member_from_record, unrankable_sport_reason, user_profile_from_record,
+    match_series_status_str, match_status_str, match_type_tag, new_live_event_to_dao,
+    notification_actor_id, notification_from_record, ranked_lock_reason_for_update, rating_ladder,
+    roster_preview_player, score_submission_from_record, score_to_record,
+    search_match_from_records, series_end_record_from_input, team_from_records,
+    team_list_item_from_record, team_member_from_record, unrankable_sport_reason,
+    user_profile_from_record,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -1892,6 +1893,30 @@ enum ListMatchSeriesOccurrencesResponse {
 
     #[oai(status = 400)]
     ValidationError(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// `PATCH /match-series/:id`'s input: moves a series between `Active`,
+/// `Paused`, and `Ended`. `Generating` can't be set here — it's an internal
+/// transient state `materialize_series` owns.
+#[derive(Object)]
+struct UpdateMatchSeriesInput {
+    status: MatchSeriesStatus,
+}
+
+#[derive(ApiResponse)]
+enum UpdateMatchSeriesResponse {
+    #[oai(status = 200)]
+    Series(Json<MatchSeries>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// Only the series' creator may pause/resume/end it.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
@@ -4905,6 +4930,122 @@ impl Api {
                 items,
                 next_cursor: page.next_cursor,
             },
+        )))
+    }
+
+    /// Pause, resume, or end a recurring series early. Creator-only (same
+    /// authority as the series itself — there's no separate series
+    /// organizer/admin concept yet).
+    ///
+    /// `Paused` stops the series from generating any further occurrences —
+    /// `materialize_series` checks a series' status every cycle and skips
+    /// generation while it reads `"paused"`, for both bounded and indefinite
+    /// series. `Active` resumes a paused series.
+    ///
+    /// `Ended` stops the series permanently (no resuming from it) and
+    /// cancels every already-generated occurrence that hasn't started yet —
+    /// the occurrences' own matches are otherwise untouched, including ones
+    /// already in progress or completed.
+    #[oai(path = "/match-series/:series_id", method = "patch")]
+    async fn update_match_series(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(series_id): Path<String>,
+        input: Json<UpdateMatchSeriesInput>,
+    ) -> Result<UpdateMatchSeriesResponse> {
+        info!("Updating match series {series_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let series = match dao.get_series(&series_id).await.map_err(dao_internal)? {
+            Some(s) => s,
+            None => {
+                return Ok(UpdateMatchSeriesResponse::NotFound(PlainText(
+                    "series not found".into(),
+                )));
+            }
+        };
+        if series.created_by_user_id != uid {
+            return Ok(UpdateMatchSeriesResponse::Forbidden(PlainText(
+                "only the series' creator can pause, resume, or end it".into(),
+            )));
+        }
+
+        let current = series.status.as_str();
+        let target = match_series_status_str(&input.0.status);
+        if !agon_core::series::series_status_transition_allowed(current, target) {
+            return Ok(UpdateMatchSeriesResponse::ValidationError(PlainText(
+                format!("a series cannot move from `{current}` to `{target}`"),
+            )));
+        }
+
+        dao.update_series_status(&series_id, current, target)
+            .await
+            .map_err(dao_internal)?;
+
+        // Ending a series cancels its already-generated future occurrences —
+        // matches that haven't started yet, and are still `scheduled`
+        // (never touches one that's in progress, completed, or already
+        // cancelled).
+        if target == "ended" {
+            let now = chrono::Utc::now();
+            let mut cursor: Option<String> = None;
+            loop {
+                let page = dao
+                    .list_series_occurrences(&series_id, cursor.as_deref(), MAX_PAGE_LIMIT)
+                    .await
+                    .map_err(dao_internal)?;
+
+                for occurrence in page.items {
+                    let starts_in_future =
+                        chrono::DateTime::parse_from_rfc3339(&occurrence.starts_at)
+                            .is_ok_and(|starts_at| starts_at.with_timezone(&chrono::Utc) > now);
+                    if !starts_in_future {
+                        continue;
+                    }
+                    let Some(agg) = dao
+                        .get_match(&occurrence.match_id)
+                        .await
+                        .map_err(dao_internal)?
+                    else {
+                        continue;
+                    };
+                    if agg.match_.status != "scheduled" {
+                        continue;
+                    }
+                    dao.update_match_meta(
+                        &occurrence.match_id,
+                        None,
+                        None,
+                        Some("cancelled"),
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        &[],
+                        &[],
+                    )
+                    .await
+                    .map_err(dao_internal)?;
+                }
+
+                match page.next_cursor {
+                    Some(next) => cursor = Some(next),
+                    None => break,
+                }
+            }
+        }
+
+        let updated = dao
+            .get_series(&series_id)
+            .await
+            .map_err(dao_internal)?
+            .ok_or_else(|| Error::from_string("series not found", StatusCode::NOT_FOUND))?;
+        Ok(UpdateMatchSeriesResponse::Series(Json(
+            match_series_from_record(&updated),
         )))
     }
 

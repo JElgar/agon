@@ -451,8 +451,9 @@ impl MaterializeSeries {
         // 2. "Paused": generate nothing this cycle, but keep checking back
         //    (at the same bounded interval the active/generating path caps
         //    its own sleep at) so a later resume is noticed reasonably
-        //    promptly. Simpler than a signal-driven wake, and the pause/end
-        //    endpoint this reacts to doesn't exist in this change anyway.
+        //    promptly. Simpler than a signal-driven wake — `PATCH
+        //    /match-series/:id` just flips the DB status and leaves this
+        //    poll loop to notice it.
         if series.status == "paused" {
             ctx.timer(to_std_duration(materialize_poll_cap())).await;
             ctx.continue_as_new(&series_id, ContinueAsNewOptions::default())?;

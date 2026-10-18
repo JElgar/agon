@@ -4938,11 +4938,9 @@ impl Api {
     /// organizer/admin concept yet).
     ///
     /// `Paused` stops the series from generating any further occurrences —
-    /// only meaningful once an indefinite (`Never`-ending) series can
-    /// actually run a long-lived generation workflow (not yet buildable;
-    /// see `CreateMatchSeriesEndInput`'s doc comment), since a bounded
-    /// series' occurrences are all generated up front by the one-shot
-    /// `materialize_series` workflow. `Active` resumes a paused series.
+    /// `materialize_series` checks a series' status every cycle and skips
+    /// generation while it reads `"paused"`, for both bounded and indefinite
+    /// series. `Active` resumes a paused series.
     ///
     /// `Ended` stops the series permanently (no resuming from it) and
     /// cancels every already-generated occurrence that hasn't started yet —

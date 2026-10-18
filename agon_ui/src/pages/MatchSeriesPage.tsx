@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
+import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { sportIcon } from '@/lib/sports'
 import { scheduledDateTime } from '@/lib/datetime'
@@ -37,11 +38,17 @@ export function MatchSeriesPage() {
     enabled: !!seriesId,
     refetchInterval: () => (seriesQuery.data?.status === 'generating' ? GENERATING_POLL_MS : false),
     queryFn: async () => {
-      const { data, error } = await fetchClient.GET('/match-series/{series_id}/occurrences', {
-        params: { path: { series_id: seriesId! } },
-      })
-      if (error || !data) throw new Error('Failed to load this series’ matches')
-      return data
+      const items: components['schemas']['MatchSeriesOccurrence'][] = []
+      let cursor: string | undefined
+      do {
+        const { data, error } = await fetchClient.GET('/match-series/{series_id}/occurrences', {
+          params: { path: { series_id: seriesId! }, query: { cursor, limit: 50 } },
+        })
+        if (error || !data) throw new Error('Failed to load this series’ matches')
+        items.push(...data.items)
+        cursor = data.next_cursor
+      } while (cursor)
+      return items
     },
   })
 

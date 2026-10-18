@@ -19,8 +19,10 @@ export function seriesCadenceLabel(frequency: string, weekday: number): string {
   return day ? `${freq} on ${day}s` : freq
 }
 
-/** How a series' `ends` reads out, e.g. "10 matches" or "until 12 Dec 2026". */
+/** How a series' `ends` reads out, e.g. "10 matches", "until 12 Dec 2026" or
+ *  "no end date" for an indefinite series. */
 export function seriesEndLabel(ends: MatchSeries['ends']): string {
+  if (ends.type === 'Never') return 'No end date'
   if (ends.type === 'AfterN') return `${ends.count} ${ends.count === 1 ? 'match' : 'matches'}`
   const d = new Date(ends.date)
   return Number.isNaN(d.getTime())

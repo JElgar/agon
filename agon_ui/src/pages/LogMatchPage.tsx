@@ -39,7 +39,7 @@ type Score = components['schemas']['Score']
 type TeamListItem = components['schemas']['TeamListItem']
 
 type SeriesFrequency = 'weekly' | 'fortnightly' | 'monthly' | 'yearly'
-type SeriesEndMode = 'after' | 'on_date'
+type SeriesEndMode = 'after' | 'on_date' | 'never'
 
 const FREQUENCY_OPTIONS: { value: SeriesFrequency; label: string }[] = [
   { value: 'weekly', label: 'Weekly' },
@@ -51,6 +51,7 @@ const FREQUENCY_OPTIONS: { value: SeriesFrequency; label: string }[] = [
 const END_MODE_OPTIONS: { value: SeriesEndMode; label: string }[] = [
   { value: 'after', label: 'After N matches' },
   { value: 'on_date', label: 'On a date' },
+  { value: 'never', label: 'Never' },
 ]
 
 /** A tagged side's players, reshaped into the API's `MatchPlayer` so the
@@ -341,6 +342,7 @@ export function LogMatchPage() {
 
   const seriesError = useMemo((): string | null => {
     if (!repeatEnabled) return null
+    if (endMode === 'never') return null
     if (endMode === 'after') {
       const n = Number(endAfterCount)
       if (!endAfterCount.trim() || !Number.isInteger(n) || n < 1 || n > 99) {
@@ -521,7 +523,9 @@ export function LogMatchPage() {
     const ends =
       endMode === 'after'
         ? { type: 'AfterN', count: Number(endAfterCount) }
-        : { type: 'OnDate', date: endOnDate }
+        : endMode === 'on_date'
+          ? { type: 'OnDate', date: endOnDate }
+          : { type: 'Never' }
     return {
       match_type: sport!,
       name: name.trim(),
@@ -675,7 +679,7 @@ export function LogMatchPage() {
                           className="h-10 w-20 rounded-xl border bg-card text-center font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         />
                       </label>
-                    ) : (
+                    ) : endMode === 'on_date' ? (
                       <label className="flex items-center justify-between gap-3 text-sm font-semibold">
                         <span>Last match on</span>
                         <input
@@ -686,6 +690,8 @@ export function LogMatchPage() {
                           className="h-10 rounded-xl border bg-card px-2 text-sm font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         />
                       </label>
+                    ) : (
+                      <p className="text-xs text-muted-foreground">Keeps generating matches indefinitely.</p>
                     )}
                     {seriesError && <p className="text-xs text-destructive">{seriesError}</p>}
                   </>

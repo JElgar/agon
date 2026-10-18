@@ -8168,6 +8168,57 @@ async fn team_self_join_on_an_intra_squad_match_offers_a_pick_or_unassigned() {
     );
 }
 
+/// A creator who doesn't play (`creator_side_client_id: None`, as
+/// `create_match_input` always builds) still gets `Owner` authority over the
+/// match — on a non-roster `MatchOrganizerRecord`, not a roster row. They
+/// never appear in `players`, and `viewer_role` reports `Owner` directly
+/// (not `None`, which would hide the edit affordance client-side — see
+/// `agon_ui`'s `members.ts::myMatchRole`), so the server and client agree
+/// without the client needing to know organizer records exist.
+#[tokio::test]
+async fn a_non_playing_creator_owns_the_match_without_a_roster_row() {
+    let (config, creator) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    assert_eq!(created.viewer_role, Some(models::MatchPlayerRole::Owner));
+    assert!(
+        !created
+            .players
+            .iter()
+            .any(|p| matches!(&*p.member, models::Member::User(u) if u.user_id == creator.profile.id)),
+        "a non-playing creator must not get a roster row"
+    );
+
+    // Owner authority actually works: the creator can edit the match despite
+    // never joining its roster.
+    let updated = matches_match_id_patch(
+        &config,
+        &created.id,
+        models::UpdateMatchInput {
+            name: Some("Renamed By Non-Playing Owner".to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("non-playing owner can edit");
+    assert_eq!(updated.name, "Renamed By Non-Playing Owner");
+
+    // A re-fetch by anyone else sees no trace of the organizer on the roster.
+    let fetched = matches_match_id_get(&_invitee_config, &created.id)
+        .await
+        .expect("fetch as the invitee");
+    assert!(
+        !fetched
+            .players
+            .iter()
+            .any(|p| matches!(&*p.member, models::Member::User(u) if u.user_id == creator.profile.id))
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Ranked matches — the flag, its ladder, and the lock on changing it
 // ---------------------------------------------------------------------------

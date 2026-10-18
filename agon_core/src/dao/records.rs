@@ -503,14 +503,15 @@ pub struct TeamMemberRecord {
 pub struct MatchRecord {
     pub id: String,
     /// The user who created (organizes) the match. Immutable — a historical
-    /// fact, unrelated to the transferable `Owner` role on `players` below
-    /// (see `MatchPlayerRole`). Still checked directly by
-    /// `caller_can_manage_match`/`caller_is_match_admin` as a stopgap for a
-    /// creator who organizes without playing — they'd otherwise have no
-    /// roster row to carry any role at all. A future "non-player organizers"
-    /// list (tracked separately, not yet built) is the real fix for that
-    /// case; this field isn't it, just today's fallback.
-    /// `#[serde(default)]` for records written before this field existed.
+    /// fact, unrelated to the transferable `Owner` role on `players`/the
+    /// match's `MatchOrganizerRecord`s (see `MatchPlayerRole`). A match
+    /// created without the creator playing now gets them an explicit
+    /// `MatchOrganizerRecord` (`Owner`) instead of relying on this field for
+    /// authority — this is kept only as a last-resort fallback in
+    /// `caller_is_match_admin`, for matches written before organizer records
+    /// existed and so have neither a player nor organizer row for their
+    /// creator. `#[serde(default)]` for records written before this field
+    /// existed.
     #[serde(default)]
     pub created_by_user_id: String,
     pub name: String,
@@ -966,12 +967,14 @@ pub struct MatchWaitlistEntryRecord {
 #[serde(rename_all = "snake_case")]
 pub enum MatchPlayerRole {
     /// The match's owner — permanently so, in the sense that there's exactly
-    /// one at a time, transferable via `Dao::transfer_match_ownership` (which
-    /// atomically demotes the outgoing owner to `Admin`, mirroring
-    /// `Dao::transfer_team_ownership`). The playing creator gets this by
-    /// default. A non-playing organizer has no roster row and so can't hold
-    /// it today — `MatchRecord::created_by_user_id` is the stopgap for that
-    /// case (see its doc comment) until a non-player-organizers list exists.
+    /// one at a time (whether they hold it via a roster row or a
+    /// `MatchOrganizerRecord`), transferable via `Dao::transfer_match_ownership`
+    /// (which atomically demotes the outgoing owner to `Admin`, mirroring
+    /// `Dao::transfer_team_ownership`). The playing creator gets this on a
+    /// roster row by default; a creator who doesn't play gets it on a
+    /// `MatchOrganizerRecord` instead (see that type's doc comment) —
+    /// `MatchRecord::created_by_user_id` is only a last-resort fallback for
+    /// matches that predate organizer records.
     Owner,
     /// Full authority over the match short of transferring ownership: manage
     /// `join_policy`/caps, mint or revoke join-links, invite people.
@@ -981,6 +984,36 @@ pub enum MatchPlayerRole {
     /// above.
     #[default]
     Player,
+}
+
+/// `MATCH#<matchId>` / `ORGANIZER#<userId>` — a match role (`Owner` or
+/// `Admin`, never `Player`) held by a user who isn't on the roster at all:
+/// no `MatchPlayerRecord`, no side, no invitation. This is the real fix for
+/// the case `MatchRecord::created_by_user_id`'s doc comment describes — a
+/// match's organizer (the creator who didn't opt to play, or a series'
+/// organizer, who never does) needs `Owner`/`Admin` authority without ever
+/// being swept into the match as a participant.
+///
+/// Deliberately a separate item collection from `MatchPlayerRecord` rather
+/// than a player row with `side_id: None`: every roster reader (stats/rating
+/// contribution, feed fan-out, side/match headcounts, `occupies_slot`) only
+/// ever queries `PLAYER#`, so an organizer record can never leak into any of
+/// them by construction — there's no flag to check or exclusion to keep in
+/// sync at each call site, unlike a side_id-is-none special case would need.
+///
+/// At most one row per (match, user) — doubles as the "already an
+/// organizer" uniqueness guard. A user holds *either* a roster row *or* an
+/// organizer row for a given match, never both: joining the roster while
+/// already an organizer (or vice versa) is expected to reconcile the two
+/// (see the call sites that create either), not leave them coexisting.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MatchOrganizerRecord {
+    pub user_id: String,
+    /// `Owner` or `Admin` — never `Player`, which only means something on a
+    /// roster row. Callers that construct this are expected to reject
+    /// `Player` themselves; the DAO doesn't re-validate it.
+    pub role: MatchPlayerRole,
+    pub created_at: String,
 }
 
 /// How a player joined the match, when it wasn't the organizer adding them

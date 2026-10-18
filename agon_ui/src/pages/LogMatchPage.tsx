@@ -313,12 +313,23 @@ export function LogMatchPage() {
   const sideALabel = resolvedSideName(sideA, sideAIdentity ? sideAName : '', linkedA, sideACap) ?? 'Your side'
   const sideBLabel = resolvedSideName(sideB, sideBIdentity ? sideBName : '', linkedB, sideBCap) ?? 'Opposition'
 
-  // A series template only supports team-linked sides (see `CreateMatchSeriesSideInput`),
-  // so the repeat option only shows once both sides are a real team.
-  const canRepeat = !racket && mode === 'scheduled' && !!linkedA && !!linkedB
+  // A series template only supports team-linked sides, with no players or
+  // invites (see `CreateMatchSeriesSideInput`) — racket sports don't have
+  // team sides at all, and a series can only ever be upcoming.
+  const canRepeat = sport !== null && !racket && mode === 'scheduled'
   useEffect(() => {
     if (!canRepeat && repeatEnabled) setRepeatEnabled(false)
   }, [canRepeat, repeatEnabled])
+
+  // Repeat is decided on step 1, before sides exist, so lock both sides to
+  // "Existing team" the moment it's turned on rather than letting the user
+  // reach step 2 with a one-off side that a series can't accept.
+  useEffect(() => {
+    if (repeatEnabled) {
+      setSideAKind('team')
+      setSideBKind('team')
+    }
+  }, [repeatEnabled])
 
   const weekdayName = useMemo(() => {
     const d = new Date(startsAt)
@@ -342,6 +353,13 @@ export function LogMatchPage() {
   }, [repeatEnabled, endMode, endAfterCount, endOnDate, startsAt])
 
   const step2Error = useMemo((): string | null => {
+    if (repeatEnabled) {
+      if (!sideATeam) return 'Pick a team for your side'
+      if (!sideBTeam) return 'Pick a team for the opposition'
+      if (needsName(sideAIdentity, linkedA, sideAName, sideACap)) return 'Give your side a name'
+      if (needsName(sideBIdentity, linkedB, sideBName, sideBCap)) return 'Give the opposition a name'
+      return null
+    }
     if (sideA.length === 0) return 'Add at least one player to your side'
     if (racket) {
       if (sideB.length === 0) return racketFormat === 'singles' ? 'Invite an opponent' : 'Add at least one opponent'
@@ -355,7 +373,7 @@ export function LogMatchPage() {
       return 'Name the opposition or invite a player'
     return maxError('Your side', sideAMaxPlayers, sideA.length) ?? maxError('Opposition', sideBMaxPlayers, sideB.length)
   }, [
-    sideA.length, sideB.length, racket, racketFormat, sideAKind, sideBKind, sideATeam, sideBTeam,
+    repeatEnabled, sideA.length, sideB.length, racket, racketFormat, sideAKind, sideBKind, sideATeam, sideBTeam,
     sideAIdentity, sideAName, linkedA, sideACap, sideBIdentity, sideBName, linkedB, sideBCap,
     sideAMaxPlayers, sideBMaxPlayers,
   ])
@@ -372,7 +390,11 @@ export function LogMatchPage() {
   }, [mode, isFootball, isCricket, isNetball, detailBuilt, racket, sets, pointsA, pointsB])
 
   const stepError =
-    step === 0 ? step1Error : step === 1 ? step2Error : (step1Error ?? step2Error ?? scoreError ?? seriesError)
+    step === 0
+      ? (step1Error ?? seriesError)
+      : step === 1
+        ? step2Error
+        : (step1Error ?? seriesError ?? step2Error ?? scoreError)
 
   const mutation = useMutation({
     mutationFn: async (body: CreateMatchInput) => {
@@ -620,6 +642,55 @@ export function LogMatchPage() {
             </div>
           </FormSection>
 
+          {canRepeat && (
+            <FormSection title="Repeat" aside="Optional">
+              <div className={cn(CARD, 'gap-3')}>
+                <ToggleRow
+                  label="Make this a recurring match"
+                  hint={weekdayName ? `Repeats every ${weekdayName}` : undefined}
+                  checked={repeatEnabled}
+                  onChange={setRepeatEnabled}
+                />
+                {repeatEnabled && (
+                  <>
+                    <p className="-mt-1 text-xs text-muted-foreground">
+                      A recurring match can only be between two existing teams — no one-off sides or invited
+                      players, since each generated match fills its own roster separately.
+                    </p>
+                    <Segmented label="Frequency" options={FREQUENCY_OPTIONS} value={frequency} onChange={setFrequency} />
+                    <Segmented label="Ends" options={END_MODE_OPTIONS} value={endMode} onChange={setEndMode} />
+                    {endMode === 'after' ? (
+                      <label className="flex items-center justify-between gap-3 text-sm font-semibold">
+                        <span>Number of matches</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={99}
+                          inputMode="numeric"
+                          value={endAfterCount}
+                          onChange={(e) => setEndAfterCount(e.target.value)}
+                          className="h-10 w-20 rounded-xl border bg-card text-center font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        />
+                      </label>
+                    ) : (
+                      <label className="flex items-center justify-between gap-3 text-sm font-semibold">
+                        <span>Last match on</span>
+                        <input
+                          type="date"
+                          value={endOnDate}
+                          onChange={(e) => setEndOnDate(e.target.value)}
+                          min={toDateTimeLocal(new Date(startsAt)).slice(0, 10)}
+                          className="h-10 rounded-xl border bg-card px-2 text-sm font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        />
+                      </label>
+                    )}
+                    {seriesError && <p className="text-xs text-destructive">{seriesError}</p>}
+                  </>
+                )}
+              </div>
+            </FormSection>
+          )}
+
           <FormSection title="Where" htmlFor="match-location">
             <LocationField id="match-location" value={location} onChange={setLocation} />
           </FormSection>
@@ -678,6 +749,7 @@ export function LogMatchPage() {
                 currentUserId={currentUserId}
                 maxPlayers={sideAMaxPlayers}
                 onMaxPlayersChange={setSideAMaxPlayers}
+                seriesMode={repeatEnabled}
               />
               <TeamSideCard
                 title="Opposition"
@@ -705,6 +777,7 @@ export function LogMatchPage() {
                 currentUserId={currentUserId}
                 maxPlayers={sideBMaxPlayers}
                 onMaxPlayersChange={setSideBMaxPlayers}
+                seriesMode={repeatEnabled}
               />
             </>
           )}
@@ -732,6 +805,7 @@ export function LogMatchPage() {
                 colour={racket ? undefined : sideAIdentity ? sideAColour : undefined}
                 players={sideA}
                 currentUserId={currentUserId}
+                seriesMode={repeatEnabled}
               />
               <span className="text-xs font-bold text-muted-foreground">v</span>
               <SideSummary
@@ -740,6 +814,7 @@ export function LogMatchPage() {
                 colour={racket ? undefined : sideBIdentity ? sideBColour : undefined}
                 players={sideB}
                 currentUserId={currentUserId}
+                seriesMode={repeatEnabled}
               />
             </div>
           </section>
@@ -748,51 +823,6 @@ export function LogMatchPage() {
             <Clock className="mt-px size-[18px] shrink-0" />
             <span>No score yet. You can score it live from the match page when it starts, or add the result afterwards.</span>
           </div>
-
-          {canRepeat && (
-            <FormSection title="Repeat" aside="Optional">
-              <div className={cn(CARD, 'gap-3')}>
-                <ToggleRow
-                  label="Make this a recurring match"
-                  hint={weekdayName ? `Repeats every ${weekdayName}` : undefined}
-                  checked={repeatEnabled}
-                  onChange={setRepeatEnabled}
-                />
-                {repeatEnabled && (
-                  <>
-                    <Segmented label="Frequency" options={FREQUENCY_OPTIONS} value={frequency} onChange={setFrequency} />
-                    <Segmented label="Ends" options={END_MODE_OPTIONS} value={endMode} onChange={setEndMode} />
-                    {endMode === 'after' ? (
-                      <label className="flex items-center justify-between gap-3 text-sm font-semibold">
-                        <span>Number of matches</span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={99}
-                          inputMode="numeric"
-                          value={endAfterCount}
-                          onChange={(e) => setEndAfterCount(e.target.value)}
-                          className="h-10 w-20 rounded-xl border bg-card text-center font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        />
-                      </label>
-                    ) : (
-                      <label className="flex items-center justify-between gap-3 text-sm font-semibold">
-                        <span>Last match on</span>
-                        <input
-                          type="date"
-                          value={endOnDate}
-                          onChange={(e) => setEndOnDate(e.target.value)}
-                          min={toDateTimeLocal(new Date(startsAt)).slice(0, 10)}
-                          className="h-10 rounded-xl border bg-card px-2 text-sm font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        />
-                      </label>
-                    )}
-                    {seriesError && <p className="text-xs text-destructive">{seriesError}</p>}
-                  </>
-                )}
-              </div>
-            </FormSection>
-          )}
 
           {!repeatEnabled && (
             <FormSection title="Who can join">
@@ -924,21 +954,27 @@ function SideSummary({
   colour,
   players,
   currentUserId,
+  seriesMode,
 }: {
   label: string
   team: TeamListItem | null
   colour?: string
   players: TaggedPlayer[]
   currentUserId?: string
+  /** A series has no roster at creation time — each generated match fills
+   *  its own, so the usual in/invited/guest counts don't apply. */
+  seriesMode?: boolean
 }) {
   const inCount = players.filter((p) => p.kind === 'user' && p.id === currentUserId).length
   const invited = players.filter((p) => p.kind === 'user' && p.id !== currentUserId).length
   const guests = players.filter((p) => p.kind === 'external').length
-  const counts = [
-    inCount > 0 && `${inCount} in`,
-    invited > 0 && `${invited} invited`,
-    guests > 0 && `${guests} ${guests === 1 ? 'guest' : 'guests'}`,
-  ].filter(Boolean)
+  const counts = seriesMode
+    ? []
+    : [
+        inCount > 0 && `${inCount} in`,
+        invited > 0 && `${invited} invited`,
+        guests > 0 && `${guests} ${guests === 1 ? 'guest' : 'guests'}`,
+      ].filter(Boolean)
   return (
     <div className="flex min-w-0 flex-col items-center gap-1.5 text-center">
       {team ? (
@@ -953,7 +989,9 @@ function SideSummary({
         </span>
       )}
       <span className="max-w-full truncate text-sm font-bold">{label}</span>
-      <span className="text-xs text-muted-foreground">{counts.join(' · ') || 'No players yet'}</span>
+      <span className="text-xs text-muted-foreground">
+        {seriesMode ? 'Joins each match' : counts.join(' · ') || 'No players yet'}
+      </span>
     </div>
   )
 }

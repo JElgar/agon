@@ -37,6 +37,11 @@ export interface TeamSideCardProps {
   currentUserId?: string
   maxPlayers: string
   onMaxPlayersChange: (value: string) => void
+  /** A recurring series' side template only supports a team (no one-off
+   *  sides) and carries no players or join settings — those are per-occurrence,
+   *  set up once each generated match exists. Locks this side to "Existing
+   *  team" and hides everything a series template doesn't take. */
+  seriesMode?: boolean
 }
 
 /**
@@ -49,9 +54,13 @@ export function TeamSideCard(p: TeamSideCardProps) {
   return (
     <FormSection title={p.title}>
       <div className={CARD}>
-        <Segmented label={`${p.title} is`} options={KIND_OPTIONS} value={p.kind} onChange={p.onKindChange} />
+        {p.seriesMode ? (
+          <span className="text-xs font-semibold text-muted-foreground">Existing team</span>
+        ) : (
+          <Segmented label={`${p.title} is`} options={KIND_OPTIONS} value={p.kind} onChange={p.onKindChange} />
+        )}
 
-        {p.kind === 'oneoff' && (
+        {!p.seriesMode && p.kind === 'oneoff' && (
           <span className="-mt-1 text-xs text-muted-foreground">
             A name and colour just for this match, not a saved team.
           </span>
@@ -87,7 +96,7 @@ export function TeamSideCard(p: TeamSideCardProps) {
           </>
         )}
 
-        {p.kind === 'team' && p.team && (
+        {!p.seriesMode && p.kind === 'team' && p.team && (
           <ToggleRow
             label="Let the team join this side"
             hint="Members can add themselves"
@@ -96,7 +105,7 @@ export function TeamSideCard(p: TeamSideCardProps) {
           />
         )}
 
-        {p.players.length > 0 && (
+        {!p.seriesMode && p.players.length > 0 && (
           <div className="flex flex-wrap gap-2">
             {p.players.map((player, i) => (
               <PlayerChip
@@ -109,11 +118,13 @@ export function TeamSideCard(p: TeamSideCardProps) {
           </div>
         )}
 
-        <PlayerSearchInput
-          placeholder="Invite a player or add a guest"
-          taken={p.taken}
-          onAdd={(player) => p.onPlayersChange([...p.players, player])}
-        />
+        {!p.seriesMode && (
+          <PlayerSearchInput
+            placeholder="Invite a player or add a guest"
+            taken={p.taken}
+            onAdd={(player) => p.onPlayersChange([...p.players, player])}
+          />
+        )}
 
         <label className="flex min-h-12 items-center gap-2.5 border-t pt-2.5 text-sm font-semibold">
           <span className="flex-1">

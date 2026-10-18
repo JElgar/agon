@@ -30,6 +30,7 @@ use std::collections::HashMap;
 
 use super::client::Dao;
 use super::error::DaoResult;
+use super::records::MatchPlayerRole;
 
 /// How many follower rows to pull per page while walking a follower list.
 const FOLLOWER_PAGE: u32 = 100;
@@ -97,6 +98,16 @@ impl Dao {
 
         // Participating users (players linked to an account) + their followers.
         for player in &agg.players {
+            // A non-playing series organiser's own roster row (`side_id:
+            // None` paired with `Owner` — see `MatchPlayerRole::Owner`'s doc
+            // comment; a *playing* owner always has a side, so this
+            // combination is otherwise unused) isn't a participant for
+            // audience/feed purposes: whether an organiser's matches should
+            // surface in their own feed without playing is a separate,
+            // not-yet-decided question.
+            if player.side_id.is_none() && player.role == MatchPlayerRole::Owner {
+                continue;
+            }
             if let Some(user_id) = &player.user_id {
                 // The participant's own entry: record which side they play
                 // on (their card shows the score prompt, not a "known

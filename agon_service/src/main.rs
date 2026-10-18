@@ -4758,9 +4758,10 @@ impl Api {
             .map_err(dao_internal)?;
 
         // The first occurrence is the template itself, created exactly like
-        // any other match — but with no players: a series only configures a
-        // team per side, roster join happens per-occurrence later (no
-        // invite-list support for a series yet).
+        // any other match — but with no invited players: a series only
+        // configures a team per side, roster join happens per-occurrence via
+        // each side's own team (no invite-list support for a series yet),
+        // so `team_join_enabled` has to be on or nobody can ever get in.
         let match_id = occurrence.match_id;
         let mut sides: std::collections::HashMap<String, dao::records::MatchSideRecord> =
             Default::default();
@@ -4774,12 +4775,30 @@ impl Api {
                     name: side.name.clone(),
                     colour: side.colour.clone(),
                     max_players: side.max_players,
-                    team_join_enabled: false,
+                    team_join_enabled: true,
                     player_count: 0,
                     roster_preview: Vec::new(),
                 },
             );
         }
+        // The organiser never plays in a series template — there's no
+        // `creator_side_client_id` concept for one — so without a roster row
+        // of their own they'd have no `MatchPlayerRole::Owner` on any
+        // occurrence (`MatchRecord::created_by_user_id` only covers
+        // `caller_is_match_admin`, not `viewer_role`/feed inclusion — see
+        // their doc comments). Give them an unassigned, non-invited Owner
+        // row instead, exactly like `creator_side_client_id`'s player below
+        // minus the side.
+        let organiser_player = dao::records::MatchPlayerRecord {
+            player_id: new_id(),
+            user_id: Some(uid.clone()),
+            display_name: None,
+            side_id: None,
+            is_member_of_team: None,
+            invitation: None,
+            role: dao::records::MatchPlayerRole::Owner,
+            joined_via: None,
+        };
 
         let match_record = dao::records::MatchRecord {
             id: match_id.clone(),
@@ -4814,7 +4833,7 @@ impl Api {
             created_at: now,
         };
 
-        match dao.create_match(&match_record, &[]).await {
+        match dao.create_match(&match_record, &[organiser_player]).await {
             Ok(()) => {}
             Err(dao::DaoError::Conflict(msg)) => {
                 return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(msg)));

@@ -105,9 +105,12 @@ impl AgonActivities {
     }
 
     /// Generate one occurrence of a series: claim its generation slot, create
-    /// its match (team-linked sides only, no players — a series only
-    /// configures a team per side; roster join happens per-occurrence
-    /// later), then bump the series' `occurrences_generated` counter. Every
+    /// its match (team-linked sides only, with team self-join turned on and
+    /// no invited players — a series only configures a team per side and has
+    /// no invite-list support yet, so roster join happens per-occurrence via
+    /// each side's own team; the organiser gets an unassigned, non-invited
+    /// `Owner` row of their own, since they never play in the template),
+    /// then bump the series' `occurrences_generated` counter. Every
     /// step is individually idempotent, so a retry of this whole activity —
     /// for an occurrence this activity (or an earlier attempt) already fully
     /// or partially generated — is always safe:
@@ -160,12 +163,30 @@ impl AgonActivities {
                     name: side.name.clone(),
                     colour: side.colour.clone(),
                     max_players: side.max_players,
-                    team_join_enabled: false,
+                    // Roster join happens per-occurrence via each side's own
+                    // team (no invite-list support for a series yet) — this
+                    // has to be on or nobody can ever get onto a generated
+                    // occurrence.
+                    team_join_enabled: true,
                     player_count: 0,
                     roster_preview: Vec::new(),
                 },
             );
         }
+        // Mirrors `create_match_series`'s own organiser row: the series
+        // organiser never plays in the template, so without this they'd
+        // have no roster row to carry `MatchPlayerRole::Owner` on any
+        // occurrence (see that type's doc comment).
+        let organiser_player = agon_core::dao::records::MatchPlayerRecord {
+            player_id: agon_core::id::new_id(),
+            user_id: Some(input.created_by_user_id.clone()),
+            display_name: None,
+            side_id: None,
+            is_member_of_team: None,
+            invitation: None,
+            role: agon_core::dao::records::MatchPlayerRole::Owner,
+            joined_via: None,
+        };
 
         let match_record = agon_core::dao::records::MatchRecord {
             id: match_id.clone(),
@@ -198,7 +219,11 @@ impl AgonActivities {
             created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         };
 
-        match self.dao.create_match(&match_record, &[]).await {
+        match self
+            .dao
+            .create_match(&match_record, &[organiser_player])
+            .await
+        {
             Ok(()) => {}
             Err(agon_core::dao::error::DaoError::Conflict(_)) => {
                 // Already generated — by this attempt's own earlier try, or

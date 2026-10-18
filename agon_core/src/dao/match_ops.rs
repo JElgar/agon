@@ -195,12 +195,18 @@ impl Dao {
 
             // Write the participant's *own* feed row synchronously so a match
             // they're playing in shows on their feed the moment it's created.
-            // Only for already-joined players — a linked user with no pending
-            // invitation (the creator who opted to play / a self-added player).
-            // Invitees get their row when they accept; followers via async
-            // fan-out. Idempotent on the feed sort key, so the fan-out re-write
-            // is harmless.
-            let joined = player.invitation.is_none();
+            // Only for already-joined players on a side — a linked user with
+            // no pending invitation (the creator who opted to play / a
+            // self-added player). Invitees get their row when they accept;
+            // followers via async fan-out. Idempotent on the feed sort key,
+            // so the fan-out re-write is harmless. `side_id: None` here is a
+            // non-playing organiser's own row (series occurrences — see
+            // `MatchPlayerRole::Owner`'s doc comment), deliberately excluded:
+            // whether a match's organiser should see it in their feed
+            // without playing is a separate, not-yet-decided question.
+            let non_playing_organiser =
+                player.side_id.is_none() && player.role == MatchPlayerRole::Owner;
+            let joined = player.invitation.is_none() && !non_playing_organiser;
             if let (Some(uid), true) = (&player.user_id, joined) {
                 let feed_item = self.feed_item(
                     uid,

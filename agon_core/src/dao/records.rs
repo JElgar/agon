@@ -735,10 +735,12 @@ pub struct SeriesRecord {
     /// up by some other means to find it.
     pub first_occurrence_starts_at: String,
     /// When the series stops generating new occurrences. `Never` means
-    /// indefinite recurrence: occurrences are still generated only a few at
-    /// a time over the series' lifetime (a small materialized-ahead
-    /// window), not all upfront — the generation workflow that does this
-    /// lands in a later change.
+    /// indefinite recurrence: `materialize_series` generates occurrences
+    /// only a few at a time, keeping a small rolling window materialized
+    /// ahead of the series' current progress rather than ever generating
+    /// everything upfront — true for a bounded (`OnDate`/`AfterN`) series
+    /// too, which just additionally stops once its implied total is
+    /// reached.
     pub ends: SeriesEndRecord,
     /// The sides generated for every occurrence of this series. Every
     /// occurrence is generated with these as team-linked,

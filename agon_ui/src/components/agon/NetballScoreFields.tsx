@@ -14,6 +14,50 @@ type Score = components['schemas']['Score']
 type NetballGoalEvent = components['schemas']['NetballGoalEvent']
 type NetballFoulEvent = components['schemas']['NetballFoulEvent']
 type NetballLiveEvent = components['schemas']['NetballLiveEvent']
+type NetballPeriod = components['schemas']['NetballPeriod']
+
+/** The quarter-end markers a manually entered quarter breakdown fills in, in
+ *  play order — the same cumulative checkpoints `NetballQuarterBreakdown`
+ *  reads back (see `NetballScore.period_scores`'s backend doc comment). No
+ *  extra-time row here — a manually logged quarter breakdown only covers the
+ *  four regulation quarters. */
+const QUARTER_END_MARKERS: NetballPeriod[] = [
+  'quarter_one_end',
+  'quarter_two_end',
+  'quarter_three_end',
+  'full_time',
+]
+
+/** One quarter's own goals for each side (not cumulative) — what the user
+ *  actually types in. */
+interface QuarterRow {
+  a: string
+  b: string
+}
+
+function emptyQuarters(): QuarterRow[] {
+  return QUARTER_END_MARKERS.map(() => ({ a: '', b: '' }))
+}
+
+/** Seeds the quarter rows from an existing quarter-scored result, converting
+ *  `period_scores`' cumulative checkpoints back into each quarter's own
+ *  tally. Falls back to blank rows unless every quarter marker is present —
+ *  a partial breakdown can't be reconstructed unambiguously. */
+function seedQuarters(initial: Score | undefined, aId: string, bId: string): QuarterRow[] {
+  if (initial?.type !== 'Netball' || !initial.period_scores) return emptyQuarters()
+  const cumulative = QUARTER_END_MARKERS.map((period) => initial.period_scores?.[period])
+  if (cumulative.some((entry) => !entry)) return emptyQuarters()
+  let prevA = 0
+  let prevB = 0
+  return cumulative.map((entry) => {
+    const a = entry?.[aId] ?? 0
+    const b = entry?.[bId] ?? 0
+    const row = { a: String(a - prevA), b: String(b - prevB) }
+    prevA = a
+    prevB = b
+    return row
+  })
+}
 
 export interface NetballScoreFieldsProps {
   sideA: MatchSide
@@ -38,16 +82,27 @@ function seedPoints(initial: Score | undefined, aId: string, bId: string): [stri
   return ['', '']
 }
 
+/** Which optional detail section is open, if any — mutually exclusive, same
+ *  as the two live-scoring methods (`quarter_only`/`event_by_event`) they
+ *  mirror. `'none'` is a bare final tally. */
+type DetailMode = 'none' | 'quarters' | 'events'
+
+function initialDetailMode(initial: Score | undefined): DetailMode {
+  if (initial?.type !== 'Netball') return 'none'
+  if ((initial.goals?.length ?? 0) > 0) return 'events'
+  if (QUARTER_END_MARKERS.every((period) => initial.period_scores?.[period])) return 'quarters'
+  return 'none'
+}
+
 /**
- * Netball's result entry: a points pair by default, plus an optional
- * goal-by-goal detail section reusing `RecordNetballEventDialog` (the same
- * dialog event-by-event live scoring uses) to build up `goals`/`fouls`
- * locally instead of posting to `/live/events` — same pattern as
- * `FootballScoreFields`. Once at least one goal is added, the points become
- * derived from the goal tally (two-point-zone goals already counted double).
- * There's no manual-entry equivalent of quarter-only scoring's
- * `period_scores` breakdown here — a bare final tally covers the same
- * "just the numbers" case for a manually-logged result.
+ * Netball's result entry: a points pair by default, plus one optional detail
+ * section — a quarter-by-quarter breakdown, or goal-by-goal detail reusing
+ * `RecordNetballEventDialog` (the same dialog event-by-event live scoring
+ * uses) to build up `goals`/`fouls` locally instead of posting to
+ * `/live/events` (same pattern as `FootballScoreFields`). Once either is in
+ * use, the final points become derived from it (summed quarters, or the goal
+ * tally with two-point-zone goals already counted double) — same relationship
+ * as `period_scores`/`score` for a live-scored match.
  */
 export function NetballScoreFields({ sideA, sideB, players, initial, onChange }: NetballScoreFieldsProps) {
   const aId = sideA.id
@@ -62,7 +117,8 @@ export function NetballScoreFields({ sideA, sideB, players, initial, onChange }:
   const [fouls, setFouls] = useState<NetballFoulEvent[]>(() =>
     initial?.type === 'Netball' ? (initial.fouls ?? []) : [],
   )
-  const [detailOpen, setDetailOpen] = useState(goals.length > 0)
+  const [quarters, setQuarters] = useState<QuarterRow[]>(() => seedQuarters(initial, aId, bId))
+  const [detailMode, setDetailMode] = useState<DetailMode>(() => initialDetailMode(initial))
   const [dialogKind, setDialogKind] = useState<NetballEventKind | null>(null)
 
   const match: Pick<Match, 'sides' | 'players'> = { sides: [sideA, sideB], players }
@@ -99,13 +155,37 @@ export function NetballScoreFields({ sideA, sideB, players, initial, onChange }:
   const goalsForA = tallyFor(aId)
   const goalsForB = tallyFor(bId)
 
+  const hasEvents = detailMode === 'events' && goals.length > 0
+  const quarterRowFilled = (row: QuarterRow) => row.a !== '' && row.b !== '' && Number.isFinite(Number(row.a)) && Number.isFinite(Number(row.b))
+  const quartersFilled = detailMode === 'quarters' && quarters.every(quarterRowFilled)
+  const quarterTotalFor = (side: 'a' | 'b') => quarters.reduce((sum, row) => sum + (Number(row[side]) || 0), 0)
+  const quarterTotalA = quarterTotalFor('a')
+  const quarterTotalB = quarterTotalFor('b')
+
   useEffect(() => {
-    const hasDetail = goals.length > 0
-    const a = hasDetail ? goalsForA : Number(pointsA)
-    const b = hasDetail ? goalsForB : Number(pointsB)
-    if (!hasDetail && (pointsA === '' || pointsB === '' || !Number.isFinite(a) || !Number.isFinite(b))) {
+    if (detailMode === 'quarters' && !quartersFilled) {
       onChange(null)
       return
+    }
+    const a = hasEvents ? goalsForA : detailMode === 'quarters' ? quarterTotalA : Number(pointsA)
+    const b = hasEvents ? goalsForB : detailMode === 'quarters' ? quarterTotalB : Number(pointsB)
+    if (
+      detailMode === 'none' &&
+      (pointsA === '' || pointsB === '' || !Number.isFinite(a) || !Number.isFinite(b))
+    ) {
+      onChange(null)
+      return
+    }
+    let periodScores: Partial<Record<NetballPeriod, Record<string, number>>> | undefined
+    if (detailMode === 'quarters') {
+      periodScores = {}
+      let cumA = 0
+      let cumB = 0
+      QUARTER_END_MARKERS.forEach((period, i) => {
+        cumA += Number(quarters[i].a) || 0
+        cumB += Number(quarters[i].b) || 0
+        periodScores![period] = { [aId]: cumA, [bId]: cumB }
+      })
     }
     // `players` (the score's resolved-name map) is server-only — the backend
     // never persists it (see `NetballScore.players`'s doc comment) — so a
@@ -114,12 +194,13 @@ export function NetballScoreFields({ sideA, sideB, players, initial, onChange }:
       type: 'Netball',
       score: { [aId]: a, [bId]: b },
       players: {},
-      ...(hasDetail ? { goals, fouls } : {}),
+      ...(hasEvents ? { goals, fouls } : {}),
+      ...(periodScores ? { period_scores: periodScores } : {}),
     }
     const winnerSideId = a === b ? undefined : a > b ? aId : bId
     onChange({ score, winnerSideId })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pointsA, pointsB, goals, fouls, aId, bId])
+  }, [pointsA, pointsB, goals, fouls, quarters, detailMode, aId, bId])
 
   const events: NetballEventView[] = [
     ...goalEventsToViews(goals),
@@ -135,6 +216,10 @@ export function NetballScoreFields({ sideA, sideB, players, initial, onChange }:
     // interleaves goals and fouls into one list.
   ].sort((a, b) => (a.minute ?? Infinity) - (b.minute ?? Infinity))
 
+  const pointsDisabled = detailMode !== 'none'
+  const [displayA, displayB] =
+    detailMode === 'events' ? [goalsForA, goalsForB] : detailMode === 'quarters' ? [quarterTotalA, quarterTotalB] : [pointsA, pointsB]
+
   return (
     <div className="flex flex-col gap-3">
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
@@ -144,8 +229,8 @@ export function NetballScoreFields({ sideA, sideB, players, initial, onChange }:
             type="number"
             min={0}
             inputMode="numeric"
-            value={goals.length > 0 ? goalsForA : pointsA}
-            disabled={goals.length > 0}
+            value={displayA}
+            disabled={pointsDisabled}
             onChange={(e) => setPoints([e.target.value, pointsB])}
             placeholder="0"
           />
@@ -157,18 +242,52 @@ export function NetballScoreFields({ sideA, sideB, players, initial, onChange }:
             type="number"
             min={0}
             inputMode="numeric"
-            value={goals.length > 0 ? goalsForB : pointsB}
-            disabled={goals.length > 0}
+            value={displayB}
+            disabled={pointsDisabled}
             onChange={(e) => setPoints([pointsA, e.target.value])}
             placeholder="0"
           />
         </div>
       </div>
 
-      {!detailOpen ? (
-        <Button type="button" variant="ghost" size="sm" className="self-start" onClick={() => setDetailOpen(true)}>
-          <Plus className="size-3.5" /> Add goal-by-goal detail
-        </Button>
+      {detailMode === 'none' ? (
+        <div className="flex flex-wrap gap-1">
+          <Button type="button" variant="ghost" size="sm" onClick={() => setDetailMode('quarters')}>
+            <Plus className="size-3.5" /> Add quarter-by-quarter score
+          </Button>
+          <Button type="button" variant="ghost" size="sm" onClick={() => setDetailMode('events')}>
+            <Plus className="size-3.5" /> Add goal-by-goal detail
+          </Button>
+        </div>
+      ) : detailMode === 'quarters' ? (
+        <div className="flex flex-col gap-2 rounded-lg border bg-muted/30 p-3">
+          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 text-center text-[11px] uppercase tracking-wider text-muted-foreground">
+            <span className="truncate text-left">{nameA}</span>
+            <span>Quarter</span>
+            <span className="truncate text-right">{nameB}</span>
+          </div>
+          {quarters.map((row, i) => (
+            <div key={i} className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+              <Input
+                type="number"
+                min={0}
+                inputMode="numeric"
+                value={row.a}
+                onChange={(e) => setQuarters((qs) => qs.map((r, j) => (j === i ? { ...r, a: e.target.value } : r)))}
+                placeholder="0"
+              />
+              <span className="text-xs text-muted-foreground">Q{i + 1}</span>
+              <Input
+                type="number"
+                min={0}
+                inputMode="numeric"
+                value={row.b}
+                onChange={(e) => setQuarters((qs) => qs.map((r, j) => (j === i ? { ...r, b: e.target.value } : r)))}
+                placeholder="0"
+              />
+            </div>
+          ))}
+        </div>
       ) : (
         <div className="flex flex-col gap-2 rounded-lg border bg-muted/30 p-3">
           {events.length > 0 && (

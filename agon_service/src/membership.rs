@@ -157,6 +157,14 @@ pub struct RespondToInvitationInput {
     /// accepting a match invitation that was not already assigned a side;
     /// ignored otherwise.
     pub side_id: Option<String>,
+    /// "I understand this starts my rating in this sport." Only read when
+    /// accepting an invitation to a ranked match whose ladder the caller
+    /// hasn't opted in to yet: `true` opts them in and accepts, and omitting
+    /// it is refused with 422 (`RatingConsentRequired`), leaving the
+    /// invitation pending. Ignored when declining, for a friendly or a team,
+    /// and once already opted in. Same field as
+    /// `CreateMatchInput.rating_consent`.
+    pub rating_consent: Option<bool>,
 }
 
 #[derive(Object)]
@@ -167,6 +175,8 @@ pub struct RespondByTokenInput {
     /// accepting a match invitation that was not already assigned a side;
     /// ignored otherwise.
     pub side_id: Option<String>,
+    /// Consent to being rated, exactly as `RespondToInvitationInput.rating_consent`.
+    pub rating_consent: Option<bool>,
 }
 
 #[derive(Enum)]
@@ -268,6 +278,19 @@ pub struct JoinLinkPreview {
 pub struct JoinMatchInput {
     pub token: Option<String>,
     pub side_id: Option<String>,
+    /// "I understand this starts my rating in this sport", for getting into a
+    /// ranked match whose ladder the caller hasn't opted in to yet: `true` opts
+    /// them in and goes ahead, and omitting it is refused with 422
+    /// (`RatingConsentRequired`). Ignored on a friendly and once already opted
+    /// in. Same field as `CreateMatchInput.rating_consent`.
+    ///
+    /// This input is shared by `POST /matches/:match_id/join` and `POST
+    /// /matches/:match_id/waitlist/join`, and both ask. Joining the waitlist
+    /// is asking to get in, and the admin who later moves someone in off it
+    /// can't consent on their behalf, so that is the last point at which they
+    /// can be asked. That includes the waitlist join which accepts a pending
+    /// invitation in the same step.
+    pub rating_consent: Option<bool>,
 }
 
 #[derive(Object)]

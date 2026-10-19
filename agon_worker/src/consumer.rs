@@ -401,6 +401,7 @@ mod tests {
             live_tip_seq: None,
             format: None,
             ranked: false,
+            ranked_prompt: None,
             created_at: "2026-07-01T10:00:00Z".into(),
         }
     }

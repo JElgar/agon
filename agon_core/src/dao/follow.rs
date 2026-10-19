@@ -282,6 +282,36 @@ impl Dao {
         team_id: &str,
         now: &str,
     ) -> DaoResult<Vec<TransactWriteItem>> {
+        Ok(vec![
+            self.follow_team_edge_item(follower_id, team_id, now)?,
+            TransactWriteItem::builder()
+                .update(counter_delta(
+                    self.table(),
+                    &Pk::Team(team_id.into()),
+                    "follower_count",
+                    1,
+                )?)
+                .build(),
+        ])
+    }
+
+    /// Just the follow *edge*, without the `follower_count` bump — for a
+    /// transaction that is already writing the team's meta item and so must
+    /// not touch it twice.
+    ///
+    /// `create_team` is the only caller: DynamoDB refuses a transaction with
+    /// two operations on one item ("Transaction request cannot include
+    /// multiple operations on one item"), and the owner's auto-follow used to
+    /// add exactly that — an `ADD follower_count :one` on the meta item being
+    /// put beside it, which made every `POST /teams` a 500 (#250). Creation
+    /// knows the owner follows, so it seeds the count on the item it is
+    /// already writing instead of updating it.
+    pub(super) fn follow_team_edge_item(
+        &self,
+        follower_id: &str,
+        team_id: &str,
+        now: &str,
+    ) -> DaoResult<TransactWriteItem> {
         let edge = TeamFollowRecord {
             team_id: team_id.into(),
             follower_id: follower_id.into(),
@@ -308,17 +338,7 @@ impl Dao {
             .build()
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
 
-        Ok(vec![
-            TransactWriteItem::builder().put(put_edge).build(),
-            TransactWriteItem::builder()
-                .update(counter_delta(
-                    self.table(),
-                    &Pk::Team(team_id.into()),
-                    "follower_count",
-                    1,
-                )?)
-                .build(),
-        ])
+        Ok(TransactWriteItem::builder().put(put_edge).build())
     }
 
     /// Follow a team. Idempotent. Bumps the team's `follower_count`. For the

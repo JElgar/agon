@@ -3409,7 +3409,7 @@ async fn creating_a_match_with_an_unnamed_empty_side_is_rejected() {
     assert_status_with_content(
         response,
         reqwest::StatusCode::BAD_REQUEST,
-        "needs a name or a team",
+        "needs a name unless it has a team",
     );
 }
 

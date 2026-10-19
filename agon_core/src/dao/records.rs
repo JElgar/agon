@@ -1105,9 +1105,13 @@ pub enum MatchPlayerRole {
     /// one at a time, transferable via `Dao::transfer_match_ownership` (which
     /// atomically demotes the outgoing owner to `Admin`, mirroring
     /// `Dao::transfer_team_ownership`). The playing creator gets this by
-    /// default. A non-playing organizer has no roster row and so can't hold
-    /// it today — `MatchRecord::created_by_user_id` is the stopgap for that
-    /// case (see its doc comment) until a non-player-organizers list exists.
+    /// default. A non-playing organizer ordinarily has no roster row and so
+    /// can't hold it — `MatchRecord::created_by_user_id` is the stopgap for
+    /// that case (see its doc comment) until a non-player-organizers list
+    /// exists. A series occurrence's organiser is the one exception: they
+    /// never play, so they get an unassigned, non-invited `Owner` row
+    /// instead (see `agon_service`'s `create_match_series` and
+    /// `agon_worker`'s `generate_series_occurrence`).
     Owner,
     /// Full authority over the match short of transferring ownership: manage
     /// `join_policy`/caps, mint or revoke join-links, invite people.

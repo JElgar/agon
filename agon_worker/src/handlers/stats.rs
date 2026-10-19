@@ -91,14 +91,18 @@ pub async fn reconcile_match_stats(dao: &Dao, match_id: &str) -> WorkerResult<()
             if !player.occupies_slot() {
                 continue;
             }
+            // A player with no side yet (still waiting to be assigned one)
+            // didn't play for either side, so they get no outcome and no
+            // box-score contribution for this match at all — not a loss.
+            let Some(side_id) = &player.side_id else {
+                continue;
+            };
             // No winner recorded => the match was a draw for everyone who
             // played, regardless of side. Otherwise won/lost depends on
-            // whether this player's side matches the winner — a player with
-            // no side assigned counts as a loss, same as any other side that
-            // isn't the winner's.
+            // whether this player's side matches the winner.
             let outcome = if winner_side_id.is_none() {
                 MatchOutcome::Drawn
-            } else if player.side_id == winner_side_id {
+            } else if Some(side_id) == winner_side_id.as_ref() {
                 MatchOutcome::Won
             } else {
                 MatchOutcome::Lost

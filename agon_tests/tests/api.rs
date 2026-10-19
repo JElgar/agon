@@ -167,6 +167,7 @@ fn create_match_input(invited_user_id: &str) -> models::CreateMatchInput {
         format: None,
         allow_unassigned: None,
         ranked: None,
+        rating_consent: None,
     }
 }
 
@@ -217,6 +218,7 @@ fn match_between(name: &str, side_a: &[&str], side_b: &[&str]) -> models::Create
         format: None,
         allow_unassigned: None,
         ranked: None,
+        rating_consent: None,
     }
 }
 
@@ -285,6 +287,7 @@ fn completed_match(invites: Vec<models::CreateMatchInviteInput>) -> models::Crea
         format: None,
         allow_unassigned: None,
         ranked: None,
+        rating_consent: None,
     }
 }
 
@@ -851,6 +854,7 @@ fn side_name_rule_match(
         format: None,
         allow_unassigned: None,
         ranked: None,
+        rating_consent: None,
     }
 }
 
@@ -1579,6 +1583,7 @@ async fn match_invitation_appears_in_inbox_and_can_be_accepted() {
         models::RespondToInvitationInput {
             response: models::InvitationResponse::Accepted,
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -1631,6 +1636,7 @@ async fn accepting_a_normal_invite_updates_feed_and_stats() {
         models::RespondToInvitationInput {
             response: models::InvitationResponse::Accepted,
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -1714,6 +1720,7 @@ async fn accepting_a_link_invite_updates_feed_and_stats() {
             invite_token: token,
             response: models::InvitationResponse::Accepted,
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -2998,6 +3005,7 @@ async fn submitting_a_score_notifies_the_other_side_to_confirm() {
         models::RespondToInvitationInput {
             response: models::InvitationResponse::Accepted,
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -4327,6 +4335,7 @@ async fn invitation_can_be_fetched_and_declined() {
         models::RespondToInvitationInput {
             response: models::InvitationResponse::Declined,
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -4722,6 +4731,7 @@ async fn accept_match_invitation(config: &Configuration, match_id: &str) {
         models::RespondToInvitationInput {
             response: models::InvitationResponse::Accepted,
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -5139,6 +5149,7 @@ async fn team_created_with_initial_invite_can_be_accepted() {
         models::RespondToInvitationInput {
             response: models::InvitationResponse::Accepted,
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -6402,6 +6413,7 @@ fn joinable_match_input(
         format: None,
         allow_unassigned,
         ranked: None,
+        rating_consent: None,
     }
 }
 
@@ -6479,6 +6491,7 @@ async fn join_link_scoped_to_one_side_assigns_it_directly() {
         models::JoinMatchInput {
             token: Some(link.token.clone()),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -6522,6 +6535,7 @@ async fn joining_a_match_twice_via_the_same_link_is_rejected() {
         models::JoinMatchInput {
             token: Some(link.token.clone()),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -6537,6 +6551,7 @@ async fn joining_a_match_twice_via_the_same_link_is_rejected() {
         models::JoinMatchInput {
             token: Some(link.token.clone()),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await;
@@ -6588,6 +6603,7 @@ async fn join_link_scoped_to_one_side_rejects_the_other() {
         models::JoinMatchInput {
             token: Some(link.token),
             side_id: Some(side_a),
+            rating_consent: None,
         },
     )
     .await;
@@ -6631,6 +6647,7 @@ async fn match_disallowing_unassigned_caps_a_links_own_setting() {
         models::JoinMatchInput {
             token: Some(general_link.token.clone()),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await;
@@ -6649,6 +6666,7 @@ async fn match_disallowing_unassigned_caps_a_links_own_setting() {
         models::JoinMatchInput {
             token: Some(general_link.token),
             side_id: Some(side_b.clone()),
+            rating_consent: None,
         },
     )
     .await
@@ -6682,6 +6700,7 @@ async fn link_requiring_a_side_rejects_an_unassigned_join() {
         models::JoinMatchInput {
             token: Some(link.token.clone()),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await;
@@ -6698,6 +6717,7 @@ async fn link_requiring_a_side_rejects_an_unassigned_join() {
         models::JoinMatchInput {
             token: Some(link.token),
             side_id: Some(side_b.clone()),
+            rating_consent: None,
         },
     )
     .await
@@ -6731,6 +6751,7 @@ async fn side_capacity_is_enforced() {
         models::JoinMatchInput {
             token: Some(link.token.clone()),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -6743,6 +6764,7 @@ async fn side_capacity_is_enforced() {
         models::JoinMatchInput {
             token: Some(link.token),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await;
@@ -6777,6 +6799,7 @@ async fn overall_capacity_is_derived_from_every_sides_cap() {
         models::JoinMatchInput {
             token: Some(link.token.clone()),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -6789,6 +6812,7 @@ async fn overall_capacity_is_derived_from_every_sides_cap() {
         models::JoinMatchInput {
             token: Some(link.token),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await;
@@ -6824,6 +6848,7 @@ async fn leaving_frees_the_spot_for_a_new_join() {
         models::JoinMatchInput {
             token: Some(link.token.clone()),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -6836,6 +6861,7 @@ async fn leaving_frees_the_spot_for_a_new_join() {
         models::JoinMatchInput {
             token: Some(link.token.clone()),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await;
@@ -6851,6 +6877,7 @@ async fn leaving_frees_the_spot_for_a_new_join() {
         models::JoinMatchInput {
             token: Some(link.token),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -6892,6 +6919,7 @@ async fn a_declined_invite_does_not_hold_a_spot() {
         models::RespondToInvitationInput {
             response: models::InvitationResponse::Declined,
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -6914,6 +6942,7 @@ async fn a_declined_invite_does_not_hold_a_spot() {
         models::JoinMatchInput {
             token: Some(link.token),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -6954,6 +6983,7 @@ async fn accepting_an_invite_takes_the_last_spot_on_a_side() {
         models::RespondToInvitationInput {
             response: models::InvitationResponse::Accepted,
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -6976,6 +7006,7 @@ async fn accepting_an_invite_takes_the_last_spot_on_a_side() {
         models::JoinMatchInput {
             token: Some(link.token),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await;
@@ -7015,6 +7046,7 @@ async fn joining_a_full_side_returns_a_typed_side_full_conflict() {
         models::JoinMatchInput {
             token: Some(link.token.clone()),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -7027,6 +7059,7 @@ async fn joining_a_full_side_returns_a_typed_side_full_conflict() {
         models::JoinMatchInput {
             token: Some(link.token),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await;
@@ -7075,6 +7108,7 @@ async fn joining_a_full_sides_waitlist_succeeds() {
         models::JoinMatchInput {
             token: Some(link.token.clone()),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -7087,6 +7121,7 @@ async fn joining_a_full_sides_waitlist_succeeds() {
         models::JoinMatchInput {
             token: Some(link.token),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -7129,6 +7164,7 @@ async fn accepting_an_invite_into_a_full_match_returns_a_conflict_and_stays_pend
         models::JoinMatchInput {
             token: Some(link.token),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -7155,6 +7191,7 @@ async fn accepting_an_invite_into_a_full_match_returns_a_conflict_and_stays_pend
         models::RespondToInvitationInput {
             response: models::InvitationResponse::Accepted,
             side_id: None,
+            rating_consent: None,
         },
     )
     .await;
@@ -7203,6 +7240,7 @@ async fn waitlist_join_accepts_a_pending_invitation_in_one_step() {
         models::JoinMatchInput {
             token: Some(link.token),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -7229,6 +7267,7 @@ async fn waitlist_join_accepts_a_pending_invitation_in_one_step() {
         models::JoinMatchInput {
             token: None,
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -7263,6 +7302,7 @@ async fn waitlist_join_accepts_a_pending_invitation_in_one_step() {
         models::JoinMatchInput {
             token: Some(second_link.token),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await;
@@ -7295,6 +7335,7 @@ async fn only_a_match_admin_can_move_someone_in_off_the_waitlist() {
         models::JoinMatchInput {
             token: Some(link.token),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -7338,6 +7379,7 @@ async fn moving_someone_in_off_the_waitlist_needs_a_free_spot() {
         models::JoinMatchInput {
             token: Some(link.token.clone()),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -7350,6 +7392,7 @@ async fn moving_someone_in_off_the_waitlist_needs_a_free_spot() {
         models::JoinMatchInput {
             token: Some(link.token),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -7392,6 +7435,7 @@ async fn moving_a_waitlisted_player_in_once_a_spot_frees_up() {
         models::JoinMatchInput {
             token: Some(link.token.clone()),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -7404,6 +7448,7 @@ async fn moving_a_waitlisted_player_in_once_a_spot_frees_up() {
         models::JoinMatchInput {
             token: Some(link.token),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -7455,6 +7500,7 @@ async fn leaving_the_waitlist_removes_the_entry() {
         models::JoinMatchInput {
             token: Some(link.token),
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -7494,6 +7540,7 @@ async fn a_self_served_participant_cannot_invite_or_manage_join_settings() {
         models::JoinMatchInput {
             token: Some(link.token),
             side_id: Some(other_side_id(&created, &side_a)),
+            rating_consent: None,
         },
     )
     .await
@@ -7592,6 +7639,7 @@ async fn match_owner_must_transfer_ownership_before_leaving() {
         models::JoinMatchInput {
             token: Some(link.token.clone()),
             side_id: Some(other_side_id(&created, &side_a)),
+            rating_consent: None,
         },
     )
     .await
@@ -7604,6 +7652,7 @@ async fn match_owner_must_transfer_ownership_before_leaving() {
         models::JoinMatchInput {
             token: Some(link.token),
             side_id: Some(other_side_id(&created, &side_a)),
+            rating_consent: None,
         },
     )
     .await
@@ -7695,6 +7744,7 @@ async fn revoked_join_link_cannot_be_used() {
             models::JoinMatchInput {
                 token: Some(link.token),
                 side_id: None,
+                rating_consent: None,
             },
         )
         .await,
@@ -7740,6 +7790,7 @@ async fn transferring_ownership_demotes_the_outgoing_owner_to_admin() {
         models::JoinMatchInput {
             token: Some(link.token),
             side_id: Some(other_side_id(&created, &side_a)),
+            rating_consent: None,
         },
     )
     .await
@@ -7902,6 +7953,7 @@ async fn team_with_accepted_member(
         models::RespondToInvitationInput {
             response: models::InvitationResponse::Accepted,
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -7946,6 +7998,7 @@ fn team_joinable_match_input(team_id: &str) -> models::CreateMatchInput {
         format: None,
         allow_unassigned: None,
         ranked: None,
+        rating_consent: None,
     }
 }
 
@@ -7978,6 +8031,7 @@ async fn accepted_team_member_can_self_join_their_sides_side() {
         models::JoinMatchInput {
             token: None,
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -8019,6 +8073,7 @@ async fn a_stranger_cannot_self_join_via_team_membership() {
         models::JoinMatchInput {
             token: None,
             side_id: None,
+            rating_consent: None,
         },
     )
     .await;
@@ -8070,6 +8125,7 @@ async fn team_self_join_requires_the_sides_own_opt_in() {
             format: None,
             allow_unassigned: None,
             ranked: None,
+            rating_consent: None,
         },
     )
     .await
@@ -8081,6 +8137,7 @@ async fn team_self_join_requires_the_sides_own_opt_in() {
         models::JoinMatchInput {
             token: None,
             side_id: None,
+            rating_consent: None,
         },
     )
     .await;
@@ -8134,6 +8191,7 @@ async fn team_self_join_on_an_intra_squad_match_offers_a_pick_or_unassigned() {
             format: None,
             allow_unassigned: None,
             ranked: None,
+            rating_consent: None,
         },
     )
     .await
@@ -8157,6 +8215,7 @@ async fn team_self_join_on_an_intra_squad_match_offers_a_pick_or_unassigned() {
         models::JoinMatchInput {
             token: None,
             side_id: None,
+            rating_consent: None,
         },
     )
     .await
@@ -8182,12 +8241,14 @@ async fn team_self_join_on_an_intra_squad_match_offers_a_pick_or_unassigned() {
 /// `opponent_id` invited onto side "b", ranked or friendly as asked. The
 /// creator being on a side is what lets them submit a score, and the opponent
 /// being on the other is what lets them dispute it — the two moves that close
-/// the lock.
+/// the lock. A ranked one carries the creator's `rating_consent`, because a
+/// creator who plays takes a spot and can't create a ranked match without it.
 fn ranked_match_input(opponent_id: &str, ranked: Option<bool>) -> models::CreateMatchInput {
     let mut input = create_match_input(opponent_id);
     input.invites = vec![invite_users("b", &[opponent_id])];
     input.creator_side_client_id = Some("a".to_string());
     input.ranked = ranked;
+    input.rating_consent = (ranked == Some(true)).then_some(true);
     input
 }
 
@@ -8245,6 +8306,9 @@ async fn a_match_created_ranked_shows_its_rating_ladder() {
 async fn invitations_and_join_links_show_whether_the_match_is_ranked() {
     let (config, _user) = new_user().await;
     let (opponent_config, opponent) = new_user().await;
+    // The creator plays, and a match only becomes ranked once everyone in a
+    // spot is opted in.
+    opt_in_to_ratings(&config, models::MatchType::Tennis).await;
 
     let mut input = ranked_match_input(&opponent.profile.id, None);
     input.invites.push(models::CreateMatchInviteInput {
@@ -8372,6 +8436,8 @@ async fn a_sport_without_a_ladder_cannot_be_ranked() {
 async fn a_match_can_be_switched_between_ranked_and_friendly_before_it_is_played() {
     let (config, _user) = new_user().await;
     let (_opponent_config, opponent) = new_user().await;
+    // The creator plays, so switching to ranked needs them opted in.
+    opt_in_to_ratings(&config, models::MatchType::Tennis).await;
 
     let created = matches_post(&config, ranked_match_input(&opponent.profile.id, None))
         .await
@@ -8478,7 +8544,9 @@ async fn ranked_stays_locked_after_a_submitted_score_is_disputed() {
     )
     .await
     .expect("create ranked match");
-    accept_match_invitation(&opponent_config, &scheduled.id).await;
+    accept_invitation_with_consent(&opponent_config, &scheduled.id, Some(true))
+        .await
+        .expect("the opponent accepts, consenting to be rated");
     let side_a = scheduled.sides[0].id.clone();
     let side_b = scheduled.sides[1].id.clone();
     let scored = matches_match_id_patch(
@@ -8772,5 +8840,1029 @@ async fn the_sport_of_a_ranked_match_cannot_be_changed() {
         &matches_match_id_get(&config, &created.id)
             .await
             .expect("re-read the match"),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Rating consent — nobody plays a ranked match without agreeing to be rated
+// ---------------------------------------------------------------------------
+
+/// Opt `config`'s user in to `sport`'s rating ladder the only way there is: by
+/// consenting on a ranked match of that sport they play in. Creates a
+/// throwaway one, with the creator on side "a" and nobody invited.
+async fn opt_in_to_ratings(config: &Configuration, sport: models::MatchType) {
+    let mut input = joinable_match_input(None, None, None);
+    input.match_type = sport;
+    input.ranked = Some(true);
+    input.rating_consent = Some(true);
+    matches_post(config, input)
+        .await
+        .expect("create a ranked match, consenting");
+}
+
+/// The ladders `config`'s user is opted in to, as their `/users/me` lists them.
+async fn my_rating_opt_ins(config: &Configuration) -> Vec<String> {
+    users_me_get(config)
+        .await
+        .expect("get me")
+        .rating_opt_ins
+        .into_iter()
+        .map(|opt_in| opt_in.ladder)
+        .collect()
+}
+
+/// `joinable_match_input` made ranked, with the creator (on side "a")
+/// consenting.
+fn ranked_joinable_match_input(side_b_max: Option<i32>) -> models::CreateMatchInput {
+    let mut input = joinable_match_input(None, None, side_b_max);
+    input.ranked = Some(true);
+    input.rating_consent = Some(true);
+    input
+}
+
+/// A join link onto `match_id` scoped to `side_ids`, or to any side if `None`.
+async fn join_link_for(
+    config: &Configuration,
+    match_id: &str,
+    side_ids: Option<Vec<String>>,
+) -> models::JoinLink {
+    let scope = match side_ids {
+        Some(ids) => sides_scope(ids),
+        None => any_side_scope(),
+    };
+    matches_match_id_join_links_post(
+        config,
+        match_id,
+        models::CreateJoinLinkInput {
+            scope: Box::new(scope),
+        },
+    )
+    .await
+    .expect("create join link")
+}
+
+/// Join `match_id` through a link's `token`, or through team membership if
+/// `None`, with `rating_consent` as given.
+async fn join_match_with_consent(
+    config: &Configuration,
+    match_id: &str,
+    token: Option<&str>,
+    rating_consent: Option<bool>,
+) -> Result<models::Match, openapi::apis::Error<MatchesMatchIdJoinPostError>> {
+    matches_match_id_join_post(
+        config,
+        match_id,
+        models::JoinMatchInput {
+            token: token.map(str::to_string),
+            side_id: None,
+            rating_consent,
+        },
+    )
+    .await
+}
+
+/// Join `match_id`'s waitlist through a link's `token` (or, with `None`, a
+/// pending invitation or team membership), with `rating_consent` as given.
+async fn join_waitlist_with_consent(
+    config: &Configuration,
+    match_id: &str,
+    token: Option<&str>,
+    rating_consent: Option<bool>,
+) -> Result<models::WaitlistEntry, openapi::apis::Error<MatchesMatchIdWaitlistJoinPostError>> {
+    matches_match_id_waitlist_join_post(
+        config,
+        match_id,
+        models::JoinMatchInput {
+            token: token.map(str::to_string),
+            side_id: None,
+            rating_consent,
+        },
+    )
+    .await
+}
+
+/// The id of `config`'s own invitation to `match_id`, found in their inbox.
+async fn match_invitation_id(config: &Configuration, match_id: &str) -> String {
+    users_me_invitations_get(config, None, None, None)
+        .await
+        .expect("inbox")
+        .items
+        .into_iter()
+        .find(|i| {
+            matches!(&*i.context, models::InvitationContext::Match(ctx) if ctx.match_id == match_id)
+        })
+        .expect("match invitation in inbox")
+        .invitation
+        .id
+}
+
+/// Accept `config`'s own invitation to `match_id` by id, with
+/// `rating_consent` as given.
+async fn accept_invitation_with_consent(
+    config: &Configuration,
+    match_id: &str,
+    rating_consent: Option<bool>,
+) -> Result<models::Invitation, openapi::apis::Error<InvitationsInvitationIdRespondPostError>> {
+    let invitation_id = match_invitation_id(config, match_id).await;
+    invitations_invitation_id_respond_post(
+        config,
+        &invitation_id,
+        models::RespondToInvitationInput {
+            response: models::InvitationResponse::Accepted,
+            side_id: None,
+            rating_consent,
+        },
+    )
+    .await
+}
+
+/// Whether a linked user has a row on `match_`'s roster. A waitlisted player
+/// doesn't: the waitlist is kept apart from the roster.
+fn is_on_roster(match_: &models::Match, user_id: &str) -> bool {
+    match_
+        .players
+        .iter()
+        .any(|p| matches!(&*p.member, models::Member::User(u) if u.user_id == user_id))
+}
+
+/// The status of `user_id`'s invitation as `match_` shows it, if they have one.
+fn invitation_status_for<'a>(
+    match_: &'a models::Match,
+    user_id: &str,
+) -> Option<&'a models::InvitationStatus> {
+    match_.players.iter().find_map(|p| match &*p.member {
+        models::Member::User(u) if u.user_id == user_id => {
+            u.invitation.as_ref().map(|inv| &inv.status)
+        }
+        _ => None,
+    })
+}
+
+/// The user ids on `match_id`'s waitlist, longest-waiting first.
+async fn waitlisted_user_ids(config: &Configuration, match_id: &str) -> Vec<String> {
+    matches_match_id_waitlist_get(config, match_id)
+        .await
+        .expect("list waitlist")
+        .into_iter()
+        .map(|entry| entry.user_id)
+        .collect()
+}
+
+/// How many players hold a spot on `match_id`, by its public join-link
+/// preview: the stored headcount that the capacity checks run on, which
+/// pending invitees and the waitlisted don't count towards.
+async fn spots_taken(link: &models::JoinLink, match_id: &str) -> i32 {
+    let public = Configuration {
+        base_path: std::env::var("AGON_SERVICE_URL").expect("AGON_SERVICE_URL must be set"),
+        ..Default::default()
+    };
+    let preview = join_links_by_token_token_get(&public, &link.token)
+        .await
+        .expect("join link preview");
+    assert_eq!(preview.match_id, match_id);
+    preview.total_player_count
+}
+
+/// Creating a ranked match you play in starts your rating in that sport, so it
+/// needs your say-so. Without `rating_consent` the create is refused with 422,
+/// the status a client reads as "ask them" (nothing else on this endpoint uses
+/// it), and nothing is opted in. With it, the match is created and
+/// `/users/me` shows the opt-in, stamped when it happened. Guards a ranked
+/// create quietly enrolling its creator, which is the "everyone is rated"
+/// design the opt-in replaced.
+#[tokio::test]
+async fn creating_a_ranked_match_you_play_in_needs_your_rating_consent() {
+    let (config, _user) = new_user().await;
+    let (_opponent_config, opponent) = new_user().await;
+
+    let mut unconsented = ranked_match_input(&opponent.profile.id, Some(true));
+    unconsented.rating_consent = None;
+    assert_status_with_content(
+        matches_post(&config, unconsented).await,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+        "rating_consent",
+    );
+    assert!(
+        my_rating_opt_ins(&config).await.is_empty(),
+        "a refusal opts nobody in"
+    );
+
+    let before = chrono::Utc::now() - chrono::Duration::seconds(5);
+    let created = matches_post(
+        &config,
+        ranked_match_input(&opponent.profile.id, Some(true)),
+    )
+    .await
+    .expect("a ranked create with the creator's consent");
+    assert!(created.ranked);
+
+    let me = users_me_get(&config).await.expect("get me");
+    assert_eq!(me.rating_opt_ins.len(), 1);
+    assert_eq!(me.rating_opt_ins[0].ladder, "tennis");
+    let opted_in_at: chrono::DateTime<chrono::Utc> = me.rating_opt_ins[0]
+        .opted_in_at
+        .parse()
+        .expect("an RFC 3339 opt-in time");
+    assert!(
+        opted_in_at >= before,
+        "stamped when they consented, not a default"
+    );
+}
+
+/// Consent is to your *own* rating. An organiser who creates a ranked match
+/// without playing in it takes no spot, so they aren't asked, and ticking the
+/// box anyway opts them in to nothing. The invitee who will play is asked
+/// when they accept.
+#[tokio::test]
+async fn an_organiser_who_does_not_play_is_not_asked_for_rating_consent() {
+    let (config, _organiser) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let mut input = create_match_input(&invitee.profile.id);
+    input.ranked = Some(true);
+    let created = matches_post(&config, input)
+        .await
+        .expect("a non-playing organiser creates a ranked match without consenting");
+    assert!(created.ranked);
+
+    let mut input = create_match_input(&invitee.profile.id);
+    input.ranked = Some(true);
+    input.rating_consent = Some(true);
+    matches_post(&config, input)
+        .await
+        .expect("and with the box ticked anyway");
+    assert!(
+        my_rating_opt_ins(&config).await.is_empty(),
+        "nothing of the organiser's is rated, so there's nothing to opt in to"
+    );
+}
+
+/// An invitee is asked on accepting, since that's when they take a spot.
+/// Without consent they get a 422, and the invitation stays pending for them
+/// to come back to. With it they're accepted and opted in. The invite here
+/// goes out while the match is a friendly, and it's switched to ranked before
+/// they answer: the check reads the match, not anything recorded when the
+/// invitation was sent.
+#[tokio::test]
+async fn accepting_a_ranked_invitation_needs_the_invitees_rating_consent() {
+    let (config, _user) = new_user().await;
+    let (invitee_config, invitee) = new_user().await;
+    let created = matches_post(&config, ranked_match_input(&invitee.profile.id, None))
+        .await
+        .expect("create a friendly, inviting them");
+    opt_in_to_ratings(&config, models::MatchType::Tennis).await;
+    matches_match_id_patch(
+        &config,
+        &created.id,
+        models::UpdateMatchInput {
+            ranked: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("switch to ranked with the invite already out");
+
+    assert_status_with_content(
+        accept_invitation_with_consent(&invitee_config, &created.id, None).await,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+        "starts your tennis rating",
+    );
+    let refused = matches_match_id_get(&config, &created.id)
+        .await
+        .expect("get match");
+    assert_eq!(
+        invitation_status_for(&refused, &invitee.profile.id),
+        Some(&models::InvitationStatus::Pending),
+        "a refused accept leaves the invitation to come back to"
+    );
+    assert!(my_rating_opt_ins(&invitee_config).await.is_empty());
+
+    accept_invitation_with_consent(&invitee_config, &created.id, Some(true))
+        .await
+        .expect("accept, consenting");
+    assert_eq!(my_rating_opt_ins(&invitee_config).await, vec!["tennis"]);
+    let accepted = matches_match_id_get(&config, &created.id)
+        .await
+        .expect("get match");
+    assert_eq!(
+        invitation_status_for(&accepted, &invitee.profile.id),
+        Some(&models::InvitationStatus::Accepted)
+    );
+}
+
+/// A token invitation is how someone without an account gets into a match, and
+/// creating a ranked match may send one. While it's pending the guest takes no
+/// spot, so a ranked match never has a player without an account in one.
+/// Whoever accepts the token has an account by then, and is asked like any
+/// invitee: a 422 without consent, and with it they take the guest's place,
+/// linked to their account and opted in.
+#[tokio::test]
+async fn accepting_a_ranked_invitation_by_token_needs_rating_consent() {
+    let (config, _owner) = new_user().await;
+    let mut input = ranked_joinable_match_input(None);
+    input.invites = vec![invite_externals("b", &["Guest"])];
+    let created = matches_post(&config, input)
+        .await
+        .expect("a ranked match may invite someone without an account");
+    let link = join_link_for(&config, &created.id, None).await;
+    assert_eq!(
+        spots_taken(&link, &created.id).await,
+        1,
+        "only the creator holds a spot; the pending guest doesn't"
+    );
+
+    let token = external_invite_token(&created);
+    let (accepter_config, accepter) = new_user().await;
+    let accept_by_token = |rating_consent: Option<bool>| {
+        invitations_respond_by_token_post(
+            &accepter_config,
+            models::RespondByTokenInput {
+                invite_token: token.clone(),
+                response: models::InvitationResponse::Accepted,
+                side_id: None,
+                rating_consent,
+            },
+        )
+    };
+
+    assert_status_with_content(
+        accept_by_token(None).await,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+        "starts your tennis rating",
+    );
+    assert!(my_rating_opt_ins(&accepter_config).await.is_empty());
+    assert_eq!(spots_taken(&link, &created.id).await, 1);
+
+    accept_by_token(Some(true))
+        .await
+        .expect("accept by token, consenting");
+    assert_eq!(my_rating_opt_ins(&accepter_config).await, vec!["tennis"]);
+    let after = matches_match_id_get(&config, &created.id)
+        .await
+        .expect("get match");
+    assert_eq!(
+        invitation_status_for(&after, &accepter.profile.id),
+        Some(&models::InvitationStatus::Accepted),
+        "the guest's place is now the accepter's, linked to their account"
+    );
+    assert_eq!(spots_taken(&link, &created.id).await, 2);
+}
+
+/// Joining through a join link asks the joiner. A refusal leaves them off the
+/// match entirely, neither on the roster nor waiting. With consent they're in
+/// and opted in.
+#[tokio::test]
+async fn joining_a_ranked_match_by_link_needs_rating_consent() {
+    let (config, _owner) = new_user().await;
+    let created = matches_post(&config, ranked_joinable_match_input(None))
+        .await
+        .expect("create ranked match");
+    let link = join_link_for(&config, &created.id, None).await;
+    let (joiner_config, joiner) = new_user().await;
+
+    assert_status_with_content(
+        join_match_with_consent(&joiner_config, &created.id, Some(&link.token), None).await,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+        "rating_consent",
+    );
+    let refused = matches_match_id_get(&config, &created.id)
+        .await
+        .expect("get match");
+    assert!(!is_on_roster(&refused, &joiner.profile.id));
+    assert!(waitlisted_user_ids(&config, &created.id).await.is_empty());
+    assert!(my_rating_opt_ins(&joiner_config).await.is_empty());
+
+    let joined =
+        join_match_with_consent(&joiner_config, &created.id, Some(&link.token), Some(true))
+            .await
+            .expect("join, consenting");
+    assert!(is_on_roster(&joined, &joiner.profile.id));
+    assert_eq!(my_rating_opt_ins(&joiner_config).await, vec!["tennis"]);
+}
+
+/// Team self-join is the other way to join without an invitation, and asks the
+/// same.
+#[tokio::test]
+async fn self_joining_a_ranked_match_through_a_team_needs_rating_consent() {
+    let (creator_config, _creator) = new_user().await;
+    let (member_config, member) = new_user().await;
+    let team = team_with_accepted_member(&creator_config, &member_config, &member.profile.id).await;
+    let mut input = team_joinable_match_input(&team.id);
+    input.ranked = Some(true);
+    input.rating_consent = Some(true);
+    let created = matches_post(&creator_config, input)
+        .await
+        .expect("create a ranked, team-joinable match");
+
+    assert_status_with_content(
+        join_match_with_consent(&member_config, &created.id, None, None).await,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+        "rating_consent",
+    );
+    assert!(my_rating_opt_ins(&member_config).await.is_empty());
+
+    let joined = join_match_with_consent(&member_config, &created.id, None, Some(true))
+        .await
+        .expect("self-join through the team, consenting");
+    assert!(is_on_roster(&joined, &member.profile.id));
+    assert_eq!(my_rating_opt_ins(&member_config).await, vec!["tennis"]);
+}
+
+/// Consent is per sport and permanent. Once opted in to tennis, the next ranked
+/// tennis match asks nothing, and ticking the box again doesn't move the date.
+/// Squash is another ladder, so it asks again, and `/users/me` then lists both
+/// by ladder.
+#[tokio::test]
+async fn rating_consent_is_asked_once_per_sport() {
+    let (config, _user) = new_user().await;
+    let (_opponent_config, opponent) = new_user().await;
+    matches_post(
+        &config,
+        ranked_match_input(&opponent.profile.id, Some(true)),
+    )
+    .await
+    .expect("a first ranked tennis match, consenting");
+    let first = users_me_get(&config).await.expect("get me").rating_opt_ins;
+
+    let mut second = ranked_match_input(&opponent.profile.id, Some(true));
+    second.rating_consent = None;
+    matches_post(&config, second)
+        .await
+        .expect("a second ranked tennis match asks nothing");
+    matches_post(
+        &config,
+        ranked_match_input(&opponent.profile.id, Some(true)),
+    )
+    .await
+    .expect("and ticking the box again is harmless");
+    let again = users_me_get(&config).await.expect("get me").rating_opt_ins;
+    assert_eq!(again.len(), 1);
+    assert_eq!(
+        again[0].opted_in_at, first[0].opted_in_at,
+        "the first consent's date stands"
+    );
+
+    let squash = |rating_consent: Option<bool>| {
+        let mut input = ranked_match_input(&opponent.profile.id, Some(true));
+        input.match_type = models::MatchType::Squash;
+        input.rating_consent = rating_consent;
+        input
+    };
+    assert_status_with_content(
+        matches_post(&config, squash(None)).await,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+        "starts your squash rating",
+    );
+    matches_post(&config, squash(Some(true)))
+        .await
+        .expect("consenting to squash");
+    assert_eq!(my_rating_opt_ins(&config).await, vec!["squash", "tennis"]);
+}
+
+/// A friendly never asks and never records anything, even with the box ticked,
+/// on each way in: creating it, accepting an invitation, joining, and joining
+/// the waitlist. Guards the consent being honoured whatever `ranked` says,
+/// which would enrol people on a ladder from a game that can't rate them.
+#[tokio::test]
+async fn a_friendly_never_needs_rating_consent_or_opts_anyone_in() {
+    let (config, _user) = new_user().await;
+    let (invitee_config, invitee) = new_user().await;
+    let (joiner_config, _joiner) = new_user().await;
+    let (unticked_config, _unticked) = new_user().await;
+    let (waiter_config, _waiter) = new_user().await;
+
+    let mut input = ranked_match_input(&invitee.profile.id, None);
+    input.rating_consent = Some(true);
+    let created = matches_post(&config, input)
+        .await
+        .expect("create a friendly with the box ticked");
+    assert!(!created.ranked);
+    accept_invitation_with_consent(&invitee_config, &created.id, Some(true))
+        .await
+        .expect("accept with the box ticked");
+    let link = join_link_for(&config, &created.id, None).await;
+    join_match_with_consent(&joiner_config, &created.id, Some(&link.token), Some(true))
+        .await
+        .expect("join with the box ticked");
+    join_match_with_consent(&unticked_config, &created.id, Some(&link.token), None)
+        .await
+        .expect("and without it");
+    join_waitlist_with_consent(&waiter_config, &created.id, Some(&link.token), Some(true))
+        .await
+        .expect("join the waitlist with the box ticked");
+
+    for (who, player_config) in [
+        ("creator", &config),
+        ("invitee", &invitee_config),
+        ("joiner", &joiner_config),
+        ("unticked joiner", &unticked_config),
+        ("waiter", &waiter_config),
+    ] {
+        assert!(my_rating_opt_ins(player_config).await.is_empty(), "{who}");
+    }
+}
+
+/// Declining isn't playing, so turning down a ranked invitation asks nothing
+/// and records nothing. The decline is checked on the invitation itself, not
+/// the match's roster: `Dao::respond_to_invitation` only writes the
+/// invitation, and the roster row's embedded copy stays `pending` (which
+/// takes no spot either way).
+#[tokio::test]
+async fn declining_a_ranked_invitation_needs_no_rating_consent() {
+    let (config, _user) = new_user().await;
+    let (invitee_config, invitee) = new_user().await;
+    let created = matches_post(&config, ranked_match_input(&invitee.profile.id, Some(true)))
+        .await
+        .expect("create ranked match");
+
+    let invitation_id = match_invitation_id(&invitee_config, &created.id).await;
+    invitations_invitation_id_respond_post(
+        &invitee_config,
+        &invitation_id,
+        models::RespondToInvitationInput {
+            response: models::InvitationResponse::Declined,
+            side_id: None,
+            rating_consent: None,
+        },
+    )
+    .await
+    .expect("decline without consenting");
+    assert!(my_rating_opt_ins(&invitee_config).await.is_empty());
+    let declined = invitations_invitation_id_get(&invitee_config, &invitation_id)
+        .await
+        .expect("get invitation");
+    assert_eq!(
+        declined.invitation.status,
+        models::InvitationStatus::Declined
+    );
+}
+
+/// An organiser adding someone directly puts them straight into a spot without
+/// asking them. So on a ranked match it's only allowed for someone who has
+/// already agreed: never a player without an account, and a linked user only
+/// once they're opted in to the sport (otherwise "invite them instead", and
+/// they consent on accepting). Refused before anything is written.
+#[tokio::test]
+async fn a_ranked_match_only_takes_added_players_already_opted_in() {
+    let (config, owner) = new_user().await;
+    let (friend_config, friend) = new_user().await;
+    let created = matches_post(&config, ranked_joinable_match_input(None))
+        .await
+        .expect("create ranked match");
+    let side_b = other_side_id(&created, &side_id_for_user(&created, &owner.profile.id));
+    let add = |user_id: Option<String>, display_name: Option<String>| {
+        matches_match_id_patch(
+            &config,
+            &created.id,
+            models::UpdateMatchInput {
+                added_players: Some(vec![models::AddMatchPlayerInput {
+                    user_id,
+                    display_name,
+                    side_id: Some(side_b.clone()),
+                }]),
+                ..Default::default()
+            },
+        )
+    };
+
+    assert_status_with_content(
+        add(None, Some("Ringer".to_string())).await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "without an Agon account",
+    );
+    assert_status_with_content(
+        add(Some(friend.profile.id.clone()), None).await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "invite them instead",
+    );
+    let unchanged = matches_match_id_get(&config, &created.id)
+        .await
+        .expect("get match");
+    assert_eq!(
+        unchanged.players.len(),
+        created.players.len(),
+        "neither refused add wrote a player"
+    );
+
+    opt_in_to_ratings(&friend_config, models::MatchType::Tennis).await;
+    let added = add(Some(friend.profile.id.clone()), None)
+        .await
+        .expect("an opted-in user can be added directly");
+    assert!(is_on_roster(&added, &friend.profile.id));
+}
+
+/// `added_players` is judged against the `ranked` the request leaves the match
+/// with, not the one it found. Switching to ranked and adding someone who
+/// isn't opted in, in one PATCH, is refused whole (the match stays friendly).
+/// Switching back to friendly and adding a ringer in one PATCH is fine, since
+/// the ringer joins a friendly.
+#[tokio::test]
+async fn added_players_are_judged_against_the_ranked_flag_the_request_leaves() {
+    let (config, owner) = new_user().await;
+    let (_friend_config, friend) = new_user().await;
+    opt_in_to_ratings(&config, models::MatchType::Tennis).await;
+    let created = matches_post(&config, joinable_match_input(None, None, None))
+        .await
+        .expect("create a friendly");
+    let side_b = other_side_id(&created, &side_id_for_user(&created, &owner.profile.id));
+    let switch_and_add = |ranked: bool, player: models::AddMatchPlayerInput| {
+        matches_match_id_patch(
+            &config,
+            &created.id,
+            models::UpdateMatchInput {
+                ranked: Some(ranked),
+                added_players: Some(vec![player]),
+                ..Default::default()
+            },
+        )
+    };
+
+    assert_status_with_content(
+        switch_and_add(
+            true,
+            models::AddMatchPlayerInput {
+                user_id: Some(friend.profile.id.clone()),
+                display_name: None,
+                side_id: Some(side_b.clone()),
+            },
+        )
+        .await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "invite them instead",
+    );
+    let refused = matches_match_id_get(&config, &created.id)
+        .await
+        .expect("get match");
+    assert!(!refused.ranked, "the switch was refused along with the add");
+    assert!(!is_on_roster(&refused, &friend.profile.id));
+
+    matches_match_id_patch(
+        &config,
+        &created.id,
+        models::UpdateMatchInput {
+            ranked: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the switch on its own: the only player in a spot is opted in");
+    let friendly = switch_and_add(
+        false,
+        models::AddMatchPlayerInput {
+            user_id: None,
+            display_name: Some("Ringer".to_string()),
+            side_id: Some(side_b),
+        },
+    )
+    .await
+    .expect("back to friendly, with a ringer");
+    assert!(!friendly.ranked);
+}
+
+/// A match can only become ranked once everyone in a spot could be rated: no
+/// player without an account, and every linked player opted in to the sport.
+/// A pending invitee doesn't count, because they're asked when they accept.
+/// Each refusal leaves the match friendly, and the switch goes through once
+/// the last player in a spot has opted in.
+#[tokio::test]
+async fn switching_to_ranked_needs_everyone_in_a_spot_opted_in() {
+    let (owner_config, owner) = new_user().await;
+    let (player_config, _player) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let mut input = joinable_match_input(None, None, None);
+    input.invites = vec![invite_users("a", &[&invitee.profile.id])];
+    let created = matches_post(&owner_config, input)
+        .await
+        .expect("create a friendly");
+    let side_b = other_side_id(&created, &side_id_for_user(&created, &owner.profile.id));
+    let link = join_link_for(&owner_config, &created.id, Some(vec![side_b])).await;
+    join_match_with_consent(&player_config, &created.id, Some(&link.token), None)
+        .await
+        .expect("takes a spot on side b; a friendly asks nothing");
+
+    let switch = || {
+        matches_match_id_patch(
+            &owner_config,
+            &created.id,
+            models::UpdateMatchInput {
+                ranked: Some(true),
+                ..Default::default()
+            },
+        )
+    };
+
+    let with_ringer = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            added_players: Some(vec![models::AddMatchPlayerInput {
+                user_id: None,
+                display_name: Some("Ringer".to_string()),
+                side_id: None,
+            }]),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("a friendly may have a player without an account");
+    assert_status_with_content(
+        switch().await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "no Agon account",
+    );
+    let ringer_id = with_ringer
+        .players
+        .iter()
+        .find_map(|p| match &*p.member {
+            models::Member::External(e) if e.display_name == "Ringer" => Some(e.id.clone()),
+            _ => None,
+        })
+        .expect("the ringer on the roster");
+    matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            removed_player_ids: Some(vec![ringer_id]),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("remove the ringer");
+
+    assert_status_with_content(
+        switch().await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "opted in to tennis ratings",
+    );
+    opt_in_to_ratings(&owner_config, models::MatchType::Tennis).await;
+    assert_status_with_content(
+        switch().await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "opted in to tennis ratings",
+    );
+    assert!(
+        !matches_match_id_get(&owner_config, &created.id)
+            .await
+            .expect("get match")
+            .ranked,
+        "a refused switch leaves the match friendly"
+    );
+
+    opt_in_to_ratings(&player_config, models::MatchType::Tennis).await;
+    let ranked = switch()
+        .await
+        .expect("everyone in a spot is opted in; the pending invitee doesn't count yet");
+    assert!(ranked.ranked);
+}
+
+/// The gap the separate waitlist opened, closed by this rule: someone waiting
+/// on a friendly that turns ranked would have no way to consent on it (joining
+/// the waitlist again is a 409, and an invite-derived entry has no invitation
+/// left to accept), and moving them in would then be refused for good. So the
+/// switch also needs everyone *waiting* opted in, self-served and
+/// invite-derived alike. An opted-in player waiting doesn't block it, and once
+/// the organiser removes the others from the waitlist it goes through.
+#[tokio::test]
+async fn switching_to_ranked_needs_everyone_on_the_waitlist_opted_in() {
+    let (owner_config, owner) = new_user().await;
+    let (filler_config, _filler) = new_user().await;
+    let (stranger_config, stranger) = new_user().await;
+    let (invitee_config, invitee) = new_user().await;
+    let (keen_config, keen) = new_user().await;
+    opt_in_to_ratings(&owner_config, models::MatchType::Tennis).await;
+    opt_in_to_ratings(&filler_config, models::MatchType::Tennis).await;
+    opt_in_to_ratings(&keen_config, models::MatchType::Tennis).await;
+
+    let created = matches_post(&owner_config, joinable_match_input(None, None, Some(1)))
+        .await
+        .expect("create a friendly");
+    let side_b = other_side_id(&created, &side_id_for_user(&created, &owner.profile.id));
+    let link = join_link_for(&owner_config, &created.id, Some(vec![side_b.clone()])).await;
+    join_match_with_consent(&filler_config, &created.id, Some(&link.token), None)
+        .await
+        .expect("fills side b's only spot");
+    for waiter_config in [&stranger_config, &keen_config] {
+        join_waitlist_with_consent(waiter_config, &created.id, Some(&link.token), None)
+            .await
+            .expect("self-serve onto the waitlist; a friendly asks nothing");
+    }
+    matches_match_id_invitations_post(
+        &owner_config,
+        &created.id,
+        models::AddInvitationsInput {
+            invited_user_ids: vec![invitee.profile.id.clone()],
+            invited_external_names: vec![],
+            side_id: Some(side_b),
+            role: None,
+        },
+    )
+    .await
+    .expect("invite onto the full side b");
+    join_waitlist_with_consent(&invitee_config, &created.id, None, None)
+        .await
+        .expect("accept the invitation onto the waitlist");
+
+    let switch = || {
+        matches_match_id_patch(
+            &owner_config,
+            &created.id,
+            models::UpdateMatchInput {
+                ranked: Some(true),
+                ..Default::default()
+            },
+        )
+    };
+    assert_status_with_content(
+        switch().await,
+        reqwest::StatusCode::BAD_REQUEST,
+        "players on its waitlist haven't opted in to tennis ratings",
+    );
+
+    matches_match_id_waitlist_user_id_delete(&owner_config, &created.id, &stranger.profile.id)
+        .await
+        .expect("the organiser removes the self-served entry");
+    assert_status_with_content(switch().await, reqwest::StatusCode::BAD_REQUEST, "waitlist");
+    assert!(
+        !matches_match_id_get(&owner_config, &created.id)
+            .await
+            .expect("get match")
+            .ranked,
+        "still friendly while the invite-derived entry is waiting"
+    );
+
+    matches_match_id_waitlist_user_id_delete(&owner_config, &created.id, &invitee.profile.id)
+        .await
+        .expect("and the invite-derived one");
+    let ranked = switch().await.expect("everyone left waiting is opted in");
+    assert!(ranked.ranked);
+    assert_eq!(
+        waitlisted_user_ids(&owner_config, &created.id).await,
+        vec![keen.profile.id.clone()],
+        "the opted-in player is still waiting"
+    );
+}
+
+/// Joining a full ranked match is a 409 before consent comes into it: there's
+/// no spot to agree to. Its waitlist, which the 409 points to, is where they're
+/// asked, because nobody asks again when an admin later moves them in. Refused,
+/// they aren't waiting; with consent they wait, opted in. Asking again once
+/// waiting is the plain "already waiting" 409.
+#[tokio::test]
+async fn joining_a_full_ranked_matchs_waitlist_needs_rating_consent() {
+    let (owner_config, owner) = new_user().await;
+    let created = matches_post(&owner_config, ranked_joinable_match_input(Some(1)))
+        .await
+        .expect("create ranked match");
+    let side_b = other_side_id(&created, &side_id_for_user(&created, &owner.profile.id));
+    let link = join_link_for(&owner_config, &created.id, Some(vec![side_b])).await;
+    let (first_config, _first) = new_user().await;
+    join_match_with_consent(&first_config, &created.id, Some(&link.token), Some(true))
+        .await
+        .expect("fills side b's only spot");
+
+    let (late_config, late) = new_user().await;
+    assert_status_with_content(
+        join_match_with_consent(&late_config, &created.id, Some(&link.token), None).await,
+        reqwest::StatusCode::CONFLICT,
+        "that side is full",
+    );
+    assert_status_with_content(
+        join_waitlist_with_consent(&late_config, &created.id, Some(&link.token), None).await,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+        "rating_consent",
+    );
+    assert!(
+        waitlisted_user_ids(&owner_config, &created.id)
+            .await
+            .is_empty(),
+        "a refusal doesn't queue them"
+    );
+    assert!(my_rating_opt_ins(&late_config).await.is_empty());
+
+    let entry =
+        join_waitlist_with_consent(&late_config, &created.id, Some(&link.token), Some(true))
+            .await
+            .expect("onto the waitlist, consenting");
+    assert_eq!(entry.user_id, late.profile.id);
+    assert_eq!(my_rating_opt_ins(&late_config).await, vec!["tennis"]);
+
+    assert_status_with_content(
+        join_waitlist_with_consent(&late_config, &created.id, Some(&link.token), Some(true)).await,
+        reqwest::StatusCode::CONFLICT,
+        "already on this match's waitlist",
+    );
+}
+
+/// An invitee to a full ranked match gets the same typed 409 as anyone, ahead
+/// of consent. Accepting onto the waitlist instead is still getting in, so it
+/// asks: without consent the invitation stays pending and they aren't queued,
+/// and with it the invitation is accepted, they're waiting, and opted in.
+/// Otherwise the waitlist would be a way round the accept's own check.
+#[tokio::test]
+async fn accepting_a_ranked_invitation_onto_the_waitlist_needs_rating_consent() {
+    let (owner_config, owner) = new_user().await;
+    let created = matches_post(&owner_config, ranked_joinable_match_input(Some(1)))
+        .await
+        .expect("create ranked match");
+    let side_b = other_side_id(&created, &side_id_for_user(&created, &owner.profile.id));
+    let link = join_link_for(&owner_config, &created.id, Some(vec![side_b.clone()])).await;
+    let (filler_config, _filler) = new_user().await;
+    join_match_with_consent(&filler_config, &created.id, Some(&link.token), Some(true))
+        .await
+        .expect("fills side b's only spot");
+    let (invitee_config, invitee) = new_user().await;
+    let invitation_id = matches_match_id_invitations_post(
+        &owner_config,
+        &created.id,
+        models::AddInvitationsInput {
+            invited_user_ids: vec![invitee.profile.id.clone()],
+            invited_external_names: vec![],
+            side_id: Some(side_b),
+            role: None,
+        },
+    )
+    .await
+    .expect("invite onto the full side b")
+    .first()
+    .expect("one invitation")
+    .id
+    .clone();
+
+    assert_status_with_content(
+        accept_invitation_with_consent(&invitee_config, &created.id, None).await,
+        reqwest::StatusCode::CONFLICT,
+        "that side is full",
+    );
+    assert_status_with_content(
+        join_waitlist_with_consent(&invitee_config, &created.id, None, None).await,
+        reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+        "starts your tennis rating",
+    );
+    let pending = invitations_invitation_id_get(&invitee_config, &invitation_id)
+        .await
+        .expect("get invitation");
+    assert_eq!(pending.invitation.status, models::InvitationStatus::Pending);
+    assert!(
+        waitlisted_user_ids(&owner_config, &created.id)
+            .await
+            .is_empty()
+    );
+    assert!(my_rating_opt_ins(&invitee_config).await.is_empty());
+
+    join_waitlist_with_consent(&invitee_config, &created.id, None, Some(true))
+        .await
+        .expect("accept onto the waitlist, consenting");
+    let accepted = invitations_invitation_id_get(&invitee_config, &invitation_id)
+        .await
+        .expect("get invitation");
+    assert_eq!(
+        accepted.invitation.status,
+        models::InvitationStatus::Accepted
+    );
+    assert_eq!(
+        waitlisted_user_ids(&owner_config, &created.id).await,
+        vec![invitee.profile.id.clone()]
+    );
+    assert_eq!(my_rating_opt_ins(&invitee_config).await, vec!["tennis"]);
+}
+
+/// Move-in on a ranked match checks the waiting player is opted in, because an
+/// admin can't consent for them. Every way onto a ranked match's waitlist
+/// already asks, so this pins the other half: an opted-in player is moved in
+/// as on any match, not caught by the check. (The refusal itself needs a
+/// waitlist join racing a switch to ranked, so it is unit-tested only, in
+/// `mapping`'s `ranked_move_in_reason` tests.)
+#[tokio::test]
+async fn an_opted_in_player_can_be_moved_in_off_a_ranked_matchs_waitlist() {
+    let (owner_config, owner) = new_user().await;
+    let created = matches_post(&owner_config, ranked_joinable_match_input(Some(1)))
+        .await
+        .expect("create ranked match");
+    let side_b = other_side_id(&created, &side_id_for_user(&created, &owner.profile.id));
+    let link = join_link_for(&owner_config, &created.id, Some(vec![side_b.clone()])).await;
+    let (filler_config, _filler) = new_user().await;
+    join_match_with_consent(&filler_config, &created.id, Some(&link.token), Some(true))
+        .await
+        .expect("fills side b's only spot");
+    let (waiter_config, waiter) = new_user().await;
+    join_waitlist_with_consent(&waiter_config, &created.id, Some(&link.token), Some(true))
+        .await
+        .expect("onto the waitlist, consenting");
+    matches_match_id_leave_post(&filler_config, &created.id)
+        .await
+        .expect("the filler leaves, freeing the spot");
+
+    matches_match_id_waitlist_user_id_move_in_post(&owner_config, &created.id, &waiter.profile.id)
+        .await
+        .expect("move the opted-in waiter in");
+    let after = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match");
+    assert_eq!(side_id_for_user(&after, &waiter.profile.id), side_b);
+    assert!(
+        waitlisted_user_ids(&owner_config, &created.id)
+            .await
+            .is_empty()
     );
 }

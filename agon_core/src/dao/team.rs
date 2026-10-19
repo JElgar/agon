@@ -41,7 +41,24 @@ impl Dao {
     ) -> DaoResult<()> {
         use aws_sdk_dynamodb::types::{Put, TransactWriteItem};
 
-        let meta_item = to_item(&Pk::Team(team.id.clone()), &Sk::Meta, TYPE_TEAM, team)?;
+        // The owner auto-follows, so the meta item is written with its
+        // `follower_count` already seeded rather than bumped by an `ADD` in
+        // this same transaction: DynamoDB refuses two operations on one item
+        // ("Transaction request cannot include multiple operations on one
+        // item"), and that is exactly what the bump was — an update of the
+        // item being put beside it, which made every `POST /teams` a 500
+        // (#250). A creator with no account can't follow, so there is nothing
+        // to seed for them.
+        let owner_follows = creator.user_id.is_some();
+        let seeded = TeamRecord {
+            follower_count: if owner_follows {
+                1
+            } else {
+                team.follower_count
+            },
+            ..team.clone()
+        };
+        let meta_item = to_item(&Pk::Team(team.id.clone()), &Sk::Meta, TYPE_TEAM, &seeded)?;
         let member_item = self.team_member_item(&team.id, creator)?;
 
         let put_meta = Put::builder()
@@ -63,7 +80,8 @@ impl Dao {
             TransactWriteItem::builder().put(put_member).build(),
         ];
         if let Some(owner_id) = &creator.user_id {
-            items.extend(self.follow_team_items(owner_id, &team.id, &creator.created_at)?);
+            // Edge only — the count is seeded above.
+            items.push(self.follow_team_edge_item(owner_id, &team.id, &creator.created_at)?);
         }
 
         let result = self

@@ -126,24 +126,14 @@ export function FeedPage() {
             {upcoming.length}
           </span>
         </h2>
-        <div className="flex items-center gap-3">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-auto p-0 text-sm font-semibold text-primary hover:bg-transparent"
-            onClick={() => navigate('/matches/scheduled')}
-          >
-            See all scheduled games
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-auto p-0 text-sm font-semibold text-primary hover:bg-transparent"
-            onClick={() => navigate('/matches/search')}
-          >
-            Browse all matches
-          </Button>
-        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-auto p-0 text-sm font-semibold text-primary hover:bg-transparent"
+          onClick={() => navigate('/matches/search?tab=scheduled')}
+        >
+          Browse all matches
+        </Button>
       </div>
       {/* A horizontal snap-scroll strip below `xl`; a plain vertical stack
           in the desktop sidebar, where there's no room to scroll sideways
@@ -155,7 +145,12 @@ export function FeedPage() {
         style={{ scrollbarWidth: 'none' }}
       >
         {upcoming.map((m) => (
-          <UpcomingMatchCard key={m.id} match={m} onOpen={() => navigate(`/matches/${m.id}`)} />
+          <UpcomingMatchCard
+            key={m.id}
+            match={m}
+            onOpen={() => navigate(`/matches/${m.id}`)}
+            fullWidth={upcoming.length === 1}
+          />
         ))}
       </div>
     </div>

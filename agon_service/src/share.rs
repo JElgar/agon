@@ -160,7 +160,11 @@ async fn match_card(
 ) -> Option<PreviewCard> {
     let agg = dao.get_match(match_id).await.ok()??;
     let raw = mapping::match_from_records(&agg.match_, &agg.sides, &agg.players, false);
-    let mut m = Api.hydrate_match(dao, raw).await.ok()?;
+    let mut m = Api
+        .hydrate_matches(dao, vec![raw], None)
+        .await
+        .ok()?
+        .remove(0);
     sign_match_headers(assets, &mut m);
     Some(PreviewCard {
         target_url: target_url.to_string(),
@@ -183,7 +187,11 @@ async fn invite_card(
         InvitationContextRecord::Match { match_id, .. } => {
             let agg = dao.get_match(match_id).await.ok()??;
             let raw = mapping::match_from_records(&agg.match_, &agg.sides, &agg.players, false);
-            let mut m = Api.hydrate_match(dao, raw).await.ok()?;
+            let mut m = Api
+                .hydrate_matches(dao, vec![raw], None)
+                .await
+                .ok()?
+                .remove(0);
             sign_match_headers(assets, &mut m);
 
             let side_name = player_for_invitation(&m, &rec.id).and_then(|p| {
@@ -273,7 +281,11 @@ async fn join_card(
     };
     let agg = dao.get_match(match_id).await.ok()??;
     let raw = mapping::match_from_records(&agg.match_, &agg.sides, &agg.players, false);
-    let mut m = Api.hydrate_match(dao, raw).await.ok()?;
+    let mut m = Api
+        .hydrate_matches(dao, vec![raw], None)
+        .await
+        .ok()?
+        .remove(0);
     sign_match_headers(assets, &mut m);
 
     // A scope naming exactly one side auto-assigns it (mirroring

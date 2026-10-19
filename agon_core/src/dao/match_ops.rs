@@ -17,7 +17,7 @@ use super::keys::{Pk, Sk};
 use super::records::{
     ConfirmedScoreRecord, HeaderPhotoRecord, LocationRecord, MatchFormatRecord, MatchPlayerRecord,
     MatchPlayerRole, MatchRankedPromptRecord, MatchRecord, MatchScoreRecord, MatchSideRecord,
-    PendingScoreRecord, RankedPromptRecord, SideRosterMemberRecord,
+    PendingScoreRecord, SideRosterMemberRecord,
 };
 
 pub const TYPE_MATCH: &str = "match";
@@ -1050,44 +1050,38 @@ impl Dao {
         self.send_transact_items(items).await
     }
 
-    /// Make a match ranked and ask the players who still need to opt in, in
-    /// one transaction: the meta item gets `ranked = true`, the ask itself
-    /// (`ranked_prompt`) and the due-index stamp, and every row in `prompted`
-    /// gets its own copy of the ask.
+    /// Make a match ranked and open its switch-to-ranked ask — **one item
+    /// write**, because the ask is the only thing stored about it.
     ///
-    /// **One write, because a half-done switch is a broken match.** A ranked
-    /// match whose players were never asked would rate people who never
-    /// consented — the one thing the whole design exists to prevent — and an
-    /// ask on a match that stayed friendly would pester people for nothing.
-    /// So `ranked` moves with the prompts or not at all, and `update_match`
-    /// leaves `ranked` out of its own meta update on this path.
+    /// Who owes an answer isn't written anywhere: it is derived from the
+    /// roster and the players' own opt-ins (see [`MatchRankedPromptRecord`]).
+    /// That keeps this off `TransactWriteItems`, so a switch has no
+    /// roster-size ceiling, nothing to half-apply, and no per-row state to
+    /// leave behind when the ask goes away.
     ///
-    /// Conditional on the match having no outstanding ask
-    /// (`attribute_not_exists(ranked_prompt)`), which makes two admins
-    /// switching at once resolve to one ask rather than two interleaved sets
-    /// of prompts; the loser gets `DaoError::Conflict`. Each player row is
-    /// conditional on still existing, so someone removed between the read and
-    /// this write fails the transaction instead of being silently asked.
+    /// `ranked` moves in the same write as the ask, and that matters: a ranked
+    /// match with nobody asked would rate players who never consented, and an
+    /// ask on a friendly match would pester people for nothing. One item makes
+    /// that atomic for free.
+    ///
+    /// Conditional on the match existing and having no ask open, so two admins
+    /// switching at once resolve to one ask and the loser gets
+    /// [`DaoError::Conflict`] rather than silently replacing the first ask's
+    /// deadline.
     ///
     /// The due-index stamp (`GSI3PK`/`GSI3SK` =
-    /// [`MatchRankedPromptRecord::DUE_GSI3PK`] / the deadline) is what makes
-    /// "which asks are overdue?" a single Query. Nothing reads it yet — the
-    /// deadline timer does the expiring — it is here so the backstop sweep and
-    /// the repair job are a small PR later rather than a backfill.
-    ///
-    /// DynamoDB caps a transaction at 100 items, so this handles 99 prompted
-    /// players beside the meta update — the same caveat `create_match` and
-    /// `remove_match_players` already carry, and far past any real roster.
-    #[tracing::instrument(skip(self, ask, prompted), fields(prompted = prompted.len()))]
-    pub async fn open_ranked_prompts_tx(
+    /// [`MatchRankedPromptRecord::DUE_GSI3PK`] / the deadline) rides along.
+    /// Nothing reads it yet; it is what makes "which asks are overdue?" one
+    /// Query for the deadline sweep and the repair job, without a backfill.
+    #[tracing::instrument(skip(self, ask))]
+    pub async fn open_ranked_prompt(
         &self,
         match_id: &str,
         ask: &MatchRankedPromptRecord,
-        prompted: &[(String, RankedPromptRecord)],
     ) -> DaoResult<()> {
-        let mut items: Vec<TransactWriteItem> = Vec::with_capacity(prompted.len() + 1);
-
-        let meta = Update::builder()
+        let result = self
+            .client
+            .update_item()
             .table_name(self.table())
             .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
             .key(ATTR_SK, s(Sk::Meta.to_string()))
@@ -1107,79 +1101,59 @@ impl Dao {
                 s(MatchRankedPromptRecord::DUE_GSI3PK.to_string()),
             )
             .expression_attribute_values(":gsisk", s(ask.deadline.clone()))
-            .build()
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-        items.push(TransactWriteItem::builder().update(meta).build());
-
-        for (player_id, prompt) in prompted {
-            let row = Update::builder()
-                .table_name(self.table())
-                .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
-                .key(ATTR_SK, s(Sk::Player(player_id.clone()).to_string()))
-                .update_expression("SET #prompt = :prompt")
-                .condition_expression("attribute_exists(#pk)")
-                .expression_attribute_names("#pk", ATTR_PK)
-                .expression_attribute_names("#prompt", "ranked_prompt")
-                .expression_attribute_values(":prompt", to_attr(prompt)?)
-                .build()
-                .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-            items.push(TransactWriteItem::builder().update(row).build());
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => Err(DaoError::Conflict(
+                "this match already has a switch-to-ranked ask open".into(),
+            )),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
-
-        self.send_transact_items(items).await
     }
 
-    /// Make a match friendly again and withdraw any outstanding ask, in one
-    /// transaction: `ranked = false`, the ask and its due-index stamp removed
-    /// from the meta item, and `ranked_prompt` removed from each row in
-    /// `prompted`.
+    /// Clear a match's switch-to-ranked ask — one item write, the mirror of
+    /// [`Self::open_ranked_prompt`].
     ///
-    /// `prompted` is the player ids currently carrying a prompt, read from the
-    /// same aggregate the switch was judged on. Missing one would leave a
-    /// stale prompt on a row, which is harmless — every reader asks whether a
-    /// row awaits the match's *current* ask
-    /// ([`MatchPlayerRecord::awaits_ranked_prompt`]), and a withdrawn match
-    /// has none — but tidy is better than harmless.
+    /// `friendly` is `true` when the organiser is reverting the match (the
+    /// flag goes back with the ask) and `false` when the ask is simply
+    /// finished — everybody owed an answer has given one, so the match stays
+    /// ranked and only the ask goes.
     ///
-    /// Unconditional on the meta item beyond its existence: whatever the ask
-    /// says now, a request that legitimately reverts the flag wants it gone.
-    #[tracing::instrument(skip(self, prompted), fields(prompted = prompted.len()))]
-    pub async fn clear_ranked_prompts_tx(
-        &self,
-        match_id: &str,
-        prompted: &[String],
-    ) -> DaoResult<()> {
-        let mut items: Vec<TransactWriteItem> = Vec::with_capacity(prompted.len() + 1);
-
-        let meta = Update::builder()
+    /// Clearing is a meta write either way, which is what lets the worker tell
+    /// the two apart from the stream: `ranked` still true means the switch
+    /// completed, `ranked` false means it was withdrawn.
+    ///
+    /// Unconditional beyond the match existing: whatever the ask currently
+    /// says, a caller that has decided it should go wants it gone.
+    #[tracing::instrument(skip(self))]
+    pub async fn clear_ranked_prompt(&self, match_id: &str, friendly: bool) -> DaoResult<()> {
+        let mut update = self
+            .client
+            .update_item()
             .table_name(self.table())
             .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
             .key(ATTR_SK, s(Sk::Meta.to_string()))
-            .update_expression("SET #ranked = :ranked REMOVE #prompt, #gsipk, #gsisk")
             .condition_expression("attribute_exists(#pk)")
             .expression_attribute_names("#pk", ATTR_PK)
-            .expression_attribute_names("#ranked", "ranked")
             .expression_attribute_names("#prompt", "ranked_prompt")
             .expression_attribute_names("#gsipk", ATTR_GSI3PK)
-            .expression_attribute_names("#gsisk", ATTR_GSI3SK)
-            .expression_attribute_values(":ranked", AttributeValue::Bool(false))
-            .build()
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-        items.push(TransactWriteItem::builder().update(meta).build());
-
-        for player_id in prompted {
-            let row = Update::builder()
-                .table_name(self.table())
-                .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
-                .key(ATTR_SK, s(Sk::Player(player_id.clone()).to_string()))
-                .update_expression("REMOVE #prompt")
-                .expression_attribute_names("#prompt", "ranked_prompt")
-                .build()
-                .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-            items.push(TransactWriteItem::builder().update(row).build());
+            .expression_attribute_names("#gsisk", ATTR_GSI3SK);
+        update = if friendly {
+            update
+                .update_expression("SET #ranked = :ranked REMOVE #prompt, #gsipk, #gsisk")
+                .expression_attribute_names("#ranked", "ranked")
+                .expression_attribute_values(":ranked", AttributeValue::Bool(false))
+        } else {
+            update.update_expression("REMOVE #prompt, #gsipk, #gsisk")
+        };
+        match update.send().await {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => {
+                Err(DaoError::NotFound("match not found".into()))
+            }
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
-
-        self.send_transact_items(items).await
     }
 
     /// Remove players from a match's roster entirely (not just unassign their

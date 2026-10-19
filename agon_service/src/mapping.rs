@@ -1601,44 +1601,57 @@ pub fn switch_to_ranked_reason(in_a_spot: &UnratablePlayers) -> Option<String> {
 
 /// A match's outstanding ask, for the API.
 ///
-/// `awaiting_you` is left `false` here and set by the caller from the same
-/// aggregate, the way `Match::viewer_role` is: this function has no viewer to
-/// resolve it against, and the answer is one
-/// [`MatchPlayerRecord::awaits_ranked_prompt`] call on the caller's own row.
+/// `pending` and `awaiting_you` are left at zero/false here and filled in by
+/// the caller, the way `Match::viewer_role` is: both are derived from the
+/// roster and the players' opt-ins (see [`players_owing_rating_consent`]),
+/// and this function has neither the profiles nor a viewer to resolve them
+/// against. `hydrate_matches` has both already loaded and does it there.
 #[must_use]
 pub fn ranked_prompt_from_record(rec: &MatchRankedPromptRecord) -> RankedPrompt {
     RankedPrompt {
         prompt_id: rec.id.clone(),
         ladder: rec.ladder.clone(),
         deadline: parse_ts(&rec.deadline),
-        pending: rec.pending,
+        pending: 0,
         awaiting_you: false,
     }
 }
 
-/// The players a switch to ranked has to ask, as `(player_id, user_id)` pairs:
-/// everyone taking a spot who hasn't opted in to `ladder` yet.
+/// The players who still owe an answer to a ranked match's switch ask, as
+/// `(player_id, user_id)` pairs: everyone taking a spot whose account isn't
+/// opted in to `ladder`.
 ///
-/// `users` holds the linked players' profiles, from the same
-/// `batch_get_users` [`unratable_players`] uses. A player with no profile in
-/// the map counts as not opted in — nothing says they are, and asking someone
-/// we know nothing about is the safe direction (the worst case is a prompt
-/// they answer).
+/// **Derived, never stored.** The same call answers both "who does this
+/// switch have to ask?" at the moment of the switch and "who is it still
+/// waiting on?" on every later read, because an answer is recorded elsewhere:
+/// accepting writes the per-sport opt-in to the player's own profile, and
+/// declining takes them off the roster. A stored "asked" flag would only cache
+/// the question and would go stale the moment someone opted in to that ladder
+/// by another route.
 ///
-/// Three groups are deliberately *not* asked:
+/// Cheap where it matters: the match read path already loads the roster and
+/// batch-gets every player's profile, so this is a filter over data in hand.
 ///
-/// - **Players already opted in to this ladder.** The prompt exists to collect
-///   consent that is missing, not to re-confirm consent that exists. Asking
-///   them would invent a new way to lose a spot in a match you had already
-///   joined, for a sport you had already agreed to be rated in — and it would
-///   kill the no-prompt path for an established group, where everyone is
-///   opted in and the switch should simply happen. They get told instead.
+/// `users` holds the linked players' profiles. A player with no profile in the
+/// map counts as not opted in — nothing says they are, and asking someone we
+/// know nothing about is the safe direction (worst case, a prompt they
+/// answer). **The deadline sweep must not rely on that**: expiring someone
+/// because their profile failed to load would take their place for a read
+/// error, so it has to fail closed instead.
+///
+/// Three groups are deliberately absent:
+///
+/// - **Players already opted in to this ladder.** The ask collects consent
+///   that is missing, not consent that exists. Asking them would invent a new
+///   way to lose a place in a match they had already joined, for a sport they
+///   had already agreed to be rated in — and it would kill the no-ask path for
+///   an established group, where everyone is opted in and the switch should
+///   simply happen.
 /// - **Pending or declined invitees**, who take no spot
 ///   ([`MatchPlayerRecord::occupies_slot`]) and are asked on accept.
 /// - **Players with no account**, who can't be asked at all and refuse the
 ///   whole switch via [`switch_to_ranked_reason`] before this is called.
-#[must_use]
-pub fn players_to_prompt(
+pub fn players_owing_rating_consent(
     ladder: &str,
     players: &[MatchPlayerRecord],
     users: &std::collections::HashMap<String, UserRecord>,
@@ -3752,7 +3765,6 @@ mod tests {
                 }),
                 role: MatchPlayerRoleRecord::Player,
                 joined_via: None,
-                ranked_prompt: None,
             };
         let roster = vec![
             player("p_in", Some("in"), None),
@@ -3763,7 +3775,7 @@ mod tests {
             player("p_guest", None, None),
         ];
 
-        let asked = players_to_prompt("squash", &roster, &users);
+        let asked = players_owing_rating_consent("squash", &roster, &users);
         assert_eq!(
             asked,
             vec![
@@ -3773,7 +3785,7 @@ mod tests {
             "not opted in and in a spot — including a linked user we hold no profile for"
         );
         assert!(
-            players_to_prompt("tennis", &roster, &users)
+            players_owing_rating_consent("tennis", &roster, &users)
                 .iter()
                 .all(|(id, _)| id != "p_out"),
             "opted in to tennis, so a tennis switch asks them nothing"

@@ -406,6 +406,12 @@ async fn create_and_get_team() {
         .expect("get team");
     assert_eq!(fetched.id, team.id);
     assert_eq!(fetched.name, "Surrey");
+    // The owner implicitly follows their own team, and the count is seeded
+    // with the meta item rather than bumped by an update beside it — the two
+    // operations on one item that DynamoDB refuses, and that broke every
+    // `POST /teams` (#250). `follow_and_unfollow_team` relies on this
+    // starting at 1.
+    assert_eq!(fetched.follower_count, 1);
     // The creator is a member — members are listed separately (paginated),
     // not embedded on the team itself.
     let members = teams_team_id_members_get(&config, &team.id, None, None)

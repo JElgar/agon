@@ -24,7 +24,6 @@ import { useUnreadNotificationsCount } from '@/hooks/useUnreadCount'
 import { useQuery } from '@tanstack/react-query'
 import { fetchClient } from '@/lib/api-client'
 import { FeedPage } from '@/pages/FeedPage'
-import { ScheduledMatchesPage } from '@/pages/ScheduledMatchesPage'
 import { BrowseMatchesPage } from '@/pages/BrowseMatchesPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { LogMatchPage } from '@/pages/LogMatchPage'
@@ -121,7 +120,10 @@ function AppShell({ onSignOut }: { onSignOut: () => void }) {
           <Route path="/" element={<HomeRedirect />} />
           <Route path="/feed" element={<FeedPage />} />
           <Route path="/matches/new" element={<LogMatchPage />} />
-          <Route path="/matches/scheduled" element={<ScheduledMatchesPage />} />
+          <Route
+            path="/matches/scheduled"
+            element={<Navigate to="/matches/search?tab=scheduled" replace />}
+          />
           <Route path="/matches/search" element={<BrowseMatchesPage />} />
           <Route path="/matches/:matchId" element={<MatchDetailPage />} />
           <Route path="/match-series/:seriesId" element={<MatchSeriesPage />} />

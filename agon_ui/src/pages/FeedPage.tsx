@@ -145,7 +145,12 @@ export function FeedPage() {
         style={{ scrollbarWidth: 'none' }}
       >
         {upcoming.map((m) => (
-          <UpcomingMatchCard key={m.id} match={m} onOpen={() => navigate(`/matches/${m.id}`)} />
+          <UpcomingMatchCard
+            key={m.id}
+            match={m}
+            onOpen={() => navigate(`/matches/${m.id}`)}
+            fullWidth={upcoming.length === 1}
+          />
         ))}
       </div>
     </div>

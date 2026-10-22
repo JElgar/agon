@@ -44,15 +44,15 @@ use mapping::{
     invitation_status_from_str, invitation_status_str, join_link_from_record,
     join_link_scope_from_record, join_link_scope_to_record, live_event_from_record,
     location_to_record, match_format_sport_tag, match_format_to_record, match_from_records,
-    match_player_role_from_record, match_score_from_record,
-    match_score_to_record, match_series_from_record, match_series_occurrence_from_record,
-    match_status_str, match_type_tag, new_live_event_to_dao, notification_actor_id,
-    notification_from_record, ranked_added_players_reason, ranked_lock_reason_for_update,
-    ranked_move_in_reason, rating_consent_step, rating_ladder, rating_ladder_for,
-    rating_opt_ins_from_record, roster_preview_player, score_submission_from_record,
-    score_to_record, search_match_from_records, series_end_record_from_input,
-    switch_to_ranked_reason, team_from_records, team_list_item_from_record,
-    team_member_from_record, unrankable_sport_reason, unratable_players, user_profile_from_record,
+    match_player_role_from_record, match_score_from_record, match_score_to_record,
+    match_series_from_record, match_series_occurrence_from_record, match_status_str,
+    match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
+    ranked_added_players_reason, ranked_lock_reason_for_update, ranked_move_in_reason,
+    rating_consent_step, rating_ladder, rating_ladder_for, rating_opt_ins_from_record,
+    roster_preview_player, score_submission_from_record, score_to_record,
+    search_match_from_records, series_end_record_from_input, switch_to_ranked_reason,
+    team_from_records, team_list_item_from_record, team_member_from_record,
+    unrankable_sport_reason, unratable_players, user_profile_from_record,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -3707,10 +3707,8 @@ impl Api {
         let mut creator_side_id: Option<String> = None;
         // The creator always gets `Owner` in `authority`, whether or not
         // they play — see `MatchRecord::authority`'s doc comment.
-        let authority = std::collections::HashMap::from([(
-            uid.clone(),
-            dao::records::MatchPlayerRole::Owner,
-        )]);
+        let authority =
+            std::collections::HashMap::from([(uid.clone(), dao::records::MatchPlayerRole::Owner)]);
         if let Some(client_id) = &input.creator_side_client_id {
             let Some(side_id) = side_ids.get(client_id).cloned() else {
                 return Ok(CreateMatchResponse::ValidationError(PlainText(
@@ -4012,8 +4010,8 @@ impl Api {
             .await
             .map_err(dao_internal)?;
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
-        m.viewer_role = caller_match_authority_role(&agg.match_, &uid)
-            .map(match_player_role_from_record);
+        m.viewer_role =
+            caller_match_authority_role(&agg.match_, &uid).map(match_player_role_from_record);
         // Only worth the extra team lookups for a non-participant on a match
         // that actually offers team self-join somewhere.
         if m.viewer_role.is_none() && agg.sides.iter().any(|s| s.team_join_enabled) {
@@ -4748,8 +4746,8 @@ impl Api {
             .await
             .map_err(dao_internal)?;
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
-        m.viewer_role = caller_match_authority_role(&agg.match_, &uid)
-            .map(match_player_role_from_record);
+        m.viewer_role =
+            caller_match_authority_role(&agg.match_, &uid).map(match_player_role_from_record);
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m).await?;
         Ok(UpdateMatchResponse::Match(Json(m)))
@@ -7389,8 +7387,8 @@ impl Api {
             )));
         };
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, false);
-        m.viewer_role = caller_match_authority_role(&agg.match_, &uid)
-            .map(match_player_role_from_record);
+        m.viewer_role =
+            caller_match_authority_role(&agg.match_, &uid).map(match_player_role_from_record);
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m).await?;
         Ok(JoinMatchResponse::Match(Json(m)))
@@ -7559,7 +7557,8 @@ impl Api {
                 "you're not a player on this match".into(),
             )));
         };
-        if caller_match_authority_role(&agg.match_, &uid) == Some(dao::records::MatchPlayerRole::Owner)
+        if caller_match_authority_role(&agg.match_, &uid)
+            == Some(dao::records::MatchPlayerRole::Owner)
         {
             return Ok(LeaveMatchResponse::ValidationError(PlainText(
                 "transfer ownership to someone else before leaving".into(),

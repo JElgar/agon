@@ -1082,11 +1082,13 @@ pub fn team_list_item_from_record(team: &TeamRecord, is_followed_by_me: bool) ->
 /// `agon_service::main::caller_match_authority_role`, the single place that
 /// lookup is implemented; this mirrors it per-player rather than importing
 /// it, since `main.rs` already depends on this module.
-pub fn match_player_from_record(rec: &MatchPlayerRecord, match_record: &MatchRecord) -> MatchPlayer {
+pub fn match_player_from_record(
+    rec: &MatchPlayerRecord,
+    match_record: &MatchRecord,
+) -> MatchPlayer {
     let authority_role = rec.user_id.as_deref().and_then(|uid| {
         match_record.authority.get(uid).copied().or_else(|| {
-            (match_record.created_by_user_id == uid)
-                .then_some(MatchPlayerRoleRecord::Owner)
+            (match_record.created_by_user_id == uid).then_some(MatchPlayerRoleRecord::Owner)
         })
     });
     MatchPlayer {

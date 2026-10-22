@@ -13,9 +13,9 @@ use super::is_update_conditional_failure;
 use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_pk, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::{
-    ConfirmedScoreRecord, HeaderPhotoRecord, LocationRecord, MatchFormatRecord,
-    MatchPlayerRecord, MatchPlayerRole, MatchRecord, MatchScoreRecord, MatchSideRecord,
-    PendingScoreRecord, SideRosterMemberRecord,
+    ConfirmedScoreRecord, HeaderPhotoRecord, LocationRecord, MatchFormatRecord, MatchPlayerRecord,
+    MatchPlayerRole, MatchRecord, MatchScoreRecord, MatchSideRecord, PendingScoreRecord,
+    SideRosterMemberRecord,
 };
 
 pub const TYPE_MATCH: &str = "match";

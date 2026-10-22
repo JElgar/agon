@@ -1692,6 +1692,85 @@ async fn accepting_a_normal_invite_updates_feed_and_stats() {
     assert_eq!(tennis.losses, 1, "invitee was on the losing side");
 }
 
+/// A roster player with no side assigned didn't play for either side, so a
+/// confirmed match must not credit them any outcome at all — not even a loss.
+#[tokio::test]
+async fn an_unassigned_roster_player_gets_no_stat_contribution() {
+    let (owner_config, _owner) = new_user().await;
+    let (opponent_config, opponent) = new_user().await;
+    let (unassigned_config, unassigned) = new_user().await;
+
+    // Side "b" gets a real opponent (so there's someone to confirm the
+    // score); a separate invite with no side_client_id puts a second user on
+    // the roster without ever assigning them a side.
+    let created = matches_post(
+        &owner_config,
+        completed_match(vec![
+            invite_users("b", &[&opponent.profile.id]),
+            models::CreateMatchInviteInput {
+                side_client_id: None,
+                invited_user_ids: vec![unassigned.profile.id.clone()],
+                invited_externals: vec![],
+            },
+        ]),
+    )
+    .await
+    .expect("create match");
+
+    for (config, id) in [
+        (&opponent_config, &opponent.profile.id),
+        (&unassigned_config, &unassigned.profile.id),
+    ] {
+        let inbox = users_me_invitations_get(config, None, None, None)
+            .await
+            .expect("inbox");
+        let detail = inbox
+            .items
+            .iter()
+            .find(|i| {
+                matches!(&*i.context,
+                models::InvitationContext::Match(ctx) if ctx.match_id == created.id)
+            })
+            .unwrap_or_else(|| panic!("match invitation in {id}'s inbox"));
+        invitations_invitation_id_respond_post(
+            config,
+            &detail.invitation.id,
+            models::RespondToInvitationInput {
+                response: models::InvitationResponse::Accepted,
+                side_id: None,
+                rating_consent: None,
+            },
+        )
+        .await
+        .expect("accept invitation");
+    }
+
+    let submission_id = created
+        .pending_score
+        .as_ref()
+        .expect("pending score at create time")
+        .submission_id
+        .clone();
+    matches_match_id_score_submissions_submission_id_respond_post(
+        &opponent_config,
+        &created.id,
+        &submission_id,
+        models::RespondToScoreInput {
+            response: models::ScoreResponseKind::Confirm,
+        },
+    )
+    .await
+    .expect("confirm score");
+
+    assert_matches_played_reaches(&opponent_config, models::MatchType::Tennis, 1, "opponent")
+        .await;
+    assert_eq!(
+        my_matches_played(&unassigned_config, models::MatchType::Tennis).await,
+        0,
+        "an unassigned roster player must not be credited a result for this match"
+    );
+}
+
 /// End-to-end for the *invite-link* (bearer token) acceptance flow into an
 /// already-completed match: an external invitee is created with a minted token,
 /// a real account then accepts by token, and afterwards the match is on that

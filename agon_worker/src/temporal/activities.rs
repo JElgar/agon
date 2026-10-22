@@ -105,9 +105,10 @@ impl AgonActivities {
     }
 
     /// Generate one occurrence of a series: claim its generation slot, create
-    /// its match (team-linked sides only, no players — a series only
-    /// configures a team per side; roster join happens per-occurrence
-    /// later; the organiser gets `Owner` on a non-roster
+    /// its match (team-linked sides only, with team self-join turned on and
+    /// no invited players — a series only configures a team per side and has
+    /// no invite-list support yet, so roster join happens per-occurrence via
+    /// each side's own team; the organiser gets `Owner` on a non-roster
     /// `MatchOrganizerRecord`, since they never play in the template — see
     /// that type's doc comment), then bump the series' `occurrences_generated`
     /// counter. Every
@@ -163,7 +164,11 @@ impl AgonActivities {
                     name: side.name.clone(),
                     colour: side.colour.clone(),
                     max_players: side.max_players,
-                    team_join_enabled: false,
+                    // Roster join happens per-occurrence via each side's own
+                    // team (no invite-list support for a series yet) — this
+                    // has to be on or nobody can ever get onto a generated
+                    // occurrence.
+                    team_join_enabled: true,
                     player_count: 0,
                     roster_preview: Vec::new(),
                 },

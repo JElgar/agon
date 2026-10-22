@@ -4983,9 +4983,10 @@ impl Api {
             .map_err(dao_internal)?;
 
         // The first occurrence is the template itself, created exactly like
-        // any other match — but with no players: a series only configures a
-        // team per side, roster join happens per-occurrence later (no
-        // invite-list support for a series yet).
+        // any other match — but with no invited players: a series only
+        // configures a team per side, roster join happens per-occurrence via
+        // each side's own team (no invite-list support for a series yet),
+        // so `team_join_enabled` has to be on or nobody can ever get in.
         let match_id = occurrence.match_id;
         let mut sides: std::collections::HashMap<String, dao::records::MatchSideRecord> =
             Default::default();
@@ -4999,7 +5000,7 @@ impl Api {
                     name: side.name.clone(),
                     colour: side.colour.clone(),
                     max_players: side.max_players,
-                    team_join_enabled: false,
+                    team_join_enabled: true,
                     player_count: 0,
                     roster_preview: Vec::new(),
                 },

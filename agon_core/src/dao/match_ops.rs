@@ -10,12 +10,14 @@ use super::audience::AudienceMember;
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::is_update_conditional_failure;
-use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_pk, s, to_item};
+use super::item::{
+    ATTR_GSI3PK, ATTR_GSI3SK, ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_pk, s, to_item,
+};
 use super::keys::{Pk, Sk};
 use super::records::{
     ConfirmedScoreRecord, HeaderPhotoRecord, LocationRecord, MatchFormatRecord, MatchPlayerRecord,
-    MatchPlayerRole, MatchRecord, MatchScoreRecord, MatchSideRecord, PendingScoreRecord,
-    SideRosterMemberRecord,
+    MatchPlayerRole, MatchRankedPromptRecord, MatchRecord, MatchScoreRecord, MatchSideRecord,
+    PendingScoreRecord, SideRosterMemberRecord,
 };
 
 pub const TYPE_MATCH: &str = "match";
@@ -1046,6 +1048,112 @@ impl Dao {
             items.push(TransactWriteItem::builder().update(update).build());
         }
         self.send_transact_items(items).await
+    }
+
+    /// Make a match ranked and open its switch-to-ranked ask — **one item
+    /// write**, because the ask is the only thing stored about it.
+    ///
+    /// Who owes an answer isn't written anywhere: it is derived from the
+    /// roster and the players' own opt-ins (see [`MatchRankedPromptRecord`]).
+    /// That keeps this off `TransactWriteItems`, so a switch has no
+    /// roster-size ceiling, nothing to half-apply, and no per-row state to
+    /// leave behind when the ask goes away.
+    ///
+    /// `ranked` moves in the same write as the ask, and that matters: a ranked
+    /// match with nobody asked would rate players who never consented, and an
+    /// ask on a friendly match would pester people for nothing. One item makes
+    /// that atomic for free.
+    ///
+    /// Conditional on the match existing and having no ask open, so two admins
+    /// switching at once resolve to one ask and the loser gets
+    /// [`DaoError::Conflict`] rather than silently replacing the first ask's
+    /// deadline.
+    ///
+    /// The due-index stamp (`GSI3PK`/`GSI3SK` =
+    /// [`MatchRankedPromptRecord::DUE_GSI3PK`] / the deadline) rides along.
+    /// Nothing reads it yet; it is what makes "which asks are overdue?" one
+    /// Query for the deadline sweep and the repair job, without a backfill.
+    #[tracing::instrument(skip(self, ask))]
+    pub async fn open_ranked_prompt(
+        &self,
+        match_id: &str,
+        ask: &MatchRankedPromptRecord,
+    ) -> DaoResult<()> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .update_expression(
+                "SET #ranked = :ranked, #prompt = :prompt, #gsipk = :gsipk, #gsisk = :gsisk",
+            )
+            .condition_expression("attribute_exists(#pk) AND attribute_not_exists(#prompt)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_names("#ranked", "ranked")
+            .expression_attribute_names("#prompt", "ranked_prompt")
+            .expression_attribute_names("#gsipk", ATTR_GSI3PK)
+            .expression_attribute_names("#gsisk", ATTR_GSI3SK)
+            .expression_attribute_values(":ranked", AttributeValue::Bool(true))
+            .expression_attribute_values(":prompt", to_attr(ask)?)
+            .expression_attribute_values(
+                ":gsipk",
+                s(MatchRankedPromptRecord::DUE_GSI3PK.to_string()),
+            )
+            .expression_attribute_values(":gsisk", s(ask.deadline.clone()))
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => Err(DaoError::Conflict(
+                "this match already has a switch-to-ranked ask open".into(),
+            )),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// Clear a match's switch-to-ranked ask — one item write, the mirror of
+    /// [`Self::open_ranked_prompt`].
+    ///
+    /// `friendly` is `true` when the organiser is reverting the match (the
+    /// flag goes back with the ask) and `false` when the ask is simply
+    /// finished — everybody owed an answer has given one, so the match stays
+    /// ranked and only the ask goes.
+    ///
+    /// Clearing is a meta write either way, which is what lets the worker tell
+    /// the two apart from the stream: `ranked` still true means the switch
+    /// completed, `ranked` false means it was withdrawn.
+    ///
+    /// Unconditional beyond the match existing: whatever the ask currently
+    /// says, a caller that has decided it should go wants it gone.
+    #[tracing::instrument(skip(self))]
+    pub async fn clear_ranked_prompt(&self, match_id: &str, friendly: bool) -> DaoResult<()> {
+        let mut update = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_names("#prompt", "ranked_prompt")
+            .expression_attribute_names("#gsipk", ATTR_GSI3PK)
+            .expression_attribute_names("#gsisk", ATTR_GSI3SK);
+        update = if friendly {
+            update
+                .update_expression("SET #ranked = :ranked REMOVE #prompt, #gsipk, #gsisk")
+                .expression_attribute_names("#ranked", "ranked")
+                .expression_attribute_values(":ranked", AttributeValue::Bool(false))
+        } else {
+            update.update_expression("REMOVE #prompt, #gsipk, #gsisk")
+        };
+        match update.send().await {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => {
+                Err(DaoError::NotFound("match not found".into()))
+            }
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
     }
 
     /// Remove players from a match's roster entirely (not just unassign their

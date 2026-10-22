@@ -47,12 +47,13 @@ use mapping::{
     match_player_role_from_record, match_player_role_to_record, match_score_from_record,
     match_score_to_record, match_series_from_record, match_series_occurrence_from_record,
     match_status_str, match_type_tag, new_live_event_to_dao, notification_actor_id,
-    notification_from_record, ranked_added_players_reason, ranked_lock_reason_for_update,
-    ranked_move_in_reason, rating_consent_step, rating_ladder, rating_ladder_for,
-    rating_opt_ins_from_record, roster_preview_player, score_submission_from_record,
-    score_to_record, search_match_from_records, series_end_record_from_input,
-    switch_to_ranked_reason, team_from_records, team_list_item_from_record,
-    team_member_from_record, unrankable_sport_reason, unratable_players, user_profile_from_record,
+    notification_from_record, players_owing_rating_consent, ranked_added_players_reason,
+    ranked_lock_reason_for_update, ranked_move_in_reason, ranked_prompt_deadline,
+    rating_consent_step, rating_ladder, rating_ladder_for, rating_opt_ins_from_record,
+    roster_preview_player, score_submission_from_record, score_to_record,
+    search_match_from_records, series_end_record_from_input, switch_to_ranked_reason,
+    team_from_records, team_list_item_from_record, team_member_from_record,
+    unrankable_sport_reason, unratable_players, user_profile_from_record,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -854,6 +855,36 @@ struct Match {
     /// derived from `match_type` on every read, so a client never maps sports
     /// to ladders itself.
     rating_ladder: Option<String>,
+    /// The outstanding switch-to-ranked ask, if this match has one. `None` on
+    /// a friendly, on a match created ranked, and on one whose players have
+    /// all answered.
+    ranked_prompt: Option<RankedPrompt>,
+}
+
+/// An outstanding "this match counts now — confirm, or lose your place" ask,
+/// opened when an organiser switches a friendly match to ranked while some of
+/// its players haven't opted in to the sport's ladder.
+///
+/// A match carrying one is already `ranked`: the switch takes effect
+/// immediately and the prompts chase the consent, which is what lets everyone
+/// keep their place while they decide. Players who were already opted in are
+/// never asked, so they never appear in `pending`.
+#[derive(Object)]
+struct RankedPrompt {
+    /// Quote this when answering (`POST /matches/:id/ranked-switch/respond`).
+    /// An answer to any other ask is refused, so a withdrawn or superseded
+    /// switch can't be answered by mistake.
+    prompt_id: String,
+    /// The ladder being consented to, e.g. `"tennis"`.
+    ladder: String,
+    /// When unanswered prompts expire, taking those players' places with
+    /// them. Always before the match starts, and fixed for the life of the
+    /// ask — see `UpdateMatchInput.ranked_prompt_deadline`.
+    deadline: chrono::DateTime<chrono::Utc>,
+    /// How many players still owe an answer.
+    pending: u32,
+    /// Whether the requesting user is one of them.
+    awaiting_you: bool,
 }
 
 /// Social engagement summary for a match. Counts plus whether the requesting
@@ -1480,12 +1511,45 @@ struct UpdateMatchInput {
     /// unconstrained even for an already-played match; see
     /// `CreateMatchInput.ranked` for why, and for what limits it instead.
     ///
-    /// Switching **to** ranked also needs everyone it would rate, or could
-    /// move in, to have agreed to it: every player in a spot must have an
-    /// account and be opted in to the ladder, and so must everyone on the
-    /// waitlist. Otherwise it's refused (400) naming them. Pending invitees
-    /// don't count; they're asked when they accept.
+    /// Switching **to** ranked asks the players who haven't agreed to that
+    /// ladder yet, and they keep their spot while they answer (see
+    /// `ranked_prompt_deadline`, and `Match.ranked_prompt` for reading the
+    /// state back). Only two things refuse the switch outright: a player in a
+    /// spot with no Agon account, who can't be asked at all and has to be
+    /// removed first, and `added_players` in the same request who haven't
+    /// opted in — invite them instead. Pending invitees aren't asked here;
+    /// they're asked when they accept. Players already opted in aren't asked
+    /// either — they're told, and keep their place whatever they do.
     ranked: Option<bool>,
+    /// When the prompts a switch to ranked opens should expire. Players who
+    /// haven't confirmed by then lose their place in the match.
+    ///
+    /// Ignored unless this request is the switch that opens them. Defaults to
+    /// 24h before kickoff, which leaves the organiser a working day to refill
+    /// the spots of anyone who says no or says nothing; on a match starting
+    /// sooner than that it collapses towards kickoff.
+    ///
+    /// Has to be in the future and no later than the match's start: expiring
+    /// people *after* kickoff would settle a rating question with the result
+    /// already knowable, which is the thing the deadline exists to prevent.
+    /// Out of range is a 400 rather than a silent clamp.
+    ///
+    /// **Fixed once set.** Nothing moves it afterwards — not a later edit, not
+    /// a reschedule. To give people longer, switch the match back to friendly
+    /// and switch it to ranked again: that asks exactly the players who still
+    /// haven't opted in, since anyone who already confirmed is opted in by
+    /// then.
+    ranked_prompt_deadline: Option<chrono::DateTime<chrono::Utc>>,
+    /// `true` to agree that switching this match to ranked starts *your* own
+    /// rating in its sport. Needed only when the caller takes a spot in the
+    /// match and hasn't opted in to that ladder already; without it the switch
+    /// is refused with 422 `RatingConsentRequired`.
+    ///
+    /// The caller is the one player this request can ask directly, so they are
+    /// asked inline rather than sent a prompt about their own switch. Everyone
+    /// else who hasn't opted in gets the prompt. An organiser who doesn't play
+    /// in the match takes no spot, so nothing is asked of them.
+    rating_consent: Option<bool>,
     // Note: no `match_type`. A match's sport is fixed at creation, and a
     // ranked match relies on that: a new sport would move its result to
     // another ladder, or off the ladders altogether. A sport edit, if one is
@@ -1924,9 +1988,23 @@ enum UpdateMatchResponse {
 
     /// The submitted `score` doesn't match what the server derives from the
     /// match's own persisted live detail. Refresh and resubmit, or set
-    /// `override_live_score` to submit it anyway.
+    /// `override_live_score` to submit it anyway. Also: another admin opened a
+    /// switch-to-ranked ask between this request's read and its write, so
+    /// theirs is the live one — reload to see who still has to confirm.
     #[oai(status = 409)]
     Conflict(PlainText<String>),
+
+    /// The caller takes a spot in this match, switching it to ranked would
+    /// start their rating in its sport, and they haven't agreed to that:
+    /// resend with `rating_consent: true`. Nothing changed.
+    ///
+    /// Only the caller is ever answered this way. The other players who
+    /// haven't opted in are *asked* — they get a prompt and keep their place
+    /// while they answer — but nobody can consent on anyone else's behalf, and
+    /// the one person this request can put the question to directly is whoever
+    /// sent it.
+    #[oai(status = 422)]
+    RatingConsentRequired(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -3728,7 +3806,6 @@ impl Api {
                 // for that case — see `MatchRecord`'s doc comment on it).
                 role: dao::records::MatchPlayerRole::Owner,
                 joined_via: None,
-                ranked_prompt: None,
             });
         }
         for invite in &input.invites {
@@ -3914,11 +3991,15 @@ impl Api {
             // `CreateMatchInput::ranked` has the full argument, including the
             // gap confirmation doesn't close.
             ranked: input.ranked.unwrap_or(false),
+            // A match created ranked never opens an ask: every player in a
+            // spot at creation is the caller (who consents inline, above) or
+            // an invitee, who is asked when they accept. Asks exist only for
+            // a *switch*, which finds players already in place.
+            ranked_prompt: None,
             // A match created ranked never opens prompts: every player in a
             // spot at creation is the caller (who consents inline, above) or
             // an invitee, who is asked when they accept. Prompts exist only
             // for a *switch*, which finds players already in place.
-            ranked_prompt: None,
             created_at: now.clone(),
         };
 
@@ -3978,7 +4059,7 @@ impl Api {
         let mut m = match_from_records(&match_record, &sides_for_response, &player_records, false);
         m.viewer_role = caller_match_role(&player_records, &uid).map(match_player_role_from_record);
         sign_match_headers(assets, &mut m);
-        let m = self.hydrate_match(dao, m).await?;
+        let m = self.hydrate_match(dao, m, &uid).await?;
         Ok(CreateMatchResponse::Match(Json(m)))
     }
 
@@ -4017,7 +4098,7 @@ impl Api {
             m.viewer_team_join_side_ids = (!eligible.is_empty()).then_some(eligible);
         }
         sign_match_headers(assets, &mut m);
-        let m = self.hydrate_match(dao, m).await?;
+        let m = self.hydrate_match(dao, m, &uid).await?;
         Ok(GetMatchResponse::Match(Json(m)))
     }
 
@@ -4147,51 +4228,61 @@ impl Api {
             ))));
         }
 
-        // Everyone a ranked match rates, or could move in, is a linked account
-        // opted in to its ladder. This request could break that in two ways,
-        // and both are refused here, before anything below writes: adding
-        // players directly to a match that is, or is about to be, ranked; and
-        // switching a match to ranked with somebody in a spot, or waiting for
-        // one, who can't be rated. Both put someone else in a ranked game, and
-        // consent has to come from the player, so both refuse rather than ask.
-        // Checked after the lock: on a match whose flag can't change anyway,
-        // who is opted in is beside the point.
+        // Everyone a ranked match rates is a linked account opted in to its
+        // ladder — but a switch no longer *refuses* when they aren't. It asks
+        // them, and they keep their spot while they answer
+        // (`MatchPlayerRecord::ranked_prompt`). Two things are still settled
+        // here, before anything below writes:
         //
-        // The switch judges the roster as stored, so removing a player in the
-        // same PATCH doesn't clear the way. That's deliberate. This handler's
-        // writes aren't one transaction, and the flag (`update_match_meta`)
-        // lands before the removals do, so a removal failing after it would
-        // leave a ranked match with an unrateable player in a spot. Removing
-        // them first costs one request. (Waitlist entries can't be removed by
-        // this endpoint at all; `DELETE /matches/:match_id/waitlist/:user_id`
-        // does that.)
+        // - **Who has to be asked**, which this works out now, while the
+        //   roster it was judged on is in hand, and writes further down in one
+        //   transaction with the flag itself (`open_ranked_prompts_tx`).
+        // - **What still refuses the switch outright**: a player in a spot
+        //   with no Agon account (`switch_to_ranked_reason`), because nobody
+        //   can consent for them and there is no profile to hold a rating, so
+        //   there is no prompt we could send. And `added_players`, which is
+        //   the one way into a match that doesn't go through the person being
+        //   added, so it can't collect their consent either
+        //   (`ranked_added_players_reason`).
+        //
+        // The waitlist is no longer judged at all: a waitlisted player holds
+        // no spot, so a switch takes nothing from them, and
+        // `ranked_move_in_reason` already refuses to move them in until
+        // they've opted in.
+        //
+        // The roster is judged as stored, so removing a player in the same
+        // PATCH doesn't change who gets asked — the same reasoning as before:
+        // this handler's writes aren't one transaction, and a removal failing
+        // after the switch landed would leave a ranked match with an
+        // unrateable player in a spot. Removing them first costs one request.
         //
         // `added_players` is judged against the *resulting* `ranked`, so
-        // switching and adding in one request is checked whole, while switching
-        // to friendly and adding a ringer in one request is allowed.
+        // switching and adding in one request is checked whole, while
+        // switching to friendly and adding a ringer in one request is allowed.
         let resulting_ladder = rating_ladder_for(
             &agg.match_.match_type,
             input.ranked.unwrap_or(agg.match_.ranked),
         );
         let added_players = input.added_players.as_deref().unwrap_or_default();
+        // `Some` once this request has decided to open an ask: the ask itself
+        // plus the prompt to write on each player's row. Carried down to the
+        // write rather than acted on here, so a later validation failure can
+        // still refuse the whole request without having asked anybody.
+        let mut ask_to_open: Option<dao::records::MatchRankedPromptRecord> = None;
         if let Some(ladder) = &resulting_ladder
             && (ranked_change == Some(true) || !added_players.is_empty())
         {
-            // The players already in, and those waiting, only need judging on a
-            // switch: a match that was already ranked checked each of them on
-            // the way in (bar the race `settle_rating_consent` describes).
-            let (in_a_spot, waitlisted) = if ranked_change == Some(true) {
-                let in_a_spot: Vec<&dao::records::MatchPlayerRecord> =
-                    agg.players.iter().filter(|p| p.occupies_slot()).collect();
-                let waitlisted = dao.list_waitlist(&match_id).await.map_err(dao_internal)?;
-                (in_a_spot, waitlisted)
+            // The players already in only need judging on a switch: a match
+            // that was already ranked checked each of them on the way in (bar
+            // the race `settle_rating_consent` describes).
+            let in_a_spot: Vec<&dao::records::MatchPlayerRecord> = if ranked_change == Some(true) {
+                agg.players.iter().filter(|p| p.occupies_slot()).collect()
             } else {
-                (Vec::new(), Vec::new())
+                Vec::new()
             };
             let user_ids: Vec<String> = in_a_spot
                 .iter()
                 .filter_map(|p| p.user_id.clone())
-                .chain(waitlisted.iter().map(|e| e.user_id.clone()))
                 .chain(added_players.iter().filter_map(|p| p.user_id.clone()))
                 .collect();
             let users = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
@@ -4203,14 +4294,7 @@ impl Api {
                     .map(|p| (p.user_id.as_deref(), p.display_name.as_deref())),
                 &users,
             );
-            let unratable_waitlisted = unratable_players(
-                ladder,
-                waitlisted.iter().map(|e| (Some(e.user_id.as_str()), None)),
-                &users,
-            );
-            if let Some(reason) =
-                switch_to_ranked_reason(ladder, &unratable_in_a_spot, &unratable_waitlisted)
-            {
+            if let Some(reason) = switch_to_ranked_reason(&unratable_in_a_spot) {
                 return Ok(UpdateMatchResponse::ValidationError(PlainText(reason)));
             }
             let unratable_added = unratable_players(
@@ -4222,6 +4306,57 @@ impl Api {
             );
             if let Some(reason) = ranked_added_players_reason(ladder, &unratable_added) {
                 return Ok(UpdateMatchResponse::ValidationError(PlainText(reason)));
+            }
+
+            if ranked_change == Some(true) {
+                let mut needs_asking = players_owing_rating_consent(ladder, &agg.players, &users);
+                // The caller is the one player this request can put the
+                // question to directly, so they answer it inline rather than
+                // being sent an ask about their own switch — the same
+                // `rating_consent` flag as every other way into a ranked
+                // match. Refusing here also means an organiser can never be
+                // the player holding up their own match.
+                if needs_asking.iter().any(|(_, user_id)| *user_id == uid) {
+                    if let Some(message) =
+                        settle_rating_consent_on_ladder(dao, &uid, ladder, input.rating_consent)
+                            .await?
+                    {
+                        return Ok(UpdateMatchResponse::RatingConsentRequired(PlainText(
+                            message,
+                        )));
+                    }
+                    needs_asking.retain(|(_, user_id)| *user_id != uid);
+                }
+                // Nobody to ask — every player in a spot is already opted in,
+                // which is the common case for a group that plays ranked
+                // together. The switch is then just the flag: no ask, no
+                // deadline, nothing anyone has to act on. Note that `ask` is
+                // only ever *opened* from this set; who still owes an answer
+                // later is derived from the roster and the players' opt-ins,
+                // never from anything written here.
+                if !needs_asking.is_empty() {
+                    let now = chrono::Utc::now();
+                    let starts_at = input
+                        .starts_at
+                        .unwrap_or_else(|| mapping::parse_ts(&agg.match_.starts_at));
+                    let deadline = match ranked_prompt_deadline(
+                        input.ranked_prompt_deadline,
+                        starts_at,
+                        now,
+                    ) {
+                        Ok(deadline) => deadline,
+                        Err(reason) => {
+                            return Ok(UpdateMatchResponse::ValidationError(PlainText(reason)));
+                        }
+                    };
+                    ask_to_open = Some(dao::records::MatchRankedPromptRecord {
+                        id: new_id(),
+                        ladder: ladder.clone(),
+                        opened_at: now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                        opened_by_user_id: uid.clone(),
+                        deadline,
+                    });
+                }
             }
         }
 
@@ -4630,6 +4765,20 @@ impl Api {
             .collect();
 
         // Apply metadata + resolved score + side renames/recolours in one update.
+        let withdrawing_ask = ranked_change == Some(false) && agg.match_.ranked_prompt.is_some();
+
+        // `ranked` is left out of this update on both ask paths, because the
+        // flag has to move in the same write as the ask: a ranked match with
+        // nobody asked would rate players who never consented, and an ask on a
+        // match that stayed friendly would pester people for nothing. Since
+        // the ask lives on this same meta item, the two writes below own the
+        // flag and get that atomicity for free.
+        let ranked_for_meta = if ask_to_open.is_some() || withdrawing_ask {
+            None
+        } else {
+            ranked_change
+        };
+
         dao.update_match_meta(
             &match_id,
             input.name.as_deref(),
@@ -4641,7 +4790,7 @@ impl Api {
             header_photos,
             input.format.as_ref().map(match_format_to_record),
             input.location.as_ref().map(location_to_record),
-            ranked_change,
+            ranked_for_meta,
             &side_name_updates,
             &side_colour_updates,
         )
@@ -4652,6 +4801,31 @@ impl Api {
             }
             other => dao_internal(other),
         })?;
+
+        // Open the ask, or clear one. After the metadata update rather than
+        // before it, so that a failure here leaves the match friendly and the
+        // caller told the switch didn't happen — the safe direction, since the
+        // other order would leave a ranked match nobody had been asked about.
+        if let Some(ask) = &ask_to_open {
+            dao.open_ranked_prompt(&match_id, ask)
+                .await
+                .map_err(|e| match e {
+                    // The write's one condition: no ask outstanding. So this
+                    // is another admin's switch landing between our read and
+                    // our write, and theirs is the live ask.
+                    dao::DaoError::Conflict(_) => Error::from_string(
+                        "someone else just made this match ranked; reload it to see who still has to confirm",
+                        StatusCode::CONFLICT,
+                    ),
+                    other => dao_internal(other),
+                })?;
+        } else if withdrawing_ask {
+            // Reverting to friendly takes the ask with the flag. Nothing else
+            // to undo: who owed an answer was never written down.
+            dao.clear_ranked_prompt(&match_id, true)
+                .await
+                .map_err(dao_internal)?;
+        }
 
         // Join settings — validated and admin-gated above. Its own call
         // rather than folded into `update_match_meta`: unlike the side
@@ -4680,7 +4854,6 @@ impl Api {
                     invitation: None,
                     role: dao::records::MatchPlayerRole::Player,
                     joined_via: None,
-                    ranked_prompt: None,
                 };
                 dao.add_match_player_tx(&match_id, &player)
                     .await
@@ -4747,7 +4920,7 @@ impl Api {
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
         m.viewer_role = caller_match_role(&agg.players, &uid).map(match_player_role_from_record);
         sign_match_headers(assets, &mut m);
-        let m = self.hydrate_match(dao, m).await?;
+        let m = self.hydrate_match(dao, m, &uid).await?;
         Ok(UpdateMatchResponse::Match(Json(m)))
     }
 
@@ -7331,7 +7504,6 @@ impl Api {
             // is opted in by the time this row exists, so there is nothing to
             // ask them — even if the match has an open switch-to-ranked ask
             // that other players still owe an answer to.
-            ranked_prompt: None,
         };
 
         if let Err(e) = dao
@@ -7379,7 +7551,7 @@ impl Api {
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, false);
         m.viewer_role = caller_match_role(&agg.players, &uid).map(match_player_role_from_record);
         sign_match_headers(assets, &mut m);
-        let m = self.hydrate_match(dao, m).await?;
+        let m = self.hydrate_match(dao, m, &uid).await?;
         Ok(JoinMatchResponse::Match(Json(m)))
     }
 
@@ -7856,7 +8028,6 @@ impl Api {
             invitation: None,
             role: dao::records::MatchPlayerRole::Player,
             joined_via: Some(dao::records::JoinSourceRecord::Waitlist),
-            ranked_prompt: None,
         };
         if let Err(e) = dao
             .move_in_from_waitlist_tx(
@@ -8833,8 +9004,11 @@ impl Api {
 
     /// Hydrate a single match — see `hydrate_matches`, which does the actual
     /// work; this just wraps/unwraps the one-match case.
-    async fn hydrate_match(&self, dao: &dao::Dao, m: Match) -> Result<Match> {
-        Ok(self.hydrate_matches(dao, vec![m]).await?.remove(0))
+    async fn hydrate_match(&self, dao: &dao::Dao, m: Match, viewer_uid: &str) -> Result<Match> {
+        Ok(self
+            .hydrate_matches(dao, vec![m], Some(viewer_uid))
+            .await?
+            .remove(0))
     }
 
     /// Hydrate every match in `matches` for one response: fill in each `User`
@@ -8844,7 +9018,12 @@ impl Api {
     /// team lookups are each batched exactly once across every match passed
     /// in, however many that is — a feed/list page hands over the whole page
     /// at once rather than calling this per match.
-    async fn hydrate_matches(&self, dao: &dao::Dao, mut matches: Vec<Match>) -> Result<Vec<Match>> {
+    async fn hydrate_matches(
+        &self,
+        dao: &dao::Dao,
+        mut matches: Vec<Match>,
+        viewer_uid: Option<&str>,
+    ) -> Result<Vec<Match>> {
         let user_ids: Vec<String> = matches.iter().flat_map(Self::player_user_ids).collect();
         let user_records = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
 
@@ -8857,8 +9036,69 @@ impl Api {
         for m in &mut matches {
             Self::apply_player_profiles(m, &user_records);
             Self::hydrate_sides(m, &team_metas);
+            Self::apply_ranked_prompt_state(m, &user_records, viewer_uid);
         }
         Ok(matches)
+    }
+
+    /// Fill in `Match.ranked_prompt`'s derived half — how many players still
+    /// owe an answer to the match's switch-to-ranked ask, and whether the
+    /// viewer is one of them.
+    ///
+    /// Derived rather than stored, and derived *here* because this is where
+    /// both halves are already in hand: the roster came with the match and
+    /// `user_records` was batch-fetched a few lines up for the display names.
+    /// A player owes an answer when they take a spot and their account isn't
+    /// opted in to the ask's ladder — accepting writes that opt-in, and
+    /// declining takes them off the roster, so nothing else has to be
+    /// recorded for this count to be right.
+    ///
+    /// When nobody owes an answer the ask is dropped from the response
+    /// entirely, rather than reported as "0 still to confirm". The stored ask
+    /// may outlive that moment — the last person can opt in through some
+    /// other ranked match, with nothing watching this one — so what the
+    /// reader sees is the derived truth, and the stored copy is tidied up by
+    /// whichever write next notices (the respond endpoint, or the deadline
+    /// sweep).
+    fn apply_ranked_prompt_state(
+        m: &mut Match,
+        user_records: &std::collections::HashMap<String, dao::records::UserRecord>,
+        viewer_uid: Option<&str>,
+    ) {
+        let Some(prompt) = &m.ranked_prompt else {
+            return;
+        };
+        let ladder = prompt.ladder.clone();
+        let owing: Vec<&str> = m
+            .players
+            .iter()
+            .filter_map(|p| match &p.member {
+                // In a spot: added directly or self-served (no invitation), or
+                // an invitee who accepted — the API-model twin of
+                // `MatchPlayerRecord::occupies_slot`. An external player can't
+                // be in a ranked match at all, so there's nobody to ask there.
+                Member::User(u) => u
+                    .invitation
+                    .as_ref()
+                    .is_none_or(|inv| matches!(inv.status, InvitationStatus::Accepted))
+                    .then_some(u.user_id.as_str()),
+                Member::External(_) => None,
+            })
+            .filter(|uid| {
+                !user_records
+                    .get(*uid)
+                    .is_some_and(|u| u.has_opted_in(&ladder))
+            })
+            .collect();
+
+        if owing.is_empty() {
+            m.ranked_prompt = None;
+            return;
+        }
+        if let Some(prompt) = &mut m.ranked_prompt {
+            prompt.pending = owing.len() as u32;
+            prompt.awaiting_you = viewer_uid.is_some_and(|me| owing.contains(&me));
+        }
     }
 
     /// Every `User` match player's account id (external players carry their
@@ -9968,7 +10208,6 @@ fn build_invited_player(
         invitation: Some(embedded),
         role: dao::records::MatchPlayerRole::Player,
         joined_via: None,
-        ranked_prompt: None,
     };
 
     let invitation = dao::records::InvitationRecord {
@@ -10125,6 +10364,20 @@ async fn settle_rating_consent(
     let Some(ladder) = rating_ladder(match_) else {
         return Ok(None);
     };
+    settle_rating_consent_on_ladder(dao, uid, &ladder, rating_consent).await
+}
+
+/// [`settle_rating_consent`] for a caller whose ladder isn't the stored
+/// match's — `update_match` switching a friendly to ranked, where the record
+/// in hand still says friendly and so has no ladder of its own yet
+/// (`rating_ladder` gives `None` for one). The ladder comes from
+/// `rating_ladder_for` on the state the request would leave behind instead.
+async fn settle_rating_consent_on_ladder(
+    dao: &dao::Dao,
+    uid: &str,
+    ladder: &str,
+    rating_consent: Option<bool>,
+) -> Result<Option<String>> {
     // `require_uid` resolved the id from its `AUTH#` guard, so a missing
     // profile is the same "no such user" it reports.
     let caller = dao
@@ -10132,7 +10385,7 @@ async fn settle_rating_consent(
         .await
         .map_err(dao_internal)?
         .ok_or_else(|| Error::from_string("user not found", StatusCode::UNAUTHORIZED))?;
-    match rating_consent_step(&ladder, &caller, rating_consent.unwrap_or(false)) {
+    match rating_consent_step(ladder, &caller, rating_consent.unwrap_or(false)) {
         mapping::RatingConsentStep::Proceed => Ok(None),
         mapping::RatingConsentStep::Refuse(message) => Ok(Some(message)),
         mapping::RatingConsentStep::OptIn(ladder) => {
@@ -10502,6 +10755,8 @@ fn mock_match(id: String) -> Match {
         series_id: None,
         ranked: true,
         rating_ladder: Some(String::from("football")),
+        // The mock match was created ranked, so nobody was ever asked.
+        ranked_prompt: None,
     }
 }
 

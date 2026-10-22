@@ -174,14 +174,13 @@ impl AgonActivities {
                 },
             );
         }
-        // Mirrors `create_match_series`'s own organiser row: the series
+        // Mirrors `create_match_series`'s own authority entry: the series
         // organiser never plays in the template, so without this they'd have
         // no authority over any occurrence.
-        let organizer_records = vec![agon_core::dao::records::MatchOrganizerRecord {
-            user_id: input.created_by_user_id.clone(),
-            role: agon_core::dao::records::MatchPlayerRole::Owner,
-            created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-        }];
+        let authority = std::collections::HashMap::from([(
+            input.created_by_user_id.clone(),
+            agon_core::dao::records::MatchPlayerRole::Owner,
+        )]);
 
         let match_record = agon_core::dao::records::MatchRecord {
             id: match_id.clone(),
@@ -197,6 +196,7 @@ impl AgonActivities {
             series_id: Some(input.series_id.clone()),
             header_photos: Vec::new(),
             sides,
+            authority,
             confirmed_score: None,
             pending_score: None,
             like_count: 0,
@@ -217,7 +217,7 @@ impl AgonActivities {
 
         match self
             .dao
-            .create_match(&match_record, &[], &organizer_records)
+            .create_match(&match_record, &[])
             .await
         {
             Ok(()) => {}

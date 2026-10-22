@@ -393,6 +393,7 @@ mod tests {
             series_id: None,
             sides: Default::default(),
             header_photos: Vec::new(),
+            authority: Default::default(),
             confirmed_score: None,
             pending_score: None,
             like_count: 0,

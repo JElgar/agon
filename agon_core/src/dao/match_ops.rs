@@ -14,14 +14,13 @@ use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_pk, s, to_item}
 use super::keys::{Pk, Sk};
 use super::records::{
     ConfirmedScoreRecord, HeaderPhotoRecord, LocationRecord, MatchFormatRecord,
-    MatchOrganizerRecord, MatchPlayerRecord, MatchPlayerRole, MatchRecord, MatchScoreRecord,
-    MatchSideRecord, PendingScoreRecord, SideRosterMemberRecord,
+    MatchPlayerRecord, MatchPlayerRole, MatchRecord, MatchScoreRecord, MatchSideRecord,
+    PendingScoreRecord, SideRosterMemberRecord,
 };
 
 pub const TYPE_MATCH: &str = "match";
 pub const TYPE_MATCH_SIDE: &str = "match_side";
 pub const TYPE_MATCH_PLAYER: &str = "match_player";
-pub const TYPE_MATCH_ORGANIZER: &str = "match_organizer";
 pub const TYPE_MATCH_SCORE: &str = "match_score";
 
 /// A side's roster is cached in full (`MatchSideRecord::roster_preview`) only
@@ -117,37 +116,12 @@ pub struct MatchAggregate {
     pub match_: MatchRecord,
     pub sides: Vec<MatchSideRecord>,
     pub players: Vec<MatchPlayerRecord>,
-    /// Owner/admin roles held by users who aren't on the roster — see
-    /// `MatchOrganizerRecord`'s doc comment. Never touched by anything that
-    /// computes stats/ratings/headcounts off `players`.
-    pub organizers: Vec<MatchOrganizerRecord>,
 }
 
 impl MatchAggregate {
     /// See [`effective_max_players`].
     pub fn effective_max_players(&self) -> Option<u32> {
         effective_max_players(&self.sides)
-    }
-}
-
-/// Which of the two rows that can carry a match role (`Owner`/`Admin`) a
-/// caller means — a roster player (`Sk::Player`) or a non-playing organizer
-/// (`Sk::Organizer`, see `MatchOrganizerRecord`'s doc comment). Exists so
-/// [`Dao::transfer_match_ownership`] can move the `Owner` role between
-/// either combination of the two without duplicating its transaction logic
-/// per combination.
-#[derive(Debug, Clone, Copy)]
-pub enum MatchRoleHolder<'a> {
-    Player(&'a str),
-    Organizer(&'a str),
-}
-
-impl MatchRoleHolder<'_> {
-    fn sk(&self) -> Sk {
-        match self {
-            MatchRoleHolder::Player(player_id) => Sk::Player((*player_id).into()),
-            MatchRoleHolder::Organizer(user_id) => Sk::Organizer((*user_id).into()),
-        }
     }
 }
 
@@ -170,14 +144,13 @@ impl Dao {
     /// large roster would need chunking — not handled here (fine for real
     /// team sizes). Feed fan-out happens asynchronously off the stream, not here.
     #[tracing::instrument(
-        skip(self, match_, players, organizers),
-        fields(match_id = %match_.id, sides = match_.sides.len(), players = players.len(), organizers = organizers.len())
+        skip(self, match_, players),
+        fields(match_id = %match_.id, sides = match_.sides.len(), players = players.len())
     )]
     pub async fn create_match(
         &self,
         match_: &MatchRecord,
         players: &[MatchPlayerRecord],
-        organizers: &[MatchOrganizerRecord],
     ) -> DaoResult<()> {
         let mut match_ = match_.clone();
         for side in match_.sides.values_mut() {
@@ -249,15 +222,6 @@ impl Dao {
             }
         }
 
-        for organizer in organizers {
-            let put = Put::builder()
-                .table_name(self.table())
-                .set_item(Some(self.match_organizer_item(&match_.id, organizer)?))
-                .build()
-                .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-            tx = tx.transact_items(TransactWriteItem::builder().put(put).build());
-        }
-
         match tx.send().await {
             Ok(_) => Ok(()),
             Err(e) if super::is_transaction_conditional_failure(&e) => Err(DaoError::Conflict(
@@ -300,16 +264,12 @@ impl Dao {
         let players: Vec<MatchPlayerRecord> = self
             .query_match_collection(match_id, &Sk::player_prefix())
             .await?;
-        let organizers: Vec<MatchOrganizerRecord> = self
-            .query_match_collection(match_id, &Sk::organizer_prefix())
-            .await?;
         let sides = sorted_sides(&match_.sides);
 
         Ok(Some(MatchAggregate {
             match_,
             sides,
             players,
-            organizers,
         }))
     }
 
@@ -806,109 +766,6 @@ impl Dao {
         }
     }
 
-    /// Move the `Owner` role from one role-holder to another, in one
-    /// transaction — mirrors `Dao::transfer_team_ownership` exactly (same
-    /// reasoning: the promote and demote either both land or neither does,
-    /// so the match is never briefly ownerless or briefly double-owned).
-    /// Either side can be a roster player or a non-playing organizer (see
-    /// `MatchRoleHolder`) — moving ownership onto/off an organizer row is
-    /// exactly the same shape of write, just a different `Sk`. `NotFound`
-    /// if either row doesn't exist. The caller is responsible for every
-    /// business-rule check (caller is the current owner, `to` is eligible to
-    /// hold it, `to` isn't already the owner) — this just moves the role.
-    #[tracing::instrument(skip(self))]
-    pub async fn transfer_match_ownership(
-        &self,
-        match_id: &str,
-        from: MatchRoleHolder<'_>,
-        to: MatchRoleHolder<'_>,
-    ) -> DaoResult<()> {
-        let promote = Update::builder()
-            .table_name(self.table())
-            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
-            .key(ATTR_SK, s(to.sk().to_string()))
-            .update_expression("SET #role = :owner")
-            .condition_expression("attribute_exists(#pk)")
-            .expression_attribute_names("#role", "role")
-            .expression_attribute_names("#pk", ATTR_PK)
-            .expression_attribute_values(":owner", s("owner"))
-            .build()
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-
-        let demote = Update::builder()
-            .table_name(self.table())
-            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
-            .key(ATTR_SK, s(from.sk().to_string()))
-            .update_expression("SET #role = :admin")
-            .condition_expression("attribute_exists(#pk)")
-            .expression_attribute_names("#role", "role")
-            .expression_attribute_names("#pk", ATTR_PK)
-            .expression_attribute_values(":admin", s("admin"))
-            .build()
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-
-        let result = self
-            .client
-            .transact_write_items()
-            .transact_items(TransactWriteItem::builder().update(promote).build())
-            .transact_items(TransactWriteItem::builder().update(demote).build())
-            .send()
-            .await;
-
-        match result {
-            Ok(_) => Ok(()),
-            Err(e) if super::is_transaction_conditional_failure(&e) => Err(DaoError::NotFound(
-                format!("role-holder row(s) on match {match_id}"),
-            )),
-            Err(e) => Err(DaoError::Dynamo(e.to_string())),
-        }
-    }
-
-    /// Set a single player's role to `Admin` or `Player` — the `Owner` role
-    /// only ever moves via [`Self::transfer_match_ownership`], which keeps
-    /// the one-owner invariant atomic; the caller is responsible for
-    /// rejecting `Owner` here and for checking the target isn't already the
-    /// owner before calling this. `NotFound` if the player doesn't exist.
-    #[tracing::instrument(skip(self))]
-    pub async fn set_match_player_role(
-        &self,
-        match_id: &str,
-        player_id: &str,
-        role: MatchPlayerRole,
-    ) -> DaoResult<()> {
-        let role_value = match role {
-            MatchPlayerRole::Admin => "admin",
-            MatchPlayerRole::Player => "player",
-            MatchPlayerRole::Owner => {
-                return Err(DaoError::Dynamo(
-                    "set_match_player_role can't set the owner role".into(),
-                ));
-            }
-        };
-
-        let result = self
-            .client
-            .update_item()
-            .table_name(self.table())
-            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
-            .key(ATTR_SK, s(Sk::Player(player_id.into()).to_string()))
-            .update_expression("SET #role = :role")
-            .condition_expression("attribute_exists(#pk)")
-            .expression_attribute_names("#role", "role")
-            .expression_attribute_names("#pk", ATTR_PK)
-            .expression_attribute_values(":role", s(role_value))
-            .send()
-            .await;
-
-        match result {
-            Ok(_) => Ok(()),
-            Err(e) if is_update_conditional_failure(&e) => Err(DaoError::NotFound(format!(
-                "player {player_id} on match {match_id}"
-            ))),
-            Err(e) => Err(DaoError::Dynamo(e.to_string())),
-        }
-    }
-
     /// Join a match: insert `player` (fully built by the caller — `side_id`,
     /// `role`, `joined_via` already set) and atomically bump the roster
     /// counters it consumes, conditioned on the caps the caller already
@@ -1298,111 +1155,42 @@ impl Dao {
         Ok(item)
     }
 
-    /// Build a match-organizer item, projected into GSI1 the same way
-    /// `match_player_item` projects a linked player — an organizer always
-    /// has a `user_id` (there's no external-organizer concept), so this
-    /// always projects, unlike that function's `Option` branch.
-    fn match_organizer_item(
+    /// Replace a match's whole `authority` map in one write — the only way
+    /// it's ever changed (creation aside, where it's just part of the
+    /// `#META` item's own `Put`). The map is always tiny (almost always one
+    /// entry), so a full replace rather than a per-key `SET` is simpler and
+    /// sidesteps the DynamoDB limitation that a dot-path `SET` on a nested
+    /// key fails outright when the parent map attribute doesn't exist at
+    /// all yet (true of every match written before this field existed) —
+    /// the caller always has the current map in hand already (from the
+    /// `MatchAggregate` it just read) and sends back the whole next state.
+    /// `NotFound` if the match doesn't exist.
+    #[tracing::instrument(skip(self, authority))]
+    pub async fn set_match_authority(
         &self,
         match_id: &str,
-        organizer: &MatchOrganizerRecord,
-    ) -> DaoResult<std::collections::HashMap<String, AttributeValue>> {
-        let base = to_item(
-            &Pk::Match(match_id.into()),
-            &Sk::Organizer(organizer.user_id.clone()),
-            TYPE_MATCH_ORGANIZER,
-            organizer,
-        )?;
-        Ok(ItemBuilder::new(base)
-            .gsi1(
-                format!("UMATCHES#{}", organizer.user_id),
-                Pk::Match(match_id.into()).to_string(),
-            )
-            .build())
-    }
-
-    /// Grant a non-playing match role to a user who isn't already on the
-    /// roster or an organizer — the general mechanism behind a non-playing
-    /// creator (see `MatchOrganizerRecord`'s doc comment) and behind
-    /// explicitly adding a scorer-only admin later. `Conflict` if the user
-    /// already holds a row either way.
-    #[tracing::instrument(skip(self, organizer), fields(user_id = %organizer.user_id))]
-    pub async fn add_match_organizer(
-        &self,
-        match_id: &str,
-        organizer: &MatchOrganizerRecord,
+        authority: &std::collections::HashMap<String, MatchPlayerRole>,
     ) -> DaoResult<()> {
         let result = self
             .client
-            .put_item()
-            .table_name(self.table())
-            .set_item(Some(self.match_organizer_item(match_id, organizer)?))
-            .condition_expression("attribute_not_exists(#pk)")
-            .expression_attribute_names("#pk", ATTR_PK)
-            .send()
-            .await;
-        match result {
-            Ok(_) => Ok(()),
-            Err(e) if is_put_conditional_failure(&e) => Err(DaoError::Conflict(format!(
-                "{} is already an organizer on match {match_id}",
-                organizer.user_id
-            ))),
-            Err(e) => Err(DaoError::Dynamo(e.to_string())),
-        }
-    }
-
-    /// Revoke a non-playing organizer role. `NotFound` if the user doesn't
-    /// hold one. The caller is responsible for every business-rule check
-    /// (can't remove the current `Owner` this way — transfer first); this
-    /// just deletes the row.
-    #[tracing::instrument(skip(self))]
-    pub async fn remove_match_organizer(&self, match_id: &str, user_id: &str) -> DaoResult<()> {
-        let result = self
-            .client
-            .delete_item()
+            .update_item()
             .table_name(self.table())
             .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
-            .key(ATTR_SK, s(Sk::Organizer(user_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .update_expression("SET authority = :authority")
             .condition_expression("attribute_exists(#pk)")
             .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_values(":authority", serde_dynamo::to_attribute_value(authority)?)
             .send()
             .await;
         match result {
             Ok(_) => Ok(()),
-            Err(e) if is_delete_conditional_failure(&e) => Err(DaoError::NotFound(format!(
-                "organizer {user_id} on match {match_id}"
-            ))),
+            Err(e) if is_update_conditional_failure(&e) => {
+                Err(DaoError::NotFound(format!("match {match_id}")))
+            }
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
     }
-}
-
-fn is_put_conditional_failure(
-    err: &aws_sdk_dynamodb::error::SdkError<aws_sdk_dynamodb::operation::put_item::PutItemError>,
-) -> bool {
-    matches!(
-        err,
-        aws_sdk_dynamodb::error::SdkError::ServiceError(se)
-            if matches!(
-                se.err(),
-                aws_sdk_dynamodb::operation::put_item::PutItemError::ConditionalCheckFailedException(_)
-            )
-    )
-}
-
-fn is_delete_conditional_failure(
-    err: &aws_sdk_dynamodb::error::SdkError<
-        aws_sdk_dynamodb::operation::delete_item::DeleteItemError,
-    >,
-) -> bool {
-    matches!(
-        err,
-        aws_sdk_dynamodb::error::SdkError::ServiceError(se)
-            if matches!(
-                se.err(),
-                aws_sdk_dynamodb::operation::delete_item::DeleteItemError::ConditionalCheckFailedException(_)
-            )
-    )
 }
 
 /// Serialize any record value into a DynamoDB AttributeValue (nested map/list).

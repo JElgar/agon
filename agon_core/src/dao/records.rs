@@ -503,15 +503,13 @@ pub struct TeamMemberRecord {
 pub struct MatchRecord {
     pub id: String,
     /// The user who created (organizes) the match. Immutable — a historical
-    /// fact, unrelated to the transferable `Owner` role on `players`/the
-    /// match's `MatchOrganizerRecord`s (see `MatchPlayerRole`). A match
-    /// created without the creator playing now gets them an explicit
-    /// `MatchOrganizerRecord` (`Owner`) instead of relying on this field for
-    /// authority — this is kept only as a last-resort fallback in
-    /// `caller_is_match_admin`, for matches written before organizer records
-    /// existed and so have neither a player nor organizer row for their
-    /// creator. `#[serde(default)]` for records written before this field
-    /// existed.
+    /// fact, unrelated to the transferable `Owner`/`Admin` roles in
+    /// `authority` (see `MatchPlayerRole`). Every match now gets the creator
+    /// an explicit `Owner` entry in `authority` at creation, whether or not
+    /// they play — this field is kept only as a last-resort fallback (in
+    /// `caller_match_authority_role`) for matches written before `authority`
+    /// existed, which have no entries there at all. `#[serde(default)]` for
+    /// records written before this field existed.
     #[serde(default)]
     pub created_by_user_id: String,
     pub name: String,
@@ -634,6 +632,24 @@ pub struct MatchRecord {
     /// ranked, or friendly and left alone, which is nearly all of them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ranked_prompt: Option<MatchRankedPromptRecord>,
+    /// Who holds `Owner`/`Admin` authority over this match, keyed by user id
+    /// — an ordinary player (or an organiser with no roster row at all) is
+    /// simply absent from the map, never stored as an explicit `Player`
+    /// entry. Embedded directly on `#META` (same reasoning as `sides`): it's
+    /// tiny (almost always just the one owner), changes rarely (creation, a
+    /// transfer, an occasional admin grant/revoke), and this way authority
+    /// and participation are two genuinely independent concerns — a roster
+    /// row (`MatchPlayerRecord`) only ever has to represent "who's playing",
+    /// never "who's in charge", so no roster reader (stats/rating
+    /// contribution, feed fan-out, headcounts) needs to know this map
+    /// exists. A non-playing organiser is just a user id in this map with no
+    /// corresponding `PLAYER#` row — there's no separate record type for
+    /// them. `#[serde(default)]` for matches written before this field
+    /// existed, which have no entries here at all;
+    /// `caller_match_authority_role` falls back to treating
+    /// `created_by_user_id` as `Owner` for exactly that case.
+    #[serde(default)]
+    pub authority: std::collections::HashMap<String, MatchPlayerRole>,
     pub created_at: String,
 }
 
@@ -953,12 +969,6 @@ pub struct MatchPlayerRecord {
     pub is_member_of_team: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invitation: Option<EmbeddedInvitationRecord>,
-    /// This player's authority on the match — own enum, deliberately not a
-    /// reuse of `TeamMemberRecord.role`, since match and team roles may
-    /// diverge over time. `#[serde(default)]` (-> `Player`) for players
-    /// written before this field existed.
-    #[serde(default)]
-    pub role: MatchPlayerRole,
     /// How this player got onto the roster: `None` means added directly by
     /// the organizer/an admin (same as today), `Some` means they added
     /// themselves — via a join link or team self-join.
@@ -1095,61 +1105,37 @@ pub struct MatchWaitlistEntryRecord {
     pub invitation_id: Option<String>,
 }
 
-/// A player's authority on a match. Kept as its own type rather than reusing
-/// `TeamMemberRecord.role` (a raw "admin"/"member" string) — match and team
-/// roles are conceptually related but not guaranteed to stay identical, and a
-/// shared type would couple them accidentally.
+/// A user's authority on a match — the value type of `MatchRecord::authority`
+/// (and the API's per-player/`viewer_role` shape). Kept as its own type
+/// rather than reusing `TeamMemberRecord.role` (a raw "admin"/"member"
+/// string) — match and team roles are conceptually related but not
+/// guaranteed to stay identical, and a shared type would couple them
+/// accidentally.
+///
+/// `authority` only ever stores `Owner`/`Admin` entries — an ordinary player
+/// is simply absent from the map, never written as an explicit `Player`
+/// entry — but the API still reports `Player` for them (e.g.
+/// `MatchPlayer.role`, `Match.viewer_role`), so the variant stays for that
+/// resolved-but-ordinary case.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchPlayerRole {
     /// The match's owner — permanently so, in the sense that there's exactly
-    /// one at a time (whether they hold it via a roster row or a
-    /// `MatchOrganizerRecord`), transferable via `Dao::transfer_match_ownership`
-    /// (which atomically demotes the outgoing owner to `Admin`, mirroring
-    /// `Dao::transfer_team_ownership`). The playing creator gets this on a
-    /// roster row by default; a creator who doesn't play gets it on a
-    /// `MatchOrganizerRecord` instead (see that type's doc comment) —
+    /// one at a time, transferable via `Dao::set_match_authority` (which
+    /// atomically demotes the outgoing owner to `Admin` in the same map
+    /// update, mirroring `Dao::transfer_team_ownership`). The creator gets
+    /// this in `authority` at creation whether or not they play —
     /// `MatchRecord::created_by_user_id` is only a last-resort fallback for
-    /// matches that predate organizer records.
+    /// matches that predate the `authority` field.
     Owner,
     /// Full authority over the match short of transferring ownership: manage
     /// `join_policy`/caps, mint or revoke join-links, invite people.
     Admin,
-    /// An ordinary roster member. Can still invite named people (today's
-    /// "any participant" behavior), just not the more structural actions
-    /// above.
+    /// An ordinary roster member, or anyone else with no entry in
+    /// `authority`. Can still invite named people (today's "any participant"
+    /// behavior), just not the more structural actions above.
     #[default]
     Player,
-}
-
-/// `MATCH#<matchId>` / `ORGANIZER#<userId>` — a match role (`Owner` or
-/// `Admin`, never `Player`) held by a user who isn't on the roster at all:
-/// no `MatchPlayerRecord`, no side, no invitation. This is the real fix for
-/// the case `MatchRecord::created_by_user_id`'s doc comment describes — a
-/// match's organizer (the creator who didn't opt to play, or a series'
-/// organizer, who never does) needs `Owner`/`Admin` authority without ever
-/// being swept into the match as a participant.
-///
-/// Deliberately a separate item collection from `MatchPlayerRecord` rather
-/// than a player row with `side_id: None`: every roster reader (stats/rating
-/// contribution, feed fan-out, side/match headcounts, `occupies_slot`) only
-/// ever queries `PLAYER#`, so an organizer record can never leak into any of
-/// them by construction — there's no flag to check or exclusion to keep in
-/// sync at each call site, unlike a side_id-is-none special case would need.
-///
-/// At most one row per (match, user) — doubles as the "already an
-/// organizer" uniqueness guard. A user holds *either* a roster row *or* an
-/// organizer row for a given match, never both: joining the roster while
-/// already an organizer (or vice versa) is expected to reconcile the two
-/// (see the call sites that create either), not leave them coexisting.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct MatchOrganizerRecord {
-    pub user_id: String,
-    /// `Owner` or `Admin` — never `Player`, which only means something on a
-    /// roster row. Callers that construct this are expected to reject
-    /// `Player` themselves; the DAO doesn't re-validate it.
-    pub role: MatchPlayerRole,
-    pub created_at: String,
 }
 
 /// How a player joined the match, when it wasn't the organizer adding them
@@ -2283,7 +2269,6 @@ mod tests {
                     invited_user_id: "u".into(),
                 },
             }),
-            role: MatchPlayerRole::Player,
             joined_via: None,
             ranked_prompt: None,
         };
@@ -2347,7 +2332,6 @@ mod tests {
                     invited_user_id: "u1".into(),
                 },
             }),
-            role: MatchPlayerRole::Player,
             joined_via: None,
             ranked_prompt: Some(prompt.clone()),
         };
@@ -2409,6 +2393,7 @@ mod tests {
             series_id: None,
             sides: HashMap::new(),
             header_photos: Vec::new(),
+            authority: HashMap::new(),
             confirmed_score: None,
             pending_score: None,
             like_count: 0,

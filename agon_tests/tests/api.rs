@@ -8314,11 +8314,11 @@ async fn team_self_join_on_an_intra_squad_match_offers_a_pick_or_unassigned() {
 
 /// A creator who doesn't play (`creator_side_client_id: None`, as
 /// `create_match_input` always builds) still gets `Owner` authority over the
-/// match — on a non-roster `MatchOrganizerRecord`, not a roster row. They
-/// never appear in `players`, and `viewer_role` reports `Owner` directly
+/// match — via an entry in the match's `authority` map, not a roster row.
+/// They never appear in `players`, and `viewer_role` reports `Owner` directly
 /// (not `None`, which would hide the edit affordance client-side — see
 /// `agon_ui`'s `members.ts::myMatchRole`), so the server and client agree
-/// without the client needing to know organizer records exist.
+/// without the client needing to know the authority map exists.
 #[tokio::test]
 async fn a_non_playing_creator_owns_the_match_without_a_roster_row() {
     let (config, creator) = new_user().await;

@@ -15,6 +15,7 @@ import { SportPicker } from '@/components/agon/SportPicker'
 import { MultiImageUploadField } from '@/components/agon/MultiImageUploadField'
 import { LocationField, type LocationValue } from '@/components/agon/LocationField'
 import { Avatar } from '@/components/agon/Avatar'
+import { PinnedActionBar } from '@/components/agon/PinnedActionBar'
 import type { TaggedPlayer } from '@/components/agon/PlayerSideEditor'
 import { FootballScoreFields } from '@/components/agon/FootballScoreFields'
 import { CricketScoreFields } from '@/components/agon/CricketScoreFields'
@@ -649,7 +650,7 @@ export function LogMatchPage() {
   )
 
   return (
-    <div className="mx-auto flex min-h-[calc(100vh-10rem)] max-w-xl flex-col gap-[18px]">
+    <div className="mx-auto -mb-28 flex min-h-[calc(100dvh_-_6rem)] max-w-xl flex-col gap-[18px] md:mb-0 md:min-h-0">
       <header className="-ml-2 flex items-center gap-1">
         <button
           type="button"
@@ -999,7 +1000,7 @@ export function LogMatchPage() {
         </>
       )}
 
-      <div className="sticky bottom-0 z-10 -mx-4 mt-auto flex flex-col gap-2 border-t bg-card/95 px-4 pt-3 pb-[max(16px,env(safe-area-inset-bottom))] backdrop-blur supports-[backdrop-filter]:bg-card/80 md:mx-0 md:rounded-2xl md:border">
+      <PinnedActionBar className="flex flex-col gap-2 border-t pb-[max(16px,env(safe-area-inset-bottom))] md:mx-0 md:rounded-2xl md:border">
         {stepError && step > 0 && <p className="text-xs text-muted-foreground">{stepError}</p>}
         {submitErrorMessage && <p className="text-sm text-destructive">{submitErrorMessage}</p>}
         {step < 2 ? (
@@ -1021,7 +1022,7 @@ export function LogMatchPage() {
             {submitPending ? 'Posting…' : submitLabel}
           </Button>
         )}
-      </div>
+      </PinnedActionBar>
     </div>
   )
 }

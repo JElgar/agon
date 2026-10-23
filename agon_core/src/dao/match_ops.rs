@@ -1155,34 +1155,72 @@ impl Dao {
         Ok(item)
     }
 
-    /// Replace a match's whole `authority` map in one write — the only way
-    /// it's ever changed (creation aside, where it's just part of the
-    /// `#META` item's own `Put`). The map is always tiny (almost always one
-    /// entry), so a full replace rather than a per-key `SET` is simpler and
-    /// sidesteps the DynamoDB limitation that a dot-path `SET` on a nested
-    /// key fails outright when the parent map attribute doesn't exist at
-    /// all yet (true of every match written before this field existed) —
-    /// the caller always has the current map in hand already (from the
-    /// `MatchAggregate` it just read) and sends back the whole next state.
-    /// `NotFound` if the match doesn't exist.
-    #[tracing::instrument(skip(self, authority))]
+    /// Set or clear individual entries in a match's `authority` map — the
+    /// only way it's ever changed (creation aside, where it's just part of
+    /// the `#META` item's own `Put`). A per-key dot-path `SET`/`REMOVE`
+    /// rather than a full-map replace, since `sets`/`removes` are usually
+    /// just the one or two entries actually changing (e.g. demote the old
+    /// owner, promote the new one). This relies on `authority` already
+    /// existing as a map attribute on the item, which is true of every match
+    /// created since this field was added, but not of one written before it
+    /// existed — calling this on such a match fails outright rather than
+    /// initializing the map; those matches don't need role changes support,
+    /// so that's an accepted gap rather than something this handles.
+    /// `NotFound` if the match doesn't exist (or the attempted update
+    /// otherwise fails the condition, e.g. a pre-`authority` match).
+    #[tracing::instrument(skip(self, sets, removes))]
     pub async fn set_match_authority(
         &self,
         match_id: &str,
-        authority: &std::collections::HashMap<String, MatchPlayerRole>,
+        sets: &std::collections::HashMap<String, MatchPlayerRole>,
+        removes: &[String],
     ) -> DaoResult<()> {
-        let result = self
+        let mut update_parts: Vec<String> = Vec::new();
+        let mut names: std::collections::HashMap<String, String> =
+            std::collections::HashMap::from([("#pk".to_string(), ATTR_PK.to_string())]);
+        let mut values: Vec<(String, AttributeValue)> = Vec::new();
+
+        let mut set_clauses: Vec<String> = Vec::new();
+        for (i, (uid, role)) in sets.iter().enumerate() {
+            let name_key = format!("#au{i}");
+            let value_key = format!(":av{i}");
+            names.insert(name_key.clone(), uid.clone());
+            values.push((value_key.clone(), to_attr(role)?));
+            set_clauses.push(format!("authority.{name_key} = {value_key}"));
+        }
+        if !set_clauses.is_empty() {
+            update_parts.push(format!("SET {}", set_clauses.join(", ")));
+        }
+
+        let mut remove_clauses: Vec<String> = Vec::new();
+        for (i, uid) in removes.iter().enumerate() {
+            let name_key = format!("#ar{i}");
+            names.insert(name_key.clone(), uid.clone());
+            remove_clauses.push(format!("authority.{name_key}"));
+        }
+        if !remove_clauses.is_empty() {
+            update_parts.push(format!("REMOVE {}", remove_clauses.join(", ")));
+        }
+
+        if update_parts.is_empty() {
+            return Ok(());
+        }
+
+        let mut request = self
             .client
             .update_item()
             .table_name(self.table())
             .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
             .key(ATTR_SK, s(Sk::Meta.to_string()))
-            .update_expression("SET authority = :authority")
-            .condition_expression("attribute_exists(#pk)")
-            .expression_attribute_names("#pk", ATTR_PK)
-            .expression_attribute_values(":authority", serde_dynamo::to_attribute_value(authority)?)
-            .send()
-            .await;
+            .update_expression(update_parts.join(" "))
+            .condition_expression("attribute_exists(#pk)");
+        for (name_key, name_value) in names {
+            request = request.expression_attribute_names(name_key, name_value);
+        }
+        for (value_key, value) in values {
+            request = request.expression_attribute_values(value_key, value);
+        }
+        let result = request.send().await;
         match result {
             Ok(_) => Ok(()),
             Err(e) if is_update_conditional_failure(&e) => {

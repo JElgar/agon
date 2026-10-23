@@ -44,15 +44,15 @@ use mapping::{
     invitation_status_from_str, invitation_status_str, join_link_from_record,
     join_link_scope_from_record, join_link_scope_to_record, live_event_from_record,
     location_to_record, match_format_sport_tag, match_format_to_record, match_from_records,
-    match_player_role_from_record, match_player_role_to_record, match_score_from_record,
-    match_score_to_record, match_series_from_record, match_series_occurrence_from_record,
-    match_status_str, match_type_tag, new_live_event_to_dao, notification_actor_id,
-    notification_from_record, ranked_added_players_reason, ranked_lock_reason_for_update,
-    ranked_move_in_reason, rating_consent_step, rating_ladder, rating_ladder_for,
-    rating_opt_ins_from_record, roster_preview_player, score_submission_from_record,
-    score_to_record, search_match_from_records, series_end_record_from_input,
-    switch_to_ranked_reason, team_from_records, team_list_item_from_record,
-    team_member_from_record, unrankable_sport_reason, unratable_players, user_profile_from_record,
+    match_player_role_from_record, match_score_from_record, match_score_to_record,
+    match_series_from_record, match_series_occurrence_from_record, match_status_str,
+    match_type_tag, new_live_event_to_dao, notification_actor_id, notification_from_record,
+    ranked_added_players_reason, ranked_lock_reason_for_update, ranked_move_in_reason,
+    rating_consent_step, rating_ladder, rating_ladder_for, rating_opt_ins_from_record,
+    roster_preview_player, score_submission_from_record, score_to_record,
+    search_match_from_records, series_end_record_from_input, switch_to_ranked_reason,
+    team_from_records, team_list_item_from_record, team_member_from_record,
+    unrankable_sport_reason, unratable_players, user_profile_from_record,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -3705,6 +3705,10 @@ impl Api {
         // attributed to them and their side pre-confirmed.
         let mut creator_player_id: Option<String> = None;
         let mut creator_side_id: Option<String> = None;
+        // The creator always gets `Owner` in `authority`, whether or not
+        // they play — see `MatchRecord::authority`'s doc comment.
+        let authority =
+            std::collections::HashMap::from([(uid.clone(), dao::records::MatchPlayerRole::Owner)]);
         if let Some(client_id) = &input.creator_side_client_id {
             let Some(side_id) = side_ids.get(client_id).cloned() else {
                 return Ok(CreateMatchResponse::ValidationError(PlainText(
@@ -3722,11 +3726,6 @@ impl Api {
                 side_id: Some(side_id),
                 is_member_of_team: None,
                 invitation: None,
-                // The playing creator is the match's owner by default — see
-                // `MatchPlayerRole`'s doc comment. A non-playing creator has
-                // no player row at all (`created_by_user_id` is the stopgap
-                // for that case — see `MatchRecord`'s doc comment on it).
-                role: dao::records::MatchPlayerRole::Owner,
                 joined_via: None,
                 ranked_prompt: None,
             });
@@ -3919,6 +3918,7 @@ impl Api {
             // an invitee, who is asked when they accept. Prompts exist only
             // for a *switch*, which finds players already in place.
             ranked_prompt: None,
+            authority: authority.clone(),
             created_at: now.clone(),
         };
 
@@ -3976,7 +3976,8 @@ impl Api {
         sides_for_response.sort_by(|a, b| a.side_id.cmp(&b.side_id));
 
         let mut m = match_from_records(&match_record, &sides_for_response, &player_records, false);
-        m.viewer_role = caller_match_role(&player_records, &uid).map(match_player_role_from_record);
+        m.viewer_role =
+            caller_match_authority_role(&match_record, &uid).map(match_player_role_from_record);
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m).await?;
         Ok(CreateMatchResponse::Match(Json(m)))
@@ -4009,7 +4010,8 @@ impl Api {
             .await
             .map_err(dao_internal)?;
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
-        m.viewer_role = caller_match_role(&agg.players, &uid).map(match_player_role_from_record);
+        m.viewer_role =
+            caller_match_authority_role(&agg.match_, &uid).map(match_player_role_from_record);
         // Only worth the extra team lookups for a non-participant on a match
         // that actually offers team self-join somewhere.
         if m.viewer_role.is_none() && agg.sides.iter().any(|s| s.team_join_enabled) {
@@ -4678,7 +4680,6 @@ impl Api {
                     side_id: p.side_id.clone(),
                     is_member_of_team: None,
                     invitation: None,
-                    role: dao::records::MatchPlayerRole::Player,
                     joined_via: None,
                     ranked_prompt: None,
                 };
@@ -4745,7 +4746,8 @@ impl Api {
             .await
             .map_err(dao_internal)?;
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, i_liked);
-        m.viewer_role = caller_match_role(&agg.players, &uid).map(match_player_role_from_record);
+        m.viewer_role =
+            caller_match_authority_role(&agg.match_, &uid).map(match_player_role_from_record);
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m).await?;
         Ok(UpdateMatchResponse::Match(Json(m)))
@@ -4992,7 +4994,12 @@ impl Api {
                 },
             );
         }
-
+        // The organiser never plays in a series template — there's no
+        // `creator_side_client_id` concept for one — but every match gets
+        // its creator `Owner` in `authority` regardless (see that field's
+        // doc comment), so this never needs a roster row for them: never a
+        // participant, so this never touches stats, ratings, headcounts or
+        // the feed.
         let match_record = dao::records::MatchRecord {
             id: match_id.clone(),
             created_by_user_id: uid.clone(),
@@ -5024,6 +5031,10 @@ impl Api {
             // it. A ranked *series* needs its own consent design first.
             ranked: false,
             ranked_prompt: None,
+            authority: std::collections::HashMap::from([(
+                uid.clone(),
+                dao::records::MatchPlayerRole::Owner,
+            )]),
             created_at: now,
         };
 
@@ -7325,7 +7336,6 @@ impl Api {
             side_id: target_side_id.clone(),
             is_member_of_team: None,
             invitation: None,
-            role: dao::records::MatchPlayerRole::Player,
             joined_via: Some(joined_via),
             // `settle_rating_consent` above means a joiner of a ranked match
             // is opted in by the time this row exists, so there is nothing to
@@ -7377,7 +7387,8 @@ impl Api {
             )));
         };
         let mut m = match_from_records(&agg.match_, &agg.sides, &agg.players, false);
-        m.viewer_role = caller_match_role(&agg.players, &uid).map(match_player_role_from_record);
+        m.viewer_role =
+            caller_match_authority_role(&agg.match_, &uid).map(match_player_role_from_record);
         sign_match_headers(assets, &mut m);
         let m = self.hydrate_match(dao, m).await?;
         Ok(JoinMatchResponse::Match(Json(m)))
@@ -7386,10 +7397,10 @@ impl Api {
     /// Transfer match ownership.
     ///
     /// Transfer match ownership — owner-only, mirrors `POST
-    /// /teams/:team_id/transfer-ownership` exactly (see that handler and
-    /// `Dao::transfer_match_ownership`'s doc comments). `created_by_user_id`
-    /// is unaffected either way — see its own doc comment for why it's a
-    /// separate, immutable concept.
+    /// /teams/:team_id/transfer-ownership` exactly. Ownership can only
+    /// transfer *to* an accepted roster player (never to a non-playing
+    /// organiser). `created_by_user_id` is unaffected — see its own doc
+    /// comment for why it's a separate, immutable concept.
     #[oai(path = "/matches/:match_id/transfer-ownership", method = "post")]
     async fn transfer_match_ownership(
         &self,
@@ -7414,15 +7425,12 @@ impl Api {
                 "only the current owner can transfer ownership".into(),
             )));
         }
-        // Always `Some` here — `caller_is_match_owner` already confirmed it.
-        let from =
-            caller_match_membership(&agg.players, &uid).expect("caller is the owner, just checked");
         let Some(to) = agg.players.iter().find(|p| p.player_id == input.player_id) else {
             return Ok(TransferMatchOwnershipResponse::NotFound(PlainText(
                 "player not found".into(),
             )));
         };
-        if to.player_id == from.player_id {
+        if to.user_id.as_deref() == Some(uid.as_str()) {
             return Ok(TransferMatchOwnershipResponse::ValidationError(PlainText(
                 "already the owner".into(),
             )));
@@ -7437,8 +7445,11 @@ impl Api {
                 "ownership can only go to an accepted player".into(),
             )));
         }
+        // `to_is_accepted` guarantees `to.user_id` is `Some` — `authority` is
+        // keyed by user id, so a transfer target always needs one.
+        let to_uid = to.user_id.clone().expect("to_is_accepted checked this");
 
-        dao.transfer_match_ownership(&match_id, &from.player_id, &to.player_id)
+        dao.transfer_match_ownership(&match_id, &uid, &to_uid)
             .await
             .map_err(dao_internal)?;
         Ok(TransferMatchOwnershipResponse::Ok)
@@ -7485,13 +7496,24 @@ impl Api {
                 "player not found".into(),
             )));
         };
-        if target.role == dao::records::MatchPlayerRole::Owner {
+        let Some(target_uid) = target.user_id.as_deref() else {
+            return Ok(SetMatchPlayerRoleResponse::ValidationError(PlainText(
+                "this player isn't linked to an account, so they can't hold a role".into(),
+            )));
+        };
+        if caller_match_authority_role(&agg.match_, target_uid)
+            == Some(dao::records::MatchPlayerRole::Owner)
+        {
             return Ok(SetMatchPlayerRoleResponse::ValidationError(PlainText(
                 "transfer ownership instead of changing the owner's role".into(),
             )));
         }
 
-        dao.set_match_player_role(&match_id, &player_id, match_player_role_to_record(role))
+        let new_role = match role {
+            MatchPlayerRole::Admin => Some(dao::records::MatchPlayerRole::Admin),
+            _ => None,
+        };
+        dao.set_match_player_role(&match_id, target_uid, new_role)
             .await
             .map_err(dao_internal)?;
         Ok(SetMatchPlayerRoleResponse::Ok)
@@ -7527,7 +7549,9 @@ impl Api {
                 "you're not a player on this match".into(),
             )));
         };
-        if player.role == dao::records::MatchPlayerRole::Owner {
+        if caller_match_authority_role(&agg.match_, &uid)
+            == Some(dao::records::MatchPlayerRole::Owner)
+        {
             return Ok(LeaveMatchResponse::ValidationError(PlainText(
                 "transfer ownership to someone else before leaving".into(),
             )));
@@ -7854,7 +7878,6 @@ impl Api {
             side_id: entry.side_id.clone(),
             is_member_of_team: None,
             invitation: None,
-            role: dao::records::MatchPlayerRole::Player,
             joined_via: Some(dao::records::JoinSourceRecord::Waitlist),
             ranked_prompt: None,
         };
@@ -9617,49 +9640,50 @@ fn caller_match_membership<'a>(
     })
 }
 
-/// The caller's role on the match, if they're an accepted player — see
-/// `caller_match_membership`. The one place this lookup is implemented;
+/// The caller's authority on the match: a single lookup in
+/// `MatchRecord::authority` (see that field's doc comment), falling back to
+/// treating the caller as `Owner` when they're `created_by_user_id` and the
+/// map has no entry for them at all — exactly the case of a match written
+/// before `authority` existed. The one place this lookup is implemented;
 /// both server-side authorization checks (`caller_is_match_owner`,
 /// `caller_is_match_admin`) and `Match.viewer_role` (the client-facing
-/// equivalent, set at each handler that returns a `Match` — see
-/// `main.rs`'s `match_from_records` call sites) go through this so the two
-/// can never disagree.
-fn caller_match_role(
-    players: &[dao::records::MatchPlayerRecord],
+/// equivalent, set at each handler that returns a `Match` — see `main.rs`'s
+/// `match_from_records` call sites) go through this so the two can never
+/// disagree.
+fn caller_match_authority_role(
+    match_: &dao::records::MatchRecord,
     uid: &str,
 ) -> Option<dao::records::MatchPlayerRole> {
-    caller_match_membership(players, uid).map(|p| p.role)
+    match_.authority.get(uid).copied().or_else(|| {
+        (match_.created_by_user_id == uid).then_some(dao::records::MatchPlayerRole::Owner)
+    })
 }
 
-/// Whether the caller owns the match — see `MatchPlayerRole::Owner`'s doc
-/// comment for how a non-playing organizer isn't covered by this yet.
+/// Whether the caller owns the match — see `caller_match_authority_role`.
 fn caller_is_match_owner(agg: &dao::match_ops::MatchAggregate, uid: &str) -> bool {
-    caller_match_role(&agg.players, uid) == Some(dao::records::MatchPlayerRole::Owner)
+    caller_match_authority_role(&agg.match_, uid) == Some(dao::records::MatchPlayerRole::Owner)
 }
 
 /// Whether `uid` may perform match-admin actions: editing the match (details,
 /// format, roster, scores, status), inviting people, recording live events,
 /// minting/revoking join-links, changing `join_policy`, changing a side's
 /// `max_players`. An ordinary player is read-only on the match itself — the
-/// only action left to them is `POST /matches/:match_id/leave`. True for a
-/// roster player with `role` `Owner` or `Admin`, the match's creator (a
-/// stopgap for a non-playing organizer — see `MatchRecord::created_by_user_id`'s
-/// doc comment), or an owner/admin of a team that has a side on this match
-/// (so a team's admin can manage a game their team is playing in even before
-/// joining the roster themselves — see `caller_can_manage_team` for that
-/// same owner-or-admin rule on the team side).
+/// only action left to them is `POST /matches/:match_id/leave`. True for
+/// `Owner`/`Admin` authority (see `caller_match_authority_role`, which
+/// already covers the `created_by_user_id` fallback), or an owner/admin of a
+/// team that has a side on this match (so a team's admin can manage a game
+/// their team is playing in even before joining the roster themselves — see
+/// `caller_can_manage_team` for that same owner-or-admin rule on the team
+/// side).
 async fn caller_is_match_admin(
     dao: &dao::Dao,
     agg: &dao::match_ops::MatchAggregate,
     uid: &str,
 ) -> Result<bool> {
     if matches!(
-        caller_match_role(&agg.players, uid),
+        caller_match_authority_role(&agg.match_, uid),
         Some(dao::records::MatchPlayerRole::Owner) | Some(dao::records::MatchPlayerRole::Admin)
     ) {
-        return Ok(true);
-    }
-    if agg.match_.created_by_user_id == uid {
         return Ok(true);
     }
     let team_ids: std::collections::HashSet<&str> = agg
@@ -9966,7 +9990,6 @@ fn build_invited_player(
         side_id,
         is_member_of_team: None,
         invitation: Some(embedded),
-        role: dao::records::MatchPlayerRole::Player,
         joined_via: None,
         ranked_prompt: None,
     };

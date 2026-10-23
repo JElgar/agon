@@ -1078,7 +1078,19 @@ pub fn team_list_item_from_record(team: &TeamRecord, is_followed_by_me: bool) ->
     }
 }
 
-pub fn match_player_from_record(rec: &MatchPlayerRecord) -> MatchPlayer {
+/// `match_record` supplies `authority` and `created_by_user_id` — see
+/// `agon_service::main::caller_match_authority_role`, the single place that
+/// lookup is implemented; this mirrors it per-player rather than importing
+/// it, since `main.rs` already depends on this module.
+pub fn match_player_from_record(
+    rec: &MatchPlayerRecord,
+    match_record: &MatchRecord,
+) -> MatchPlayer {
+    let authority_role = rec.user_id.as_deref().and_then(|uid| {
+        match_record.authority.get(uid).copied().or_else(|| {
+            (match_record.created_by_user_id == uid).then_some(MatchPlayerRoleRecord::Owner)
+        })
+    });
     MatchPlayer {
         member: member_from_parts(
             &rec.player_id,
@@ -1088,7 +1100,9 @@ pub fn match_player_from_record(rec: &MatchPlayerRecord) -> MatchPlayer {
         ),
         side_id: rec.side_id.clone(),
         is_member_of_team: rec.is_member_of_team,
-        role: match_player_role_from_record(rec.role),
+        role: match_player_role_from_record(
+            authority_role.unwrap_or(MatchPlayerRoleRecord::Player),
+        ),
     }
 }
 
@@ -1099,14 +1113,6 @@ pub fn match_player_role_from_record(rec: MatchPlayerRoleRecord) -> MatchPlayerR
         MatchPlayerRoleRecord::Owner => MatchPlayerRole::Owner,
         MatchPlayerRoleRecord::Admin => MatchPlayerRole::Admin,
         MatchPlayerRoleRecord::Player => MatchPlayerRole::Player,
-    }
-}
-
-pub fn match_player_role_to_record(role: MatchPlayerRole) -> MatchPlayerRoleRecord {
-    match role {
-        MatchPlayerRole::Owner => MatchPlayerRoleRecord::Owner,
-        MatchPlayerRole::Admin => MatchPlayerRoleRecord::Admin,
-        MatchPlayerRole::Player => MatchPlayerRoleRecord::Player,
     }
 }
 
@@ -1321,7 +1327,10 @@ pub fn match_from_records(
             })
             .collect(),
         sides: sides.iter().map(match_side_from_record).collect(),
-        players: players.iter().map(match_player_from_record).collect(),
+        players: players
+            .iter()
+            .map(|p| match_player_from_record(p, rec))
+            .collect(),
         confirmed_score: rec
             .confirmed_score
             .as_ref()
@@ -3214,6 +3223,7 @@ mod tests {
             series_id: None,
             sides: HashMap::new(),
             header_photos: Vec::new(),
+            authority: HashMap::new(),
             confirmed_score: None,
             pending_score: None,
             like_count: 0,

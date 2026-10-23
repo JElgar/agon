@@ -108,7 +108,9 @@ impl AgonActivities {
     /// its match (team-linked sides only, with team self-join turned on and
     /// no invited players — a series only configures a team per side and has
     /// no invite-list support yet, so roster join happens per-occurrence via
-    /// each side's own team), then bump the series' `occurrences_generated`
+    /// each side's own team; the organiser gets `Owner` on a non-roster
+    /// `MatchOrganizerRecord`, since they never play in the template — see
+    /// that type's doc comment), then bump the series' `occurrences_generated`
     /// counter. Every
     /// step is individually idempotent, so a retry of this whole activity —
     /// for an occurrence this activity (or an earlier attempt) already fully
@@ -172,6 +174,13 @@ impl AgonActivities {
                 },
             );
         }
+        // Mirrors `create_match_series`'s own authority entry: the series
+        // organiser never plays in the template, so without this they'd have
+        // no authority over any occurrence.
+        let authority = std::collections::HashMap::from([(
+            input.created_by_user_id.clone(),
+            agon_core::dao::records::MatchPlayerRole::Owner,
+        )]);
 
         let match_record = agon_core::dao::records::MatchRecord {
             id: match_id.clone(),
@@ -187,6 +196,7 @@ impl AgonActivities {
             series_id: Some(input.series_id.clone()),
             header_photos: Vec::new(),
             sides,
+            authority,
             confirmed_score: None,
             pending_score: None,
             like_count: 0,

@@ -12,8 +12,6 @@ import {
   Radio,
   Repeat,
   Share,
-  ShieldMinus,
-  ShieldPlus,
   UserMinus,
   UserPlus,
 } from 'lucide-react'
@@ -36,6 +34,7 @@ import { respondToInvitation } from '@/lib/invitations'
 import {
   MatchTabBar,
   PersonAvatar,
+  PlayerRoleMenuItems,
   SideSwatch,
   CommentsPreviewCard,
 } from '@/components/agon/football/FootballMatchView'
@@ -46,6 +45,7 @@ import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
 import { MatchJoinLinksDialog } from '@/components/agon/MatchJoinLinksDialog'
 import { MatchComments } from '@/components/agon/MatchComments'
+import { useSetMatchPlayerRole } from '@/hooks/useSetMatchPlayerRole'
 import {
   memberAvatarUrl,
   memberName,
@@ -207,16 +207,7 @@ export function ScheduledMatchInvite({
   const myPlayer = match.players.find((p) => p.member.type === 'User' && p.member.user_id === currentUserId)
   const matchKey = ['match', match.id]
 
-  const setPlayerRole = useMutation({
-    mutationFn: async ({ playerId: pid, role }: { playerId: string; role: 'admin' | 'player' }) => {
-      const { error } = await fetchClient.POST('/matches/{match_id}/players/{player_id}/role', {
-        params: { path: { match_id: match.id, player_id: pid } },
-        body: { role },
-      })
-      if (error) throw new Error('Failed to update role')
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: matchKey }),
-  })
+  const setPlayerRole = useSetMatchPlayerRole(match.id)
 
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false)
   const [removingAdmin, setRemovingAdmin] = useState<MatchPlayer | null>(null)
@@ -419,28 +410,22 @@ export function ScheduledMatchInvite({
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent>
-                              {p.role === 'admin' ? (
-                                <DropdownMenuItem
-                                  disabled={setPlayerRole.isPending}
-                                  onSelect={(e) => {
+                              <PlayerRoleMenuItems
+                                role={p.role}
+                                disabled={setPlayerRole.isPending}
+                                onSetRole={(role, e) => {
+                                  if (role === 'player') {
                                     // Opening a Dialog synchronously from a DropdownMenuItem's
                                     // onSelect races Radix's own close/cleanup of the menu —
                                     // deferring to the next tick lets the menu finish unmounting
                                     // first (https://github.com/radix-ui/primitives/issues/1836).
                                     e.preventDefault()
                                     setTimeout(() => setRemovingAdmin(p), 0)
-                                  }}
-                                >
-                                  <ShieldMinus /> Remove admin
-                                </DropdownMenuItem>
-                              ) : (
-                                <DropdownMenuItem
-                                  disabled={setPlayerRole.isPending}
-                                  onSelect={() => setPlayerRole.mutate({ playerId: id, role: 'admin' })}
-                                >
-                                  <ShieldPlus /> Make admin
-                                </DropdownMenuItem>
-                              )}
+                                  } else {
+                                    setPlayerRole.mutate({ playerId: id, role })
+                                  }
+                                }}
+                              />
                               {!isYou && (
                                 <DropdownMenuItem
                                   className="text-destructive focus:bg-destructive/10 focus:text-destructive"

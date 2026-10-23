@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { ChevronRight, Flame, MessageCircle, Plus, Share } from 'lucide-react'
+import { ChevronRight, Flame, MessageCircle, MoreVertical, Plus, Share, ShieldMinus, ShieldPlus } from 'lucide-react'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { fetchClient } from '@/lib/api-client'
@@ -18,10 +18,13 @@ import {
   type FootballEventSource,
   type FootballEventView,
 } from '@/lib/liveScore'
-import { initials, memberAvatarUrl, memberName, type ScorePlayers, sideDisplayName } from '@/lib/members'
+import { initials, memberAvatarUrl, memberName, playerId, type ScorePlayers, sideDisplayName } from '@/lib/members'
 import { resolveSideColour } from '@/lib/sideColours'
 import { FollowButton } from '@/components/agon/FollowButton'
+import { Button } from '@/components/ui/button'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useViewerFollowing } from '@/hooks/useViewerFollowing'
+import { useSetMatchPlayerRole } from '@/hooks/useSetMatchPlayerRole'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -977,6 +980,7 @@ export function FootballPlayersTab({
   finished,
   footer,
   layout = 'stack',
+  canManage,
 }: {
   match: Match
   detail: FootballEventSource | null
@@ -988,6 +992,8 @@ export function FootballPlayersTab({
   /** `columns` (desktop) puts the sides side by side and leaves the top
    *  performer out; `top` renders only the top performer card. */
   layout?: PlayersLayout
+  /** Viewer is an owner/admin — shows the make/remove-admin menu on each row. */
+  canManage?: boolean
 }) {
   const following = useViewerFollowing(currentUserId)
   const stats = useMemo(() => {
@@ -1039,6 +1045,8 @@ export function FootballPlayersTab({
         first={i === 0}
         currentUserId={currentUserId}
         followingIds={following.data}
+        matchId={match.id}
+        canManage={canManage}
         line={statsLine(s?.goals ?? 0, s?.assists ?? 0)}
         badges={cards.map((color, ci) => (
           <span
@@ -1135,8 +1143,37 @@ export function SidesGrid({ columns, children }: { columns: boolean; children: R
   return columns ? <div className="grid grid-cols-2 items-start gap-6">{children}</div> : <>{children}</>
 }
 
+/** The make/remove-admin items for a player roster row's actions menu —
+ *  shared by `PlayerRow` and `ScheduledMatchInvite`'s "who's going" list, so
+ *  the role cycle lives in one place. */
+export function PlayerRoleMenuItems({
+  role,
+  disabled,
+  onSetRole,
+}: {
+  role: MatchPlayer['role']
+  disabled: boolean
+  /** `event` is the menu item's `onSelect` event, so a caller that needs to
+   *  confirm first (e.g. a "remove admin" dialog) can `preventDefault` and
+   *  defer, the same way a `Dialog` opened from a `DropdownMenuItem` always
+   *  has to (https://github.com/radix-ui/primitives/issues/1836). */
+  onSetRole: (role: 'admin' | 'player', event: Event) => void
+}) {
+  return role === 'admin' ? (
+    <DropdownMenuItem disabled={disabled} onSelect={(e) => onSetRole('player', e)}>
+      <ShieldMinus /> Remove admin
+    </DropdownMenuItem>
+  ) : (
+    <DropdownMenuItem disabled={disabled} onSelect={(e) => onSetRole('admin', e)}>
+      <ShieldPlus /> Make admin
+    </DropdownMenuItem>
+  )
+}
+
 /** One roster row: avatar, name (+ badges and a You/organiser tag), a stat
- *  line and a Follow button. Shared by every sport's Players tab. */
+ *  line and a Follow button. Shared by every sport's Players tab. When
+ *  `canManage` and `matchId` are given, an owner/admin viewer also gets a
+ *  make/remove-admin menu on every row but their own and the owner's. */
 export function PlayerRow({
   player,
   first,
@@ -1144,6 +1181,8 @@ export function PlayerRow({
   followingIds,
   line,
   badges,
+  matchId,
+  canManage,
 }: {
   player: MatchPlayer
   first: boolean
@@ -1151,6 +1190,8 @@ export function PlayerRow({
   followingIds?: Set<string>
   line?: string | null
   badges?: React.ReactNode
+  matchId?: string
+  canManage?: boolean
 }) {
   const name = memberName(player.member)
   const isMe = player.member.type === 'User' && player.member.user_id === currentUserId
@@ -1160,6 +1201,8 @@ export function PlayerRow({
     .join(' · ')
   const userId = player.member.type === 'User' ? player.member.user_id : undefined
   const subline = pending ? 'Invited' : line
+  const setRole = useSetMatchPlayerRole(matchId ?? '-')
+  const showRoleMenu = canManage && matchId && !isMe && player.role !== 'owner'
   return (
     <div className={cn('flex min-h-16 items-center gap-3 px-4 py-2.5', !first && 'border-t border-hairline')}>
       {userId ? (
@@ -1194,6 +1237,28 @@ export function PlayerRow({
           tone="soft"
           className="h-9 rounded-full px-3.5 text-[13px] font-bold"
         />
+      )}
+      {showRoleMenu && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-8 shrink-0"
+              disabled={setRole.isPending}
+              aria-label={`${name} options`}
+            >
+              <MoreVertical className="size-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <PlayerRoleMenuItems
+              role={player.role}
+              disabled={setRole.isPending}
+              onSetRole={(role) => setRole.mutate({ playerId: playerId(player), role })}
+            />
+          </DropdownMenuContent>
+        </DropdownMenu>
       )}
     </div>
   )

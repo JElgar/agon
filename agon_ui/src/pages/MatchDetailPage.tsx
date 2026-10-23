@@ -640,7 +640,7 @@ function MatchDetail({
     (editingRoster ? (
       <MatchRosterEditor match={match} onDone={() => setEditingRoster(false)} />
     ) : !isLiveSport ? (
-      <RosterTab match={match} currentUserId={currentUserId} result={sideResults} footer={playersFooter} layout={layout} />
+      <RosterTab match={match} currentUserId={currentUserId} result={sideResults} footer={playersFooter} layout={layout} canManage={canEdit} />
     ) : isNetball ? (
       <NetballPlayersTab
         match={match}
@@ -651,6 +651,7 @@ function MatchDetail({
         finished={matchView === 'finished'}
         footer={playersFooter}
       layout={layout}
+      canManage={canEdit}
       />
     ) : isCricket ? (
       <CricketPlayersTab
@@ -661,6 +662,7 @@ function MatchDetail({
         finished={matchView === 'finished'}
         footer={playersFooter}
       layout={layout}
+      canManage={canEdit}
       />
     ) : (
       <FootballPlayersTab
@@ -672,6 +674,7 @@ function MatchDetail({
         finished={matchView === 'finished'}
         footer={playersFooter}
       layout={layout}
+      canManage={canEdit}
       />
     ))
   const primaryAction =

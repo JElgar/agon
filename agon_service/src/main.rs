@@ -1263,6 +1263,11 @@ struct CreateMatchSeriesInput {
     /// recurrence: later occurrences advance from this same time-of-day by
     /// `frequency`.
     starts_at: chrono::DateTime<chrono::Utc>,
+    /// The IANA timezone `starts_at` was picked in (e.g. `Europe/London`) —
+    /// every later occurrence advances in this zone's local wall-clock time,
+    /// so the series' time-of-day stays fixed across DST transitions
+    /// instead of drifting by the transition's offset.
+    timezone: String,
     /// How often an occurrence recurs: "weekly" | "fortnightly" | "monthly"
     /// | "yearly".
     frequency: String,
@@ -4852,11 +4857,22 @@ impl Api {
                 "weekday must be 0..=6 (0 = Sunday .. 6 = Saturday)".to_string(),
             )));
         }
+        let Ok(timezone) = input.timezone.parse::<chrono_tz::Tz>() else {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                format!(
+                    "timezone `{}` is not a recognised IANA timezone name",
+                    input.timezone
+                ),
+            )));
+        };
         // The first occurrence IS `starts_at`, so it has to actually fall on
         // the configured recurrence day — otherwise "every Tuesday" would
-        // start on a Wednesday.
+        // start on a Wednesday. Checked in `timezone`, not UTC: that's the
+        // calendar day the series creator actually picked, and the two can
+        // disagree near midnight.
         use chrono::Datelike;
-        let starts_at_weekday = input.starts_at.weekday().num_days_from_sunday() as u8;
+        let first_local = input.starts_at.with_timezone(&timezone);
+        let starts_at_weekday = first_local.weekday().num_days_from_sunday() as u8;
         if starts_at_weekday != input.weekday {
             return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
                 format!(
@@ -4879,8 +4895,8 @@ impl Api {
         // total would ever generate all at once. `Never` has no count at
         // all: an indefinite series just keeps recurring until something
         // pauses/ends it.
-        let first_date = input.starts_at.date_naive();
-        let weekday = input.starts_at.weekday();
+        let first_date = first_local.date_naive();
+        let weekday = first_local.weekday();
         match &input.ends {
             CreateMatchSeriesEndInput::Never(_) => {}
             CreateMatchSeriesEndInput::AfterN(n) => {
@@ -4925,6 +4941,7 @@ impl Api {
             first_occurrence_starts_at: input
                 .starts_at
                 .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            timezone: input.timezone.clone(),
             ends: series_end_record_from_input(&input.ends),
             sides: input
                 .sides

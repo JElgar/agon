@@ -24,6 +24,7 @@ serde_json = "1.0.140"
 # shared record structs — same crate agon_core uses for item (de)serialization.
 serde_dynamo = "4"
 chrono = { version = "0.4.41", features = ["serde"] }
+chrono-tz = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 thiserror = "1.0.64"
 tracing = "0.1.41"

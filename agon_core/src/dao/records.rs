@@ -653,6 +653,10 @@ pub struct MatchRecord {
     pub created_at: String,
 }
 
+fn default_series_timezone() -> String {
+    "UTC".to_string()
+}
+
 /// The outstanding switch-to-ranked ask on a match
 /// ([`MatchRecord::ranked_prompt`]): one per match, covering every player it
 /// asked.
@@ -751,6 +755,18 @@ pub struct SeriesRecord {
     /// occurrence's date, and so it never has to look the first occurrence
     /// up by some other means to find it.
     pub first_occurrence_starts_at: String,
+    /// The IANA timezone (e.g. `Europe/London`) `first_occurrence_starts_at`
+    /// was picked in — `materialize_series` advances occurrences in this
+    /// zone's local wall-clock time, not in UTC, so a series' time-of-day
+    /// stays fixed across DST transitions instead of drifting by whatever
+    /// the zone's offset changes by (see `agon_core::series::occurrence_starts_at`).
+    /// Defaults to `"UTC"` when absent so a series created before this field
+    /// existed still deserializes — such a series keeps its pre-existing
+    /// (DST-unaware) behaviour rather than silently changing its occurrence
+    /// times; fixing an already-generated series is a data migration, not
+    /// something this default attempts.
+    #[serde(default = "default_series_timezone")]
+    pub timezone: String,
     /// When the series stops generating new occurrences. `Never` means
     /// indefinite recurrence: `materialize_series` generates occurrences
     /// only a few at a time, keeping a small rolling window materialized

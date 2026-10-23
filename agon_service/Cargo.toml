@@ -24,6 +24,7 @@ tracing = "0.1.41"
 # The request metrics middleware records instruments on the global meter.
 opentelemetry = "0.32"
 chrono = { version = "0.4.41", features = ["serde"] }
+chrono-tz = "0.10"
 jsonwebtoken = "9.3.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 clap = { version = "4.5.37", features = ["derive"] }

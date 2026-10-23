@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { ChevronRight, Flame, MessageCircle, MoreVertical, Plus, Share, ShieldMinus, ShieldPlus } from 'lucide-react'
 import type { components } from '@/types/api'
@@ -24,6 +24,7 @@ import { FollowButton } from '@/components/agon/FollowButton'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useViewerFollowing } from '@/hooks/useViewerFollowing'
+import { useSetMatchPlayerRole } from '@/hooks/useSetMatchPlayerRole'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -1142,22 +1143,31 @@ export function SidesGrid({ columns, children }: { columns: boolean; children: R
   return columns ? <div className="grid grid-cols-2 items-start gap-6">{children}</div> : <>{children}</>
 }
 
-/** Promote/demote a player between `player` and `admin` — the same endpoint
- *  and role cycle `ScheduledMatchInvite`'s "Who's going" menu uses, open to
- *  any match stage since admin rights are about managing the match, not
- *  about whether it's been scored yet. */
-function useSetMatchPlayerRole(matchId: string) {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: async ({ playerId, role }: { playerId: string; role: 'admin' | 'player' }) => {
-      const { error } = await fetchClient.POST('/matches/{match_id}/players/{player_id}/role', {
-        params: { path: { match_id: matchId, player_id: playerId } },
-        body: { role },
-      })
-      if (error) throw new Error('Failed to update role')
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['match', matchId] }),
-  })
+/** The make/remove-admin items for a player roster row's actions menu —
+ *  shared by `PlayerRow` and `ScheduledMatchInvite`'s "who's going" list, so
+ *  the role cycle lives in one place. */
+export function PlayerRoleMenuItems({
+  role,
+  disabled,
+  onSetRole,
+}: {
+  role: MatchPlayer['role']
+  disabled: boolean
+  /** `event` is the menu item's `onSelect` event, so a caller that needs to
+   *  confirm first (e.g. a "remove admin" dialog) can `preventDefault` and
+   *  defer, the same way a `Dialog` opened from a `DropdownMenuItem` always
+   *  has to (https://github.com/radix-ui/primitives/issues/1836). */
+  onSetRole: (role: 'admin' | 'player', event: Event) => void
+}) {
+  return role === 'admin' ? (
+    <DropdownMenuItem disabled={disabled} onSelect={(e) => onSetRole('player', e)}>
+      <ShieldMinus /> Remove admin
+    </DropdownMenuItem>
+  ) : (
+    <DropdownMenuItem disabled={disabled} onSelect={(e) => onSetRole('admin', e)}>
+      <ShieldPlus /> Make admin
+    </DropdownMenuItem>
+  )
 }
 
 /** One roster row: avatar, name (+ badges and a You/organiser tag), a stat
@@ -1191,7 +1201,7 @@ export function PlayerRow({
     .join(' · ')
   const userId = player.member.type === 'User' ? player.member.user_id : undefined
   const subline = pending ? 'Invited' : line
-  const setRole = useSetMatchPlayerRole(matchId ?? '')
+  const setRole = useSetMatchPlayerRole(matchId ?? '-')
   const showRoleMenu = canManage && matchId && !isMe && player.role !== 'owner'
   return (
     <div className={cn('flex min-h-16 items-center gap-3 px-4 py-2.5', !first && 'border-t border-hairline')}>
@@ -1242,21 +1252,11 @@ export function PlayerRow({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            {player.role === 'admin' ? (
-              <DropdownMenuItem
-                disabled={setRole.isPending}
-                onSelect={() => setRole.mutate({ playerId: playerId(player), role: 'player' })}
-              >
-                <ShieldMinus /> Remove admin
-              </DropdownMenuItem>
-            ) : (
-              <DropdownMenuItem
-                disabled={setRole.isPending}
-                onSelect={() => setRole.mutate({ playerId: playerId(player), role: 'admin' })}
-              >
-                <ShieldPlus /> Make admin
-              </DropdownMenuItem>
-            )}
+            <PlayerRoleMenuItems
+              role={player.role}
+              disabled={setRole.isPending}
+              onSetRole={(role) => setRole.mutate({ playerId: playerId(player), role })}
+            />
           </DropdownMenuContent>
         </DropdownMenu>
       )}

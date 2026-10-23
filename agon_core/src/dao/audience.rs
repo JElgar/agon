@@ -11,7 +11,8 @@
 //! - followers of every **involved team** (sides with a team id),
 //! - the **participants themselves** (so a user's own matches appear in their
 //!   own feed),
-//! - the match's **creator**, even when they didn't add themselves as a
+//! - everyone holding **`Owner`/`Admin` authority** on the match
+//!   (`MatchRecord::authority`), even when they didn't add themselves as a
 //!   player — otherwise a non-playing organizer never sees their own match.
 //!
 //! Deduplicated across all four. Feed writes are idempotent on the match id
@@ -136,17 +137,26 @@ impl Dao {
             }
         }
 
-        // The match's creator should see it in their own feed even if they
-        // organized without playing (no roster row, so the loop above never
-        // visits them) and don't happen to follow any participant or team.
-        // `or_default()` leaves an existing entry (e.g. the creator also
-        // played) untouched. `created_by_user_id` defaults to "" on records
-        // written before the field existed — skip those rather than handing
-        // out an empty-string audience entry.
-        if !agg.match_.created_by_user_id.is_empty() {
-            audience
-                .entry(agg.match_.created_by_user_id.clone())
-                .or_default();
+        // Owner/Admin authority holders should see the match in their own
+        // feed even if they organized without playing (no roster row, so the
+        // loop above never visits them) and don't happen to follow any
+        // participant or team. `or_default()` leaves an existing entry (e.g.
+        // an authority holder who also played) untouched. Mirrors
+        // `caller_match_authority_role`'s own fallback in `agon_service`: a
+        // match written before `authority` existed has no entries here at
+        // all, so fall back to `created_by_user_id` as its implicit owner —
+        // skipping it too on the rare still-older record where even that
+        // field is unset (`#[serde(default)]` → "").
+        if agg.match_.authority.is_empty() {
+            if !agg.match_.created_by_user_id.is_empty() {
+                audience
+                    .entry(agg.match_.created_by_user_id.clone())
+                    .or_default();
+            }
+        } else {
+            for user_id in agg.match_.authority.keys() {
+                audience.entry(user_id.clone()).or_default();
+            }
         }
 
         Ok(audience)

@@ -2327,12 +2327,14 @@ async fn creating_a_match_fans_out_to_a_participants_feed() {
 //   - the participants themselves (players with a linked user id),
 //   - every follower of each participating user,
 //   - every follower of each involved team (a side with a team id),
-//   - the match's creator, even when they aren't themselves a player.
+//   - everyone holding Owner/Admin authority on the match, even when they
+//     aren't themselves a player (a non-playing creator gets an implicit
+//     Owner entry — see `MatchRecord::authority`'s doc comment).
 // So a match lands in a viewer's feed iff they participate, follow a
-// participant, follow an involved team, or created the match. These tests
-// drive that whole path through the real stream -> SQS -> worker -> feed
-// pipeline and assert both the users who SHOULD receive the match and those
-// who should NOT.
+// participant, follow an involved team, or hold authority over it. These
+// tests drive that whole path through the real stream -> SQS -> worker ->
+// feed pipeline and assert both the users who SHOULD receive the match and
+// those who should NOT.
 //
 // Note on the creator's followers: the creator themselves is always in the
 // audience (see above), but that doesn't fan out to their followers unless

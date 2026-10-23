@@ -10,9 +10,11 @@
 //! - followers of every **participating user** (players with a linked user id),
 //! - followers of every **involved team** (sides with a team id),
 //! - the **participants themselves** (so a user's own matches appear in their
-//!   own feed).
+//!   own feed),
+//! - the match's **creator**, even when they didn't add themselves as a
+//!   player — otherwise a non-playing organizer never sees their own match.
 //!
-//! Deduplicated across all three. Feed writes are idempotent on the match id
+//! Deduplicated across all four. Feed writes are idempotent on the match id
 //! anyway, so an accidental duplicate is harmless — dedup just avoids wasted
 //! writes.
 //!
@@ -132,6 +134,19 @@ impl Dao {
                         .await?;
                 }
             }
+        }
+
+        // The match's creator should see it in their own feed even if they
+        // organized without playing (no roster row, so the loop above never
+        // visits them) and don't happen to follow any participant or team.
+        // `or_default()` leaves an existing entry (e.g. the creator also
+        // played) untouched. `created_by_user_id` defaults to "" on records
+        // written before the field existed — skip those rather than handing
+        // out an empty-string audience entry.
+        if !agg.match_.created_by_user_id.is_empty() {
+            audience
+                .entry(agg.match_.created_by_user_id.clone())
+                .or_default();
         }
 
         Ok(audience)

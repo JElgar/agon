@@ -4024,7 +4024,8 @@ impl Api {
         // (e.g. a series occurrence's organiser never plays in the
         // template), so gating on `viewer_role.is_none()` hid this caller's
         // own eligibility to join their own match as a player.
-        if !caller_is_participant(&agg.players, &uid) && agg.sides.iter().any(|s| s.team_join_enabled)
+        if !caller_is_participant(&agg.players, &uid)
+            && agg.sides.iter().any(|s| s.team_join_enabled)
         {
             let eligible = caller_team_join_sides(dao, &agg, &uid).await?;
             m.viewer_team_join_side_ids = (!eligible.is_empty()).then_some(eligible);

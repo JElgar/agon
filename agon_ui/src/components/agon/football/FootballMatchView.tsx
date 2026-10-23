@@ -20,6 +20,7 @@ import {
 } from '@/lib/liveScore'
 import { initials, memberAvatarUrl, memberName, playerId, type ScorePlayers, sideDisplayName } from '@/lib/members'
 import { resolveSideColour } from '@/lib/sideColours'
+import { SideMarkerOrCrest } from '@/components/agon/RedesignedSportCard'
 import { FollowButton } from '@/components/agon/FollowButton'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -1034,6 +1035,7 @@ export function FootballPlayersTab({
   }
 
   const unassigned = match.players.filter((p) => !match.sides.some((s) => s.id === p.side_id))
+  const selfPlay = !!match.sides[0]?.team_id && match.sides[0].team_id === match.sides[1]?.team_id
 
   const renderRow = (p: MatchPlayer, i: number) => {
     const s = stats.get(p.member.id)
@@ -1085,6 +1087,7 @@ export function FootballPlayersTab({
                 index={idx}
                 name={sideLabel(side, idx === 0 ? 'Side A' : 'Side B')}
                 meta={`${res ? `${res} · ` : ''}${players.length} ${players.length === 1 ? 'player' : 'players'}`}
+                selfPlay={selfPlay}
               />
               <section className="flex flex-col overflow-hidden rounded-[20px] border bg-card">
                 {players.length === 0 && unnamed === 0 && (
@@ -1284,11 +1287,26 @@ export function TopPerformerCard({ player, detail, value }: { player: MatchPlaye
   )
 }
 
-/** Kit swatch + side name + a short meta line, above a side's roster card. */
-export function SideHeading({ side, index, name, meta }: { side?: MatchSide; index: number; name: string; meta?: string }) {
+/** Kit swatch (or team crest, when the side is team-linked) + side name + a
+ *  short meta line, above a side's roster card. Pass `selfPlay` when both
+ *  sides of the match share the same team, so a team-linked side's crest
+ *  also gets the kit-colour corner tag. */
+export function SideHeading({
+  side,
+  index,
+  name,
+  meta,
+  selfPlay,
+}: {
+  side?: MatchSide
+  index: number
+  name: string
+  meta?: string
+  selfPlay?: boolean
+}) {
   return (
     <div className="mt-1.5 flex items-center gap-2.5 px-1">
-      <SideSwatch side={side} index={index} size={14} />
+      <SideMarkerOrCrest side={side} leading={index === 0} selfPlay={selfPlay} />
       <span className="flex-1 truncate font-display text-[19px] font-bold">{name}</span>
       {meta && <span className="text-[13px] text-muted-foreground">{meta}</span>}
     </div>

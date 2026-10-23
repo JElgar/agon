@@ -616,6 +616,7 @@ export function NetballPlayersTab({
     return parts.length ? parts.join(' · ') : null
   }
   const unassigned = match.players.filter((p) => !match.sides.some((s) => s.id === p.side_id))
+  const selfPlay = !!match.sides[0]?.team_id && match.sides[0].team_id === match.sides[1]?.team_id
   const row = (p: MatchPlayer, i: number) => (
     <PlayerRow
       key={p.member.id}
@@ -653,6 +654,7 @@ export function NetballPlayersTab({
                 index={idx}
                 name={sideLabel(match, side.id, idx === 0 ? 'Side A' : 'Side B')}
                 meta={`${res ? `${res} · ` : ''}${plural(players.length, 'player')}`}
+                selfPlay={selfPlay}
               />
               <section className="flex flex-col overflow-hidden rounded-[20px] border bg-card">
                 {players.length === 0 && !unnamed && <p className="px-4 py-5 text-sm text-muted-foreground">No players yet.</p>}

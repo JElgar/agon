@@ -641,6 +641,7 @@ export function CricketScorecardTab({
     )
   }
   const nameOf = (id: string | undefined) => playerNameFor(match, id, players)
+  const selfPlay = !!match.sides[0]?.team_id && match.sides[0].team_id === match.sides[1]?.team_id
   return (
     <SidesGrid columns={columns}>
       {innings.map((inn, idx) => {
@@ -659,6 +660,7 @@ export function CricketScorecardTab({
               index={sideIndex(match, inn.batting_side_id)}
               name={sideNameFor(match, inn.batting_side_id)}
               meta={`${inn.runs}/${inn.wickets}${inn.declared ? 'd' : ''} · ${formatOvers(inn.overs)} ov`}
+              selfPlay={selfPlay}
             />
             <section className="flex flex-col overflow-hidden rounded-[20px] border bg-card">
               <div className={cn(BAT_GRID, 'px-4 pt-3.5 pb-2 text-xs font-semibold text-muted-foreground')}>
@@ -1179,6 +1181,7 @@ export function CricketPlayersTab({
     return winner === sideId ? 'Won' : 'Lost'
   }
   const unassigned = match.players.filter((p) => !match.sides.some((s) => s.id === p.side_id))
+  const selfPlay = !!match.sides[0]?.team_id && match.sides[0].team_id === match.sides[1]?.team_id
 
   const row = (p: MatchPlayer, i: number) => (
     <PlayerRow
@@ -1221,6 +1224,7 @@ export function CricketPlayersTab({
                 index={idx}
                 name={sideNameFor(match, side.id)}
                 meta={`${res ? `${res} · ` : ''}${plural(players.length, 'player')}`}
+                selfPlay={selfPlay}
               />
               <section className="flex flex-col overflow-hidden rounded-[20px] border bg-card">
                 {players.length === 0 && <p className="px-4 py-5 text-sm text-muted-foreground">No players yet.</p>}

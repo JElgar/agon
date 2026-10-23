@@ -42,6 +42,8 @@ import {
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
 import { LeaveMatchDialog } from '@/components/agon/invite/LeaveMatchDialog'
 import { WaitlistSection } from '@/components/agon/WaitlistSection'
+import { TeamJoinBanner } from '@/components/agon/TeamJoinBanner'
+import { MatchJoinSettingsEditor } from '@/components/agon/MatchJoinSettingsEditor'
 import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
 import { MatchJoinLinksDialog } from '@/components/agon/MatchJoinLinksDialog'
@@ -449,6 +451,10 @@ export function ScheduledMatchInvite({
               )}
 
               <WaitlistSection match={match} currentUserId={currentUserId} canManage={canEdit} />
+
+              <TeamJoinBanner match={match} />
+
+              {canEdit && <MatchJoinSettingsEditor match={match} canManage={canEdit} />}
 
               {/* Below the fold on mobile; on desktop this moves into the
                   action card's column instead (right-hand `xl:flex` below). */}

@@ -21,6 +21,7 @@ import {
 import { initials, memberAvatarUrl, memberName, playerId, type ScorePlayers, sideDisplayName } from '@/lib/members'
 import { resolveSideColour } from '@/lib/sideColours'
 import { FollowButton } from '@/components/agon/FollowButton'
+import { PinnedActionBar } from '@/components/agon/PinnedActionBar'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useViewerFollowing } from '@/hooks/useViewerFollowing'
@@ -1311,7 +1312,7 @@ export function MatchActionBar({
   onShare: () => void
 }) {
   return (
-    <div className="sticky bottom-0 z-10 -mx-4 mt-auto flex gap-2.5 bg-card/95 px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))] backdrop-blur supports-[backdrop-filter]:bg-card/80 md:mt-2 md:mx-0 md:rounded-2xl md:border md:bg-card md:py-3 md:backdrop-blur-none">
+    <PinnedActionBar className="flex gap-2.5 md:mt-2 md:mx-0 md:rounded-2xl md:border md:bg-card md:py-3 md:backdrop-blur-none">
       {primary}
       <button
         type="button"
@@ -1334,7 +1335,7 @@ export function MatchActionBar({
       >
         <Share className="size-[22px]" />
       </button>
-    </div>
+    </PinnedActionBar>
   )
 }
 

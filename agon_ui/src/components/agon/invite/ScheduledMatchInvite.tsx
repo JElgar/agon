@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import type { components } from '@/types/api'
 import { fetchClient } from '@/lib/api-client'
+import { PinnedActionBar } from '@/components/agon/PinnedActionBar'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import {
@@ -571,7 +572,7 @@ export function ScheduledMatchInvite({
         </div>
       </div>
 
-      <div className="sticky bottom-0 z-10 -mx-4 mt-auto flex flex-col gap-2 bg-card/95 px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))] backdrop-blur supports-[backdrop-filter]:bg-card/80 md:mt-2 xl:hidden">
+      <PinnedActionBar className="flex flex-col gap-2 md:mt-2 xl:hidden">
         <div className="flex gap-2.5">
           {invitation ? (
             <Button
@@ -611,7 +612,7 @@ export function ScheduledMatchInvite({
             Can't make it
           </button>
         )}
-      </div>
+      </PinnedActionBar>
 
       <InvitationResponseDialog
         open={action !== null}

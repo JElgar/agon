@@ -7449,11 +7449,7 @@ impl Api {
         // keyed by user id, so a transfer target always needs one.
         let to_uid = to.user_id.clone().expect("to_is_accepted checked this");
 
-        let sets = std::collections::HashMap::from([
-            (uid.clone(), dao::records::MatchPlayerRole::Admin),
-            (to_uid, dao::records::MatchPlayerRole::Owner),
-        ]);
-        dao.set_match_authority(&match_id, &sets, &[])
+        dao.transfer_match_ownership(&match_id, &uid, &to_uid)
             .await
             .map_err(dao_internal)?;
         Ok(TransferMatchOwnershipResponse::Ok)
@@ -7513,26 +7509,13 @@ impl Api {
             )));
         }
 
-        match role {
-            MatchPlayerRole::Admin => {
-                let sets = std::collections::HashMap::from([(
-                    target_uid.to_string(),
-                    dao::records::MatchPlayerRole::Admin,
-                )]);
-                dao.set_match_authority(&match_id, &sets, &[])
-                    .await
-                    .map_err(dao_internal)?;
-            }
-            _ => {
-                dao.set_match_authority(
-                    &match_id,
-                    &std::collections::HashMap::new(),
-                    &[target_uid.to_string()],
-                )
-                .await
-                .map_err(dao_internal)?;
-            }
-        }
+        let new_role = match role {
+            MatchPlayerRole::Admin => Some(dao::records::MatchPlayerRole::Admin),
+            _ => None,
+        };
+        dao.set_match_player_role(&match_id, target_uid, new_role)
+            .await
+            .map_err(dao_internal)?;
         Ok(SetMatchPlayerRoleResponse::Ok)
     }
 

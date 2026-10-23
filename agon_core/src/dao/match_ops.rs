@@ -1155,71 +1155,77 @@ impl Dao {
         Ok(item)
     }
 
-    /// Set or clear individual entries in a match's `authority` map — the
-    /// only way it's ever changed (creation aside, where it's just part of
-    /// the `#META` item's own `Put`). A per-key dot-path `SET`/`REMOVE`
-    /// rather than a full-map replace, since `sets`/`removes` are usually
-    /// just the one or two entries actually changing (e.g. demote the old
-    /// owner, promote the new one). This relies on `authority` already
-    /// existing as a map attribute on the item, which is true of every match
-    /// created since this field was added, but not of one written before it
-    /// existed — calling this on such a match fails outright rather than
-    /// initializing the map; those matches don't need role changes support,
-    /// so that's an accepted gap rather than something this handles.
-    /// `NotFound` if the match doesn't exist (or the attempted update
-    /// otherwise fails the condition, e.g. a pre-`authority` match).
-    #[tracing::instrument(skip(self, sets, removes))]
-    pub async fn set_match_authority(
+    /// Hand match ownership from `from_uid` to `to_uid`: one conditional
+    /// update, demoting `from_uid` to `Admin` and promoting `to_uid` to
+    /// `Owner` in the `authority` map. Conditioned on `from_uid` still being
+    /// the current owner at write time, so two concurrent transfer attempts
+    /// (or a transfer racing a stale read) can't both succeed — the loser
+    /// gets `Conflict` rather than silently overwriting whatever the winner
+    /// just set. Relies on `authority` already existing as a map attribute
+    /// on the item, true of every match created since this field was added
+    /// but not of one written before it existed — such a match has no
+    /// current owner to match the condition against, so this fails on it
+    /// outright rather than initializing the map; those matches don't need
+    /// ownership transfer support, so that's an accepted gap.
+    #[tracing::instrument(skip(self))]
+    pub async fn transfer_match_ownership(
         &self,
         match_id: &str,
-        sets: &std::collections::HashMap<String, MatchPlayerRole>,
-        removes: &[String],
+        from_uid: &str,
+        to_uid: &str,
     ) -> DaoResult<()> {
-        let mut update_parts: Vec<String> = Vec::new();
-        let mut names: std::collections::HashMap<String, String> =
-            std::collections::HashMap::from([("#pk".to_string(), ATTR_PK.to_string())]);
-        let mut values: Vec<(String, AttributeValue)> = Vec::new();
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .update_expression("SET authority.#from = :admin, authority.#to = :owner")
+            .condition_expression("authority.#from = :owner")
+            .expression_attribute_names("#from", from_uid)
+            .expression_attribute_names("#to", to_uid)
+            .expression_attribute_values(":admin", to_attr(&MatchPlayerRole::Admin)?)
+            .expression_attribute_values(":owner", to_attr(&MatchPlayerRole::Owner)?)
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => Err(DaoError::Conflict(format!(
+                "match {match_id}: {from_uid} is no longer the owner"
+            ))),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
 
-        let mut set_clauses: Vec<String> = Vec::new();
-        for (i, (uid, role)) in sets.iter().enumerate() {
-            let name_key = format!("#au{i}");
-            let value_key = format!(":av{i}");
-            names.insert(name_key.clone(), uid.clone());
-            values.push((value_key.clone(), to_attr(role)?));
-            set_clauses.push(format!("authority.{name_key} = {value_key}"));
-        }
-        if !set_clauses.is_empty() {
-            update_parts.push(format!("SET {}", set_clauses.join(", ")));
-        }
-
-        let mut remove_clauses: Vec<String> = Vec::new();
-        for (i, uid) in removes.iter().enumerate() {
-            let name_key = format!("#ar{i}");
-            names.insert(name_key.clone(), uid.clone());
-            remove_clauses.push(format!("authority.{name_key}"));
-        }
-        if !remove_clauses.is_empty() {
-            update_parts.push(format!("REMOVE {}", remove_clauses.join(", ")));
-        }
-
-        if update_parts.is_empty() {
-            return Ok(());
-        }
-
+    /// Promote `uid` to `Admin`, or demote them back to a plain player (an
+    /// absent `authority` entry), by setting or removing their one entry in
+    /// the map. Never used for `Owner` — see `transfer_match_ownership`.
+    /// Relies on `authority` already existing as a map attribute on the
+    /// item (see `transfer_match_ownership`'s doc comment for why, and the
+    /// same accepted gap for a pre-`authority` match). `NotFound` if the
+    /// match doesn't exist.
+    #[tracing::instrument(skip(self))]
+    pub async fn set_match_player_role(
+        &self,
+        match_id: &str,
+        uid: &str,
+        role: Option<MatchPlayerRole>,
+    ) -> DaoResult<()> {
         let mut request = self
             .client
             .update_item()
             .table_name(self.table())
             .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
             .key(ATTR_SK, s(Sk::Meta.to_string()))
-            .update_expression(update_parts.join(" "))
-            .condition_expression("attribute_exists(#pk)");
-        for (name_key, name_value) in names {
-            request = request.expression_attribute_names(name_key, name_value);
-        }
-        for (value_key, value) in values {
-            request = request.expression_attribute_values(value_key, value);
-        }
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_names("#uid", uid);
+        request = match role {
+            Some(role) => request
+                .update_expression("SET authority.#uid = :role")
+                .expression_attribute_values(":role", to_attr(&role)?),
+            None => request.update_expression("REMOVE authority.#uid"),
+        };
         let result = request.send().await;
         match result {
             Ok(_) => Ok(()),

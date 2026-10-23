@@ -34,17 +34,20 @@ function timeLabel(iso: string): string {
  * its own button, so none of them joins/accepts on tap; the detail page is
  * where that action actually lives. A fixed-width card in the horizontal
  * snap-scroll strip below `xl`, full-width in the desktop sidebar's vertical
- * stack at `xl` and up. See the "Agon redesign" canvas's
- * `Main.dc.html`/`DesktopHome.dc.html`.
+ * stack at `xl` and up. When `fullWidth` is set (the strip holds only one
+ * card, so there's nothing to scroll between), it's full-width below `xl`
+ * too. See the "Agon redesign" canvas's `Main.dc.html`/`DesktopHome.dc.html`.
  */
 export function UpcomingMatchCard({
   match,
   onOpen,
   className,
+  fullWidth,
 }: {
   match: FeedMatch
   onOpen?: () => void
   className?: string
+  fullWidth?: boolean
 }) {
   const { weekday, day } = dateParts(match.starts_at)
   const going = match.viewer_is_going
@@ -59,7 +62,8 @@ export function UpcomingMatchCard({
       type="button"
       onClick={onOpen}
       className={cn(
-        'flex w-[300px] shrink-0 scroll-ml-4 snap-start items-center gap-3.5 rounded-2xl border bg-card p-3.5 text-left text-card-foreground xl:w-full xl:shrink xl:scroll-ml-0 xl:snap-align-none',
+        'flex shrink-0 scroll-ml-4 snap-start items-center gap-3.5 rounded-2xl border bg-card p-3.5 text-left text-card-foreground xl:w-full xl:shrink xl:scroll-ml-0 xl:snap-align-none',
+        fullWidth ? 'w-full' : 'w-[300px]',
         className,
       )}
     >

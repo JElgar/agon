@@ -766,106 +766,6 @@ impl Dao {
         }
     }
 
-    /// Move the `Owner` role from one player to another, in one transaction
-    /// — mirrors `Dao::transfer_team_ownership` exactly (same reasoning: the
-    /// promote and demote either both land or neither does, so the match is
-    /// never briefly ownerless or briefly double-owned). `NotFound` if either
-    /// player doesn't exist. The caller is responsible for every
-    /// business-rule check (caller is the current owner, `to` is an accepted
-    /// player, `to` isn't already the owner) — this just moves the role.
-    #[tracing::instrument(skip(self))]
-    pub async fn transfer_match_ownership(
-        &self,
-        match_id: &str,
-        from_player_id: &str,
-        to_player_id: &str,
-    ) -> DaoResult<()> {
-        let promote = Update::builder()
-            .table_name(self.table())
-            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
-            .key(ATTR_SK, s(Sk::Player(to_player_id.into()).to_string()))
-            .update_expression("SET #role = :owner")
-            .condition_expression("attribute_exists(#pk)")
-            .expression_attribute_names("#role", "role")
-            .expression_attribute_names("#pk", ATTR_PK)
-            .expression_attribute_values(":owner", s("owner"))
-            .build()
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-
-        let demote = Update::builder()
-            .table_name(self.table())
-            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
-            .key(ATTR_SK, s(Sk::Player(from_player_id.into()).to_string()))
-            .update_expression("SET #role = :admin")
-            .condition_expression("attribute_exists(#pk)")
-            .expression_attribute_names("#role", "role")
-            .expression_attribute_names("#pk", ATTR_PK)
-            .expression_attribute_values(":admin", s("admin"))
-            .build()
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-
-        let result = self
-            .client
-            .transact_write_items()
-            .transact_items(TransactWriteItem::builder().update(promote).build())
-            .transact_items(TransactWriteItem::builder().update(demote).build())
-            .send()
-            .await;
-
-        match result {
-            Ok(_) => Ok(()),
-            Err(e) if super::is_transaction_conditional_failure(&e) => Err(DaoError::NotFound(
-                format!("player {from_player_id} or {to_player_id} on match {match_id}"),
-            )),
-            Err(e) => Err(DaoError::Dynamo(e.to_string())),
-        }
-    }
-
-    /// Set a single player's role to `Admin` or `Player` — the `Owner` role
-    /// only ever moves via [`Self::transfer_match_ownership`], which keeps
-    /// the one-owner invariant atomic; the caller is responsible for
-    /// rejecting `Owner` here and for checking the target isn't already the
-    /// owner before calling this. `NotFound` if the player doesn't exist.
-    #[tracing::instrument(skip(self))]
-    pub async fn set_match_player_role(
-        &self,
-        match_id: &str,
-        player_id: &str,
-        role: MatchPlayerRole,
-    ) -> DaoResult<()> {
-        let role_value = match role {
-            MatchPlayerRole::Admin => "admin",
-            MatchPlayerRole::Player => "player",
-            MatchPlayerRole::Owner => {
-                return Err(DaoError::Dynamo(
-                    "set_match_player_role can't set the owner role".into(),
-                ));
-            }
-        };
-
-        let result = self
-            .client
-            .update_item()
-            .table_name(self.table())
-            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
-            .key(ATTR_SK, s(Sk::Player(player_id.into()).to_string()))
-            .update_expression("SET #role = :role")
-            .condition_expression("attribute_exists(#pk)")
-            .expression_attribute_names("#role", "role")
-            .expression_attribute_names("#pk", ATTR_PK)
-            .expression_attribute_values(":role", s(role_value))
-            .send()
-            .await;
-
-        match result {
-            Ok(_) => Ok(()),
-            Err(e) if is_update_conditional_failure(&e) => Err(DaoError::NotFound(format!(
-                "player {player_id} on match {match_id}"
-            ))),
-            Err(e) => Err(DaoError::Dynamo(e.to_string())),
-        }
-    }
-
     /// Join a match: insert `player` (fully built by the caller — `side_id`,
     /// `role`, `joined_via` already set) and atomically bump the roster
     /// counters it consumes, conditioned on the caps the caller already
@@ -1253,6 +1153,92 @@ impl Dao {
             None => base,
         };
         Ok(item)
+    }
+
+    /// Hand match ownership from `from_uid` to `to_uid`: one conditional
+    /// update, demoting `from_uid` to `Admin` and promoting `to_uid` to
+    /// `Owner` in the `authority` map. Conditioned on `from_uid` still being
+    /// the current owner at write time, so two concurrent transfer attempts
+    /// (or a transfer racing a stale read) can't both succeed — the loser
+    /// gets `Conflict` rather than silently overwriting whatever the winner
+    /// just set. Relies on `authority` already existing as a map attribute
+    /// on the item, true of every match created since this field was added
+    /// but not of one written before it existed — such a match has no
+    /// current owner to match the condition against, so this fails on it
+    /// outright rather than initializing the map; those matches don't need
+    /// ownership transfer support, so that's an accepted gap.
+    #[tracing::instrument(skip(self))]
+    pub async fn transfer_match_ownership(
+        &self,
+        match_id: &str,
+        from_uid: &str,
+        to_uid: &str,
+    ) -> DaoResult<()> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .update_expression("SET authority.#from = :admin, authority.#to = :owner")
+            .condition_expression("authority.#from = :owner")
+            .expression_attribute_names("#from", from_uid)
+            .expression_attribute_names("#to", to_uid)
+            .expression_attribute_values(":admin", to_attr(&MatchPlayerRole::Admin)?)
+            .expression_attribute_values(":owner", to_attr(&MatchPlayerRole::Owner)?)
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => Err(DaoError::Conflict(format!(
+                "match {match_id}: {from_uid} is no longer the owner"
+            ))),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// Promote `uid` to `Admin`, or demote them back to a plain player (an
+    /// absent `authority` entry), by setting or removing their one entry in
+    /// the map. Never used for `Owner` — see `transfer_match_ownership`.
+    /// Conditioned on `uid` not currently being `Owner`, so this can't
+    /// silently touch the owner's entry if they were promoted (or became
+    /// owner via a transfer) after the caller's read — the caller gets
+    /// `Conflict` instead. Relies on `authority` already existing as a map
+    /// attribute on the item (see `transfer_match_ownership`'s doc comment
+    /// for why, and the same accepted gap for a pre-`authority` match).
+    #[tracing::instrument(skip(self))]
+    pub async fn set_match_player_role(
+        &self,
+        match_id: &str,
+        uid: &str,
+        role: Option<MatchPlayerRole>,
+    ) -> DaoResult<()> {
+        let mut request = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .condition_expression(
+                "attribute_exists(#pk) and (attribute_not_exists(authority.#uid) or authority.#uid <> :owner)",
+            )
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_names("#uid", uid)
+            .expression_attribute_values(":owner", to_attr(&MatchPlayerRole::Owner)?);
+        request = match role {
+            Some(role) => request
+                .update_expression("SET authority.#uid = :role")
+                .expression_attribute_values(":role", to_attr(&role)?),
+            None => request.update_expression("REMOVE authority.#uid"),
+        };
+        let result = request.send().await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => Err(DaoError::Conflict(format!(
+                "match {match_id}: {uid} is the owner, or the match no longer exists"
+            ))),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
     }
 }
 

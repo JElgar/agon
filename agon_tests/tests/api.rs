@@ -8197,6 +8197,85 @@ async fn a_stranger_cannot_self_join_via_team_membership() {
     );
 }
 
+/// A non-playing organiser (`creator_side_client_id: None`, same shape as a
+/// series occurrence's organiser) still holds `Owner` authority but has no
+/// roster row. If they're themselves an accepted member of a team-linked
+/// side, they should see and be able to use team self-join just like any
+/// other eligible member — `viewer_role` being `Some` must not hide this
+/// (regression for the "owner of their own match can't join" bug).
+#[tokio::test]
+async fn non_playing_owner_can_self_join_via_their_own_team_membership() {
+    let (creator_config, creator) = new_user().await;
+    let team =
+        team_with_accepted_member(&creator_config, &creator_config, &creator.profile.id).await;
+
+    let created = matches_post(
+        &creator_config,
+        models::CreateMatchInput {
+            name: "Owner Self-Join".to_string(),
+            description: "".to_string(),
+            match_type: models::MatchType::Tennis,
+            starts_at: iso_offset_hours(24),
+            location: None,
+            sides: vec![
+                models::CreateMatchSideInput {
+                    client_id: "a".to_string(),
+                    team_id: Some(team.id.clone()),
+                    name: None,
+                    colour: None,
+                    max_players: None,
+                    team_join_enabled: Some(true),
+                },
+                models::CreateMatchSideInput {
+                    client_id: "b".to_string(),
+                    team_id: None,
+                    name: Some("Side B".to_string()),
+                    colour: Some("#2952D9".to_string()),
+                    max_players: None,
+                    team_join_enabled: None,
+                },
+            ],
+            invites: vec![],
+            creator_side_client_id: None,
+            score: None,
+            winner_side_id: None,
+            header_photo_asset_ids: None,
+            format: None,
+            allow_unassigned: None,
+            ranked: None,
+            rating_consent: None,
+        },
+    )
+    .await
+    .expect("create match");
+    let side_a = created
+        .sides
+        .iter()
+        .find(|s| s.team_id.as_deref() == Some(team.id.as_str()))
+        .expect("side a")
+        .id
+        .clone();
+
+    let preview = matches_match_id_get(&creator_config, &created.id)
+        .await
+        .expect("get match as the non-playing owner");
+    assert_eq!(preview.viewer_role, Some(models::MatchPlayerRole::Owner));
+    assert_eq!(preview.viewer_team_join_side_ids, Some(vec![side_a.clone()]));
+
+    let joined = matches_match_id_join_post(
+        &creator_config,
+        &created.id,
+        models::JoinMatchInput {
+            token: None,
+            side_id: None,
+            rating_consent: None,
+        },
+    )
+    .await
+    .expect("owner self-joins via their own team membership");
+    assert_eq!(side_id_for_user(&joined, &creator.profile.id), side_a);
+}
+
 #[tokio::test]
 async fn team_self_join_requires_the_sides_own_opt_in() {
     let (creator_config, _creator) = new_user().await;

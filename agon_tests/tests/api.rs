@@ -2326,16 +2326,20 @@ async fn creating_a_match_fans_out_to_a_participants_feed() {
 // docs/async-design.md / agon_core `resolve_fanout_audience`):
 //   - the participants themselves (players with a linked user id),
 //   - every follower of each participating user,
-//   - every follower of each involved team (a side with a team id).
+//   - every follower of each involved team (a side with a team id),
+//   - everyone holding Owner/Admin authority on the match, even when they
+//     aren't themselves a player (a non-playing creator gets an implicit
+//     Owner entry — see `MatchRecord::authority`'s doc comment).
 // So a match lands in a viewer's feed iff they participate, follow a
-// participant, or follow an involved team. These tests drive that whole path
-// through the real stream -> SQS -> worker -> feed pipeline and assert both the
-// users who SHOULD receive the match and those who should NOT.
+// participant, follow an involved team, or hold authority over it. These
+// tests drive that whole path through the real stream -> SQS -> worker ->
+// feed pipeline and assert both the users who SHOULD receive the match and
+// those who should NOT.
 //
-// Note on the creator: on this surface the creator is only a participant if they
-// are themselves a player (a self-invite via `match_between`). A creator who
-// merely invites others is not in the audience, and neither are their followers
-// — the tests reflect that.
+// Note on the creator's followers: the creator themselves is always in the
+// audience (see above), but that doesn't fan out to their followers unless
+// they're also a player (a self-invite via `match_between`) — a non-playing
+// creator's followers are not in the audience.
 // ---------------------------------------------------------------------------
 
 /// The scenario from the ask: two users follow a third (the poster), the poster
@@ -2538,6 +2542,36 @@ async fn match_with_a_team_side_fans_out_to_team_followers() {
     assert_match_reaches_feed(&team_follower_config, &created.id, "team-follower feed").await;
     // A stranger following neither the team nor any player does not.
     assert_match_absent_from_feed(&stranger_config, &created.id, "stranger feed").await;
+}
+
+/// A non-playing creator (organizes a match without self-inviting) still sees
+/// it in their own feed — the creator is always in the fan-out audience, even
+/// though that doesn't extend to their followers (see the comment above).
+#[tokio::test]
+async fn match_fans_out_to_a_non_playing_creator() {
+    let (creator_config, creator) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+    let (creator_follower_config, _creator_follower) = new_user().await;
+
+    // Follows the creator, not any participant — shouldn't receive the match.
+    users_user_id_follow_post(&creator_follower_config, &creator.profile.id)
+        .await
+        .expect("follower follows creator");
+
+    let created = matches_post(&creator_config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    // The creator themselves is in the audience despite not being a player.
+    assert_match_reaches_feed(&creator_config, &created.id, "creator's own feed").await;
+    // Their follower is not — the creator isn't a participant, so this isn't
+    // participant-follower fan-out.
+    assert_match_absent_from_feed(
+        &creator_follower_config,
+        &created.id,
+        "creator-follower feed",
+    )
+    .await;
 }
 
 // ---------------------------------------------------------------------------

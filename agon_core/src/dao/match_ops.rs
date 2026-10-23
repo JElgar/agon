@@ -1200,10 +1200,12 @@ impl Dao {
     /// Promote `uid` to `Admin`, or demote them back to a plain player (an
     /// absent `authority` entry), by setting or removing their one entry in
     /// the map. Never used for `Owner` — see `transfer_match_ownership`.
-    /// Relies on `authority` already existing as a map attribute on the
-    /// item (see `transfer_match_ownership`'s doc comment for why, and the
-    /// same accepted gap for a pre-`authority` match). `NotFound` if the
-    /// match doesn't exist.
+    /// Conditioned on `uid` not currently being `Owner`, so this can't
+    /// silently touch the owner's entry if they were promoted (or became
+    /// owner via a transfer) after the caller's read — the caller gets
+    /// `Conflict` instead. Relies on `authority` already existing as a map
+    /// attribute on the item (see `transfer_match_ownership`'s doc comment
+    /// for why, and the same accepted gap for a pre-`authority` match).
     #[tracing::instrument(skip(self))]
     pub async fn set_match_player_role(
         &self,
@@ -1217,9 +1219,12 @@ impl Dao {
             .table_name(self.table())
             .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
             .key(ATTR_SK, s(Sk::Meta.to_string()))
-            .condition_expression("attribute_exists(#pk)")
+            .condition_expression(
+                "attribute_exists(#pk) and (attribute_not_exists(authority.#uid) or authority.#uid <> :owner)",
+            )
             .expression_attribute_names("#pk", ATTR_PK)
-            .expression_attribute_names("#uid", uid);
+            .expression_attribute_names("#uid", uid)
+            .expression_attribute_values(":owner", to_attr(&MatchPlayerRole::Owner)?);
         request = match role {
             Some(role) => request
                 .update_expression("SET authority.#uid = :role")
@@ -1229,9 +1234,9 @@ impl Dao {
         let result = request.send().await;
         match result {
             Ok(_) => Ok(()),
-            Err(e) if is_update_conditional_failure(&e) => {
-                Err(DaoError::NotFound(format!("match {match_id}")))
-            }
+            Err(e) if is_update_conditional_failure(&e) => Err(DaoError::Conflict(format!(
+                "match {match_id}: {uid} is the owner, or the match no longer exists"
+            ))),
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
     }

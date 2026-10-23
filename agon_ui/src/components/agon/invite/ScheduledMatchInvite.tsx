@@ -42,6 +42,8 @@ import {
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
 import { LeaveMatchDialog } from '@/components/agon/invite/LeaveMatchDialog'
 import { WaitlistSection } from '@/components/agon/WaitlistSection'
+import { MatchJoinSettingsEditor } from '@/components/agon/MatchJoinSettingsEditor'
+import { useJoinMatch } from '@/hooks/useJoinMatch'
 import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
 import { MatchJoinLinksDialog } from '@/components/agon/MatchJoinLinksDialog'
@@ -205,6 +207,31 @@ export function ScheduledMatchInvite({
   const [editingRoster, setEditingRoster] = useState(false)
   const [inviting, setInviting] = useState(false)
   const [commentsOpen, setCommentsOpen] = useState(false)
+
+  // Team self-join (no invitation, no token — just an accepted member of a
+  // side's team): folded into the same primary action as accepting an
+  // invitation, rather than a separate banner, so there's one "Join" per
+  // match regardless of which route got you eligible.
+  const teamJoinSideIds = match.viewer_team_join_side_ids
+  const teamJoinPickableSides = match.sides.filter((s) => teamJoinSideIds?.includes(s.id))
+  const teamJoinForcedSideId = teamJoinSideIds?.length === 1 ? teamJoinSideIds[0] : undefined
+  const teamJoinNeedsPick = (teamJoinSideIds?.length ?? 0) > 1
+  const canTeamJoin = !invitation && (teamJoinSideIds?.length ?? 0) > 0
+  const [teamJoinPickerOpen, setTeamJoinPickerOpen] = useState(false)
+  const [teamJoinSideId, setTeamJoinSideId] = useState<string | undefined>(undefined)
+  const effectiveTeamJoinSideId = teamJoinForcedSideId ?? teamJoinSideId
+  const teamJoinCanSubmit = teamJoinNeedsPick
+    ? match.allow_unassigned || !!effectiveTeamJoinSideId
+    : true
+  const teamJoin = useJoinMatch(match.id)
+  const teamJoinConflict = teamJoin.data && teamJoin.data !== 'joined' ? teamJoin.data : null
+  const startTeamJoin = () => {
+    if (teamJoinNeedsPick) {
+      setTeamJoinPickerOpen(true)
+      return
+    }
+    teamJoin.mutate({ side_id: teamJoinForcedSideId })
+  }
   const myPlayer = match.players.find((p) => p.member.type === 'User' && p.member.user_id === currentUserId)
   const matchKey = ['match', match.id]
 
@@ -450,6 +477,8 @@ export function ScheduledMatchInvite({
 
               <WaitlistSection match={match} currentUserId={currentUserId} canManage={canEdit} />
 
+              {canEdit && <MatchJoinSettingsEditor match={match} canManage={canEdit} />}
+
               {/* Below the fold on mobile; on desktop this moves into the
                   action card's column instead (right-hand `xl:flex` below). */}
               {organiser && (
@@ -516,7 +545,13 @@ export function ScheduledMatchInvite({
               </div>
               <div className="flex flex-col gap-0.5">
                 <span className="text-[17px] font-bold">
-                  {invitation ? 'Are you playing?' : viewerGoing ? "You're in" : "Don't miss it"}
+                  {invitation
+                    ? 'Are you playing?'
+                    : canTeamJoin
+                      ? "You're on the team"
+                      : viewerGoing
+                        ? "You're in"
+                        : "Don't miss it"}
                 </span>
                 <span className="text-sm text-muted-foreground">
                   {spotsLeft != null ? `${spotsLeft} ${spotsLeft === 1 ? 'spot' : 'spots'} left` : `${going.length} going`}
@@ -539,6 +574,20 @@ export function ScheduledMatchInvite({
                 >
                   Can't make it
                 </Button>
+              </>
+            ) : canTeamJoin ? (
+              <>
+                <Button
+                  size="lg"
+                  className="h-[54px] rounded-2xl text-base font-bold"
+                  disabled={teamJoin.isPending || !teamJoinCanSubmit}
+                  onClick={startTeamJoin}
+                >
+                  {teamJoin.isPending ? 'Joining…' : 'Join'}
+                </Button>
+                {teamJoinConflict && (
+                  <p className="text-xs text-destructive">{teamJoinConflict.message}</p>
+                )}
               </>
             ) : (
               <button
@@ -583,6 +632,16 @@ export function ScheduledMatchInvite({
             >
               I'm in
             </Button>
+          ) : canTeamJoin ? (
+            <Button
+              size="lg"
+              shape="pill"
+              className="h-[54px] flex-1 gap-2 rounded-2xl text-base font-bold"
+              disabled={teamJoin.isPending || !teamJoinCanSubmit}
+              onClick={startTeamJoin}
+            >
+              {teamJoin.isPending ? 'Joining…' : 'Join'}
+            </Button>
           ) : (
             <button
               type="button"
@@ -611,6 +670,9 @@ export function ScheduledMatchInvite({
           >
             Can't make it
           </button>
+        )}
+        {canTeamJoin && teamJoinConflict && (
+          <p className="px-1 text-xs text-destructive">{teamJoinConflict.message}</p>
         )}
       </PinnedActionBar>
 
@@ -679,6 +741,52 @@ export function ScheduledMatchInvite({
               }}
             >
               {removePlayer.isPending ? 'Removing…' : 'Remove from match'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Only reachable when `teamJoinNeedsPick` — both sides share the
+          viewer's team (an intra-squad/derby match) and there's no single
+          side to auto-assign, same choice a multi-side join link offers. */}
+      <Dialog open={teamJoinPickerOpen} onOpenChange={(open) => !open && setTeamJoinPickerOpen(false)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Choose a side</DialogTitle>
+          </DialogHeader>
+          <select
+            value={teamJoinSideId ?? ''}
+            onChange={(e) => setTeamJoinSideId(e.target.value || undefined)}
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+          >
+            {match.allow_unassigned ? (
+              <option value="">Unassigned — pick a side later</option>
+            ) : (
+              <option value="" disabled>
+                Choose a side…
+              </option>
+            )}
+            {teamJoinPickableSides.map((side, i) => (
+              <option key={side.id} value={side.id}>
+                {sideDisplayName(side) ?? `Side ${i + 1}`}
+              </option>
+            ))}
+          </select>
+          {teamJoinConflict && <p className="text-xs text-destructive">{teamJoinConflict.message}</p>}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setTeamJoinPickerOpen(false)} disabled={teamJoin.isPending}>
+              Cancel
+            </Button>
+            <Button
+              disabled={teamJoin.isPending || !teamJoinCanSubmit}
+              onClick={() =>
+                teamJoin.mutate(
+                  { side_id: effectiveTeamJoinSideId },
+                  { onSuccess: (result) => result === 'joined' && setTeamJoinPickerOpen(false) },
+                )
+              }
+            >
+              {teamJoin.isPending ? 'Joining…' : 'Join'}
             </Button>
           </DialogFooter>
         </DialogContent>

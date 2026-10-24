@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { ChevronRight, Flame, MessageCircle, MoreVertical, Plus, Share, ShieldMinus, ShieldPlus } from 'lucide-react'
+import { ChevronRight, Flame, MessageCircle, MoreVertical, Plus, Share, ShieldMinus, ShieldPlus, User } from 'lucide-react'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { fetchClient } from '@/lib/api-client'
@@ -1144,6 +1144,19 @@ export function SidesGrid({ columns, children }: { columns: boolean; children: R
   return columns ? <div className="grid grid-cols-2 items-start gap-6">{children}</div> : <>{children}</>
 }
 
+/** "View profile" menu item — shared by `PlayerRow` and
+ *  `ScheduledMatchInvite`'s "who's going" list, so every player's actions
+ *  menu links to their profile the same way. */
+export function ViewProfileMenuItem({ userId }: { userId: string }) {
+  return (
+    <DropdownMenuItem asChild>
+      <Link to={`/users/${userId}`}>
+        <User /> View profile
+      </Link>
+    </DropdownMenuItem>
+  )
+}
+
 /** The make/remove-admin items for a player roster row's actions menu —
  *  shared by `PlayerRow` and `ScheduledMatchInvite`'s "who's going" list, so
  *  the role cycle lives in one place. */
@@ -1172,9 +1185,10 @@ export function PlayerRoleMenuItems({
 }
 
 /** One roster row: avatar, name (+ badges and a You/organiser tag), a stat
- *  line and a Follow button. Shared by every sport's Players tab. When
- *  `canManage` and `matchId` are given, an owner/admin viewer also gets a
- *  make/remove-admin menu on every row but their own and the owner's. */
+ *  line and a Follow button. Shared by every sport's Players tab. Every row
+ *  with a user gets a "View profile" actions menu; when `canManage` and
+ *  `matchId` are given, an owner/admin viewer also gets a make/remove-admin
+ *  item on every row but their own and the owner's. */
 export function PlayerRow({
   player,
   first,
@@ -1204,6 +1218,7 @@ export function PlayerRow({
   const subline = pending ? 'Invited' : line
   const setRole = useSetMatchPlayerRole(matchId ?? '-')
   const showRoleMenu = canManage && matchId && !isMe && player.role !== 'owner'
+  const showMenu = !!userId || showRoleMenu
   return (
     <div className={cn('flex min-h-16 items-center gap-3 px-4 py-2.5', !first && 'border-t border-hairline')}>
       {userId ? (
@@ -1239,7 +1254,7 @@ export function PlayerRow({
           className="h-9 rounded-full px-3.5 text-[13px] font-bold"
         />
       )}
-      {showRoleMenu && (
+      {showMenu && (
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -1253,11 +1268,14 @@ export function PlayerRow({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <PlayerRoleMenuItems
-              role={player.role}
-              disabled={setRole.isPending}
-              onSetRole={(role) => setRole.mutate({ playerId: playerId(player), role })}
-            />
+            {userId && <ViewProfileMenuItem userId={userId} />}
+            {showRoleMenu && (
+              <PlayerRoleMenuItems
+                role={player.role}
+                disabled={setRole.isPending}
+                onSetRole={(role) => setRole.mutate({ playerId: playerId(player), role })}
+              />
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       )}

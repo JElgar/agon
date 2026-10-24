@@ -38,6 +38,7 @@ import {
   PlayerRoleMenuItems,
   SideSwatch,
   CommentsPreviewCard,
+  ViewProfileMenuItem,
 } from '@/components/agon/football/FootballMatchView'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
 import { LeaveMatchDialog } from '@/components/agon/invite/LeaveMatchDialog'
@@ -409,6 +410,8 @@ export function ScheduledMatchInvite({
                     const id = playerId(p)
                     const isOwnerRow = p.role === 'owner'
                     const isYou = myPlayer && id === playerId(myPlayer)
+                    const userId = p.member.type === 'User' ? p.member.user_id : undefined
+                    const showAdminActions = canEdit && !isOwnerRow
                     return (
                       <div
                         key={id}
@@ -424,7 +427,7 @@ export function ScheduledMatchInvite({
                             <span className="block text-xs text-muted-foreground capitalize">{p.role}</span>
                           )}
                         </div>
-                        {canEdit && !isOwnerRow && (
+                        {(userId || showAdminActions) && (
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Button
@@ -438,33 +441,38 @@ export function ScheduledMatchInvite({
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent>
-                              <PlayerRoleMenuItems
-                                role={p.role}
-                                disabled={setPlayerRole.isPending}
-                                onSetRole={(role, e) => {
-                                  if (role === 'player') {
-                                    // Opening a Dialog synchronously from a DropdownMenuItem's
-                                    // onSelect races Radix's own close/cleanup of the menu —
-                                    // deferring to the next tick lets the menu finish unmounting
-                                    // first (https://github.com/radix-ui/primitives/issues/1836).
-                                    e.preventDefault()
-                                    setTimeout(() => setRemovingAdmin(p), 0)
-                                  } else {
-                                    setPlayerRole.mutate({ playerId: id, role })
-                                  }
-                                }}
-                              />
-                              {!isYou && (
-                                <DropdownMenuItem
-                                  className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                                  disabled={removePlayer.isPending}
-                                  onSelect={(e) => {
-                                    e.preventDefault()
-                                    setTimeout(() => setRemovingPlayer(p), 0)
-                                  }}
-                                >
-                                  <UserMinus /> Remove from match
-                                </DropdownMenuItem>
+                              {userId && <ViewProfileMenuItem userId={userId} />}
+                              {showAdminActions && (
+                                <>
+                                  <PlayerRoleMenuItems
+                                    role={p.role}
+                                    disabled={setPlayerRole.isPending}
+                                    onSetRole={(role, e) => {
+                                      if (role === 'player') {
+                                        // Opening a Dialog synchronously from a DropdownMenuItem's
+                                        // onSelect races Radix's own close/cleanup of the menu —
+                                        // deferring to the next tick lets the menu finish unmounting
+                                        // first (https://github.com/radix-ui/primitives/issues/1836).
+                                        e.preventDefault()
+                                        setTimeout(() => setRemovingAdmin(p), 0)
+                                      } else {
+                                        setPlayerRole.mutate({ playerId: id, role })
+                                      }
+                                    }}
+                                  />
+                                  {!isYou && (
+                                    <DropdownMenuItem
+                                      className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                                      disabled={removePlayer.isPending}
+                                      onSelect={(e) => {
+                                        e.preventDefault()
+                                        setTimeout(() => setRemovingPlayer(p), 0)
+                                      }}
+                                    >
+                                      <UserMinus /> Remove from match
+                                    </DropdownMenuItem>
+                                  )}
+                                </>
                               )}
                             </DropdownMenuContent>
                           </DropdownMenu>

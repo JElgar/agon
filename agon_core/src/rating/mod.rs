@@ -19,8 +19,7 @@
 //! The pieces, one file each:
 //!
 //! - [`ladder`] — which pool a result counts towards. The one place a ladder
-//!   key is minted, so a new sport is a compile error in exactly one match
-//!   arm and an opaque string everywhere else.
+//!   key is minted, so it is an opaque string everywhere else.
 //! - [`engine`] — the Weng-Lin wrapper. 1v1, team-vs-team and N-way, draws
 //!   included, all through one code path.
 //! - [`scale`] — native `μ`/`σ` to the Elo-shaped numbers players see: a

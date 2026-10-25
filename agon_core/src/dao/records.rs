@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use crate::sports::SportRecord;
 use serde::{Deserialize, Serialize};
 
 // ===========================================================================
@@ -48,168 +49,68 @@ pub struct HeaderPhotoRecord {
     pub url: String,
 }
 
-/// A match score. Tagged union mirroring the sport's scoring shape.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ScoreRecord {
-    Simple {
-        /// Points per side, keyed by side id.
-        entries: HashMap<String, u32>,
-    },
-    Sets {
-        /// Games won per set per side, keyed by side id.
-        entries: HashMap<String, Vec<u32>>,
-    },
-    Cricket {
-        innings: Vec<CricketScoreInningsRecord>,
-        /// The current/most recent innings' recent-ball window — `None` once
-        /// there isn't a "current" innings (between innings, or the match is
-        /// over) or for a result with no ball-by-ball data behind it.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        recent_deliveries: Option<Vec<CricketDeliveryRecord>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        next_ball_context: Option<NextBallContextRecord>,
-        /// True once the log's last innings has ended and no following one
-        /// has started yet. `None` for a result with no live log behind it.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        awaiting_next_innings: Option<bool>,
-    },
-    Football {
-        /// Goal tally, keyed by side id. `#[serde(default)]` because this
-        /// field didn't exist before the tally was embedded here — a record
-        /// written in that gap has no `score` to fall back to, so it
-        /// deserializes as an empty tally rather than 500ing.
-        #[serde(default)]
-        score: HashMap<String, u32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        goals: Option<Vec<FootballGoalEventRecord>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        cards: Option<Vec<FootballCardEventRecord>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        substitutions: Option<Vec<FootballSubstitutionEventRecord>>,
-        /// The most recent period marker seen, if any.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        period: Option<FootballPeriodRecord>,
-        /// When each period marker was recorded, keyed by kind.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        period_times: Option<HashMap<FootballPeriodRecord, String>>,
-        /// Every penalty-shootout kick recorded, in order taken.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        penalty_shootout: Option<Vec<FootballPenaltyShootoutKickRecord>>,
-        /// Running shootout tally (kicks scored, not taken), keyed by side id.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        penalty_shootout_score: Option<HashMap<String, u32>>,
-    },
-    Netball {
-        /// Goal tally, keyed by side id.
-        #[serde(default)]
-        score: HashMap<String, u32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        goals: Option<Vec<NetballGoalEventRecord>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        fouls: Option<Vec<NetballFoulEventRecord>>,
-        /// The most recent period marker seen, if any.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        period: Option<NetballPeriodRecord>,
-        /// When each period marker was recorded, keyed by kind.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        period_times: Option<HashMap<NetballPeriodRecord, String>>,
-        /// The score as of each quarter-end marker, keyed by kind — the
-        /// *only* source of the score for a quarter-only-scored match. See
-        /// `agon_service::live_score::netball::NetballPeriodEvent::score`'s
-        /// doc comment.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        period_scores: Option<HashMap<NetballPeriodRecord, HashMap<String, u32>>>,
-    },
-}
+/// Every sport-shaped record aggregate, generated from the sport registry
+/// (`crate::for_each_sport!`): one variant or field per modeled sport, holding
+/// that sport's own record type from its `SportRecord` impl.
+macro_rules! define_sport_records {
+    (
+        modeled: [$( $variant:ident { tag: $tag:literal, key: $key:ident } ),+ $(,)?],
+        generic: [$( $gvariant:ident { tag: $gtag:literal, key: $gkey:ident, label: $glabel:literal } ),* $(,)?] $(,)?
+    ) => {
+        /// A match score. Tagged union mirroring the sport's scoring shape.
+        #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        pub enum ScoreRecord {
+            Simple {
+                /// Points per side, keyed by side id.
+                entries: HashMap<String, u32>,
+            },
+            Sets {
+                /// Games won per set per side, keyed by side id.
+                entries: HashMap<String, Vec<u32>>,
+            },
+            $( $variant(<crate::sports::$key::$variant as SportRecord>::ScoreRecord), )+
+        }
 
-/// One innings' final totals, as stored on a match's confirmed/pending
-/// `Score` — mirrors the API's `CricketScoreInnings`. `batting`/`bowling`/
-/// `fall_of_wickets`/`extras` are `None` for a manually-entered result with
-/// no per-player detail to hand over; populated when the result came from a
-/// live-scored (or backfilled) match.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketScoreInningsRecord {
-    pub batting_side_id: String,
-    pub bowling_side_id: String,
-    pub runs: u32,
-    pub wickets: u32,
-    pub overs: OversRecord,
-    pub declared: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub batting: Option<Vec<CricketBattingEntryRecord>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bowling: Option<Vec<CricketBowlingEntryRecord>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fall_of_wickets: Option<Vec<CricketFallOfWicketRecord>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extras: Option<CricketExtrasRecord>,
-}
+        /// A match's configured format, discriminated by sport.
+        #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+        #[serde(tag = "sport", rename_all = "snake_case")]
+        pub enum MatchFormatRecord {
+            $( $variant(<crate::sports::$key::$variant as SportRecord>::FormatRecord), )+
+        }
 
-/// Mirrors the API's `detailed_score::cricket::CricketBattingEntry`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketBattingEntryRecord {
-    pub player_id: String,
-    pub runs: u32,
-    pub balls_faced: u32,
-    pub fours: u32,
-    pub sixes: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dismissal: Option<CricketDismissalRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub batting_position: Option<u32>,
-}
+        /// One stored live-scoring event, discriminated by sport.
+        #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+        #[serde(tag = "sport", rename_all = "snake_case")]
+        pub enum LiveEventPayloadRecord {
+            $( $variant(<crate::sports::$key::$variant as SportRecord>::LiveEventRecord), )+
+        }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketDismissalRecord {
-    pub kind: CricketDismissalKindRecord,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bowler_player_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fielder_player_id: Option<String>,
+        /// A user's lifetime stats, one field per sport — `None` for a sport
+        /// they've never played a confirmed match in. Stored inline on
+        /// `UserRecord::stats`, so each sport is a nested map attribute
+        /// (`stats.cricket`, `stats.football`, ...).
+        ///
+        /// The DAO's write path (`Dao::stats_delta`/`update_best_figures`)
+        /// doesn't use this type: it addresses `stats.<sport>.<counter>` with
+        /// raw `UpdateItem` expressions built from the sport tag and counter
+        /// names, so it is sport-agnostic.
+        #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+        pub struct UserStatsRecord {
+            $(
+                #[serde(default, skip_serializing_if = "Option::is_none")]
+                pub $key: Option<<crate::sports::$key::$variant as SportRecord>::StatsRecord>,
+            )+
+            $(
+                #[serde(default, skip_serializing_if = "Option::is_none")]
+                pub $gkey: Option<GenericSportStatsRecord>,
+            )*
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub other: Option<GenericSportStatsRecord>,
+        }
+    };
 }
-
-/// Mirrors the API's `detailed_score::cricket::CricketBowlingEntry`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketBowlingEntryRecord {
-    pub player_id: String,
-    pub overs: OversRecord,
-    pub maidens: u32,
-    pub runs_conceded: u32,
-    pub wickets: u32,
-    pub wides: u32,
-    pub no_balls: u32,
-}
-
-/// Mirrors the API's `detailed_score::cricket::CricketExtras`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketExtrasRecord {
-    pub byes: u32,
-    pub leg_byes: u32,
-    pub wides: u32,
-    pub no_balls: u32,
-    pub penalty: u32,
-}
-
-/// Mirrors the API's `detailed_score::cricket::CricketFallOfWicket`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketFallOfWicketRecord {
-    pub wicket: u32,
-    pub runs: u32,
-    pub player_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub overs: Option<OversRecord>,
-}
-
-/// A count of overs bowled/faced: whole overs plus balls into the current
-/// over — mirrors the API's `detailed_score::cricket::Overs`. Two integer
-/// fields rather than a single float, which can't safely represent a ball
-/// count that doesn't fit in one decimal digit.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OversRecord {
-    pub overs: u32,
-    pub balls: u32,
-}
+crate::for_each_sport!(define_sport_records);
 
 /// The agreed, settled score of a match.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -850,60 +751,12 @@ pub enum SeriesEndRecord {
     Never,
 }
 
-/// Mirrors `agon_service::match_format::MatchFormat`, sport-first
-/// discriminated like `LiveEventPayloadRecord` — a typed DAO enum rather
-/// than opaque JSON, so a variant added on the API side and forgotten here
-/// is a compile error, not a silent runtime data loss. New sport = new
-/// variant on both sides.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "sport", rename_all = "snake_case")]
-pub enum MatchFormatRecord {
-    Football(FootballFormatRecord),
-    Cricket(CricketFormatRecord),
-    Netball(NetballFormatRecord),
-}
-
-/// Mirrors `agon_service::match_format::FootballFormat`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct FootballFormatRecord {
-    pub half_length_minutes: u32,
-    pub num_halves: u32,
-    pub extra_time: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extra_time_half_length_minutes: Option<u32>,
-    pub penalties: bool,
-}
-
-/// Mirrors `agon_service::match_format::CricketFormat`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketFormatRecord {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub overs_per_innings: Option<u32>,
-    pub innings_per_side: u32,
-    pub balls_per_over: u32,
-    pub no_ball_penalty_runs: u32,
-    pub wide_penalty_runs: u32,
-    /// `#[serde(default = "default_true")]` for records written before these
-    /// two fields existed — the standard rule (extra ball) is the safe
-    /// default for a match that never configured otherwise.
-    #[serde(default = "default_true")]
-    pub wide_is_extra_ball: bool,
-    #[serde(default = "default_true")]
-    pub no_ball_is_extra_ball: bool,
-    pub free_hit_after_no_ball: bool,
-}
-
-fn default_true() -> bool {
+/// Shared by `MatchRecord::allow_unassigned`, `JoinLinkScopeRecord::allow_unassigned`
+/// and `crate::sports::cricket::CricketFormatRecord`'s extra-ball flags — not
+/// cricket- or match-specific, so it stays here rather than moving into any
+/// one sport module.
+pub(crate) fn default_true() -> bool {
     true
-}
-
-/// Mirrors `agon_service::match_format::NetballFormat`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct NetballFormatRecord {
-    pub num_quarters: u32,
-    pub quarter_length_minutes: u32,
-    pub two_point_zone: bool,
-    pub extra_time: bool,
 }
 
 /// `MATCH#<matchId>` / `SIDE#<sideId>` — one side of a match.
@@ -1217,304 +1070,11 @@ pub struct LiveEventRecord {
     pub recorded_at: String,
 }
 
-/// DAO-owned mirror of `agon_service::live_score::LiveEventInput`, sport-
-/// first discriminated. New sport = new variant on both sides.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "sport", rename_all = "snake_case")]
-pub enum LiveEventPayloadRecord {
-    Football(FootballLiveEventRecord),
-    Cricket(CricketLiveEventRecord),
-    Netball(NetballLiveEventRecord),
-}
-
-// ---- Football live events --------------------------------------------------
-
-/// Mirrors `agon_service::live_score::football::FootballLiveEvent`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum FootballLiveEventRecord {
-    Goal(FootballGoalEventRecord),
-    Card(FootballCardEventRecord),
-    Substitution(FootballSubstitutionEventRecord),
-    Period(FootballPeriodEventRecord),
-    PenaltyShootoutKick(FootballPenaltyShootoutKickRecord),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct FootballGoalEventRecord {
-    pub side_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scorer_player_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub assist_player_id: Option<String>,
-    pub own_goal: bool,
-    pub penalty: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub minute: Option<u32>,
-    /// Mirrors `agon_service::detailed_score::football::FootballGoalEvent::occurred_at`
-    /// — RFC3339, same string convention as `LiveEventRecord::occurred_at`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub occurred_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct FootballCardEventRecord {
-    pub side_id: String,
-    pub player_id: String,
-    pub color: FootballCardColorRecord,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub minute: Option<u32>,
-    /// Mirrors `FootballGoalEventRecord::occurred_at`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub occurred_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum FootballCardColorRecord {
-    Yellow,
-    Red,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct FootballSubstitutionEventRecord {
-    pub side_id: String,
-    pub player_in_id: String,
-    pub player_out_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub minute: Option<u32>,
-    /// Mirrors `FootballGoalEventRecord::occurred_at`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub occurred_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct FootballPeriodEventRecord {
-    pub period: FootballPeriodRecord,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum FootballPeriodRecord {
-    KickOff,
-    HalfTime,
-    SecondHalfKickOff,
-    FullTime,
-    ExtraTimeKickOff,
-    ExtraTimeHalfTime,
-    ExtraTimeSecondHalfKickOff,
-    ExtraTimeFullTime,
-    PenaltiesComplete,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct FootballPenaltyShootoutKickRecord {
-    pub side_id: String,
-    pub scored: bool,
-}
-
-// ---- Cricket live events ----------------------------------------------------
-
-/// Mirrors `agon_service::live_score::cricket::CricketLiveEvent`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum CricketLiveEventRecord {
-    Delivery(CricketDeliveryRecord),
-    Retire(CricketRetireEventRecord),
-    InningsStart(CricketInningsStartEventRecord),
-    InningsEnd(CricketInningsEndEventRecord),
-}
-
-/// Mirrors `detailed_score::cricket::CricketDelivery` (reused verbatim as the
-/// API's live delivery payload).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketDeliveryRecord {
-    pub over: u32,
-    pub ball: u32,
-    pub bowler_player_id: String,
-    pub striker_player_id: String,
-    pub non_striker_player_id: String,
-    pub runs_off_bat: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extra: Option<CricketDeliveryExtraRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wicket: Option<CricketDeliveryWicketRecord>,
-    /// Mirrors `agon_service::detailed_score::cricket::CricketDelivery::occurred_at`
-    /// — RFC3339, same string convention as `LiveEventRecord::occurred_at`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub occurred_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketDeliveryExtraRecord {
-    pub kind: CricketExtraKindRecord,
-    pub runs: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum CricketExtraKindRecord {
-    Wide,
-    NoBall,
-    Bye,
-    LegBye,
-    Penalty,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketDeliveryWicketRecord {
-    pub kind: CricketDismissalKindRecord,
-    pub dismissed_player_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bowler_player_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fielder_player_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum CricketDismissalKindRecord {
-    Bowled,
-    Caught,
-    LegBeforeWicket,
-    RunOut,
-    Stumped,
-    HitWicket,
-    RetiredOut,
-    RetiredHurt,
-}
-
-/// Mirrors `detailed_score::cricket::NextBallContext`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct NextBallContextRecord {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub striker_player_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub non_striker_player_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bowler_player_id: Option<String>,
-    pub over: u32,
-    pub ball: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub previous_over_bowler_player_id: Option<String>,
-    pub runs_conceded_this_over: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketRetireEventRecord {
-    pub batter_player_id: String,
-    pub retired_out: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketInningsStartEventRecord {
-    pub batting_side_id: String,
-    pub bowling_side_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketInningsEndEventRecord {
-    pub reason: InningsEndReasonRecord,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum InningsEndReasonRecord {
-    AllOut,
-    OversComplete,
-    Declared,
-    TargetReached,
-}
-
-// ---- Netball live events ----------------------------------------------------
-
-/// Mirrors `agon_service::live_score::netball::NetballLiveEvent`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum NetballLiveEventRecord {
-    Goal(NetballGoalEventRecord),
-    Foul(NetballFoulEventRecord),
-    Period(NetballPeriodEventRecord),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct NetballGoalEventRecord {
-    pub side_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scorer_player_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scorer_position: Option<NetballPositionRecord>,
-    pub two_points: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub minute: Option<u32>,
-    /// Mirrors `agon_service::detailed_score::netball::NetballGoalEvent::occurred_at`
-    /// — RFC3339, same string convention as `LiveEventRecord::occurred_at`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub occurred_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum NetballPositionRecord {
-    GoalShooter,
-    GoalAttack,
-    WingAttack,
-    Centre,
-    WingDefence,
-    GoalDefence,
-    GoalKeeper,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct NetballFoulEventRecord {
-    pub side_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub player_id: Option<String>,
-    /// Named `foul_kind`, not `kind` — same collision-avoidance as the API's
-    /// `NetballFoulEvent::foul_kind` (`NetballLiveEventRecord`'s own
-    /// `#[serde(tag = "kind")]` would otherwise fight this field over the
-    /// same wire key once serde flattens the variant's fields in).
-    pub foul_kind: NetballFoulKindRecord,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub minute: Option<u32>,
-    /// Mirrors `NetballGoalEventRecord::occurred_at`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub occurred_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum NetballFoulKindRecord {
-    Contact,
-    Obstruction,
-    Footwork,
-    Offside,
-    HeldBall,
-    Other,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct NetballPeriodEventRecord {
-    pub period: NetballPeriodRecord,
-    /// Cumulative score per side as of this marker — always present, same
-    /// reasoning as `agon_service::live_score::netball::NetballPeriodEvent`.
-    pub score: HashMap<String, u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum NetballPeriodRecord {
-    Start,
-    QuarterOneEnd,
-    QuarterTwoStart,
-    QuarterTwoEnd,
-    QuarterThreeStart,
-    QuarterThreeEnd,
-    QuarterFourStart,
-    FullTime,
-    ExtraTimeStart,
-    ExtraTimeEnd,
-}
+// `LiveEventPayloadRecord` is generated by `define_sport_records!` above.
+// Each sport's live-event record tree (`FootballLiveEventRecord`,
+// `CricketLiveEventRecord`, `NetballLiveEventRecord`, and their nested types)
+// lives in `crate::sports::{football,cricket,netball}` alongside that sport's
+// score/format records.
 
 /// `MATCH#<matchId>` / `SCORESUB#<ts>#<subId>` — a score submission and its
 /// responses. Score and responses are opaque JSON.
@@ -1899,55 +1459,12 @@ pub struct FeedItemRecord {
     pub viewer_can_join_side_ids: Vec<String>,
 }
 
-/// A user's lifetime stats, one field per sport — `None` for a sport they've
-/// never played a confirmed match in. Stored inline on `UserRecord::stats`.
-///
-/// Explicit named fields rather than a `HashMap<String, _>` keyed by sport
-/// tag: the set of sports is closed (mirrors the API's `MatchType`), so
-/// there's no need to pay for a stringly-keyed map to get "only entries for
-/// sports actually played" — an `Option` field serializes absent the same
-/// way a missing map key would, at the same DynamoDB storage shape
-/// (`stats.cricket`, `stats.football`, ... as nested map attributes either
-/// way). What a named field buys over the map: `CricketStatsRecord`'s
-/// `runs`/`wickets` and football's `goals`/`assists` are real, distinctly
-/// named, compiler-checked fields instead of stringly-keyed lookups into a
-/// generic counters bag.
-///
-/// The DAO's *write* path (`agon_core::dao::stats::Dao::stats_delta` /
-/// `update_best_figures`) doesn't construct or read this type at all — it
-/// addresses `stats.<sport>.<counter>` via raw `UpdateItem` expressions built
-/// from a runtime `sport: &str` and counter-name strings, so it stays fully
-/// sport-agnostic regardless of how strongly-typed the read side is.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct UserStatsRecord {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cricket: Option<CricketStatsRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub football: Option<FootballStatsRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tennis: Option<GenericSportStatsRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub badminton: Option<GenericSportStatsRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub squash: Option<GenericSportStatsRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub table_tennis: Option<GenericSportStatsRecord>,
-    /// Netball has no dedicated stats record yet — a per-player goal/foul
-    /// log exists on `ScoreRecord::Netball` (see `NetballGoalEventRecord`)
-    /// that a future `NetballStatsRecord` (mirroring `CricketStatsRecord`/
-    /// `FootballStatsRecord`) could derive best-figures from, same as
-    /// cricket/football — just not built out yet.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub netball: Option<GenericSportStatsRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub other: Option<GenericSportStatsRecord>,
-}
-
 /// Lifetime counters common to every sport. Also the full shape for a sport
 /// with no richer per-player box score to derive extras from (tennis,
-/// badminton, squash, table tennis, "other") — `CricketStatsRecord`/
-/// `FootballStatsRecord` flatten this in and add their own fields on top, the
-/// DAO-side mirror of the API's `GenericPlayerStats`/`#[oai(flatten)]`.
+/// badminton, squash, table tennis, "other") — each fully-modeled sport's own
+/// stats record (`crate::sports::<sport>`) flattens this in and adds its own
+/// fields on top, the DAO-side mirror of the API's `GenericPlayerStats`/
+/// `#[oai(flatten)]`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct GenericSportStatsRecord {
     // Every counter below is `#[serde(default)]`: `stats_delta` only ever
@@ -1967,112 +1484,19 @@ pub struct GenericSportStatsRecord {
     // Win percentage is derived (wins / matches_played) at the API layer.
 }
 
-/// Lifetime cricket stats: the common counters plus a batting/bowling summary
-/// derived from every confirmed match's box score, and each counter's
-/// personal-best single-match figure.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct CricketStatsRecord {
-    #[serde(flatten)]
-    pub common: GenericSportStatsRecord,
-    // As with `GenericSportStatsRecord`, every counter here is
-    // `#[serde(default)]`: only counters that were ever actually
-    // incremented get written to `stats.cricket` (see `Dao::stats_delta`),
-    // so e.g. a bowler who never batted has no `runs` attribute at all.
-    #[serde(default)]
-    pub runs: u64,
-    #[serde(default)]
-    pub wickets: u64,
-    #[serde(default)]
-    pub fours: u64,
-    #[serde(default)]
-    pub sixes: u64,
-    /// Legal balls faced while batting (career total).
-    #[serde(default)]
-    pub balls_faced: u64,
-    /// Times out as a batter — divisor for batting average. Not-out innings
-    /// aren't counted, same convention as the sport's own "average".
-    #[serde(default)]
-    pub dismissals: u64,
-    /// Catches taken (as the credited fielder on any dismissal, batting side
-    /// or bowling side — a catch isn't tied to which side this player was
-    /// fielding for in that innings).
-    #[serde(default)]
-    pub catches: u64,
-    /// Runs conceded while bowling (career total) — divisor for economy.
-    #[serde(default)]
-    pub runs_conceded: u64,
-    /// Legal balls bowled (career total) — divisor for economy, and the
-    /// source for the displayed "overs bowled". Summed as a raw ball count
-    /// rather than `Overs`, and — critically — each contributing match's
-    /// legal-ball count is computed from *that match's own*
-    /// `CricketFormatRecord::balls_per_over` (5-ball, 6-ball, whatever it
-    /// was), not a fixed assumption, so the accumulation itself is exact
-    /// regardless of how many different formats a career spans. The only
-    /// approximation left is display: turning a cross-format total back into
-    /// an "X overs Y balls" figure has to pick *some* over length, since a
-    /// blended career total isn't really in any one format — this uses the
-    /// standard 6-ball over, the same convention real-world career bowling
-    /// figures are always reported in regardless of which tournaments
-    /// contributed to them.
-    #[serde(default)]
-    pub balls_bowled: u64,
-    /// Highest score in a single match.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub best_runs: Option<BestFigureRecord>,
-    /// Best single-match bowling spell — most wickets, with the runs
-    /// conceded and overs bowled in that same spell so it isn't just a bare
-    /// wicket count. See `Dao::update_best_bowling_figures`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub best_bowling: Option<BestBowlingFiguresRecord>,
-}
-
-/// A personal-best single-match bowling spell: most wickets taken, plus the
-/// runs conceded and overs bowled in that same spell — e.g. "5 wickets for
-/// 32 runs off 5.4 overs", not just "5 wickets". Ranked by `wickets` alone
-/// (ties aren't broken by economy). See `Dao::update_best_bowling_figures`
-/// for why this only ever ratchets up, same as `BestFigureRecord`.
-///
-/// `overs` is the exact figure from that one match (in that match's own
-/// `balls_per_over`), not re-derived from a raw ball count under some
-/// assumed over length — unlike the career `balls_bowled` total above, a
-/// single match's own bowling figures have no cross-format ambiguity to
-/// approximate away.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct BestBowlingFiguresRecord {
-    pub wickets: u64,
-    pub runs_conceded: u64,
-    pub overs: OversRecord,
-    pub match_id: String,
-}
-
-/// Lifetime football stats: the common counters plus goals/assists derived
-/// from every confirmed match's goal log, and personal-best single-match
-/// figures.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct FootballStatsRecord {
-    #[serde(flatten)]
-    pub common: GenericSportStatsRecord,
-    // Sparse for the same reason as `CricketStatsRecord`'s counters — only
-    // ever written once actually incremented.
-    #[serde(default)]
-    pub goals: u64,
-    #[serde(default)]
-    pub assists: u64,
-    /// Most goals scored in a single match.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub best_goals: Option<BestFigureRecord>,
-    /// Most goals + assists combined in a single match — a more complete
-    /// "best game" than assists alone.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub best_goal_contributions: Option<BestFigureRecord>,
-}
-
 /// A personal-best single-match value for one counter, plus the match it was
 /// set in. See `Dao::update_best_figures` for why this only ever ratchets up.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BestFigureRecord {
     pub value: u64,
     pub match_id: String,
+}
+
+impl crate::sports::PersonalBest for BestFigureRecord {
+    const RANK_FIELD: &'static str = "value";
+    fn rank(&self) -> u64 {
+        self.value
+    }
 }
 
 /// `MATCH#<mid>` / `STATCONTRIB#<uid>` — what a single match currently
@@ -2531,22 +1955,6 @@ mod tests {
                 assert_eq!(entries.get("sideA"), Some(&vec![6, 4]));
             }
             _ => panic!("expected sets"),
-        }
-    }
-
-    /// A `Football` score written in the brief window before the `score`
-    /// tally field existed (just `goals`, no aggregate) deserializes to an
-    /// empty tally rather than 500ing on a missing field.
-    #[test]
-    fn football_score_missing_tally_field_deserializes() {
-        let score_av = AttributeValue::M(HashMap::from([
-            ("type".to_string(), AttributeValue::S("football".into())),
-            ("goals".to_string(), AttributeValue::L(vec![])),
-        ]));
-        let rec: ScoreRecord = serde_dynamo::from_attribute_value(score_av).unwrap();
-        match rec {
-            ScoreRecord::Football { score, .. } => assert!(score.is_empty()),
-            _ => panic!("expected football"),
         }
     }
 

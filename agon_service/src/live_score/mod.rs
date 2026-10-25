@@ -3,12 +3,13 @@
 //! goal-by-goal, card-by-card, ...) in real time — possibly in batches, from a
 //! device catching up after being offline.
 //!
-//! This is the write-side vocabulary, plus the pure functions (in
-//! `football`/`cricket`) that fold an ordered event log into `Score`'s
-//! optional rich-detail fields — there's no separate "live" read shape:
-//! `GET /matches/:id/score` serves the same `Score` whether the match is
-//! still being scored or long finished, live or confirmed (see `Score`'s
-//! doc comment on `main.rs`).
+//! This is the write-side vocabulary. Each sport's event type and the fold
+//! from events to its `Score` are part of its `Sport` impl in
+//! `crate::sports::<sport>`; this file only holds the `LiveEventInput` union
+//! generated from them, plus the sport-agnostic envelope types around it.
+//! There's no separate "live" read shape: `GET /matches/:id/score` serves
+//! the same `Score` whether the match is still being scored or long finished,
+//! live or confirmed (see `Score`'s doc comment on `main.rs`).
 //!
 //! Corrections are restricted to undoing the most recently recorded event —
 //! `DELETE /matches/:id/live/events/:seq` only succeeds when `seq` is the
@@ -18,25 +19,23 @@
 
 use poem_openapi::{Object, Union};
 
-pub mod cricket;
-pub mod football;
-pub mod netball;
-
-pub use cricket::CricketLiveEvent;
-pub use football::FootballLiveEvent;
-pub use netball::NetballLiveEvent;
-
-/// A single live-scoring event, sport-first discriminated so a new sport is a
-/// new variant without touching existing ones — same pattern as `Score`.
-/// See `football`/`cricket` for the per-kind union nested inside each
-/// variant.
-#[derive(Union)]
-#[oai(one_of, discriminator_name = "sport")]
-pub enum LiveEventInput {
-    Football(FootballLiveEvent),
-    Cricket(CricketLiveEvent),
-    Netball(NetballLiveEvent),
+/// Builds `LiveEventInput` from the sport registry (`agon_core::for_each_sport!`).
+macro_rules! define_live_event_input {
+    (
+        modeled: [$( $variant:ident { tag: $tag:literal, key: $key:ident } ),+ $(,)?],
+        generic: [$( $gvariant:ident { tag: $gtag:literal, key: $gkey:ident, label: $glabel:literal } ),* $(,)?] $(,)?
+    ) => {
+        /// A single live-scoring event, sport-first discriminated so a new sport is a
+        /// new variant without touching existing ones — same pattern as `Score`. See
+        /// `football`/`cricket` for the per-kind union nested inside each variant.
+        #[derive(Union)]
+        #[oai(one_of, discriminator_name = "sport")]
+        pub enum LiveEventInput {
+            $( $variant(<agon_core::sports::$key::$variant as crate::sports::Sport>::LiveEvent), )+
+        }
+    };
 }
+agon_core::for_each_sport!(define_live_event_input);
 
 /// One event to append, before the server has assigned it a `seq`.
 #[derive(Object)]
@@ -89,7 +88,7 @@ pub struct LiveScoreSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::detailed_score::football::{FootballCardColor, FootballCardEvent};
+    use crate::sports::football::{FootballCardColor, FootballCardEvent, FootballLiveEvent};
     use poem_openapi::types::{ParseFromJSON, ToJSON};
 
     /// The outer (`sport`) and inner (`kind`) unions must serialize as one
@@ -136,8 +135,7 @@ mod tests {
     /// have — see `NetballFoulEvent::foul_kind`'s doc comment).
     #[test]
     fn netball_foul_kind_does_not_collide_with_the_outer_discriminator() {
-        use crate::detailed_score::netball::{NetballFoulEvent, NetballFoulKind};
-        use crate::live_score::netball::NetballLiveEvent;
+        use crate::sports::netball::{NetballFoulEvent, NetballFoulKind, NetballLiveEvent};
 
         let event = LiveEventInput::Netball(NetballLiveEvent::Foul(NetballFoulEvent {
             side_id: "side_a".into(),

@@ -7,9 +7,9 @@
 //! from events to its `Score` are part of its `Sport` impl in
 //! `crate::sports::<sport>`; this file only holds the `LiveEventInput` union
 //! generated from them, plus the sport-agnostic envelope types around it.
-//! There's no separate "live" read shape: `GET /matches/:id/score` serves the same `Score` whether the
-//! match is still being scored or long finished, live or confirmed (see
-//! `Score`'s doc comment on `main.rs`).
+//! There's no separate "live" read shape: `GET /matches/:id/score` serves
+//! the same `Score` whether the match is still being scored or long finished,
+//! live or confirmed (see `Score`'s doc comment on `main.rs`).
 //!
 //! Corrections are restricted to undoing the most recently recorded event —
 //! `DELETE /matches/:id/live/events/:seq` only succeeds when `seq` is the

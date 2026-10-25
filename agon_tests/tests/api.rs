@@ -2789,10 +2789,11 @@ async fn scoring_a_match_completes_it_and_confirms_the_score_by_default() {
 }
 
 /// A create-time score is accepted by default. The other side can challenge
-/// it by submitting their own correction (a non-admin participant is allowed
-/// to PATCH a score-only update — see `is_score_only_update`), which the
-/// original submitter can then dispute (leaving the default-accepted score
-/// standing) or, on a second challenge, confirm — finally replacing it.
+/// it by submitting their own correction via the dedicated
+/// `POST /matches/:id/score-submissions` (`submit_score`), open to any
+/// participant and not just a match admin, which the original submitter can
+/// then dispute (leaving the default-accepted score standing) or, on a
+/// second challenge, confirm — finally replacing it.
 #[tokio::test]
 async fn challenging_a_default_accepted_score_can_be_disputed_and_resubmitted() {
     let (owner_config, _owner) = new_user().await;
@@ -2828,19 +2829,28 @@ async fn challenging_a_default_accepted_score_can_be_disputed_and_resubmitted() 
         .clone();
 
     // The opponent disagrees and challenges it with their own correction —
-    // allowed even though they aren't a match admin, since this PATCH touches
-    // only the score.
-    let challenged = matches_match_id_patch(
+    // allowed even though they aren't a match admin, since submitting a
+    // score isn't gated to one.
+    let challenge = matches_match_id_score_submissions_post(
         &opponent_config,
         &created.id,
-        models::UpdateMatchInput {
-            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 4))),
+        models::SubmitScoreInput {
+            score: Box::new(simple_score(&side_a, &side_b, 6, 4)),
             winner_side_id: Some(side_a.clone()),
-            ..Default::default()
+            override_live_score: None,
         },
     )
     .await
     .expect("opponent challenges the score");
+    assert!(matches!(
+        challenge.status,
+        models::ScoreSubmissionStatus::Pending
+    ));
+    assert_ne!(challenge.id, first_submission_id);
+
+    let challenged = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match");
     let still_confirmed = challenged
         .confirmed_score
         .expect("the default-accepted score is unaffected by an unapproved challenge");
@@ -2848,16 +2858,19 @@ async fn challenging_a_default_accepted_score_can_be_disputed_and_resubmitted() 
         simple_score_points(&still_confirmed.score),
         sorted_points(vec![(side_a.clone(), 6), (side_b.clone(), 3)]),
     );
-    let challenge = challenged
-        .pending_score
-        .expect("the challenge awaits the owner's response");
-    assert_ne!(challenge.submission_id, first_submission_id);
+    assert_eq!(
+        challenged
+            .pending_score
+            .expect("the challenge awaits the owner's response")
+            .submission_id,
+        challenge.id,
+    );
 
     // The owner disputes the challenge — the default-accepted score stands.
     matches_match_id_score_submissions_submission_id_respond_post(
         &owner_config,
         &created.id,
-        &challenge.submission_id,
+        &challenge.id,
         models::RespondToScoreInput {
             response: models::ScoreResponseKind::Dispute,
         },
@@ -2879,22 +2892,23 @@ async fn challenging_a_default_accepted_score_can_be_disputed_and_resubmitted() 
     );
 
     // The opponent challenges again, with a different correction.
-    let rechallenged = matches_match_id_patch(
+    let rechallenge = matches_match_id_score_submissions_post(
         &opponent_config,
         &created.id,
-        models::UpdateMatchInput {
-            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 5))),
+        models::SubmitScoreInput {
+            score: Box::new(simple_score(&side_a, &side_b, 6, 5)),
             winner_side_id: Some(side_a.clone()),
-            ..Default::default()
+            override_live_score: None,
         },
     )
     .await
     .expect("opponent challenges again");
-    let pending = rechallenged
-        .pending_score
-        .expect("the second challenge is pending");
+    assert!(matches!(
+        rechallenge.status,
+        models::ScoreSubmissionStatus::Pending
+    ));
     assert_ne!(
-        pending.submission_id, challenge.submission_id,
+        rechallenge.id, challenge.id,
         "the second challenge is a fresh submission, not the disputed one"
     );
 
@@ -2906,7 +2920,7 @@ async fn challenging_a_default_accepted_score_can_be_disputed_and_resubmitted() 
     assert_eq!(submissions.len(), 3);
     let new_submission = submissions
         .iter()
-        .find(|s| s.id == pending.submission_id)
+        .find(|s| s.id == rechallenge.id)
         .expect("new submission present in history");
     assert!(matches!(
         new_submission.status,
@@ -2918,7 +2932,7 @@ async fn challenging_a_default_accepted_score_can_be_disputed_and_resubmitted() 
     matches_match_id_score_submissions_submission_id_respond_post(
         &owner_config,
         &created.id,
-        &pending.submission_id,
+        &rechallenge.id,
         models::RespondToScoreInput {
             response: models::ScoreResponseKind::Confirm,
         },
@@ -3114,14 +3128,17 @@ async fn disputing_an_edit_to_a_confirmed_score_leaves_the_original_confirmed_sc
     ));
 }
 
-/// The score-only carve-out (`is_score_only_update`) must not let a non-admin
-/// participant also change something admin-only by bundling it into the same
-/// PATCH as a score — `ranked` and `side_colours` have no other authorization
-/// check once the top-level gate lets a request through, so each needs its
-/// own exclusion from the carve-out, not just the fields that existed when it
-/// was first written.
+/// `update_match`'s admin gate used to carve out a score-only request for
+/// any participant (`is_score_only_update`), which needed auditing
+/// field-by-field and twice missed one (`ranked`, `side_colours` — see
+/// git history). That carve-out is gone: the gate is now unconditional, so
+/// a non-admin participant can't PATCH the match at all, not even a bare
+/// score — submitting or disputing a score is `submit_score`'s job instead
+/// (see `challenging_a_default_accepted_score_can_be_disputed_and_resubmitted`),
+/// open to any participant by construction rather than by an exclusion list
+/// that has to be kept in sync with every field `UpdateMatchInput` gains.
 #[tokio::test]
-async fn a_bundled_score_update_cannot_smuggle_in_admin_only_fields() {
+async fn a_non_admin_participant_cannot_update_the_match_via_patch() {
     let (_owner_config, _owner, opponent_config, _opponent, created, side_a, side_b) =
         match_with_a_confirmed_score().await;
 
@@ -3132,7 +3149,6 @@ async fn a_bundled_score_update_cannot_smuggle_in_admin_only_fields() {
             models::UpdateMatchInput {
                 score: Some(Box::new(simple_score(&side_a, &side_b, 6, 4))),
                 winner_side_id: Some(side_a.clone()),
-                ranked: Some(true),
                 ..Default::default()
             },
         )
@@ -3144,32 +3160,12 @@ async fn a_bundled_score_update_cannot_smuggle_in_admin_only_fields() {
             &opponent_config,
             &created.id,
             models::UpdateMatchInput {
-                score: Some(Box::new(simple_score(&side_a, &side_b, 6, 4))),
-                winner_side_id: Some(side_a.clone()),
-                side_colours: Some(vec![models::UpdateMatchSideColourInput {
-                    side_id: side_a.clone(),
-                    colour: Some("#ff0000".to_string()),
-                }]),
+                ranked: Some(true),
                 ..Default::default()
             },
         )
         .await,
     );
-
-    // A bare score-only PATCH (no bundled admin-only field) is still allowed,
-    // confirming the rejections above are about what's bundled in, not a
-    // blanket block on the opponent.
-    matches_match_id_patch(
-        &opponent_config,
-        &created.id,
-        models::UpdateMatchInput {
-            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 4))),
-            winner_side_id: Some(side_a.clone()),
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("a genuinely score-only PATCH is still allowed");
 }
 
 #[tokio::test]

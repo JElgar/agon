@@ -14,7 +14,7 @@ import { PendingInvitesNudge } from '@/components/agon/PendingInvitesNudge'
 import { sideDisplayName } from '@/lib/members'
 
 type Match = components['schemas']['Match']
-type UpdateMatchInput = components['schemas']['UpdateMatchInput']
+type SubmitScoreInput = components['schemas']['SubmitScoreInput']
 type Score = components['schemas']['Score']
 
 /** A short "X–Y" summary of a score for the two given sides — used to show
@@ -79,10 +79,12 @@ function seedPoints(match: Match, aId: string, bId: string): [string, string] {
  * (goal-by-goal / innings detail, optional) for those sports, and a single
  * points pair otherwise (mirroring the create flow), seeded from the match's
  * current result — confirmed if there is one, else a still-pending
- * submission (see `displayScore`). On save it PATCHes the score against the
- * match's real side ids; a changed score re-enters the confirmation flow
- * server-side (the other side is asked to confirm), so we also refresh so
- * the pending-score prompt appears.
+ * submission (see `displayScore`). On save it submits the score against the
+ * match's real side ids via `POST /matches/:id/score-submissions`, open to
+ * any participant assigned to a side (not just a match admin — this is also
+ * how a non-admin disputes an already-confirmed result); a changed score
+ * re-enters the confirmation flow server-side (the other side is asked to
+ * confirm), so we also refresh so the pending-score prompt appears.
  *
  * `MatchDetailPage` doesn't offer this editor at all while live scoring is
  * actually under way (`hasLiveState`) — finishing the live-scored game from
@@ -193,12 +195,12 @@ export function MatchResultEditor({
   const save = useMutation({
     mutationFn: async (override: boolean): Promise<'saved' | 'conflict'> => {
       if (!built) throw new Error('Enter a score first')
-      const body: UpdateMatchInput = {
+      const body: SubmitScoreInput = {
         score: built.score,
       }
       if (built.winner) body.winner_side_id = built.winner
       if (override) body.override_live_score = true
-      const { error, response } = await fetchClient.PATCH('/matches/{match_id}', {
+      const { error, response } = await fetchClient.POST('/matches/{match_id}/score-submissions', {
         params: { path: { match_id: match.id } },
         body,
       })

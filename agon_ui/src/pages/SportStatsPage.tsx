@@ -126,7 +126,7 @@ export function SportStatsPage() {
   // bespoke desktop board, so everyone else's banner just reflows via its
   // own responsive classes with no `extra` cluster.
   const bannerExtra =
-    stats && 'goals' in stats ? (
+    stats && 'assists' in stats ? (
       <>
         <PerMatchStat value={stats.goals} label="Goals" matches={stats.matches_played} />
         <PerMatchStat value={stats.assists} label="Assists" matches={stats.matches_played} />
@@ -161,7 +161,7 @@ export function SportStatsPage() {
         />
       </Card>
     </section>
-  ) : 'goals' in stats ? (
+  ) : 'assists' in stats ? (
     <section className="flex flex-col gap-3 xl:hidden">
       <SectionHeading>Goals &amp; assists</SectionHeading>
       <Card className="grid grid-cols-2 gap-4 p-[18px]">
@@ -180,7 +180,7 @@ export function SportStatsPage() {
         onOpen={(id) => navigate(`/matches/${id}`)}
       />
     </section>
-  ) : 'goals' in stats ? (
+  ) : 'assists' in stats ? (
     <section className="flex flex-col gap-3">
       <SectionHeading>Personal bests</SectionHeading>
       <PersonalBestsCard

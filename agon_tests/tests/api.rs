@@ -3114,6 +3114,64 @@ async fn disputing_an_edit_to_a_confirmed_score_leaves_the_original_confirmed_sc
     ));
 }
 
+/// The score-only carve-out (`is_score_only_update`) must not let a non-admin
+/// participant also change something admin-only by bundling it into the same
+/// PATCH as a score — `ranked` and `side_colours` have no other authorization
+/// check once the top-level gate lets a request through, so each needs its
+/// own exclusion from the carve-out, not just the fields that existed when it
+/// was first written.
+#[tokio::test]
+async fn a_bundled_score_update_cannot_smuggle_in_admin_only_fields() {
+    let (_owner_config, _owner, opponent_config, _opponent, created, side_a, side_b) =
+        match_with_a_confirmed_score().await;
+
+    assert_forbidden(
+        matches_match_id_patch(
+            &opponent_config,
+            &created.id,
+            models::UpdateMatchInput {
+                score: Some(Box::new(simple_score(&side_a, &side_b, 6, 4))),
+                winner_side_id: Some(side_a.clone()),
+                ranked: Some(true),
+                ..Default::default()
+            },
+        )
+        .await,
+    );
+
+    assert_forbidden(
+        matches_match_id_patch(
+            &opponent_config,
+            &created.id,
+            models::UpdateMatchInput {
+                score: Some(Box::new(simple_score(&side_a, &side_b, 6, 4))),
+                winner_side_id: Some(side_a.clone()),
+                side_colours: Some(vec![models::UpdateMatchSideColourInput {
+                    side_id: side_a.clone(),
+                    colour: Some("#ff0000".to_string()),
+                }]),
+                ..Default::default()
+            },
+        )
+        .await,
+    );
+
+    // A bare score-only PATCH (no bundled admin-only field) is still allowed,
+    // confirming the rejections above are about what's bundled in, not a
+    // blanket block on the opponent.
+    matches_match_id_patch(
+        &opponent_config,
+        &created.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 4))),
+            winner_side_id: Some(side_a.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("a genuinely score-only PATCH is still allowed");
+}
+
 #[tokio::test]
 async fn submitting_the_first_score_notifies_the_other_side_informationally() {
     let (owner_config, owner) = new_user().await;

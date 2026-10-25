@@ -9011,11 +9011,13 @@ fn is_score_only_update(input: &UpdateMatchInput) -> bool {
         && input.side_assignments.is_none()
         && input.removed_player_ids.is_none()
         && input.side_names.is_none()
+        && input.side_colours.is_none()
         && input.detailed_score.is_none()
         && input.header_photo_asset_ids.is_none()
         && input.format.is_none()
         && input.allow_unassigned.is_none()
         && input.side_join_settings.is_none()
+        && input.ranked.is_none()
 }
 
 /// Side ids the caller may join directly by virtue of an accepted (any

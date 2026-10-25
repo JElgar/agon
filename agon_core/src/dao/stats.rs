@@ -11,7 +11,7 @@ use super::is_update_conditional_failure;
 use super::item::{ATTR_PK, ATTR_SK, from_item, item_sk, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::StatContributionRecord;
-use crate::sports::BestCandidate;
+use crate::sports::PersonalBestUpdate;
 
 /// Type tag for the per-match stat-contribution item.
 pub const TYPE_STAT_CONTRIBUTION: &str = "stat_contribution";
@@ -38,11 +38,10 @@ pub struct MatchContribution {
     /// player's lifetime totals. Only meaningful (and only ever populated by
     /// callers) when `outcome` is `Some`.
     pub counters: HashMap<String, u64>,
-    /// Single-match figures worth keeping a personal best for, by name
-    /// (e.g. "runs", "bowling"). Only figures someone would rank are listed,
-    /// so a counter like `balls_faced` doesn't cost a conditional write on
-    /// every reconcile. See `Dao::update_best_figures`.
-    pub bests: HashMap<String, BestCandidate>,
+    /// This match's personal-best figures (the sport's `best_*` stats
+    /// fields), each kept if it beats the stored one. See
+    /// `Dao::update_best_figures`.
+    pub bests: Vec<PersonalBestUpdate>,
 }
 
 impl StatContributionRecord {
@@ -238,7 +237,7 @@ impl Dao {
                 // only when the user actually played: a contribution being
                 // withdrawn (outcome -> None) can't set a new best.
                 if desired.outcome.is_some() {
-                    self.update_best_figures(user_id, sport, match_id, &desired.bests)
+                    self.update_best_figures(user_id, sport, &desired.bests)
                         .await?;
                 }
                 Ok(())
@@ -253,12 +252,11 @@ impl Dao {
         }
     }
 
-    /// Ratchet up `stats.<sport>.best_<name>` for every best in `bests`
-    /// whose rank in *this* match exceeds the stored one: a personal-best
+    /// Ratchet up `stats.<sport>.<field>` for every best in `bests` whose
+    /// rank in *this* match exceeds the stored one's: a personal-best
     /// single-match figure ("most goals in a game", "best bowling") alongside
-    /// the match it happened in. Each is stored as the candidate's detail plus
-    /// its rank under `rank_field` and `match_id`. Ranks of `0` are skipped
-    /// (nothing to record).
+    /// the match it happened in. Ranks of `0` are skipped (nothing to
+    /// record).
     ///
     /// Deliberately one-directional: if the match that set a record is later
     /// rescored downward, cancelled, or the player is removed from its
@@ -279,8 +277,7 @@ impl Dao {
         &self,
         user_id: &str,
         sport: &str,
-        match_id: &str,
-        bests: &HashMap<String, BestCandidate>,
+        bests: &[PersonalBestUpdate],
     ) -> DaoResult<()> {
         let pk = s(Pk::User(user_id.into()).to_string());
         let sk = s(Sk::Profile.to_string());
@@ -288,14 +285,9 @@ impl Dao {
         // `stats.#sport` is guaranteed to already exist by this point (the
         // transaction just above always touches at least `matches_played`
         // for a played contribution), so each `best_<name>` field can be set
-        // directly on it, matching the stats records' flat `best_*` fields.
-        for (name, best) in bests.iter().filter(|(_, b)| b.rank > 0) {
-            let field = format!("best_{name}");
-            let rank = AttributeValue::N(best.rank.to_string());
-            let mut new_best: HashMap<String, AttributeValue> =
-                serde_dynamo::to_item(&best.detail)?;
-            new_best.insert(best.rank_field.to_string(), rank.clone());
-            new_best.insert("match_id".to_string(), s(match_id));
+        // directly on it.
+        for best in bests.iter().filter(|b| b.rank > 0) {
+            let new_best: AttributeValue = serde_dynamo::to_attribute_value(&best.record)?;
             let result = self
                 .client
                 .update_item()
@@ -307,10 +299,10 @@ impl Dao {
                     "attribute_not_exists(stats.#sport.#field) OR stats.#sport.#field.#rank < :rank",
                 )
                 .expression_attribute_names("#sport", sport)
-                .expression_attribute_names("#field", field.as_str())
+                .expression_attribute_names("#field", best.field)
                 .expression_attribute_names("#rank", best.rank_field)
-                .expression_attribute_values(":new", AttributeValue::M(new_best))
-                .expression_attribute_values(":rank", rank)
+                .expression_attribute_values(":new", new_best)
+                .expression_attribute_values(":rank", AttributeValue::N(best.rank.to_string()))
                 .send()
                 .await;
             match result {

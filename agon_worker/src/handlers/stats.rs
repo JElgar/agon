@@ -112,6 +112,7 @@ pub async fn reconcile_match_stats(dao: &Dao, match_id: &str) -> WorkerResult<()
                 &cs.score,
                 &player_ids,
                 agg.match_.format.as_ref(),
+                match_id,
             );
             desired.insert(
                 user_id.to_string(),

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{BestCandidate, SportContribution, SportRecord};
+use super::SportRecord;
 use crate::dao::records::{BestFigureRecord, GenericSportStatsRecord};
 
 /// Football's stored score: the `ScoreRecord::Football` variant. Its stored shape is
@@ -168,42 +168,47 @@ impl SportRecord for Football {
     type StatsRecord = FootballStatsRecord;
 
     /// Counts this player's goals scored (own goals excluded) and assists
-    /// across a confirmed football score's goal log. Best-candidates are
-    /// "goals" and "goal_contributions" (goals + assists in this match) —
+    /// across a confirmed football score's goal log. Bests are goals and
+    /// goal contributions (goals + assists in this match) —
     /// not "assists" alone, since a single assist doesn't make as complete a
     /// "best game" record as the combined tally.
     fn contribution(
         rec: &FootballScoreRecord,
         player_ids: &[&str],
         _format: Option<&FootballFormatRecord>,
-    ) -> SportContribution {
+        match_id: &str,
+    ) -> FootballStatsRecord {
         let is_theirs = |id: Option<&str>| id.is_some_and(|id| player_ids.contains(&id));
-        let mut counters = HashMap::new();
+        let mut goals = 0;
+        let mut assists = 0;
         for goal in rec.goals.iter().flatten() {
             if !goal.own_goal && is_theirs(goal.scorer_player_id.as_deref()) {
-                *counters.entry("goals".to_string()).or_insert(0) += 1;
+                goals += 1;
             }
             if is_theirs(goal.assist_player_id.as_deref()) {
-                *counters.entry("assists".to_string()).or_insert(0) += 1;
+                assists += 1;
             }
         }
-
-        let mut bests = HashMap::new();
-        if let Some(goals) = counters.get("goals") {
-            bests.insert("goals".to_string(), BestCandidate::value(*goals));
+        let best = |value: u64| {
+            (value > 0).then(|| BestFigureRecord {
+                value,
+                match_id: match_id.to_string(),
+            })
+        };
+        FootballStatsRecord {
+            goals,
+            assists,
+            best_goals: best(goals),
+            best_goal_contributions: best(goals + assists),
+            ..FootballStatsRecord::default()
         }
-        let contributions =
-            counters.get("goals").unwrap_or(&0) + counters.get("assists").unwrap_or(&0);
-        if contributions > 0 {
-            bests.insert(
-                "goal_contributions".to_string(),
-                BestCandidate::value(contributions),
-            );
-        }
-
-        SportContribution { counters, bests }
     }
 }
+
+crate::personal_bests!(FootballStatsRecord {
+    best_goals,
+    best_goal_contributions
+});
 
 #[cfg(test)]
 mod tests {

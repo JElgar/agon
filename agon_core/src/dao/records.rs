@@ -1492,6 +1492,13 @@ pub struct BestFigureRecord {
     pub match_id: String,
 }
 
+impl crate::sports::PersonalBest for BestFigureRecord {
+    const RANK_FIELD: &'static str = "value";
+    fn rank(&self) -> u64 {
+        self.value
+    }
+}
+
 /// `MATCH#<mid>` / `STATCONTRIB#<uid>` — what a single match currently
 /// contributes to one participant's per-sport stats. The stats reconciler
 /// stores this after applying it, then on any later match change diffs the new

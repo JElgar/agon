@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{SportContribution, SportRecord};
+use super::SportRecord;
 use crate::dao::records::GenericSportStatsRecord;
 
 /// Netball's stored score: the `ScoreRecord::Netball` variant. Its stored shape is
@@ -170,7 +170,8 @@ impl SportRecord for Netball {
         rec: &NetballScoreRecord,
         player_ids: &[&str],
         _format: Option<&NetballFormatRecord>,
-    ) -> SportContribution {
+        _match_id: &str,
+    ) -> NetballStatsRecord {
         let goals = rec
             .goals
             .iter()
@@ -181,21 +182,19 @@ impl SportRecord for Netball {
                     .is_some_and(|id| player_ids.contains(&id))
             })
             .count() as u64;
-
-        let mut counters = HashMap::new();
-        if goals > 0 {
-            counters.insert("goals".to_string(), goals);
-        }
-        SportContribution {
-            counters,
-            ..SportContribution::default()
+        NetballStatsRecord {
+            goals,
+            ..NetballStatsRecord::default()
         }
     }
 }
 
+crate::personal_bests!(NetballStatsRecord {});
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sports::SportContribution;
 
     fn goal(scorer: Option<&str>, two_points: bool) -> NetballGoalEventRecord {
         NetballGoalEventRecord {
@@ -227,17 +226,24 @@ mod tests {
             goal(Some("p2"), false),
             goal(None, false),
         ]));
-        let c = Netball::contribution(&s, &["p1"], None);
-        assert_eq!(c.counters.get("goals"), Some(&2));
+        let stats = Netball::contribution(&s, &["p1"], None, "m1");
+        assert_eq!(stats.goals, 2);
+        let c = SportContribution::from_stats(&stats);
+        assert_eq!(c.counters, HashMap::from([("goals".to_string(), 2)]));
         assert!(c.bests.is_empty());
     }
 
     #[test]
     fn a_player_with_no_goals_contributes_no_goals_counter() {
-        let c = Netball::contribution(&score(Some(vec![goal(Some("p2"), false)])), &["p1"], None);
-        assert!(c.counters.is_empty());
+        let stats = Netball::contribution(
+            &score(Some(vec![goal(Some("p2"), false)])),
+            &["p1"],
+            None,
+            "m1",
+        );
+        assert!(SportContribution::from_stats(&stats).counters.is_empty());
         // Quarter-only / manual result: no goal log at all.
-        let c = Netball::contribution(&score(None), &["p1"], None);
-        assert!(c.counters.is_empty());
+        let stats = Netball::contribution(&score(None), &["p1"], None, "m1");
+        assert!(SportContribution::from_stats(&stats).counters.is_empty());
     }
 }

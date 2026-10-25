@@ -8,11 +8,11 @@
 mod common;
 
 use agon_core::dao::stats::{MatchContribution, MatchOutcome};
-use agon_core::sports::SportRecord;
 use agon_core::sports::cricket::{
     BestBowlingFiguresRecord, Cricket, CricketBattingEntryRecord, CricketBowlingEntryRecord,
     CricketScoreInningsRecord, CricketScoreRecord, CricketStatsRecord, OversRecord,
 };
+use agon_core::sports::{SportContribution, SportRecord};
 use common::{TestEnv, local_env};
 
 fn unique(prefix: &str) -> String {
@@ -63,7 +63,7 @@ fn score(runs: u32, wickets: u32, runs_conceded: u32, overs: OversRecord) -> Cri
 }
 
 async fn reconcile(env: &TestEnv, user_id: &str, match_id: &str, score: &CricketScoreRecord) {
-    let c = Cricket::contribution(score, &["me"], None);
+    let c = SportContribution::from_stats(&Cricket::contribution(score, &["me"], None, match_id));
     let contribution = MatchContribution {
         outcome: Some(MatchOutcome::Won),
         counters: c.counters,

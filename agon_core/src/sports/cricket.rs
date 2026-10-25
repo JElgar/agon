@@ -1,10 +1,8 @@
 //! Cricket: its stored record types and `SportRecord` impl.
 
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 
-use super::{BestCandidate, SportContribution, SportRecord};
+use super::{PersonalBest, SportRecord};
 use crate::dao::records::{BestFigureRecord, GenericSportStatsRecord, default_true};
 
 /// Cricket's stored score: the `ScoreRecord::Cricket` variant. Its stored shape is
@@ -328,6 +326,13 @@ pub struct BestBowlingFiguresRecord {
     pub match_id: String,
 }
 
+impl PersonalBest for BestBowlingFiguresRecord {
+    const RANK_FIELD: &'static str = "wickets";
+    fn rank(&self) -> u64 {
+        self.wickets
+    }
+}
+
 /// Cricket: the marker type its sport traits are implemented for.
 pub struct Cricket;
 
@@ -345,37 +350,34 @@ impl SportRecord for Cricket {
     /// feature in more than one innings (e.g. a two-innings match), so these
     /// accumulate rather than take the last entry.
     ///
-    /// Bests are "runs" (high score) and "bowling": the match's bowling
-    /// figures ranked by wickets, stored with runs conceded and overs as a
-    /// `BestBowlingFiguresRecord`. The rest (fours,
-    /// sixes, balls faced, dismissals, catches, runs conceded, balls bowled)
+    /// Bests are runs (high score) and bowling figures (ranked by wickets).
+    /// The rest (fours, sixes, balls faced, dismissals, catches, runs
+    /// conceded, balls bowled)
     /// are lifetime totals only — nobody's asked to see "most balls faced in
     /// a game" as a record, so there's no reason to pay for tracking it.
     fn contribution(
         rec: &CricketScoreRecord,
         player_ids: &[&str],
         format: Option<&CricketFormatRecord>,
-    ) -> SportContribution {
+        match_id: &str,
+    ) -> CricketStatsRecord {
         let balls_per_over = balls_per_over(format);
         let is_theirs = |id: &str| player_ids.contains(&id);
 
-        let mut counters = HashMap::new();
-        let mut bests = HashMap::new();
-        let mut spell_wickets = 0;
-        let mut spell_runs_conceded = 0;
-        let mut spell_balls = 0;
+        let mut stats = CricketStatsRecord::default();
+        let mut batted = false;
         let mut bowled = false;
 
         for inning in &rec.innings {
             for entry in inning.batting.iter().flatten() {
                 if is_theirs(&entry.player_id) {
-                    *counters.entry("runs".to_string()).or_insert(0) += entry.runs as u64;
-                    *counters.entry("fours".to_string()).or_insert(0) += entry.fours as u64;
-                    *counters.entry("sixes".to_string()).or_insert(0) += entry.sixes as u64;
-                    *counters.entry("balls_faced".to_string()).or_insert(0) +=
-                        entry.balls_faced as u64;
+                    batted = true;
+                    stats.runs += entry.runs as u64;
+                    stats.fours += entry.fours as u64;
+                    stats.sixes += entry.sixes as u64;
+                    stats.balls_faced += entry.balls_faced as u64;
                     if entry.dismissal.is_some() {
-                        *counters.entry("dismissals".to_string()).or_insert(0) += 1;
+                        stats.dismissals += 1;
                     }
                 }
                 // Catches: this player credited as the fielder on *any* batter's
@@ -389,46 +391,38 @@ impl SportRecord for Cricket {
                         .as_deref()
                         .is_some_and(is_theirs)
                 {
-                    *counters.entry("catches".to_string()).or_insert(0) += 1;
+                    stats.catches += 1;
                 }
             }
             for entry in inning.bowling.iter().flatten() {
                 if is_theirs(&entry.player_id) {
-                    let balls =
-                        overs_to_balls(entry.overs.overs, entry.overs.balls, balls_per_over);
-                    *counters.entry("wickets".to_string()).or_insert(0) += entry.wickets as u64;
-                    *counters.entry("runs_conceded".to_string()).or_insert(0) +=
-                        entry.runs_conceded as u64;
-                    *counters.entry("balls_bowled".to_string()).or_insert(0) += balls;
                     bowled = true;
-                    spell_wickets += entry.wickets as u64;
-                    spell_runs_conceded += entry.runs_conceded as u64;
-                    spell_balls += balls;
+                    stats.wickets += entry.wickets as u64;
+                    stats.runs_conceded += entry.runs_conceded as u64;
+                    stats.balls_bowled +=
+                        overs_to_balls(entry.overs.overs, entry.overs.balls, balls_per_over);
                 }
             }
         }
 
-        if let Some(runs) = counters.get("runs") {
-            bests.insert("runs".to_string(), BestCandidate::value(*runs));
-        }
-        if bowled {
-            let overs = balls_to_overs(spell_balls, balls_per_over);
-            let detail = serde_json::json!({
-                "runs_conceded": spell_runs_conceded,
-                "overs": overs,
-            });
-            let serde_json::Value::Object(detail) = detail else {
-                unreachable!("json! of an object literal is an object")
-            };
-            bests.insert(
-                "bowling".to_string(),
-                BestCandidate::ranked_by("wickets", spell_wickets, detail),
-            );
-        }
-
-        SportContribution { counters, bests }
+        stats.best_runs = batted.then(|| BestFigureRecord {
+            value: stats.runs,
+            match_id: match_id.to_string(),
+        });
+        stats.best_bowling = bowled.then(|| BestBowlingFiguresRecord {
+            wickets: stats.wickets,
+            runs_conceded: stats.runs_conceded,
+            overs: balls_to_overs(stats.balls_bowled, balls_per_over),
+            match_id: match_id.to_string(),
+        });
+        stats
     }
 }
+
+crate::personal_bests!(CricketStatsRecord {
+    best_runs,
+    best_bowling
+});
 
 /// This match's legal deliveries per over — its own `CricketFormatRecord`'s,
 /// or the standard 6 when it has no (cricket) format configured.
@@ -455,6 +449,8 @@ fn balls_to_overs(balls: u64, balls_per_over: u32) -> OversRecord {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use aws_sdk_dynamodb::types::AttributeValue;
 
     use super::*;

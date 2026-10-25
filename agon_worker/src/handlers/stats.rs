@@ -69,6 +69,9 @@ pub async fn reconcile_match_stats(dao: &Dao, match_id: &str) -> WorkerResult<()
     // counts use). Pending/declined invitees are on the roster but didn't play.
     let mut desired: BTreeMap<String, MatchContribution> = Default::default();
     if let Some(cs) = confirmed_score {
+        // Each user's roster entries in this match (almost always one) and
+        // their best outcome across them (won > drawn > lost).
+        let mut played: BTreeMap<&str, (MatchOutcome, Vec<&str>)> = Default::default();
         for player in &agg.players {
             let Some(user_id) = &player.user_id else {
                 continue;
@@ -92,34 +95,32 @@ pub async fn reconcile_match_stats(dao: &Dao, match_id: &str) -> WorkerResult<()
             } else {
                 MatchOutcome::Lost
             };
+            let (best, player_ids) = played
+                .entry(user_id.as_str())
+                .or_insert((outcome, Vec::new()));
+            *best = match (*best, outcome) {
+                (MatchOutcome::Won, _) | (_, MatchOutcome::Won) => MatchOutcome::Won,
+                (MatchOutcome::Drawn, _) | (_, MatchOutcome::Drawn) => MatchOutcome::Drawn,
+                _ => MatchOutcome::Lost,
+            };
+            player_ids.push(&player.player_id);
+        }
+
+        for (user_id, (outcome, player_ids)) in played {
             let contribution = agon_core::sports::contribution(
                 &sport,
                 &cs.score,
-                &player.player_id,
+                &player_ids,
                 agg.match_.format.as_ref(),
             );
-
-            // If a user somehow appears twice, take the best outcome
-            // (won > drawn > lost) and sum counters/bowling figures across
-            // both appearances.
-            let entry = desired.entry(user_id.clone()).or_default();
-            entry.outcome = Some(match (entry.outcome, outcome) {
-                (Some(MatchOutcome::Won), _) | (_, MatchOutcome::Won) => MatchOutcome::Won,
-                (Some(MatchOutcome::Drawn), _) | (_, MatchOutcome::Drawn) => MatchOutcome::Drawn,
-                _ => MatchOutcome::Lost,
-            });
-            for (k, v) in contribution.counters {
-                *entry.counters.entry(k).or_insert(0) += v;
-            }
-            for (k, v) in contribution.best_candidates {
-                *entry.best_candidates.entry(k).or_insert(0) += v;
-            }
-            if let Some(spell) = contribution.bowling_spell {
-                match &mut entry.bowling_spell {
-                    Some(acc) => acc.absorb(&spell),
-                    None => entry.bowling_spell = Some(spell),
-                }
-            }
+            desired.insert(
+                user_id.to_string(),
+                MatchContribution {
+                    outcome: Some(outcome),
+                    counters: contribution.counters,
+                    bests: contribution.bests,
+                },
+            );
         }
     }
 

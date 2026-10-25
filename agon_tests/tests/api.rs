@@ -2002,7 +2002,7 @@ async fn cricket_stats_track_batting_bowling_fielding_and_derived_rates() {
 /// `best_bowling` only ever ratchets up: a worse spell in a later match must
 /// not overwrite an existing record, and a better one must — while the
 /// career `wickets` total keeps accumulating regardless either way. This is
-/// the behavior `Dao::update_best_bowling_figures` exists for, so it's worth
+/// the behavior `Dao::update_best_figures` exists for, so it's worth
 /// covering across more than one match rather than just a single snapshot.
 #[tokio::test]
 async fn best_bowling_figures_only_ratchet_up_across_matches() {

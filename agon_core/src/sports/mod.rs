@@ -28,8 +28,6 @@ pub mod cricket;
 pub mod football;
 pub mod netball;
 
-use cricket::BowlingSpell;
-
 /// The sport registry. Calls `$callback!` with every sport, in two groups:
 ///
 /// - `modeled`: sports with their own score, format, live-event and stats
@@ -63,17 +61,53 @@ macro_rules! for_each_sport {
     };
 }
 
-/// One player's box-score contribution to a single match's confirmed score:
-/// every counter that feeds their lifetime totals, the subset worth a
-/// personal-best record, and (cricket only) their bowling figures in this
-/// match. Empty when the player didn't feature in the box score.
+/// What one user contributed to a single match's confirmed score: every
+/// counter that feeds their lifetime totals, and the single-match figures
+/// worth keeping a personal best for. Empty when they didn't feature in the
+/// box score.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SportContribution {
+    /// Added to `stats.<tag>.<name>`. Each name must be a field on the
+    /// sport's stats record.
     pub counters: HashMap<String, u64>,
-    pub best_candidates: HashMap<String, u64>,
-    /// Bowling figures need runs conceded and balls bowled alongside the
-    /// wicket count, not just a scalar (see `Dao::update_best_bowling_figures`).
-    pub bowling_spell: Option<BowlingSpell>,
+    /// Stored at `stats.<tag>.best_<name>` when this match beats the current
+    /// best. The stats record needs a matching `best_<name>` field.
+    pub bests: HashMap<String, BestCandidate>,
+}
+
+/// A single-match figure that replaces the stored personal best when its
+/// `rank` is higher. Stored as `detail` plus the rank under `rank_field` and
+/// the match's id.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BestCandidate {
+    pub rank_field: &'static str,
+    pub rank: u64,
+    pub detail: serde_json::Map<String, serde_json::Value>,
+}
+
+impl BestCandidate {
+    /// A plain figure, stored as `{ value, match_id }` (`BestFigureRecord`).
+    pub fn value(value: u64) -> Self {
+        Self {
+            rank_field: "value",
+            rank: value,
+            detail: serde_json::Map::new(),
+        }
+    }
+
+    /// A figure ranked by `rank_field`, with `detail` stored alongside it
+    /// (e.g. a bowling spell's runs conceded and overs).
+    pub fn ranked_by(
+        rank_field: &'static str,
+        rank: u64,
+        detail: serde_json::Map<String, serde_json::Value>,
+    ) -> Self {
+        Self {
+            rank_field,
+            rank,
+            detail,
+        }
+    }
 }
 
 /// Bounds every stored sport type shares.
@@ -98,11 +132,13 @@ pub trait SportRecord {
     /// fields default when read back).
     type StatsRecord: RecordType + Default;
 
-    /// What a confirmed score contributes to `player_id`'s lifetime stats,
+    /// What a confirmed score contributes to one user's lifetime stats,
     /// beyond the played/won/drawn/lost every sport gets from the outcome.
+    /// `player_ids` is every roster entry that user holds in the match
+    /// (almost always one).
     fn contribution(
         score: &Self::ScoreRecord,
-        player_id: &str,
+        player_ids: &[&str],
         format: Option<&Self::FormatRecord>,
     ) -> SportContribution;
 }
@@ -112,13 +148,14 @@ macro_rules! define_contribution {
         modeled: [$( $variant:ident { tag: $tag:literal, key: $key:ident } ),+ $(,)?],
         generic: [$( $gvariant:ident { tag: $gtag:literal, key: $gkey:ident, label: $glabel:literal } ),* $(,)?] $(,)?
     ) => {
-        /// What a confirmed `score` contributes to `player_id`'s lifetime
-        /// stats in `sport` (the stored sport tag). Empty for a generic sport,
-        /// which only gets played/won/drawn/lost from the match outcome.
+        /// What a confirmed `score` contributes to the lifetime stats of the
+        /// user holding `player_ids`, in `sport` (the stored sport tag). Empty
+        /// for a generic sport, which only gets played/won/drawn/lost from the
+        /// match outcome.
         pub fn contribution(
             sport: &str,
             score: &ScoreRecord,
-            player_id: &str,
+            player_ids: &[&str],
             format: Option<&MatchFormatRecord>,
         ) -> SportContribution {
             match (sport, score) {
@@ -129,7 +166,7 @@ macro_rules! define_contribution {
                             Some(MatchFormatRecord::$variant(f)) => Some(f),
                             _ => None,
                         };
-                        <$key::$variant as SportRecord>::contribution(score, player_id, format)
+                        <$key::$variant as SportRecord>::contribution(score, player_ids, format)
                     }
                 )+
                 _ => SportContribution::default(),

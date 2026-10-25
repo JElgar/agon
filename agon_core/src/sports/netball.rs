@@ -168,14 +168,18 @@ impl SportRecord for Netball {
     /// gets their played/won/drawn/lost from the outcome, just no goals.
     fn contribution(
         rec: &NetballScoreRecord,
-        player_id: &str,
+        player_ids: &[&str],
         _format: Option<&NetballFormatRecord>,
     ) -> SportContribution {
         let goals = rec
             .goals
             .iter()
             .flatten()
-            .filter(|g| g.scorer_player_id.as_deref() == Some(player_id))
+            .filter(|g| {
+                g.scorer_player_id
+                    .as_deref()
+                    .is_some_and(|id| player_ids.contains(&id))
+            })
             .count() as u64;
 
         let mut counters = HashMap::new();
@@ -223,18 +227,17 @@ mod tests {
             goal(Some("p2"), false),
             goal(None, false),
         ]));
-        let c = Netball::contribution(&s, "p1", None);
+        let c = Netball::contribution(&s, &["p1"], None);
         assert_eq!(c.counters.get("goals"), Some(&2));
-        assert!(c.best_candidates.is_empty());
-        assert!(c.bowling_spell.is_none());
+        assert!(c.bests.is_empty());
     }
 
     #[test]
     fn a_player_with_no_goals_contributes_no_goals_counter() {
-        let c = Netball::contribution(&score(Some(vec![goal(Some("p2"), false)])), "p1", None);
+        let c = Netball::contribution(&score(Some(vec![goal(Some("p2"), false)])), &["p1"], None);
         assert!(c.counters.is_empty());
         // Quarter-only / manual result: no goal log at all.
-        let c = Netball::contribution(&score(None), "p1", None);
+        let c = Netball::contribution(&score(None), &["p1"], None);
         assert!(c.counters.is_empty());
     }
 }

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{SportContribution, SportRecord};
+use super::{BestCandidate, SportContribution, SportRecord};
 use crate::dao::records::{BestFigureRecord, GenericSportStatsRecord};
 
 /// Football's stored score: the `ScoreRecord::Football` variant. Its stored shape is
@@ -171,38 +171,37 @@ impl SportRecord for Football {
     /// across a confirmed football score's goal log. Best-candidates are
     /// "goals" and "goal_contributions" (goals + assists in this match) —
     /// not "assists" alone, since a single assist doesn't make as complete a
-    /// "best game" record as the combined tally. No `bowling_spell` — that's
-    /// cricket-only.
+    /// "best game" record as the combined tally.
     fn contribution(
         rec: &FootballScoreRecord,
-        player_id: &str,
+        player_ids: &[&str],
         _format: Option<&FootballFormatRecord>,
     ) -> SportContribution {
+        let is_theirs = |id: Option<&str>| id.is_some_and(|id| player_ids.contains(&id));
         let mut counters = HashMap::new();
         for goal in rec.goals.iter().flatten() {
-            if !goal.own_goal && goal.scorer_player_id.as_deref() == Some(player_id) {
+            if !goal.own_goal && is_theirs(goal.scorer_player_id.as_deref()) {
                 *counters.entry("goals".to_string()).or_insert(0) += 1;
             }
-            if goal.assist_player_id.as_deref() == Some(player_id) {
+            if is_theirs(goal.assist_player_id.as_deref()) {
                 *counters.entry("assists".to_string()).or_insert(0) += 1;
             }
         }
 
-        let mut best_candidates = HashMap::new();
+        let mut bests = HashMap::new();
         if let Some(goals) = counters.get("goals") {
-            best_candidates.insert("goals".to_string(), *goals);
+            bests.insert("goals".to_string(), BestCandidate::value(*goals));
         }
         let contributions =
             counters.get("goals").unwrap_or(&0) + counters.get("assists").unwrap_or(&0);
         if contributions > 0 {
-            best_candidates.insert("goal_contributions".to_string(), contributions);
+            bests.insert(
+                "goal_contributions".to_string(),
+                BestCandidate::value(contributions),
+            );
         }
 
-        SportContribution {
-            counters,
-            best_candidates,
-            bowling_spell: None,
-        }
+        SportContribution { counters, bests }
     }
 }
 

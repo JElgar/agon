@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{SportContribution, SportRecord};
+use super::{BestCandidate, SportContribution, SportRecord};
 use crate::dao::records::{BestFigureRecord, GenericSportStatsRecord, default_true};
 
 /// Cricket's stored score: the `ScoreRecord::Cricket` variant. Its stored shape is
@@ -304,7 +304,7 @@ pub struct CricketStatsRecord {
     pub best_runs: Option<BestFigureRecord>,
     /// Best single-match bowling spell — most wickets, with the runs
     /// conceded and overs bowled in that same spell so it isn't just a bare
-    /// wicket count. See `Dao::update_best_bowling_figures`.
+    /// wicket count. See `Dao::update_best_figures`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub best_bowling: Option<BestBowlingFiguresRecord>,
 }
@@ -312,7 +312,7 @@ pub struct CricketStatsRecord {
 /// A personal-best single-match bowling spell: most wickets taken, plus the
 /// runs conceded and overs bowled in that same spell — e.g. "5 wickets for
 /// 32 runs off 5.4 overs", not just "5 wickets". Ranked by `wickets` alone
-/// (ties aren't broken by economy). See `Dao::update_best_bowling_figures`
+/// (ties aren't broken by economy). See `Dao::update_best_figures`
 /// for why this only ever ratchets up, same as `BestFigureRecord`.
 ///
 /// `overs` is the exact figure from that one match (in that match's own
@@ -326,39 +326,6 @@ pub struct BestBowlingFiguresRecord {
     pub runs_conceded: u64,
     pub overs: OversRecord,
     pub match_id: String,
-}
-
-/// One player's bowling figures in a single match (possibly summed across
-/// more than one innings) — the raw material for `best_bowling`. Not
-/// persisted as-is: `Dao::update_best_bowling_figures` writes it out as a
-/// `BestBowlingFiguresRecord`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BowlingSpell {
-    pub wickets: u64,
-    pub runs_conceded: u64,
-    /// Legal balls bowled — also folded into the cumulative `balls_bowled`
-    /// counter (see `CricketStatsRecord::balls_bowled`).
-    pub balls_bowled: u64,
-    /// Same ball count as whole overs + balls, in this match's own format —
-    /// what `best_bowling` actually stores/displays.
-    pub overs: OversRecord,
-    /// This match's over length, kept alongside so `absorb` can re-derive
-    /// `overs` exactly after summing.
-    pub balls_per_over: u32,
-}
-
-impl BowlingSpell {
-    /// Fold a second spell *from the same match* into this one — the rare
-    /// case of one user appearing as more than one player in a single match.
-    /// `overs` is re-derived from the summed raw ball count rather than
-    /// added field-wise: two `Overs` values don't sum that way (balls can roll
-    /// over into a whole extra over).
-    pub fn absorb(&mut self, other: &BowlingSpell) {
-        self.wickets += other.wickets;
-        self.runs_conceded += other.runs_conceded;
-        self.balls_bowled += other.balls_bowled;
-        self.overs = balls_to_overs(self.balls_bowled, self.balls_per_over);
-    }
 }
 
 /// Cricket: the marker type its sport traits are implemented for.
@@ -378,22 +345,22 @@ impl SportRecord for Cricket {
     /// feature in more than one innings (e.g. a two-innings match), so these
     /// accumulate rather than take the last entry.
     ///
-    /// Only "runs" (high score) is a best-candidate here — "wickets" is
-    /// tracked as a richer `bowling_spell` (best bowling figures need
-    /// runs-conceded/balls-bowled alongside the wicket count, not just a bare
-    /// scalar; see `Dao::update_best_bowling_figures`), and the rest (fours,
+    /// Bests are "runs" (high score) and "bowling": the match's bowling
+    /// figures ranked by wickets, stored with runs conceded and overs as a
+    /// `BestBowlingFiguresRecord`. The rest (fours,
     /// sixes, balls faced, dismissals, catches, runs conceded, balls bowled)
     /// are lifetime totals only — nobody's asked to see "most balls faced in
     /// a game" as a record, so there's no reason to pay for tracking it.
     fn contribution(
         rec: &CricketScoreRecord,
-        player_id: &str,
+        player_ids: &[&str],
         format: Option<&CricketFormatRecord>,
     ) -> SportContribution {
         let balls_per_over = balls_per_over(format);
+        let is_theirs = |id: &str| player_ids.contains(&id);
 
         let mut counters = HashMap::new();
-        let mut best_candidates = HashMap::new();
+        let mut bests = HashMap::new();
         let mut spell_wickets = 0;
         let mut spell_runs_conceded = 0;
         let mut spell_balls = 0;
@@ -401,7 +368,7 @@ impl SportRecord for Cricket {
 
         for inning in &rec.innings {
             for entry in inning.batting.iter().flatten() {
-                if entry.player_id == player_id {
+                if is_theirs(&entry.player_id) {
                     *counters.entry("runs".to_string()).or_insert(0) += entry.runs as u64;
                     *counters.entry("fours".to_string()).or_insert(0) += entry.fours as u64;
                     *counters.entry("sixes".to_string()).or_insert(0) += entry.sixes as u64;
@@ -417,13 +384,16 @@ impl SportRecord for Cricket {
                 // this player's own batting entry).
                 if let Some(dismissal) = &entry.dismissal
                     && matches!(dismissal.kind, CricketDismissalKindRecord::Caught)
-                    && dismissal.fielder_player_id.as_deref() == Some(player_id)
+                    && dismissal
+                        .fielder_player_id
+                        .as_deref()
+                        .is_some_and(is_theirs)
                 {
                     *counters.entry("catches".to_string()).or_insert(0) += 1;
                 }
             }
             for entry in inning.bowling.iter().flatten() {
-                if entry.player_id == player_id {
+                if is_theirs(&entry.player_id) {
                     let balls =
                         overs_to_balls(entry.overs.overs, entry.overs.balls, balls_per_over);
                     *counters.entry("wickets".to_string()).or_insert(0) += entry.wickets as u64;
@@ -439,20 +409,24 @@ impl SportRecord for Cricket {
         }
 
         if let Some(runs) = counters.get("runs") {
-            best_candidates.insert("runs".to_string(), *runs);
+            bests.insert("runs".to_string(), BestCandidate::value(*runs));
+        }
+        if bowled {
+            let overs = balls_to_overs(spell_balls, balls_per_over);
+            let detail = serde_json::json!({
+                "runs_conceded": spell_runs_conceded,
+                "overs": overs,
+            });
+            let serde_json::Value::Object(detail) = detail else {
+                unreachable!("json! of an object literal is an object")
+            };
+            bests.insert(
+                "bowling".to_string(),
+                BestCandidate::ranked_by("wickets", spell_wickets, detail),
+            );
         }
 
-        SportContribution {
-            counters,
-            best_candidates,
-            bowling_spell: bowled.then(|| BowlingSpell {
-                wickets: spell_wickets,
-                runs_conceded: spell_runs_conceded,
-                balls_bowled: spell_balls,
-                overs: balls_to_overs(spell_balls, balls_per_over),
-                balls_per_over,
-            }),
-        }
+        SportContribution { counters, bests }
     }
 }
 
@@ -515,26 +489,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    /// Summing two spells from the same match re-derives `overs` from the
-    /// summed raw ball count in that match's own over length — not field-wise
-    /// (2.3 + 1.4 at 5 balls/over is 13 + 9 = 22 balls = 4.2, not "3.7").
-    #[test]
-    fn absorbing_a_second_spell_rolls_balls_over_into_whole_overs() {
-        let spell = |wickets, balls| BowlingSpell {
-            wickets,
-            runs_conceded: 10,
-            balls_bowled: balls,
-            overs: balls_to_overs(balls, 5),
-            balls_per_over: 5,
-        };
-        let mut acc = spell(1, 13);
-        acc.absorb(&spell(2, 9));
-        assert_eq!(acc.wickets, 3);
-        assert_eq!(acc.runs_conceded, 20);
-        assert_eq!(acc.balls_bowled, 22);
-        assert_eq!(acc.overs, OversRecord { overs: 4, balls: 2 });
     }
 
     /// `stats.<sport>` is only ever populated with the counters that have

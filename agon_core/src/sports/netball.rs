@@ -1,20 +1,14 @@
-//! Netball's whole DAO-side surface — see `crate::sports::cricket`'s doc
-//! comment.
+//! Netball: its stored record types and `SportRecord` impl.
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::dao::records::{GenericSportStatsRecord, MatchFormatRecord, ScoreRecord};
-use crate::sport::{SportContribution, SportRecord};
+use super::{SportContribution, SportRecord};
+use crate::dao::records::GenericSportStatsRecord;
 
-/// Netball's `ScoreRecord` shape — pulled out to its own type (rather than an
-/// inline enum-variant struct, like `Cricket`/`Football` originally were) as
-/// the first sport migrated onto the `agon_core::sport::SportRecord` trait
-/// (see the project's sport-setup refactor design notes). Wire-identical to
-/// the inline shape it replaced — serde's internally-tagged representation
-/// serializes a newtype-around-a-struct the same as a struct-variant with the
-/// same fields — guarded by `agon_core/tests/netball_score_record_roundtrip.rs`.
+/// Netball's stored score: the `ScoreRecord::Netball` variant. Its stored shape is
+/// guarded by `agon_core/tests/netball_score_record_roundtrip.rs`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NetballScoreRecord {
     /// Goal tally, keyed by side id.
@@ -32,13 +26,13 @@ pub struct NetballScoreRecord {
     pub period_times: Option<HashMap<NetballPeriodRecord, String>>,
     /// The score as of each quarter-end marker, keyed by kind — the
     /// *only* source of the score for a quarter-only-scored match. See
-    /// `agon_service::live_score::netball::NetballPeriodEvent::score`'s
+    /// `agon_service::sports::netball::NetballPeriodEvent::score`'s
     /// doc comment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub period_scores: Option<HashMap<NetballPeriodRecord, HashMap<String, u32>>>,
 }
 
-/// Mirrors `agon_service::match_format::NetballFormat`.
+/// Stored form of `agon_service::sports::netball::NetballFormat`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NetballFormatRecord {
     pub num_quarters: u32,
@@ -49,7 +43,7 @@ pub struct NetballFormatRecord {
 
 // ---- Netball live events ----------------------------------------------------
 
-/// Mirrors `agon_service::live_score::netball::NetballLiveEvent`.
+/// Stored form of `agon_service::sports::netball::NetballLiveEvent`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NetballLiveEventRecord {
@@ -68,7 +62,7 @@ pub struct NetballGoalEventRecord {
     pub two_points: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minute: Option<u32>,
-    /// Mirrors `agon_service::detailed_score::netball::NetballGoalEvent::occurred_at`
+    /// Stored form of `agon_service::sports::netball::NetballGoalEvent::occurred_at`
     /// — RFC3339, same string convention as `LiveEventRecord::occurred_at`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occurred_at: Option<String>,
@@ -98,7 +92,7 @@ pub struct NetballFoulEventRecord {
     pub foul_kind: NetballFoulKindRecord,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minute: Option<u32>,
-    /// Mirrors `NetballGoalEventRecord::occurred_at`.
+    /// Same convention as `NetballGoalEventRecord::occurred_at`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occurred_at: Option<String>,
 }
@@ -118,7 +112,7 @@ pub enum NetballFoulKindRecord {
 pub struct NetballPeriodEventRecord {
     pub period: NetballPeriodRecord,
     /// Cumulative score per side as of this marker — always present, same
-    /// reasoning as `agon_service::live_score::netball::NetballPeriodEvent`.
+    /// reasoning as `agon_service::sports::netball::NetballPeriodEvent`.
     pub score: HashMap<String, u32>,
 }
 
@@ -157,24 +151,26 @@ pub struct NetballStatsRecord {
     pub goals: u64,
 }
 
-/// Marker type for netball's `SportRecord` impl — no fields, just a home for
-/// the trait's methods (the same per-sport marker pattern cricket/football
-/// use).
-pub struct NetballRecord;
+/// Netball: the marker type its sport traits are implemented for.
+pub struct Netball;
 
-impl SportRecord for NetballRecord {
+impl SportRecord for Netball {
+    const LABEL: &'static str = "Netball";
+
+    type ScoreRecord = NetballScoreRecord;
+    type FormatRecord = NetballFormatRecord;
+    type LiveEventRecord = NetballLiveEventRecord;
+    type StatsRecord = NetballStatsRecord;
+
     /// Counts the goals this player scored across a confirmed netball
     /// score's goal log. Nothing to count for a quarter-only-scored or
     /// manually-entered result with no goal-by-goal detail — the player still
     /// gets their played/won/drawn/lost from the outcome, just no goals.
     fn contribution(
-        score: &ScoreRecord,
+        rec: &NetballScoreRecord,
         player_id: &str,
-        _format: Option<&MatchFormatRecord>,
+        _format: Option<&NetballFormatRecord>,
     ) -> SportContribution {
-        let ScoreRecord::Netball(rec) = score else {
-            return SportContribution::default();
-        };
         let goals = rec
             .goals
             .iter()
@@ -208,15 +204,15 @@ mod tests {
         }
     }
 
-    fn score(goals: Option<Vec<NetballGoalEventRecord>>) -> ScoreRecord {
-        ScoreRecord::Netball(NetballScoreRecord {
+    fn score(goals: Option<Vec<NetballGoalEventRecord>>) -> NetballScoreRecord {
+        NetballScoreRecord {
             score: HashMap::new(),
             goals,
             fouls: None,
             period: None,
             period_times: None,
             period_scores: None,
-        })
+        }
     }
 
     #[test]
@@ -227,7 +223,7 @@ mod tests {
             goal(Some("p2"), false),
             goal(None, false),
         ]));
-        let c = NetballRecord::contribution(&s, "p1", None);
+        let c = Netball::contribution(&s, "p1", None);
         assert_eq!(c.counters.get("goals"), Some(&2));
         assert!(c.best_candidates.is_empty());
         assert!(c.bowling_spell.is_none());
@@ -235,11 +231,10 @@ mod tests {
 
     #[test]
     fn a_player_with_no_goals_contributes_no_goals_counter() {
-        let c =
-            NetballRecord::contribution(&score(Some(vec![goal(Some("p2"), false)])), "p1", None);
+        let c = Netball::contribution(&score(Some(vec![goal(Some("p2"), false)])), "p1", None);
         assert!(c.counters.is_empty());
         // Quarter-only / manual result: no goal log at all.
-        let c = NetballRecord::contribution(&score(None), "p1", None);
+        let c = Netball::contribution(&score(None), "p1", None);
         assert!(c.counters.is_empty());
     }
 }

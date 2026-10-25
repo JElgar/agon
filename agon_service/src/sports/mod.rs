@@ -1,79 +1,98 @@
-//! Per-sport API-side surface. One module per fully-modeled sport, holding
-//! *everything* specific to that sport on the API side: its score/format/
-//! live-event/stats poem-openapi types, the event-log fold that computes a
-//! score from a live event log (`XScore::from_events`/`apply_event`), the
-//! per-score-shape helpers the generic `Score` dispatchers call into
-//! (`side_ids`/`resolve_ids`/`set_players`/`player_ids`/`winner`/
-//! `apply_new_events`), and the conversions between those API types and the
-//! DAO's records (`score_to_record`/`score_from_record`/`format_to_record`/
-//! `format_from_record`/`live_event_to_record`/`live_event_from_record`/
-//! `from_events`/`stats_from_record`). Plain functions with conventional
-//! names, not a shared trait — see `crate::sports::netball`'s doc comment for
-//! why. `netball.rs` is the smallest complete example of the full set.
+//! The API side of a modeled sport: the [`Sport`] trait, implemented for the
+//! sport's marker type from `agon_core::sports::<sport>`. See
+//! `agon_core::sports` for the full list of steps to add a sport and the
+//! registry every sport-shaped API type is generated from (`MatchType`,
+//! `Score`, `MatchFormat`, `LiveEventInput`, `UserStats` and the dispatch in
+//! `mapping.rs`).
 //!
-//! `agon_sports!` below is the single source of truth for which sports those
-//! are. Every sport-shaped aggregate and dispatcher on this side is generated
-//! from it: `Score`/`MatchType`/`UserStats` (`main.rs`), `MatchFormat`
-//! (`match_format.rs`), `LiveEventInput` (`live_score`), and every
-//! conversion/dispatch function in `mapping.rs` — so no other file names a
-//! specific sport.
-//!
-//! Adding a fully-modeled sport is therefore:
-//! 1. `agon_core::sports::<sport>` — its DAO record types (score/format/
-//!    live-event/stats) and `SportRecord` impl, plus one line in
-//!    `agon_core::sports::core_sports!`.
-//! 2. `agon_service::sports::<sport>` (this module) — the functions above,
-//!    plus one line in `agon_sports!` below.
-//!
-//! Each generated type stays defined in its own file rather than centralized
-//! here, so existing call sites (`crate::Score`, `crate::match_format::
-//! MatchFormat`, `crate::live_score::LiveEventInput`, ...) don't change
-//! paths — `agon_sports!` is invoked once per file, each time with a
-//! different "template" macro (defined right next to that invocation) that
-//! says what to build from the list for that file.
-//!
-//! The two sport lists (this one and `agon_core::sports::core_sports!`) can't
-//! be one macro across the crate boundary — keep them in sync by hand;
-//! nothing enforces it automatically.
-//!
-//! Tennis/badminton/squash/table-tennis are deliberately *not* here: they're
-//! the generic, unmodeled sports (`Score::Sets`, no dedicated format/
-//! live-event/stats), and stay as fixed arms hand-written alongside each
-//! macro invocation. Making one of them fully modeled would mean giving it
-//! the same treatment as any new sport — a module here plus a line in the
-//! list — not touching this macro.
-#[macro_export]
-macro_rules! agon_sports {
-    ($callback:ident) => {
-        $callback! {
-            Football {
-                tag: "football",
-                module: football,
-                score: $crate::sports::football::FootballScore,
-                format: $crate::sports::football::FootballFormat,
-                live_event: $crate::sports::football::FootballLiveEvent,
-                stats: $crate::sports::football::FootballPlayerStats,
-            },
-            Cricket {
-                tag: "cricket",
-                module: cricket,
-                score: $crate::sports::cricket::CricketScore,
-                format: $crate::sports::cricket::CricketFormat,
-                live_event: $crate::sports::cricket::CricketLiveEvent,
-                stats: $crate::sports::cricket::CricketPlayerStats,
-            },
-            Netball {
-                tag: "netball",
-                module: netball,
-                score: $crate::sports::netball::NetballScore,
-                format: $crate::sports::netball::NetballFormat,
-                live_event: $crate::sports::netball::NetballLiveEvent,
-                stats: $crate::sports::netball::NetballPlayerStats,
-            },
-        }
-    };
-}
+//! `netball.rs` is the smallest complete example.
+
+use std::collections::HashMap;
+
+use agon_core::sports::SportRecord;
+use chrono::{DateTime, Utc};
+use poem_openapi::types::{ParseFromJSON, ToJSON, Type};
+
+use crate::RosterPreviewPlayer;
 
 pub mod cricket;
 pub mod football;
 pub mod netball;
+
+/// Bounds every API type of a sport shares, so it can sit in the generated
+/// poem-openapi unions and structs.
+pub(crate) trait ApiType: Type + ParseFromJSON + ToJSON {}
+impl<T: Type + ParseFromJSON + ToJSON> ApiType for T {}
+
+/// Everything the API needs from a modeled sport: its API types, how live
+/// events fold into a score, and how each API type maps to its stored record
+/// (the associated types of [`SportRecord`]).
+pub(crate) trait Sport: SportRecord {
+    /// The sport's score: its `Score` variant. Serves as the confirmable
+    /// result, the persisted live score and the live-poll response.
+    type Score: ApiType;
+    /// The sport's match format: its `MatchFormat` variant.
+    type Format: ApiType + Clone;
+    /// One live-scoring event: its `LiveEventInput` variant.
+    type LiveEvent: ApiType + Clone;
+    /// A user's lifetime stats: its `UserStats` field.
+    type PlayerStats: ApiType;
+
+    /// The score before any live event has been recorded.
+    fn new_score() -> Self::Score;
+
+    /// Folds one live event into `score`. `occurred_at` is the recording
+    /// device's clock, which is the authoritative time for the event.
+    fn apply_event(
+        score: &mut Self::Score,
+        occurred_at: DateTime<Utc>,
+        event: &Self::LiveEvent,
+        format: Option<&Self::Format>,
+    );
+
+    /// Folds a whole ordered event log into a score. Appends use
+    /// [`Sport::apply_event`] directly, so both paths share one fold.
+    fn from_events(
+        events: &[(DateTime<Utc>, Self::LiveEvent)],
+        format: Option<&Self::Format>,
+    ) -> Self::Score {
+        let mut score = Self::new_score();
+        for (occurred_at, event) in events {
+            Self::apply_event(&mut score, *occurred_at, event, format);
+        }
+        score
+    }
+
+    /// The winning side, when the score decides one. `side_ids` is the
+    /// match's own sides, since a side with nothing scored may be absent
+    /// from the score.
+    fn winner(score: &Self::Score, side_ids: &[String]) -> Option<String>;
+
+    /// Every side id the score references, to validate a submitted score
+    /// against the match's sides.
+    fn side_ids(score: &Self::Score) -> Vec<&str>;
+
+    /// Every player id the score references (repeats allowed), for
+    /// resolving player names.
+    fn player_ids(score: &Self::Score) -> Vec<String>;
+
+    /// Re-points a score submitted at match creation from the request's
+    /// client ids to the real side and player ids. `None` if it references
+    /// an unknown side or player.
+    fn resolve_ids(
+        score: &Self::Score,
+        side_ids: &HashMap<String, String>,
+        player_ids: &HashMap<String, String>,
+    ) -> Option<Self::Score>;
+
+    /// Attaches the resolved players (keyed by player id) to the score.
+    fn set_players(score: &mut Self::Score, players: HashMap<String, RosterPreviewPlayer>);
+
+    fn score_to_record(score: &Self::Score) -> Self::ScoreRecord;
+    fn score_from_record(rec: &Self::ScoreRecord) -> Self::Score;
+    fn format_to_record(format: &Self::Format) -> Self::FormatRecord;
+    fn format_from_record(rec: &Self::FormatRecord) -> Self::Format;
+    fn live_event_to_record(event: &Self::LiveEvent) -> Self::LiveEventRecord;
+    fn live_event_from_record(rec: &Self::LiveEventRecord) -> Self::LiveEvent;
+    fn stats_from_record(rec: &Self::StatsRecord) -> Self::PlayerStats;
+}

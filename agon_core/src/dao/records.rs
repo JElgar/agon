@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use crate::sports::SportRecord;
 use serde::{Deserialize, Serialize};
 
 // ===========================================================================
@@ -48,20 +49,14 @@ pub struct HeaderPhotoRecord {
     pub url: String,
 }
 
-/// x-macro template for `crate::sports::core_sports!` (the single source of
-/// truth for which sports are fully modeled — see `crate::sports`): every
-/// sport-shaped DAO aggregate, one variant/field per sport wrapping that
-/// sport's own record type from `crate::sports::<sport>`.
+/// Every sport-shaped record aggregate, generated from the sport registry
+/// (`crate::for_each_sport!`): one variant or field per modeled sport, holding
+/// that sport's own record type from its `SportRecord` impl.
 macro_rules! define_sport_records {
-    ($( $variant:ident {
-        tag: $tag:literal,
-        module: $module:ident,
-        score: $score:ty,
-        format: $format:ty,
-        live_event: $live_event:ty,
-        stats: $stats:ty,
-        record: $record:ty $(,)?
-    } ),+ $(,)?) => {
+    (
+        modeled: [$( $variant:ident { tag: $tag:literal, key: $key:ident } ),+ $(,)?],
+        generic: [$( $gvariant:ident { tag: $gtag:literal, key: $gkey:ident, label: $glabel:literal } ),* $(,)?] $(,)?
+    ) => {
         /// A match score. Tagged union mirroring the sport's scoring shape.
         #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
         #[serde(tag = "type", rename_all = "snake_case")]
@@ -74,69 +69,48 @@ macro_rules! define_sport_records {
                 /// Games won per set per side, keyed by side id.
                 entries: HashMap<String, Vec<u32>>,
             },
-            $( $variant($score), )+
+            $( $variant(<crate::sports::$key::$variant as SportRecord>::ScoreRecord), )+
         }
 
-        /// Mirrors `agon_service::match_format::MatchFormat`, sport-first
-        /// discriminated like `LiveEventPayloadRecord` — a typed DAO enum
-        /// rather than opaque JSON, so a variant added on the API side and
-        /// forgotten here is a compile error, not a silent runtime data
-        /// loss. New sport = new variant on both sides.
+        /// A match's configured format, discriminated by sport.
         #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
         #[serde(tag = "sport", rename_all = "snake_case")]
         pub enum MatchFormatRecord {
-            $( $variant($format), )+
+            $( $variant(<crate::sports::$key::$variant as SportRecord>::FormatRecord), )+
         }
 
-        /// DAO-owned mirror of `agon_service::live_score::LiveEventInput`,
-        /// sport-first discriminated. New sport = new variant on both sides.
+        /// One stored live-scoring event, discriminated by sport.
         #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
         #[serde(tag = "sport", rename_all = "snake_case")]
         pub enum LiveEventPayloadRecord {
-            $( $variant($live_event), )+
+            $( $variant(<crate::sports::$key::$variant as SportRecord>::LiveEventRecord), )+
         }
 
         /// A user's lifetime stats, one field per sport — `None` for a sport
         /// they've never played a confirmed match in. Stored inline on
-        /// `UserRecord::stats`.
+        /// `UserRecord::stats`, so each sport is a nested map attribute
+        /// (`stats.cricket`, `stats.football`, ...).
         ///
-        /// Explicit named fields rather than a `HashMap<String, _>` keyed by
-        /// sport tag: the set of sports is closed (mirrors the API's
-        /// `MatchType`), and an `Option` field serializes absent the same way
-        /// a missing map key would, at the same DynamoDB storage shape
-        /// (`stats.cricket`, `stats.football`, ... as nested map attributes
-        /// either way). What a named field buys over the map: each
-        /// fully-modeled sport's own counters (cricket's `runs`/`wickets`,
-        /// football's `goals`/`assists`, ...) are real, compiler-checked
-        /// fields instead of stringly-keyed lookups into a counters bag.
-        /// Sports with no richer box score are just the common shape.
-        ///
-        /// The DAO's *write* path (`Dao::stats_delta`/`update_best_figures`)
-        /// doesn't construct or read this type at all — it addresses
-        /// `stats.<sport>.<counter>` via raw `UpdateItem` expressions built
-        /// from a runtime sport tag and counter-name strings, so it stays
-        /// fully sport-agnostic regardless of how strongly-typed this read
-        /// side is.
+        /// The DAO's write path (`Dao::stats_delta`/`update_best_figures`)
+        /// doesn't use this type: it addresses `stats.<sport>.<counter>` with
+        /// raw `UpdateItem` expressions built from the sport tag and counter
+        /// names, so it is sport-agnostic.
         #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
         pub struct UserStatsRecord {
             $(
                 #[serde(default, skip_serializing_if = "Option::is_none")]
-                pub $module: Option<$stats>,
+                pub $key: Option<<crate::sports::$key::$variant as SportRecord>::StatsRecord>,
             )+
-            #[serde(default, skip_serializing_if = "Option::is_none")]
-            pub tennis: Option<GenericSportStatsRecord>,
-            #[serde(default, skip_serializing_if = "Option::is_none")]
-            pub badminton: Option<GenericSportStatsRecord>,
-            #[serde(default, skip_serializing_if = "Option::is_none")]
-            pub squash: Option<GenericSportStatsRecord>,
-            #[serde(default, skip_serializing_if = "Option::is_none")]
-            pub table_tennis: Option<GenericSportStatsRecord>,
+            $(
+                #[serde(default, skip_serializing_if = "Option::is_none")]
+                pub $gkey: Option<GenericSportStatsRecord>,
+            )*
             #[serde(default, skip_serializing_if = "Option::is_none")]
             pub other: Option<GenericSportStatsRecord>,
         }
     };
 }
-crate::sports::core_sports!(define_sport_records);
+crate::for_each_sport!(define_sport_records);
 
 /// The agreed, settled score of a match.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1974,22 +1948,6 @@ mod tests {
                 assert_eq!(entries.get("sideA"), Some(&vec![6, 4]));
             }
             _ => panic!("expected sets"),
-        }
-    }
-
-    /// A `Football` score written in the brief window before the `score`
-    /// tally field existed (just `goals`, no aggregate) deserializes to an
-    /// empty tally rather than 500ing on a missing field.
-    #[test]
-    fn football_score_missing_tally_field_deserializes() {
-        let score_av = AttributeValue::M(HashMap::from([
-            ("type".to_string(), AttributeValue::S("football".into())),
-            ("goals".to_string(), AttributeValue::L(vec![])),
-        ]));
-        let rec: ScoreRecord = serde_dynamo::from_attribute_value(score_av).unwrap();
-        match rec {
-            ScoreRecord::Football(rec) => assert!(rec.score.is_empty()),
-            _ => panic!("expected football"),
         }
     }
 

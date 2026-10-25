@@ -1,20 +1,14 @@
-//! Football's whole DAO-side surface — see `crate::sports::cricket`'s doc
-//! comment.
+//! Football: its stored record types and `SportRecord` impl.
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::dao::records::{
-    BestFigureRecord, GenericSportStatsRecord, MatchFormatRecord, ScoreRecord,
-};
-use crate::sport::{SportContribution, SportRecord};
+use super::{SportContribution, SportRecord};
+use crate::dao::records::{BestFigureRecord, GenericSportStatsRecord};
 
-/// Football's `ScoreRecord` shape — see
-/// `crate::sports::netball::NetballScoreRecord`'s doc comment for why this is
-/// a standalone type rather than an inline enum-variant struct: wire-identical
-/// to the inline shape it replaced, guarded by
-/// `agon_core/tests/football_score_record_roundtrip.rs`.
+/// Football's stored score: the `ScoreRecord::Football` variant. Its stored shape is
+/// guarded by `agon_core/tests/football_score_record_roundtrip.rs`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FootballScoreRecord {
     /// Goal tally, keyed by side id. `#[serde(default)]` because this
@@ -43,7 +37,7 @@ pub struct FootballScoreRecord {
     pub penalty_shootout_score: Option<HashMap<String, u32>>,
 }
 
-/// Mirrors `agon_service::match_format::FootballFormat`.
+/// Stored form of `agon_service::sports::football::FootballFormat`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FootballFormatRecord {
     pub half_length_minutes: u32,
@@ -56,7 +50,7 @@ pub struct FootballFormatRecord {
 
 // ---- Football live events --------------------------------------------------
 
-/// Mirrors `agon_service::live_score::football::FootballLiveEvent`.
+/// Stored form of `agon_service::sports::football::FootballLiveEvent`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FootballLiveEventRecord {
@@ -78,7 +72,7 @@ pub struct FootballGoalEventRecord {
     pub penalty: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minute: Option<u32>,
-    /// Mirrors `agon_service::detailed_score::football::FootballGoalEvent::occurred_at`
+    /// Stored form of `agon_service::sports::football::FootballGoalEvent::occurred_at`
     /// — RFC3339, same string convention as `LiveEventRecord::occurred_at`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occurred_at: Option<String>,
@@ -91,7 +85,7 @@ pub struct FootballCardEventRecord {
     pub color: FootballCardColorRecord,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minute: Option<u32>,
-    /// Mirrors `FootballGoalEventRecord::occurred_at`.
+    /// Same convention as `FootballGoalEventRecord::occurred_at`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occurred_at: Option<String>,
 }
@@ -110,7 +104,7 @@ pub struct FootballSubstitutionEventRecord {
     pub player_out_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub minute: Option<u32>,
-    /// Mirrors `FootballGoalEventRecord::occurred_at`.
+    /// Same convention as `FootballGoalEventRecord::occurred_at`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occurred_at: Option<String>,
 }
@@ -162,11 +156,17 @@ pub struct FootballStatsRecord {
     pub best_goal_contributions: Option<BestFigureRecord>,
 }
 
-/// Marker type for football's `SportRecord` impl — see
-/// `agon_core::sports::netball::NetballRecord`'s doc comment for the pattern.
-pub struct FootballRecord;
+/// Football: the marker type its sport traits are implemented for.
+pub struct Football;
 
-impl SportRecord for FootballRecord {
+impl SportRecord for Football {
+    const LABEL: &'static str = "Football";
+
+    type ScoreRecord = FootballScoreRecord;
+    type FormatRecord = FootballFormatRecord;
+    type LiveEventRecord = FootballLiveEventRecord;
+    type StatsRecord = FootballStatsRecord;
+
     /// Counts this player's goals scored (own goals excluded) and assists
     /// across a confirmed football score's goal log. Best-candidates are
     /// "goals" and "goal_contributions" (goals + assists in this match) —
@@ -174,14 +174,11 @@ impl SportRecord for FootballRecord {
     /// "best game" record as the combined tally. No `bowling_spell` — that's
     /// cricket-only.
     fn contribution(
-        score: &ScoreRecord,
+        rec: &FootballScoreRecord,
         player_id: &str,
-        _format: Option<&MatchFormatRecord>,
+        _format: Option<&FootballFormatRecord>,
     ) -> SportContribution {
         let mut counters = HashMap::new();
-        let ScoreRecord::Football(rec) = score else {
-            return SportContribution::default();
-        };
         for goal in rec.goals.iter().flatten() {
             if !goal.own_goal && goal.scorer_player_id.as_deref() == Some(player_id) {
                 *counters.entry("goals".to_string()).or_insert(0) += 1;
@@ -214,6 +211,7 @@ mod tests {
     use aws_sdk_dynamodb::types::AttributeValue;
 
     use super::*;
+    use crate::dao::records::ScoreRecord;
 
     /// A `Football` score written in the brief window before the `score`
     /// tally field existed (just `goals`, no aggregate) deserializes to an

@@ -1,15 +1,16 @@
-//! Cricket's whole API-side surface — see `crate::sports::netball`'s doc
-//! comment for the pattern and its rationale. Cricket is the most involved
-//! of the three: its event-log fold is genuinely stateful (an innings'
-//! batting/bowling cards, extras, fall-of-wickets, and the next-ball
-//! context all update together on every delivery), and its format
-//! (`balls_per_over`, wide/no-ball rules) actually drives that fold's math,
-//! not just client display.
+//! Cricket: its API types and `Sport` impl. The most involved sport: its
+//! event fold is stateful (an innings' batting and bowling cards, extras,
+//! fall of wickets and the next-ball context all update on every delivery),
+//! and its format (`balls_per_over`, wide/no-ball rules) drives that fold's
+//! math, not just client display.
 
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
+
 use poem_openapi::{Enum, Object, Union};
 
+use agon_core::sports::cricket::Cricket;
 use agon_core::sports::cricket::{
     BestBowlingFiguresRecord, CricketBattingEntryRecord, CricketBowlingEntryRecord,
     CricketDeliveryExtraRecord, CricketDeliveryRecord, CricketDeliveryWicketRecord,
@@ -20,17 +21,474 @@ use agon_core::sports::cricket::{
     InningsEndReasonRecord, NextBallContextRecord, OversRecord,
 };
 
-use crate::live_score::NewLiveEventInput;
 use crate::mapping::{best_figure_from_record, generic_stats_from_record, parse_ts_opt};
+use crate::sports::Sport;
 use crate::{BestFigure, GenericPlayerStats};
 
-/// How this sport is named to people (e.g. share-card headings).
-pub const LABEL: &str = "Cricket";
+impl Sport for Cricket {
+    type Score = CricketScore;
+    type Format = CricketFormat;
+    type LiveEvent = CricketLiveEvent;
+    type PlayerStats = CricketPlayerStats;
 
-// ===========================================================================
-// API types (formerly `match_format::CricketFormat`, `detailed_score::cricket`,
-// `live_score::cricket`).
-// ===========================================================================
+    fn new_score() -> CricketScore {
+        CricketScore {
+            innings: Vec::new(),
+            recent_deliveries: None,
+            next_ball_context: None,
+            awaiting_next_innings: Some(true),
+            players: HashMap::new(),
+        }
+    }
+
+    /// Only `Delivery` reads `occurred_at` (see `CricketDelivery::occurred_at`).
+    fn apply_event(
+        score: &mut CricketScore,
+        occurred_at: DateTime<Utc>,
+        event: &CricketLiveEvent,
+        format: Option<&CricketFormat>,
+    ) {
+        let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) = format_args(format);
+        match event {
+            CricketLiveEvent::InningsStart(start) => {
+                score.innings.push(CricketScoreInnings::opening(
+                    start.batting_side_id.clone(),
+                    start.bowling_side_id.clone(),
+                ));
+                score.recent_deliveries = Some(Vec::new());
+                score.next_ball_context = Some(NextBallContext::opening());
+                score.awaiting_next_innings = Some(false);
+            }
+            CricketLiveEvent::Delivery(d) => {
+                let Some(current) = score.innings.last_mut() else {
+                    // A delivery with no open innings is malformed input —
+                    // there's nothing to fold it into.
+                    return;
+                };
+                let context = score
+                    .next_ball_context
+                    .clone()
+                    .unwrap_or_else(NextBallContext::opening);
+                let next_context = apply_delivery(
+                    current,
+                    &context,
+                    d,
+                    balls_per_over,
+                    wide_is_extra_ball,
+                    no_ball_is_extra_ball,
+                );
+                score.next_ball_context = Some(next_context);
+
+                // Stamp with the envelope's own `occurred_at` before storing
+                // — see `CricketDelivery::occurred_at`'s doc comment. Stats
+                // are already folded above off the un-stamped `d`, so this
+                // only affects what gets stored/returned.
+                let mut d = d.clone();
+                d.occurred_at = Some(occurred_at);
+                let deliveries = score.recent_deliveries.get_or_insert_with(Vec::new);
+                deliveries.push(d);
+                if deliveries.len() > RECENT_DELIVERIES_LIMIT {
+                    deliveries.remove(0);
+                }
+            }
+            CricketLiveEvent::Retire(r) => {
+                let Some(current) = score.innings.last_mut() else {
+                    return;
+                };
+                let Some(entry) = current
+                    .batting
+                    .get_or_insert_with(Vec::new)
+                    .iter_mut()
+                    .find(|b| b.player_id == r.batter_player_id)
+                else {
+                    // Retired without ever facing a ball — no batting-card
+                    // row exists yet to annotate. Rare enough not to
+                    // synthesize one.
+                    return;
+                };
+                if entry.dismissal.is_some() {
+                    // A later real dismissal (from a delivery) always takes
+                    // precedence over an earlier retirement note — and by
+                    // the time we're processing events in order, that's
+                    // already reflected here.
+                    return;
+                }
+                entry.dismissal = Some(CricketDismissal {
+                    kind: if r.retired_out {
+                        CricketDismissalKind::RetiredOut
+                    } else {
+                        CricketDismissalKind::RetiredHurt
+                    },
+                    bowler_player_id: None,
+                    fielder_player_id: None,
+                });
+                if r.retired_out {
+                    current.wickets += 1;
+                    current.fall_of_wickets.get_or_insert_with(Vec::new).push(
+                        CricketFallOfWicket {
+                            wicket: current.wickets,
+                            runs: current.runs,
+                            player_id: r.batter_player_id.clone(),
+                            overs: Some(current.overs),
+                        },
+                    );
+                }
+                if let Some(ctx) = &mut score.next_ball_context {
+                    if ctx.striker_player_id.as_deref() == Some(r.batter_player_id.as_str()) {
+                        ctx.striker_player_id = None;
+                    } else if ctx.non_striker_player_id.as_deref()
+                        == Some(r.batter_player_id.as_str())
+                    {
+                        ctx.non_striker_player_id = None;
+                    }
+                }
+            }
+            CricketLiveEvent::InningsEnd(end) => {
+                if let Some(current) = score.innings.last_mut() {
+                    current.declared = matches!(end.reason, InningsEndReason::Declared);
+                }
+                score.recent_deliveries = None;
+                score.next_ball_context = None;
+                score.awaiting_next_innings = Some(true);
+            }
+        }
+    }
+
+    /// Compares summed match totals (two-innings formats add up both).
+    fn winner(score: &CricketScore, side_ids: &[String]) -> Option<String> {
+        let mut totals: HashMap<&str, u32> = HashMap::new();
+        for i in &score.innings {
+            *totals.entry(i.batting_side_id.as_str()).or_insert(0) += i.runs;
+        }
+        crate::two_side_winner(side_ids, |sid| *totals.get(sid).unwrap_or(&0) as i64)
+    }
+
+    fn side_ids(score: &CricketScore) -> Vec<&str> {
+        score
+            .innings
+            .iter()
+            .flat_map(|i| [i.batting_side_id.as_str(), i.bowling_side_id.as_str()])
+            .collect()
+    }
+
+    /// `next_ball_context`'s striker, non-striker, bowler and previous-over
+    /// bowler; each innings' batting, bowling and fall-of-wicket entries (plus a
+    /// dismissal's bowler and fielder); and `recent_deliveries` (plus each
+    /// delivery's wicket).
+    fn player_ids(score: &CricketScore) -> Vec<String> {
+        let mut ids = Vec::new();
+        if let Some(ctx) = &score.next_ball_context {
+            ids.extend(ctx.striker_player_id.clone());
+            ids.extend(ctx.non_striker_player_id.clone());
+            ids.extend(ctx.bowler_player_id.clone());
+            ids.extend(ctx.previous_over_bowler_player_id.clone());
+        }
+        for innings in &score.innings {
+            for entry in innings.batting.iter().flatten() {
+                ids.push(entry.player_id.clone());
+                if let Some(d) = &entry.dismissal {
+                    ids.extend(d.bowler_player_id.clone());
+                    ids.extend(d.fielder_player_id.clone());
+                }
+            }
+            for entry in innings.bowling.iter().flatten() {
+                ids.push(entry.player_id.clone());
+            }
+            for fow in innings.fall_of_wickets.iter().flatten() {
+                ids.push(fow.player_id.clone());
+            }
+        }
+        for delivery in score.recent_deliveries.iter().flatten() {
+            ids.push(delivery.bowler_player_id.clone());
+            ids.push(delivery.striker_player_id.clone());
+            ids.push(delivery.non_striker_player_id.clone());
+            if let Some(w) = &delivery.wicket {
+                ids.push(w.dismissed_player_id.clone());
+                ids.extend(w.bowler_player_id.clone());
+                ids.extend(w.fielder_player_id.clone());
+            }
+        }
+        ids
+    }
+
+    fn resolve_ids(
+        s: &CricketScore,
+        side_ids: &HashMap<String, String>,
+        player_ids: &HashMap<String, String>,
+    ) -> Option<CricketScore> {
+        let map = |client_id: &str| side_ids.get(client_id).cloned();
+        let pmap = |client_id: &str| player_ids.get(client_id).cloned();
+        let pmap_opt = |id: &Option<String>| -> Option<Option<String>> {
+            match id {
+                Some(id) => pmap(id).map(Some),
+                None => Some(None),
+            }
+        };
+
+        let mut innings = Vec::with_capacity(s.innings.len());
+        for i in &s.innings {
+            let batting = match &i.batting {
+                Some(bs) => {
+                    let mut out = Vec::with_capacity(bs.len());
+                    for b in bs {
+                        let dismissal = match &b.dismissal {
+                            Some(d) => Some(CricketDismissal {
+                                kind: d.kind.clone(),
+                                bowler_player_id: pmap_opt(&d.bowler_player_id)?,
+                                fielder_player_id: pmap_opt(&d.fielder_player_id)?,
+                            }),
+                            None => None,
+                        };
+                        out.push(CricketBattingEntry {
+                            player_id: pmap(&b.player_id)?,
+                            runs: b.runs,
+                            balls_faced: b.balls_faced,
+                            fours: b.fours,
+                            sixes: b.sixes,
+                            dismissal,
+                            batting_position: b.batting_position,
+                        });
+                    }
+                    Some(out)
+                }
+                None => None,
+            };
+            let bowling = match &i.bowling {
+                Some(bs) => {
+                    let mut out = Vec::with_capacity(bs.len());
+                    for b in bs {
+                        out.push(CricketBowlingEntry {
+                            player_id: pmap(&b.player_id)?,
+                            overs: b.overs,
+                            maidens: b.maidens,
+                            runs_conceded: b.runs_conceded,
+                            wickets: b.wickets,
+                            wides: b.wides,
+                            no_balls: b.no_balls,
+                        });
+                    }
+                    Some(out)
+                }
+                None => None,
+            };
+            let fall_of_wickets = match &i.fall_of_wickets {
+                Some(fs) => {
+                    let mut out = Vec::with_capacity(fs.len());
+                    for f in fs {
+                        out.push(CricketFallOfWicket {
+                            wicket: f.wicket,
+                            runs: f.runs,
+                            player_id: pmap(&f.player_id)?,
+                            overs: f.overs,
+                        });
+                    }
+                    Some(out)
+                }
+                None => None,
+            };
+            innings.push(CricketScoreInnings {
+                batting_side_id: map(&i.batting_side_id)?,
+                bowling_side_id: map(&i.bowling_side_id)?,
+                runs: i.runs,
+                wickets: i.wickets,
+                overs: i.overs,
+                declared: i.declared,
+                batting,
+                bowling,
+                fall_of_wickets,
+                extras: i.extras.clone(),
+            });
+        }
+        let recent_deliveries = match &s.recent_deliveries {
+            Some(ds) => {
+                let mut out = Vec::with_capacity(ds.len());
+                for d in ds {
+                    out.push(CricketDelivery {
+                        over: d.over,
+                        ball: d.ball,
+                        bowler_player_id: pmap(&d.bowler_player_id)?,
+                        striker_player_id: pmap(&d.striker_player_id)?,
+                        non_striker_player_id: pmap(&d.non_striker_player_id)?,
+                        runs_off_bat: d.runs_off_bat,
+                        extra: d.extra.clone(),
+                        wicket: match &d.wicket {
+                            Some(w) => Some(CricketDeliveryWicket {
+                                kind: w.kind.clone(),
+                                dismissed_player_id: pmap(&w.dismissed_player_id)?,
+                                bowler_player_id: pmap_opt(&w.bowler_player_id)?,
+                                fielder_player_id: pmap_opt(&w.fielder_player_id)?,
+                            }),
+                            None => None,
+                        },
+                        occurred_at: d.occurred_at,
+                    });
+                }
+                Some(out)
+            }
+            None => None,
+        };
+        let next_ball_context = match &s.next_ball_context {
+            Some(ctx) => Some(NextBallContext {
+                striker_player_id: pmap_opt(&ctx.striker_player_id)?,
+                non_striker_player_id: pmap_opt(&ctx.non_striker_player_id)?,
+                bowler_player_id: pmap_opt(&ctx.bowler_player_id)?,
+                over: ctx.over,
+                ball: ctx.ball,
+                previous_over_bowler_player_id: pmap_opt(&ctx.previous_over_bowler_player_id)?,
+                runs_conceded_this_over: ctx.runs_conceded_this_over,
+            }),
+            None => None,
+        };
+        Some(CricketScore {
+            innings,
+            recent_deliveries,
+            next_ball_context,
+            awaiting_next_innings: s.awaiting_next_innings,
+            players: HashMap::new(),
+        })
+    }
+
+    fn set_players(
+        score: &mut CricketScore,
+        resolved: HashMap<String, crate::RosterPreviewPlayer>,
+    ) {
+        score.players = resolved;
+    }
+
+    fn score_to_record(s: &CricketScore) -> CricketScoreRecord {
+        CricketScoreRecord {
+            innings: s.innings.iter().map(score_innings_to_record).collect(),
+            recent_deliveries: s
+                .recent_deliveries
+                .as_ref()
+                .map(|ds| ds.iter().map(delivery_to_record).collect()),
+            next_ball_context: s
+                .next_ball_context
+                .as_ref()
+                .map(next_ball_context_to_record),
+            awaiting_next_innings: s.awaiting_next_innings,
+        }
+    }
+
+    fn score_from_record(rec: &CricketScoreRecord) -> CricketScore {
+        CricketScore {
+            innings: rec.innings.iter().map(score_innings_from_record).collect(),
+            recent_deliveries: rec
+                .recent_deliveries
+                .as_ref()
+                .map(|ds| ds.iter().map(delivery_from_record).collect()),
+            next_ball_context: rec
+                .next_ball_context
+                .as_ref()
+                .map(next_ball_context_from_record),
+            awaiting_next_innings: rec.awaiting_next_innings,
+            // Not stored — `Api::hydrate_score_players` fills this afterward (see
+            // `CricketScore::players`' doc comment).
+            players: HashMap::new(),
+        }
+    }
+
+    fn format_to_record(f: &CricketFormat) -> CricketFormatRecord {
+        CricketFormatRecord {
+            overs_per_innings: f.overs_per_innings,
+            innings_per_side: f.innings_per_side,
+            balls_per_over: f.balls_per_over,
+            no_ball_penalty_runs: f.no_ball_penalty_runs,
+            wide_penalty_runs: f.wide_penalty_runs,
+            wide_is_extra_ball: f.wide_is_extra_ball,
+            no_ball_is_extra_ball: f.no_ball_is_extra_ball,
+            free_hit_after_no_ball: f.free_hit_after_no_ball,
+        }
+    }
+
+    fn format_from_record(f: &CricketFormatRecord) -> CricketFormat {
+        CricketFormat {
+            overs_per_innings: f.overs_per_innings,
+            innings_per_side: f.innings_per_side,
+            balls_per_over: f.balls_per_over,
+            no_ball_penalty_runs: f.no_ball_penalty_runs,
+            wide_penalty_runs: f.wide_penalty_runs,
+            wide_is_extra_ball: f.wide_is_extra_ball,
+            no_ball_is_extra_ball: f.no_ball_is_extra_ball,
+            free_hit_after_no_ball: f.free_hit_after_no_ball,
+        }
+    }
+
+    fn live_event_to_record(event: &CricketLiveEvent) -> CricketLiveEventRecord {
+        match event {
+            CricketLiveEvent::Delivery(d) => {
+                CricketLiveEventRecord::Delivery(delivery_to_record(d))
+            }
+            CricketLiveEvent::Retire(r) => {
+                CricketLiveEventRecord::Retire(CricketRetireEventRecord {
+                    batter_player_id: r.batter_player_id.clone(),
+                    retired_out: r.retired_out,
+                })
+            }
+            CricketLiveEvent::InningsStart(s) => {
+                CricketLiveEventRecord::InningsStart(CricketInningsStartEventRecord {
+                    batting_side_id: s.batting_side_id.clone(),
+                    bowling_side_id: s.bowling_side_id.clone(),
+                })
+            }
+            CricketLiveEvent::InningsEnd(e) => {
+                CricketLiveEventRecord::InningsEnd(CricketInningsEndEventRecord {
+                    reason: innings_end_reason_to_record(&e.reason),
+                })
+            }
+        }
+    }
+
+    fn live_event_from_record(rec: &CricketLiveEventRecord) -> CricketLiveEvent {
+        match rec {
+            CricketLiveEventRecord::Delivery(d) => {
+                CricketLiveEvent::Delivery(delivery_from_record(d))
+            }
+            CricketLiveEventRecord::Retire(r) => CricketLiveEvent::Retire(CricketRetireEvent {
+                batter_player_id: r.batter_player_id.clone(),
+                retired_out: r.retired_out,
+            }),
+            CricketLiveEventRecord::InningsStart(s) => {
+                CricketLiveEvent::InningsStart(CricketInningsStartEvent {
+                    batting_side_id: s.batting_side_id.clone(),
+                    bowling_side_id: s.bowling_side_id.clone(),
+                })
+            }
+            CricketLiveEventRecord::InningsEnd(e) => {
+                CricketLiveEvent::InningsEnd(CricketInningsEndEvent {
+                    reason: innings_end_reason_from_record(&e.reason),
+                })
+            }
+        }
+    }
+
+    fn stats_from_record(rec: &CricketStatsRecord) -> CricketPlayerStats {
+        let strike_rate =
+            (rec.balls_faced > 0).then(|| (rec.runs as f32 / rec.balls_faced as f32) * 100.0);
+        let batting_average = (rec.dismissals > 0).then(|| rec.runs as f32 / rec.dismissals as f32);
+        let economy = (rec.balls_bowled > 0)
+            .then(|| rec.runs_conceded as f32 / (rec.balls_bowled as f32 / 6.0));
+        CricketPlayerStats {
+            common: generic_stats_from_record(&rec.common),
+            runs: rec.runs as i32,
+            wickets: rec.wickets as i32,
+            fours: rec.fours as i32,
+            sixes: rec.sixes as i32,
+            balls_faced: rec.balls_faced as i32,
+            dismissals: rec.dismissals as i32,
+            catches: rec.catches as i32,
+            runs_conceded: rec.runs_conceded as i32,
+            overs_bowled: balls_to_overs(rec.balls_bowled as u32, 6),
+            strike_rate,
+            batting_average,
+            economy,
+            best_runs: rec.best_runs.as_ref().map(best_figure_from_record),
+            best_bowling: rec.best_bowling.as_ref().map(best_bowling_from_record),
+        }
+    }
+}
+
+// ---- API types ----------------------------------------------------------
 
 #[derive(Object, Clone)]
 pub struct CricketFormat {
@@ -405,7 +863,7 @@ pub(crate) struct CricketScore {
     /// instead of scanning `Match.players`, which a feed/search card's
     /// trimmed match type doesn't carry at all. Resolved separately from
     /// everything else on this type: `score_from_record`/
-    /// `CricketScore::from_events` (the DAO-only paths) always leave this
+    /// `Sport::from_events` (the DAO-only paths) always leave this
     /// empty, since neither has access to player records;
     /// `Api::hydrate_score_players` fills it afterward with one targeted
     /// `Dao::batch_get_match_players` lookup for exactly the ids this score
@@ -460,10 +918,6 @@ pub struct CricketInningsEndEvent {
     pub reason: InningsEndReason,
 }
 
-// ===========================================================================
-// Event-log fold (formerly `live_score::cricket`).
-// ===========================================================================
-
 fn batter<'a>(
     batting: &'a mut Vec<CricketBattingEntry>,
     player_id: &str,
@@ -510,7 +964,7 @@ fn bowler<'a>(
 /// step: called once per new delivery on the append path, and repeatedly
 /// from `CricketScoreInnings::opening`/`NextBallContext::opening` to
 /// bootstrap or recover a `CricketScore` from the full event log (see
-/// `CricketScore::from_events`) — one implementation either way, so the two
+/// `Sport::from_events`) — one implementation either way, so the two
 /// paths can't disagree. The card fields (`batting`/`bowling`/`extras`/
 /// `fall_of_wickets`) are always `Some` by the time this runs — `opening()`
 /// populates them empty rather than `None` — but every access still goes
@@ -681,440 +1135,21 @@ fn apply_delivery(
     }
 }
 
-impl CricketScore {
-    /// Folds the whole event log into a `CricketScore` from scratch — the
-    /// slow path, used to bootstrap a match's first score, recover from a
-    /// missing/unparseable cache, or rebuild after undoing the last event.
-    /// Just `apply_event` run once per event in order; the fast
-    /// (single-event) and slow (whole-log) paths share the exact same fold,
-    /// so they can't disagree.
-    fn from_events(
-        events: &[(chrono::DateTime<chrono::Utc>, CricketLiveEvent)],
-        balls_per_over: u32,
-        wide_is_extra_ball: bool,
-        no_ball_is_extra_ball: bool,
-    ) -> Self {
-        let mut score = CricketScore {
-            innings: Vec::new(),
-            recent_deliveries: None,
-            next_ball_context: None,
-            awaiting_next_innings: Some(true),
-            players: HashMap::new(),
-        };
-        for (occurred_at, event) in events {
-            score.apply_event(
-                *occurred_at,
-                event,
-                balls_per_over,
-                wide_is_extra_ball,
-                no_ball_is_extra_ball,
-            );
-        }
-        score
-    }
-
-    /// Folds one new event into this score in place — the fast path, run
-    /// on every append. `occurred_at` (not `recorded_at`) is threaded
-    /// through separately from `event`, same reasoning as
-    /// `crate::sports::football::FootballScore::apply_event` — only
-    /// `Delivery` reads it (see `CricketDelivery::occurred_at`'s doc
-    /// comment); every other variant ignores it, same as before this
-    /// parameter existed.
-    fn apply_event(
-        &mut self,
-        occurred_at: chrono::DateTime<chrono::Utc>,
-        event: &CricketLiveEvent,
-        balls_per_over: u32,
-        wide_is_extra_ball: bool,
-        no_ball_is_extra_ball: bool,
-    ) {
-        match event {
-            CricketLiveEvent::InningsStart(start) => {
-                self.innings.push(CricketScoreInnings::opening(
-                    start.batting_side_id.clone(),
-                    start.bowling_side_id.clone(),
-                ));
-                self.recent_deliveries = Some(Vec::new());
-                self.next_ball_context = Some(NextBallContext::opening());
-                self.awaiting_next_innings = Some(false);
-            }
-            CricketLiveEvent::Delivery(d) => {
-                let Some(current) = self.innings.last_mut() else {
-                    // A delivery with no open innings is malformed input —
-                    // there's nothing to fold it into.
-                    return;
-                };
-                let context = self
-                    .next_ball_context
-                    .clone()
-                    .unwrap_or_else(NextBallContext::opening);
-                let next_context = apply_delivery(
-                    current,
-                    &context,
-                    d,
-                    balls_per_over,
-                    wide_is_extra_ball,
-                    no_ball_is_extra_ball,
-                );
-                self.next_ball_context = Some(next_context);
-
-                // Stamp with the envelope's own `occurred_at` before storing
-                // — see `CricketDelivery::occurred_at`'s doc comment. Stats
-                // are already folded above off the un-stamped `d`, so this
-                // only affects what gets stored/returned.
-                let mut d = d.clone();
-                d.occurred_at = Some(occurred_at);
-                let deliveries = self.recent_deliveries.get_or_insert_with(Vec::new);
-                deliveries.push(d);
-                if deliveries.len() > RECENT_DELIVERIES_LIMIT {
-                    deliveries.remove(0);
-                }
-            }
-            CricketLiveEvent::Retire(r) => {
-                let Some(current) = self.innings.last_mut() else {
-                    return;
-                };
-                let Some(entry) = current
-                    .batting
-                    .get_or_insert_with(Vec::new)
-                    .iter_mut()
-                    .find(|b| b.player_id == r.batter_player_id)
-                else {
-                    // Retired without ever facing a ball — no batting-card
-                    // row exists yet to annotate. Rare enough not to
-                    // synthesize one.
-                    return;
-                };
-                if entry.dismissal.is_some() {
-                    // A later real dismissal (from a delivery) always takes
-                    // precedence over an earlier retirement note — and by
-                    // the time we're processing events in order, that's
-                    // already reflected here.
-                    return;
-                }
-                entry.dismissal = Some(CricketDismissal {
-                    kind: if r.retired_out {
-                        CricketDismissalKind::RetiredOut
-                    } else {
-                        CricketDismissalKind::RetiredHurt
-                    },
-                    bowler_player_id: None,
-                    fielder_player_id: None,
-                });
-                if r.retired_out {
-                    current.wickets += 1;
-                    current.fall_of_wickets.get_or_insert_with(Vec::new).push(
-                        CricketFallOfWicket {
-                            wicket: current.wickets,
-                            runs: current.runs,
-                            player_id: r.batter_player_id.clone(),
-                            overs: Some(current.overs),
-                        },
-                    );
-                }
-                if let Some(ctx) = &mut self.next_ball_context {
-                    if ctx.striker_player_id.as_deref() == Some(r.batter_player_id.as_str()) {
-                        ctx.striker_player_id = None;
-                    } else if ctx.non_striker_player_id.as_deref()
-                        == Some(r.batter_player_id.as_str())
-                    {
-                        ctx.non_striker_player_id = None;
-                    }
-                }
-            }
-            CricketLiveEvent::InningsEnd(end) => {
-                if let Some(current) = self.innings.last_mut() {
-                    current.declared = matches!(end.reason, InningsEndReason::Declared);
-                }
-                self.recent_deliveries = None;
-                self.next_ball_context = None;
-                self.awaiting_next_innings = Some(true);
-            }
-        }
-    }
-}
-
 /// A cricket match's configured over length and extra-ball rules — standard
 /// rules (a 6-ball over, wides/no-balls re-bowled as extras) unless the match
 /// configured something else (e.g. The Hundred's 5-ball over). The only
 /// pieces of match format the DAO-agnostic scoring math actually needs, so
 /// callers thread these three through as plain arguments rather than the
 /// whole format.
-pub fn format_args(
-    format: Option<&agon_core::dao::records::MatchFormatRecord>,
-) -> (u32, bool, bool) {
-    match format {
-        Some(agon_core::dao::records::MatchFormatRecord::Cricket(f)) => (
+fn format_args(format: Option<&CricketFormat>) -> (u32, bool, bool) {
+    format.map_or((6, true, true), |f| {
+        (
             f.balls_per_over,
             f.wide_is_extra_ball,
             f.no_ball_is_extra_ball,
-        ),
-        _ => (6, true, true),
-    }
-}
-
-/// Folds an ordered event log into a full `CricketScore` — see
-/// `crate::sports::football::from_events`'s doc comment for the uniform
-/// signature every sport's `from_events` shares. Cricket is the one sport
-/// that actually needs `format` here, for `format_args`' over-length/
-/// extra-ball rules.
-pub fn from_events(
-    events: &[(chrono::DateTime<chrono::Utc>, CricketLiveEvent)],
-    format: Option<&agon_core::dao::records::MatchFormatRecord>,
-) -> CricketScore {
-    let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) = format_args(format);
-    CricketScore::from_events(
-        events,
-        balls_per_over,
-        wide_is_extra_ball,
-        no_ball_is_extra_ball,
-    )
-}
-
-/// The incremental fast path for a live-scoring append — see
-/// `crate::sports::netball::apply_new_events`'s doc comment. Unlike
-/// football/netball, cricket's fold genuinely needs `format` (via
-/// `format_args`) to thread `balls_per_over`/the extra-ball rules through.
-pub fn apply_new_events(
-    score: &mut CricketScore,
-    new_events: &[NewLiveEventInput],
-    format: Option<&agon_core::dao::records::MatchFormatRecord>,
-) -> Option<()> {
-    let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) = format_args(format);
-    for e in new_events {
-        let crate::live_score::LiveEventInput::Cricket(event) = &e.event else {
-            return None;
-        };
-        score.apply_event(
-            e.occurred_at,
-            event,
-            balls_per_over,
-            wide_is_extra_ball,
-            no_ball_is_extra_ball,
-        );
-    }
-    Some(())
-}
-
-// ===========================================================================
-// Generic-`Score`-dispatch helpers (formerly per-sport arms scattered across
-// `main.rs`).
-// ===========================================================================
-
-/// This score's side ids, for validating a submitted score references only
-/// sides that actually exist on the match.
-pub fn side_ids(score: &CricketScore) -> Vec<&str> {
-    score
-        .innings
-        .iter()
-        .flat_map(|i| [i.batting_side_id.as_str(), i.bowling_side_id.as_str()])
-        .collect()
-}
-
-/// Re-point a `CricketScore`'s request-scoped client ids to the real side/
-/// player ids assigned at creation — see `crate::sports::netball::resolve_ids`'s
-/// doc comment. `None` if any referenced side or player is unknown.
-pub fn resolve_ids(
-    s: &CricketScore,
-    side_ids: &HashMap<String, String>,
-    player_ids: &HashMap<String, String>,
-) -> Option<CricketScore> {
-    let map = |client_id: &str| side_ids.get(client_id).cloned();
-    let pmap = |client_id: &str| player_ids.get(client_id).cloned();
-    let pmap_opt = |id: &Option<String>| -> Option<Option<String>> {
-        match id {
-            Some(id) => pmap(id).map(Some),
-            None => Some(None),
-        }
-    };
-
-    let mut innings = Vec::with_capacity(s.innings.len());
-    for i in &s.innings {
-        let batting = match &i.batting {
-            Some(bs) => {
-                let mut out = Vec::with_capacity(bs.len());
-                for b in bs {
-                    let dismissal = match &b.dismissal {
-                        Some(d) => Some(CricketDismissal {
-                            kind: d.kind.clone(),
-                            bowler_player_id: pmap_opt(&d.bowler_player_id)?,
-                            fielder_player_id: pmap_opt(&d.fielder_player_id)?,
-                        }),
-                        None => None,
-                    };
-                    out.push(CricketBattingEntry {
-                        player_id: pmap(&b.player_id)?,
-                        runs: b.runs,
-                        balls_faced: b.balls_faced,
-                        fours: b.fours,
-                        sixes: b.sixes,
-                        dismissal,
-                        batting_position: b.batting_position,
-                    });
-                }
-                Some(out)
-            }
-            None => None,
-        };
-        let bowling = match &i.bowling {
-            Some(bs) => {
-                let mut out = Vec::with_capacity(bs.len());
-                for b in bs {
-                    out.push(CricketBowlingEntry {
-                        player_id: pmap(&b.player_id)?,
-                        overs: b.overs,
-                        maidens: b.maidens,
-                        runs_conceded: b.runs_conceded,
-                        wickets: b.wickets,
-                        wides: b.wides,
-                        no_balls: b.no_balls,
-                    });
-                }
-                Some(out)
-            }
-            None => None,
-        };
-        let fall_of_wickets = match &i.fall_of_wickets {
-            Some(fs) => {
-                let mut out = Vec::with_capacity(fs.len());
-                for f in fs {
-                    out.push(CricketFallOfWicket {
-                        wicket: f.wicket,
-                        runs: f.runs,
-                        player_id: pmap(&f.player_id)?,
-                        overs: f.overs,
-                    });
-                }
-                Some(out)
-            }
-            None => None,
-        };
-        innings.push(CricketScoreInnings {
-            batting_side_id: map(&i.batting_side_id)?,
-            bowling_side_id: map(&i.bowling_side_id)?,
-            runs: i.runs,
-            wickets: i.wickets,
-            overs: i.overs,
-            declared: i.declared,
-            batting,
-            bowling,
-            fall_of_wickets,
-            extras: i.extras.clone(),
-        });
-    }
-    let recent_deliveries = match &s.recent_deliveries {
-        Some(ds) => {
-            let mut out = Vec::with_capacity(ds.len());
-            for d in ds {
-                out.push(CricketDelivery {
-                    over: d.over,
-                    ball: d.ball,
-                    bowler_player_id: pmap(&d.bowler_player_id)?,
-                    striker_player_id: pmap(&d.striker_player_id)?,
-                    non_striker_player_id: pmap(&d.non_striker_player_id)?,
-                    runs_off_bat: d.runs_off_bat,
-                    extra: d.extra.clone(),
-                    wicket: match &d.wicket {
-                        Some(w) => Some(CricketDeliveryWicket {
-                            kind: w.kind.clone(),
-                            dismissed_player_id: pmap(&w.dismissed_player_id)?,
-                            bowler_player_id: pmap_opt(&w.bowler_player_id)?,
-                            fielder_player_id: pmap_opt(&w.fielder_player_id)?,
-                        }),
-                        None => None,
-                    },
-                    occurred_at: d.occurred_at,
-                });
-            }
-            Some(out)
-        }
-        None => None,
-    };
-    let next_ball_context = match &s.next_ball_context {
-        Some(ctx) => Some(NextBallContext {
-            striker_player_id: pmap_opt(&ctx.striker_player_id)?,
-            non_striker_player_id: pmap_opt(&ctx.non_striker_player_id)?,
-            bowler_player_id: pmap_opt(&ctx.bowler_player_id)?,
-            over: ctx.over,
-            ball: ctx.ball,
-            previous_over_bowler_player_id: pmap_opt(&ctx.previous_over_bowler_player_id)?,
-            runs_conceded_this_over: ctx.runs_conceded_this_over,
-        }),
-        None => None,
-    };
-    Some(CricketScore {
-        innings,
-        recent_deliveries,
-        next_ball_context,
-        awaiting_next_innings: s.awaiting_next_innings,
-        players: HashMap::new(),
+        )
     })
 }
-
-/// Set this score's resolved-players map (see `Api::hydrate_score_players`).
-pub fn set_players(
-    score: &mut CricketScore,
-    resolved: HashMap<String, crate::RosterPreviewPlayer>,
-) {
-    score.players = resolved;
-}
-
-/// Every player id referenced in a `CricketScore`: `next_ball_context`'s
-/// striker/non-striker/bowler/previous-over-bowler, each innings' batting/
-/// bowling/fall-of-wicket entries (plus a batting entry's dismissal bowler/
-/// fielder), and `recent_deliveries` (plus each delivery's wicket). May
-/// repeat the same id many times over (e.g. a bowler across several
-/// deliveries) — deduped downstream by `Dao::batch_get_match_players`.
-pub fn player_ids(score: &CricketScore) -> Vec<String> {
-    let mut ids = Vec::new();
-    if let Some(ctx) = &score.next_ball_context {
-        ids.extend(ctx.striker_player_id.clone());
-        ids.extend(ctx.non_striker_player_id.clone());
-        ids.extend(ctx.bowler_player_id.clone());
-        ids.extend(ctx.previous_over_bowler_player_id.clone());
-    }
-    for innings in &score.innings {
-        for entry in innings.batting.iter().flatten() {
-            ids.push(entry.player_id.clone());
-            if let Some(d) = &entry.dismissal {
-                ids.extend(d.bowler_player_id.clone());
-                ids.extend(d.fielder_player_id.clone());
-            }
-        }
-        for entry in innings.bowling.iter().flatten() {
-            ids.push(entry.player_id.clone());
-        }
-        for fow in innings.fall_of_wickets.iter().flatten() {
-            ids.push(fow.player_id.clone());
-        }
-    }
-    for delivery in score.recent_deliveries.iter().flatten() {
-        ids.push(delivery.bowler_player_id.clone());
-        ids.push(delivery.striker_player_id.clone());
-        ids.push(delivery.non_striker_player_id.clone());
-        if let Some(w) = &delivery.wicket {
-            ids.push(w.dismissed_player_id.clone());
-            ids.extend(w.bowler_player_id.clone());
-            ids.extend(w.fielder_player_id.clone());
-        }
-    }
-    ids
-}
-
-/// Derives the winner (when decidable) from a live-scored cricket match's
-/// persisted score — the summed match totals (two-innings formats add up
-/// both).
-pub fn winner(score: &CricketScore, side_ids: &[String]) -> Option<String> {
-    let mut totals: HashMap<&str, u32> = HashMap::new();
-    for i in &score.innings {
-        *totals.entry(i.batting_side_id.as_str()).or_insert(0) += i.runs;
-    }
-    crate::two_side_winner(side_ids, |sid| *totals.get(sid).unwrap_or(&0) as i64)
-}
-
-// ===========================================================================
-// Stats (a user's lifetime cricket totals, `UserStats::cricket`).
-// ===========================================================================
 
 /// A personal-best single-match bowling spell: most wickets taken, plus the
 /// runs conceded and overs bowled in that same spell — e.g. "5 wickets for
@@ -1173,31 +1208,6 @@ pub struct CricketPlayerStats {
     pub best_bowling: Option<BestBowlingFigures>,
 }
 
-pub fn stats_from_record(rec: &CricketStatsRecord) -> CricketPlayerStats {
-    let strike_rate =
-        (rec.balls_faced > 0).then(|| (rec.runs as f32 / rec.balls_faced as f32) * 100.0);
-    let batting_average = (rec.dismissals > 0).then(|| rec.runs as f32 / rec.dismissals as f32);
-    let economy =
-        (rec.balls_bowled > 0).then(|| rec.runs_conceded as f32 / (rec.balls_bowled as f32 / 6.0));
-    CricketPlayerStats {
-        common: generic_stats_from_record(&rec.common),
-        runs: rec.runs as i32,
-        wickets: rec.wickets as i32,
-        fours: rec.fours as i32,
-        sixes: rec.sixes as i32,
-        balls_faced: rec.balls_faced as i32,
-        dismissals: rec.dismissals as i32,
-        catches: rec.catches as i32,
-        runs_conceded: rec.runs_conceded as i32,
-        overs_bowled: balls_to_overs(rec.balls_bowled as u32, 6),
-        strike_rate,
-        batting_average,
-        economy,
-        best_runs: rec.best_runs.as_ref().map(best_figure_from_record),
-        best_bowling: rec.best_bowling.as_ref().map(best_bowling_from_record),
-    }
-}
-
 fn best_bowling_from_record(b: &BestBowlingFiguresRecord) -> BestBowlingFigures {
     BestBowlingFigures {
         wickets: b.wickets as i32,
@@ -1209,68 +1219,7 @@ fn best_bowling_from_record(b: &BestBowlingFiguresRecord) -> BestBowlingFigures 
     }
 }
 
-// ===========================================================================
-// API<->DAO mapping.
-// ===========================================================================
-
-pub fn score_to_record(s: &CricketScore) -> CricketScoreRecord {
-    CricketScoreRecord {
-        innings: s.innings.iter().map(score_innings_to_record).collect(),
-        recent_deliveries: s
-            .recent_deliveries
-            .as_ref()
-            .map(|ds| ds.iter().map(delivery_to_record).collect()),
-        next_ball_context: s
-            .next_ball_context
-            .as_ref()
-            .map(next_ball_context_to_record),
-        awaiting_next_innings: s.awaiting_next_innings,
-    }
-}
-
-pub fn score_from_record(rec: &CricketScoreRecord) -> CricketScore {
-    CricketScore {
-        innings: rec.innings.iter().map(score_innings_from_record).collect(),
-        recent_deliveries: rec
-            .recent_deliveries
-            .as_ref()
-            .map(|ds| ds.iter().map(delivery_from_record).collect()),
-        next_ball_context: rec
-            .next_ball_context
-            .as_ref()
-            .map(next_ball_context_from_record),
-        awaiting_next_innings: rec.awaiting_next_innings,
-        // Not stored — `Api::hydrate_score_players` fills this afterward (see
-        // `CricketScore::players`' doc comment).
-        players: HashMap::new(),
-    }
-}
-
-pub fn format_to_record(f: &CricketFormat) -> CricketFormatRecord {
-    CricketFormatRecord {
-        overs_per_innings: f.overs_per_innings,
-        innings_per_side: f.innings_per_side,
-        balls_per_over: f.balls_per_over,
-        no_ball_penalty_runs: f.no_ball_penalty_runs,
-        wide_penalty_runs: f.wide_penalty_runs,
-        wide_is_extra_ball: f.wide_is_extra_ball,
-        no_ball_is_extra_ball: f.no_ball_is_extra_ball,
-        free_hit_after_no_ball: f.free_hit_after_no_ball,
-    }
-}
-
-pub fn format_from_record(f: &CricketFormatRecord) -> CricketFormat {
-    CricketFormat {
-        overs_per_innings: f.overs_per_innings,
-        innings_per_side: f.innings_per_side,
-        balls_per_over: f.balls_per_over,
-        no_ball_penalty_runs: f.no_ball_penalty_runs,
-        wide_penalty_runs: f.wide_penalty_runs,
-        wide_is_extra_ball: f.wide_is_extra_ball,
-        no_ball_is_extra_ball: f.no_ball_is_extra_ball,
-        free_hit_after_no_ball: f.free_hit_after_no_ball,
-    }
-}
+// ---- Record mapping helpers ---------------------------------------------
 
 fn overs_to_record(overs: &Overs) -> OversRecord {
     OversRecord {
@@ -1586,48 +1535,6 @@ fn innings_end_reason_from_record(rec: &InningsEndReasonRecord) -> InningsEndRea
     }
 }
 
-pub fn live_event_to_record(event: &CricketLiveEvent) -> CricketLiveEventRecord {
-    match event {
-        CricketLiveEvent::Delivery(d) => CricketLiveEventRecord::Delivery(delivery_to_record(d)),
-        CricketLiveEvent::Retire(r) => CricketLiveEventRecord::Retire(CricketRetireEventRecord {
-            batter_player_id: r.batter_player_id.clone(),
-            retired_out: r.retired_out,
-        }),
-        CricketLiveEvent::InningsStart(s) => {
-            CricketLiveEventRecord::InningsStart(CricketInningsStartEventRecord {
-                batting_side_id: s.batting_side_id.clone(),
-                bowling_side_id: s.bowling_side_id.clone(),
-            })
-        }
-        CricketLiveEvent::InningsEnd(e) => {
-            CricketLiveEventRecord::InningsEnd(CricketInningsEndEventRecord {
-                reason: innings_end_reason_to_record(&e.reason),
-            })
-        }
-    }
-}
-
-pub fn live_event_from_record(rec: &CricketLiveEventRecord) -> CricketLiveEvent {
-    match rec {
-        CricketLiveEventRecord::Delivery(d) => CricketLiveEvent::Delivery(delivery_from_record(d)),
-        CricketLiveEventRecord::Retire(r) => CricketLiveEvent::Retire(CricketRetireEvent {
-            batter_player_id: r.batter_player_id.clone(),
-            retired_out: r.retired_out,
-        }),
-        CricketLiveEventRecord::InningsStart(s) => {
-            CricketLiveEvent::InningsStart(CricketInningsStartEvent {
-                batting_side_id: s.batting_side_id.clone(),
-                bowling_side_id: s.bowling_side_id.clone(),
-            })
-        }
-        CricketLiveEventRecord::InningsEnd(e) => {
-            CricketLiveEvent::InningsEnd(CricketInningsEndEvent {
-                reason: innings_end_reason_from_record(&e.reason),
-            })
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use chrono::{DateTime, TimeZone, Utc};
@@ -1661,15 +1568,15 @@ mod tests {
 
     /// Most tests only care about the fold's result, not real timestamps —
     /// this pairs each event with a synthetic, strictly increasing one so
-    /// `from_events` (which now always wants a timestamp — see
-    /// `CricketScore::apply_event`) has something to thread through.
+    /// `from_events` (which wants a timestamp — see
+    /// `Sport::apply_event`) has something to thread through.
     fn score(events: &[CricketLiveEvent]) -> CricketScore {
         let timed: Vec<_> = events
             .iter()
             .enumerate()
             .map(|(i, e)| (ts(i as i64), e.clone()))
             .collect();
-        CricketScore::from_events(&timed, 6, true, true)
+        Cricket::from_events(&timed, None)
     }
 
     #[test]
@@ -1688,7 +1595,7 @@ mod tests {
             ),
         ];
 
-        let d = CricketScore::from_events(&events, 6, true, true);
+        let d = Cricket::from_events(&events, None);
 
         assert_eq!(
             d.recent_deliveries.as_ref().unwrap()[0].occurred_at,
@@ -2031,7 +1938,7 @@ mod tests {
             .map(|(i, e)| (ts(i as i64), e))
             .collect();
 
-        let full = CricketScore::from_events(&events, 6, true, true);
+        let full = Cricket::from_events(&events, None);
 
         // Apply the same events one at a time, incrementally, and check the
         // final state matches the full fold exactly.
@@ -2043,7 +1950,7 @@ mod tests {
             players: HashMap::new(),
         };
         for (occurred_at, event) in &events {
-            incremental.apply_event(*occurred_at, event, 6, true, true);
+            Cricket::apply_event(&mut incremental, *occurred_at, event, None);
         }
 
         assert_eq!(incremental.innings.len(), full.innings.len());

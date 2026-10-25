@@ -33,6 +33,9 @@ use crate::{
     ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
 };
 use agon_core::dao::error::DaoError;
+use agon_core::sports::SportRecord;
+
+use crate::sports::Sport;
 use agon_core::dao::live_score_ops::NewLiveEvent;
 use agon_core::dao::records::{
     BestFigureRecord, CommentRecord, ConfirmedScoreRecord, DevicePlatform as DevicePlatformRecord,
@@ -69,30 +72,20 @@ pub fn dao_internal(err: DaoError) -> poem::Error {
     InternalServerError(err)
 }
 
-/// x-macro template for `agon_sports!` (see `crate::sports`'s doc comment):
-/// every `MatchType`/`Score`/`MatchFormat`/`LiveEventInput` conversion and
-/// sport-tag/dispatch function this boundary layer needs, generated from the
-/// shared sport list in one place. This is the function-level counterpart to
-/// the type-level macros in `main.rs`/`match_format.rs`/`live_score/mod.rs` —
-/// together they're what used to be ~40 hand-written, easy-to-forget
-/// per-sport functions and match arms scattered through this file.
+/// Every `MatchType`/`Score`/`MatchFormat`/`LiveEventInput` conversion and
+/// per-sport dispatch the boundary layer needs, generated from the sport
+/// registry (`agon_core::for_each_sport!`). Each modeled sport's arm calls
+/// its `Sport` impl.
 macro_rules! define_sport_dispatch {
-    ($( $variant:ident {
-        tag: $tag:literal,
-        module: $module:ident,
-        score: $score:ty,
-        format: $format:ty,
-        live_event: $live_event:ty,
-        stats: $stats:ty $(,)?
-    } ),+ $(,)?) => {
+    (
+        modeled: [$( $variant:ident { tag: $tag:literal, key: $key:ident } ),+ $(,)?],
+        generic: [$( $gvariant:ident { tag: $gtag:literal, key: $gkey:ident, label: $glabel:literal } ),* $(,)?] $(,)?
+    ) => {
         /// Parse a stored sport tag into the API enum, defaulting unknown values
         /// rather than failing a read.
         pub fn match_type_from_tag(tag: &str) -> MatchType {
             match tag {
-                "tennis" => MatchType::Tennis,
-                "badminton" => MatchType::Badminton,
-                "squash" => MatchType::Squash,
-                "table_tennis" => MatchType::TableTennis,
+                $( $gtag => MatchType::$gvariant, )*
                 $( $tag => MatchType::$variant, )+
                 _ => MatchType::Other,
             }
@@ -101,10 +94,7 @@ macro_rules! define_sport_dispatch {
         /// The stored string tag for an API sport enum.
         pub fn match_type_tag(mt: &MatchType) -> &'static str {
             match mt {
-                MatchType::Tennis => "tennis",
-                MatchType::Badminton => "badminton",
-                MatchType::Squash => "squash",
-                MatchType::TableTennis => "table_tennis",
+                $( MatchType::$gvariant => $gtag, )*
                 $( MatchType::$variant => $tag, )+
                 MatchType::Other => "other",
             }
@@ -113,17 +103,14 @@ macro_rules! define_sport_dispatch {
         /// How a sport is named to people (e.g. share-card headings).
         pub fn match_type_label(mt: &MatchType) -> &'static str {
             match mt {
-                MatchType::Tennis => "Tennis",
-                MatchType::Badminton => "Badminton",
-                MatchType::Squash => "Squash",
-                MatchType::TableTennis => "Table Tennis",
-                $( MatchType::$variant => crate::sports::$module::LABEL, )+
+                $( MatchType::$gvariant => $glabel, )*
+                $( MatchType::$variant => <agon_core::sports::$key::$variant as SportRecord>::LABEL, )+
                 MatchType::Other => "Match",
             }
         }
 
-        /// Whether a stored sport tag is one of the fully-modeled sports —
-        /// the ones with a live event log and a persisted live score record.
+        /// Whether a stored sport tag is one of the modeled sports — the ones
+        /// with a live event log and a persisted live score record.
         pub fn is_live_scored_sport(tag: &str) -> bool {
             matches!(tag, $( $tag )|+)
         }
@@ -136,7 +123,7 @@ macro_rules! define_sport_dispatch {
                 ScoreRecord::Sets { entries } => Score::Sets(SetsScore {
                     entries: entries.clone(),
                 }),
-                $( ScoreRecord::$variant(r) => Score::$variant(crate::sports::$module::score_from_record(r)), )+
+                $( ScoreRecord::$variant(r) => Score::$variant(<agon_core::sports::$key::$variant as Sport>::score_from_record(r)), )+
             }
         }
 
@@ -148,7 +135,7 @@ macro_rules! define_sport_dispatch {
                 Score::Sets(s) => ScoreRecord::Sets {
                     entries: s.entries.clone(),
                 },
-                $( Score::$variant(s) => ScoreRecord::$variant(crate::sports::$module::score_to_record(s)), )+
+                $( Score::$variant(s) => ScoreRecord::$variant(<agon_core::sports::$key::$variant as Sport>::score_to_record(s)), )+
             }
         }
 
@@ -174,20 +161,18 @@ macro_rules! define_sport_dispatch {
 
         pub fn match_format_to_record(fmt: &MatchFormat) -> MatchFormatRecord {
             match fmt {
-                $( MatchFormat::$variant(f) => MatchFormatRecord::$variant(crate::sports::$module::format_to_record(f)), )+
+                $( MatchFormat::$variant(f) => MatchFormatRecord::$variant(<agon_core::sports::$key::$variant as Sport>::format_to_record(f)), )+
             }
         }
 
-        /// Build the API `MatchFormat` from a stored record. Infallible — `format`
-        /// is a typed DAO enum, not JSON, so there's no parse step that can fail.
+        /// Build the API `MatchFormat` from a stored record.
         pub fn match_format_from_record(rec: &MatchFormatRecord) -> MatchFormat {
             match rec {
-                $( MatchFormatRecord::$variant(f) => MatchFormat::$variant(crate::sports::$module::format_from_record(f)), )+
+                $( MatchFormatRecord::$variant(f) => MatchFormat::$variant(<agon_core::sports::$key::$variant as Sport>::format_from_record(f)), )+
             }
         }
 
-        /// The sport tag a `MatchFormat` is for, mirroring the union variant (same
-        /// convention as `live_event_sport_tag`) — used to reject a format that
+        /// The sport tag a `MatchFormat` is for — used to reject a format that
         /// doesn't match the match's own sport.
         pub fn match_format_sport_tag(fmt: &MatchFormat) -> &'static str {
             match fmt {
@@ -196,8 +181,7 @@ macro_rules! define_sport_dispatch {
         }
 
         /// The stored sport tag for a live event, mirroring the union variant so a
-        /// read can pick the right variant back out (same convention as
-        /// `match_score_to_record`).
+        /// read can pick the right variant back out.
         pub fn live_event_sport_tag(event: &LiveEventInput) -> &'static str {
             match event {
                 $( LiveEventInput::$variant(_) => $tag, )+
@@ -206,18 +190,18 @@ macro_rules! define_sport_dispatch {
 
         pub fn live_event_input_to_record(event: &LiveEventInput) -> LiveEventPayloadRecord {
             match event {
-                $( LiveEventInput::$variant(e) => LiveEventPayloadRecord::$variant(crate::sports::$module::live_event_to_record(e)), )+
+                $( LiveEventInput::$variant(e) => LiveEventPayloadRecord::$variant(<agon_core::sports::$key::$variant as Sport>::live_event_to_record(e)), )+
             }
         }
 
         pub fn live_event_payload_from_record(rec: &LiveEventPayloadRecord) -> LiveEventInput {
             match rec {
-                $( LiveEventPayloadRecord::$variant(e) => LiveEventInput::$variant(crate::sports::$module::live_event_from_record(e)), )+
+                $( LiveEventPayloadRecord::$variant(e) => LiveEventInput::$variant(<agon_core::sports::$key::$variant as Sport>::live_event_from_record(e)), )+
             }
         }
 
         /// Folds a match's live event log into its full detail. `None` if
-        /// `match_type` isn't a sport live scoring supports yet.
+        /// `match_type` isn't a modeled sport.
         ///
         /// `records` is whatever the DAO currently has on record, in seq order — a
         /// deleted event is already absent from it and an amended one already shows
@@ -230,17 +214,24 @@ macro_rules! define_sport_dispatch {
             match match_type {
                 $(
                     $tag => {
+                        type S = agon_core::sports::$key::$variant;
                         let events: Vec<_> = records
                             .iter()
                             .filter_map(|r| match &r.payload {
                                 LiveEventPayloadRecord::$variant(e) => Some((
                                     parse_ts(&r.occurred_at),
-                                    crate::sports::$module::live_event_from_record(e),
+                                    <S as Sport>::live_event_from_record(e),
                                 )),
+                                #[allow(unreachable_patterns)]
                                 _ => None,
                             })
                             .collect();
-                        Some(Score::$variant(crate::sports::$module::from_events(&events, format)))
+                        #[allow(unreachable_patterns)]
+                        let format = match format {
+                            Some(MatchFormatRecord::$variant(f)) => Some(<S as Sport>::format_from_record(f)),
+                            _ => None,
+                        };
+                        Some(Score::$variant(<S as Sport>::from_events(&events, format.as_ref())))
                     }
                 )+
                 _ => None,
@@ -252,11 +243,8 @@ macro_rules! define_sport_dispatch {
         /// DAO side.
         pub fn user_stats_from_record(stats: &UserStatsRecord) -> UserStats {
             UserStats {
-                $( $module: stats.$module.as_ref().map(crate::sports::$module::stats_from_record), )+
-                tennis: stats.tennis.as_ref().map(generic_stats_from_record),
-                badminton: stats.badminton.as_ref().map(generic_stats_from_record),
-                squash: stats.squash.as_ref().map(generic_stats_from_record),
-                table_tennis: stats.table_tennis.as_ref().map(generic_stats_from_record),
+                $( $key: stats.$key.as_ref().map(<agon_core::sports::$key::$variant as Sport>::stats_from_record), )+
+                $( $gkey: stats.$gkey.as_ref().map(generic_stats_from_record), )*
                 other: stats.other.as_ref().map(generic_stats_from_record),
             }
         }
@@ -267,7 +255,7 @@ macro_rules! define_sport_dispatch {
             match score {
                 Score::Simple(s) => s.entries.keys().map(|k| k.as_str()).collect(),
                 Score::Sets(s) => s.entries.keys().map(|k| k.as_str()).collect(),
-                $( Score::$variant(s) => crate::sports::$module::side_ids(s), )+
+                $( Score::$variant(s) => <agon_core::sports::$key::$variant as Sport>::side_ids(s), )+
             }
         }
 
@@ -299,7 +287,7 @@ macro_rules! define_sport_dispatch {
                 }
                 $(
                     Score::$variant(s) => Some(Score::$variant(
-                        crate::sports::$module::resolve_ids(s, side_ids, player_ids)?,
+                        <agon_core::sports::$key::$variant as Sport>::resolve_ids(s, side_ids, player_ids)?,
                     )),
                 )+
             }
@@ -309,37 +297,30 @@ macro_rules! define_sport_dispatch {
         /// for `Score::Simple`/`Score::Sets`, which have no such field.
         pub fn set_score_players(score: &mut Score, resolved: HashMap<String, RosterPreviewPlayer>) {
             match score {
-                $( Score::$variant(s) => crate::sports::$module::set_players(s, resolved), )+
+                $( Score::$variant(s) => <agon_core::sports::$key::$variant as Sport>::set_players(s, resolved), )+
                 Score::Simple(_) | Score::Sets(_) => {}
             }
         }
 
         /// Every player id referenced anywhere in a score — the set
-        /// `Api::hydrate_score_players` resolves names for. Empty (nothing to
-        /// resolve) for `Score::Simple`/`Score::Sets`, which don't reference
-        /// players by id at all.
+        /// `Api::hydrate_score_players` resolves names for. Empty for
+        /// `Score::Simple`/`Score::Sets`, which don't reference players.
         pub fn score_player_ids(score: &Score) -> Vec<String> {
             match score {
-                $( Score::$variant(s) => crate::sports::$module::player_ids(s), )+
+                $( Score::$variant(s) => <agon_core::sports::$key::$variant as Sport>::player_ids(s), )+
                 Score::Simple(_) | Score::Sets(_) => Vec::new(),
             }
         }
 
         /// Derives the winner (when decidable) from a live-scored match's
         /// persisted score — used by `update_match` to finish a live-scored
-        /// match without the client having to work out and resubmit a margin
-        /// the server already has enough to compute (see `LiveScoringPage`/
-        /// `CricketLiveScoringPage`'s `finishMatch`). `side_ids` is the match's
-        /// own two side ids, needed because a tally map only holds entries for
-        /// sides that are actually on the board — "absence means zero" — so the
-        /// winner comparison needs to know both ids to look up, not just
-        /// iterate whatever's present. `None` for `Score::Simple`/`Score::Sets`
-        /// — winner derivation for those sports isn't this function's job (the
-        /// client always supplies `winner_side_id` itself for a manual
-        /// entry/correction on those sports).
+        /// match without the client resubmitting a result the server can work
+        /// out. `side_ids` is the match's own two side ids. `None` for
+        /// `Score::Simple`/`Score::Sets`, where the client always supplies
+        /// `winner_side_id` itself.
         pub fn winner_from_score(score: &Score, side_ids: &[String]) -> Option<String> {
             match score {
-                $( Score::$variant(s) => crate::sports::$module::winner(s, side_ids), )+
+                $( Score::$variant(s) => <agon_core::sports::$key::$variant as Sport>::winner(s, side_ids), )+
                 Score::Simple(_) | Score::Sets(_) => None,
             }
         }
@@ -347,21 +328,38 @@ macro_rules! define_sport_dispatch {
         /// The incremental live-scoring fast path: folds `new_events` into
         /// `score` in place. `false` if they couldn't be applied — an event for
         /// a different sport than `score`'s (already rejected earlier in
-        /// `append_live_events`, so unreachable in practice), or a
-        /// `Simple`/`Sets` score (live scoring never creates one).
+        /// `append_live_events`), or a `Simple`/`Sets` score (live scoring
+        /// never creates one).
         pub fn apply_new_live_events(
             score: &mut Score,
             new_events: &[NewLiveEventInput],
             format: Option<&MatchFormatRecord>,
         ) -> bool {
             match score {
-                $( Score::$variant(s) => crate::sports::$module::apply_new_events(s, new_events, format).is_some(), )+
+                $(
+                    Score::$variant(s) => {
+                        type S = agon_core::sports::$key::$variant;
+                        #[allow(unreachable_patterns)]
+                        let format = match format {
+                            Some(MatchFormatRecord::$variant(f)) => Some(<S as Sport>::format_from_record(f)),
+                            _ => None,
+                        };
+                        for e in new_events {
+                            #[allow(unreachable_patterns)]
+                            let LiveEventInput::$variant(event) = &e.event else {
+                                return false;
+                            };
+                            <S as Sport>::apply_event(s, e.occurred_at, event, format.as_ref());
+                        }
+                        true
+                    }
+                )+
                 Score::Simple(_) | Score::Sets(_) => false,
             }
         }
     };
 }
-crate::agon_sports!(define_sport_dispatch);
+agon_core::for_each_sport!(define_sport_dispatch);
 
 /// The largest `max_players` at which a side with no team and no custom
 /// name is identified by its players' names ("Sam" or "Sam & Alex"). Past

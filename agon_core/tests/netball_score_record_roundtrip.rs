@@ -1,23 +1,11 @@
-//! Regression guard for the netball `ScoreRecord` shape refactor (extracting
-//! `ScoreRecord::Netball { .. }`'s inline fields into a standalone
-//! `NetballScoreRecord`, wrapped as `ScoreRecord::Netball(NetballScoreRecord)`
-//! — part of the sport-registry refactor described in the project's design
-//! notes for making it simpler to add a sport).
-//!
-//! This test writes a fully-populated netball `MatchScoreRecord` through
-//! `Dao::put_match_score` and reads it back through `Dao::get_match_score`,
-//! against a real DynamoDB (Local) table — not just an in-process serde
-//! round-trip — so it also catches anything `serde_dynamo`'s `AttributeValue`
-//! mapping does differently from a bare `serde_json` round-trip (e.g. how it
-//! handles the enum-keyed `HashMap`s below).
-//!
-//! It's deliberately written and run *before* the `ScoreRecord::Netball`
-//! shape changes, then re-run unchanged afterwards (only the two-line
-//! `ScoreRecord::Netball { .. }` construction becomes
-//! `ScoreRecord::Netball(NetballScoreRecord { .. })` — the assertions and the
-//! guarantee stay the same): staying green across that edit is the actual
-//! proof that existing stored items still deserialize correctly and nothing
-//! written today becomes unreadable.
+//! Guards netball's stored score shape: writes a fully populated netball
+//! `MatchScoreRecord` through `Dao::put_match_score` and reads it back through
+//! `Dao::get_match_score`, against a real DynamoDB (Local) table rather than
+//! an in-process serde round-trip, so it also catches anything `serde_dynamo`'s
+//! `AttributeValue` mapping does differently (e.g. the enum-keyed `HashMap`s
+//! below). It also checks a hand-written item in the stored JSON shape still
+//! deserializes, so a change to the record types can't make existing data
+//! unreadable.
 //!
 //! ## Running locally
 //!
@@ -160,30 +148,24 @@ async fn netball_score_record_round_trips_through_dynamodb() {
     assert_eq!(fetched_bare, bare_record);
 }
 
-/// Writes the *pre-refactor* wire shape directly (hand-built JSON, matching
-/// exactly what `ScoreRecord::Netball { .. }`'s inline struct-variant used to
-/// serialize as — independent of any Rust type, so this doesn't just prove
-/// the new code round-trips its own output) and confirms today's code reads
-/// it back correctly. This is the direct proof that items written by the
-/// service *before* this migration remain readable after it — the round-trip
-/// test above only proves the new code is internally consistent with itself.
+/// Writes the stored wire shape directly as hand-built JSON, independent of
+/// any Rust type, and confirms the code reads it back. The round-trip test
+/// above only proves the code agrees with itself; this pins the shape items
+/// already in the table were written in.
 #[tokio::test]
-async fn pre_refactor_netball_score_json_still_deserializes() {
+async fn stored_netball_score_json_still_deserializes() {
     let Some(TestEnv { dao, client, table }) = local_env().await else {
         eprintln!("skipping: see this file's header for setup.");
         return;
     };
 
     let match_id = format!(
-        "test-netball-legacy-{}",
+        "test-netball-stored-{}",
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
     );
 
-    // Exactly the JSON `ScoreRecord::Netball { score, goals, fouls, period,
-    // period_times, period_scores }` (the inline struct-variant, pre-refactor)
-    // serialized as, tag included — before `NetballScoreRecord` existed as a
-    // named type.
-    let legacy_record_json = serde_json::json!({
+    // The JSON a netball score is stored as, tag included.
+    let stored_record_json = serde_json::json!({
         "sport": "netball",
         "score": {
             "type": "netball",
@@ -212,9 +194,9 @@ async fn pre_refactor_netball_score_json_still_deserializes() {
         &Pk::Match(match_id.clone()),
         &Sk::Score("netball".to_string()),
         TYPE_MATCH_SCORE,
-        &legacy_record_json,
+        &stored_record_json,
     )
-    .expect("build item from legacy JSON shape");
+    .expect("build item from stored JSON shape");
 
     client
         .put_item()
@@ -222,13 +204,13 @@ async fn pre_refactor_netball_score_json_still_deserializes() {
         .set_item(Some(item))
         .send()
         .await
-        .expect("put legacy item");
+        .expect("put stored item");
 
     let fetched = dao
         .get_match_score(&match_id, "netball")
         .await
         .expect("get_match_score")
-        .expect("legacy record was written");
+        .expect("stored record was written");
 
     let ScoreRecord::Netball(score) = &fetched.score else {
         panic!("expected ScoreRecord::Netball, got {:?}", fetched.score);

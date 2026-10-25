@@ -749,7 +749,8 @@ mod tests {
         use crate::rating::{Sport, ladder_for};
 
         let ladders: Vec<String> = Sport::ALL
-            .into_iter()
+            .iter()
+            .copied()
             .filter_map(ladder_for)
             .map(|l| l.as_str().to_string())
             // Not mintable today; the likeliest split, and the whole reason

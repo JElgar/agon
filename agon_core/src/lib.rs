@@ -12,6 +12,5 @@ pub mod push;
 pub mod rating;
 pub mod search;
 pub mod series;
-pub mod sport;
 pub mod sports;
 pub mod telemetry;

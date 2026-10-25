@@ -1,18 +1,13 @@
-//! Netball's whole API-side surface: its score/format/live-event/stats
-//! types, the event-log fold (`NetballScore::from_events`/`apply_event`),
-//! every per-score-shape helper the generic `Score` dispatchers call into
-//! (`side_ids`/`resolve_ids`/`set_players`/`player_ids`/`winner`/
-//! `apply_new_events`), and the API<->DAO mapping (see `crate::sports`'s doc
-//! comment). Plain functions with the names `agon_sports!`'s generated
-//! dispatchers expect every sport module to provide, rather than a shared
-//! trait — there's no dynamic dispatch here (the macro expands to a direct
-//! call through the module path for each sport), so a trait would add
-//! ceremony without a caller that needs it.
+//! Netball: its API types and `Sport` impl. The smallest complete example of
+//! a modeled sport (see `agon_core::sports` for the steps to add one).
 
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
+
 use poem_openapi::{Enum, Object, Union};
 
+use agon_core::sports::netball::Netball;
 use agon_core::sports::netball::{
     NetballFormatRecord, NetballFoulEventRecord, NetballFoulKindRecord, NetballGoalEventRecord,
     NetballLiveEventRecord, NetballPeriodEventRecord, NetballPeriodRecord, NetballPositionRecord,
@@ -20,16 +15,279 @@ use agon_core::sports::netball::{
 };
 
 use crate::GenericPlayerStats;
-use crate::live_score::NewLiveEventInput;
 use crate::mapping::{generic_stats_from_record, parse_ts, parse_ts_opt};
+use crate::sports::Sport;
 
-/// How this sport is named to people (e.g. share-card headings).
-pub const LABEL: &str = "Netball";
+impl Sport for Netball {
+    type Score = NetballScore;
+    type Format = NetballFormat;
+    type LiveEvent = NetballLiveEvent;
+    type PlayerStats = NetballPlayerStats;
 
-// ===========================================================================
-// API types (formerly `match_format::NetballFormat`,
-// `detailed_score::netball`, `live_score::netball`).
-// ===========================================================================
+    fn new_score() -> NetballScore {
+        NetballScore {
+            score: HashMap::new(),
+            goals: Some(Vec::new()),
+            fouls: Some(Vec::new()),
+            period: None,
+            period_times: Some(HashMap::new()),
+            period_scores: Some(HashMap::new()),
+            players: HashMap::new(),
+        }
+    }
+
+    fn apply_event(
+        score: &mut NetballScore,
+        occurred_at: DateTime<Utc>,
+        event: &NetballLiveEvent,
+        _format: Option<&NetballFormat>,
+    ) {
+        match event {
+            NetballLiveEvent::Goal(g) => {
+                *score.score.entry(g.side_id.clone()).or_insert(0) +=
+                    if g.two_points { 2 } else { 1 };
+                // Stamp with the envelope's own `occurred_at` — the
+                // recording device's clock — regardless of whatever (if
+                // anything) the client sent in the payload itself. This is
+                // what makes `occurred_at`, not the quarter-relative
+                // `minute`, the authoritative order for a live-scored goal
+                // (see `NetballGoalEvent::occurred_at`'s doc comment).
+                let mut g = g.clone();
+                g.occurred_at = Some(occurred_at);
+                score.goals.get_or_insert_with(Vec::new).push(g);
+            }
+            NetballLiveEvent::Foul(fo) => {
+                let mut fo = fo.clone();
+                fo.occurred_at = Some(occurred_at);
+                score.fouls.get_or_insert_with(Vec::new).push(fo);
+            }
+            NetballLiveEvent::Period(p) => {
+                score
+                    .period_times
+                    .get_or_insert_with(HashMap::new)
+                    .insert(p.period, occurred_at);
+                score
+                    .period_scores
+                    .get_or_insert_with(HashMap::new)
+                    .insert(p.period, p.score.clone());
+                // The one line that unifies both live-scoring methods — see
+                // `NetballPeriodEvent::score`'s doc comment.
+                score.score = p.score.clone();
+                score.period = Some(p.period);
+            }
+        }
+    }
+
+    fn winner(score: &NetballScore, side_ids: &[String]) -> Option<String> {
+        crate::two_side_winner(side_ids, |sid| *score.score.get(sid).unwrap_or(&0) as i64)
+    }
+
+    fn side_ids(score: &NetballScore) -> Vec<&str> {
+        score.score.keys().map(|k| k.as_str()).collect()
+    }
+
+    /// Each goal's scorer and each foul's player.
+    fn player_ids(score: &NetballScore) -> Vec<String> {
+        let mut ids = Vec::new();
+        for goal in score.goals.iter().flatten() {
+            ids.extend(goal.scorer_player_id.clone());
+        }
+        for foul in score.fouls.iter().flatten() {
+            ids.extend(foul.player_id.clone());
+        }
+        ids
+    }
+
+    fn resolve_ids(
+        s: &NetballScore,
+        side_ids: &HashMap<String, String>,
+        player_ids: &HashMap<String, String>,
+    ) -> Option<NetballScore> {
+        let map = |client_id: &str| side_ids.get(client_id).cloned();
+        let pmap_opt = |id: &Option<String>| -> Option<Option<String>> {
+            match id {
+                Some(id) => player_ids.get(id).cloned().map(Some),
+                None => Some(None),
+            }
+        };
+
+        let mut score = HashMap::with_capacity(s.score.len());
+        for (side_id, goals) in &s.score {
+            score.insert(map(side_id)?, *goals);
+        }
+        let goals = match &s.goals {
+            Some(gs) => {
+                let mut out = Vec::with_capacity(gs.len());
+                for g in gs {
+                    out.push(NetballGoalEvent {
+                        side_id: map(&g.side_id)?,
+                        scorer_player_id: pmap_opt(&g.scorer_player_id)?,
+                        scorer_position: g.scorer_position,
+                        two_points: g.two_points,
+                        minute: g.minute,
+                        occurred_at: g.occurred_at,
+                    });
+                }
+                Some(out)
+            }
+            None => None,
+        };
+        let fouls = match &s.fouls {
+            Some(fs) => {
+                let mut out = Vec::with_capacity(fs.len());
+                for fo in fs {
+                    out.push(NetballFoulEvent {
+                        side_id: map(&fo.side_id)?,
+                        player_id: pmap_opt(&fo.player_id)?,
+                        foul_kind: fo.foul_kind,
+                        minute: fo.minute,
+                        occurred_at: fo.occurred_at,
+                    });
+                }
+                Some(out)
+            }
+            None => None,
+        };
+        let period_scores = match &s.period_scores {
+            Some(pss) => {
+                let mut out = HashMap::with_capacity(pss.len());
+                for (period, entries) in pss {
+                    let mut mapped = HashMap::with_capacity(entries.len());
+                    for (side_id, goals) in entries {
+                        mapped.insert(map(side_id)?, *goals);
+                    }
+                    out.insert(*period, mapped);
+                }
+                Some(out)
+            }
+            None => None,
+        };
+        Some(NetballScore {
+            score,
+            goals,
+            fouls,
+            period: s.period,
+            period_times: s.period_times.clone(),
+            period_scores,
+            players: HashMap::new(),
+        })
+    }
+
+    fn set_players(
+        score: &mut NetballScore,
+        resolved: HashMap<String, crate::RosterPreviewPlayer>,
+    ) {
+        score.players = resolved;
+    }
+
+    fn score_to_record(s: &NetballScore) -> NetballScoreRecord {
+        NetballScoreRecord {
+            score: s.score.clone(),
+            goals: s
+                .goals
+                .as_ref()
+                .map(|gs| gs.iter().map(goal_event_to_record).collect()),
+            fouls: s
+                .fouls
+                .as_ref()
+                .map(|fs| fs.iter().map(foul_event_to_record).collect()),
+            period: s.period.as_ref().map(period_to_record),
+            period_times: s.period_times.as_ref().map(|pts| {
+                pts.iter()
+                    .map(|(p, t)| {
+                        (
+                            period_to_record(p),
+                            t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                        )
+                    })
+                    .collect()
+            }),
+            period_scores: s.period_scores.as_ref().map(|pss| {
+                pss.iter()
+                    .map(|(p, entries)| (period_to_record(p), entries.clone()))
+                    .collect()
+            }),
+        }
+    }
+
+    fn score_from_record(rec: &NetballScoreRecord) -> NetballScore {
+        NetballScore {
+            score: rec.score.clone(),
+            goals: rec
+                .goals
+                .as_ref()
+                .map(|gs| gs.iter().map(goal_event_from_record).collect()),
+            fouls: rec
+                .fouls
+                .as_ref()
+                .map(|fs| fs.iter().map(foul_event_from_record).collect()),
+            period: rec.period.as_ref().map(period_from_record),
+            period_times: rec.period_times.as_ref().map(|pts| {
+                pts.iter()
+                    .map(|(p, t)| (period_from_record(p), parse_ts(t)))
+                    .collect()
+            }),
+            period_scores: rec.period_scores.as_ref().map(|pss| {
+                pss.iter()
+                    .map(|(p, entries)| (period_from_record(p), entries.clone()))
+                    .collect()
+            }),
+            // Not stored — `Api::hydrate_score_players` fills this afterward.
+            players: HashMap::new(),
+        }
+    }
+
+    fn format_to_record(f: &NetballFormat) -> NetballFormatRecord {
+        NetballFormatRecord {
+            num_quarters: f.num_quarters,
+            quarter_length_minutes: f.quarter_length_minutes,
+            two_point_zone: f.two_point_zone,
+            extra_time: f.extra_time,
+        }
+    }
+
+    fn format_from_record(f: &NetballFormatRecord) -> NetballFormat {
+        NetballFormat {
+            num_quarters: f.num_quarters,
+            quarter_length_minutes: f.quarter_length_minutes,
+            two_point_zone: f.two_point_zone,
+            extra_time: f.extra_time,
+        }
+    }
+
+    fn live_event_to_record(event: &NetballLiveEvent) -> NetballLiveEventRecord {
+        match event {
+            NetballLiveEvent::Goal(g) => NetballLiveEventRecord::Goal(goal_event_to_record(g)),
+            NetballLiveEvent::Foul(fo) => NetballLiveEventRecord::Foul(foul_event_to_record(fo)),
+            NetballLiveEvent::Period(p) => {
+                NetballLiveEventRecord::Period(NetballPeriodEventRecord {
+                    period: period_to_record(&p.period),
+                    score: p.score.clone(),
+                })
+            }
+        }
+    }
+
+    fn live_event_from_record(rec: &NetballLiveEventRecord) -> NetballLiveEvent {
+        match rec {
+            NetballLiveEventRecord::Goal(g) => NetballLiveEvent::Goal(goal_event_from_record(g)),
+            NetballLiveEventRecord::Foul(fo) => NetballLiveEvent::Foul(foul_event_from_record(fo)),
+            NetballLiveEventRecord::Period(p) => NetballLiveEvent::Period(NetballPeriodEvent {
+                period: period_from_record(&p.period),
+                score: p.score.clone(),
+            }),
+        }
+    }
+
+    fn stats_from_record(rec: &NetballStatsRecord) -> NetballPlayerStats {
+        NetballPlayerStats {
+            common: generic_stats_from_record(&rec.common),
+            goals: rec.goals as i32,
+        }
+    }
+}
+
+// ---- API types ----------------------------------------------------------
 
 #[derive(Object, Clone)]
 pub struct NetballFormat {
@@ -78,7 +336,7 @@ pub struct NetballGoalEvent {
     pub minute: Option<u32>,
     /// When this actually happened, wall-clock — always overwritten by the
     /// server from the live event envelope's own `occurred_at` for anything
-    /// recorded through `/live/events` (see `NetballScore::apply_event`),
+    /// recorded through `/live/events` (see `Netball::apply_event`),
     /// ignoring whatever a client sends here. `None` for a manually logged
     /// historical result, same as `minute` above.
     ///
@@ -268,234 +526,11 @@ pub struct NetballPeriodEvent {
     /// share one event vocabulary: for event-by-event scoring this is a
     /// checkpoint that should already agree with the total folded from
     /// `Goal` events; for quarter-only scoring it's the *only* place the
-    /// score ever comes from. Either way, `NetballScore::apply_event`
+    /// score ever comes from. Either way, `Netball::apply_event`
     /// simply overwrites `score` with this value — it doesn't need to know
     /// which method a given match is using.
     pub score: HashMap<String, u32>,
 }
-
-// ===========================================================================
-// Event-log fold (formerly `live_score::netball`).
-// ===========================================================================
-
-impl NetballScore {
-    /// Folds the whole event log into a `NetballScore` from scratch — the
-    /// slow path, used to bootstrap a match's first score or recover from a
-    /// missing/unparseable persisted record. Just `apply_event` run once per
-    /// event in order; the fast (single-event) and slow (whole-log) paths
-    /// share the exact same fold, so they can't disagree — same pattern as
-    /// `crate::sports::football::FootballScore::from_events`.
-    fn from_events(events: &[(chrono::DateTime<chrono::Utc>, NetballLiveEvent)]) -> Self {
-        let mut score = NetballScore {
-            score: HashMap::new(),
-            goals: Some(Vec::new()),
-            fouls: Some(Vec::new()),
-            period: None,
-            period_times: Some(HashMap::new()),
-            period_scores: Some(HashMap::new()),
-            players: HashMap::new(),
-        };
-        for (occurred_at, event) in events {
-            score.apply_event(*occurred_at, event);
-        }
-        score
-    }
-
-    /// Folds one new event into this score in place — the fast path, run on
-    /// every append. `occurred_at` (not `recorded_at`) is threaded through
-    /// separately from `event`, same reasoning as
-    /// `crate::sports::football::FootballScore::apply_event`.
-    fn apply_event(
-        &mut self,
-        occurred_at: chrono::DateTime<chrono::Utc>,
-        event: &NetballLiveEvent,
-    ) {
-        match event {
-            NetballLiveEvent::Goal(g) => {
-                *self.score.entry(g.side_id.clone()).or_insert(0) +=
-                    if g.two_points { 2 } else { 1 };
-                // Stamp with the envelope's own `occurred_at` — the
-                // recording device's clock — regardless of whatever (if
-                // anything) the client sent in the payload itself. This is
-                // what makes `occurred_at`, not the quarter-relative
-                // `minute`, the authoritative order for a live-scored goal
-                // (see `NetballGoalEvent::occurred_at`'s doc comment).
-                let mut g = g.clone();
-                g.occurred_at = Some(occurred_at);
-                self.goals.get_or_insert_with(Vec::new).push(g);
-            }
-            NetballLiveEvent::Foul(fo) => {
-                let mut fo = fo.clone();
-                fo.occurred_at = Some(occurred_at);
-                self.fouls.get_or_insert_with(Vec::new).push(fo);
-            }
-            NetballLiveEvent::Period(p) => {
-                self.period_times
-                    .get_or_insert_with(HashMap::new)
-                    .insert(p.period, occurred_at);
-                self.period_scores
-                    .get_or_insert_with(HashMap::new)
-                    .insert(p.period, p.score.clone());
-                // The one line that unifies both live-scoring methods — see
-                // `NetballPeriodEvent::score`'s doc comment.
-                self.score = p.score.clone();
-                self.period = Some(p.period);
-            }
-        }
-    }
-}
-
-/// Folds an ordered event log into a full `NetballScore` — see
-/// `crate::sports::football::from_events`'s doc comment for the uniform
-/// signature every sport's `from_events` shares.
-pub fn from_events(
-    events: &[(chrono::DateTime<chrono::Utc>, NetballLiveEvent)],
-    _format: Option<&agon_core::dao::records::MatchFormatRecord>,
-) -> NetballScore {
-    NetballScore::from_events(events)
-}
-
-/// The incremental fast path for a live-scoring append — folds `new_events`
-/// into `score` in place. `None` means a mismatched event sport slipped
-/// through (unreachable in practice; the caller has already rejected that
-/// earlier). `_format` is unused (netball's fold needs no format-derived
-/// rules) — kept in the signature only so every sport's `apply_new_events`
-/// has the same shape to call generically, same reasoning as `from_events`.
-pub fn apply_new_events(
-    score: &mut NetballScore,
-    new_events: &[NewLiveEventInput],
-    _format: Option<&agon_core::dao::records::MatchFormatRecord>,
-) -> Option<()> {
-    for e in new_events {
-        let crate::live_score::LiveEventInput::Netball(event) = &e.event else {
-            return None;
-        };
-        score.apply_event(e.occurred_at, event);
-    }
-    Some(())
-}
-
-// ===========================================================================
-// Generic-`Score`-dispatch helpers (formerly per-sport arms scattered across
-// `main.rs`).
-// ===========================================================================
-
-/// This score's side ids, for validating a submitted score references only
-/// sides that actually exist on the match.
-pub fn side_ids(score: &NetballScore) -> Vec<&str> {
-    score.score.keys().map(|k| k.as_str()).collect()
-}
-
-/// Re-point a `NetballScore`'s request-scoped client ids to the real side/
-/// player ids assigned at creation — see `main.rs`'s (removed)
-/// `resolve_score_ids` for the original shared doc comment. `None` if any
-/// referenced side or player is unknown.
-pub fn resolve_ids(
-    s: &NetballScore,
-    side_ids: &HashMap<String, String>,
-    player_ids: &HashMap<String, String>,
-) -> Option<NetballScore> {
-    let map = |client_id: &str| side_ids.get(client_id).cloned();
-    let pmap_opt = |id: &Option<String>| -> Option<Option<String>> {
-        match id {
-            Some(id) => player_ids.get(id).cloned().map(Some),
-            None => Some(None),
-        }
-    };
-
-    let mut score = HashMap::with_capacity(s.score.len());
-    for (side_id, goals) in &s.score {
-        score.insert(map(side_id)?, *goals);
-    }
-    let goals = match &s.goals {
-        Some(gs) => {
-            let mut out = Vec::with_capacity(gs.len());
-            for g in gs {
-                out.push(NetballGoalEvent {
-                    side_id: map(&g.side_id)?,
-                    scorer_player_id: pmap_opt(&g.scorer_player_id)?,
-                    scorer_position: g.scorer_position,
-                    two_points: g.two_points,
-                    minute: g.minute,
-                    occurred_at: g.occurred_at,
-                });
-            }
-            Some(out)
-        }
-        None => None,
-    };
-    let fouls = match &s.fouls {
-        Some(fs) => {
-            let mut out = Vec::with_capacity(fs.len());
-            for fo in fs {
-                out.push(NetballFoulEvent {
-                    side_id: map(&fo.side_id)?,
-                    player_id: pmap_opt(&fo.player_id)?,
-                    foul_kind: fo.foul_kind,
-                    minute: fo.minute,
-                    occurred_at: fo.occurred_at,
-                });
-            }
-            Some(out)
-        }
-        None => None,
-    };
-    let period_scores = match &s.period_scores {
-        Some(pss) => {
-            let mut out = HashMap::with_capacity(pss.len());
-            for (period, entries) in pss {
-                let mut mapped = HashMap::with_capacity(entries.len());
-                for (side_id, goals) in entries {
-                    mapped.insert(map(side_id)?, *goals);
-                }
-                out.insert(*period, mapped);
-            }
-            Some(out)
-        }
-        None => None,
-    };
-    Some(NetballScore {
-        score,
-        goals,
-        fouls,
-        period: s.period,
-        period_times: s.period_times.clone(),
-        period_scores,
-        players: HashMap::new(),
-    })
-}
-
-/// Set this score's resolved-players map (see `Api::hydrate_score_players`).
-pub fn set_players(
-    score: &mut NetballScore,
-    resolved: HashMap<String, crate::RosterPreviewPlayer>,
-) {
-    score.players = resolved;
-}
-
-/// Every player id referenced in a `NetballScore`: each goal's scorer, each
-/// foul's player. May repeat the same id many times over — deduped
-/// downstream by `Dao::batch_get_match_players`.
-pub fn player_ids(score: &NetballScore) -> Vec<String> {
-    let mut ids = Vec::new();
-    for goal in score.goals.iter().flatten() {
-        ids.extend(goal.scorer_player_id.clone());
-    }
-    for foul in score.fouls.iter().flatten() {
-        ids.extend(foul.player_id.clone());
-    }
-    ids
-}
-
-/// Derives the winner (when decidable) from a live-scored netball match's
-/// persisted score. `None` if the two sides are tied.
-pub fn winner(score: &NetballScore, side_ids: &[String]) -> Option<String> {
-    crate::two_side_winner(side_ids, |sid| *score.score.get(sid).unwrap_or(&0) as i64)
-}
-
-// ===========================================================================
-// Stats (a user's lifetime netball totals, `UserStats::netball`).
-// ===========================================================================
 
 /// Lifetime netball stats: the common counters plus goals scored, derived
 /// from every confirmed match's goal log. A quarter-only-scored or
@@ -510,91 +545,7 @@ pub struct NetballPlayerStats {
     pub goals: i32,
 }
 
-pub fn stats_from_record(rec: &NetballStatsRecord) -> NetballPlayerStats {
-    NetballPlayerStats {
-        common: generic_stats_from_record(&rec.common),
-        goals: rec.goals as i32,
-    }
-}
-
-// ===========================================================================
-// API<->DAO mapping.
-// ===========================================================================
-
-pub fn score_to_record(s: &NetballScore) -> NetballScoreRecord {
-    NetballScoreRecord {
-        score: s.score.clone(),
-        goals: s
-            .goals
-            .as_ref()
-            .map(|gs| gs.iter().map(goal_event_to_record).collect()),
-        fouls: s
-            .fouls
-            .as_ref()
-            .map(|fs| fs.iter().map(foul_event_to_record).collect()),
-        period: s.period.as_ref().map(period_to_record),
-        period_times: s.period_times.as_ref().map(|pts| {
-            pts.iter()
-                .map(|(p, t)| {
-                    (
-                        period_to_record(p),
-                        t.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                    )
-                })
-                .collect()
-        }),
-        period_scores: s.period_scores.as_ref().map(|pss| {
-            pss.iter()
-                .map(|(p, entries)| (period_to_record(p), entries.clone()))
-                .collect()
-        }),
-    }
-}
-
-pub fn score_from_record(rec: &NetballScoreRecord) -> NetballScore {
-    NetballScore {
-        score: rec.score.clone(),
-        goals: rec
-            .goals
-            .as_ref()
-            .map(|gs| gs.iter().map(goal_event_from_record).collect()),
-        fouls: rec
-            .fouls
-            .as_ref()
-            .map(|fs| fs.iter().map(foul_event_from_record).collect()),
-        period: rec.period.as_ref().map(period_from_record),
-        period_times: rec.period_times.as_ref().map(|pts| {
-            pts.iter()
-                .map(|(p, t)| (period_from_record(p), parse_ts(t)))
-                .collect()
-        }),
-        period_scores: rec.period_scores.as_ref().map(|pss| {
-            pss.iter()
-                .map(|(p, entries)| (period_from_record(p), entries.clone()))
-                .collect()
-        }),
-        // Not stored — `Api::hydrate_score_players` fills this afterward.
-        players: HashMap::new(),
-    }
-}
-
-pub fn format_to_record(f: &NetballFormat) -> NetballFormatRecord {
-    NetballFormatRecord {
-        num_quarters: f.num_quarters,
-        quarter_length_minutes: f.quarter_length_minutes,
-        two_point_zone: f.two_point_zone,
-        extra_time: f.extra_time,
-    }
-}
-
-pub fn format_from_record(f: &NetballFormatRecord) -> NetballFormat {
-    NetballFormat {
-        num_quarters: f.num_quarters,
-        quarter_length_minutes: f.quarter_length_minutes,
-        two_point_zone: f.two_point_zone,
-        extra_time: f.extra_time,
-    }
-}
+// ---- Record mapping helpers ---------------------------------------------
 
 /// Shared by the live-event mapping below and `score_to_record`/
 /// `score_from_record` above — both carry the same `NetballGoalEvent`/
@@ -719,28 +670,6 @@ fn period_from_record(rec: &NetballPeriodRecord) -> NetballPeriod {
     }
 }
 
-pub fn live_event_to_record(event: &NetballLiveEvent) -> NetballLiveEventRecord {
-    match event {
-        NetballLiveEvent::Goal(g) => NetballLiveEventRecord::Goal(goal_event_to_record(g)),
-        NetballLiveEvent::Foul(fo) => NetballLiveEventRecord::Foul(foul_event_to_record(fo)),
-        NetballLiveEvent::Period(p) => NetballLiveEventRecord::Period(NetballPeriodEventRecord {
-            period: period_to_record(&p.period),
-            score: p.score.clone(),
-        }),
-    }
-}
-
-pub fn live_event_from_record(rec: &NetballLiveEventRecord) -> NetballLiveEvent {
-    match rec {
-        NetballLiveEventRecord::Goal(g) => NetballLiveEvent::Goal(goal_event_from_record(g)),
-        NetballLiveEventRecord::Foul(fo) => NetballLiveEvent::Foul(foul_event_from_record(fo)),
-        NetballLiveEventRecord::Period(p) => NetballLiveEvent::Period(NetballPeriodEvent {
-            period: period_from_record(&p.period),
-            score: p.score.clone(),
-        }),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use chrono::{DateTime, TimeZone, Utc};
@@ -797,7 +726,7 @@ mod tests {
             ),
         ];
 
-        let score = NetballScore::from_events(&events);
+        let score = Netball::from_events(&events, None);
 
         assert_eq!(score.score.get("kestrels"), Some(&2));
         assert_eq!(score.score.get("harriers"), Some(&1));
@@ -852,7 +781,7 @@ mod tests {
             ),
         ];
 
-        let score = NetballScore::from_events(&events);
+        let score = Netball::from_events(&events, None);
 
         assert_eq!(score.score.get("kestrels"), Some(&22));
         assert_eq!(score.score.get("harriers"), Some(&18));
@@ -887,7 +816,7 @@ mod tests {
             }),
         )];
 
-        let score = NetballScore::from_events(&events);
+        let score = Netball::from_events(&events, None);
         assert_eq!(score.score.get("kestrels"), Some(&2));
     }
 
@@ -916,7 +845,7 @@ mod tests {
             (ts(2), goal("kestrels", 2)),
         ];
 
-        let score = NetballScore::from_events(&events);
+        let score = Netball::from_events(&events, None);
         let goals = score.goals.as_ref().unwrap();
         assert_eq!(goals.len(), 2);
         assert_eq!(goals[0].occurred_at, Some(ts(0)));
@@ -943,7 +872,7 @@ mod tests {
             ),
         ];
 
-        let full = NetballScore::from_events(&events);
+        let full = Netball::from_events(&events, None);
 
         let mut incremental = NetballScore {
             score: HashMap::new(),
@@ -955,7 +884,7 @@ mod tests {
             players: HashMap::new(),
         };
         for (occurred_at, event) in &events {
-            incremental.apply_event(*occurred_at, event);
+            Netball::apply_event(&mut incremental, *occurred_at, event, None);
         }
 
         assert_eq!(incremental.score, full.score);

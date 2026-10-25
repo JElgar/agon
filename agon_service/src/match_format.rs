@@ -16,28 +16,22 @@
 //! `crate::sports::cricket`'s event fold, since that's server-side scoring
 //! math, not just client display.
 //!
-//! Each sport's own `XFormat` struct lives in `crate::sports::x` alongside
-//! the rest of that sport's surface — this file only holds the generic
-//! `MatchFormat` union `agon_sports!` assembles from them.
+//! Each sport's format type is `Sport::Format` in `crate::sports::<sport>`;
+//! this file only holds the `MatchFormat` union generated from them.
 
 use poem_openapi::Union;
 
-/// x-macro template for `agon_sports!` (see `crate::sports`'s doc comment):
-/// builds `MatchFormat` from the shared sport list.
+/// Builds `MatchFormat` from the sport registry (`agon_core::for_each_sport!`).
 macro_rules! define_match_format {
-    ($( $variant:ident {
-        tag: $tag:literal,
-        module: $module:ident,
-        score: $score:ty,
-        format: $format:ty,
-        live_event: $live_event:ty,
-        stats: $stats:ty $(,)?
-    } ),+ $(,)?) => {
+    (
+        modeled: [$( $variant:ident { tag: $tag:literal, key: $key:ident } ),+ $(,)?],
+        generic: [$( $gvariant:ident { tag: $gtag:literal, key: $gkey:ident, label: $glabel:literal } ),* $(,)?] $(,)?
+    ) => {
         #[derive(Union, Clone)]
         #[oai(one_of, discriminator_name = "sport")]
         pub enum MatchFormat {
-            $( $variant($format), )+
+            $( $variant(<agon_core::sports::$key::$variant as crate::sports::Sport>::Format), )+
         }
     };
 }
-crate::agon_sports!(define_match_format);
+agon_core::for_each_sport!(define_match_format);

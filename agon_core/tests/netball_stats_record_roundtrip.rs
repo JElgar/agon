@@ -1,17 +1,12 @@
-//! Regression guard for netball's stats shape: `UserStatsRecord::netball`
-//! goes from the generic `GenericSportStatsRecord` to a dedicated
-//! `NetballStatsRecord` (the common counters flattened in, plus `goals`).
+//! Guards netball's stored stats shape (`NetballStatsRecord`: the common
+//! counters flattened in, plus `goals`). See `netball_score_record_roundtrip.rs`
+//! for how to run these against DynamoDB Local.
 //!
-//! Written and run against the code *before* that change, then re-run after
-//! it — see `netball_score_record_roundtrip.rs`'s doc comment for the method
-//! and for how to run these against DynamoDB Local.
-//!
-//! The first test proves a profile written today (the generic shape — no
-//! `goals` attribute at all) still reads back afterwards. The second drives
-//! the real stats write path (`Dao::reconcile_match_contribution`) on top of
-//! such a profile, so it also proves the sport-agnostic `ADD
-//! stats.netball.<counter>` update lands a new counter into an existing
-//! legacy map correctly.
+//! The first test proves a profile with no `goals` attribute (written before
+//! netball had its own stats) still reads back. The second drives the real
+//! stats write path (`Dao::reconcile_match_contribution`) on top of such a
+//! profile, proving the sport-agnostic `ADD stats.netball.<counter>` update
+//! lands a new counter into an existing map.
 
 mod common;
 

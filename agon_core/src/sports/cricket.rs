@@ -1,21 +1,14 @@
-//! Cricket's whole DAO-side surface: its score/format/live-event record
-//! types, its lifetime stats record, and its `SportRecord` impl (what a
-//! confirmed score contributes to each player's stats).
+//! Cricket: its stored record types and `SportRecord` impl.
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::dao::records::{
-    BestFigureRecord, GenericSportStatsRecord, MatchFormatRecord, ScoreRecord, default_true,
-};
-use crate::sport::{SportContribution, SportRecord};
+use super::{SportContribution, SportRecord};
+use crate::dao::records::{BestFigureRecord, GenericSportStatsRecord, default_true};
 
-/// Cricket's `ScoreRecord` shape — see
-/// `crate::sports::netball::NetballScoreRecord`'s doc comment for why this is
-/// a standalone type rather than an inline enum-variant struct: wire-identical
-/// to the inline shape it replaced, guarded by
-/// `agon_core/tests/cricket_score_record_roundtrip.rs`.
+/// Cricket's stored score: the `ScoreRecord::Cricket` variant. Its stored shape is
+/// guarded by `agon_core/tests/cricket_score_record_roundtrip.rs`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CricketScoreRecord {
     pub innings: Vec<CricketScoreInningsRecord>,
@@ -55,7 +48,7 @@ pub struct CricketScoreInningsRecord {
     pub extras: Option<CricketExtrasRecord>,
 }
 
-/// Mirrors the API's `detailed_score::cricket::CricketBattingEntry`.
+/// Stored form of `agon_service::sports::cricket::CricketBattingEntry`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CricketBattingEntryRecord {
     pub player_id: String,
@@ -78,7 +71,7 @@ pub struct CricketDismissalRecord {
     pub fielder_player_id: Option<String>,
 }
 
-/// Mirrors the API's `detailed_score::cricket::CricketBowlingEntry`.
+/// Stored form of `agon_service::sports::cricket::CricketBowlingEntry`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CricketBowlingEntryRecord {
     pub player_id: String,
@@ -90,7 +83,7 @@ pub struct CricketBowlingEntryRecord {
     pub no_balls: u32,
 }
 
-/// Mirrors the API's `detailed_score::cricket::CricketExtras`.
+/// Stored form of `agon_service::sports::cricket::CricketExtras`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CricketExtrasRecord {
     pub byes: u32,
@@ -100,7 +93,7 @@ pub struct CricketExtrasRecord {
     pub penalty: u32,
 }
 
-/// Mirrors the API's `detailed_score::cricket::CricketFallOfWicket`.
+/// Stored form of `agon_service::sports::cricket::CricketFallOfWicket`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CricketFallOfWicketRecord {
     pub wicket: u32,
@@ -111,7 +104,7 @@ pub struct CricketFallOfWicketRecord {
 }
 
 /// A count of overs bowled/faced: whole overs plus balls into the current
-/// over — mirrors the API's `detailed_score::cricket::Overs`. Two integer
+/// over — mirrors `agon_service::sports::cricket::Overs`. Two integer
 /// fields rather than a single float, which can't safely represent a ball
 /// count that doesn't fit in one decimal digit.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -120,7 +113,7 @@ pub struct OversRecord {
     pub balls: u32,
 }
 
-/// Mirrors `agon_service::match_format::CricketFormat`.
+/// Stored form of `agon_service::sports::cricket::CricketFormat`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CricketFormatRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -141,7 +134,7 @@ pub struct CricketFormatRecord {
 
 // ---- Cricket live events ----------------------------------------------------
 
-/// Mirrors `agon_service::live_score::cricket::CricketLiveEvent`.
+/// Stored form of `agon_service::sports::cricket::CricketLiveEvent`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CricketLiveEventRecord {
@@ -151,7 +144,7 @@ pub enum CricketLiveEventRecord {
     InningsEnd(CricketInningsEndEventRecord),
 }
 
-/// Mirrors `detailed_score::cricket::CricketDelivery` (reused verbatim as the
+/// Stored form of `agon_service::sports::cricket::CricketDelivery` (reused verbatim as the
 /// API's live delivery payload).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CricketDeliveryRecord {
@@ -165,7 +158,7 @@ pub struct CricketDeliveryRecord {
     pub extra: Option<CricketDeliveryExtraRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wicket: Option<CricketDeliveryWicketRecord>,
-    /// Mirrors `agon_service::detailed_score::cricket::CricketDelivery::occurred_at`
+    /// Stored form of `agon_service::sports::cricket::CricketDelivery::occurred_at`
     /// — RFC3339, same string convention as `LiveEventRecord::occurred_at`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub occurred_at: Option<String>,
@@ -210,7 +203,7 @@ pub enum CricketDismissalKindRecord {
     RetiredHurt,
 }
 
-/// Mirrors `detailed_score::cricket::NextBallContext`.
+/// Stored form of `agon_service::sports::cricket::NextBallContext`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct NextBallContextRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -368,11 +361,17 @@ impl BowlingSpell {
     }
 }
 
-/// Marker type for cricket's `SportRecord` impl — see
-/// `agon_core::sports::netball::NetballRecord`'s doc comment for the pattern.
-pub struct CricketRecord;
+/// Cricket: the marker type its sport traits are implemented for.
+pub struct Cricket;
 
-impl SportRecord for CricketRecord {
+impl SportRecord for Cricket {
+    const LABEL: &'static str = "Cricket";
+
+    type ScoreRecord = CricketScoreRecord;
+    type FormatRecord = CricketFormatRecord;
+    type LiveEventRecord = CricketLiveEventRecord;
+    type StatsRecord = CricketStatsRecord;
+
     /// Sums this player's batting (runs/fours/sixes/balls faced/dismissals),
     /// fielding (catches), and bowling (wickets/runs conceded/balls bowled)
     /// across every innings of a confirmed cricket score. A player can
@@ -387,13 +386,10 @@ impl SportRecord for CricketRecord {
     /// are lifetime totals only — nobody's asked to see "most balls faced in
     /// a game" as a record, so there's no reason to pay for tracking it.
     fn contribution(
-        score: &ScoreRecord,
+        rec: &CricketScoreRecord,
         player_id: &str,
-        format: Option<&MatchFormatRecord>,
+        format: Option<&CricketFormatRecord>,
     ) -> SportContribution {
-        let ScoreRecord::Cricket(rec) = score else {
-            return SportContribution::default();
-        };
         let balls_per_over = balls_per_over(format);
 
         let mut counters = HashMap::new();
@@ -462,11 +458,8 @@ impl SportRecord for CricketRecord {
 
 /// This match's legal deliveries per over — its own `CricketFormatRecord`'s,
 /// or the standard 6 when it has no (cricket) format configured.
-fn balls_per_over(format: Option<&MatchFormatRecord>) -> u32 {
-    match format {
-        Some(MatchFormatRecord::Cricket(f)) => f.balls_per_over,
-        _ => 6,
-    }
+fn balls_per_over(format: Option<&CricketFormatRecord>) -> u32 {
+    format.map_or(6, |f| f.balls_per_over)
 }
 
 /// Legal balls bowled, exact — uses this match's own `balls_per_over` (from

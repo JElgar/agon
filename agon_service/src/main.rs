@@ -413,24 +413,18 @@ struct MatchPlayer {
     role: MatchPlayerRole,
 }
 
-/// x-macro template for `agon_sports!` (see `crate::sports`'s doc comment):
-/// builds `Score`, `MatchType` and `UserStats` from the shared sport list.
-/// Per-sport variant doc comments don't survive being macro-generated — see
-/// each sport's own types in `crate::sports::<sport>` for that documentation
-/// instead.
+/// Builds `Score`, `MatchType` and `UserStats` from the sport registry
+/// (`agon_core::for_each_sport!`). Each modeled sport's types are documented
+/// in its own `crate::sports::<sport>` module.
 macro_rules! define_score_and_match_type {
-    ($( $variant:ident {
-        tag: $tag:literal,
-        module: $module:ident,
-        score: $score:ty,
-        format: $format:ty,
-        live_event: $live_event:ty,
-        stats: $stats:ty $(,)?
-    } ),+ $(,)?) => {
+    (
+        modeled: [$( $variant:ident { tag: $tag:literal, key: $key:ident } ),+ $(,)?],
+        generic: [$( $gvariant:ident { tag: $gtag:literal, key: $gkey:ident, label: $glabel:literal } ),* $(,)?] $(,)?
+    ) => {
         /// Match score. Tagged union so each sport's scoring shape is modelled
-        /// explicitly; clients switch on `type` to pick a renderer. Add new sports
-        /// (e.g. golf) via `agon_sports!` (see `crate::sports`) without breaking
-        /// existing clients.
+        /// explicitly; clients switch on `type` to pick a renderer. New sports
+        /// are added to the sport registry (see `agon_core::sports`) without
+        /// breaking existing clients.
         ///
         /// One type serves three roles for football/cricket: the confirmable result
         /// embedded on `Match.confirmed_score`/`pending_score`, the persisted
@@ -448,44 +442,33 @@ macro_rules! define_score_and_match_type {
             Simple(SimpleScore),
             /// Set-based: tennis, volleyball, badminton.
             Sets(SetsScore),
-            $( $variant($score), )+
+            $( $variant(<agon_core::sports::$key::$variant as crate::sports::Sport>::Score), )+
         }
 
         /// The sport a match was played in. Determines the expected `Score` shape
         /// (e.g. racket sports use `Score::Sets`, football uses `Score::Football`,
-        /// and cricket uses `Score::Cricket`). Extend via `agon_sports!` (see
-        /// `crate::sports`) for a fully-modeled sport, or add a bare variant here
-        /// alongside `Tennis`/`Badminton`/etc for one that just needs a label.
+        /// and cricket uses `Score::Cricket`).
         #[derive(Enum)]
         #[oai(rename_all = "snake_case")]
         pub enum MatchType {
-            Tennis,
-            Badminton,
-            Squash,
-            TableTennis,
+            $( $gvariant, )*
             $( $variant, )+
             /// Fallback for sports not yet modelled explicitly.
             Other,
         }
 
         /// A user's lifetime stats, one field per sport — `None` for a sport
-        /// they've never played a confirmed match in. Explicit per-sport
-        /// fields rather than a list/map so each sport's shape is
-        /// self-describing: every fully-modeled sport carries its own typed
-        /// detail (see `crate::sports::<sport>`), everything else is the
-        /// common shape as-is.
+        /// they've never played a confirmed match in. Each modeled sport
+        /// carries its own typed detail; generic sports use the common shape.
         #[derive(Object)]
         pub struct UserStats {
-            $( pub $module: Option<$stats>, )+
-            pub tennis: Option<GenericPlayerStats>,
-            pub badminton: Option<GenericPlayerStats>,
-            pub squash: Option<GenericPlayerStats>,
-            pub table_tennis: Option<GenericPlayerStats>,
+            $( pub(crate) $key: Option<<agon_core::sports::$key::$variant as crate::sports::Sport>::PlayerStats>, )+
+            $( pub $gkey: Option<GenericPlayerStats>, )*
             pub other: Option<GenericPlayerStats>,
         }
     };
 }
-crate::agon_sports!(define_score_and_match_type);
+agon_core::for_each_sport!(define_score_and_match_type);
 
 #[derive(Object)]
 struct SimpleScore {

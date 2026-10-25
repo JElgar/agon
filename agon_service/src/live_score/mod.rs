@@ -3,13 +3,11 @@
 //! goal-by-goal, card-by-card, ...) in real time — possibly in batches, from a
 //! device catching up after being offline.
 //!
-//! This is the write-side vocabulary. Each sport's own event types, plus the
-//! pure functions that fold an ordered event log into its `Score`'s optional
-//! rich-detail fields, live in `crate::sports::{football,cricket,netball}`
-//! alongside the rest of that sport's surface — this file only holds the
-//! generic `LiveEventInput` union `agon_sports!` assembles from them, plus
-//! the sport-agnostic envelope types around it. There's no separate "live"
-//! read shape: `GET /matches/:id/score` serves the same `Score` whether the
+//! This is the write-side vocabulary. Each sport's event type and the fold
+//! from events to its `Score` are part of its `Sport` impl in
+//! `crate::sports::<sport>`; this file only holds the `LiveEventInput` union
+//! generated from them, plus the sport-agnostic envelope types around it.
+//! There's no separate "live" read shape: `GET /matches/:id/score` serves the same `Score` whether the
 //! match is still being scored or long finished, live or confirmed (see
 //! `Score`'s doc comment on `main.rs`).
 //!
@@ -21,28 +19,23 @@
 
 use poem_openapi::{Object, Union};
 
-/// x-macro template for `agon_sports!` (see `crate::sports`'s doc comment):
-/// builds `LiveEventInput` from the shared sport list.
+/// Builds `LiveEventInput` from the sport registry (`agon_core::for_each_sport!`).
 macro_rules! define_live_event_input {
-    ($( $variant:ident {
-        tag: $tag:literal,
-        module: $module:ident,
-        score: $score:ty,
-        format: $format:ty,
-        live_event: $live_event:ty,
-        stats: $stats:ty $(,)?
-    } ),+ $(,)?) => {
+    (
+        modeled: [$( $variant:ident { tag: $tag:literal, key: $key:ident } ),+ $(,)?],
+        generic: [$( $gvariant:ident { tag: $gtag:literal, key: $gkey:ident, label: $glabel:literal } ),* $(,)?] $(,)?
+    ) => {
         /// A single live-scoring event, sport-first discriminated so a new sport is a
         /// new variant without touching existing ones — same pattern as `Score`. See
         /// `football`/`cricket` for the per-kind union nested inside each variant.
         #[derive(Union)]
         #[oai(one_of, discriminator_name = "sport")]
         pub enum LiveEventInput {
-            $( $variant($live_event), )+
+            $( $variant(<agon_core::sports::$key::$variant as crate::sports::Sport>::LiveEvent), )+
         }
     };
 }
-crate::agon_sports!(define_live_event_input);
+agon_core::for_each_sport!(define_live_event_input);
 
 /// One event to append, before the server has assigned it a `seq`.
 #[derive(Object)]

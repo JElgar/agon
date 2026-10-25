@@ -1,7 +1,6 @@
-//! Regression guard for the football `ScoreRecord` shape refactor — see
-//! `netball_score_record_roundtrip.rs`'s doc comment for what these tests
-//! prove, why, and how to run them locally against DynamoDB Local. Same
-//! structure, football's shapes.
+//! Guards football's stored score shape. See
+//! `netball_score_record_roundtrip.rs` for what these tests prove and how to
+//! run them locally against DynamoDB Local.
 
 mod common;
 
@@ -137,30 +136,24 @@ async fn football_score_record_round_trips_through_dynamodb() {
     assert_eq!(fetched_bare, bare_record);
 }
 
-/// Writes the *pre-refactor* wire shape directly (hand-built JSON, matching
-/// exactly what `ScoreRecord::Football { .. }`'s inline struct-variant used
-/// to serialize as — independent of any Rust type) and confirms today's code
-/// reads it back correctly. Also covers the pre-existing "missing `score`
-/// tally field" backward-compat case (`records.rs`'s
-/// `football_score_missing_tally_field_deserializes` unit test covers the
-/// same thing in-process; this proves it through a real DynamoDB round-trip
-/// too).
+/// Writes the stored wire shape directly as hand-built JSON, independent of
+/// any Rust type, and confirms the code reads it back. The round-trip test
+/// above only proves the code agrees with itself; this pins the shape items
+/// already in the table were written in.
 #[tokio::test]
-async fn pre_refactor_football_score_json_still_deserializes() {
+async fn stored_football_score_json_still_deserializes() {
     let Some(TestEnv { dao, client, table }) = local_env().await else {
         eprintln!("skipping: see netball_score_record_roundtrip.rs's header for setup.");
         return;
     };
 
     let match_id = format!(
-        "test-football-legacy-{}",
+        "test-football-stored-{}",
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
     );
 
-    // Exactly the JSON `ScoreRecord::Football { score, goals, cards, .. }`
-    // (the inline struct-variant, pre-refactor) serialized as, tag included —
-    // before `FootballScoreRecord` existed as a named type.
-    let legacy_record_json = serde_json::json!({
+    // The JSON a football score is stored as, tag included.
+    let stored_record_json = serde_json::json!({
         "sport": "football",
         "score": {
             "type": "football",
@@ -194,9 +187,9 @@ async fn pre_refactor_football_score_json_still_deserializes() {
         &Pk::Match(match_id.clone()),
         &Sk::Score("football".to_string()),
         TYPE_MATCH_SCORE,
-        &legacy_record_json,
+        &stored_record_json,
     )
-    .expect("build item from legacy JSON shape");
+    .expect("build item from stored JSON shape");
 
     client
         .put_item()
@@ -204,13 +197,13 @@ async fn pre_refactor_football_score_json_still_deserializes() {
         .set_item(Some(item))
         .send()
         .await
-        .expect("put legacy item");
+        .expect("put stored item");
 
     let fetched = dao
         .get_match_score(&match_id, "football")
         .await
         .expect("get_match_score")
-        .expect("legacy record was written");
+        .expect("stored record was written");
 
     let ScoreRecord::Football(score) = &fetched.score else {
         panic!("expected ScoreRecord::Football, got {:?}", fetched.score);

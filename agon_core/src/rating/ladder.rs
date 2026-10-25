@@ -11,87 +11,56 @@
 
 use std::fmt;
 
-/// A sport, as the rating engine sees it.
-///
-/// A hand-kept mirror of `agon_service::MatchType`, the same arrangement (and
-/// for the same reason) as `LiveEventPayloadRecord` and `MatchFormatRecord`
-/// in `dao::records`: `agon_core` cannot depend on `agon_service`, and an
-/// opaque `&str` would let a new sport slip silently into the wrong ladder.
-/// **New sport = new variant on both sides**, plus an arm in
-/// [`ladder_for`] deciding which pool it rates into.
-///
-/// The one gap that mirroring leaves — and it is worth being explicit about
-/// it rather than implying a guarantee that doesn't exist — is that adding a
-/// variant to `MatchType` alone will not fail to compile here. It fails in
-/// `mapping::match_type_tag`, whose exhaustive match forces a tag string,
-/// and that new tag then lands in [`Sport::Other`] below, which is
-/// *unrated*. So the failure mode of forgetting this file is "the sport
-/// quietly doesn't get a ladder", never "results land in the wrong pool".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Sport {
-    Tennis,
-    Badminton,
-    Squash,
-    TableTennis,
-    Football,
-    Cricket,
-    Netball,
-    /// Fallback for sports not modelled explicitly — the tag `MatchType::Other`
-    /// stores, and anything unrecognised. Deliberately **not rated**: see
-    /// [`ladder_for`].
-    Other,
-}
-
-impl Sport {
-    /// Every sport, for callers that need to enumerate ladders (and for the
-    /// tests that assert properties across all of them).
-    pub const ALL: [Sport; 8] = [
-        Sport::Tennis,
-        Sport::Badminton,
-        Sport::Squash,
-        Sport::TableTennis,
-        Sport::Football,
-        Sport::Cricket,
-        Sport::Netball,
-        Sport::Other,
-    ];
-
-    /// Parse a stored `MatchRecord::match_type` tag.
-    ///
-    /// Unknown tags become [`Sport::Other`] rather than an error, matching
-    /// `mapping::match_type_from_tag` — a sport this build doesn't know about
-    /// must not fail a read, and (unlike on the API side) here it can't do any
-    /// damage either, since `Other` doesn't rate.
-    #[must_use]
-    pub fn from_tag(tag: &str) -> Self {
-        match tag {
-            "tennis" => Sport::Tennis,
-            "badminton" => Sport::Badminton,
-            "squash" => Sport::Squash,
-            "table_tennis" => Sport::TableTennis,
-            "football" => Sport::Football,
-            "cricket" => Sport::Cricket,
-            "netball" => Sport::Netball,
-            _ => Sport::Other,
+macro_rules! define_rating_sport {
+    (
+        modeled: [$( $variant:ident { tag: $tag:literal, key: $key:ident } ),+ $(,)?],
+        generic: [$( $gvariant:ident { tag: $gtag:literal, key: $gkey:ident, label: $glabel:literal } ),* $(,)?] $(,)?
+    ) => {
+        /// A sport, as the rating engine sees it. Generated from the sport
+        /// registry (`crate::for_each_sport!`).
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum Sport {
+            $( $variant, )+
+            $( $gvariant, )*
+            /// Fallback for sports not modelled explicitly — the tag
+            /// `MatchType::Other` stores, and anything unrecognised.
+            /// Deliberately **not rated**: see [`ladder_for`].
+            Other,
         }
-    }
 
-    /// The stored tag for this sport. The exact strings
-    /// `mapping::match_type_tag` writes onto `MatchRecord::match_type`.
-    #[must_use]
-    pub fn tag(self) -> &'static str {
-        match self {
-            Sport::Tennis => "tennis",
-            Sport::Badminton => "badminton",
-            Sport::Squash => "squash",
-            Sport::TableTennis => "table_tennis",
-            Sport::Football => "football",
-            Sport::Cricket => "cricket",
-            Sport::Netball => "netball",
-            Sport::Other => "other",
+        impl Sport {
+            /// Every sport, for callers that need to enumerate ladders (and
+            /// for the tests that assert properties across all of them).
+            pub const ALL: &'static [Sport] = &[$( Sport::$variant, )+ $( Sport::$gvariant, )* Sport::Other];
+
+            /// Parse a stored `MatchRecord::match_type` tag.
+            ///
+            /// Unknown tags become [`Sport::Other`] rather than an error,
+            /// matching `mapping::match_type_from_tag` — a sport this build
+            /// doesn't know about must not fail a read, and here it can't do
+            /// any damage either, since `Other` doesn't rate.
+            #[must_use]
+            pub fn from_tag(tag: &str) -> Self {
+                match tag {
+                    $( $tag => Sport::$variant, )+
+                    $( $gtag => Sport::$gvariant, )*
+                    _ => Sport::Other,
+                }
+            }
+
+            /// The stored tag for this sport.
+            #[must_use]
+            pub fn tag(self) -> &'static str {
+                match self {
+                    $( Sport::$variant => $tag, )+
+                    $( Sport::$gvariant => $gtag, )*
+                    Sport::Other => "other",
+                }
+            }
         }
-    }
+    };
 }
+crate::for_each_sport!(define_rating_sport);
 
 /// The key a rating is stored, compared and matchmade under — `"squash"`
 /// today.
@@ -149,14 +118,8 @@ impl fmt::Display for Ladder {
 #[must_use]
 pub fn ladder_for(sport: Sport) -> Option<Ladder> {
     match sport {
-        Sport::Tennis
-        | Sport::Badminton
-        | Sport::Squash
-        | Sport::TableTennis
-        | Sport::Football
-        | Sport::Cricket
-        | Sport::Netball => Some(Ladder(sport.tag().to_string())),
         Sport::Other => None,
+        _ => Some(Ladder(sport.tag().to_string())),
     }
 }
 
@@ -180,7 +143,7 @@ mod tests {
     /// that.
     #[test]
     fn ladder_keys_never_contain_the_key_delimiter() {
-        for sport in Sport::ALL {
+        for &sport in Sport::ALL {
             if let Some(ladder) = ladder_for(sport) {
                 assert!(
                     !ladder.as_str().contains(DELIMITER),
@@ -195,7 +158,7 @@ mod tests {
     /// other unmodelled sport.
     #[test]
     fn every_real_sport_has_a_ladder_and_other_has_none() {
-        for sport in Sport::ALL {
+        for &sport in Sport::ALL {
             let ladder = ladder_for(sport);
             if sport == Sport::Other {
                 assert_eq!(ladder, None, "`Other` must not be rated");
@@ -212,7 +175,7 @@ mod tests {
     /// hold or a match would rate into a ladder its own record can't name.
     #[test]
     fn sport_tags_round_trip() {
-        for sport in Sport::ALL {
+        for &sport in Sport::ALL {
             assert_eq!(Sport::from_tag(sport.tag()), sport, "{sport:?}");
         }
     }
@@ -231,7 +194,7 @@ mod tests {
     #[test]
     fn ladders_are_distinct_per_sport() {
         let mut seen = std::collections::HashSet::new();
-        for sport in Sport::ALL {
+        for &sport in Sport::ALL {
             if let Some(ladder) = ladder_for(sport) {
                 assert!(seen.insert(ladder.clone()), "duplicate ladder {ladder}");
             }

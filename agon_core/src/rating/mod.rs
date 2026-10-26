@@ -1,7 +1,18 @@
 //! Player ratings — the pure engine.
 //!
-//! Ratings are opt-in, per sport: nobody has one until they play a ranked game
-//! in that sport, and a ranked game needs every player in it to have opted in.
+//! Every player is rated, per sport, from the first match they complete —
+//! ranked or not, opted in or not. What opting in buys is **publication**, not
+//! a rating: until then the number exists, is maintained, and is shown to
+//! nobody. [`placement`] holds that rule and the reasoning behind it.
+//!
+//! The reason it is worth the storage is that it removes a whole class of
+//! problem rather than making one easier. With a rating for everybody there
+//! is no unrated participant to refuse, chase for consent, or approximate
+//! with a placeholder prior, so a ringer is just a player and switching a
+//! match to ranked stops being a question the maths has an opinion about.
+//! (One gap survives: a guest with no account has nothing to key a rating to.
+//! Those matches are refused — see the worker's eligibility check.)
+//!
 //! None of that is decided here. This module only knows how to turn a rated
 //! result into new ratings; whether a match is rated at all is the caller's
 //! question (see "What this module does *not* know" below).
@@ -25,6 +36,8 @@
 //!   included, all through one code path.
 //! - [`scale`] — native `μ`/`σ` to the Elo-shaped numbers players see: a
 //!   rating and its `±` confidence. There are no named tiers on top of it.
+//! - [`placement`] — whether a rating is anyone's business yet, which matches
+//!   move it, and the confidence reset that opting in applies.
 //!
 //! Split per concern, matching how `dao/` is laid out — the three jobs above
 //! have nothing to say to each other beyond their types.
@@ -55,6 +68,7 @@
 
 pub mod engine;
 pub mod ladder;
+pub mod placement;
 pub mod scale;
 
 pub use engine::{
@@ -63,6 +77,9 @@ pub use engine::{
     rate_sides,
 };
 pub use ladder::{Ladder, Sport, ladder_for, ladder_for_tag};
+pub use placement::{
+    PLACEMENT_MATCHES, counts_towards_placement, counts_towards_rating, published, sigma_on_entry,
+};
 pub use scale::{
     CONFIDENCE_SIGMAS, DisplayRating, RATING_ORIGIN, SCALE, display, display_confidence,
     display_rating,

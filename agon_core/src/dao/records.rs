@@ -2105,11 +2105,37 @@ pub struct RatingRecord {
     pub mu: f64,
     /// Standard deviation, i.e. how unsure we are — `rating::PlayerRating::sigma`.
     pub sigma: f64,
-    /// How many rated matches have been folded into this rating: the
-    /// "· 6 games" shown beside the number from the first rated match on,
-    /// and the cheap check that a repair replay covered the same matches the
-    /// incremental path did.
+    /// How many matches have been folded into this rating in total,
+    /// **including unranked ones** — the cheap check that a repair replay
+    /// covered the same matches the incremental path did.
+    ///
+    /// Not the number a player is shown. Every completed match in a rated
+    /// sport moves a rating now, ranked or not, so this counts the casual
+    /// play that builds a latent prior as well as the ranked play that
+    /// surfaces — see [`RatingRecord::ranked_matches_rated`] for the half
+    /// that does. It is also not comparable between two players: someone who
+    /// logs every kickabout and someone who logs only league games can reach
+    /// the same count off very different amounts of evidence.
     pub matches_rated: u64,
+    /// How many **ranked** matches have been folded in since this ladder's
+    /// opt-in: the "· 6 games" shown beside a published rating, and the
+    /// counter that decides whether there is a published rating at all
+    /// (`rating::PLACEMENT_MATCHES`).
+    ///
+    /// Zero means one of two things, and the rating is displayed in neither:
+    /// the player has never opted in to this ladder (the rating is latent,
+    /// built from casual play, shown to nobody — not even to them), or they
+    /// have opted in and not yet finished placements. Which of the two it is
+    /// comes from `UserRecord::rating_opt_ins`, not from here.
+    ///
+    /// It carries a second job: it is what stops the opt-in confidence reset
+    /// from firing twice. See `rating::sigma_on_entry`.
+    ///
+    /// `#[serde(default)]` is a formality rather than a migration — the
+    /// rating write path has never run (see `dao::rating`'s module doc), so
+    /// no stored rating predates this field.
+    #[serde(default)]
+    pub ranked_matches_rated: u64,
     /// The `starts_at` of the most recent match folded in — when the newest
     /// rated match was **played**, not when it was rated. That is the
     /// comparison the pipeline actually needs: a match arriving with an
@@ -2172,6 +2198,22 @@ pub struct RatingHistoryRecord {
     /// The match's `starts_at` — the key's ordering segment. See
     /// `Sk::Rating` on why played order and not confirmation order.
     pub played_at: String,
+    /// Whether the match was `ranked`, and so counted towards the player's
+    /// published standing rather than only their latent rating.
+    ///
+    /// Duplicated out of the match record because the repair replay pages
+    /// through these history items and never reads the matches behind them.
+    /// This is the only place it can learn which entries advanced
+    /// `RatingRecord::ranked_matches_rated`, and therefore where in the
+    /// sequence the opt-in confidence reset fell — get that wrong and the
+    /// replay lands on different numbers than the incremental path did,
+    /// which is the one thing the repair design may not do.
+    ///
+    /// Same justification as [`RatingContributionRecord::ladder`]: what was
+    /// true when the entry was applied is not answerable from the match's
+    /// current state.
+    #[serde(default)]
+    pub ranked: bool,
     pub movement: RatingMovementRecord,
     /// Wall clock at the moment this was applied. Distinct from `played_at`,
     /// and worth keeping alongside it: the gap between the two is exactly how
@@ -2216,6 +2258,18 @@ pub struct RatingContributionRecord {
     /// withdrawing a contribution can address its `RATING#` history item
     /// (whose key contains it) without re-reading the match.
     pub played_at: String,
+    /// Whether the match was `ranked` when this was applied — mirrored onto
+    /// the history entry this contribution derives, where the repair replay
+    /// reads it ([`RatingHistoryRecord::ranked`] explains why it has to be
+    /// stored rather than looked up).
+    ///
+    /// Part of [`RatingContributionRecord::has_same_effect_as`], because a
+    /// match toggled between ranked and friendly has genuinely changed its
+    /// effect even when the movement is identical: the same `mu` and `sigma`
+    /// arrived, but one advanced the player's placement progress and the
+    /// other did not.
+    #[serde(default)]
+    pub ranked: bool,
     pub movement: RatingMovementRecord,
     /// Wall clock at the moment this was applied. Deliberately *excluded*
     /// from the "has anything changed?" comparison — see
@@ -2240,6 +2294,7 @@ impl RatingContributionRecord {
             && self.ladder == other.ladder
             && self.side_id == other.side_id
             && self.played_at == other.played_at
+            && self.ranked == other.ranked
             && self.movement == other.movement
     }
 }
@@ -2668,6 +2723,7 @@ mod tests {
                     mu: 27.638_888_888_888_89,
                     sigma: 7.171_442_936_549_223,
                     matches_rated: 6,
+                    ranked_matches_rated: 5,
                     last_rated_at: "2026-09-01T19:00:00.000Z".into(),
                 },
             )]),
@@ -2701,6 +2757,7 @@ mod tests {
                 mu,
                 sigma,
                 matches_rated: 7,
+                ranked_matches_rated: 4,
                 last_rated_at: "2026-06-01T10:00:00.000Z".into(),
             };
             let av: AttributeValue = serde_dynamo::to_attribute_value(&rec).unwrap();
@@ -2722,6 +2779,7 @@ mod tests {
             ladder: "squash".into(),
             side_id: "sideA".into(),
             played_at: "2026-06-01T10:00:00.000Z".into(),
+            ranked: true,
             movement: RatingMovementRecord {
                 mu_before: 25.0,
                 sigma_before: 25.0 / 3.0,
@@ -2774,6 +2832,19 @@ mod tests {
                 "another player",
                 RatingContributionRecord {
                     user_id: "u2".into(),
+                    ..base.clone()
+                },
+            ),
+            // The movement is byte-for-byte identical and the effect is
+            // still different: the same mu and sigma arrived, but one of
+            // these advanced the player's placement progress and the other
+            // did not. Without `ranked` in the comparison, switching a
+            // rated match to friendly would look like a redelivery and the
+            // counter would keep the match it no longer has.
+            (
+                "switched to friendly",
+                RatingContributionRecord {
+                    ranked: false,
                     ..base.clone()
                 },
             ),

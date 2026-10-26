@@ -392,6 +392,45 @@ export function matchPlayerTotalLabel(match: Match): string {
   return `${count} ${count === 1 ? 'player' : 'players'}`
 }
 
+/** The match's total headcount, from whichever field the given shape
+ *  carries it in — `FeedMatch.total_player_count` (pre-aggregated) or a full
+ *  `Match.players` roster to count directly. `undefined` for a `SearchMatch`,
+ *  which carries neither. */
+function matchTotalPlayerCount(match: Match | FeedMatch | SearchMatch): number | undefined {
+  if ('total_player_count' in match) return match.total_player_count
+  if ('players' in match) return match.players.length
+  return undefined
+}
+
+/** Whether a scheduled match has anyone not yet assigned to a side. A side's
+ *  own roster count (`sidePlayerCountLabel`) never includes the unassigned,
+ *  so showing it per side alongside unassigned players can make a match
+ *  look emptier than it is. `false` for a `SearchMatch` — it carries no
+ *  overall headcount to compare against the sides' counts, so there's no
+ *  way to tell. */
+export function matchHasUnassignedPlayers(match: Match | FeedMatch | SearchMatch): boolean {
+  const total = matchTotalPlayerCount(match)
+  if (total == null) return false
+  const assigned = match.sides.reduce((sum, s) => sum + s.player_count, 0)
+  return total > assigned
+}
+
+/** "8 spots left" (or "1 spot left") — the match's remaining capacity
+ *  overall, shown in place of the per-side counts once
+ *  `matchHasUnassignedPlayers` is true. `undefined` when any side is still
+ *  uncapped (no overall ceiling to report yet, same rule as
+ *  `matchPlayerTotalLabel`) or the match carries no overall headcount
+ *  (`SearchMatch`). */
+export function matchSpotsLeftLabel(match: Match | FeedMatch | SearchMatch): string | undefined {
+  const total = matchTotalPlayerCount(match)
+  if (total == null) return undefined
+  const caps = match.sides.map((s) => s.max_players)
+  if (!caps.every((c) => c != null)) return undefined
+  const cap = caps.reduce<number>((sum, c) => sum + (c ?? 0), 0)
+  const left = Math.max(0, cap - total)
+  return `${left} ${left === 1 ? 'spot' : 'spots'} left`
+}
+
 /**
  * Display name for a match player: a linked Agon user's name is hydrated onto
  * the member server-side, an external player carries a display name directly.

@@ -4,7 +4,14 @@ import { cn } from '@/lib/utils'
 import { directionsUrl } from '@/lib/location'
 import { PlaceChip } from './MatchLocation'
 import { Avatar } from './Avatar'
-import { initials, sideDisplayName, sidePlayerCountLabel, sideTeamHint } from '@/lib/members'
+import {
+  initials,
+  matchHasUnassignedPlayers,
+  matchSpotsLeftLabel,
+  sideDisplayName,
+  sidePlayerCountLabel,
+  sideTeamHint,
+} from '@/lib/members'
 import type { ScorePlayers } from '@/lib/members'
 import { sportLabel, SPORT_ICON_TINT, type MatchType } from '@/lib/sports'
 import { countdownLabel, isStartingSoon, shortDate, timeOfDay } from '@/lib/datetime'
@@ -130,6 +137,29 @@ function ScheduledInfoRow({
       <span className={cn('truncate', linked && 'font-semibold text-foreground')}>{locationText}</span>
     </div>
   )
+}
+
+/** A scheduled tile's per-side roster count, or nothing once the match has
+ *  unassigned players — the unassigned don't show up in either side's
+ *  count, so showing both side counts would understate how full the game
+ *  actually is. `ScheduledSpotsLeftRow` shows the match's total capacity
+ *  instead in that case. */
+function ScheduledSideCount({
+  side,
+  spotsLeftLabel,
+}: {
+  side: MatchSide | undefined
+  spotsLeftLabel?: string
+}) {
+  if (spotsLeftLabel) return null
+  return <span className="shrink-0 text-xs text-muted-foreground">{sidePlayerCountLabel(side)}</span>
+}
+
+/** The match-wide "N spots left" line that replaces the per-side roster
+ *  counts once the match has unassigned players. */
+function ScheduledSpotsLeftRow({ label }: { label?: string }) {
+  if (!label) return null
+  return <p className="text-right text-xs text-muted-foreground">{label}</p>
 }
 
 function CardHeader({
@@ -526,6 +556,7 @@ export function FootballFeedCardBody({
   // rendered as a fabricated "0–0, Full time"; see the roster-count/"vs"
   // treatment below, matching `FootballMatchView`'s existing scheduled state).
   const isScheduled = match.status === 'scheduled'
+  const spotsLeftLabel = isScheduled && matchHasUnassignedPlayers(match) ? matchSpotsLeftLabel(match) : undefined
   const goalsForLive = (sideId: string | undefined) =>
     liveState && sideId ? (liveState.score[sideId] ?? 0) : 0
   const goalsA = isLive ? goalsForLive(sideA?.id) : (finishedHeadline?.[sideA?.id ?? ''] ?? 0)
@@ -588,7 +619,7 @@ export function FootballFeedCardBody({
               {!isLive && !isScheduled && aWon && <WinnerCheck />}
             </span>
             {isScheduled ? (
-              <span className="shrink-0 text-xs text-muted-foreground">{sidePlayerCountLabel(sideA)}</span>
+              <ScheduledSideCount side={sideA} spotsLeftLabel={spotsLeftLabel} />
             ) : (
               <span
                 className={cn(
@@ -612,7 +643,7 @@ export function FootballFeedCardBody({
               {!isLive && !isScheduled && bWon && <WinnerCheck />}
             </span>
             {isScheduled ? (
-              <span className="shrink-0 text-xs text-muted-foreground">{sidePlayerCountLabel(sideB)}</span>
+              <ScheduledSideCount side={sideB} spotsLeftLabel={spotsLeftLabel} />
             ) : (
               <span
                 className={cn(
@@ -626,6 +657,7 @@ export function FootballFeedCardBody({
           </div>
         </div>
 
+        {isScheduled && <ScheduledSpotsLeftRow label={spotsLeftLabel} />}
         {isScheduled && <ScheduledInfoRow startsAt={startsAt} location={match.location} />}
 
         {isLive && progressPct !== null && (
@@ -749,6 +781,7 @@ export function CricketFeedCardBody({
   onOpen?: () => void
 }) {
   const isScheduled = match.status === 'scheduled'
+  const spotsLeftLabel = isScheduled && matchHasUnassignedPlayers(match) ? matchSpotsLeftLabel(match) : undefined
   const format = cricketFormat(match.format)
   const activeScore = liveState ?? finishedScore
   const innings = (sideId: string | undefined) =>
@@ -799,7 +832,7 @@ export function CricketFeedCardBody({
           {batting && <span className="size-2 shrink-0 rounded-[3px] bg-destructive" aria-label="Batting" />}
         </span>
         {isScheduled ? (
-          <span className="shrink-0 text-xs text-muted-foreground">{sidePlayerCountLabel(side)}</span>
+          <ScheduledSideCount side={side} spotsLeftLabel={spotsLeftLabel} />
         ) : (
           <>
             {inn && (
@@ -846,6 +879,7 @@ export function CricketFeedCardBody({
           {row(sideB, nameB, bHeadline, bBatting, !!bWon)}
         </div>
 
+        {isScheduled && <ScheduledSpotsLeftRow label={spotsLeftLabel} />}
         {isScheduled && <ScheduledInfoRow startsAt={startsAt} location={match.location} />}
 
         {isLive && chase && (
@@ -940,6 +974,7 @@ export function NetballFeedCardBody({
   // See `FootballFeedCardBody`'s matching comment — same fabricated
   // "0–0, Full time" bug for a scheduled match, same fix.
   const isScheduled = match.status === 'scheduled'
+  const spotsLeftLabel = isScheduled && matchHasUnassignedPlayers(match) ? matchSpotsLeftLabel(match) : undefined
   const goalsForLive = (sideId: string | undefined) =>
     liveState && sideId ? (liveState.score[sideId] ?? 0) : 0
   const goalsA = isLive ? goalsForLive(sideA?.id) : (finishedHeadline?.[sideA?.id ?? ''] ?? 0)
@@ -1005,7 +1040,7 @@ export function NetballFeedCardBody({
               {!isLive && !isScheduled && aWon && <WinnerCheck />}
             </span>
             {isScheduled ? (
-              <span className="shrink-0 text-xs text-muted-foreground">{sidePlayerCountLabel(sideA)}</span>
+              <ScheduledSideCount side={sideA} spotsLeftLabel={spotsLeftLabel} />
             ) : (
               <span
                 className={cn(
@@ -1029,7 +1064,7 @@ export function NetballFeedCardBody({
               {!isLive && !isScheduled && bWon && <WinnerCheck />}
             </span>
             {isScheduled ? (
-              <span className="shrink-0 text-xs text-muted-foreground">{sidePlayerCountLabel(sideB)}</span>
+              <ScheduledSideCount side={sideB} spotsLeftLabel={spotsLeftLabel} />
             ) : (
               <span
                 className={cn(
@@ -1043,6 +1078,7 @@ export function NetballFeedCardBody({
           </div>
         </div>
 
+        {isScheduled && <ScheduledSpotsLeftRow label={spotsLeftLabel} />}
         {isScheduled && <ScheduledInfoRow startsAt={startsAt} location={match.location} />}
 
         {isLive && progressPct !== null && (

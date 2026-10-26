@@ -390,7 +390,7 @@ function WinnerCheck() {
  *  has its own (see `MatchSide.colour`), else falling back to the same
  *  primary-filled vs. white-bordered coloring `SideMarker` uses for the plain
  *  dot (`leading`). */
-function TeamCrestBadge({
+export function TeamCrestBadge({
   side,
   cornerTag,
 }: {
@@ -433,7 +433,7 @@ function TeamCrestBadge({
  *  (`side.team_id` set), else falls back to the existing plain dot. Pass
  *  `selfPlay` when both sides of the match share the same team id, so the
  *  crest also gets the small kit-colour corner tag. */
-function SideMarkerOrCrest({
+export function SideMarkerOrCrest({
   side,
   leading,
   selfPlay,

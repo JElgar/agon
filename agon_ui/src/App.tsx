@@ -14,6 +14,7 @@ import { LoginForm } from '@/components/auth/LoginForm'
 import { CreateProfileForm } from '@/components/auth/CreateProfileForm'
 import { InvitePreviewBanner } from '@/components/auth/InvitePreviewBanner'
 import { IosInstallBanner } from '@/components/IosInstallBanner'
+import { OfflineBanner } from '@/components/OfflineBanner'
 import { MobileBottomNav } from '@/components/MobileBottomNav'
 import { DesktopNav } from '@/components/DesktopNav'
 import { TabletHeader, TabletFloatingNav } from '@/components/TabletNav'
@@ -46,6 +47,8 @@ import {
   setPendingInvite,
   type PendingInvite,
 } from '@/lib/pendingInvite'
+import { getHasProfileCache, setHasProfileCache } from '@/lib/profileGateCache'
+import { useOnlineStatus } from '@/hooks/useOnlineStatus'
 
 /** Full-screen centered content, used for the loading / error / auth gates. */
 function CenteredMessage({ children }: { children: React.ReactNode }) {
@@ -231,20 +234,39 @@ function AuthenticatedApp() {
   // survives login. `pendingLink` is the token on the *current* URL, used to
   // preview the invite/join on the logged-out screen.
   const pendingLink = usePendingLinkCapture()
+  const isOnline = useOnlineStatus()
 
   // Resolve the caller's Agon profile. A 404 means the Supabase account exists
   // but hasn't completed signup (no `/users` record yet) → show profile creation.
   // We use the raw fetch client here (not $api) because the gate decision hinges
   // on the HTTP *status*, which openapi-react-query hides behind the parsed body.
+  //
+  // `fetchClient.GET` rejects (rather than returning a response) when the
+  // request can't reach the network at all — which is exactly what happens on
+  // a cold reload while offline. In that case fall back to whether this
+  // account had a profile last time it successfully checked, so someone who
+  // has already been let into the app isn't dropped back onto an error
+  // screen just because they lost connectivity.
   const gate = useQuery({
     queryKey: ['profile-gate'],
     enabled: !!session,
     retry: false,
     queryFn: async (): Promise<ProfileGate> => {
-      const { data, response } = await fetchClient.GET('/users/me')
-      if (data) return 'has-profile'
-      if (response.status === 404) return 'needs-profile'
-      throw new Error(`Failed to load profile (${response.status})`)
+      try {
+        const { data, response } = await fetchClient.GET('/users/me')
+        if (data) {
+          setHasProfileCache(true)
+          return 'has-profile'
+        }
+        if (response.status === 404) {
+          setHasProfileCache(false)
+          return 'needs-profile'
+        }
+        throw new Error(`Failed to load profile (${response.status})`)
+      } catch (err) {
+        if (!isOnline && getHasProfileCache()) return 'has-profile'
+        throw err
+      }
     },
   })
 
@@ -286,7 +308,11 @@ function AuthenticatedApp() {
       <CenteredMessage>
         <div className="text-center">
           <h2 className="text-xl font-semibold mb-4">Something went wrong</h2>
-          <p className="text-muted-foreground mb-4">Couldn't load your profile.</p>
+          <p className="text-muted-foreground mb-4">
+            {isOnline
+              ? "Couldn't load your profile."
+              : "You're offline and don't have a saved profile to show yet."}
+          </p>
           <div className="space-x-2">
             <Button onClick={() => gate.refetch()} variant="outline">
               Retry
@@ -311,6 +337,7 @@ function App() {
   return (
     <ThemeProvider defaultTheme="system" storageKey="agon-ui-theme">
       <BrowserRouter>
+        <OfflineBanner />
         <AuthProvider>
           <AuthenticatedApp />
         </AuthProvider>

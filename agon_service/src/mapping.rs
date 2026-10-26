@@ -18,9 +18,9 @@ use crate::membership::{
 };
 use crate::notification::{
     CommentNotification, FollowNotification, InvitationAcceptedNotification, LikeNotification,
-    MatchInvitationNotification, Notification, NotificationKind, ReplyNotification,
-    ScoreConfirmedNotification, ScoreSubmittedNotification, TeamInvitationNotification,
-    TeamMatchJoinableNotification,
+    MatchInvitationNotification, Notification, NotificationKind, PlayerJoinedNotification,
+    ReplyNotification, ScoreConfirmedNotification, ScoreSubmittedNotification,
+    TeamInvitationNotification, TeamMatchJoinableNotification, TeamMemberJoinedNotification,
 };
 use crate::team::{AssignableTeamRole, Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
@@ -1697,6 +1697,8 @@ pub fn notification_actor_id(kind: &NotificationKindRecord) -> &str {
         NotificationKindRecord::ScoreSubmitted { actor_user_id, .. } => actor_user_id,
         NotificationKindRecord::ScoreConfirmed { actor_user_id, .. } => actor_user_id,
         NotificationKindRecord::TeamMatchJoinable { actor_user_id, .. } => actor_user_id,
+        NotificationKindRecord::PlayerJoined { actor_user_id, .. } => actor_user_id,
+        NotificationKindRecord::TeamMemberJoined { actor_user_id, .. } => actor_user_id,
     }
 }
 
@@ -1839,6 +1841,22 @@ pub fn notification_from_record(
             team_name: team_name.clone(),
             match_id: match_id.clone(),
             match_name: match_name.clone(),
+        }),
+        NotificationKindRecord::PlayerJoined {
+            match_id,
+            match_name,
+            ..
+        } => NotificationKind::PlayerJoined(PlayerJoinedNotification {
+            joined_by: actor,
+            match_id: match_id.clone(),
+            match_name: match_name.clone(),
+        }),
+        NotificationKindRecord::TeamMemberJoined {
+            team_id, team_name, ..
+        } => NotificationKind::TeamMemberJoined(TeamMemberJoinedNotification {
+            joined_by: actor,
+            team_id: team_id.clone(),
+            team_name: team_name.clone(),
         }),
     };
     Notification {

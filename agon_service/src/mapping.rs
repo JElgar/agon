@@ -52,6 +52,7 @@ use crate::{
     ScoreSubmissionResponse, ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore,
     UserProfile, UserStats,
 };
+use crate::{LadderPlacement, LadderRating};
 use agon_core::dao::error::DaoError;
 use agon_core::dao::live_score_ops::NewLiveEvent;
 use agon_core::dao::records::{
@@ -78,6 +79,7 @@ use agon_core::dao::records::{
     TeamMemberRecord, TeamRecord, UserRecord, UserStatsRecord,
 };
 use agon_core::rating::ladder_for_tag;
+use agon_core::rating::{PLACEMENT_MATCHES, display, published};
 
 /// Parse an RFC-3339 timestamp string stored by the DAO into a UTC datetime,
 /// defaulting to the epoch on a malformed value (reads never fail on bad data).
@@ -181,7 +183,72 @@ pub fn user_profile_from_record(user: &UserRecord, is_followed_by_me: bool) -> U
         follower_count: user.follower_count as u32,
         following_count: user.following_count as u32,
         is_followed_by_me,
+        ratings: published_ratings_from_record(user),
     }
+}
+
+/// A user's published ratings, ordered by ladder, for any profile view.
+///
+/// The filter is the whole point: a stored rating exists for every ladder the
+/// user has ever completed a match on, and only the ones they have opted in
+/// to *and* finished placements on may be shown. Everything else is latent
+/// and is dropped here, at the one boundary where a rating becomes something
+/// anyone can read — rather than left to each caller to remember, which is
+/// how a latent number eventually reaches a response.
+///
+/// Ordered by ladder for the reason [`rating_opt_ins_from_record`] is: the
+/// record is a map, and a list that reshuffles between two reads of an
+/// unchanged profile makes a client diff it for nothing.
+pub fn published_ratings_from_record(user: &UserRecord) -> Vec<LadderRating> {
+    let mut ratings: Vec<LadderRating> = user
+        .ratings
+        .iter()
+        .filter(|(ladder, rating)| {
+            published(user.has_opted_in(ladder), rating.ranked_matches_rated)
+        })
+        .map(|(ladder, rating)| {
+            let display = display(rating.mu, rating.sigma);
+            LadderRating {
+                ladder: ladder.clone(),
+                rating: display.rating,
+                confidence: display.confidence,
+                floor: display.floor,
+                matches_rated: rating.ranked_matches_rated as u32,
+            }
+        })
+        .collect();
+    ratings.sort_by(|a, b| a.ladder.cmp(&b.ladder));
+    ratings
+}
+
+/// A user's in-progress placements, ordered by ladder, for their own
+/// `/users/me`.
+///
+/// Complements [`published_ratings_from_record`] exactly: a ladder they have
+/// opted in to is in one list or the other, never both and never neither. A
+/// ladder opted in to with no rating stored yet counts as nought played
+/// rather than being left out, so "4 more games" appears the moment somebody
+/// opts in rather than when they next play.
+pub fn rating_placements_from_record(user: &UserRecord) -> Vec<LadderPlacement> {
+    let mut placements: Vec<LadderPlacement> = user
+        .rating_opt_ins
+        .keys()
+        .filter_map(|ladder| {
+            let played = user
+                .ratings
+                .get(ladder)
+                .map_or(0, |rating| rating.ranked_matches_rated);
+            // Opted in by construction — this walks the opt-in map — so the
+            // only question left is whether placements are still running.
+            (played < PLACEMENT_MATCHES).then(|| LadderPlacement {
+                ladder: ladder.clone(),
+                played: played as u32,
+                required: PLACEMENT_MATCHES as u32,
+            })
+        })
+        .collect();
+    placements.sort_by(|a, b| a.ladder.cmp(&b.ladder));
+    placements
 }
 
 /// The ladders a user has opted in to, for their own `/users/me`, ordered by
@@ -2647,6 +2714,10 @@ pub fn deleted_user_profile(actor_id: &str) -> UserProfile {
         follower_count: 0,
         following_count: 0,
         is_followed_by_me: false,
+        // A deleted account's ratings go with it. They were never this
+        // profile's to show anyway: the placeholder exists so a stale link
+        // resolves, not so a vanished player keeps a standing.
+        ratings: Vec::new(),
     }
 }
 
@@ -3677,5 +3748,82 @@ mod tests {
                 ("tennis".to_string(), parse_ts("2026-09-15T10:00:00.000Z")),
             ]
         );
+    }
+
+    fn rated(ranked_matches_rated: u64) -> agon_core::dao::records::RatingRecord {
+        agon_core::dao::records::RatingRecord {
+            mu: 27.0,
+            sigma: 2.0,
+            matches_rated: 40,
+            ranked_matches_rated,
+            last_rated_at: "2026-09-15T10:00:00.000Z".to_string(),
+        }
+    }
+
+    /// **The leak boundary.** A rating exists for every ladder a user has
+    /// ever completed a match on, and only a placed one may leave the
+    /// service. Opted in but still placing is not enough, and never having
+    /// opted in is not enough however much they have played — which is the
+    /// case that matters, because it is every ringer in the system.
+    #[test]
+    fn only_a_placed_rating_is_published() {
+        let mut user = user_opted_in_to("u1", "Sam", &["squash"]);
+        user.ratings = HashMap::from([
+            ("squash".to_string(), rated(PLACEMENT_MATCHES)),
+            ("tennis".to_string(), rated(PLACEMENT_MATCHES)),
+            ("netball".to_string(), rated(PLACEMENT_MATCHES - 1)),
+        ]);
+        // Opted in to squash only: tennis is latent however many matches are
+        // behind it, and netball is still placing.
+        user.rating_opt_ins.insert(
+            "netball".to_string(),
+            "2026-09-15T10:00:00.000Z".to_string(),
+        );
+
+        let published = published_ratings_from_record(&user);
+        assert_eq!(
+            published
+                .iter()
+                .map(|r| r.ladder.as_str())
+                .collect::<Vec<_>>(),
+            vec!["squash"]
+        );
+        let squash = &published[0];
+        assert_eq!(squash.matches_rated, PLACEMENT_MATCHES as u32);
+        assert_eq!(squash.floor, squash.rating - squash.confidence);
+    }
+
+    /// The two lists partition the ladders a user has opted in to: squash is
+    /// published, netball is placing, and neither appears twice. A ladder
+    /// opted in to with nothing played yet reports nought of five rather
+    /// than going missing, so the client has something to show from the
+    /// moment somebody agrees.
+    #[test]
+    fn placements_hold_exactly_the_ladders_a_rating_does_not() {
+        let mut user = user_opted_in_to("u1", "Sam", &["squash", "netball", "tennis"]);
+        user.ratings = HashMap::from([
+            ("squash".to_string(), rated(PLACEMENT_MATCHES)),
+            ("netball".to_string(), rated(2)),
+        ]);
+
+        let placements = rating_placements_from_record(&user);
+        assert_eq!(
+            placements
+                .iter()
+                .map(|p| (p.ladder.as_str(), p.played, p.required))
+                .collect::<Vec<_>>(),
+            vec![
+                ("netball", 2, PLACEMENT_MATCHES as u32),
+                ("tennis", 0, PLACEMENT_MATCHES as u32),
+            ]
+        );
+        let published: Vec<String> = published_ratings_from_record(&user)
+            .into_iter()
+            .map(|r| r.ladder)
+            .collect();
+        assert_eq!(published, vec!["squash".to_string()]);
+        for placing in &placements {
+            assert!(!published.contains(&placing.ladder), "{}", placing.ladder);
+        }
     }
 }

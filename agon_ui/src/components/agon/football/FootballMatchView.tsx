@@ -21,7 +21,7 @@ import {
 import { initials, memberAvatarUrl, memberName, playerId, type ScorePlayers, sideDisplayName } from '@/lib/members'
 import { resolveSideColour } from '@/lib/sideColours'
 import { FollowButton } from '@/components/agon/FollowButton'
-import { MatchLikesButton } from '@/components/agon/MatchLikes'
+import { MatchLikesRow } from '@/components/agon/MatchLikes'
 import { PinnedActionBar } from '@/components/agon/PinnedActionBar'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -627,15 +627,9 @@ export function CommentsPreviewCard({
 
   return (
     <section className={cn(cardClass, 'flex flex-col gap-3')}>
+      <MatchLikesRow match={match} />
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <span className="text-[15px] font-bold">Comments</span>
-          <MatchLikesButton
-            matchId={match.id}
-            count={match.social.like_count}
-            liked={match.social.i_liked}
-          />
-        </div>
+        <span className="text-[15px] font-bold">Comments</span>
         {count > 0 && (
           <button type="button" onClick={onOpen} className="text-sm font-bold text-link">
             See all {count}

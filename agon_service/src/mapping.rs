@@ -1325,62 +1325,22 @@ pub fn ranked_lock_reason_for_update(
     None
 }
 
-/// What has to happen about a caller's rating consent before they get into a
-/// ranked match. Decided by [`rating_consent_step`]; `main.rs`'s
-/// `settle_rating_consent` carries it out.
-#[derive(Debug, PartialEq, Eq)]
-pub enum RatingConsentStep {
-    /// Let them in: they're already opted in to the match's ladder.
-    Proceed,
-    /// Record their opt-in to this ladder, then let them in.
-    OptIn(String),
-    /// Refuse, with this message: not opted in, and no consent given.
-    Refuse(String),
-}
-
-/// Whether `caller` may get into a match ranked on `ladder` (by creating it
-/// as a player, accepting an invitation to it, joining it, or joining its
-/// waitlist), and what has to happen first. `consent` is the request's
-/// `rating_consent`.
-///
-/// Only ever asked about a ranked match: `ladder` is its `rating_ladder`, which
-/// a friendly doesn't have. That is the whole of "a friendly ignores consent
-/// and never opts anyone in", with no branch of its own here to get wrong.
-///
-/// Being opted in wins over `consent` either way. A second ranked game in the
-/// same sport asks nothing, and ticking the box again isn't a second opt-in:
-/// `Dao::opt_in_to_rating` would keep the first date regardless, but there's
-/// no reason to spend its two round trips finding that out.
-#[must_use]
-pub fn rating_consent_step(ladder: &str, caller: &UserRecord, consent: bool) -> RatingConsentStep {
-    if caller.has_opted_in(ladder) {
-        RatingConsentStep::Proceed
-    } else if consent {
-        RatingConsentStep::OptIn(ladder.to_owned())
-    } else {
-        RatingConsentStep::Refuse(format!(
-            "this is a ranked {ladder} match, and playing in it starts your {ladder} rating: \
-             send `rating_consent: true` to agree to that"
-        ))
-    }
-}
-
 /// The players a match ranked on some ladder can't have in it, sorted by why.
 /// Built by [`unratable_players`]; empty means all of them can play.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct UnratablePlayers {
-    /// Players with no Agon account, by display name. Nobody can consent to a
-    /// rating for them and there's no profile to keep one on, so they can't be
-    /// in a ranked match at all.
+    /// Players with no Agon account, by display name. There is no profile to
+    /// keep a rating on, and the rating pipeline refuses a match outright
+    /// rather than rate around a guest on a side (Weng-Lin sums a side's
+    /// beliefs, so their part of the result would be credited to their
+    /// team-mates). Keeping them out of a ranked match is therefore not a
+    /// consent rule but a "this could never be rated" one.
+    ///
+    /// Once the only reason a player could be unratable. Not being opted in
+    /// used to be the other, and is not a reason for anything now: every
+    /// account is rated from the first match it completes, published only
+    /// once it opts in (`agon_core::rating::placement`).
     pub without_account: Vec<String>,
-    /// Linked players who haven't opted in to the ladder, by name.
-    pub not_opted_in: Vec<String>,
-}
-
-impl UnratablePlayers {
-    fn is_empty(&self) -> bool {
-        self.without_account.is_empty() && self.not_opted_in.is_empty()
-    }
 }
 
 /// Sort `players` into those who couldn't take a spot in a match ranked on
@@ -1388,33 +1348,25 @@ impl UnratablePlayers {
 /// roster row, an `added_players` entry or a waitlist entry this needs.
 /// `users` holds the profiles of the linked ones, from one `batch_get_users`.
 ///
-/// A user id with no profile in `users` counts as not opted in: nothing says
-/// they are, and the check is there to keep out exactly the players nothing
-/// vouches for.
-///
 /// This is for the paths that put *someone else* in a ranked match (an
-/// organiser's `added_players`, switching a match to ranked, moving someone in
-/// off the waitlist), which is why it refuses rather than asks: consent has to
-/// come from the player, and those paths have no way to ask them. The caller's
-/// own way in is [`rating_consent_step`].
+/// organiser's `added_players`, switching a match to ranked). It refuses
+/// rather than asks, which used to be because consent has to come from the
+/// player and those paths can't ask them — and is now because the one thing
+/// left to refuse, a player with no account, is not something anybody can
+/// consent their way out of.
+///
+/// It no longer takes the ladder or the players' profiles, because with the
+/// opt-in rule gone there is nothing on a profile left to check. Callers that
+/// read those profiles only to pass them here can drop the read.
 pub fn unratable_players<'a>(
-    ladder: &str,
     players: impl IntoIterator<Item = (Option<&'a str>, Option<&'a str>)>,
-    users: &std::collections::HashMap<String, UserRecord>,
 ) -> UnratablePlayers {
     let mut unratable = UnratablePlayers::default();
     for (user_id, display_name) in players {
-        match user_id {
-            None => unratable
+        if user_id.is_none() {
+            unratable
                 .without_account
-                .push(display_name.unwrap_or("an unnamed player").to_owned()),
-            Some(id) => match users.get(id) {
-                Some(user) if user.has_opted_in(ladder) => {}
-                Some(user) => unratable.not_opted_in.push(user.name.clone()),
-                None => unratable
-                    .not_opted_in
-                    .push(display_name.unwrap_or(id).to_owned()),
-            },
+                .push(display_name.unwrap_or("an unnamed player").to_owned());
         }
     }
     unratable
@@ -1423,109 +1375,46 @@ pub fn unratable_players<'a>(
 /// The refusal for an organiser's `added_players` on a ranked match, or `None`
 /// if everyone listed may be added.
 ///
-/// Adding someone directly is the one way into a match that doesn't go through
-/// the person being added, so it's the one that can't collect their consent.
-/// Hence "invite them instead": an invitee consents when they accept.
+/// The only reason left is a player with no account, who could never be
+/// rated whoever added them. Adding someone who simply hasn't opted in is
+/// fine now: the match rates them latently, and nothing they or the organiser
+/// does about it changes the result.
 #[must_use]
-pub fn ranked_added_players_reason(ladder: &str, unratable: &UnratablePlayers) -> Option<String> {
+pub fn ranked_added_players_reason(unratable: &UnratablePlayers) -> Option<String> {
     if !unratable.without_account.is_empty() {
         return Some(format!(
             "players without an Agon account can't be added to a ranked match: {}",
             unratable.without_account.join(", ")
         ));
     }
-    if !unratable.not_opted_in.is_empty() {
-        return Some(format!(
-            "players who haven't opted in to {ladder} ratings can't be added straight into a \
-             ranked match; invite them instead, and they can opt in when they accept: {}",
-            unratable.not_opted_in.join(", ")
-        ));
-    }
     None
 }
 
-/// The refusal for switching a match to ranked, or `None` if everyone it
-/// would rate or could move in can be rated on `ladder`.
+/// The refusal for switching a match to ranked, or `None` if the match could
+/// actually be rated afterwards.
 ///
-/// `in_a_spot` is judged because those are the players the match would rate.
-/// Pending invitees aren't: they're asked for consent when they accept.
+/// Only the players in a spot are judged, and only for having an account. A
+/// switch used to be refused unless everyone in a spot had opted in, and
+/// separately unless everyone on the *waitlist* had too — the latter because
+/// a player waiting on a friendly that turned ranked had no way left to
+/// consent (joining the waitlist again is a 409, an invite-derived entry's
+/// invitation is already accepted, and move-in refused them because an admin
+/// couldn't consent for them). That whole knot was consent machinery, and it
+/// is gone: nobody needs to have agreed for the match to rate, so a waitlist
+/// is no longer a reason to refuse anything and needs no read here.
 ///
-/// `waitlisted` is judged too, which a first version of this rule left out.
-/// A player waiting on a friendly that turns ranked would otherwise have no
-/// way to consent on it: joining the waitlist again is a 409, an invite-derived
-/// entry's invitation is already accepted so there's nothing left to accept,
-/// and move-in refuses them because an admin can't consent for them. Refusing
-/// the switch instead keeps a ranked match's waitlist to opted-in players only.
-/// The organiser can remove the entry, and the player can come back by a way
-/// in that asks them. (Recording an opt-in as a side effect of the repeat
-/// waitlist join was the alternative, and was rejected as surprising.)
-///
-/// Players in a spot are reported ahead of the waitlist, and within each,
-/// players without an account ahead of the not-opted-in, because nothing a
-/// not-opted-in player could do (be invited, opt in) helps the former.
+/// What survives is not a consent rule. A guest on a side makes the match
+/// unrateable outright, so a switch that would produce one is refused rather
+/// than allowed to quietly produce a ranked match that never rates.
 #[must_use]
-pub fn switch_to_ranked_reason(
-    ladder: &str,
-    in_a_spot: &UnratablePlayers,
-    waitlisted: &UnratablePlayers,
-) -> Option<String> {
+pub fn switch_to_ranked_reason(in_a_spot: &UnratablePlayers) -> Option<String> {
     if !in_a_spot.without_account.is_empty() {
         return Some(format!(
             "a match with players who have no Agon account can't be ranked; remove them first: {}",
             in_a_spot.without_account.join(", ")
         ));
     }
-    if !in_a_spot.not_opted_in.is_empty() {
-        return Some(format!(
-            "a match can't become ranked until everyone taking a spot in it has opted in to \
-             {ladder} ratings, and these players haven't: {}",
-            in_a_spot.not_opted_in.join(", ")
-        ));
-    }
-    if !waitlisted.is_empty() {
-        let names: Vec<&str> = waitlisted
-            .without_account
-            .iter()
-            .chain(&waitlisted.not_opted_in)
-            .map(String::as_str)
-            .collect();
-        return Some(format!(
-            "a match can't become ranked while players on its waitlist haven't opted in to \
-             {ladder} ratings, because nobody could move them in; remove them from the waitlist \
-             first, and they'll be asked to agree when they next join or accept an invitation: {}",
-            names.join(", ")
-        ));
-    }
     None
-}
-
-/// The refusal for moving a waitlisted player into a spot on a ranked match,
-/// or `None` if they can be rated on `ladder`.
-///
-/// [`switch_to_ranked_reason`] keeps a ranked match's waitlist to opted-in
-/// players, and joining the waitlist of a ranked match asks for consent, so
-/// this is a backstop: a waitlist join that raced a switch to ranked, or an
-/// entry from before ranked matches asked for consent at all. The organiser
-/// moving them in can't consent for them, so they have to opt in themselves
-/// first.
-///
-/// A waitlist entry always names an account (`MatchWaitlistEntryRecord`), so
-/// `without_account` is empty in practice. It's handled anyway, so that if that
-/// ever changes the refusal stays right rather than reading an external as fine.
-#[must_use]
-pub fn ranked_move_in_reason(ladder: &str, unratable: &UnratablePlayers) -> Option<String> {
-    if !unratable.without_account.is_empty() {
-        return Some(
-            "that player has no Agon account, so they can't take a spot in a ranked match".into(),
-        );
-    }
-    unratable.not_opted_in.first().map(|name| {
-        format!(
-            "{name} hasn't opted in to {ladder} ratings, so they can't take a spot in a ranked \
-             match. Nobody can opt in on their behalf: remove them from the waitlist and invite \
-             them instead, and they can agree to it when they accept"
-        )
-    })
 }
 
 /// Build the feed's `FeedMatch` from a match summary (meta + sides, no
@@ -2257,165 +2146,54 @@ mod tests {
         }
     }
 
-    /// The case the whole check exists for: a player who isn't opted in and
-    /// didn't tick the box is refused, not let in on the strength of the
-    /// organiser having made the match ranked. The refusal names the sport and
-    /// the flag that answers it, and ticking the box is what opts them in.
+    /// The paths that put someone *else* in a ranked match sort out the
+    /// players who could never be rated there. That is now only players with
+    /// no account: there is no profile to keep a rating on, and the pipeline
+    /// refuses the match rather than rate a side around one of them.
+    ///
+    /// Not being opted in used to belong here too, and deliberately counted a
+    /// missing profile as a refusal. Both are gone — a player nothing vouches
+    /// for is simply rated latently like everyone else.
     #[test]
-    fn a_player_not_opted_in_needs_consent_to_get_into_a_ranked_match() {
-        let newcomer = user_opted_in_to("u1", "Sam", &[]);
-        let RatingConsentStep::Refuse(message) = rating_consent_step("squash", &newcomer, false)
-        else {
-            panic!("no opt-in and no consent must be refused");
-        };
-        assert!(message.contains("squash"), "{message}");
-        assert!(message.contains("rating_consent"), "{message}");
-        assert_eq!(
-            rating_consent_step("squash", &newcomer, true),
-            RatingConsentStep::OptIn("squash".to_string())
-        );
-    }
-
-    /// Consent is per ladder and permanent. An opted-in player gets into every
-    /// later ranked game in that sport without being asked, and ticking the box
-    /// again isn't a second opt-in. A different sport is a different consent,
-    /// and so is a ladder whose name merely starts with one they're opted in
-    /// to, which is `has_opted_in`'s exact-key lookup showing through.
-    #[test]
-    fn consent_is_asked_once_per_ladder() {
-        let player = user_opted_in_to("u1", "Sam", &["tennis"]);
-        assert_eq!(
-            rating_consent_step("tennis", &player, false),
-            RatingConsentStep::Proceed
-        );
-        assert_eq!(
-            rating_consent_step("tennis", &player, true),
-            RatingConsentStep::Proceed
-        );
-        for other in ["squash", "tennis:doubles"] {
-            assert!(
-                matches!(
-                    rating_consent_step(other, &player, false),
-                    RatingConsentStep::Refuse(_)
-                ),
-                "{other}"
-            );
-        }
-    }
-
-    /// The paths that put someone *else* in a ranked match can't ask them, so
-    /// they sort players instead: no account, linked but not opted in, or fine.
-    /// A user id whose profile didn't come back counts as not opted in. The
-    /// check exists to keep out players nothing vouches for, so a missing
-    /// profile must not read as a pass.
-    #[test]
-    fn players_are_sorted_by_why_they_cannot_be_rated() {
-        let users = HashMap::from([
-            (
-                "in".to_string(),
-                user_opted_in_to("in", "Opted", &["squash"]),
-            ),
-            (
-                "out".to_string(),
-                user_opted_in_to("out", "Not Opted", &["tennis"]),
-            ),
+    fn only_players_without_an_account_cannot_be_rated() {
+        let unratable = unratable_players([
+            (Some("in"), None),
+            (Some("out"), None),
+            (None, Some("Ringer")),
+            (Some("ghost"), None),
+            (None, None),
         ]);
-        let unratable = unratable_players(
-            "squash",
-            [
-                (Some("in"), None),
-                (Some("out"), None),
-                (None, Some("Ringer")),
-                (Some("ghost"), None),
-                (None, None),
-            ],
-            &users,
-        );
         assert_eq!(
             unratable,
             UnratablePlayers {
                 without_account: vec!["Ringer".to_string(), "an unnamed player".to_string()],
-                not_opted_in: vec!["Not Opted".to_string(), "ghost".to_string()],
             }
         );
         assert_eq!(
-            unratable_players("squash", [(Some("in"), None)], &users),
+            unratable_players([(Some("in"), None)]),
             UnratablePlayers::default()
         );
     }
 
     /// Each refusal is silent when there's nobody to refuse, and otherwise
-    /// names who. For an organiser's direct add it also names the way round
-    /// it: an invitation, which does ask the player. Players without an account
-    /// are reported ahead of the not-opted-in, because nothing a not-opted-in
-    /// player could do (be invited, opt in) helps them.
+    /// names who. Both remaining refusals are about accounts, so both say
+    /// so — there is no longer a second kind to report underneath.
     #[test]
     fn the_roster_refusals_name_who_and_what_to_do() {
         let nobody = UnratablePlayers::default();
-        assert_eq!(ranked_added_players_reason("squash", &nobody), None);
-        assert_eq!(switch_to_ranked_reason("squash", &nobody, &nobody), None);
-        assert_eq!(ranked_move_in_reason("squash", &nobody), None);
+        assert_eq!(ranked_added_players_reason(&nobody), None);
+        assert_eq!(switch_to_ranked_reason(&nobody), None);
 
-        let not_opted_in = UnratablePlayers {
-            without_account: Vec::new(),
-            not_opted_in: vec!["Sam".to_string()],
-        };
-        let added = ranked_added_players_reason("squash", &not_opted_in).unwrap();
-        assert!(added.contains("invite them instead"), "{added}");
-        assert!(added.contains("Sam"), "{added}");
-        let switch = switch_to_ranked_reason("squash", &not_opted_in, &nobody).unwrap();
-        assert!(switch.contains("opted in to squash ratings"), "{switch}");
-        assert!(switch.contains("Sam"), "{switch}");
-        let move_in = ranked_move_in_reason("squash", &not_opted_in).unwrap();
-        assert!(move_in.starts_with("Sam hasn't opted in"), "{move_in}");
-        assert!(move_in.contains("invite them"), "{move_in}");
-
-        let both = UnratablePlayers {
+        let guest = UnratablePlayers {
             without_account: vec!["Ringer".to_string()],
-            not_opted_in: vec!["Sam".to_string()],
         };
         for reason in [
-            ranked_added_players_reason("squash", &both).unwrap(),
-            switch_to_ranked_reason("squash", &both, &nobody).unwrap(),
+            ranked_added_players_reason(&guest).unwrap(),
+            switch_to_ranked_reason(&guest).unwrap(),
         ] {
             assert!(reason.contains("Agon account"), "{reason}");
             assert!(reason.contains("Ringer"), "{reason}");
-            assert!(!reason.contains("Sam"), "{reason}");
         }
-        assert!(
-            ranked_move_in_reason("squash", &both)
-                .unwrap()
-                .contains("no Agon account")
-        );
-    }
-
-    /// The gap the re-port onto the separate waitlist closed: a player waiting
-    /// on a friendly has no way to consent on it once it turns ranked (a
-    /// repeat waitlist join is a 409, and an invite-derived entry has no
-    /// invitation left to accept), and move-in would then refuse them for
-    /// good. So switching to ranked refuses while anyone waiting isn't opted
-    /// in, naming them and the way out. It's a refusal of its own, reported
-    /// only once everyone in a spot is fine, so the organiser fixes the roster
-    /// first and the waitlist second rather than seeing one message for both.
-    #[test]
-    fn switching_to_ranked_also_judges_the_waitlist() {
-        let nobody = UnratablePlayers::default();
-        let waiting = UnratablePlayers {
-            without_account: Vec::new(),
-            not_opted_in: vec!["Wendy".to_string()],
-        };
-        let reason = switch_to_ranked_reason("squash", &nobody, &waiting).unwrap();
-        assert!(reason.contains("waitlist"), "{reason}");
-        assert!(reason.contains("squash"), "{reason}");
-        assert!(reason.contains("Wendy"), "{reason}");
-
-        let in_a_spot = UnratablePlayers {
-            without_account: Vec::new(),
-            not_opted_in: vec!["Sam".to_string()],
-        };
-        let reason = switch_to_ranked_reason("squash", &in_a_spot, &waiting).unwrap();
-        assert!(reason.contains("Sam"), "{reason}");
-        assert!(!reason.contains("Wendy"), "{reason}");
     }
 
     /// `/users/me` lists opt-ins in ladder order with their stored dates,

@@ -236,8 +236,8 @@ pub struct DevicePairingRecord {
 /// `email` is duplicated here for reads; uniqueness is enforced by a separate
 /// `EMAIL#<email>` guard item. `stats` holds per-sport aggregates inline, so a
 /// profile read/batch-read returns everything in one point read — always
-/// present (all `None` for a brand new user). `ratings` and `rating_opt_ins`
-/// ride the same item for the same reason.
+/// present (all `None` for a brand new user). `ratings` rides the same item
+/// for the same reason.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UserRecord {
     pub id: String,
@@ -278,55 +278,12 @@ pub struct UserRecord {
     ///   stored rating (see `rating::Ladder`). A closed struct here would
     ///   re-close exactly what that decision opened.
     ///
-    /// A ladder appears here only once a ranked match on it has been rated,
-    /// so being opted in (`rating_opt_ins`) with no entry yet is normal. The
-    /// reverse — a rating with no opt-in behind it — is what the rating
-    /// pipeline must refuse to produce, by re-checking every participant's
-    /// opt-in before it rates; nothing at this layer enforces it.
+    /// A ladder appears here once a ranked match on it has been rated, and
+    /// not before. Nothing says whether the rating may be shown: that is
+    /// `rating::published`, read off `RatingRecord::matches_rated`.
     #[serde(default)]
     pub ratings: HashMap<String, RatingRecord>,
-    /// The ladders this account has consented to be rated on, each mapped to
-    /// when it did so (RFC 3339). Written by `Dao::opt_in_to_rating` when a
-    /// player ticks "I understand this starts my <sport> rating" on a ranked
-    /// game; read through [`UserRecord::has_opted_in`].
-    ///
-    /// **Entries are never removed.** Opting in is not reversible — a product
-    /// decision, not an omission, and the reason there is no opt-out
-    /// operation — so a ladder seen here once can be relied on from then on.
-    ///
-    /// A map to the consent time rather than a set of ladder names. A
-    /// DynamoDB string set would be the simpler write (`ADD` creates a missing
-    /// set, so there would be no ensure-the-map round trip), but it throws
-    /// away *when* somebody agreed, which is the one fact a consent record
-    /// exists to keep. The map also makes "first tick wins" a single
-    /// `attribute_not_exists` condition on the ladder's path, so ticking the
-    /// box again on a later game never moves the original date.
-    ///
-    /// Keyed by ladder, like `ratings`, and today a ladder is exactly the
-    /// sport tag. If a sport is ever split into several ladders, whether one
-    /// consent covers all of them is for that change to decide; this shape
-    /// does not settle it.
-    ///
-    /// `#[serde(default)]` because no profile written before this field
-    /// existed has it, and an empty map is right for every one of them:
-    /// nobody could opt in before there was anywhere to record it.
-    #[serde(default)]
-    pub rating_opt_ins: HashMap<String, String>,
     pub created_at: String,
-}
-
-impl UserRecord {
-    /// Whether this account has opted in to being rated on `ladder` — the
-    /// check every path into a ranked game makes.
-    ///
-    /// An exact-key lookup. Ladder names can be string prefixes of one
-    /// another (`"tennis"`, `"tennis:doubles"`), and a prefix match would
-    /// quietly decide the open question on `rating_opt_ins` of whether one
-    /// consent covers a split sport.
-    #[must_use]
-    pub fn has_opted_in(&self, ladder: &str) -> bool {
-        self.rating_opt_ins.contains_key(ladder)
-    }
 }
 
 /// `USER#<followeeId>` / `FOLLOWER#<followerId>` — a directed user→user follow
@@ -517,8 +474,8 @@ pub struct MatchRecord {
     /// that item is rewritten by far more than an edit: every like and every
     /// comment `ADD`s a counter on it. A `true` default would enrol the whole
     /// back catalogue into the ladders, one old match per like, rating
-    /// players who never opted in — when opting in is the one thing a rating
-    /// requires. Please don't "fix" this to match a create-time default.
+    /// games nobody meant to count. Please don't "fix" this to match a
+    /// create-time default.
     ///
     /// A ranked match always has a rating ladder (`rating::ladder_for_tag` on
     /// `match_type`), so sport `other` is never ranked. The API enforces that
@@ -856,11 +813,13 @@ pub struct MatchPlayerRecord {
     /// writes that have always moved them (a decline, or the deadline sweep
     /// removing the row).
     ///
-    /// Only players who haven't opted in to the match's ladder are prompted.
-    /// Someone already opted in is *told* the match now counts and keeps their
-    /// place whatever they do, so this never appears on their row: the prompt
-    /// exists to collect consent that is missing, not to re-confirm consent
-    /// that already exists.
+    /// **Nothing writes this.** It was shaped around an opt-in map that no
+    /// longer exists: only players not opted in to the match's ladder were
+    /// prompted, and who still owed an answer was derived from the absence
+    /// of their opt-in rather than stored per player. Nobody consents to
+    /// anything now, so if a switch-to-ranked ask is ever built it needs a
+    /// different shape — per-player answers on the match — and this field
+    /// is not it.
     ///
     /// `#[serde(default)]` → `None` for every row written before prompts
     /// existed, which is the truth about them: nothing was ever asked.
@@ -2058,47 +2017,33 @@ mod tests {
         ])
     }
 
+    /// A profile stored before ratings existed reads back unrated, and one
+    /// stored while the opt-in map existed reads back the same — the
+    /// attribute is simply no longer a field, which is what makes removing
+    /// it a no-op for everything already written.
     #[test]
-    fn user_written_before_ratings_existed_is_unrated_and_opted_in_nowhere() {
-        let rec: UserRecord =
-            serde_dynamo::from_attribute_value(AttributeValue::M(legacy_user_fields())).unwrap();
-        assert!(rec.ratings.is_empty(), "nothing rated");
-        assert!(
-            rec.rating_opt_ins.is_empty(),
-            "nobody could opt in before the field existed"
-        );
-        assert!(!rec.has_opted_in("squash"));
+    fn a_user_written_before_or_during_the_opt_in_map_reads_back_unrated() {
+        for extra in [None, Some(("rating_opt_ins", "tennis"))] {
+            let mut item = legacy_user_fields();
+            if let Some((attr, ladder)) = extra {
+                item.insert(
+                    attr.to_string(),
+                    AttributeValue::M(HashMap::from([(
+                        ladder.to_string(),
+                        AttributeValue::S("2026-09-15T10:00:00.000Z".into()),
+                    )])),
+                );
+            }
+            let rec: UserRecord =
+                serde_dynamo::from_attribute_value(AttributeValue::M(item)).unwrap();
+            assert!(rec.ratings.is_empty(), "nothing rated");
+        }
     }
 
-    /// `Dao::opt_in_to_rating` writes the consent time with a raw nested
-    /// `SET rating_opt_ins.#ladder = :opted_in_at` of a string, while this
-    /// side reads `HashMap<String, String>` — two shapes nothing but this test
-    /// ties together. It builds the item the way that write leaves it and
-    /// reads it back. The ladder names are prefixes of one another, to pin
-    /// that `has_opted_in` is an exact-key lookup.
+    /// A rated profile survives the write/read cycle whole — the `ratings`
+    /// map of nested records beside the fields that were already there.
     #[test]
-    fn an_opt_in_as_the_dao_writes_it_reads_back_for_exactly_that_ladder() {
-        let mut item = legacy_user_fields();
-        item.insert(
-            "rating_opt_ins".to_string(),
-            AttributeValue::M(HashMap::from([(
-                "tennis".to_string(),
-                AttributeValue::S("2026-09-15T10:00:00.000Z".into()),
-            )])),
-        );
-        let rec: UserRecord = serde_dynamo::from_attribute_value(AttributeValue::M(item)).unwrap();
-
-        assert!(rec.has_opted_in("tennis"));
-        assert!(!rec.has_opted_in("tennis:doubles"));
-        assert!(!rec.has_opted_in("squash"));
-        assert_eq!(rec.rating_opt_ins["tennis"], "2026-09-15T10:00:00.000Z");
-    }
-
-    /// A rated, opted-in profile survives the write/read cycle whole — the
-    /// `ratings` map of nested records and the `rating_opt_ins` map of
-    /// strings both, beside the fields that were already there.
-    #[test]
-    fn a_rated_opted_in_profile_round_trips() {
+    fn a_rated_profile_round_trips() {
         let rec = UserRecord {
             id: "u1".into(),
             email: "sofia@example.com".into(),
@@ -2117,10 +2062,6 @@ mod tests {
                     last_rated_at: "2026-09-01T19:00:00.000Z".into(),
                 },
             )]),
-            rating_opt_ins: HashMap::from([
-                ("squash".to_string(), "2026-08-01T12:00:00.000Z".to_string()),
-                ("tennis".to_string(), "2026-09-15T10:00:00.000Z".to_string()),
-            ]),
             created_at: "2026-01-01T00:00:00Z".into(),
         };
         let av: AttributeValue = serde_dynamo::to_attribute_value(&rec).unwrap();

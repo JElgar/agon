@@ -28,9 +28,9 @@ use crate::{
     CreateMatchSeriesEndInput, CreateMatchSeriesEndNeverInput, CreateMatchSeriesEndOnDateInput,
     DevicePlatform, FeedMatch, GenericPlayerStats, Location, Match, MatchOutcome, MatchPlayer,
     MatchSeries, MatchSeriesOccurrence, MatchSeriesSide, MatchSeriesStatus, MatchSide, MatchSocial,
-    MatchStatus, MatchType, PendingScore, Photo, RatingOptIn, RosterPreviewPlayer, Score,
-    ScoreConfirmation, ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse,
-    ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
+    MatchStatus, MatchType, PendingScore, Photo, RosterPreviewPlayer, Score, ScoreConfirmation,
+    ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus,
+    SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
 };
 use crate::{LadderPlacement, LadderRating};
 use agon_core::dao::error::DaoError;
@@ -479,26 +479,6 @@ pub fn rating_placements_from_record(user: &UserRecord) -> Vec<LadderPlacement> 
         .collect();
     placements.sort_by(|a, b| a.ladder.cmp(&b.ladder));
     placements
-}
-
-/// The ladders a user has opted in to, for their own `/users/me`, ordered by
-/// ladder.
-///
-/// Sorted because the record is a map, whose iteration order is arbitrary, and
-/// a list that reshuffles between two reads of an unchanged profile makes a
-/// client re-render or diff it for nothing. By ladder rather than by date
-/// because ladder names are unique, so the order is total.
-pub fn rating_opt_ins_from_record(user: &UserRecord) -> Vec<RatingOptIn> {
-    let mut opt_ins: Vec<RatingOptIn> = user
-        .rating_opt_ins
-        .iter()
-        .map(|(ladder, opted_in_at)| RatingOptIn {
-            ladder: ladder.clone(),
-            opted_in_at: parse_ts(opted_in_at),
-        })
-        .collect();
-    opt_ins.sort_by(|a, b| a.ladder.cmp(&b.ladder));
-    opt_ins
 }
 
 /// Map the counters common to every sport, deriving win % from matches
@@ -2126,8 +2106,8 @@ mod tests {
     // Rating consent: who may take a spot in, or wait for, a ranked match
     // -----------------------------------------------------------------------
 
-    /// A profile named `name`, opted in to exactly `ladders`.
-    fn user_opted_in_to(id: &str, name: &str, ladders: &[&str]) -> UserRecord {
+    /// A profile named `name`, rated on nothing.
+    fn user_record(id: &str, name: &str) -> UserRecord {
         UserRecord {
             id: id.to_string(),
             email: format!("{id}@example.com"),
@@ -2138,10 +2118,6 @@ mod tests {
             unread_count: 0,
             stats: UserStatsRecord::default(),
             ratings: HashMap::new(),
-            rating_opt_ins: ladders
-                .iter()
-                .map(|ladder| (ladder.to_string(), "2026-09-15T10:00:00.000Z".to_string()))
-                .collect(),
             created_at: "2026-01-01T00:00:00.000Z".to_string(),
         }
     }
@@ -2196,32 +2172,6 @@ mod tests {
         }
     }
 
-    /// `/users/me` lists opt-ins in ladder order with their stored dates,
-    /// whatever order the map iterates in, and a profile opted in nowhere lists
-    /// nothing.
-    #[test]
-    fn opt_ins_are_listed_by_ladder_with_their_dates() {
-        let mut user = user_opted_in_to("u1", "Sam", &[]);
-        assert!(rating_opt_ins_from_record(&user).is_empty());
-
-        user.rating_opt_ins = HashMap::from([
-            ("tennis".to_string(), "2026-09-15T10:00:00.000Z".to_string()),
-            ("squash".to_string(), "2026-09-01T08:30:00.000Z".to_string()),
-        ]);
-        let listed: Vec<(String, chrono::DateTime<chrono::Utc>)> =
-            rating_opt_ins_from_record(&user)
-                .into_iter()
-                .map(|opt_in| (opt_in.ladder, opt_in.opted_in_at))
-                .collect();
-        assert_eq!(
-            listed,
-            vec![
-                ("squash".to_string(), parse_ts("2026-09-01T08:30:00.000Z")),
-                ("tennis".to_string(), parse_ts("2026-09-15T10:00:00.000Z")),
-            ]
-        );
-    }
-
     fn rated(matches_rated: u64) -> agon_core::dao::records::RatingRecord {
         agon_core::dao::records::RatingRecord {
             mu: 27.0,
@@ -2238,7 +2188,7 @@ mod tests {
     /// responses and sent in the fifth is withheld nowhere.
     #[test]
     fn only_a_placed_rating_is_published() {
-        let mut user = user_opted_in_to("u1", "Sam", &[]);
+        let mut user = user_record("u1", "Sam");
         user.ratings = HashMap::from([
             ("squash".to_string(), rated(PLACEMENT_MATCHES)),
             ("tennis".to_string(), rated(PLACEMENT_MATCHES + 30)),
@@ -2265,7 +2215,7 @@ mod tests {
     /// without asking what a ladder in neither would mean.
     #[test]
     fn placements_hold_exactly_the_ladders_a_rating_does_not() {
-        let mut user = user_opted_in_to("u1", "Sam", &[]);
+        let mut user = user_record("u1", "Sam");
         user.ratings = HashMap::from([
             ("squash".to_string(), rated(PLACEMENT_MATCHES)),
             ("netball".to_string(), rated(2)),

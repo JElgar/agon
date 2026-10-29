@@ -51,9 +51,9 @@ use mapping::{
     match_score_from_record, match_score_to_record, match_series_from_record,
     match_series_occurrence_from_record, match_status_str, match_type_tag, new_live_event_to_dao,
     notification_actor_id, notification_from_record, ranked_added_players_reason,
-    ranked_lock_reason_for_update, rating_ladder, rating_ladder_for, rating_opt_ins_from_record,
-    rating_placements_from_record, resolve_score_ids, roster_preview_player, score_player_ids,
-    score_side_ids, score_submission_from_record, score_to_record, search_match_from_records,
+    ranked_lock_reason_for_update, rating_ladder, rating_ladder_for, rating_placements_from_record,
+    resolve_score_ids, roster_preview_player, score_player_ids, score_side_ids,
+    score_submission_from_record, score_to_record, search_match_from_records,
     series_end_record_from_input, set_score_players, switch_to_ranked_reason, team_from_records,
     team_list_item_from_record, team_member_from_record, unrankable_sport_reason,
     unratable_players, user_profile_from_record, winner_from_score,
@@ -220,15 +220,6 @@ struct User {
     /// The same public profile others see (id, name, image, stats, follower
     /// counts).
     profile: UserProfile,
-    /// The rating ladders this user has agreed to be rated on, ordered by
-    /// ladder. Empty until they first consent on a ranked match
-    /// (`rating_consent`), and never shrinks: opting in isn't reversible.
-    ///
-    /// Here and not on `UserProfile`, so only the user themselves sees it. An
-    /// opt-in records a consent, which is between the user and Agon; what
-    /// other people get to see is a rating, which only exists once a ranked
-    /// match has been rated.
-    rating_opt_ins: Vec<RatingOptIn>,
     /// Ladders this user has a rating on but has not been placed on, with
     /// how far through their placement matches they are — the "3 more games"
     /// a client shows in place of a rating.
@@ -242,16 +233,6 @@ struct User {
     /// A ladder appears in exactly one of this and `UserProfile::ratings`,
     /// never both.
     rating_placements: Vec<LadderPlacement>,
-}
-
-/// One ladder a user has opted in to being rated on.
-#[derive(Object)]
-struct RatingOptIn {
-    /// The ladder, as `Match.rating_ladder` names it (e.g. `"tennis"`).
-    ladder: String,
-    /// When they agreed. The first time only: consenting again on a later
-    /// ranked match in the same sport doesn't move it.
-    opted_in_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Object)]
@@ -932,10 +913,10 @@ struct CreateMatchInput {
     /// friendly, the default. Refused (400) for a sport with no rating ladder
     /// (`other`).
     ///
-    /// Friendly by default because ratings are opt-in, per sport, and a
-    /// ranked match needs everyone playing in it to have opted in. Ranked by
-    /// default would put that requirement in front of most games, which are
-    /// casual; ranked is the organiser's explicit choice instead.
+    /// Friendly by default because a ranked match is the one that counts:
+    /// everybody who plays in one is rated for it, and nothing else moves a
+    /// rating. Most games are casual, so ranked is the organiser's explicit
+    /// choice rather than something a kickabout falls into.
     ///
     /// **Creation is deliberately unconstrained, including for a match that
     /// has already been played.** This endpoint accepts a completed match with
@@ -2602,7 +2583,6 @@ impl Api {
         // Own profile: not "followed by me".
         let profile = user_profile_from_record(&record, false);
         Ok(GetUserResponse::User(Json(User {
-            rating_opt_ins: rating_opt_ins_from_record(&record),
             rating_placements: rating_placements_from_record(&record),
             email: record.email,
             profile,
@@ -2657,7 +2637,6 @@ impl Api {
             .ok_or_else(|| Error::from_string("user not found", StatusCode::NOT_FOUND))?;
         let profile = user_profile_from_record(&record, false);
         Ok(UpdateUserResponse::User(Json(User {
-            rating_opt_ins: rating_opt_ins_from_record(&record),
             rating_placements: rating_placements_from_record(&record),
             email: record.email,
             profile,
@@ -2801,15 +2780,11 @@ impl Api {
             following_count: 0,
             unread_count: 0,
             stats: dao::records::UserStatsRecord::default(),
-            // A brand-new account has played nothing and consented to
-            // nothing: rated on no ladder, opted in to none — the same state a
-            // profile written before ratings existed deserializes into.
-            // Neither is settable at signup. Opting in is ticking the consent
-            // box on a ranked game, and only the rating pipeline writes
-            // `ratings`; both are later changes, and these are here only
-            // because the record now has the fields.
+            // A brand-new account has played nothing, so it is rated on no
+            // ladder — the same state a profile written before ratings
+            // existed deserializes into. Not settable at signup: only the
+            // rating pipeline writes `ratings`.
             ratings: HashMap::new(),
-            rating_opt_ins: HashMap::new(),
             created_at: now_iso(),
         };
         match dao.create_user(&jwt_data.sub, &record).await {
@@ -2823,7 +2798,6 @@ impl Api {
         }
         let profile = user_profile_from_record(&record, false);
         Ok(CreateUserResponse::User(Json(User {
-            rating_opt_ins: rating_opt_ins_from_record(&record),
             rating_placements: rating_placements_from_record(&record),
             email: record.email,
             profile,
@@ -9442,10 +9416,6 @@ fn mock_user() -> User {
     User {
         email: String::from("jamesnelgar@gmail.com"),
         profile: mock_user_profile(String::from("123"), String::from("James Elgar")),
-        rating_opt_ins: vec![RatingOptIn {
-            ladder: String::from("tennis"),
-            opted_in_at: mock_timestamp(),
-        }],
         rating_placements: Vec::new(),
     }
 }

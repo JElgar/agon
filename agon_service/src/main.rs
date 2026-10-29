@@ -743,6 +743,26 @@ struct RespondToScoreInput {
     response: ScoreResponseKind,
 }
 
+/// Submit a match's result. Open to any participant assigned to a side — not
+/// just a match admin — since reporting (or correcting) a score is the one
+/// thing every player gets to do. The match's first-ever score lands
+/// straight in `confirmed_score`; a later submission that *differs* from it
+/// instead opens a pending challenge awaiting the other side(s)'
+/// confirmation via `POST /matches/:id/score-submissions/:sid/respond`
+/// (`respond_to_score_submission`).
+#[derive(Object)]
+struct SubmitScoreInput {
+    /// `side_id`s reference the match's sides.
+    score: Score,
+    winner_side_id: Option<String>,
+    /// For a live-scored football/cricket/netball match: submit `score` even
+    /// though it doesn't match what the server derives from the match's own
+    /// persisted live detail — see `UpdateMatchInput.override_live_score`
+    /// for the full rule. Ignored when there's no live detail to disagree
+    /// with.
+    override_live_score: Option<bool>,
+}
+
 /// An ad-hoc player to add to a match at update time (e.g. a ringer who turned
 /// up but was never invited). No invitation is created.
 #[derive(Object)]
@@ -1117,19 +1137,20 @@ struct MatchSeriesOccurrencePage {
     next_cursor: Option<String>,
 }
 
-/// The organiser's one-stop update for a match: edit metadata, reconcile the
-/// actual line-up, and/or record the result — all in one validated, atomic call.
-/// All fields optional; only supplied fields take effect. The server validates
-/// the *resulting* state (legal status transition, every scored player has a
-/// side, a cancelled match can't be scored, etc.) and rejects the whole request
-/// on any violation.
+/// The match admin's one-stop update for a match: edit metadata, reconcile
+/// the actual line-up, and/or record the result — all in one validated,
+/// atomic call. All fields optional; only supplied fields take effect. The
+/// server validates the *resulting* state (legal status transition, every
+/// scored player has a side, a cancelled match can't be scored, etc.) and
+/// rejects the whole request on any violation.
 ///
 /// Score handling is set-vs-submission aware: a supplied `score` only creates a
 /// new score submission when it differs from the current one — re-sending the
 /// same score while editing, say, the time is a no-op for the score. A genuinely
 /// new/changed score creates a submission and (re)starts confirmation.
 /// Confirming/disputing a submission is a *different actor's* action and lives on
-/// its own endpoint, not here.
+/// its own endpoint, not here — and so does submitting one in the first place for
+/// a non-admin participant: see `SubmitScoreInput`/`submit_score`.
 #[derive(Object)]
 struct UpdateMatchInput {
     name: Option<String>,
@@ -1717,13 +1738,24 @@ enum SubmitScoreResponse {
     #[oai(status = 200)]
     Submission(Json<ScoreSubmission>),
 
-    /// The score is invalid (e.g. references a player without a side, or the
-    /// match is Scheduled/Cancelled and cannot be scored).
+    /// The score is invalid (e.g. references a side not on this match, the
+    /// match is cancelled and cannot be scored, or the score matches the
+    /// confirmed result already).
     #[oai(status = 400)]
     ValidationError(PlainText<String>),
 
+    /// The caller isn't a participant assigned to a side on this match.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
     #[oai(status = 404)]
     NotFound(PlainText<String>),
+
+    /// The submitted score doesn't match what the server derives from the
+    /// match's own persisted live detail. Refresh and resubmit, or set
+    /// `override_live_score` to submit it anyway.
+    #[oai(status = 409)]
+    Conflict(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -3581,14 +3613,15 @@ impl Api {
             "scheduled"
         };
 
-        // A create-time score becomes a PENDING submission attributed to the
-        // creator, with the creator's side pre-confirmed (mirrors the respond
-        // endpoint, which requires every side to confirm and treats the
-        // submitter's side as implicitly confirmed). It only promotes to a
-        // confirmed score once the other side(s) confirm. Submitting a score
-        // therefore requires the creator to be a participant (someone must own
-        // the submission); reject a score without `creator_side_client_id`.
-        let (pending_score, pending_submission) = match resolved_score {
+        // A create-time score is the match's first-ever score, so it's
+        // accepted by default rather than opening a pending/confirm cycle:
+        // there's nothing yet for another side to disagree with, only to
+        // dispute afterwards (see `update_match`, which keeps the
+        // pending/confirm cycle for a *correcting* submission once a
+        // confirmed score already exists). Submitting a score therefore
+        // requires the creator to be a participant (someone must own the
+        // submission); reject a score without `creator_side_client_id`.
+        let (confirmed_score, pending_submission) = match resolved_score {
             Some(score_rec) => {
                 let (Some(player_id), Some(side_id)) =
                     (creator_player_id.clone(), creator_side_id.clone())
@@ -3600,26 +3633,19 @@ impl Api {
                     )));
                 };
                 let submission_id = new_id();
-                let confirmation = dao::records::ScoreConfirmationRecord {
-                    side_id: side_id.clone(),
-                    confirmed_by_player_id: player_id.clone(),
-                    confirmed_at: now.clone(),
-                };
-                let pending = dao::records::PendingScoreRecord {
-                    submission_id: submission_id.clone(),
+                let confirmed = dao::records::ConfirmedScoreRecord {
                     score: score_rec.clone(),
                     winner_side_id: resolved_winner.clone(),
-                    confirmations: vec![confirmation],
                 };
                 let submission = dao::records::ScoreSubmissionRecord {
                     submission_id,
                     score: score_rec,
                     winner_side_id: resolved_winner.clone(),
-                    status: String::from("pending"),
+                    status: String::from("confirmed"),
                     submitted_by_player_id: player_id.clone(),
                     submitted_at: now.clone(),
-                    // Seed the submitter's side as confirmed, so once the other
-                    // side responds "confirm" the submission is fully confirmed.
+                    // Seed the submitter's side so the history shows who
+                    // reported it, same as the pending-submission case.
                     responses: vec![dao::records::ScoreResponseRecord {
                         side_id,
                         responded_by_player_id: player_id,
@@ -3627,7 +3653,7 @@ impl Api {
                         responded_at: now.clone(),
                     }],
                 };
-                (Some(pending), Some(submission))
+                (Some(confirmed), Some(submission))
             }
             None => (None, None),
         };
@@ -3651,8 +3677,8 @@ impl Api {
             series_id: None,
             header_photos,
             sides,
-            confirmed_score: None,
-            pending_score,
+            confirmed_score,
+            pending_score: None,
             like_count: 0,
             comment_count: 0,
             live_seq: 0,
@@ -3806,11 +3832,14 @@ impl Api {
             }
         };
 
-        // Editing a match — details, format, roster, scores, or status (e.g.
-        // cancelling it) — is a match-admin action. An ordinary player is
-        // read-only on the match itself; `POST /matches/:match_id/leave` is
-        // the one action left to them (see `caller_is_match_admin`'s doc
-        // comment for exactly who qualifies as an admin here).
+        // Editing a match — details, format, roster, status (e.g. cancelling
+        // it), or its score — is a match-admin action. An ordinary player is
+        // read-only on the match itself: the only actions left to them are
+        // `POST /matches/:match_id/leave` and submitting/disputing a score
+        // via the dedicated `POST /matches/:match_id/score-submissions`
+        // (`submit_score`), which isn't gated to an admin. See
+        // `caller_is_match_admin`'s doc comment for exactly who qualifies as
+        // an admin here.
         if !caller_is_match_admin(dao, &agg, &uid).await? {
             return Ok(UpdateMatchResponse::Forbidden(PlainText(
                 "only a match admin can edit this match".into(),
@@ -4258,13 +4287,17 @@ impl Api {
         // also completes it.
         let mut status_override: Option<&str> = input.status.as_ref().map(match_status_str);
 
-        // A score submitted here is a PENDING submission, not a confirmed one:
-        // it awaits the other side(s)' confirmation via
-        // `POST /matches/:id/score-submissions/:sid/respond`, exactly like a
-        // create-time score (mirrors `create_match`/`respond_to_score_submission`).
-        // This is what makes a resubmission after a dispute require fresh
-        // approval instead of silently overriding the rejection.
-        let mut pending_score: Option<dao::records::PendingScoreRecord> = None;
+        // A score submitted here is accepted by default when the match has no
+        // confirmed score yet (the match's first-ever result — mirrors
+        // `create_match`) and written straight to `confirmed_score`. Once a
+        // confirmed score exists, a *differing* submission is instead a
+        // dispute/correction: it opens a PENDING submission that awaits the
+        // other side(s)' confirmation via
+        // `POST /matches/:id/score-submissions/:sid/respond`
+        // (`respond_to_score_submission`) and leaves `confirmed_score`
+        // untouched unless and until that submission is itself confirmed.
+        let mut confirmed_score_update: Option<dao::records::ConfirmedScoreRecord> = None;
+        let mut pending_score_outcome: Option<Option<dao::records::PendingScoreRecord>> = None;
 
         if let Some(score) = effective_score {
             // Validate every scored side exists on the match.
@@ -4306,40 +4339,21 @@ impl Api {
                     }
                 };
 
-                let submission_id = new_id();
-                let submitted_at = now_iso();
-                let confirmation = dao::records::ScoreConfirmationRecord {
-                    side_id: caller_side_id.clone(),
-                    confirmed_by_player_id: caller_player_id.clone(),
-                    confirmed_at: submitted_at.clone(),
-                };
-                let pending = dao::records::PendingScoreRecord {
-                    submission_id: submission_id.clone(),
-                    score: new_record.clone(),
-                    winner_side_id: effective_winner_side_id.clone(),
-                    confirmations: vec![confirmation],
-                };
-                let submission = dao::records::ScoreSubmissionRecord {
-                    submission_id,
-                    score: new_record,
-                    winner_side_id: effective_winner_side_id.clone(),
-                    status: String::from("pending"),
-                    submitted_by_player_id: caller_player_id.clone(),
-                    submitted_at: submitted_at.clone(),
-                    // Seed the submitter's side as confirmed, so once the other
-                    // side(s) confirm, the submission becomes fully confirmed.
-                    responses: vec![dao::records::ScoreResponseRecord {
-                        side_id: caller_side_id,
-                        responded_by_player_id: caller_player_id,
-                        response: String::from("confirm"),
-                        responded_at: submitted_at,
-                    }],
-                };
+                let (submission, confirmed, pending) = score_submission_records(
+                    &agg,
+                    new_record,
+                    effective_winner_side_id.clone(),
+                    caller_player_id,
+                    caller_side_id,
+                );
                 dao.put_score_submission(&match_id, &submission)
                     .await
                     .map_err(dao_internal)?;
-
-                pending_score = Some(pending);
+                if confirmed.is_some() {
+                    confirmed_score_update = confirmed;
+                } else {
+                    pending_score_outcome = Some(pending);
+                }
 
                 // A not-yet-played match becomes Completed when first scored.
                 if status_override.is_none() && agg.match_.status != "completed" {
@@ -4385,8 +4399,8 @@ impl Api {
             input.description.as_deref(),
             status_override,
             resulting_starts_at.as_deref(),
-            None,
-            pending_score.map(Some),
+            confirmed_score_update,
+            pending_score_outcome,
             header_photos,
             input.format.as_ref().map(match_format_to_record),
             input.location.as_ref().map(location_to_record),
@@ -5576,6 +5590,152 @@ impl Api {
         // Stored oldest-first; present newest-first.
         items.reverse();
         Ok(ListScoreSubmissionsResponse::Submissions(Json(items)))
+    }
+
+    /// Submit a match's result — the first-ever score, or a correction to an
+    /// already-confirmed one. Open to any participant assigned to a side
+    /// (unlike `update_match`, which this deliberately bypasses: see
+    /// `SubmitScoreInput`'s doc comment for why submitting a score isn't a
+    /// match-admin action).
+    #[oai(path = "/matches/:match_id/score-submissions", method = "post")]
+    async fn submit_score(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        input: Json<SubmitScoreInput>,
+    ) -> Result<SubmitScoreResponse> {
+        info!("Submitting a score for match {match_id}");
+        let input = input.0;
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(SubmitScoreResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+
+        // A cancelled match can't be scored — mirrors `update_match`.
+        if agg.match_.status == "cancelled" {
+            return Ok(SubmitScoreResponse::ValidationError(PlainText(
+                "a cancelled match cannot be scored".into(),
+            )));
+        }
+
+        // The submission is attributed to the caller's own player/side
+        // (needed so their side can be pre-confirmed, same as at create
+        // time and in `update_match`), so the caller must be an assigned
+        // participant.
+        let caller_player = agg
+            .players
+            .iter()
+            .find(|p| p.user_id.as_deref() == Some(uid.as_str()));
+        let (caller_player_id, caller_side_id) = match caller_player.and_then(|p| {
+            p.side_id
+                .as_ref()
+                .map(|sid| (p.player_id.clone(), sid.clone()))
+        }) {
+            Some(pair) => pair,
+            None => {
+                return Ok(SubmitScoreResponse::Forbidden(PlainText(
+                    "a score can only be submitted by a participant assigned to a side".into(),
+                )));
+            }
+        };
+
+        // Validate every scored side exists on the match.
+        let valid_sides: std::collections::HashSet<&str> =
+            agg.sides.iter().map(|s| s.side_id.as_str()).collect();
+        let score_sides = score_side_ids(&input.score);
+        if score_sides.iter().any(|sid| !valid_sides.contains(sid)) {
+            return Ok(SubmitScoreResponse::ValidationError(PlainText(
+                "score references a side that is not part of this match".into(),
+            )));
+        }
+
+        // For a live-scored match, cross-check against the server's own
+        // derived score — mirrors `update_match`'s `override_live_score` guard.
+        let mut derived_winner_side_id: Option<String> = None;
+        if is_live_scored_sport(&agg.match_.match_type)
+            && let Some(record) = dao
+                .get_match_score(&match_id, &agg.match_.match_type)
+                .await
+                .map_err(dao_internal)?
+        {
+            let derived_score = match_score_from_record(&record);
+            let side_ids: Vec<String> = agg.sides.iter().map(|s| s.side_id.clone()).collect();
+            derived_winner_side_id = winner_from_score(&derived_score, &side_ids);
+
+            if score_to_record(&input.score) != score_to_record(&derived_score)
+                && !input.override_live_score.unwrap_or(false)
+            {
+                return Ok(SubmitScoreResponse::Conflict(PlainText(
+                    "the submitted score doesn't match the match's live result — refresh \
+                     and resubmit, or set override_live_score to submit it anyway"
+                        .into(),
+                )));
+            }
+        }
+        let effective_winner_side_id = input.winner_side_id.clone().or(derived_winner_side_id);
+
+        let new_record = score_to_record(&input.score);
+        let differs = agg
+            .match_
+            .confirmed_score
+            .as_ref()
+            .map(|cs| cs.score != new_record)
+            .unwrap_or(true);
+        if !differs {
+            return Ok(SubmitScoreResponse::ValidationError(PlainText(
+                "this already matches the match's confirmed score".into(),
+            )));
+        }
+
+        let (submission, confirmed, pending) = score_submission_records(
+            &agg,
+            new_record,
+            effective_winner_side_id,
+            caller_player_id,
+            caller_side_id,
+        );
+        dao.put_score_submission(&match_id, &submission)
+            .await
+            .map_err(dao_internal)?;
+
+        // A not-yet-played match becomes Completed when first scored.
+        let status_override =
+            (confirmed.is_some() && agg.match_.status != "completed").then_some("completed");
+        let pending_score_outcome = confirmed.is_none().then_some(pending);
+
+        dao.update_match_meta(
+            &match_id,
+            None,
+            None,
+            status_override,
+            None,
+            confirmed,
+            pending_score_outcome,
+            None,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+        )
+        .await
+        .map_err(|e| match e {
+            dao::DaoError::NotFound(_) => {
+                Error::from_string("match not found", StatusCode::NOT_FOUND)
+            }
+            other => dao_internal(other),
+        })?;
+
+        Ok(SubmitScoreResponse::Submission(Json(
+            score_submission_from_record(&submission),
+        )))
     }
 
     #[oai(
@@ -8974,6 +9134,74 @@ async fn caller_is_match_admin(
         }
     }
     Ok(false)
+}
+
+/// Build the records for a score submission that the caller has already
+/// established *differs* from the match's current confirmed score — shared
+/// by `update_match`'s score handling and `submit_score`, so the two can't
+/// drift apart on what submitting a score does: a match's first-ever score
+/// lands straight in `confirmed_score`; any later differing submission
+/// instead opens a pending challenge awaiting the other side(s)'
+/// confirmation via `POST /matches/:id/score-submissions/:sid/respond`
+/// (`respond_to_score_submission`). Returns the submission record to persist,
+/// plus the `confirmed_score`/`pending_score` outcome for the caller to pass
+/// to `update_match_meta` — exactly one of the two is `Some`.
+fn score_submission_records(
+    agg: &dao::match_ops::MatchAggregate,
+    new_record: dao::records::ScoreRecord,
+    winner_side_id: Option<String>,
+    caller_player_id: String,
+    caller_side_id: String,
+) -> (
+    dao::records::ScoreSubmissionRecord,
+    Option<dao::records::ConfirmedScoreRecord>,
+    Option<dao::records::PendingScoreRecord>,
+) {
+    let submission_id = new_id();
+    let submitted_at = now_iso();
+    let first_ever_score = agg.match_.confirmed_score.is_none();
+    let submission = dao::records::ScoreSubmissionRecord {
+        submission_id: submission_id.clone(),
+        score: new_record.clone(),
+        winner_side_id: winner_side_id.clone(),
+        status: String::from(if first_ever_score {
+            "confirmed"
+        } else {
+            "pending"
+        }),
+        submitted_by_player_id: caller_player_id.clone(),
+        submitted_at: submitted_at.clone(),
+        // Seed the submitter's side so the history shows who reported it;
+        // for a correction this also doubles as the pre-confirmation that
+        // lets the other side's "confirm" alone complete it.
+        responses: vec![dao::records::ScoreResponseRecord {
+            side_id: caller_side_id.clone(),
+            responded_by_player_id: caller_player_id.clone(),
+            response: String::from("confirm"),
+            responded_at: submitted_at.clone(),
+        }],
+    };
+
+    if first_ever_score {
+        let confirmed = dao::records::ConfirmedScoreRecord {
+            score: new_record,
+            winner_side_id,
+        };
+        (submission, Some(confirmed), None)
+    } else {
+        let confirmation = dao::records::ScoreConfirmationRecord {
+            side_id: caller_side_id,
+            confirmed_by_player_id: caller_player_id,
+            confirmed_at: submitted_at,
+        };
+        let pending = dao::records::PendingScoreRecord {
+            submission_id,
+            score: new_record,
+            winner_side_id,
+            confirmations: vec![confirmation],
+        };
+        (submission, None, Some(pending))
+    }
 }
 
 /// Side ids the caller may join directly by virtue of an accepted (any

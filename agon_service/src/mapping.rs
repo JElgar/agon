@@ -32,6 +32,7 @@ use crate::{
     ScoreConfirmation, ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse,
     ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
 };
+use crate::{LadderPlacement, LadderRating};
 use agon_core::dao::error::DaoError;
 use agon_core::sports::SportRecord;
 
@@ -49,6 +50,7 @@ use agon_core::dao::records::{
     TeamRecord, UserRecord, UserStatsRecord,
 };
 use agon_core::rating::ladder_for_tag;
+use agon_core::rating::{PLACEMENT_MATCHES, display, published};
 
 /// Parse an RFC-3339 timestamp string stored by the DAO into a UTC datetime,
 /// defaulting to the epoch on a malformed value (reads never fail on bad data).
@@ -412,7 +414,71 @@ pub fn user_profile_from_record(user: &UserRecord, is_followed_by_me: bool) -> U
         follower_count: user.follower_count as u32,
         following_count: user.following_count as u32,
         is_followed_by_me,
+        ratings: published_ratings_from_record(user),
     }
+}
+
+/// A user's published ratings, ordered by ladder, for any profile view.
+///
+/// The filter is the whole point: a stored rating exists for every ladder the
+/// user has played a ranked match on, and only the ones past placements may
+/// be shown. The rest are dropped here, at the one boundary where a rating
+/// becomes something anyone can read — rather than left to each caller to
+/// remember, which is how an unplaced number eventually reaches a response.
+///
+/// Used for the caller's own profile as well as everybody else's. A rating
+/// mid-placements is withheld from the player it belongs to too, so there is
+/// no second, more generous version of this function to keep in step.
+///
+/// Ordered by ladder for the reason [`rating_opt_ins_from_record`] is: the
+/// record is a map, and a list that reshuffles between two reads of an
+/// unchanged profile makes a client diff it for nothing.
+pub fn published_ratings_from_record(user: &UserRecord) -> Vec<LadderRating> {
+    let mut ratings: Vec<LadderRating> = user
+        .ratings
+        .iter()
+        .filter(|(_, rating)| published(rating.matches_rated))
+        .map(|(ladder, rating)| {
+            let display = display(rating.mu, rating.sigma);
+            LadderRating {
+                ladder: ladder.clone(),
+                rating: display.rating,
+                confidence: display.confidence,
+                floor: display.floor,
+                matches_rated: rating.matches_rated as u32,
+            }
+        })
+        .collect();
+    ratings.sort_by(|a, b| a.ladder.cmp(&b.ladder));
+    ratings
+}
+
+/// A user's in-progress placements, ordered by ladder, for their own
+/// `/users/me`.
+///
+/// Complements [`published_ratings_from_record`] exactly: every ladder with a
+/// stored rating is in one list or the other, never both and never neither.
+/// Together they are the answer to "where do I stand", which is why this one
+/// is only ever sent to the player themselves — "two more games" is progress
+/// they are owed, and a stranger's placement progress is a hint about a
+/// number deliberately withheld.
+///
+/// A ladder with no rating stored is simply absent. There is no act that
+/// starts placements early any more: the counter and the rating are written
+/// by the same match, so nought played and no rating are the same state.
+pub fn rating_placements_from_record(user: &UserRecord) -> Vec<LadderPlacement> {
+    let mut placements: Vec<LadderPlacement> = user
+        .ratings
+        .iter()
+        .filter(|(_, rating)| !published(rating.matches_rated))
+        .map(|(ladder, rating)| LadderPlacement {
+            ladder: ladder.clone(),
+            played: rating.matches_rated as u32,
+            required: PLACEMENT_MATCHES as u32,
+        })
+        .collect();
+    placements.sort_by(|a, b| a.ladder.cmp(&b.ladder));
+    placements
 }
 
 /// The ladders a user has opted in to, for their own `/users/me`, ordered by
@@ -1720,6 +1786,10 @@ pub fn deleted_user_profile(actor_id: &str) -> UserProfile {
         follower_count: 0,
         following_count: 0,
         is_followed_by_me: false,
+        // A deleted account's ratings go with it. They were never this
+        // profile's to show anyway: the placeholder exists so a stale link
+        // resolves, not so a vanished player keeps a standing.
+        ratings: Vec::new(),
     }
 }
 
@@ -2372,5 +2442,76 @@ mod tests {
                 ("tennis".to_string(), parse_ts("2026-09-15T10:00:00.000Z")),
             ]
         );
+    }
+
+    fn rated(matches_rated: u64) -> agon_core::dao::records::RatingRecord {
+        agon_core::dao::records::RatingRecord {
+            mu: 27.0,
+            sigma: 2.0,
+            matches_rated,
+            last_rated_at: "2026-09-15T10:00:00.000Z".to_string(),
+        }
+    }
+
+    /// **The leak boundary.** A rating exists for every ladder a user has
+    /// played a ranked match on, and only a placed one may leave the
+    /// service. One short of the threshold is one short, and the filter is
+    /// here rather than at each caller because a number withheld in four
+    /// responses and sent in the fifth is withheld nowhere.
+    #[test]
+    fn only_a_placed_rating_is_published() {
+        let mut user = user_opted_in_to("u1", "Sam", &[]);
+        user.ratings = HashMap::from([
+            ("squash".to_string(), rated(PLACEMENT_MATCHES)),
+            ("tennis".to_string(), rated(PLACEMENT_MATCHES + 30)),
+            ("netball".to_string(), rated(PLACEMENT_MATCHES - 1)),
+        ]);
+
+        let published = published_ratings_from_record(&user);
+        assert_eq!(
+            published
+                .iter()
+                .map(|r| r.ladder.as_str())
+                .collect::<Vec<_>>(),
+            vec!["squash", "tennis"]
+        );
+        let squash = &published[0];
+        assert_eq!(squash.matches_rated, PLACEMENT_MATCHES as u32);
+        assert_eq!(squash.floor, squash.rating - squash.confidence);
+    }
+
+    /// The two lists partition the ladders a user has a rating on: squash is
+    /// published, netball is placing, and neither appears twice. There is no
+    /// third state to fall into, which is the property worth a test — it is
+    /// what lets a client render "where do I stand" from the two fields
+    /// without asking what a ladder in neither would mean.
+    #[test]
+    fn placements_hold_exactly_the_ladders_a_rating_does_not() {
+        let mut user = user_opted_in_to("u1", "Sam", &[]);
+        user.ratings = HashMap::from([
+            ("squash".to_string(), rated(PLACEMENT_MATCHES)),
+            ("netball".to_string(), rated(2)),
+            ("tennis".to_string(), rated(1)),
+        ]);
+
+        let placements = rating_placements_from_record(&user);
+        assert_eq!(
+            placements
+                .iter()
+                .map(|p| (p.ladder.as_str(), p.played, p.required))
+                .collect::<Vec<_>>(),
+            vec![
+                ("netball", 2, PLACEMENT_MATCHES as u32),
+                ("tennis", 1, PLACEMENT_MATCHES as u32),
+            ]
+        );
+        let published: Vec<String> = published_ratings_from_record(&user)
+            .into_iter()
+            .map(|r| r.ladder)
+            .collect();
+        assert_eq!(published, vec!["squash".to_string()]);
+        for placing in &placements {
+            assert!(!published.contains(&placing.ladder), "{}", placing.ladder);
+        }
     }
 }

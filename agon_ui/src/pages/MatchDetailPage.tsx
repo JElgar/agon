@@ -100,7 +100,6 @@ import {
 import { netballLiveLabel, netballRulesSummary } from '@/components/agon/netball/netballMeta'
 import { RosterTab, SetsCard } from '@/components/agon/sets/SetsMatchView'
 import { singlesPlayers } from '@/components/agon/sets/singles'
-import { sportLabel as sportName } from '@/lib/sports'
 
 type Match = components['schemas']['Match']
 type MatchSide = components['schemas']['MatchSide']
@@ -235,7 +234,8 @@ function MatchDetail({
   // The viewer's own side, when they're playing, reads first in the
   // calendar entry's "A vs B" — mirrors the feed card (`MatchCard`). The page
   // itself keeps the stored side order so each side's kit colour is stable.
-  const orderedSides = orderSidesForViewer(match.sides, mySideId(match, currentUserId))
+  const myMatchSideId = mySideId(match, currentUserId)
+  const orderedSides = orderSidesForViewer(match.sides, myMatchSideId)
   const [sideA, sideB] = orderedSides
   const nameA = sideName(sideA, 'Side A')
   const nameB = sideName(sideB, 'Side B')
@@ -302,7 +302,6 @@ function MatchDetail({
 
   const isCricket = match.match_type === 'cricket'
   const isNetball = match.match_type === 'netball'
-  const sportLabel = sportName(match.match_type)
   const cricketFmt = cricketFormat(match.format)
   const matchView: 'finished' | 'live' | 'scheduled' | 'cancelled' = cancelled
     ? 'cancelled'
@@ -343,7 +342,12 @@ function MatchDetail({
           : { [kitSideA.id]: 'Lost', [kitSideB.id]: 'Won' }
       : undefined
   const myPlayer = match.players.find((p) => p.member.type === 'User' && p.member.user_id === currentUserId)
-  const metaTeamSide = match.sides.find((s) => s.team_name)
+  // Only the viewer's own side, and only when it's team-linked — shown next
+  // to the match title. An unassigned viewer, or a side with no team, means
+  // there's nothing meaningful to show there, so the row falls back to just
+  // the date/time.
+  const mySide = match.sides.find((s) => s.id === myMatchSideId)
+  const metaTeamSide = mySide?.team_name ? mySide : undefined
 
   const moreMenu = (variant: 'overlay' | 'plain' | 'outlined') => (
     <DropdownMenu>
@@ -469,7 +473,8 @@ function MatchDetail({
           )
         )}
         <span className="truncate text-sm text-muted-foreground">
-          {metaTeamSide?.team_name ?? sportLabel} · {scheduledDateTime(match.starts_at)}
+          {metaTeamSide ? `${metaTeamSide.team_name} · ` : ''}
+          {scheduledDateTime(match.starts_at)}
         </span>
       </div>
       <h1 className="font-display text-[30px] leading-tight font-extrabold tracking-[-0.4px]">{match.name}</h1>

@@ -52,12 +52,12 @@ use mapping::{
     match_series_occurrence_from_record, match_status_str, match_type_tag, new_live_event_to_dao,
     notification_actor_id, notification_from_record, ranked_added_players_reason,
     ranked_lock_reason_for_update, ranked_move_in_reason, rating_consent_step, rating_ladder,
-    rating_ladder_for, rating_opt_ins_from_record, resolve_score_ids, roster_preview_player,
-    score_player_ids, score_side_ids, score_submission_from_record, score_to_record,
-    search_match_from_records, series_end_record_from_input, set_score_players,
-    switch_to_ranked_reason, team_from_records, team_list_item_from_record,
-    team_member_from_record, unrankable_sport_reason, unratable_players, user_profile_from_record,
-    winner_from_score,
+    rating_ladder_for, rating_opt_ins_from_record, rating_placements_from_record,
+    resolve_score_ids, roster_preview_player, score_player_ids, score_side_ids,
+    score_submission_from_record, score_to_record, search_match_from_records,
+    series_end_record_from_input, set_score_players, switch_to_ranked_reason, team_from_records,
+    team_list_item_from_record, team_member_from_record, unrankable_sport_reason,
+    unratable_players, user_profile_from_record, winner_from_score,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -170,6 +170,46 @@ pub struct UserProfile {
     pub following_count: u32,
     /// Whether the requesting user follows this profile. False for your own.
     pub is_followed_by_me: bool,
+    /// This user's **published** ratings, ordered by ladder.
+    ///
+    /// A ladder is absent until they have five ranked matches behind them on
+    /// it. Everybody who plays a ranked match is rated for it, but a rating
+    /// still in its placements is shown to nobody — not to other users, and
+    /// not to the user themselves. There is deliberately no field anywhere
+    /// that exposes one: a brand-new rating reads as `1500 ±750` and moves
+    /// eighty points a game, which is `σ` being honest rather than a number
+    /// anybody should be judged on. `User::rating_placements` is what the
+    /// player sees instead, and only the player.
+    pub ratings: Vec<LadderRating>,
+}
+
+/// One ladder a user has a published rating on.
+#[derive(Object)]
+pub struct LadderRating {
+    /// The ladder, as `Match.rating_ladder` names it (e.g. `"tennis"`).
+    pub ladder: String,
+    /// The headline number. 1500 is an average, unproven player.
+    pub rating: i32,
+    /// The `±` half-width to show beside it. Wide for a freshly placed
+    /// player and narrowing as they play.
+    pub confidence: i32,
+    /// `rating - confidence`: the conservative value, for anything that
+    /// ranks or gates rather than displays.
+    pub floor: i32,
+    /// Ranked matches behind this rating — the "· 12 games" beside it. Every
+    /// match that moved it, since friendlies move nothing.
+    pub matches_rated: u32,
+}
+
+/// Progress towards a published rating on one ladder.
+#[derive(Object)]
+pub struct LadderPlacement {
+    /// The ladder, as `Match.rating_ladder` names it.
+    pub ladder: String,
+    /// Ranked matches played so far.
+    pub played: u32,
+    /// How many are needed in all before the rating is published.
+    pub required: u32,
 }
 
 /// The authenticated user's own view: their public `profile` plus private fields
@@ -190,6 +230,19 @@ struct User {
     /// other people get to see is a rating, which only exists once a ranked
     /// match has been rated.
     rating_opt_ins: Vec<RatingOptIn>,
+    /// Ladders this user has a rating on but has not been placed on, with
+    /// how far through their placement matches they are — the "3 more games"
+    /// a client shows in place of a rating.
+    ///
+    /// Private, and the only thing a user sees while placing: the rating
+    /// being settled is deliberately not here, because it is moving fast by
+    /// design and showing it would be showing a number we are in the middle
+    /// of disagreeing with. Progress is theirs to see; a stranger reading it
+    /// would be reading a hint about a number being withheld.
+    ///
+    /// A ladder appears in exactly one of this and `UserProfile::ratings`,
+    /// never both.
+    rating_placements: Vec<LadderPlacement>,
 }
 
 /// One ladder a user has opted in to being rated on.
@@ -2608,6 +2661,7 @@ impl Api {
         let profile = user_profile_from_record(&record, false);
         Ok(GetUserResponse::User(Json(User {
             rating_opt_ins: rating_opt_ins_from_record(&record),
+            rating_placements: rating_placements_from_record(&record),
             email: record.email,
             profile,
         })))
@@ -2662,6 +2716,7 @@ impl Api {
         let profile = user_profile_from_record(&record, false);
         Ok(UpdateUserResponse::User(Json(User {
             rating_opt_ins: rating_opt_ins_from_record(&record),
+            rating_placements: rating_placements_from_record(&record),
             email: record.email,
             profile,
         })))
@@ -2827,6 +2882,7 @@ impl Api {
         let profile = user_profile_from_record(&record, false);
         Ok(CreateUserResponse::User(Json(User {
             rating_opt_ins: rating_opt_ins_from_record(&record),
+            rating_placements: rating_placements_from_record(&record),
             email: record.email,
             profile,
         })))
@@ -9640,6 +9696,7 @@ fn mock_user() -> User {
             ladder: String::from("tennis"),
             opted_in_at: mock_timestamp(),
         }],
+        rating_placements: Vec::new(),
     }
 }
 
@@ -9682,6 +9739,7 @@ fn mock_user_profile(id: String, name: String) -> UserProfile {
         follower_count: 42,
         following_count: 17,
         is_followed_by_me: false,
+        ratings: Vec::new(),
     }
 }
 

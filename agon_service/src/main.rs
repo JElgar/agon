@@ -780,9 +780,9 @@ struct CreateMatchInput {
     /// creator opts to play in their own match — no self-invitation is created.
     /// None means the caller creates the match but doesn't play in it.
     creator_side_client_id: Option<String>,
-    /// If present, the match is created already played (status `Completed`) and
-    /// the score enters the confirmation flow. `side_id`s reference the created
-    /// sides' `client_id`s. Absent => an upcoming match.
+    /// If present, the match is created already played (status `Completed`)
+    /// with this as its final score. `side_id`s reference the created sides'
+    /// `client_id`s. Absent => an upcoming match.
     score: Option<Score>,
     winner_side_id: Option<String>,
     /// Header images for the match. Each references an `Asset` the caller created
@@ -814,14 +814,12 @@ struct CreateMatchInput {
     /// to rate results logged afterwards would refuse most amateur sport — the
     /// ladders' whole input.
     ///
-    /// What limits it is confirmation, not this field: nothing is rated
-    /// without a confirmed score, so every other side has agreed to the result.
-    /// The gap that leaves is real and known — the opponent confirms the
-    /// **score**, never the **flag**, so a creator could log their wins ranked
-    /// and their losses friendly. The principled fix is making `ranked` part
-    /// of what the other side confirms, which changes the confirmation flow
-    /// rather than restricting creation, and isn't worth building before
-    /// anyone is seen doing it.
+    /// What limits it is the score, not this field: nothing is rated until a
+    /// match admin sets one. The gap that leaves is real and known — nothing
+    /// stops an admin from picking `ranked` per match to their own advantage
+    /// (ranked wins, friendly losses), since only the score itself, never the
+    /// flag, is checked against anything else. Worth fixing if anyone is ever
+    /// seen doing it; not worth building ahead of that.
     ranked: Option<bool>,
     /// "I understand this starts my rating in this sport." Needed only when
     /// creating a ranked match the creator plays in (`creator_side_client_id`)

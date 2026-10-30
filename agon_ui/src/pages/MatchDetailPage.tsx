@@ -258,12 +258,12 @@ function MatchDetail({
   const cricketState = isCurrentlyLive ? cricketScoreFrom(scoreQuery.data) : null
   const netballState = isCurrentlyLive ? netballScoreFrom(scoreQuery.data) : null
   const hasLiveState = !!footballState || !!cricketState || !!netballState
-  // Same "live while in progress, else confirmed/pending" source as
+  // Same "live while in progress, else confirmed" source as
   // `cricketScoreInnings` below — the hero card and the score's resolved
   // player names.
   const cricketScore = cricketScoreFrom(isCurrentlyLive ? scoreQuery.data : scoreInfo?.score)
   // The timeline's events: the live running score while the
-  // match is in progress, else straight off the confirmed/pending score —
+  // match is in progress, else straight off the confirmed score —
   // stays visible once the match is completed, unlike `footballState` above.
   const footballEventSource = footballEventSourceFromScore(
     isCurrentlyLive ? scoreQuery.data : scoreInfo?.score,

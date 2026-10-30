@@ -206,8 +206,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
   // refetched (so the summary above updates to what's actually current) and
   // the button stays "Finish match" so the user reviews it and taps again
   // themselves, rather than the app resubmitting on their behalf without
-  // them seeing what changed. Still enters the normal confirmation flow
-  // rather than being auto-confirmed, same as a manual "Add result" would.
+  // them seeing what changed.
   const finishMatch = useMutation({
     mutationFn: async () => {
       if (!state) throw new Error('No score recorded yet')

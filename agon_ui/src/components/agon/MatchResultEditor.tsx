@@ -38,9 +38,9 @@ function sideLabel(match: Match, index: number, fallback: string): string {
 }
 
 /**
- * Seed the sets editor from the match's current score (confirmed, or pending
- * if not yet confirmed — see `displayScore`), if it's a sets score keyed to
- * these two sides. Falls back to two empty rows for a fresh result.
+ * Seed the sets editor from the match's current score (see `displayScore`),
+ * if it's a sets score keyed to these two sides. Falls back to two empty rows
+ * for a fresh result.
  */
 function seedSets(match: Match, aId: string, bId: string): SetRow[] {
   const score = displayScore(match)?.score
@@ -61,8 +61,8 @@ function seedSets(match: Match, aId: string, bId: string): SetRow[] {
   ]
 }
 
-/** Seed the simple points editor from the match's current simple score
- *  (confirmed, or pending if not yet confirmed), else blanks. */
+/** Seed the simple points editor from the match's current simple score, else
+ *  blanks. */
 function seedPoints(match: Match, aId: string, bId: string): [string, string] {
   const score = displayScore(match)?.score
   if (score && score.type === 'Simple') {
@@ -78,11 +78,9 @@ function seedPoints(match: Match, aId: string, bId: string): [string, string] {
  * sets grid for racket sports, the football/cricket/netball editors
  * (goal-by-goal / innings detail, optional) for those sports, and a single
  * points pair otherwise (mirroring the create flow), seeded from the match's
- * current result — confirmed if there is one, else a still-pending
- * submission (see `displayScore`). On save it PATCHes the score against the
- * match's real side ids; a changed score re-enters the confirmation flow
- * server-side (the other side is asked to confirm), so we also refresh so
- * the pending-score prompt appears.
+ * current result, if any (see `displayScore`). On save it PATCHes the score
+ * against the match's real side ids, which takes effect immediately — it's
+ * final as soon as it saves, so we refresh the match and feed queries.
  *
  * `MatchDetailPage` doesn't offer this editor at all while live scoring is
  * actually under way (`hasLiveState`) — finishing the live-scored game from
@@ -116,8 +114,7 @@ export function MatchResultEditor({
   const isCricket = match.match_type === 'cricket'
   const isNetball = match.match_type === 'netball'
   const setsMode = isSetsSport(match.match_type)
-  // The result to prepopulate the form with: confirmed if there is one, else
-  // a still-pending submission awaiting the other side's confirmation.
+  // The result to prepopulate the form with, if the match has one.
   const currentScore = displayScore(match)?.score
   const [sets, setSets] = useState<SetRow[]>(() => seedSets(match, aId, bId))
   const [points, setPoints] = useState<[string, string]>(() => seedPoints(match, aId, bId))

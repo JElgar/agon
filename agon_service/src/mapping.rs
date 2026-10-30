@@ -1527,7 +1527,7 @@ pub fn like_user_id(rec: &MatchLikeRecord) -> String {
 // ===========================================================================
 // Live-scoring score record: MatchScoreRecord (DAO) <-> Score (API). Reuses
 // score_from_record/score_to_record directly — a match's live-scoring score
-// is the exact same type as its confirmed/pending score, just a separate
+// is the exact same type as its confirmed score, just a separate
 // DynamoDB item for write-frequency/stream-isolation reasons (see
 // `MatchScoreRecord`'s doc comment).
 // ===========================================================================

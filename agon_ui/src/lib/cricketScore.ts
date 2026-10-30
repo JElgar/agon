@@ -37,7 +37,7 @@ export function cricketScoreFrom(score: Score | null | undefined): CricketScore 
 /** A match's per-innings totals (plus whatever per-player detail they carry)
  *  straight off its score — `null` if there's no score yet or it's not
  *  `Cricket`. The same accessor for both the live in-progress view and a
- *  finished match's confirmed/pending score, now that they're the same
+ *  finished match's confirmed score, now that they're the same
  *  shape (see `cricketScoreFrom`). */
 export function cricketInningsFor(score: Score | null | undefined): CricketScoreInnings[] | null {
   return cricketScoreFrom(score)?.innings ?? null

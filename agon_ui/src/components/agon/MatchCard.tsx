@@ -66,8 +66,8 @@ export interface MatchCardProps extends React.HTMLAttributes<HTMLDivElement> {
   match: Match | FeedMatch | SearchMatch
   /** Called when the card body is activated (navigate to match detail). */
   onOpen?: () => void
-  /** The signed-in user's id. When they're a participant with a pending score to
-   *  respond to, an inline confirm/dispute prompt is shown. */
+  /** The signed-in user's id. When they have a pending invitation to this
+   *  match, an inline accept/decline prompt is shown. */
   currentUserId?: string
 }
 
@@ -243,7 +243,7 @@ export function MatchCard({
     match.match_type === 'football' || match.match_type === 'cricket' || match.match_type === 'netball'
   const isCurrentlyLive = isLiveSport && match.status === 'in_progress'
   // Only fetched while live — a finished match doesn't need it. Football's
-  // confirmed/pending `Score.Football` already embeds its goals (see
+  // confirmed `Score.Football` already embeds its goals (see
   // `footballGoalsFromScore`/`FootballScorersBySide` below), and cricket's
   // confirmed `Score.Cricket` already embeds its per-innings detail
   // (`cricketScore` below) — both produced by finishing a live-scored match
@@ -291,7 +291,7 @@ export function MatchCard({
   // tennis/badminton/squash/table_tennis redesigned card bodies below. No
   // live poll backs this (see `TennisFeedCardBody`'s doc comment on why
   // `isLiveSport` doesn't include these sports), so this is always the
-  // confirmed/pending score, never a live one.
+  // confirmed score, never a live one.
   const setsScore = scoreInfo ? setsScoreFrom(scoreInfo.score) : null
   // Cricket's own state-of-game line ("England won by 4 wickets" / "...need
   // 200 to win" / "...lead by 30 runs") is a strictly better headline than
@@ -476,7 +476,7 @@ export function MatchCard({
       )}
 
       {/* Score block — a live-scored match shows the mini-ticker instead of
-          the usual confirmed/pending result; a finished cricket match with
+          the usual confirmed result; a finished cricket match with
           per-innings detail gets its own tile too. */}
       {footballState ? (
         <div className="mx-3.5 mb-3">

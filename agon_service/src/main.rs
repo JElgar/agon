@@ -10295,10 +10295,20 @@ enum Commands {
     },
 }
 
-fn log_request(uri: &Uri, status: StatusCode) {
+fn log_request(
+    method: &str,
+    uri: &Uri,
+    status: StatusCode,
+    latency: std::time::Duration,
+    sub: Option<&str>,
+) {
     info!(
+        method,
         path = uri.path(),
+        query = uri.query().unwrap_or(""),
         status = status.as_u16(),
+        latency_ms = latency.as_millis() as u64,
+        user.sub = sub.unwrap_or_default(),
         "Request complete"
     );
 }
@@ -10344,6 +10354,14 @@ async fn log_middleware<E: Endpoint>(next: E, req: Request) -> Result<Response> 
 
     let uri = req.uri().clone();
     let method = req.method().to_string();
+    // Unverified — just for log correlation, read before `req` moves into
+    // `next.call` below. See `auth::unverified_sub`.
+    let sub = req
+        .headers()
+        .get(poem::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(auth::unverified_sub);
     let start = Instant::now();
 
     let (status, result) = match next.call(req).await {
@@ -10354,7 +10372,8 @@ async fn log_middleware<E: Endpoint>(next: E, req: Request) -> Result<Response> 
         Err(err) => (err.status(), Err(err)),
     };
 
-    log_request(&uri, status);
+    let elapsed = start.elapsed();
+    log_request(&method, &uri, status, elapsed, sub.as_deref());
 
     // Record request count + latency on the global meter. Attributes are kept to
     // bounded-cardinality dimensions only (see RequestMetrics).
@@ -10364,9 +10383,7 @@ async fn log_middleware<E: Endpoint>(next: E, req: Request) -> Result<Response> 
     ];
     let metrics = RequestMetrics::global();
     metrics.count.add(1, &attrs);
-    metrics
-        .duration
-        .record(start.elapsed().as_secs_f64(), &attrs);
+    metrics.duration.record(elapsed.as_secs_f64(), &attrs);
 
     result
 }

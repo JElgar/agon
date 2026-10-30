@@ -198,7 +198,6 @@ impl AgonActivities {
             sides,
             authority,
             confirmed_score: None,
-            pending_score: None,
             like_count: 0,
             comment_count: 0,
             live_seq: 0,

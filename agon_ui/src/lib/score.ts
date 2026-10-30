@@ -6,8 +6,8 @@ type MatchSide = components['schemas']['MatchSide']
 type FootballGoalEvent = components['schemas']['FootballGoalEvent']
 type NetballGoalEvent = components['schemas']['NetballGoalEvent']
 
-/** A finished football match's goals, straight off its confirmed/pending
- *  score — `null` for any other score type, or a football score with no
+/** A finished football match's goals, straight off its confirmed score —
+ *  `null` for any other score type, or a football score with no
  *  goal-by-goal detail attached (a manual entry with just the final tally).
  *  Lets a feed card show who scored without a separate live-poll fetch once
  *  the match is over. */
@@ -15,34 +15,24 @@ export function footballGoalsFromScore(score: Score): FootballGoalEvent[] | null
   return score.type === 'Football' ? (score.goals ?? null) : null
 }
 
-/** A finished netball match's goals, straight off its confirmed/pending
- *  score — `null` for any other score type, or a netball score with no
+/** A finished netball match's goals, straight off its confirmed score —
+ *  `null` for any other score type, or a netball score with no
  *  goal-by-goal detail attached (a quarter-only-scored or manual entry with
  *  just the final tally). Same role as `footballGoalsFromScore`. */
 export function netballGoalsFromScore(score: Score): NetballGoalEvent[] | null {
   return score.type === 'Netball' ? (score.goals ?? null) : null
 }
 
-/** The score to display for a match: the confirmed result if present, else the
- *  pending (awaiting-confirmation) submission. `null` when no score exists yet. */
+/** The score to display for a match: its confirmed result. `null` when no
+ *  score has been set yet. */
 export function displayScore(
-  match: Pick<Match, 'confirmed_score' | 'pending_score'>,
-): { score: Score; winnerSideId?: string; confirmed: boolean } | null {
-  if (match.confirmed_score) {
-    return {
-      score: match.confirmed_score.score,
-      winnerSideId: match.confirmed_score.winner_side_id,
-      confirmed: true,
-    }
+  match: Pick<Match, 'confirmed_score'>,
+): { score: Score; winnerSideId?: string } | null {
+  if (!match.confirmed_score) return null
+  return {
+    score: match.confirmed_score.score,
+    winnerSideId: match.confirmed_score.winner_side_id,
   }
-  if (match.pending_score) {
-    return {
-      score: match.pending_score.score,
-      winnerSideId: match.pending_score.winner_side_id,
-      confirmed: false,
-    }
-  }
-  return null
 }
 
 /**

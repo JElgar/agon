@@ -1649,34 +1649,10 @@ async fn accepting_a_normal_invite_updates_feed_and_stats() {
     // The match is now on the accepter's feed...
     assert_match_reaches_feed(&invitee_config, &created.id, "invitee's feed").await;
 
-    // Stats aren't credited yet: the creator's score is still an unconfirmed
-    // submission, and an unconfirmed game doesn't count as played.
-    assert_eq!(
-        my_matches_played(&invitee_config, models::MatchType::Tennis).await,
-        0,
-        "an unconfirmed score shouldn't count toward matches played"
-    );
-
-    // Now the invitee (side "b") confirms the creator's submitted score.
-    let submission_id = created
-        .pending_score
-        .as_ref()
-        .expect("pending score at create time")
-        .submission_id
-        .clone();
-    matches_match_id_score_submissions_submission_id_respond_post(
-        &invitee_config,
-        &created.id,
-        &submission_id,
-        models::RespondToScoreInput {
-            response: models::ScoreResponseKind::Confirm,
-        },
-    )
-    .await
-    .expect("confirm score");
-
-    // ...and their stats now credit the confirmed match they played in (they
-    // were on the losing side, so one played, zero wins, one loss).
+    // ...and their stats credit the match they played in (they were on the
+    // losing side, so one played, zero wins, one loss). The score was set
+    // directly at creation time (the creator is the match's owner), so
+    // nothing else needs to happen for it to count once they've accepted.
     assert_matches_played_reaches(&invitee_config, models::MatchType::Tennis, 1, "invitee").await;
     let stats = users_me_get(&invitee_config)
         .await
@@ -1745,23 +1721,6 @@ async fn an_unassigned_roster_player_gets_no_stat_contribution() {
         .expect("accept invitation");
     }
 
-    let submission_id = created
-        .pending_score
-        .as_ref()
-        .expect("pending score at create time")
-        .submission_id
-        .clone();
-    matches_match_id_score_submissions_submission_id_respond_post(
-        &opponent_config,
-        &created.id,
-        &submission_id,
-        models::RespondToScoreInput {
-            response: models::ScoreResponseKind::Confirm,
-        },
-    )
-    .await
-    .expect("confirm score");
-
     assert_matches_played_reaches(&opponent_config, models::MatchType::Tennis, 1, "opponent")
         .await;
     assert_eq!(
@@ -1809,33 +1768,9 @@ async fn accepting_a_link_invite_updates_feed_and_stats() {
         models::InvitationStatus::Accepted
     ));
 
-    // The match is on the accepter's feed, but their stats aren't credited
-    // yet: the creator's score is still an unconfirmed submission.
+    // The match is on the accepter's feed, and once they've accepted, their
+    // stats credit it — the score was set directly at creation time.
     assert_match_reaches_feed(&accepter_config, &created.id, "token-accepter's feed").await;
-    assert_eq!(
-        my_matches_played(&accepter_config, models::MatchType::Tennis).await,
-        0,
-        "an unconfirmed score shouldn't count toward matches played"
-    );
-
-    // The accepter (side "b") confirms the creator's submitted score, and only
-    // then does it credit the match.
-    let submission_id = created
-        .pending_score
-        .as_ref()
-        .expect("pending score at create time")
-        .submission_id
-        .clone();
-    matches_match_id_score_submissions_submission_id_respond_post(
-        &accepter_config,
-        &created.id,
-        &submission_id,
-        models::RespondToScoreInput {
-            response: models::ScoreResponseKind::Confirm,
-        },
-    )
-    .await
-    .expect("confirm score");
     assert_matches_played_reaches(
         &accepter_config,
         models::MatchType::Tennis,
@@ -1930,7 +1865,7 @@ async fn cricket_stats_track_batting_bowling_fielding_and_derived_rates() {
         Default::default(),
     )));
 
-    let updated = matches_match_id_patch(
+    matches_match_id_patch(
         &owner_config,
         &created.id,
         models::UpdateMatchInput {
@@ -1941,20 +1876,6 @@ async fn cricket_stats_track_batting_bowling_fielding_and_derived_rates() {
     )
     .await
     .expect("patch cricket score");
-    let submission_id = updated
-        .pending_score
-        .expect("pending score after patch")
-        .submission_id;
-    matches_match_id_score_submissions_submission_id_respond_post(
-        &opponent_config,
-        &created.id,
-        &submission_id,
-        models::RespondToScoreInput {
-            response: models::ScoreResponseKind::Confirm,
-        },
-    )
-    .await
-    .expect("confirm cricket score");
 
     assert_matches_played_reaches(&owner_config, models::MatchType::Cricket, 1, "owner").await;
     let profile = users_me_get(&owner_config).await.expect("get me").profile;
@@ -2149,7 +2070,7 @@ async fn football_stats_track_goals_assists_and_best_goal_contributions() {
     );
     football_score.goals = Some(vec![goal1, goal2, goal3, own_goal]);
 
-    let updated = matches_match_id_patch(
+    matches_match_id_patch(
         &owner_config,
         &created.id,
         models::UpdateMatchInput {
@@ -2160,20 +2081,6 @@ async fn football_stats_track_goals_assists_and_best_goal_contributions() {
     )
     .await
     .expect("patch football score");
-    let submission_id = updated
-        .pending_score
-        .expect("pending score after patch")
-        .submission_id;
-    matches_match_id_score_submissions_submission_id_respond_post(
-        &opponent_config,
-        &created.id,
-        &submission_id,
-        models::RespondToScoreInput {
-            response: models::ScoreResponseKind::Confirm,
-        },
-    )
-    .await
-    .expect("confirm football score");
 
     assert_matches_played_reaches(&owner_config, models::MatchType::Football, 1, "owner").await;
     let profile = users_me_get(&owner_config).await.expect("get me").profile;
@@ -2248,7 +2155,7 @@ async fn netball_stats_track_goals_scored() {
         goal(&side_b, &opponent_pid, false),
     ]);
 
-    let updated = matches_match_id_patch(
+    matches_match_id_patch(
         &owner_config,
         &created.id,
         models::UpdateMatchInput {
@@ -2259,20 +2166,6 @@ async fn netball_stats_track_goals_scored() {
     )
     .await
     .expect("patch netball score");
-    let submission_id = updated
-        .pending_score
-        .expect("pending score after patch")
-        .submission_id;
-    matches_match_id_score_submissions_submission_id_respond_post(
-        &opponent_config,
-        &created.id,
-        &submission_id,
-        models::RespondToScoreInput {
-            response: models::ScoreResponseKind::Confirm,
-        },
-    )
-    .await
-    .expect("confirm netball score");
 
     assert_matches_played_reaches(&owner_config, models::MatchType::Netball, 1, "owner").await;
     let owner_netball = users_me_get(&owner_config)
@@ -2319,7 +2212,7 @@ async fn a_drawn_match_credits_draws_not_wins_or_losses() {
     let side_a = side_id_for_user(&created, &owner.profile.id);
     let side_b = side_id_for_user(&created, &opponent.profile.id);
 
-    let updated = matches_match_id_patch(
+    matches_match_id_patch(
         &owner_config,
         &created.id,
         models::UpdateMatchInput {
@@ -2330,20 +2223,6 @@ async fn a_drawn_match_credits_draws_not_wins_or_losses() {
     )
     .await
     .expect("patch drawn score");
-    let submission_id = updated
-        .pending_score
-        .expect("pending score after patch")
-        .submission_id;
-    matches_match_id_score_submissions_submission_id_respond_post(
-        &opponent_config,
-        &created.id,
-        &submission_id,
-        models::RespondToScoreInput {
-            response: models::ScoreResponseKind::Confirm,
-        },
-    )
-    .await
-    .expect("confirm drawn score");
 
     for (config, whose) in [(&owner_config, "owner"), (&opponent_config, "opponent")] {
         assert_matches_played_reaches(config, models::MatchType::Tennis, 1, whose).await;
@@ -2817,11 +2696,13 @@ fn sorted_points(mut points: Vec<(String, i32)>) -> Vec<(String, i32)> {
 }
 
 #[tokio::test]
-async fn scoring_a_match_completes_it_and_records_a_pending_submission() {
+async fn scoring_a_match_completes_it_and_sets_the_score() {
     let (config, _owner) = new_user().await;
     let (_invitee_config, invitee) = new_user().await;
 
-    // The scorer must be an assigned participant, so put the owner on side "a".
+    // The owner is an assigned participant here, but that's incidental: an
+    // owner/admin may set a match's score whether or not they're on the
+    // roster — see `match_admin_can_set_a_score_without_playing_in_it` below.
     let mut input = create_match_input(&invitee.profile.id);
     input.creator_side_client_id = Some("a".to_string());
     let created = matches_post(&config, input).await.expect("create match");
@@ -2829,9 +2710,8 @@ async fn scoring_a_match_completes_it_and_records_a_pending_submission() {
     let side_a = created.sides[0].id.clone();
     let side_b = created.sides[1].id.clone();
 
-    // PATCH a score: this completes the match and records a submission, but the
-    // score itself is PENDING (not confirmed) until the other side confirms it —
-    // same as a create-time score.
+    // PATCHing a score both completes the match and sets it as the match's
+    // result immediately — there's no approval step to wait on.
     let updated = matches_match_id_patch(
         &config,
         &created.id,
@@ -2844,29 +2724,24 @@ async fn scoring_a_match_completes_it_and_records_a_pending_submission() {
     .await
     .expect("patch score");
     assert!(matches!(updated.status, models::MatchStatus::Completed));
-    assert!(
-        updated.confirmed_score.is_none(),
-        "a PATCHed score awaits the other side's confirmation, not confirmed immediately"
+    let confirmed = updated
+        .confirmed_score
+        .expect("a PATCHed score is the match's result immediately");
+    assert_eq!(
+        simple_score_points(&confirmed.score),
+        sorted_points(vec![(side_a.clone(), 6), (side_b.clone(), 3)])
     );
-    assert!(updated.pending_score.is_some());
-
-    // The submission is visible in the match's submission history, as pending.
-    let submissions = matches_match_id_score_submissions_get(&config, &created.id)
-        .await
-        .expect("list submissions");
-    assert_eq!(submissions.len(), 1, "a submission was recorded");
-    assert!(matches!(
-        submissions[0].status,
-        models::ScoreSubmissionStatus::Pending
-    ));
 }
 
+/// An admin may set a match's score even when they never joined its roster —
+/// there's no "must be a participant" restriction once the endpoint is
+/// already gated on `caller_is_match_admin`.
 #[tokio::test]
-async fn rejecting_a_score_and_resubmitting_requires_approval_again() {
+async fn match_admin_can_set_a_score_without_playing_in_it() {
     let (owner_config, owner) = new_user().await;
     let (opponent_config, opponent) = new_user().await;
 
-    // Owner plays on side "a", opponent is invited (and accepts) onto side "b".
+    // The owner organises but never takes a side (no `creator_side_client_id`).
     let mut input = create_match_input(&opponent.profile.id);
     input.invites = vec![models::CreateMatchInviteInput {
         side_client_id: Some("b".to_string()),
@@ -2874,110 +2749,32 @@ async fn rejecting_a_score_and_resubmitting_requires_approval_again() {
         invited_externals: vec![],
     }];
     input.starts_at = iso_offset_hours(-2);
-    input.creator_side_client_id = Some("a".to_string());
-    input.score = Some(Box::new(simple_score("a", "b", 6, 3)));
-    input.winner_side_id = Some("a".to_string());
 
     let created = matches_post(&owner_config, input)
         .await
         .expect("create match");
+    accept_match_invitation(&opponent_config, &created.id).await;
+    assert_eq!(created.viewer_role, Some(models::MatchPlayerRole::Owner));
+
     let side_a = created.sides[0].id.clone();
     let side_b = created.sides[1].id.clone();
-    assert!(created.confirmed_score.is_none(), "score starts pending");
-
-    let first_submission_id = created
-        .pending_score
-        .as_ref()
-        .expect("a pending score was recorded at create time")
-        .submission_id
-        .clone();
-
-    // The opponent rejects (disputes) the submitted score.
-    matches_match_id_score_submissions_submission_id_respond_post(
-        &opponent_config,
-        &created.id,
-        &first_submission_id,
-        models::RespondToScoreInput {
-            response: models::ScoreResponseKind::Dispute,
-        },
-    )
-    .await
-    .expect("dispute score");
-
-    let after_dispute = matches_match_id_get(&owner_config, &created.id)
-        .await
-        .expect("get match");
-    assert!(after_dispute.confirmed_score.is_none());
-    assert!(
-        after_dispute.pending_score.is_none(),
-        "a disputed submission clears the pending score"
-    );
-
-    // The owner submits a new score via PATCH. It must NOT show up as confirmed
-    // immediately — the opponent still has to approve/reject it, just like the
-    // first submission.
-    let resubmitted = matches_match_id_patch(
+    let updated = matches_match_id_patch(
         &owner_config,
         &created.id,
         models::UpdateMatchInput {
-            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 4))),
+            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 3))),
             winner_side_id: Some(side_a.clone()),
             ..Default::default()
         },
     )
     .await
-    .expect("patch new score");
-    assert!(
-        resubmitted.confirmed_score.is_none(),
-        "a resubmitted score must await confirmation, not appear confirmed immediately"
-    );
-    let pending = resubmitted
-        .pending_score
-        .expect("the resubmission is pending");
-    assert_ne!(
-        pending.submission_id, first_submission_id,
-        "the resubmission is a fresh submission, not the disputed one"
-    );
-
-    // The submission history now has both the disputed original and the new
-    // pending one.
-    let submissions = matches_match_id_score_submissions_get(&owner_config, &created.id)
-        .await
-        .expect("list submissions");
-    assert_eq!(submissions.len(), 2);
-    let new_submission = submissions
-        .iter()
-        .find(|s| s.id == pending.submission_id)
-        .expect("new submission present in history");
-    assert!(matches!(
-        new_submission.status,
-        models::ScoreSubmissionStatus::Pending
-    ));
-
-    // The opponent can now confirm the resubmitted score, which finally
-    // promotes it to the match's confirmed score.
-    matches_match_id_score_submissions_submission_id_respond_post(
-        &opponent_config,
-        &created.id,
-        &pending.submission_id,
-        models::RespondToScoreInput {
-            response: models::ScoreResponseKind::Confirm,
-        },
-    )
-    .await
-    .expect("confirm resubmitted score");
-
-    let final_match = matches_match_id_get(&owner_config, &created.id)
-        .await
-        .expect("get match");
-    let confirmed = final_match
-        .confirmed_score
-        .expect("resubmitted score is confirmed after opponent approves");
-    assert_eq!(confirmed.winner_side_id.as_deref(), Some(side_a.as_str()));
+    .expect("owner (non-participant) sets the score");
+    assert!(updated.confirmed_score.is_some());
+    let _ = owner.profile.id;
 }
 
-/// Sets up a match with a confirmed score (owner on side "a", opponent on side
-/// "b", 6-3 to the owner), for tests that edit an already-confirmed score.
+/// Sets up a match with a score (owner on side "a", opponent on side "b",
+/// 6-3 to the owner), for tests that edit an already-scored match.
 /// Returns (owner_config, owner, opponent_config, opponent, match, side_a, side_b).
 async fn match_with_a_confirmed_score() -> (
     Configuration,
@@ -3010,30 +2807,9 @@ async fn match_with_a_confirmed_score() -> (
     // real side id off the roster instead, by who's on it.
     let side_a = side_id_for_user(&created, &owner.profile.id);
     let side_b = side_id_for_user(&created, &opponent.profile.id);
-    let first_submission_id = created
-        .pending_score
-        .as_ref()
-        .expect("pending at create time")
-        .submission_id
-        .clone();
-
-    matches_match_id_score_submissions_submission_id_respond_post(
-        &opponent_config,
-        &created.id,
-        &first_submission_id,
-        models::RespondToScoreInput {
-            response: models::ScoreResponseKind::Confirm,
-        },
-    )
-    .await
-    .expect("confirm original score");
-
-    let confirmed = matches_match_id_get(&owner_config, &created.id)
-        .await
-        .expect("get match");
     assert!(
-        confirmed.confirmed_score.is_some(),
-        "setup: score confirmed"
+        created.confirmed_score.is_some(),
+        "setup: the creator's score is the match's result immediately"
     );
 
     (
@@ -3041,15 +2817,15 @@ async fn match_with_a_confirmed_score() -> (
         owner,
         opponent_config,
         opponent,
-        confirmed,
+        created,
         side_a,
         side_b,
     )
 }
 
 #[tokio::test]
-async fn editing_a_confirmed_score_stays_pending_until_the_other_side_confirms() {
-    let (owner_config, _owner, opponent_config, _opponent, created, side_a, side_b) =
+async fn editing_a_confirmed_score_updates_it_directly() {
+    let (owner_config, _owner, _opponent_config, _opponent, created, side_a, side_b) =
         match_with_a_confirmed_score().await;
 
     // The owner edits the match with a new, different score.
@@ -3065,291 +2841,24 @@ async fn editing_a_confirmed_score_stays_pending_until_the_other_side_confirms()
     .await
     .expect("patch edited score");
 
-    // The old confirmed score is untouched; the new one shows up as pending.
-    let still_confirmed = edited
+    // The edit lands immediately — no approval step, no separate pending state.
+    let updated_confirmed = edited
         .confirmed_score
-        .expect("confirmed score is unaffected by an unapproved edit");
+        .expect("the edit is the match's result immediately");
     assert_eq!(
-        simple_score_points(&still_confirmed.score),
-        sorted_points(vec![(side_a.clone(), 6), (side_b.clone(), 3)]),
-        "the previously-confirmed score must not change until the edit is approved"
-    );
-    let pending = edited
-        .pending_score
-        .expect("the edit is pending, not applied immediately");
-    assert_eq!(
-        simple_score_points(&pending.score),
+        simple_score_points(&updated_confirmed.score),
         sorted_points(vec![(side_a.clone(), 6), (side_b.clone(), 4)])
     );
-
-    // History now has the confirmed original plus the new pending edit.
-    let submissions = matches_match_id_score_submissions_get(&owner_config, &created.id)
-        .await
-        .expect("list submissions");
-    assert_eq!(submissions.len(), 2);
-
-    // The opponent confirms the edit, promoting it to the confirmed score.
-    matches_match_id_score_submissions_submission_id_respond_post(
-        &opponent_config,
-        &created.id,
-        &pending.submission_id,
-        models::RespondToScoreInput {
-            response: models::ScoreResponseKind::Confirm,
-        },
-    )
-    .await
-    .expect("confirm edited score");
 
     let final_match = matches_match_id_get(&owner_config, &created.id)
         .await
         .expect("get match");
     let final_confirmed = final_match
         .confirmed_score
-        .expect("edited score is confirmed");
+        .expect("edited score is the match's result");
     assert_eq!(
         simple_score_points(&final_confirmed.score),
         sorted_points(vec![(side_a.clone(), 6), (side_b.clone(), 4)])
-    );
-    assert!(final_match.pending_score.is_none());
-}
-
-#[tokio::test]
-async fn disputing_an_edit_to_a_confirmed_score_leaves_the_original_confirmed_score_intact() {
-    let (owner_config, _owner, opponent_config, _opponent, created, side_a, side_b) =
-        match_with_a_confirmed_score().await;
-
-    let edited = matches_match_id_patch(
-        &owner_config,
-        &created.id,
-        models::UpdateMatchInput {
-            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 4))),
-            winner_side_id: Some(side_a.clone()),
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("patch edited score");
-    let pending = edited.pending_score.expect("the edit is pending");
-
-    // The opponent disputes the edit.
-    matches_match_id_score_submissions_submission_id_respond_post(
-        &opponent_config,
-        &created.id,
-        &pending.submission_id,
-        models::RespondToScoreInput {
-            response: models::ScoreResponseKind::Dispute,
-        },
-    )
-    .await
-    .expect("dispute edited score");
-
-    let after_dispute = matches_match_id_get(&owner_config, &created.id)
-        .await
-        .expect("get match");
-    assert!(
-        after_dispute.pending_score.is_none(),
-        "a disputed edit clears the pending score"
-    );
-    let confirmed = after_dispute
-        .confirmed_score
-        .expect("the original confirmed score still stands");
-    assert_eq!(
-        simple_score_points(&confirmed.score),
-        sorted_points(vec![(side_a.clone(), 6), (side_b.clone(), 3)]),
-        "a disputed edit must not change the previously-confirmed score"
-    );
-
-    // History has the original confirmed submission and the disputed edit.
-    let submissions = matches_match_id_score_submissions_get(&owner_config, &created.id)
-        .await
-        .expect("list submissions");
-    assert_eq!(submissions.len(), 2);
-    let disputed_submission = submissions
-        .iter()
-        .find(|s| s.id == pending.submission_id)
-        .expect("edited submission present in history");
-    assert!(matches!(
-        disputed_submission.status,
-        models::ScoreSubmissionStatus::Disputed
-    ));
-}
-
-#[tokio::test]
-async fn submitting_a_score_notifies_the_other_side_to_confirm() {
-    let (owner_config, owner) = new_user().await;
-    let (opponent_config, opponent) = new_user().await;
-
-    // Owner plays on side "a", opponent invited onto side "b" — no score at
-    // creation. The opponent accepts the invite first, so the score PATCHed in
-    // below is unambiguously "submitted after accept", which must always
-    // notify (unlike a create-time score arriving alongside a still-pending
-    // invite — see `inviting_with_a_score_does_not_duplicate_the_invite_notification`
-    // for that deliberately-deduped case).
-    let mut input = create_match_input(&opponent.profile.id);
-    input.invites = vec![models::CreateMatchInviteInput {
-        side_client_id: Some("b".to_string()),
-        invited_user_ids: vec![opponent.profile.id.clone()],
-        invited_externals: vec![],
-    }];
-    input.creator_side_client_id = Some("a".to_string());
-
-    let created = matches_post(&owner_config, input)
-        .await
-        .expect("create match");
-    assert!(created.confirmed_score.is_none(), "no score yet");
-
-    // The opponent accepts their invite before any score exists.
-    let inbox = users_me_invitations_get(&opponent_config, None, None, None)
-        .await
-        .expect("inbox");
-    let detail = inbox
-        .items
-        .iter()
-        .find(|i| {
-            matches!(&*i.context,
-            models::InvitationContext::Match(ctx) if ctx.match_id == created.id)
-        })
-        .expect("match invitation in inbox");
-    invitations_invitation_id_respond_post(
-        &opponent_config,
-        &detail.invitation.id,
-        models::RespondToInvitationInput {
-            response: models::InvitationResponse::Accepted,
-            side_id: None,
-            rating_consent: None,
-        },
-    )
-    .await
-    .expect("accept invitation");
-
-    // Now the owner submits a score (post-creation, via PATCH) — pending on
-    // the opponent's (already-joined) side.
-    let side_a = created.sides[0].id.clone();
-    let side_b = created.sides[1].id.clone();
-    matches_match_id_patch(
-        &owner_config,
-        &created.id,
-        models::UpdateMatchInput {
-            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 3))),
-            winner_side_id: Some(side_a.clone()),
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("patch score");
-
-    // The opponent gets a ScoreSubmitted notification asking them to confirm, with
-    // the owner as the submitter.
-    let notif = eventually("score-submitted notification to be generated", || {
-        let config = &opponent_config;
-        let match_id = &created.id;
-        let owner_id = &owner.profile.id;
-        async move {
-            let page = notifications_get(config, None, None).await.ok()?;
-            page.items.into_iter().find(|n| match &*n.kind {
-                models::NotificationKind::ScoreSubmitted(s) => {
-                    &s.match_id == match_id && &s.submitted_by.id == owner_id
-                }
-                _ => false,
-            })
-        }
-    })
-    .await;
-    let models::NotificationKind::ScoreSubmitted(submitted) = &*notif.kind else {
-        unreachable!("filtered to ScoreSubmitted above");
-    };
-    assert!(
-        submitted.needs_confirmation,
-        "the opposing side must be asked to confirm"
-    );
-
-    // The opponent confirms the submission, which completes the score.
-    matches_match_id_score_submissions_submission_id_respond_post(
-        &opponent_config,
-        &created.id,
-        &submitted.submission_id,
-        models::RespondToScoreInput {
-            response: models::ScoreResponseKind::Confirm,
-        },
-    )
-    .await
-    .expect("confirm score");
-
-    // The owner (the submitter) is notified that their score was confirmed, with
-    // the opponent as the confirming actor.
-    let confirmed = eventually("score-confirmed notification to be generated", || {
-        let config = &owner_config;
-        let match_id = &created.id;
-        let opponent_id = &opponent.profile.id;
-        async move {
-            let page = notifications_get(config, None, None).await.ok()?;
-            page.items.into_iter().find(|n| match &*n.kind {
-                models::NotificationKind::ScoreConfirmed(c) => {
-                    &c.match_id == match_id && &c.confirmed_by.id == opponent_id
-                }
-                _ => false,
-            })
-        }
-    })
-    .await;
-    assert!(!confirmed.is_read, "a fresh notification is unread");
-}
-
-/// A match created with a score already attached (e.g. logging a completed
-/// match and inviting the opponent in the same action) must not duplicate the
-/// invite notification with a separate "score submitted, confirm it?" one —
-/// the invitee's accept flow already surfaces the pending score in the same
-/// step. Once they accept, a later submission notifies as normal (covered by
-/// `submitting_a_score_notifies_the_other_side_to_confirm`).
-#[tokio::test]
-async fn inviting_with_a_score_does_not_duplicate_the_invite_notification() {
-    let (owner_config, _owner) = new_user().await;
-    let (opponent_config, opponent) = new_user().await;
-
-    // Owner plays on side "a" and submits a create-time score; the opponent is
-    // invited (left pending — never accepted in this test) onto side "b".
-    let mut input = create_match_input(&opponent.profile.id);
-    input.invites = vec![models::CreateMatchInviteInput {
-        side_client_id: Some("b".to_string()),
-        invited_user_ids: vec![opponent.profile.id.clone()],
-        invited_externals: vec![],
-    }];
-    input.starts_at = iso_offset_hours(-2);
-    input.creator_side_client_id = Some("a".to_string());
-    input.score = Some(Box::new(simple_score("a", "b", 6, 3)));
-    input.winner_side_id = Some("a".to_string());
-
-    let created = matches_post(&owner_config, input)
-        .await
-        .expect("create match");
-
-    // Wait for the invite notification — proves the worker has processed this
-    // match's events, so a still-absent score-submitted notification below
-    // reflects the dedup rather than the async pipeline simply not having run.
-    eventually("match invitation notification to be generated", || {
-        let config = &opponent_config;
-        let match_id = &created.id;
-        async move {
-            let page = notifications_get(config, None, None).await.ok()?;
-            page.items.into_iter().find(|n| match &*n.kind {
-                models::NotificationKind::MatchInvitation(m) => m.match_id == *match_id,
-                _ => false,
-            })
-        }
-    })
-    .await;
-
-    // A short extra settle (same idiom as `assert_match_absent_from_feed`),
-    // then confirm no score-submitted notification arrived for the invitee —
-    // their invite is still pending, so it was deliberately deduped.
-    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-    let page = notifications_get(&opponent_config, None, None)
-        .await
-        .expect("list notifications");
-    assert!(
-        !page.items.iter().any(|n| matches!(&*n.kind,
-            models::NotificationKind::ScoreSubmitted(s) if s.match_id == created.id)),
-        "a still-pending invitee should not get a separate score-submitted notification"
     );
 }
 
@@ -4998,7 +4507,7 @@ async fn play_cricket_bowling_match(
         Default::default(),
     )));
 
-    let updated = matches_match_id_patch(
+    matches_match_id_patch(
         bowler_config,
         &created.id,
         models::UpdateMatchInput {
@@ -5009,20 +4518,6 @@ async fn play_cricket_bowling_match(
     )
     .await
     .expect("patch cricket score");
-    let submission_id = updated
-        .pending_score
-        .expect("pending score after patch")
-        .submission_id;
-    matches_match_id_score_submissions_submission_id_respond_post(
-        &batter_config,
-        &created.id,
-        &submission_id,
-        models::RespondToScoreInput {
-            response: models::ScoreResponseKind::Confirm,
-        },
-    )
-    .await
-    .expect("confirm cricket score");
 }
 
 /// Every member of a team, across all pages of `GET /teams/:id/members` — a
@@ -8870,83 +8365,6 @@ async fn ranked_cannot_be_changed_once_a_score_has_been_submitted() {
     );
 }
 
-/// A dispute *clears* the pending score, so a scored-then-disputed match has no
-/// score on it at all — and still doesn't start until tomorrow. The lock has to
-/// hold anyway, or it would reopen on exactly the match whose result both sides
-/// have already seen. (It's the status having left `scheduled` that holds it.)
-#[tokio::test]
-async fn ranked_stays_locked_after_a_submitted_score_is_disputed() {
-    let (config, _user) = new_user().await;
-    let (opponent_config, opponent) = new_user().await;
-
-    let scheduled = matches_post(
-        &config,
-        ranked_match_input(&opponent.profile.id, Some(true)),
-    )
-    .await
-    .expect("create ranked match");
-    accept_invitation_with_consent(&opponent_config, &scheduled.id, Some(true))
-        .await
-        .expect("the opponent accepts, consenting to be rated");
-    let side_a = scheduled.sides[0].id.clone();
-    let side_b = scheduled.sides[1].id.clone();
-    let scored = matches_match_id_patch(
-        &config,
-        &scheduled.id,
-        models::UpdateMatchInput {
-            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 3))),
-            winner_side_id: Some(side_a.clone()),
-            ..Default::default()
-        },
-    )
-    .await
-    .expect("submit a score");
-    let submission_id = scored
-        .pending_score
-        .as_ref()
-        .expect("the score awaits confirmation")
-        .submission_id
-        .clone();
-
-    matches_match_id_score_submissions_submission_id_respond_post(
-        &opponent_config,
-        &scheduled.id,
-        &submission_id,
-        models::RespondToScoreInput {
-            response: models::ScoreResponseKind::Dispute,
-        },
-    )
-    .await
-    .expect("the opponent disputes the score");
-    let disputed = matches_match_id_get(&config, &scheduled.id)
-        .await
-        .expect("re-read the match");
-    assert!(
-        disputed.pending_score.is_none() && disputed.confirmed_score.is_none(),
-        "the dispute cleared the score, which is what makes this the trap"
-    );
-
-    assert_status_with_content(
-        matches_match_id_patch(
-            &config,
-            &scheduled.id,
-            models::UpdateMatchInput {
-                ranked: Some(false),
-                ..Default::default()
-            },
-        )
-        .await,
-        reqwest::StatusCode::BAD_REQUEST,
-        "no longer scheduled",
-    );
-    assert!(
-        matches_match_id_get(&config, &scheduled.id)
-            .await
-            .expect("re-read the match")
-            .ranked
-    );
-}
-
 /// Past its start time a match is closed even with no score, because by then
 /// the result is knowable whether or not anyone has typed it in. Both routes
 /// there: backdating in the same request as the flag change (refused whole),
@@ -9060,7 +8478,7 @@ async fn ranked_cannot_be_flipped_by_the_same_request_that_submits_the_score() {
         .expect("re-read the match");
     assert!(after.ranked, "the flag must be untouched");
     assert!(
-        after.pending_score.is_none(),
+        after.confirmed_score.is_none(),
         "and the score must not have landed either"
     );
 }

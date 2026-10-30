@@ -30,8 +30,7 @@ function sideName(side: MatchSide | undefined, fallback: string): string {
  * (mockup "Mini-ticker — last events under the score"). Presentational: the
  * caller fetches the live score (`useMatchScore`) and passes the derived
  * football score down, so `MatchCard` and `MatchDetailPage` can each decide
- * when to show this instead of their normal (confirmed/pending score)
- * block.
+ * when to show this instead of their normal (confirmed score) block.
  */
 export function LiveMatchBlock({
   match,

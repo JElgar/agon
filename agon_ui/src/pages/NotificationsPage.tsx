@@ -4,8 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { formatDistanceToNow } from 'date-fns'
 import {
   Bell,
-  CheckCircle2,
-  ClipboardCheck,
+  Clock,
   Flame,
   LogIn,
   MessageCircle,
@@ -34,15 +33,13 @@ type Kind = components['schemas']['NotificationKind']
 const PAGE_SIZE = 20
 
 /** A notification stays in "Needs your reply" while it still has an action
- *  attached to it — a pending match/team invite, or a score awaiting
- *  confirmation. Everything else is a read-only update. */
+ *  attached to it — a pending match/team invite. Everything else is a
+ *  read-only update. */
 function needsReply(kind: Kind): boolean {
   switch (kind.type) {
     case 'MatchInvitation':
     case 'TeamInvitation':
       return kind.status === 'pending'
-    case 'ScoreSubmitted':
-      return kind.needs_confirmation
     default:
       return false
   }
@@ -561,47 +558,6 @@ function describe(kind: Kind): NotificationView {
         href: `/matches/${kind.match_id}`,
         actions: { viewLabel: 'View match' },
       }
-    case 'ScoreSubmitted':
-      return {
-        actorName: kind.submitted_by.name,
-        actorImage: kind.submitted_by.profile_image?.image_url,
-        message: kind.needs_confirmation ? (
-          <>
-            <strong className="font-medium">{kind.submitted_by.name}</strong>{' '}
-            submitted a score for{' '}
-            <strong className="font-medium">{kind.match_name}</strong> — confirm
-            it?
-          </>
-        ) : (
-          <>
-            <strong className="font-medium">{kind.submitted_by.name}</strong>{' '}
-            updated the score for{' '}
-            <strong className="font-medium">{kind.match_name}</strong>.
-          </>
-        ),
-        badgeIcon: ClipboardCheck,
-        badgeClass: kind.needs_confirmation ? 'bg-primary' : 'bg-muted-foreground',
-        href: `/matches/${kind.match_id}`,
-        actions: {
-          viewLabel: kind.needs_confirmation ? 'Review score' : 'View match',
-        },
-      }
-    case 'ScoreConfirmed':
-      return {
-        actorName: kind.confirmed_by.name,
-        actorImage: kind.confirmed_by.profile_image?.image_url,
-        message: (
-          <>
-            <strong className="font-medium">{kind.confirmed_by.name}</strong>{' '}
-            confirmed the score for{' '}
-            <strong className="font-medium">{kind.match_name}</strong>.
-          </>
-        ),
-        badgeIcon: CheckCircle2,
-        badgeClass: 'bg-success',
-        href: `/matches/${kind.match_id}`,
-        actions: { viewLabel: 'View match' },
-      }
     case 'TeamMatchJoinable':
       return {
         actorName: kind.organizer.name,
@@ -613,6 +569,21 @@ function describe(kind: Kind): NotificationView {
           </>
         ),
         badgeIcon: LogIn,
+        badgeClass: 'bg-primary',
+        href: `/matches/${kind.match_id}`,
+        actions: { viewLabel: 'View match' },
+      }
+    case 'MatchReminder':
+      return {
+        actorName: kind.organizer.name,
+        actorImage: kind.organizer.profile_image?.image_url,
+        message: (
+          <>
+            <strong className="font-medium">{kind.match_name}</strong> starts
+            soon.
+          </>
+        ),
+        badgeIcon: Clock,
         badgeClass: 'bg-primary',
         href: `/matches/${kind.match_id}`,
         actions: { viewLabel: 'View match' },

@@ -3,8 +3,8 @@
 //! per-viewer feed data that lets their feed card render without a live
 //! players query: which of the match's participants they follow ("people you
 //! know are playing"), and, if the viewer is themselves a participant, which
-//! side they play on (so their own card can show the score confirm/dispute
-//! prompt).
+//! side they play on (so their own card can be shown from their side's point
+//! of view).
 //!
 //! Per docs/async-design.md §5/§11 the audience is the union of:
 //! - followers of every **participating user** (players with a linked user id),
@@ -62,7 +62,7 @@ pub struct AudienceMember {
     /// decide "is the viewer going" — an unassigned participant (a match with
     /// `allow_unassigned` whose joiner hasn't picked a side) has this as
     /// `None` too despite playing. Use `viewer_is_going` for that; this field
-    /// is only for the side-specific score confirm/dispute prompt.
+    /// is only for showing the match from the viewer's own side.
     pub viewer_side_id: Option<String>,
     /// Whether this viewer is themselves a participant in the match (in the
     /// `agg.players` loop below), regardless of whether they've been

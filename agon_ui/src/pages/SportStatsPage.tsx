@@ -502,7 +502,7 @@ function outcomeBadge(match: SearchMatch): { label: string; bg: string; fg: stri
 }
 
 function matchScoreLabel(match: SearchMatch): string | undefined {
-  const score = match.confirmed_score?.score ?? match.pending_score?.score
+  const score = match.confirmed_score?.score
   if (!score) return undefined
   if (score.type === 'Simple' || score.type === 'Football' || score.type === 'Netball') {
     const values = Object.values(score.type === 'Simple' ? score.entries : score.score)

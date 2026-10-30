@@ -212,9 +212,8 @@ pub enum Sk {
     /// A match's live-scoring score record, keyed by sport — the score as
     /// derived from the event log, live or finished, but never itself the
     /// agreed result. Named `LIVESCORE#<sport>` rather than `SCORE#` to keep
-    /// that distinct from `confirmed_score`/`pending_score` on the match's
-    /// `#META` item, which *is* the agreed-or-awaiting-agreement result (see
-    /// `ScoreSubmission`'s confirm/dispute flow).
+    /// that distinct from `confirmed_score` on the match's `#META` item,
+    /// which is the match's score of record, set directly by its owner/admin.
     Score(String),
     /// A like on a match. `LIKE#<uid>`
     Like(String),
@@ -226,9 +225,6 @@ pub enum Sk {
     /// seq), not edits.
     LiveEvent(u32),
 
-    /// A score submission. `SCORESUB#<subId>` — addressed by id; time ordering
-    /// is via GSI1 (`MSUBMISSIONS#<matchId>` / `<ts>#<subId>`).
-    ScoreSubmission(String),
     /// A top-level comment on a match. `COMMENT#<cid>` — addressed by id; time
     /// ordering is via GSI1 (`MCOMMENTS#<matchId>` / `<ts>#<cid>`).
     Comment(String),
@@ -322,7 +318,6 @@ impl Sk {
             Sk::Score(_) => "LIVESCORE",
             Sk::Like(_) => "LIKE",
             Sk::LiveEvent(_) => "LIVEEVT",
-            Sk::ScoreSubmission(_) => "SCORESUB",
             Sk::Comment(_) => "COMMENT",
             Sk::Reply(_) => "REPLY",
             Sk::Notification(_) => "NOTIF",
@@ -509,7 +504,6 @@ impl fmt::Display for Sk {
             | Sk::Occurrence(v)
             | Sk::Score(v)
             | Sk::Like(v)
-            | Sk::ScoreSubmission(v)
             | Sk::Comment(v)
             | Sk::Reply(v)
             | Sk::Notification(v)
@@ -597,7 +591,6 @@ impl FromStr for Sk {
                 .parse::<u32>()
                 .map(Sk::LiveEvent)
                 .map_err(|_| KeyError::Malformed(s.into())),
-            "SCORESUB" => Ok(Sk::ScoreSubmission(rest.into())),
             "COMMENT" => Ok(Sk::Comment(rest.into())),
             "REPLY" => Ok(Sk::Reply(rest.into())),
             "NOTIF" => Ok(Sk::Notification(rest.into())),
@@ -700,7 +693,6 @@ mod tests {
         sk_roundtrip(Sk::Score("cricket".into()), "LIVESCORE#cricket");
         sk_roundtrip(Sk::Like("u3".into()), "LIKE#u3");
         // Id-addressed (time-ordered) items now use id-only base SKs.
-        sk_roundtrip(Sk::ScoreSubmission("s1".into()), "SCORESUB#s1");
         sk_roundtrip(Sk::Comment("c1".into()), "COMMENT#c1");
         sk_roundtrip(Sk::Reply("r1".into()), "REPLY#r1");
         sk_roundtrip(Sk::Notification("n1".into()), "NOTIF#n1");
@@ -911,14 +903,7 @@ mod tests {
     #[test]
     fn no_range_query_prefix_is_a_prefix_of_another() {
         // A `begins_with(SK, prefix)` query must only ever match its own
-        // variant's items. This is exactly the bug that motivated
-        // `LIVESCORE#` over `SCORE#` for `Sk::Score`: `SCORE#` would have
-        // been a literal string-prefix of `SCORESUB#`, so a range query
-        // meant to list live-scoring records would also match score
-        // submissions. `SCORESUB#` has no `*_prefix()` of its own today
-        // (score submissions are addressed by id / listed via GSI1) but is
-        // included here as a literal precisely so it keeps guarding future
-        // additions, not just the ones that already have a function.
+        // variant's items.
         //
         // `Sk::rating_prefix` is ladder-parameterised, so what goes in the
         // list is its stem (`RATING#`) rather than one arbitrary ladder:
@@ -927,8 +912,7 @@ mod tests {
         // the stem being a prefix of each. The assertion below the loop
         // pins the helper to the stem so that stays true. `RATING#` versus
         // `RATINGCONTRIB#` is the near-miss this pairing is really here for:
-        // the two differ only at the delimiter, exactly as `SCORE#` and
-        // `SCORESUB#` did.
+        // the two differ only at the delimiter.
         let prefixes = [
             Sk::follower_prefix(),
             Sk::member_prefix(),
@@ -943,7 +927,6 @@ mod tests {
             Sk::paired_device_prefix(),
             Sk::rating_contribution_prefix(),
             Sk::rating_stem(),
-            "SCORESUB#".to_string(),
         ];
         for (i, a) in prefixes.iter().enumerate() {
             for (j, b) in prefixes.iter().enumerate() {

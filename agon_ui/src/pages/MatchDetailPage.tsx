@@ -12,7 +12,6 @@ import { addMatchToCalendar } from '@/lib/calendar'
 import { Button } from '@/components/ui/button'
 import { WaitlistSection } from '@/components/agon/WaitlistSection'
 import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
-import { ScoreConfirmationBar } from '@/components/agon/ScoreConfirmationBar'
 import { useLiveEvents } from '@/hooks/useLiveScore'
 import { useMatchScore } from '@/hooks/useMatchScore'
 import { useIsDesktop } from '@/hooks/useMediaQuery'
@@ -243,7 +242,7 @@ function MatchDetail({
   const headline = scoreInfo ? headlineBySide(scoreInfo.score) : {}
 
   // Live, in-progress score only — a completed match reads its scorecard
-  // straight off `confirmed_score`/`pending_score` instead (see
+  // straight off `confirmed_score` instead (see
   // `footballEventSource`/`cricketInnings` below), which carries the same
   // goals/cards/subs (football) or batting/bowling/extras (cricket) a
   // live-scored or manually-entered result produces — it's the same `Score`
@@ -259,12 +258,12 @@ function MatchDetail({
   const cricketState = isCurrentlyLive ? cricketScoreFrom(scoreQuery.data) : null
   const netballState = isCurrentlyLive ? netballScoreFrom(scoreQuery.data) : null
   const hasLiveState = !!footballState || !!cricketState || !!netballState
-  // Same "live while in progress, else confirmed/pending" source as
+  // Same "live while in progress, else confirmed" source as
   // `cricketScoreInnings` below — the hero card and the score's resolved
   // player names.
   const cricketScore = cricketScoreFrom(isCurrentlyLive ? scoreQuery.data : scoreInfo?.score)
   // The timeline's events: the live running score while the
-  // match is in progress, else straight off the confirmed/pending score —
+  // match is in progress, else straight off the confirmed score —
   // stays visible once the match is completed, unlike `footballState` above.
   const footballEventSource = footballEventSourceFromScore(
     isCurrentlyLive ? scoreQuery.data : scoreInfo?.score,
@@ -523,15 +522,11 @@ function MatchDetail({
     (matchView === 'finished' || matchView === 'live') && (
       <YourGameCard match={match} me={myPlayer} detail={footballEventSource} />
     )
-  // Invites, pending-score confirmation, join prompts and the result editor.
+  // Invites, join prompts and the result editor.
   const banners = (
     <>
-      {myPendingInvitation(match, currentUserId) ? (
+      {myPendingInvitation(match, currentUserId) && (
         <InviteBanner match={match} currentUserId={currentUserId} />
-      ) : (
-        match.pending_score && (
-          <ScoreConfirmationBar match={match} currentUserId={currentUserId} variant="detail" />
-        )
       )}
       {!cancelled && <TeamJoinBanner match={match} />}
       {!cancelled && <JoinLinkBanner match={match} />}

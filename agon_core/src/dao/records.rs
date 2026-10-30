@@ -120,34 +120,6 @@ pub struct ConfirmedScoreRecord {
     pub winner_side_id: Option<String>,
 }
 
-/// A submitted score awaiting confirmation, with per-side confirmations so far.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PendingScoreRecord {
-    pub submission_id: String,
-    pub score: ScoreRecord,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub winner_side_id: Option<String>,
-    #[serde(default)]
-    pub confirmations: Vec<ScoreConfirmationRecord>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ScoreConfirmationRecord {
-    pub side_id: String,
-    pub confirmed_by_player_id: String,
-    pub confirmed_at: String,
-}
-
-/// A confirm/dispute response to a score submission.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ScoreResponseRecord {
-    pub side_id: String,
-    pub responded_by_player_id: String,
-    /// "confirm" | "dispute".
-    pub response: String,
-    pub responded_at: String,
-}
-
 /// How an invitation is authorised on acceptance.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -461,12 +433,9 @@ pub struct MatchRecord {
     /// for records written before this field existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub header_photos: Vec<HeaderPhotoRecord>,
-    /// The agreed score. None until agreed.
+    /// The match's score, set directly by its owner/admin. None until set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirmed_score: Option<ConfirmedScoreRecord>,
-    /// A score awaiting confirmation. None if none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_score: Option<PendingScoreRecord>,
     // Denormalized social counts, maintained via atomic ADD.
     #[serde(default)]
     pub like_count: u64,
@@ -1027,7 +996,7 @@ pub enum JoinSourceRecord {
 /// `agon_service`'s `Score` doc comment). A match being scored live keeps
 /// this up to date incrementally, one event at a time; a manually-entered
 /// match (or one past its last live event) just has it written directly.
-/// Same `ScoreRecord` type as `Match.confirmed_score`/`pending_score` — kept
+/// Same `ScoreRecord` type as `Match.confirmed_score` — kept
 /// as a separate item (rather than written straight to the match's `#META`
 /// item) purely for write-frequency and stream-isolation reasons: this
 /// record can be rewritten on every single live event without touching the
@@ -1075,22 +1044,6 @@ pub struct LiveEventRecord {
 // `CricketLiveEventRecord`, `NetballLiveEventRecord`, and their nested types)
 // lives in `crate::sports::{football,cricket,netball}` alongside that sport's
 // score/format records.
-
-/// `MATCH#<matchId>` / `SCORESUB#<ts>#<subId>` — a score submission and its
-/// responses. Score and responses are opaque JSON.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ScoreSubmissionRecord {
-    pub submission_id: String,
-    pub score: ScoreRecord,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub winner_side_id: Option<String>,
-    /// "pending" | "confirmed" | "disputed" | "superseded".
-    pub status: String,
-    pub submitted_by_player_id: String,
-    pub submitted_at: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub responses: Vec<ScoreResponseRecord>,
-}
 
 /// `MATCH#<matchId>` / `LIKE#<userId>` — a like on a match.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1274,26 +1227,6 @@ pub enum NotificationKindRecord {
         comment_id: String,
         parent_comment_id: String,
         preview: String,
-    },
-    /// A score was submitted for a match you played in. `needs_confirmation`
-    /// distinguishes the two messages: `true` => your side must confirm it,
-    /// `false` => informational (your side already implicitly confirmed, or the
-    /// score was set directly). `actor_user_id` is the submitter.
-    ScoreSubmitted {
-        actor_user_id: String,
-        match_id: String,
-        match_name: String,
-        submission_id: String,
-        needs_confirmation: bool,
-    },
-    /// A score you submitted was confirmed by the other side(s). Sent to the
-    /// submitter; `actor_user_id` is the participant whose confirmation completed
-    /// it.
-    ScoreConfirmed {
-        actor_user_id: String,
-        match_id: String,
-        match_name: String,
-        submission_id: String,
     },
     /// A match now has a side your team may join directly
     /// (`MatchSideRecord::team_join_enabled`) — sent to every accepted member
@@ -1857,7 +1790,6 @@ mod tests {
             header_photos: Vec::new(),
             authority: HashMap::new(),
             confirmed_score: None,
-            pending_score: None,
             like_count: 0,
             comment_count: 0,
             live_seq: 0,
@@ -1936,8 +1868,7 @@ mod tests {
     /// `Simple`/`Sets` `entries` round-trip through the side_id-keyed map
     /// shape. (Data written before this shape landed no longer needs
     /// handling here — see `migrate_score_entries.py`, the one-off script
-    /// that backfilled every match's `confirmed_score`/`pending_score`/
-    /// score-submission history to this shape.)
+    /// that backfilled every match's `confirmed_score` to this shape.)
     #[test]
     fn simple_map_shape_deserializes() {
         let map_shape = AttributeValue::M(HashMap::from([

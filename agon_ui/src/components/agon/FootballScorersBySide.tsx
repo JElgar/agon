@@ -15,7 +15,7 @@ type SearchMatch = components['schemas']['SearchMatch']
  * 5', 53'" — laid out side-by-side under the score, aligned under `sideA`/
  * `sideB` the same way the score header itself is. Shared between the feed/
  * profile card (`MatchCard`) and the match detail page header; both show
- * this in place of goals for a finished/confirmed-or-pending score.
+ * this in place of goals for a finished, confirmed score.
  * `FootballScorecard`'s full event timeline (goals *and* cards/subs) further
  * down the detail page is unaffected — this is just the score header's
  * summary. Renders nothing if neither side has a goal to show.

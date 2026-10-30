@@ -889,7 +889,6 @@ mod tests {
             match_type: "squash".into(),
             status: "completed".into(),
             series_id: None,
-            ranked_prompt: None,
             starts_at: PLAYED_AT.into(),
             allow_unassigned: true,
             total_player_count: 2,
@@ -934,7 +933,6 @@ mod tests {
             // Main's shape today. The switch-to-ranked prompt survives as a
             // notification and loses its enforcement, so this field is on its
             // way out; nothing here reads it either way.
-            ranked_prompt: None,
         }
     }
 

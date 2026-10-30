@@ -1309,6 +1309,21 @@ pub enum NotificationKindRecord {
         match_id: String,
         match_name: String,
     },
+    /// A scheduled reminder that a match is coming up — sent a fixed time
+    /// before `starts_at` (see `agon_worker`'s `MatchReminder` workflow).
+    /// Covers both an organizer's own matches and a series occurrence
+    /// generated from a recurring series: a series occurrence never gets an
+    /// "invited"-style notification of its own (its sides are team-linked,
+    /// not personally invited), so this is the only heads-up its audience
+    /// gets ahead of kickoff. `actor_user_id` is the match's organizer — no
+    /// more specific "actor" exists for a time-triggered event, same
+    /// reasoning as `TeamMatchJoinable`.
+    MatchReminder {
+        actor_user_id: String,
+        match_id: String,
+        match_name: String,
+        starts_at: String,
+    },
 }
 
 fn default_pending_invitation_status() -> String {

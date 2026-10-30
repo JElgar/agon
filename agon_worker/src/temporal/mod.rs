@@ -38,3 +38,10 @@ pub fn accept_workflow_id(invitation_id: &str) -> String {
 pub fn materialize_workflow_id(series_id: &str) -> String {
     format!("materialize-{series_id}")
 }
+
+/// Deterministic workflow id for a match's pre-kickoff reminder. A duplicate
+/// start (e.g. a redelivered stream event for the match's creation) attaches
+/// to the existing run instead of scheduling a second reminder.
+pub fn reminder_workflow_id(match_id: &str) -> String {
+    format!("reminder-{match_id}")
+}

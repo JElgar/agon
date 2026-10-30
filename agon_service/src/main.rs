@@ -10295,12 +10295,19 @@ enum Commands {
     },
 }
 
+/// Request bodies longer than this are truncated before logging, so one
+/// oversized payload can't blow up a log line (the field still names the
+/// original length).
+const MAX_LOGGED_BODY_CHARS: usize = 2048;
+
 fn log_request(
     method: &str,
     uri: &Uri,
     status: StatusCode,
     latency: std::time::Duration,
     sub: Option<&str>,
+    body: Option<&str>,
+    error: Option<&str>,
 ) {
     info!(
         method,
@@ -10309,6 +10316,8 @@ fn log_request(
         status = status.as_u16(),
         latency_ms = latency.as_millis() as u64,
         user.sub = sub.unwrap_or_default(),
+        body = body.unwrap_or_default(),
+        error = error.unwrap_or_default(),
         "Request complete"
     );
 }
@@ -10348,7 +10357,7 @@ impl RequestMetrics {
     }
 }
 
-async fn log_middleware<E: Endpoint>(next: E, req: Request) -> Result<Response> {
+async fn log_middleware<E: Endpoint>(next: E, mut req: Request) -> Result<Response> {
     use opentelemetry::KeyValue;
     use std::time::Instant;
 
@@ -10362,18 +10371,56 @@ async fn log_middleware<E: Endpoint>(next: E, req: Request) -> Result<Response> 
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .and_then(auth::unverified_sub);
+
+    // Buffer the body so it can be logged, then hand the same bytes back to
+    // the real handler — nothing downstream notices. Only for text/JSON
+    // bodies: uploads go straight to S3 via presigned URLs, never through
+    // this API, so there's no large/binary request body to worry about here.
+    let is_text_body = req
+        .content_type()
+        .is_some_and(|ct| ct.starts_with("application/json") || ct.starts_with("text/"));
+    let body = if is_text_body {
+        match req.take_body().into_bytes().await {
+            Ok(bytes) => {
+                req.set_body(bytes.clone());
+                Some(String::from_utf8_lossy(&bytes).into_owned())
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    let body = body.map(|b| {
+        if b.chars().count() > MAX_LOGGED_BODY_CHARS {
+            b.chars().take(MAX_LOGGED_BODY_CHARS).collect::<String>() + "...(truncated)"
+        } else {
+            b
+        }
+    });
+
     let start = Instant::now();
 
-    let (status, result) = match next.call(req).await {
+    let (status, error, result) = match next.call(req).await {
         Ok(resp) => {
             let resp = resp.into_response();
-            (resp.status(), Ok(resp))
+            (resp.status(), None, Ok(resp))
         }
-        Err(err) => (err.status(), Err(err)),
+        Err(err) => {
+            let message = err.to_string();
+            (err.status(), Some(message), Err(err))
+        }
     };
 
     let elapsed = start.elapsed();
-    log_request(&method, &uri, status, elapsed, sub.as_deref());
+    log_request(
+        &method,
+        &uri,
+        status,
+        elapsed,
+        sub.as_deref(),
+        body.as_deref(),
+        error.as_deref(),
+    );
 
     // Record request count + latency on the global meter. Attributes are kept to
     // bounded-cardinality dimensions only (see RequestMetrics).

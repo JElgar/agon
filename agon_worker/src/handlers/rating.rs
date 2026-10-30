@@ -959,7 +959,7 @@ mod tests {
         ]
     }
 
-    fn user(id: &str, opted_in_to: &[&str]) -> UserRecord {
+    fn user(id: &str) -> UserRecord {
         UserRecord {
             id: id.into(),
             email: format!("{id}@example.com"),
@@ -970,19 +970,13 @@ mod tests {
             unread_count: 0,
             stats: UserStatsRecord::default(),
             ratings: HashMap::new(),
-            rating_opt_ins: opted_in_to
-                .iter()
-                .map(|ladder| (ladder.to_string(), "2026-05-01T09:00:00.000Z".to_string()))
-                .collect(),
             created_at: "2026-01-01T00:00:00.000Z".into(),
         }
     }
 
     /// Profiles for `ids`, each opted in to squash.
     fn opted_in(ids: &[&str]) -> HashMap<String, UserRecord> {
-        ids.iter()
-            .map(|id| (id.to_string(), user(id, &["squash"])))
-            .collect()
+        ids.iter().map(|id| (id.to_string(), user(id))).collect()
     }
 
     /// The gate. One step: it used to be two, with a batch read between them
@@ -1842,7 +1836,7 @@ mod tests {
         let store = FakeStore::with_match(match_record(), singles(), &[]);
         // Profiles that have consented to nothing: the point of the test.
         for id in ["u1", "u2"] {
-            store.users.borrow_mut().insert(id.into(), user(id, &[]));
+            store.users.borrow_mut().insert(id.into(), user(id));
         }
 
         let done = run(&store, "m1", FIRST_DELIVERY);

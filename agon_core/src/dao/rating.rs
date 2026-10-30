@@ -1,9 +1,8 @@
-//! Rating storage: a player's per-ladder rating, their rating history, what
-//! each match contributed to it, and the ladders they have opted in to.
+//! Rating storage: a player's per-ladder rating, their rating history, and
+//! what each match contributed to it.
 //!
 //! | What | Where | Why |
 //! |---|---|---|
-//! | opt-in | `rating_opt_ins.<ladder>` on `USER#<uid>`/`#PROFILE` | consent to play ranked, on its way out — see below |
 //! | current rating | `ratings.<ladder>` on `USER#<uid>`/`#PROFILE` | rides the point read profiles, feed and search hydration already do |
 //! | history | `USER#<uid>` / `RATING#<ladder>#<played_at>#<mid>` | replay source *and* the rating-over-time chart, from one write |
 //! | contribution | `MATCH#<mid>` / `RATINGCONTRIB#<userId>` | makes re-rating idempotent, and is what the UI reads to show "+18" |
@@ -13,12 +12,11 @@
 //! planned follow-ups — rating a confirmed match in the worker, publishing a
 //! placed rating at the API, and the `RepairRatings` replay.
 //!
-//! Note what is *not* in that list. Nothing here records whether a rating
-//! may be *shown*: a ranked match rates everybody who played in it, and
-//! `rating::placement` decides from `matches_rated` alone whether the result
-//! is published. The opt-in map is the remains of an earlier design in which
-//! consent gated the maths, and comes out with the rest of the consent
-//! machinery.
+//! Note what is *not* in that list. Nothing here records a consent, and
+//! nothing records whether a rating may be shown. A ranked match rates
+//! everybody who played in it, and `rating::placement` decides from
+//! `matches_rated` alone whether the result is published — which is the whole
+//! of the policy, derived at read time, stored nowhere.
 //!
 //! ## Players only
 //!
@@ -97,10 +95,6 @@ pub const TYPE_RATING_HISTORY: &str = "rating_history";
 /// nothing reads. Pinned by
 /// `tests::every_attribute_an_expression_names_exists_on_its_record`.
 const ATTR_RATINGS: &str = "ratings";
-
-/// The profile-item attribute holding the per-ladder opt-in map. The same
-/// hazard as [`ATTR_RATINGS`], pinned by the same test.
-const ATTR_RATING_OPT_INS: &str = "rating_opt_ins";
 
 impl RatingContributionRecord {
     /// The history entry this contribution implies for its player.
@@ -222,48 +216,6 @@ impl Dao {
             },
         )
         .await
-    }
-
-    /// Record that a player has opted in to being rated on `ladder`, as of
-    /// `now` (RFC 3339). `true` if this call opted them in, `false` if they
-    /// already were.
-    ///
-    /// Idempotent in the way consent needs to be: the first opt-in's
-    /// timestamp is kept for good, and a repeat — the box ticked again on a
-    /// second ranked game, or a retried request — changes nothing. That is a
-    /// condition on the write (`attribute_not_exists` on the ladder's path),
-    /// not a read followed by a write, so two concurrent opt-ins cannot both
-    /// report `true`.
-    ///
-    /// `ladder` must come from `rating::ladder_for_tag` on the match's sport,
-    /// never from request input — it becomes a map key on the profile.
-    ///
-    /// `NotFound` if the profile does not exist, and neither round trip can
-    /// create one: both are conditioned on `attribute_exists(PK)`, because an
-    /// `UpdateItem` against a missing key *creates* the item.
-    ///
-    /// A failed condition on the second write is read as "already opted in",
-    /// and that relies on something worth stating. The ensure step has just
-    /// proved the profile exists and nothing deletes a `#PROFILE` item, so the
-    /// ladder already being set is the only way left for the condition to
-    /// fail. If account deletion is ever added, this has to learn to tell the
-    /// two apart (`ReturnValuesOnConditionCheckFailure` would do it).
-    ///
-    /// There is deliberately no counterpart: opting in is not reversible.
-    #[tracing::instrument(skip(self))]
-    pub async fn opt_in_to_rating(
-        &self,
-        user_id: &str,
-        ladder: &str,
-        now: &str,
-    ) -> DaoResult<bool> {
-        self.ensure_profile_map(user_id, ATTR_RATING_OPT_INS)
-            .await?;
-        match self.opt_in_request(user_id, ladder, now).send().await {
-            Ok(_) => Ok(true),
-            Err(e) if is_update_conditional_failure(&e) => Ok(false),
-            Err(e) => Err(DaoError::Dynamo(e.to_string())),
-        }
     }
 
     /// Apply one player's rating movement from one match: the new rating, the
@@ -636,33 +588,9 @@ impl Dao {
         b.build().map_err(|e| DaoError::Dynamo(e.to_string()))
     }
 
-    /// The conditional `SET rating_opt_ins.<ladder> = :opted_in_at` behind
-    /// [`Self::opt_in_to_rating`], built apart from sending it so the
-    /// expressions are unit-testable.
-    ///
-    /// It sets the one ladder's path and nothing else. A `SET` of the whole
-    /// map would be the same line shorter and would erase every other
-    /// ladder's opt-in.
-    fn opt_in_request(&self, user_id: &str, ladder: &str, now: &str) -> UpdateItemFluentBuilder {
-        self.client
-            .update_item()
-            .table_name(self.table())
-            .key(ATTR_PK, s(Pk::User(user_id.into()).to_string()))
-            .key(ATTR_SK, s(Sk::Profile.to_string()))
-            .update_expression("SET #opt_ins.#ladder = :opted_in_at")
-            .condition_expression(
-                "attribute_exists(#pk) AND attribute_not_exists(#opt_ins.#ladder)",
-            )
-            .expression_attribute_names("#pk", ATTR_PK)
-            .expression_attribute_names("#opt_ins", ATTR_RATING_OPT_INS)
-            // Same reserved-word reasoning as `rating_update`'s `#ladder`.
-            .expression_attribute_names("#ladder", ladder)
-            .expression_attribute_values(":opted_in_at", s(now))
-    }
-
-    /// Make sure the profile item has a map at `attr` (`ratings` or
-    /// `rating_opt_ins`), so that a nested `SET <attr>.#ladder = …` has
-    /// somewhere to resolve into.
+    /// Make sure the profile item has a map at `attr` (today only
+    /// `ratings`), so that a nested `SET <attr>.#ladder = …` has somewhere
+    /// to resolve into.
     ///
     /// DynamoDB cannot `SET` a path under a map that does not exist, and
     /// every profile written before these fields shipped lacks both. A
@@ -671,8 +599,8 @@ impl Dao {
     /// :empty)` and `SET m.#ladder = :v` overlap on one document path, which
     /// DynamoDB rejects outright — and splitting them across two items of one
     /// transaction is not possible either, since a transaction may not touch
-    /// the same item twice. It only runs on a rating write or an opt-in, both
-    /// rare per player.
+    /// the same item twice. It only runs on a rating write, which is rare
+    /// per player.
     ///
     /// Unlike `ensure_stats_sport` this is conditional on the item existing,
     /// and the divergence is deliberate. An `UpdateItem` against a missing key
@@ -947,46 +875,16 @@ mod tests {
     }
 
     /// Consent is first-writer-wins and never conjures a profile, and both
-    /// halves live entirely in this request's condition — there is no read
-    /// to fall back on. So: the update sets the one ladder's path (a `SET` of
-    /// the whole map would erase every other ladder's opt-in); the condition
-    /// refuses a ladder that is already set (so a second tick never moves the
-    /// original date, and is how the op knows to return `false`) and a
-    /// missing profile (an `UpdateItem` on a missing key would create one);
-    /// and the ladder travels as a `#name` placeholder rather than being
-    /// spliced into the expression.
-    #[test]
-    fn opting_in_sets_only_an_unset_ladder_on_an_existing_profile() {
-        let dao = offline_dao();
-        let req = dao.opt_in_request("u1", "squash", NOW);
-
-        assert_eq!(req.get_key().as_ref(), Some(&profile_key("u1")));
-        assert_eq!(
-            req.get_update_expression().as_deref(),
-            Some("SET #opt_ins.#ladder = :opted_in_at")
-        );
-        assert_eq!(
-            req.get_condition_expression().as_deref(),
-            Some("attribute_exists(#pk) AND attribute_not_exists(#opt_ins.#ladder)")
-        );
-
-        let names = req.get_expression_attribute_names().as_ref().unwrap();
-        assert_eq!(names["#pk"], ATTR_PK);
-        assert_eq!(names["#opt_ins"], ATTR_RATING_OPT_INS);
-        assert_eq!(names["#ladder"], "squash");
-        let values = req.get_expression_attribute_values().as_ref().unwrap();
-        assert_eq!(values[":opted_in_at"], s(NOW));
-    }
-
     /// The step that makes the nested `SET` resolvable on a profile written
-    /// before these maps existed. `if_not_exists` is what stops it wiping a
-    /// map that is already there — and with it every opt-in or rating it
-    /// holds — and `attribute_exists(#pk)` is the deliberate divergence from
+    /// before the map existed. `if_not_exists` is what stops it wiping a map
+    /// that is already there — and with it every rating it holds — and
+    /// `attribute_exists(#pk)` is the deliberate divergence from
     /// `ensure_stats_sport` that stops it creating a stub profile.
     #[test]
     fn ensuring_a_map_keeps_an_existing_one_and_never_creates_a_profile() {
         let dao = offline_dao();
-        for attr in [ATTR_RATINGS, ATTR_RATING_OPT_INS] {
+        {
+            let attr = ATTR_RATINGS;
             let req = dao.ensure_profile_map_request("u1", attr);
 
             assert_eq!(req.get_key().as_ref(), Some(&profile_key("u1")), "{attr}");
@@ -1151,10 +1049,10 @@ mod tests {
         };
         let r = rating(27.6, 1);
 
-        assert_request_binds_exactly("opt-in", &dao.opt_in_request("u1", "squash", NOW));
-        for attr in [ATTR_RATINGS, ATTR_RATING_OPT_INS] {
-            assert_request_binds_exactly(attr, &dao.ensure_profile_map_request("u1", attr));
-        }
+        assert_request_binds_exactly(
+            ATTR_RATINGS,
+            &dao.ensure_profile_map_request("u1", ATTR_RATINGS),
+        );
         assert_transaction_binds_exactly(
             "first apply",
             &dao.rating_contribution_items("m1", &stored, None, &r, None)
@@ -1176,9 +1074,9 @@ mod tests {
         );
     }
 
-    /// The expressions here name attributes by string — `ratings`,
-    /// `rating_opt_ins`, and each field the contribution guard compares —
-    /// while the records name them by Rust field. A rename on the record side
+    /// The expressions here name attributes by string — `ratings`, and each
+    /// field the contribution guard compares — while the records name them
+    /// by Rust field. A rename on the record side
     /// compiles cleanly and then fails only in production: writes land in an
     /// attribute nothing reads, or a guard compares an attribute that no
     /// longer exists and every redelivery becomes a permanent `Conflict`.
@@ -1194,13 +1092,13 @@ mod tests {
             unread_count: 0,
             stats: UserStatsRecord::default(),
             ratings: HashMap::from([("squash".to_string(), rating(27.6, 1))]),
-            rating_opt_ins: HashMap::from([("squash".to_string(), NOW.to_string())]),
             created_at: NOW.into(),
         };
         let item: HashMap<String, AttributeValue> = serde_dynamo::to_item(&user).unwrap();
-        for attr in [ATTR_RATINGS, ATTR_RATING_OPT_INS] {
-            assert!(item.contains_key(attr), "UserRecord has no `{attr}`");
-        }
+        assert!(
+            item.contains_key(ATTR_RATINGS),
+            "UserRecord has no `{ATTR_RATINGS}`"
+        );
 
         let c = contribution();
         let item: HashMap<String, AttributeValue> = serde_dynamo::to_item(&c).unwrap();

@@ -211,7 +211,6 @@ impl AgonActivities {
             // single occurrence to ranked afterwards, which asks everyone in
             // it. A ranked *series* needs its own consent design first.
             ranked: false,
-            ranked_prompt: None,
             created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         };
 

@@ -19,6 +19,10 @@
 //! changes what a gap on screen means.
 //! `tests::beta_maps_to_the_elo_like_gap_the_scale_was_chosen_for` fails if
 //! they drift apart.
+//!
+//! Also whether a rating is read at all: [`PLACEMENT_MATCHES`] and
+//! [`published`] live here because withholding a new rating is an argument
+//! about the `±750` above, not about the maths that produced it.
 
 use super::engine::INITIAL_MU;
 
@@ -77,10 +81,38 @@ pub fn display(mu: f64, sigma: f64) -> DisplayRating {
     }
 }
 
+/// Ranked matches behind a rating before it is shown to anyone — its owner
+/// included, because showing someone their own unplaced number anchors them
+/// to it just as firmly as showing it to everybody else would.
+///
+/// A new rating is not wrong, it is unknown, and `±750` lurching eighty
+/// points a game (`tests::an_unplaced_rating_swings_about_eighty_points_a_
+/// game`) is `σ` saying exactly that. Publishing it invites people to read a
+/// number that is not yet a statement about anything.
+///
+/// A count rather than a `σ` bound, which would be the principled version
+/// since `σ` is the thing actually being waited on. A bound cannot answer
+/// "how many more?", and `σ` falls at a rate that depends on who you played,
+/// so two players who started together would come out of placements apart
+/// with no explanation available to either.
+pub const PLACEMENT_MATCHES: u64 = 5;
+
+/// Whether a rating with this many ranked matches behind it may be shown.
+///
+/// Compared against `RatingRecord::matches_rated`, which the rating write
+/// already maintains, so there is no stored status to contradict and
+/// retuning [`PLACEMENT_MATCHES`] moves everybody at once.
+#[must_use]
+pub fn published(matches_rated: u64) -> bool {
+    matches_rated >= PLACEMENT_MATCHES
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rating::engine::{BETA, INITIAL_SIGMA, PlayerRating};
+    use crate::rating::engine::{
+        BETA, INITIAL_SIGMA, PlayerRating, RatedPlayer, RatingSide, rate_sides,
+    };
 
     /// A first rated game starts from exactly 1500 — not 1499.99, not "about
     /// 1500". The engine's prior is `μ₀`, so an off-by-a-hair origin would put
@@ -125,6 +157,32 @@ mod tests {
     fn a_settled_players_confidence_is_around_180() {
         let d = display(INITIAL_MU, 2.0);
         assert_eq!(d.confidence, 180);
+    }
+
+    /// The case for [`PLACEMENT_MATCHES`]: an unplaced rating moves about
+    /// eighty display points on one result, against nine once it has
+    /// settled. Both ends fall out of `INITIAL_SIGMA` and `SCALE`, either of
+    /// which somebody could retune without reading any of this — and if the
+    /// gap closes, the placement period is guarding against something that no
+    /// longer happens.
+    #[test]
+    fn an_unplaced_rating_swings_about_eighty_points_a_game() {
+        let swing = |sigma: f64| {
+            let side = |id: &str| RatingSide {
+                side_id: id.to_string(),
+                players: vec![RatedPlayer {
+                    competitor_id: id.to_string(),
+                    rating: PlayerRating {
+                        mu: INITIAL_MU,
+                        sigma,
+                    },
+                }],
+            };
+            rate_sides(&[side("a"), side("b")], Some("a")).unwrap()[0].display_delta()
+        };
+
+        assert_eq!(swing(INITIAL_SIGMA), 79);
+        assert_eq!(swing(2.0), 9);
     }
 
     /// The three numbers are shown side by side, so they have to agree

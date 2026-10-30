@@ -1,7 +1,11 @@
 //! Player ratings — the pure engine.
 //!
-//! Ratings are opt-in, per sport: nobody has one until they play a ranked game
-//! in that sport, and a ranked game needs every player in it to have opted in.
+//! Ratings are per sport, and playing a ranked match is the whole of the
+//! agreement: anybody in one is rated for it, and friendlies move nobody.
+//! There is nothing to opt in to, so no player in a match can be refused,
+//! asked, or stood in for with a placeholder prior. What a rating withholds
+//! for a while is only its *visibility* — see [`placement`].
+//!
 //! None of that is decided here. This module only knows how to turn a rated
 //! result into new ratings; whether a match is rated at all is the caller's
 //! question (see "What this module does *not* know" below).
@@ -40,8 +44,8 @@
 //!    football match's players are only in the separate `MATCH#/PLAYER#`
 //!    items. Any record-shaped signature would already be a pair.
 //! 2. Eligibility — `ranked`, `Completed`, every side confirmed, and every
-//!    player who took a spot linked to a real account and opted in to this
-//!    sport's rating — is a question about stored state, and the answer to it
+//!    player who took a spot linked to a real account — is a question about
+//!    stored state, and the answer to it
 //!    is what decides whether the engine is called at all. That filter belongs
 //!    at the storage boundary with the records, not in here.
 //!
@@ -54,6 +58,7 @@
 
 pub mod engine;
 pub mod ladder;
+pub mod placement;
 pub mod scale;
 
 pub use engine::{
@@ -62,6 +67,7 @@ pub use engine::{
     rate_sides,
 };
 pub use ladder::{Ladder, Sport, ladder_for, ladder_for_tag};
+pub use placement::{PLACEMENT_MATCHES, published};
 pub use scale::{
     CONFIDENCE_SIGMAS, DisplayRating, RATING_ORIGIN, SCALE, display, display_confidence,
     display_rating,

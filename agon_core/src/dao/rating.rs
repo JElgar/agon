@@ -3,7 +3,7 @@
 //!
 //! | What | Where | Why |
 //! |---|---|---|
-//! | opt-in | `rating_opt_ins.<ladder>` on `USER#<uid>`/`#PROFILE` | what publishes a rating, and the moment casual play stops counting towards it |
+//! | opt-in | `rating_opt_ins.<ladder>` on `USER#<uid>`/`#PROFILE` | consent to play ranked, on its way out — see below |
 //! | current rating | `ratings.<ladder>` on `USER#<uid>`/`#PROFILE` | rides the point read profiles, feed and search hydration already do |
 //! | history | `USER#<uid>` / `RATING#<ladder>#<played_at>#<mid>` | replay source *and* the rating-over-time chart, from one write |
 //! | contribution | `MATCH#<mid>` / `RATINGCONTRIB#<userId>` | makes re-rating idempotent, and is what the UI reads to show "+18" |
@@ -13,9 +13,12 @@
 //! planned follow-ups — rating a confirmed match in the worker, publishing a
 //! placed rating at the API, and the `RepairRatings` replay.
 //!
-//! Note what is *not* in that list. Opting in enforces nothing: every player
-//! is rated from the first match they complete, so no path into a match has
-//! an opt-in to check. See `rating::placement`.
+//! Note what is *not* in that list. Nothing here records whether a rating
+//! may be *shown*: a ranked match rates everybody who played in it, and
+//! `rating::placement` decides from `matches_rated` alone whether the result
+//! is published. The opt-in map is the remains of an earlier design in which
+//! consent gated the maths, and comes out with the rest of the consent
+//! machinery.
 //!
 //! ## Players only
 //!
@@ -113,7 +116,6 @@ impl RatingContributionRecord {
             ladder: self.ladder.clone(),
             match_id: match_id.to_string(),
             played_at: self.played_at.clone(),
-            ranked: self.ranked,
             movement: self.movement,
             applied_at: self.applied_at.clone(),
         }
@@ -835,7 +837,6 @@ mod tests {
             ladder: "squash".into(),
             side_id: "sideA".into(),
             played_at: "2026-06-01T10:00:00.000Z".into(),
-            ranked: true,
             movement: RatingMovementRecord {
                 mu_before: 25.0,
                 sigma_before: 25.0 / 3.0,
@@ -847,16 +848,11 @@ mod tests {
         }
     }
 
-    /// These tests are about expression shape and guard equality, not about
-    /// standing, so the two counters move together — a player whose every
-    /// rated match was ranked. A fixture that let them drift would imply a
-    /// distinction none of the assertions below actually make.
     fn rating(mu: f64, matches_rated: u64) -> RatingRecord {
         RatingRecord {
             mu,
             sigma: 7.1,
             matches_rated,
-            ranked_matches_rated: matches_rated,
             last_rated_at: "2026-06-01T10:00:00.000Z".into(),
         }
     }

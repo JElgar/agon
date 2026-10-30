@@ -1866,7 +1866,6 @@ mod tests {
             live_tip_seq: None,
             format: None,
             ranked: true,
-            ranked_prompt: None,
             created_at: "2026-01-01T00:00:00.000Z".to_string(),
         }
     }

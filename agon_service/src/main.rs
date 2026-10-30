@@ -3452,7 +3452,6 @@ impl Api {
                 is_member_of_team: None,
                 invitation: None,
                 joined_via: None,
-                ranked_prompt: None,
             });
         }
         for invite in &input.invites {
@@ -3642,7 +3641,6 @@ impl Api {
             // spot at creation is the caller (who consents inline, above) or
             // an invitee, who is asked when they accept. Prompts exist only
             // for a *switch*, which finds players already in place.
-            ranked_prompt: None,
             authority: authority.clone(),
             created_at: now.clone(),
         };
@@ -4374,7 +4372,6 @@ impl Api {
                     is_member_of_team: None,
                     invitation: None,
                     joined_via: None,
-                    ranked_prompt: None,
                 };
                 dao.add_match_player_tx(&match_id, &player)
                     .await
@@ -4733,7 +4730,6 @@ impl Api {
             // organiser can switch a single occurrence to ranked afterwards;
             // a ranked *series* needs a design of its own first.
             ranked: false,
-            ranked_prompt: None,
             authority: std::collections::HashMap::from([(
                 uid.clone(),
                 dao::records::MatchPlayerRole::Owner,
@@ -6993,7 +6989,6 @@ impl Api {
             is_member_of_team: None,
             invitation: None,
             joined_via: Some(joined_via),
-            ranked_prompt: None,
         };
 
         if let Err(e) = dao
@@ -7503,7 +7498,6 @@ impl Api {
             is_member_of_team: None,
             invitation: None,
             joined_via: Some(dao::records::JoinSourceRecord::Waitlist),
-            ranked_prompt: None,
         };
         if let Err(e) = dao
             .move_in_from_waitlist_tx(
@@ -9145,7 +9139,6 @@ fn build_invited_player(
         is_member_of_team: None,
         invitation: Some(embedded),
         joined_via: None,
-        ranked_prompt: None,
     };
 
     let invitation = dao::records::InvitationRecord {

@@ -14,8 +14,7 @@ use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_pk, s, to_item}
 use super::keys::{Pk, Sk};
 use super::records::{
     ConfirmedScoreRecord, HeaderPhotoRecord, LocationRecord, MatchFormatRecord, MatchPlayerRecord,
-    MatchPlayerRole, MatchRecord, MatchScoreRecord, MatchSideRecord,
-    SideRosterMemberRecord,
+    MatchPlayerRole, MatchRecord, MatchScoreRecord, MatchSideRecord, SideRosterMemberRecord,
 };
 
 pub const TYPE_MATCH: &str = "match";

@@ -53,11 +53,10 @@ use mapping::{
     notification_actor_id, notification_from_record, ranked_added_players_reason,
     ranked_lock_reason_for_update, ranked_move_in_reason, rating_consent_step, rating_ladder,
     rating_ladder_for, rating_opt_ins_from_record, resolve_score_ids, roster_preview_player,
-    score_player_ids, score_side_ids, score_to_record,
-    search_match_from_records, series_end_record_from_input, set_score_players,
-    switch_to_ranked_reason, team_from_records, team_list_item_from_record,
-    team_member_from_record, unrankable_sport_reason, unratable_players, user_profile_from_record,
-    winner_from_score,
+    score_player_ids, score_side_ids, score_to_record, search_match_from_records,
+    series_end_record_from_input, set_score_players, switch_to_ranked_reason, team_from_records,
+    team_list_item_from_record, team_member_from_record, unrankable_sport_reason,
+    unratable_players, user_profile_from_record, winner_from_score,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -91,8 +90,8 @@ mod notification;
 use notification::{
     CommentNotification, FollowNotification, InvitationAcceptedNotification, LikeNotification,
     MatchInvitationNotification, MatchReminderNotification, Notification, NotificationKind,
-    NotificationPage, ReplyNotification, TeamInvitationNotification,
-    TeamMatchJoinableNotification, UnreadCount,
+    NotificationPage, ReplyNotification, TeamInvitationNotification, TeamMatchJoinableNotification,
+    UnreadCount,
 };
 
 // Plain (non-OpenAPI) HTML "unfurl" pages for match/invite/join links, so

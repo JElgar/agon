@@ -41,9 +41,9 @@ use agon_core::dao::records::{
     InvitationKindRecord, InvitationRecord, JoinLinkRecord, JoinLinkScopeRecord,
     LiveEventPayloadRecord, LiveEventRecord, LocationRecord, MatchFormatRecord, MatchLikeRecord,
     MatchPlayerRecord, MatchPlayerRole as MatchPlayerRoleRecord, MatchRecord, MatchScoreRecord,
-    MatchSideRecord, NotificationKindRecord, NotificationRecord, ScoreRecord,
-    SeriesEndRecord, SeriesOccurrenceRecord, SeriesRecord, SeriesSideRecord, TeamMemberRecord,
-    TeamRecord, UserRecord, UserStatsRecord,
+    MatchSideRecord, NotificationKindRecord, NotificationRecord, ScoreRecord, SeriesEndRecord,
+    SeriesOccurrenceRecord, SeriesRecord, SeriesSideRecord, TeamMemberRecord, TeamRecord,
+    UserRecord, UserStatsRecord,
 };
 use agon_core::rating::ladder_for_tag;
 

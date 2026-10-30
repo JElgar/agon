@@ -12,7 +12,6 @@ import { addMatchToCalendar } from '@/lib/calendar'
 import { Button } from '@/components/ui/button'
 import { WaitlistSection } from '@/components/agon/WaitlistSection'
 import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
-import { ScoreConfirmationBar } from '@/components/agon/ScoreConfirmationBar'
 import { useLiveEvents } from '@/hooks/useLiveScore'
 import { useMatchScore } from '@/hooks/useMatchScore'
 import { useIsDesktop } from '@/hooks/useMediaQuery'
@@ -243,7 +242,7 @@ function MatchDetail({
   const headline = scoreInfo ? headlineBySide(scoreInfo.score) : {}
 
   // Live, in-progress score only — a completed match reads its scorecard
-  // straight off `confirmed_score`/`pending_score` instead (see
+  // straight off `confirmed_score` instead (see
   // `footballEventSource`/`cricketInnings` below), which carries the same
   // goals/cards/subs (football) or batting/bowling/extras (cricket) a
   // live-scored or manually-entered result produces — it's the same `Score`
@@ -523,15 +522,11 @@ function MatchDetail({
     (matchView === 'finished' || matchView === 'live') && (
       <YourGameCard match={match} me={myPlayer} detail={footballEventSource} />
     )
-  // Invites, pending-score confirmation, join prompts and the result editor.
+  // Invites, join prompts and the result editor.
   const banners = (
     <>
-      {myPendingInvitation(match, currentUserId) ? (
+      {myPendingInvitation(match, currentUserId) && (
         <InviteBanner match={match} currentUserId={currentUserId} />
-      ) : (
-        match.pending_score && (
-          <ScoreConfirmationBar match={match} currentUserId={currentUserId} variant="detail" />
-        )
       )}
       {!cancelled && <TeamJoinBanner match={match} />}
       {!cancelled && <JoinLinkBanner match={match} />}

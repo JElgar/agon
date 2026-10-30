@@ -14,7 +14,7 @@ use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, item_pk, s, to_item}
 use super::keys::{Pk, Sk};
 use super::records::{
     ConfirmedScoreRecord, HeaderPhotoRecord, LocationRecord, MatchFormatRecord, MatchPlayerRecord,
-    MatchPlayerRole, MatchRecord, MatchScoreRecord, MatchSideRecord, PendingScoreRecord,
+    MatchPlayerRole, MatchRecord, MatchScoreRecord, MatchSideRecord,
     SideRosterMemberRecord,
 };
 
@@ -353,7 +353,7 @@ impl Dao {
     /// span different partitions (a different match's `PK` each), so this is
     /// still one request-shape whether `keys` names one match or a whole
     /// feed/search page's worth. Used to resolve a page of matches'
-    /// `confirmed_score`/`pending_score` player ids without the cost scaling
+    /// `confirmed_score` player ids without the cost scaling
     /// with page size — see `Api::hydrate_score_players_across_matches`.
     /// Keyed by `(match_id, player_id)` in the result (unlike the
     /// single-match version, a bare player id isn't unique across matches).
@@ -465,9 +465,8 @@ impl Dao {
     /// Update a match's mutable meta fields. Any `Some` field is written:
     /// `name`, `description`, `status`, `starts_at`, `location`, `format`
     /// (each overwritten wholesale, no clear case — mirrors `format`'s own
-    /// doc comment), and the resolved `confirmed_score`/`pending_score`
-    /// blobs (which do support clearing via `Some(None)`). `NotFound` if the
-    /// match is absent.
+    /// doc comment), and the resolved `confirmed_score` blob. `NotFound` if
+    /// the match is absent.
     ///
     /// `side_names` renames one or more sides in the same `UpdateItem` call as
     /// everything else here — both target the same item, so folding it in
@@ -494,7 +493,6 @@ impl Dao {
         status: Option<&str>,
         starts_at: Option<&str>,
         confirmed_score: Option<ConfirmedScoreRecord>,
-        pending_score: Option<Option<PendingScoreRecord>>,
         // Replace the header photos, in order. `None` leaves them unchanged;
         // `Some([])` clears them (removes the attribute); `Some([..])`
         // overwrites.
@@ -553,18 +551,6 @@ impl Dao {
             set.push("#cs = :cs".into());
             names.insert("#cs".into(), "confirmed_score".into());
             values.insert(":cs".into(), to_attr(&cs)?);
-        }
-        match pending_score {
-            Some(Some(ps)) => {
-                set.push("#ps = :ps".into());
-                names.insert("#ps".into(), "pending_score".into());
-                values.insert(":ps".into(), to_attr(&ps)?);
-            }
-            Some(None) => {
-                remove.push("#ps".into());
-                names.insert("#ps".into(), "pending_score".into());
-            }
-            None => {}
         }
         match header_photos {
             Some(photos) if !photos.is_empty() => {

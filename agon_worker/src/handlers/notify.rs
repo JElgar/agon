@@ -1,24 +1,22 @@
 //! Inline handler: generate notifications from social events.
 //!
 //! Triggered by newly-created social edges: a follow, a match like, a match
-//! comment, an invitation, or a score submission. For each we synthesise a
-//! `NotificationRecord` for the target user and write it via the DAO (which
-//! bumps the unread badge atomically).
+//! comment, or an invitation. For each we synthesise a `NotificationRecord`
+//! for the target user and write it via the DAO (which bumps the unread
+//! badge atomically).
 //!
 //! **Idempotency**: notification ids are **deterministic**, derived from the
 //! source item's keys (`notif-<kind>-<...>`). Combined with the guarded,
 //! id-idempotent `create_notification`, a redelivered stream event re-computes
 //! the same id and the write is a harmless no-op — no duplicate bell entries, no
 //! double-counted badge. Most notifications act only on `INSERT` (the edge's
-//! creation). The one exception is score submissions: the submission item is
-//! overwritten in place when a side responds, so "score confirmed" is detected
-//! as a `pending → confirmed` MODIFY transition (fired once, on the transition).
+//! creation).
 
 use agon_core::dao::Dao;
 use agon_core::dao::keys::{Pk, Sk};
 use agon_core::dao::records::{
     InvitationContextRecord, InvitationRecord, MatchRecord, NotificationKindRecord,
-    NotificationRecord, ScoreSubmissionRecord,
+    NotificationRecord,
 };
 
 use crate::error::{WorkerError, WorkerResult};
@@ -32,15 +30,7 @@ use crate::event::{ChangeEvent, ChangeKind};
 /// is deterministic — a duplicate is a no-op, so the first-processed timestamp
 /// wins and never changes.
 pub async fn handle(dao: &Dao, ev: &ChangeEvent, now: &str) -> WorkerResult<()> {
-    // Score submissions are the one case that reacts to a MODIFY as well as an
-    // INSERT: the submission item is overwritten in place when a side confirms,
-    // so the pending → confirmed transition is a MODIFY. Handle it before the
-    // INSERT-only guard below.
-    if let (Pk::Match(match_id), Sk::ScoreSubmission(submission_id)) = (&ev.pk, &ev.sk) {
-        return notify_score(dao, ev, match_id, submission_id, now).await;
-    }
-
-    // Invitations, like score submissions, react to both INSERT (the invite was
+    // Invitations react to both INSERT (the invite was
     // sent → notify the invitee) and MODIFY (a `pending → accepted` transition →
     // notify the inviter). Handle before the INSERT-only guard below.
     if let (Pk::Invitation(invitation_id), Sk::Meta) = (&ev.pk, &ev.sk) {
@@ -465,189 +455,6 @@ async fn notify_team_match_joinable(
         };
         dao.create_notification(&notif).await?;
     }
-    Ok(())
-}
-
-/// Dispatch a score-submission stream event. Submitted (INSERT) and confirmed
-/// (MODIFY, pending → confirmed) are the two events we notify on; a dispute or
-/// any other modify is ignored.
-async fn notify_score(
-    dao: &Dao,
-    ev: &ChangeEvent,
-    match_id: &str,
-    submission_id: &str,
-    now: &str,
-) -> WorkerResult<()> {
-    match ev.kind {
-        ChangeKind::Insert => notify_score_submitted(dao, ev, match_id, submission_id, now).await,
-        ChangeKind::Modify => notify_score_confirmed(dao, ev, match_id, submission_id, now).await,
-        ChangeKind::Remove => Ok(()),
-    }
-}
-
-/// A score was submitted: notify every participant except the submitter. Each
-/// row carries `needs_confirmation` — true for a pending submission's opposing
-/// sides (who must confirm/dispute), false for the submitter's own side-mates
-/// and for a submission that arrived already confirmed (score set directly).
-async fn notify_score_submitted(
-    dao: &Dao,
-    ev: &ChangeEvent,
-    match_id: &str,
-    submission_id: &str,
-    now: &str,
-) -> WorkerResult<()> {
-    let Some(sub) = ev.new_record::<ScoreSubmissionRecord>() else {
-        return Ok(());
-    };
-    let Some(agg) = dao.get_match(match_id).await? else {
-        // Match gone; nothing to notify about.
-        return Ok(());
-    };
-
-    // Resolve the submitter (a player id) to a user id and their side. If the
-    // submitter isn't linked to a user we can't attribute or exclude them, so
-    // there's nothing coherent to send.
-    let submitter = agg
-        .players
-        .iter()
-        .find(|p| p.player_id == sub.submitted_by_player_id);
-    let Some(submitter_user_id) = submitter.and_then(|p| p.user_id.clone()) else {
-        return Ok(());
-    };
-    let submitter_side_id = submitter.and_then(|p| p.side_id.clone());
-
-    // A pending submission still needs the other side(s) to confirm; one that
-    // arrives already confirmed (direct score set) is purely informational.
-    let is_pending = sub.status == "pending";
-
-    // Build the recipient set (deduplicated by user id, submitter excluded). A
-    // user needs to confirm only if the submission is pending and they're not on
-    // the submitter's side; if a user appears on multiple sides, err towards
-    // asking them to confirm.
-    //
-    // A player whose invite to the match is still pending is skipped here: their
-    // `MatchInvitation` notification already covers this (accepting offers to
-    // confirm the score in the same step, using whatever's pending at that
-    // point), so a separate "score submitted" notification would just be a
-    // duplicate of the same event. Once they accept, notifications resume as
-    // normal for any later submission.
-    let mut recipients: std::collections::BTreeMap<String, bool> =
-        std::collections::BTreeMap::new();
-    for player in &agg.players {
-        let Some(uid) = &player.user_id else { continue };
-        if *uid == submitter_user_id {
-            continue;
-        }
-        if player
-            .invitation
-            .as_ref()
-            .is_some_and(|inv| inv.status == "pending")
-        {
-            continue;
-        }
-        let needs = is_pending && player.side_id != submitter_side_id;
-        recipients
-            .entry(uid.clone())
-            .and_modify(|n| *n = *n || needs)
-            .or_insert(needs);
-    }
-
-    for (user_id, needs_confirmation) in recipients {
-        let notif = NotificationRecord {
-            id: format!("notif-scoresubmitted-{match_id}-{submission_id}-{user_id}"),
-            user_id,
-            is_read: false,
-            created_at: now.to_string(),
-            kind: NotificationKindRecord::ScoreSubmitted {
-                actor_user_id: submitter_user_id.clone(),
-                match_id: match_id.to_string(),
-                match_name: agg.match_.name.clone(),
-                submission_id: submission_id.to_string(),
-                needs_confirmation,
-            },
-        };
-        dao.create_notification(&notif).await?;
-    }
-    Ok(())
-}
-
-/// A submission transitioned into "confirmed": notify the submitter that their
-/// score is now confirmed. Fires only on the pending → confirmed transition so a
-/// later re-modify of an already-confirmed submission is a no-op.
-async fn notify_score_confirmed(
-    dao: &Dao,
-    ev: &ChangeEvent,
-    match_id: &str,
-    submission_id: &str,
-    now: &str,
-) -> WorkerResult<()> {
-    let Some(new_sub) = ev.new_record::<ScoreSubmissionRecord>() else {
-        return Ok(());
-    };
-    if new_sub.status != "confirmed" {
-        return Ok(());
-    }
-    let was_confirmed = ev
-        .old_record::<ScoreSubmissionRecord>()
-        .map(|old| old.status == "confirmed")
-        .unwrap_or(false);
-    if was_confirmed {
-        return Ok(());
-    }
-
-    let Some(agg) = dao.get_match(match_id).await? else {
-        return Ok(());
-    };
-
-    // The submitter (who we notify).
-    let Some(submitter_user_id) = agg
-        .players
-        .iter()
-        .find(|p| p.player_id == new_sub.submitted_by_player_id)
-        .and_then(|p| p.user_id.clone())
-    else {
-        return Ok(());
-    };
-
-    // The actor: the participant whose confirm response completed it — the most
-    // recent confirm that isn't the submitter's own pre-seeded one.
-    let confirmer_player_id = new_sub
-        .responses
-        .iter()
-        .rev()
-        .find(|r| {
-            r.response == "confirm" && r.responded_by_player_id != new_sub.submitted_by_player_id
-        })
-        .map(|r| r.responded_by_player_id.clone());
-    let Some(confirmer_player_id) = confirmer_player_id else {
-        return Ok(());
-    };
-    let Some(confirmer_user_id) = agg
-        .players
-        .iter()
-        .find(|p| p.player_id == confirmer_player_id)
-        .and_then(|p| p.user_id.clone())
-    else {
-        return Ok(());
-    };
-    // Never notify the submitter about their own confirmation.
-    if confirmer_user_id == submitter_user_id {
-        return Ok(());
-    }
-
-    let notif = NotificationRecord {
-        id: format!("notif-scoreconfirmed-{match_id}-{submission_id}"),
-        user_id: submitter_user_id,
-        is_read: false,
-        created_at: now.to_string(),
-        kind: NotificationKindRecord::ScoreConfirmed {
-            actor_user_id: confirmer_user_id,
-            match_id: match_id.to_string(),
-            match_name: agg.match_.name.clone(),
-            submission_id: submission_id.to_string(),
-        },
-    };
-    dao.create_notification(&notif).await?;
     Ok(())
 }
 

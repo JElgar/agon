@@ -9,7 +9,6 @@ import { Avatar } from './Avatar'
 import { Button } from '@/components/ui/button'
 import { SportBadge } from './SportBadge'
 import { StatusBadge, matchBadgeStatus } from './StatusBadge'
-import { ScoreConfirmationBar } from './ScoreConfirmationBar'
 import { MatchHeaderCarousel } from './MatchHeaderCarousel'
 import { InvitationResponseDialog } from './InvitationResponseDialog'
 import { respondToInvitation } from '@/lib/invitations'
@@ -266,13 +265,13 @@ export function MatchCard({
   const cricketState = isCurrentlyLive ? cricketScoreFrom(scoreQuery.data) : null
   const netballState = isCurrentlyLive ? netballScoreFrom(scoreQuery.data) : null
   // Goals for a finished football/netball match, read straight off the
-  // confirmed/pending score (no fetch) — shown under the plain score box
-  // below (the live ticker in `LiveMatchBlock`/`NetballMatchBlock` only
-  // renders while still in progress).
+  // confirmed score (no fetch) — shown under the plain score box below (the
+  // live ticker in `LiveMatchBlock`/`NetballMatchBlock` only renders while
+  // still in progress).
   const finishedFootballGoals = scoreInfo && !isCurrentlyLive ? footballGoalsFromScore(scoreInfo.score) : null
   const finishedNetballGoals = scoreInfo && !isCurrentlyLive ? netballGoalsFromScore(scoreInfo.score) : null
-  // Resolved server-side on `confirmed_score`/`pending_score` itself (see
-  // `Api::hydrate_confirmed_pending_score_players`) — this card's `match` is
+  // Resolved server-side on `confirmed_score` itself (see
+  // `Api::hydrate_confirmed_score_players`) — this card's `match` is
   // a `FeedMatch`/`SearchMatch`/`Match`, none of which reliably carry a full
   // player roster to resolve scorer names from locally.
   const finishedFootballScorePlayers =
@@ -614,27 +613,15 @@ export function MatchCard({
         </div>
       )}
 
-      {/* Respond to a pending invite first; only once joined does the score
-          confirm/dispute prompt apply — the two are mutually exclusive. */}
-      {myPendingInvitation(match, currentUserId) ? (
+      {/* Respond to a pending invite. */}
+      {myPendingInvitation(match, currentUserId) && (
         <div className="px-3.5 pb-2.5">
           <InviteResponseBar match={match} currentUserId={currentUserId} />
         </div>
-      ) : (
-        match.pending_score && (
-          <div className="px-3.5 pb-2.5">
-            <ScoreConfirmationBar
-              match={match}
-              currentUserId={currentUserId}
-              variant="card"
-            />
-          </div>
-        )
       )}
 
       {/* Footer: kudos + comments + share. The redesigned sports match the
-          mock exactly (a "Kudos" label, not a count; no lifecycle badge —
-          the score confirmation prompt above already covers that state);
+          mock exactly (a "Kudos" label, not a count; no lifecycle badge);
           the generic ("other" sport) layout keeps its original footer. */}
       {isRedesignedSport ? (
         <div className="flex items-center gap-1 border-t px-2 py-1 text-muted-foreground">

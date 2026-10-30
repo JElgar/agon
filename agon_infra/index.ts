@@ -1391,14 +1391,24 @@ const loki = new k8s.helm.v4.Chart("loki", {
 // Tempo — single-binary traces backend with the OTLP receiver enabled. Alloy
 // forwards spans here; Grafana queries it on port 3100.
 //
-// The metrics-generator (+ its `local-blocks` processor) is enabled so
-// TraceQL metrics queries work — e.g. Grafana's Traces Drilldown app runs a
-// default overview panel of `{...} | rate() by (resource.service.name)`,
-// which is served by the generator's ring, not the trace store. Without
-// this, plain trace search/lookup still works, but any rate()/
-// quantile_over_time()/histogram_over_time() query 500s with "error finding
-// generators in Querier.queryRangeRecent: empty ring" because no generator
-// ever registers in the ring.
+// The metrics-generator is left disabled. It was previously turned on with
+// `overrides.defaults.metrics_generator.processors: ["local-blocks"]` to
+// back TraceQL metrics (e.g. Grafana's Traces Drilldown overview panel), but
+// this chart version's config template (see its embedded `config:` value)
+// only reads `tempo.global_overrides`, not `tempo.overrides` — so that
+// setting was silently dropped. With `metricsGenerator.enabled: true` alone,
+// the template hardcodes the processor list to `service-graphs` +
+// `span-metrics` instead (not `local-blocks`) and leaves
+// `metrics_generator.remote_write` pointed at the chart's placeholder
+// default, `http://prometheus.monitoring:9090/api/v1/write` — a
+// service/namespace that doesn't exist in this cluster, so every remote
+// write attempt failed. Running the (wrong, heavier) processors against a
+// dead remote-write target on a single pod with a 512Mi limit is a likely
+// source of the instability behind traces getting stuck loading in Grafana.
+// Until this chart is upgraded to one that supports `local-blocks` via
+// values, leave the generator off: rate()/quantile_over_time()/
+// histogram_over_time() TraceQL queries will 500 with "empty ring", but
+// plain trace search/lookup is unaffected.
 const tempo = new k8s.helm.v4.Chart("tempo", {
 	chart: "tempo",
 	version: "1.18.2",
@@ -1410,21 +1420,9 @@ const tempo = new k8s.helm.v4.Chart("tempo", {
 			storage: {
 				trace: { backend: "local", local: { path: "/var/tempo/traces" } },
 			},
-			metricsGenerator: {
-				enabled: true,
-			},
-			overrides: {
-				defaults: {
-					metrics_generator: {
-						processors: ["local-blocks"],
-					},
-				},
-			},
-			// Bumped slightly over the trace-only baseline: the generator holds
-			// recent blocks in memory to serve queryRangeRecent.
 			resources: {
-				requests: { cpu: "100m", memory: "160Mi" },
-				limits: { memory: "512Mi" },
+				requests: { cpu: "100m", memory: "128Mi" },
+				limits: { memory: "400Mi" },
 			},
 		},
 		persistence: { enabled: true, size: "5Gi" },

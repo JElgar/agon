@@ -761,6 +761,7 @@ pub fn invitation_from_record(rec: &InvitationRecord) -> Invitation {
         invited_at: parse_ts(&rec.invited_at),
         responded_at: parse_ts_opt(&rec.responded_at),
         kind: invitation_kind_from_record(&rec.kind),
+        reserve_spot: rec.reserve_spot,
     }
 }
 
@@ -787,6 +788,7 @@ pub fn invitation_from_embedded(rec: &EmbeddedInvitationRecord) -> Invitation {
         invited_at: parse_ts(&rec.invited_at),
         responded_at: parse_ts_opt(&rec.responded_at),
         kind: invitation_kind_from_record(&rec.kind),
+        reserve_spot: rec.reserve_spot,
     }
 }
 

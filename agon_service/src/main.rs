@@ -8173,11 +8173,10 @@ impl Api {
                 // discover and retry) over-count rather than undoing the
                 // revoke.
                 let now = now_iso();
-                if let Err(e) = dao
-                    .release_reserved_match_slot(&rec, &now)
-                    .await
-                {
-                    error!("Failed to release reserved slot for revoked invitation {invitation_id}: {e}");
+                if let Err(e) = dao.release_reserved_match_slot(&rec, &now).await {
+                    error!(
+                        "Failed to release reserved slot for revoked invitation {invitation_id}: {e}"
+                    );
                 } else if let dao::records::InvitationContextRecord::Match { match_id, .. } =
                     &rec.context
                     && let Err(e) = dao.refresh_side_roster_previews(match_id).await
@@ -8313,11 +8312,10 @@ impl Api {
                 // A declined reserving invite was holding a roster slot —
                 // free it now. Best-effort, same as the notification flip
                 // below: the decline itself already succeeded.
-                if let Err(e) = dao
-                    .release_reserved_match_slot(&rec, &responded_at)
-                    .await
-                {
-                    error!("Failed to release reserved slot for declined invitation {invitation_id}: {e}");
+                if let Err(e) = dao.release_reserved_match_slot(&rec, &responded_at).await {
+                    error!(
+                        "Failed to release reserved slot for declined invitation {invitation_id}: {e}"
+                    );
                 } else if let dao::records::InvitationContextRecord::Match { match_id, .. } =
                     &rec.context
                     && let Err(e) = dao.refresh_side_roster_previews(match_id).await
@@ -8457,11 +8455,11 @@ impl Api {
                 })?;
                 // As in `respond_to_invitation`: free a reserved slot the
                 // decline just gave up, best-effort.
-                if let Err(e) = dao
-                    .release_reserved_match_slot(&rec, &responded_at)
-                    .await
-                {
-                    error!("Failed to release reserved slot for declined invitation {}: {e}", rec.id);
+                if let Err(e) = dao.release_reserved_match_slot(&rec, &responded_at).await {
+                    error!(
+                        "Failed to release reserved slot for declined invitation {}: {e}",
+                        rec.id
+                    );
                 } else if let dao::records::InvitationContextRecord::Match { match_id, .. } =
                     &rec.context
                     && let Err(e) = dao.refresh_side_roster_previews(match_id).await

@@ -157,6 +157,16 @@ impl Dao {
                         None,
                     )
                 } else {
+                    // A reserving invite already holds its spot while
+                    // pending (`occupies_slot` counts it from the moment it
+                    // was sent — see `EmbeddedInvitationRecord::reserve_spot`),
+                    // so accepting it must not `ADD` the headcount again: the
+                    // slot update is for the ordinary case, where acceptance
+                    // is the first moment the player is counted.
+                    let already_reserved = existing
+                        .invitation
+                        .as_ref()
+                        .is_some_and(|inv| inv.reserve_spot);
                     let mut linked = existing;
                     linked.user_id = Some(accepting_user_id.to_string());
                     linked.display_name = None;
@@ -169,19 +179,23 @@ impl Dao {
                         .set_item(Some(self.match_player_item(match_id, &linked)?))
                         .build()
                         .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-                    let slot_update = take_slot_update(
-                        self.table(),
-                        match_id,
-                        linked.side_id.as_deref(),
-                        side_max_players,
-                        total_max_players,
-                    )?;
+                    let slot_update = if already_reserved {
+                        None
+                    } else {
+                        Some(take_slot_update(
+                            self.table(),
+                            match_id,
+                            linked.side_id.as_deref(),
+                            side_max_players,
+                            total_max_players,
+                        )?)
+                    };
                     (
                         TransactWriteItem::builder().put(put_roster).build(),
                         Some(feed_put),
                         Some(match_id.clone()),
                         None,
-                        Some(slot_update),
+                        slot_update,
                     )
                 }
             }
@@ -233,6 +247,60 @@ impl Dao {
             items.extend(self.follow_team_items(accepting_user_id, team_id, now)?);
         }
         Ok((match_id, team_id, items))
+    }
+
+    /// Free the roster slot a reserving pending match invitation (see
+    /// `EmbeddedInvitationRecord::reserve_spot`) was holding, once it stops
+    /// being pending without being accepted — declined, or revoked (both
+    /// leave the roster row in place, marked declined; a revoke has no
+    /// status of its own, and today's non-reserving revoke already leaves
+    /// its row dangling the same way). A no-op for a team invitation (no
+    /// capacity concept), or a match invite that wasn't reserving a spot in
+    /// the first place — the ordinary case, unchanged from before
+    /// `reserve_spot` existed.
+    #[tracing::instrument(skip(self))]
+    pub async fn release_reserved_match_slot(
+        &self,
+        rec: &super::records::InvitationRecord,
+        responded_at: &str,
+    ) -> DaoResult<()> {
+        let InvitationContextRecord::Match { match_id, .. } = &rec.context else {
+            return Ok(());
+        };
+        let (mut player, _, _, _) = self.match_player_for_invitation(match_id, &rec.id).await?;
+        let reserved = player
+            .invitation
+            .as_ref()
+            .is_some_and(|inv| inv.reserve_spot && inv.status == "pending");
+        if !reserved {
+            return Ok(());
+        }
+
+        let side_deltas: Vec<(String, i64)> = player
+            .side_id
+            .clone()
+            .map(|sid| (sid, -1))
+            .into_iter()
+            .collect();
+
+        if let Some(inv) = player.invitation.as_mut() {
+            inv.status = "declined".to_string();
+            inv.responded_at = Some(responded_at.to_string());
+        }
+        let put = Put::builder()
+            .table_name(self.table())
+            .set_item(Some(self.match_player_item(match_id, &player)?))
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        let mut items = vec![TransactWriteItem::builder().put(put).build()];
+
+        if let Some(update) =
+            super::match_ops::headcount_delta_update(self.table(), match_id, -1, &side_deltas)?
+        {
+            items.push(TransactWriteItem::builder().update(update).build());
+        }
+
+        self.send_transact_items(items).await
     }
 
     /// Send a prebuilt list of writes as one `TransactWriteItems` call.

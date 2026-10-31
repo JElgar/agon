@@ -1325,7 +1325,7 @@ pub(super) fn take_slot_update(
 ///
 /// `Ok(None)` if every delta is zero (nothing to write) — `total_delta == 0`
 /// and every side delta cancels out.
-fn headcount_delta_update(
+pub(super) fn headcount_delta_update(
     table: &str,
     match_id: &str,
     total_delta: i64,

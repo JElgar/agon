@@ -183,6 +183,12 @@ pub struct EmbeddedInvitationRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub responded_at: Option<String>,
     pub kind: InvitationKindRecord,
+    /// Whether this still-pending invite holds a roster slot for the invitee
+    /// — see `MatchPlayerRecord::occupies_slot`. Meaningless once
+    /// accepted/declined (a real roster spot is counted by presence, not by
+    /// this flag) and for a team invite (teams have no capacity concept).
+    #[serde(default)]
+    pub reserve_spot: bool,
 }
 
 /// `EMAIL#<lowercased-email>` / `#GUARD` — the email-uniqueness guard item.
@@ -871,8 +877,9 @@ pub struct MatchPlayerRecord {
 impl MatchPlayerRecord {
     /// Whether this player takes one of the match's spots: they're *in* —
     /// added by an organiser or self-served via a join link/team (no
-    /// invitation), or an invitee who has accepted. A pending or declined
-    /// invite takes nothing; sending an invite doesn't reserve a spot.
+    /// invitation), an invitee who has accepted, or a still-pending invitee
+    /// whose invite was sent with `reserve_spot` on. A declined invite takes
+    /// nothing; an ordinary (non-reserving) pending invite doesn't either.
     ///
     /// A waitlisted player is never represented by a `MatchPlayerRecord` at
     /// all — self-served, their `MatchWaitlistEntryRecord` is the only row;
@@ -891,9 +898,9 @@ impl MatchPlayerRecord {
     /// ever recomputing from a full scan — see `match_ops::take_slot_update`
     /// and `match_ops::headcount_delta_update`.
     pub fn occupies_slot(&self) -> bool {
-        self.invitation
-            .as_ref()
-            .is_none_or(|inv| inv.status == "accepted")
+        self.invitation.as_ref().is_none_or(|inv| {
+            inv.status == "accepted" || (inv.status == "pending" && inv.reserve_spot)
+        })
     }
 
     /// Whether this row is still waiting on an answer to `prompt_id` — the
@@ -1152,6 +1159,11 @@ pub struct InvitationRecord {
     pub invited_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub responded_at: Option<String>,
+    /// Mirrors `EmbeddedInvitationRecord::reserve_spot` — kept on the
+    /// standalone record too since it's what `Dao::release_reserved_match_slot`
+    /// (decline/revoke) has to go on before it's loaded the roster row.
+    #[serde(default)]
+    pub reserve_spot: bool,
 }
 
 /// `JOINLINK#<linkId>` / `#META` — a shareable, many-use join link. Unlike
@@ -1712,7 +1724,8 @@ mod tests {
     use aws_sdk_dynamodb::types::AttributeValue;
 
     /// `occupies_slot` is the one rule for who takes a spot: in with no
-    /// invitation, or an accepted invitee — never a pending or declined one.
+    /// invitation, an accepted invitee, or a pending invitee whose invite
+    /// reserved a spot — never an ordinary pending or a declined one.
     #[test]
     fn occupies_slot_counts_only_players_who_are_in() {
         let player = |status: Option<&str>| MatchPlayerRecord {
@@ -1730,6 +1743,7 @@ mod tests {
                 kind: InvitationKindRecord::User {
                     invited_user_id: "u".into(),
                 },
+                reserve_spot: false,
             }),
             joined_via: None,
             ranked_prompt: None,
@@ -1741,6 +1755,36 @@ mod tests {
         assert!(player(Some("accepted")).occupies_slot());
         assert!(!player(Some("pending")).occupies_slot());
         assert!(!player(Some("declined")).occupies_slot());
+    }
+
+    /// A reserving invite holds the spot while pending, same as being in —
+    /// but stops the moment it's declined (never resurrected by `reserve_spot`
+    /// alone once the invitee has actually answered).
+    #[test]
+    fn a_reserved_pending_invite_occupies_a_slot_until_declined() {
+        let player = |status: &str| MatchPlayerRecord {
+            player_id: "p".into(),
+            user_id: Some("u".into()),
+            display_name: None,
+            side_id: None,
+            is_member_of_team: None,
+            invitation: Some(EmbeddedInvitationRecord {
+                id: "inv".into(),
+                status: status.into(),
+                invited_by_user_id: "host".into(),
+                invited_at: "2026-09-14T00:00:00Z".into(),
+                responded_at: None,
+                kind: InvitationKindRecord::User {
+                    invited_user_id: "u".into(),
+                },
+                reserve_spot: true,
+            }),
+            joined_via: None,
+            ranked_prompt: None,
+        };
+        assert!(player("pending").occupies_slot());
+        assert!(player("accepted").occupies_slot());
+        assert!(!player("declined").occupies_slot());
     }
 
     /// A player row with no `ranked_prompt`, as every row written before
@@ -1793,6 +1837,7 @@ mod tests {
                 kind: InvitationKindRecord::User {
                     invited_user_id: "u1".into(),
                 },
+                reserve_spot: false,
             }),
             joined_via: None,
             ranked_prompt: Some(prompt.clone()),

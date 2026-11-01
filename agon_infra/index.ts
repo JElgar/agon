@@ -1410,17 +1410,29 @@ const loki = new k8s.helm.v4.Chart("loki", {
 // histogram_over_time() TraceQL queries will 500 with "empty ring", but
 // plain trace search/lookup is unaffected.
 //
-// The 400Mi limit this landed with OOMKilled the pod into a permanent
-// CrashLoopBackOff (steady-state usage, not just a startup spike — it kept
-// dying every restart), which in turn times out every `pulumi up` on main
-// waiting for the StatefulSet to become Ready. Disabling the metrics
-// generator removed one source of memory pressure but wasn't enough on its
-// own. Bumping the limit to 1Gi *also* wasn't enough — it OOMed again on
-// the very next deploy, in roughly the same timeframe, so this isn't just a
-// tight number: something (likely WAL/local-blocks replay backlog from
-// ~36h of crash-looping) is driving memory well past 1Gi at startup. Going
-// much higher while that's investigated, rather than guessing another
-// slightly-bigger number.
+// Root cause of the deploy outage that ran 2026-10-30 through 2026-11-01:
+// this chart always runs the Tempo binary with `-mem-ballast-size-mbs=1024`
+// (`tempo.memBallastSizeMbs`, a fixed default this chart version always
+// emits, unrelated to `resources`) — a 1GB memory ballast allocated almost
+// instantly at startup. The 400Mi limit this landed with (see git history)
+// couldn't fit that ballast, so the pod OOMKilled in ~2 seconds on every
+// single restart — and had been doing so since this chart was first
+// installed on 2026-08-05, invisibly, since nothing had touched this Pulumi
+// resource since then and `pulumi up` only waits on a resource it's
+// actually updating. PR #285 was the first change to touch it, so it was
+// the first deploy to wait on — and time out on — a StatefulSet that could
+// never become Ready.
+//
+// Raising the memory limit (400Mi → 1Gi → 3Gi here) was the right fix, but
+// two rounds of it (#298, #299) *looked* like they didn't work: the
+// StatefulSet's `spec.template` did update each time (confirmed via
+// `kubectl get statefulset tempo -o jsonpath=...`), but the actual running
+// pod never got replaced with it — it stayed stuck on the pre-#285 revision
+// at the old 512Mi default the whole time, so `kubectl describe pod`
+// kept showing the old limit no matter what we pushed. A manual
+// `kubectl delete pod tempo-0 -n observability` forced the StatefulSet
+// controller to recreate it from the current (3Gi) spec, at which point
+// the 1Gi ballast fit comfortably and it's stayed Ready since.
 const tempo = new k8s.helm.v4.Chart("tempo", {
 	chart: "tempo",
 	version: "1.18.2",
@@ -1428,6 +1440,11 @@ const tempo = new k8s.helm.v4.Chart("tempo", {
 	namespace: observabilityNamespace,
 	values: {
 		tempo: {
+			// Pin this explicitly rather than relying on the chart's default: it's
+			// always emitted as a CLI flag regardless of `resources`, so dropping
+			// the memory limit below it (as happened above) OOMs the pod on every
+			// single startup. Well under the limit below (3Gi).
+			memBallastSizeMbs: 1024,
 			retention: "72h",
 			storage: {
 				trace: { backend: "local", local: { path: "/var/tempo/traces" } },

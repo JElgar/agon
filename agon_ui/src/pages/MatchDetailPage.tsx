@@ -220,6 +220,7 @@ function MatchDetail({
   const toggleLike = useToggleLike(match)
   const isDesktop = useIsDesktop()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
 
   // Owner or admin only, mirroring the server's `caller_is_match_admin` — an
   // ordinary player is read-only on the match itself; `LeaveMatch` below is
@@ -250,11 +251,22 @@ function MatchDetail({
   // shape either way. Takes over the score block below (and the entry
   // button becomes "Continue scoring") while a match is actually in
   // progress — see `footballState`/`cricketState`.
+  // Enabled for any live-sport match regardless of status (not just while
+  // `in_progress`) so a *completed* match can still tell whether it was
+  // ever live-scored — see `hasLiveScoreRecord`/`ReopenLiveScoring` below.
+  // Only polled while actually in progress; a finished match's score isn't
+  // going to change on its own.
   const scoreQuery = useMatchScore(match.id, {
-    enabled: isLiveSport && match.status === 'in_progress',
+    enabled: isLiveSport,
     refetchInterval: match.status === 'in_progress' ? 15000 : undefined,
   })
   const isCurrentlyLive = isLiveSport && match.status === 'in_progress'
+  // Whether this match has ever been live-scored, independent of its
+  // current status — `GET /matches/:id/score` 404s (-> `null`) for a match
+  // with no live-scoring record at all (e.g. a plain "Add result"), and
+  // stays populated once it's completed. Used to offer reopening a
+  // completed match back into live scoring — see `ReopenLiveScoring`.
+  const hasLiveScoreRecord = isLiveSport && !!scoreQuery.data
   const footballState = isCurrentlyLive ? footballScoreFrom(scoreQuery.data) : null
   const cricketState = isCurrentlyLive ? cricketScoreFrom(scoreQuery.data) : null
   const netballState = isCurrentlyLive ? netballScoreFrom(scoreQuery.data) : null
@@ -285,6 +297,30 @@ function MatchDetail({
     match.match_type === 'cricket' || match.match_type === 'netball'
       ? `/matches/${match.id}/live`
       : `/matches/${match.id}/live/setup`
+
+  // Puts a live-scored match that was finished by mistake back into
+  // `in_progress` so "Continue scoring" (and the live page's own "Finish
+  // match") work again — the server has no guard against moving a match
+  // back out of `completed`, so this is just the status flip; the live
+  // event log and persisted score record were never touched by finishing
+  // in the first place (see `finish_live_match`/`update_match` on the
+  // server), so there's nothing else to restore. Goes straight to
+  // `/matches/:id/live` (not `liveEntryPath`, which routes football through
+  // its setup screen first) — the match has already been through that once.
+  const reopenLiveScoring = useMutation({
+    mutationFn: async () => {
+      const { error } = await fetchClient.PATCH('/matches/{match_id}', {
+        params: { path: { match_id: match.id } },
+        body: { status: 'in_progress' },
+      })
+      if (error) throw new Error('Failed to reopen live scoring')
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['match', match.id] })
+      queryClient.invalidateQueries({ queryKey: ['feed'] })
+      navigate(`/matches/${match.id}/live`)
+    },
+  })
 
   // Each cricket innings' deliveries, folded in from the raw live event log
   // by matching innings order, for the run-rate graph — the score's own
@@ -388,6 +424,18 @@ function MatchDetail({
         {canEdit && isLiveSport && !cancelled && match.status !== 'completed' && (
           <DropdownMenuItem onSelect={() => navigate(liveEntryPath)}>
             <Radio className="size-4" /> {hasLiveState ? 'Continue scoring' : 'Score live'}
+          </DropdownMenuItem>
+        )}
+        {/* Only path back into live scoring for a match finished by mistake
+            — "Continue scoring" above only shows while still in_progress,
+            and "Edit result" below is hidden whenever there's a live score
+            record (`hasLiveState`'s completed-match counterpart). */}
+        {canEdit && isLiveSport && !cancelled && match.status === 'completed' && hasLiveScoreRecord && (
+          <DropdownMenuItem
+            disabled={reopenLiveScoring.isPending}
+            onSelect={() => reopenLiveScoring.mutate()}
+          >
+            <Radio className="size-4" /> Reopen for live scoring
           </DropdownMenuItem>
         )}
         {canEdit && !cancelled && !hasLiveState && (

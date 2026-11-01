@@ -1415,12 +1415,33 @@ const loki = new k8s.helm.v4.Chart("loki", {
 // dying every restart), which in turn times out every `pulumi up` on main
 // waiting for the StatefulSet to become Ready. Disabling the metrics
 // generator removed one source of memory pressure but wasn't enough on its
-// own. Bumping the limit to 1Gi *also* wasn't enough — it OOMed again on
-// the very next deploy, in roughly the same timeframe, so this isn't just a
-// tight number: something (likely WAL/local-blocks replay backlog from
-// ~36h of crash-looping) is driving memory well past 1Gi at startup. Going
-// much higher while that's investigated, rather than guessing another
-// slightly-bigger number.
+// own. Bumping the limit to 1Gi, then 3Gi, *also* wasn't enough — it OOMed
+// again each time, in roughly the same timeframe, so this isn't just a
+// tight number. The node has 12GB RAM (see the OVH VPS note above), so 3Gi
+// isn't hitting a node-capacity ceiling either — something in Tempo's own
+// state is driving unbounded memory use, most likely a WAL/local-blocks
+// replay backlog from ~38h of crash-looping. `tempoDiagnostics` below pulls
+// real data (previous crash's logs, live memory, on-disk WAL size) via the
+// same SSH connection used to install k3s, instead of guessing another
+// number.
+const tempoDiagnostics = new command.remote.Command("tempo-diagnostics", {
+	connection,
+	create: [
+		"echo '--- previous container logs (last 300 lines) ---'",
+		"kubectl logs tempo-0 -n observability --previous --tail=300 2>&1 || true",
+		"echo '--- current container logs (last 100 lines, may be mid-crash) ---'",
+		"kubectl logs tempo-0 -n observability --tail=100 2>&1 || true",
+		"echo '--- pod describe (events, restart count, last state, OOM reason) ---'",
+		"kubectl describe pod tempo-0 -n observability 2>&1 || true",
+		"echo '--- live memory, if the container happens to be up right now ---'",
+		"kubectl top pod tempo-0 -n observability --containers 2>&1 || true",
+		"echo '--- on-disk trace storage size (is the WAL/blocks backlog the issue?) ---'",
+		"kubectl exec -n observability tempo-0 -- sh -c 'du -sh /var/tempo/traces 2>&1; du -sh /var/tempo/traces/wal 2>&1; find /var/tempo/traces -maxdepth 2' 2>&1 || true",
+	].join(" ; "),
+	triggers: [Date.now()],
+}, { dependsOn: [installK3s] });
+export const tempoDiagnosticsOutput = tempoDiagnostics.stdout;
+
 const tempo = new k8s.helm.v4.Chart("tempo", {
 	chart: "tempo",
 	version: "1.18.2",

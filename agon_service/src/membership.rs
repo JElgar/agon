@@ -58,6 +58,10 @@ pub struct Invitation {
     pub invited_at: chrono::DateTime<chrono::Utc>,
     pub responded_at: Option<chrono::DateTime<chrono::Utc>>,
     pub kind: InvitationKind,
+    /// (Match invitations only) whether this invite holds a roster slot for
+    /// the invitee while still pending — see `AddInvitationsInput.reserve_spot`.
+    /// Always `false` for a team invitation.
+    pub reserve_spot: bool,
 }
 
 /// How an invitation is authorised on acceptance.
@@ -148,6 +152,15 @@ pub struct AddInvitationsInput {
     /// admin and others as member in one call by sending two calls). None
     /// defaults to `Member`. Ignored for match invitations.
     pub role: Option<AssignableTeamRole>,
+    /// (Match invitations only) whether every invitee in this batch holds a
+    /// roster slot while their invite is still pending, rather than only once
+    /// they accept — e.g. a key player the organiser wants to count on before
+    /// filling the rest of the roster. None defaults to `false` (today's
+    /// behaviour: an invite reserves nothing until accepted). An admin invite
+    /// that reserves a spot is uncapped, same as any other admin roster add —
+    /// it can push a side/match over its usual cap. Ignored for team
+    /// invitations, which have no capacity concept.
+    pub reserve_spot: Option<bool>,
 }
 
 #[derive(Object)]

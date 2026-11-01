@@ -866,6 +866,10 @@ struct CreateMatchInviteInput {
     /// reference them too, the same way `CreateMatchSideInput.client_id`
     /// lets a score reference a side before it has a real id.
     invited_externals: Vec<CreateMatchExternalInviteInput>,
+    /// Whether every invitee in this batch holds a roster slot while their
+    /// invite is still pending, instead of only once they accept. Omit for
+    /// the default (`false`) — see `AddInvitationsInput::reserve_spot`.
+    reserve_spot: Option<bool>,
 }
 
 #[derive(Object)]
@@ -3459,6 +3463,7 @@ impl Api {
                 .side_client_id
                 .as_ref()
                 .and_then(|c| side_ids.get(c).cloned());
+            let reserve_spot = invite.reserve_spot.unwrap_or(false);
             for user_id in &invite.invited_user_ids {
                 let (player, inv) = build_invited_player(
                     &match_id,
@@ -3467,6 +3472,7 @@ impl Api {
                     side_id.clone(),
                     Some(user_id.clone()),
                     None,
+                    reserve_spot,
                     &now,
                 );
                 player_ids.insert(user_id.clone(), player.player_id.clone());
@@ -3481,6 +3487,7 @@ impl Api {
                     side_id.clone(),
                     None,
                     Some(external.name.clone()),
+                    reserve_spot,
                     &now,
                 );
                 player_ids.insert(external.client_id.clone(), player.player_id.clone());
@@ -6599,6 +6606,7 @@ impl Api {
                     .map(|n| (None, Some(n.clone()))),
             );
 
+        let reserve_spot = input.reserve_spot.unwrap_or(false);
         let mut created = Vec::new();
         for (user_id, display_name) in invitees {
             let (player, invitation) = build_invited_player(
@@ -6608,11 +6616,22 @@ impl Api {
                 input.side_id.clone(),
                 user_id,
                 display_name,
+                reserve_spot,
                 &now,
             );
-            dao.put_match_player(&match_id, &player)
-                .await
-                .map_err(dao_internal)?;
+            // A reserving invite takes a roster spot immediately, so it needs
+            // the same headcount bump an ad-hoc organiser add gets — uncapped,
+            // same as that add (see `Dao::add_match_player_tx`'s doc comment).
+            // A non-reserving invite is unchanged: a bare put, no spot taken.
+            if reserve_spot {
+                dao.add_match_player_tx(&match_id, &player)
+                    .await
+                    .map_err(dao_internal)?;
+            } else {
+                dao.put_match_player(&match_id, &player)
+                    .await
+                    .map_err(dao_internal)?;
+            }
             dao.create_invitation(&invitation)
                 .await
                 .map_err(dao_internal)?;
@@ -8024,7 +8043,7 @@ impl Api {
     ) -> Result<RevokeInvitationResponse> {
         info!("Revoking invitation {invitation_id}");
         let uid = self.require_uid(dao, &jwt_data).await?;
-        match dao
+        let rec = match dao
             .get_invitation(&invitation_id)
             .await
             .map_err(dao_internal)?
@@ -8039,10 +8058,30 @@ impl Api {
                     "only the inviter can revoke this invitation".into(),
                 )));
             }
-            Some(_) => {}
-        }
+            Some(rec) => rec,
+        };
         match dao.delete_invitation(&invitation_id).await {
-            Ok(()) => Ok(RevokeInvitationResponse::Ok),
+            Ok(()) => {
+                // A revoked reserving invite was holding a roster slot —
+                // free it now. Best-effort: the invitation itself is already
+                // gone, so a failure here leaves a stale (but harmless to
+                // discover and retry) over-count rather than undoing the
+                // revoke.
+                let now = now_iso();
+                if let Err(e) = dao.release_reserved_match_slot(&rec, &now).await {
+                    error!(
+                        "Failed to release reserved slot for revoked invitation {invitation_id}: {e}"
+                    );
+                } else if let dao::records::InvitationContextRecord::Match { match_id, .. } =
+                    &rec.context
+                    && let Err(e) = dao.refresh_side_roster_previews(match_id).await
+                {
+                    error!(
+                        "Failed to refresh roster previews after revoking invitation {invitation_id}: {e}"
+                    );
+                }
+                Ok(RevokeInvitationResponse::Ok)
+            }
             // Revoked by a concurrent request between the check above and here.
             Err(dao::DaoError::NotFound(_)) => Ok(RevokeInvitationResponse::NotFound(PlainText(
                 "invitation not found".into(),
@@ -8152,6 +8191,21 @@ impl Api {
                     }
                     other => dao_internal(other),
                 })?;
+                // A declined reserving invite was holding a roster slot —
+                // free it now. Best-effort, same as the notification flip
+                // below: the decline itself already succeeded.
+                if let Err(e) = dao.release_reserved_match_slot(&rec, &responded_at).await {
+                    error!(
+                        "Failed to release reserved slot for declined invitation {invitation_id}: {e}"
+                    );
+                } else if let dao::records::InvitationContextRecord::Match { match_id, .. } =
+                    &rec.context
+                    && let Err(e) = dao.refresh_side_roster_previews(match_id).await
+                {
+                    error!(
+                        "Failed to refresh roster previews after declining invitation {invitation_id}: {e}"
+                    );
+                }
                 "declined"
             }
         };
@@ -8273,6 +8327,22 @@ impl Api {
                     }
                     other => dao_internal(other),
                 })?;
+                // As in `respond_to_invitation`: free a reserved slot the
+                // decline just gave up, best-effort.
+                if let Err(e) = dao.release_reserved_match_slot(&rec, &responded_at).await {
+                    error!(
+                        "Failed to release reserved slot for declined invitation {}: {e}",
+                        rec.id
+                    );
+                } else if let dao::records::InvitationContextRecord::Match { match_id, .. } =
+                    &rec.context
+                    && let Err(e) = dao.refresh_side_roster_previews(match_id).await
+                {
+                    error!(
+                        "Failed to refresh roster previews after declining invitation {}: {e}",
+                        rec.id
+                    );
+                }
                 "declined"
             }
         };
@@ -9049,11 +9119,18 @@ fn invite_full_reason(
     agg: &dao::match_ops::MatchAggregate,
     rec: &dao::records::InvitationRecord,
 ) -> Option<(RosterConflictKind, &'static str)> {
-    let target_side_id = agg
+    let target = agg
         .players
         .iter()
-        .find(|p| p.invitation.as_ref().is_some_and(|i| i.id == rec.id))
-        .and_then(|p| p.side_id.clone());
+        .find(|p| p.invitation.as_ref().is_some_and(|i| i.id == rec.id));
+    // A reserving invite already holds its spot (it's counted in
+    // `occupies_slot` from the moment it was sent) — accepting just confirms
+    // a slot the invitee already has, never a new one, so there's nothing to
+    // guard against here.
+    if target.is_some_and(|p| p.invitation.as_ref().is_some_and(|i| i.reserve_spot)) {
+        return None;
+    }
+    let target_side_id = target.and_then(|p| p.side_id.clone());
     full_reason(agg, target_side_id.as_deref())
 }
 
@@ -9094,6 +9171,7 @@ fn build_invited_player(
     side_id: Option<String>,
     user_id: Option<String>,
     display_name: Option<String>,
+    reserve_spot: bool,
     now: &str,
 ) -> (
     dao::records::MatchPlayerRecord,
@@ -9129,6 +9207,7 @@ fn build_invited_player(
         invited_at: now.to_string(),
         responded_at: None,
         kind: kind.clone(),
+        reserve_spot,
     };
 
     let player = dao::records::MatchPlayerRecord {
@@ -9154,6 +9233,7 @@ fn build_invited_player(
         },
         invited_at: now.to_string(),
         responded_at: None,
+        reserve_spot,
     };
 
     (player, invitation)
@@ -9208,6 +9288,8 @@ fn build_invited_team_member(
         invited_at: now.to_string(),
         responded_at: None,
         kind: kind.clone(),
+        // Teams have no capacity concept — never reserves a spot.
+        reserve_spot: false,
     };
 
     let member = dao::records::TeamMemberRecord {
@@ -9233,6 +9315,7 @@ fn build_invited_team_member(
         },
         invited_at: now.to_string(),
         responded_at: None,
+        reserve_spot: false,
     };
 
     (member, invitation)
@@ -9692,6 +9775,7 @@ fn mock_invitations_for_input(
     input: &AddInvitationsInput,
     invited_by_user_id: &str,
 ) -> Vec<Invitation> {
+    let reserve_spot = input.reserve_spot.unwrap_or(false);
     let mut invitations = Vec::new();
     for (i, user_id) in input.invited_user_ids.iter().enumerate() {
         invitations.push(Invitation {
@@ -9703,6 +9787,7 @@ fn mock_invitations_for_input(
             kind: InvitationKind::User(UserInvitation {
                 invited_user_id: user_id.clone(),
             }),
+            reserve_spot,
         });
     }
     for (i, _name) in input.invited_external_names.iter().enumerate() {
@@ -9715,6 +9800,7 @@ fn mock_invitations_for_input(
             kind: InvitationKind::Token(TokenInvitation {
                 invite_token: format!("token_{i}"),
             }),
+            reserve_spot,
         });
     }
     invitations
@@ -9731,6 +9817,7 @@ fn mock_user_invitation(id: String) -> Invitation {
         kind: InvitationKind::User(UserInvitation {
             invited_user_id: String::from("user_2"),
         }),
+        reserve_spot: false,
     }
 }
 
@@ -9924,6 +10011,7 @@ fn mock_team_member_page() -> TeamMemberPage {
                         kind: InvitationKind::User(UserInvitation {
                             invited_user_id: String::from("user_1"),
                         }),
+                        reserve_spot: false,
                     }),
                     name: String::from("Alex Kim"),
                     avatar_url: None,
@@ -9944,6 +10032,7 @@ fn mock_team_member_page() -> TeamMemberPage {
                         kind: InvitationKind::Token(TokenInvitation {
                             invite_token: String::from("team_invite_abc123"),
                         }),
+                        reserve_spot: false,
                     }),
                 }),
                 role: TeamRole::Member,

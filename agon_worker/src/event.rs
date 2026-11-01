@@ -162,6 +162,7 @@ mod tests {
             },
             invited_at: "2026-07-01T10:00:00Z".into(),
             responded_at: Some("2026-07-02T09:00:00Z".into()),
+            reserve_spot: false,
         }
     }
 

@@ -4,6 +4,7 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import {
   PlayerSideEditor,
   type TaggedPlayer,
@@ -38,6 +39,9 @@ export function InvitePlayers({
   const [players, setPlayers] = useState<TaggedPlayer[]>([])
   // Default to the first side; the invite endpoint takes one side per call.
   const [sideId, setSideId] = useState<string>(match.sides[0]?.id ?? '')
+  // Off by default: a plain invite holds no roster spot until accepted,
+  // same as today. On, it counts toward the match/side cap immediately.
+  const [reserveSpot, setReserveSpot] = useState(false)
 
   // Everyone already linked to this match, so we don't offer to invite them again.
   const existingUserIds = match.players.flatMap((p) =>
@@ -63,6 +67,7 @@ export function InvitePlayers({
             invited_user_ids,
             invited_external_names,
             side_id: sideId || undefined,
+            reserve_spot: reserveSpot,
           },
         },
       )
@@ -104,6 +109,23 @@ export function InvitePlayers({
             </option>
           ))}
         </select>
+      </div>
+
+      <div className="flex items-center justify-between rounded-lg border px-3 py-2">
+        <div>
+          <Label htmlFor="invite-reserve-spot" className="text-sm">
+            Reserve them a spot
+          </Label>
+          <p className="text-xs text-muted-foreground">
+            Counts towards the match/side limit while the invite is pending,
+            not just once it's accepted.
+          </p>
+        </div>
+        <Switch
+          id="invite-reserve-spot"
+          checked={reserveSpot}
+          onCheckedChange={setReserveSpot}
+        />
       </div>
 
       {invite.isError && (

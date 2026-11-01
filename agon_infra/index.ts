@@ -1415,7 +1415,12 @@ const loki = new k8s.helm.v4.Chart("loki", {
 // dying every restart), which in turn times out every `pulumi up` on main
 // waiting for the StatefulSet to become Ready. Disabling the metrics
 // generator removed one source of memory pressure but wasn't enough on its
-// own; give it real headroom instead of re-guessing a tighter number.
+// own. Bumping the limit to 1Gi *also* wasn't enough — it OOMed again on
+// the very next deploy, in roughly the same timeframe, so this isn't just a
+// tight number: something (likely WAL/local-blocks replay backlog from
+// ~36h of crash-looping) is driving memory well past 1Gi at startup. Going
+// much higher while that's investigated, rather than guessing another
+// slightly-bigger number.
 const tempo = new k8s.helm.v4.Chart("tempo", {
 	chart: "tempo",
 	version: "1.18.2",
@@ -1428,8 +1433,8 @@ const tempo = new k8s.helm.v4.Chart("tempo", {
 				trace: { backend: "local", local: { path: "/var/tempo/traces" } },
 			},
 			resources: {
-				requests: { cpu: "100m", memory: "256Mi" },
-				limits: { memory: "1Gi" },
+				requests: { cpu: "100m", memory: "512Mi" },
+				limits: { memory: "3Gi" },
 			},
 		},
 		persistence: { enabled: true, size: "5Gi" },

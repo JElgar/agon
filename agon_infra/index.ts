@@ -1409,6 +1409,13 @@ const loki = new k8s.helm.v4.Chart("loki", {
 // values, leave the generator off: rate()/quantile_over_time()/
 // histogram_over_time() TraceQL queries will 500 with "empty ring", but
 // plain trace search/lookup is unaffected.
+//
+// The 400Mi limit this landed with OOMKilled the pod into a permanent
+// CrashLoopBackOff (steady-state usage, not just a startup spike — it kept
+// dying every restart), which in turn times out every `pulumi up` on main
+// waiting for the StatefulSet to become Ready. Disabling the metrics
+// generator removed one source of memory pressure but wasn't enough on its
+// own; give it real headroom instead of re-guessing a tighter number.
 const tempo = new k8s.helm.v4.Chart("tempo", {
 	chart: "tempo",
 	version: "1.18.2",
@@ -1421,8 +1428,8 @@ const tempo = new k8s.helm.v4.Chart("tempo", {
 				trace: { backend: "local", local: { path: "/var/tempo/traces" } },
 			},
 			resources: {
-				requests: { cpu: "100m", memory: "128Mi" },
-				limits: { memory: "400Mi" },
+				requests: { cpu: "100m", memory: "256Mi" },
+				limits: { memory: "1Gi" },
 			},
 		},
 		persistence: { enabled: true, size: "5Gi" },

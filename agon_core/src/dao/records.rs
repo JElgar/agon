@@ -236,8 +236,8 @@ pub struct DevicePairingRecord {
 /// `email` is duplicated here for reads; uniqueness is enforced by a separate
 /// `EMAIL#<email>` guard item. `stats` holds per-sport aggregates inline, so a
 /// profile read/batch-read returns everything in one point read — always
-/// present (all `None` for a brand new user). `ratings` and `rating_opt_ins`
-/// ride the same item for the same reason.
+/// present (all `None` for a brand new user). `ratings` rides the same item
+/// for the same reason.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UserRecord {
     pub id: String,
@@ -278,55 +278,12 @@ pub struct UserRecord {
     ///   stored rating (see `rating::Ladder`). A closed struct here would
     ///   re-close exactly what that decision opened.
     ///
-    /// A ladder appears here only once a ranked match on it has been rated,
-    /// so being opted in (`rating_opt_ins`) with no entry yet is normal. The
-    /// reverse — a rating with no opt-in behind it — is what the rating
-    /// pipeline must refuse to produce, by re-checking every participant's
-    /// opt-in before it rates; nothing at this layer enforces it.
+    /// A ladder appears here once a ranked match on it has been rated, and
+    /// not before. Nothing says whether the rating may be shown: that is
+    /// `rating::published`, read off `RatingRecord::matches_rated`.
     #[serde(default)]
     pub ratings: HashMap<String, RatingRecord>,
-    /// The ladders this account has consented to be rated on, each mapped to
-    /// when it did so (RFC 3339). Written by `Dao::opt_in_to_rating` when a
-    /// player ticks "I understand this starts my <sport> rating" on a ranked
-    /// game; read through [`UserRecord::has_opted_in`].
-    ///
-    /// **Entries are never removed.** Opting in is not reversible — a product
-    /// decision, not an omission, and the reason there is no opt-out
-    /// operation — so a ladder seen here once can be relied on from then on.
-    ///
-    /// A map to the consent time rather than a set of ladder names. A
-    /// DynamoDB string set would be the simpler write (`ADD` creates a missing
-    /// set, so there would be no ensure-the-map round trip), but it throws
-    /// away *when* somebody agreed, which is the one fact a consent record
-    /// exists to keep. The map also makes "first tick wins" a single
-    /// `attribute_not_exists` condition on the ladder's path, so ticking the
-    /// box again on a later game never moves the original date.
-    ///
-    /// Keyed by ladder, like `ratings`, and today a ladder is exactly the
-    /// sport tag. If a sport is ever split into several ladders, whether one
-    /// consent covers all of them is for that change to decide; this shape
-    /// does not settle it.
-    ///
-    /// `#[serde(default)]` because no profile written before this field
-    /// existed has it, and an empty map is right for every one of them:
-    /// nobody could opt in before there was anywhere to record it.
-    #[serde(default)]
-    pub rating_opt_ins: HashMap<String, String>,
     pub created_at: String,
-}
-
-impl UserRecord {
-    /// Whether this account has opted in to being rated on `ladder` — the
-    /// check every path into a ranked game makes.
-    ///
-    /// An exact-key lookup. Ladder names can be string prefixes of one
-    /// another (`"tennis"`, `"tennis:doubles"`), and a prefix match would
-    /// quietly decide the open question on `rating_opt_ins` of whether one
-    /// consent covers a split sport.
-    #[must_use]
-    pub fn has_opted_in(&self, ladder: &str) -> bool {
-        self.rating_opt_ins.contains_key(ladder)
-    }
 }
 
 /// `USER#<followeeId>` / `FOLLOWER#<followerId>` — a directed user→user follow
@@ -517,8 +474,8 @@ pub struct MatchRecord {
     /// that item is rewritten by far more than an edit: every like and every
     /// comment `ADD`s a counter on it. A `true` default would enrol the whole
     /// back catalogue into the ladders, one old match per like, rating
-    /// players who never opted in — when opting in is the one thing a rating
-    /// requires. Please don't "fix" this to match a create-time default.
+    /// games nobody meant to count. Please don't "fix" this to match a
+    /// create-time default.
     ///
     /// A ranked match always has a rating ladder (`rating::ladder_for_tag` on
     /// `match_type`), so sport `other` is never ranked. The API enforces that
@@ -528,11 +485,6 @@ pub struct MatchRecord {
     /// see `ranked_lock_reason` in `agon_service`'s mapping.
     #[serde(default)]
     pub ranked: bool,
-    /// The outstanding switch-to-ranked ask, if this match has one — see
-    /// [`MatchRankedPromptRecord`]. `None` on every match that was created
-    /// ranked, or friendly and left alone, which is nearly all of them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ranked_prompt: Option<MatchRankedPromptRecord>,
     /// Who holds `Owner`/`Admin` authority over this match, keyed by user id
     /// — an ordinary player (or an organiser with no roster row at all) is
     /// simply absent from the map, never stored as an explicit `Player`
@@ -556,70 +508,6 @@ pub struct MatchRecord {
 
 fn default_series_timezone() -> String {
     "UTC".to_string()
-}
-
-/// The outstanding switch-to-ranked ask on a match
-/// ([`MatchRecord::ranked_prompt`]): one per match, covering every player it
-/// asked.
-///
-/// One nested struct rather than a handful of sibling fields on `MatchRecord`,
-/// so that a deadline, a counter and the id they belong to cannot drift apart:
-/// clearing the ask is one `REMOVE`, and a half-written ask is a parse failure
-/// rather than a match that expires people against a stale deadline.
-///
-/// `ranked` is still the flag everything else reads. This record says only
-/// "some of the players in a spot haven't agreed yet", and a match carrying it
-/// is already `ranked: true` — the switch takes effect immediately and the
-/// prompts chase the consent, which is what keeps everyone's place.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct MatchRankedPromptRecord {
-    /// Quoted by every [`RankedPromptRecord::prompt_id`] this ask wrote, and
-    /// by every answer to it. A fresh id per switch is what makes a stale
-    /// answer recognisable.
-    pub id: String,
-    /// The ladder being consented to, as of the ask.
-    pub ladder: String,
-    pub opened_at: String,
-    pub opened_by_user_id: String,
-    /// When unanswered prompts expire, and with them the places they were
-    /// holding. Host-set or defaulted to 24h before the start, and always
-    /// within `(opened_at, starts_at]` — the service clamps it, because an
-    /// expiry after kickoff would decide a rating question with the result
-    /// already known.
-    ///
-    /// Also the `GSI3SK` of this match's meta item while the ask is open (see
-    /// [`Self::DUE_GSI3PK`]), which is how the sweep finds matches whose
-    /// deadline has passed without scanning the table.
-    pub deadline: String,
-    /// How many roster rows still carry an unanswered prompt for [`Self::id`].
-    ///
-    /// Maintained by atomic `ADD ranked_prompt.pending :delta` in the same
-    /// transaction as the row it counts — the same nested-path counter pattern
-    /// as `sides.<sideId>.player_count` — and never recomputed from a scan.
-    ///
-    /// Advisory: it exists so the feed, which reads a match's meta without its
-    /// roster, can render "3 still to confirm" without a second read, and so
-    /// the sweep can skip a match in one field. The authoritative question is
-    /// always whether any row in a spot still
-    /// [awaits this ask](MatchPlayerRecord::awaits_ranked_prompt), so a drifted
-    /// counter costs a wrong subtitle, never a wrongly expired player.
-    #[serde(default)]
-    pub pending: u32,
-}
-
-impl MatchRankedPromptRecord {
-    /// The `GSI3PK` stamped on a match's meta item while an ask is open, with
-    /// [`Self::deadline`] as the `GSI3SK`. Both attributes are removed when
-    /// the ask is answered out, expired or withdrawn, so the index is sparse:
-    /// only matches with something outstanding are in it.
-    ///
-    /// A constant value, so every pending ask shares one index partition. At
-    /// the scale this serves — matches with an unanswered prompt, which is a
-    /// subset of matches not yet played — that is a feature: the sweep's whole
-    /// job is one `Query` for `GSI3SK <= now`, which costs about half an RCU
-    /// and usually returns nothing. Bucket the value by date if that ever
-    /// stops being true.
-    pub const DUE_GSI3PK: &'static str = "RANKEDPROMPTDUE";
 }
 
 /// `SERIES#<seriesId>` / `#META` — a recurring match series' template and
@@ -843,29 +731,6 @@ pub struct MatchPlayerRecord {
     /// themselves — via a join link or team self-join.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub joined_via: Option<JoinSourceRecord>,
-    /// Set while this player has been asked to confirm a switch to ranked and
-    /// hasn't answered — see [`RankedPromptRecord`].
-    ///
-    /// **[`occupies_slot`](MatchPlayerRecord::occupies_slot) deliberately does
-    /// not look at this field**, and that is the whole point of it. Holding a
-    /// player's place while they decide is what makes switching a friendly to
-    /// ranked bearable: the alternative is evicting everyone until they
-    /// re-consent. A pending *invitation* cannot express it, because a pending
-    /// invite takes no spot at all — so the roster row stays exactly as it
-    /// was, this field rides alongside it, and the headcounts move only on the
-    /// writes that have always moved them (a decline, or the deadline sweep
-    /// removing the row).
-    ///
-    /// Only players who haven't opted in to the match's ladder are prompted.
-    /// Someone already opted in is *told* the match now counts and keeps their
-    /// place whatever they do, so this never appears on their row: the prompt
-    /// exists to collect consent that is missing, not to re-confirm consent
-    /// that already exists.
-    ///
-    /// `#[serde(default)]` → `None` for every row written before prompts
-    /// existed, which is the truth about them: nothing was ever asked.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ranked_prompt: Option<RankedPromptRecord>,
 }
 
 impl MatchPlayerRecord {
@@ -895,50 +760,6 @@ impl MatchPlayerRecord {
             .as_ref()
             .is_none_or(|inv| inv.status == "accepted")
     }
-
-    /// Whether this row is still waiting on an answer to `prompt_id` — the
-    /// test the respond endpoint and the deadline sweep both make before they
-    /// touch a row.
-    ///
-    /// Scoped to one id on purpose. A match can be flipped friendly → ranked
-    /// more than once, and a row left carrying a prompt from a withdrawn
-    /// switch must not be mistaken for an answer owed on the current one: the
-    /// authoritative question is never "is there a prompt?" but "is there a
-    /// prompt for *this* ask?".
-    #[must_use]
-    pub fn awaits_ranked_prompt(&self, prompt_id: &str) -> bool {
-        self.ranked_prompt
-            .as_ref()
-            .is_some_and(|p| p.prompt_id == prompt_id)
-    }
-}
-
-/// A player's outstanding "this match is ranked now — confirm, or lose your
-/// place" ask, embedded on their roster row
-/// ([`MatchPlayerRecord::ranked_prompt`]).
-///
-/// Embedded rather than given its own `RANKEDPROMPT#<userId>` item range
-/// because [`Dao::get_match`](crate::dao::Dao::get_match) is a point read of
-/// the meta plus **one** Query of the `PLAYER#` prefix. A separate range would
-/// add a third read to every match page view, to carry three fields that only
-/// ever matter beside the roster row they hang off.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RankedPromptRecord {
-    /// The switch that asked, matching [`MatchRankedPromptRecord::id`] on the
-    /// match's meta item.
-    ///
-    /// An answer quoting any other id is stale — the switch was withdrawn, or
-    /// the match has been flipped since — and is refused rather than applied.
-    /// That is what makes answering idempotent and a re-switch unambiguous,
-    /// without either side having to reason about ordering.
-    pub prompt_id: String,
-    /// The ladder consent is being collected for, as of the ask (e.g.
-    /// `"tennis"`). Stored rather than re-derived from the match's
-    /// `match_type` so a notification can name the sport without reading the
-    /// match, and so a row answered after a `match_type` edit still records
-    /// what was actually agreed to.
-    pub ladder: String,
-    pub asked_at: String,
 }
 
 /// `MATCH#<matchId>` / `WAITLIST#<userId>` — someone queued for a match/side
@@ -1732,7 +1553,6 @@ mod tests {
                 },
             }),
             joined_via: None,
-            ranked_prompt: None,
         };
         assert!(
             player(None).occupies_slot(),
@@ -1741,196 +1561,6 @@ mod tests {
         assert!(player(Some("accepted")).occupies_slot());
         assert!(!player(Some("pending")).occupies_slot());
         assert!(!player(Some("declined")).occupies_slot());
-    }
-
-    /// A player row with no `ranked_prompt`, as every row written before
-    /// prompts existed reads back. Nothing was asked of them, so nothing is
-    /// owed — and `awaits_ranked_prompt` says so for any id.
-    #[test]
-    fn a_player_row_written_before_prompts_existed_owes_no_answer() {
-        let item = HashMap::from([
-            ("player_id".to_string(), AttributeValue::S("p1".into())),
-            ("user_id".to_string(), AttributeValue::S("u1".into())),
-            ("role".to_string(), AttributeValue::S("player".into())),
-        ]);
-        let rec: MatchPlayerRecord =
-            serde_dynamo::from_attribute_value(AttributeValue::M(item)).unwrap();
-
-        assert!(rec.ranked_prompt.is_none());
-        assert!(!rec.awaits_ranked_prompt("sw1"));
-        assert!(rec.occupies_slot(), "still in, as they always were");
-    }
-
-    /// The invariant the whole switch-to-ranked flow rests on: **an
-    /// outstanding prompt does not cost the player their spot.** If this ever
-    /// starts failing, switching a friendly to ranked silently empties the
-    /// match — and `sides.*.player_count`/`total_player_count`, which are
-    /// maintained by deltas rather than recomputed, would disagree with the
-    /// roster for good.
-    ///
-    /// The second half pins the other direction: a prompt does not *grant* a
-    /// spot either. A pending invitee who somehow carries one is still out,
-    /// because `occupies_slot` reads the invitation and nothing else.
-    #[test]
-    fn an_outstanding_prompt_neither_costs_nor_grants_a_spot() {
-        let prompt = RankedPromptRecord {
-            prompt_id: "sw1".into(),
-            ladder: "tennis".into(),
-            asked_at: "2026-10-14T09:00:00.000Z".into(),
-        };
-        let row = |invitation_status: Option<&str>| MatchPlayerRecord {
-            player_id: "p1".into(),
-            user_id: Some("u1".into()),
-            display_name: None,
-            side_id: Some("home".into()),
-            is_member_of_team: None,
-            invitation: invitation_status.map(|status| EmbeddedInvitationRecord {
-                id: "inv".into(),
-                status: status.into(),
-                invited_by_user_id: "host".into(),
-                invited_at: "2026-10-01T00:00:00Z".into(),
-                responded_at: None,
-                kind: InvitationKindRecord::User {
-                    invited_user_id: "u1".into(),
-                },
-            }),
-            joined_via: None,
-            ranked_prompt: Some(prompt.clone()),
-        };
-
-        assert!(
-            row(None).occupies_slot(),
-            "an unanswered prompt holds the place; that is its purpose"
-        );
-        assert!(row(Some("accepted")).occupies_slot());
-        assert!(
-            !row(Some("pending")).occupies_slot(),
-            "a prompt grants nothing an invitation hasn't"
-        );
-    }
-
-    /// Answering is scoped to one ask. A row still carrying a prompt from a
-    /// withdrawn switch owes nothing on the current one, and an answer quoting
-    /// the old id must not be mistaken for the one owed now.
-    #[test]
-    fn a_prompt_is_only_owed_to_the_ask_that_wrote_it() {
-        let mut rec: MatchPlayerRecord =
-            serde_dynamo::from_attribute_value(AttributeValue::M(HashMap::from([
-                ("player_id".to_string(), AttributeValue::S("p1".into())),
-                ("role".to_string(), AttributeValue::S("player".into())),
-            ])))
-            .unwrap();
-        rec.ranked_prompt = Some(RankedPromptRecord {
-            prompt_id: "sw1".into(),
-            ladder: "tennis".into(),
-            asked_at: "2026-10-14T09:00:00.000Z".into(),
-        });
-
-        assert!(rec.awaits_ranked_prompt("sw1"));
-        assert!(
-            !rec.awaits_ranked_prompt("sw2"),
-            "a later ask, not this one"
-        );
-        assert!(!rec.awaits_ranked_prompt(""));
-    }
-
-    /// `ranked_prompt` is skipped when absent, so the common case — every
-    /// match that was created ranked, or friendly and left alone — writes the
-    /// same item it always did. Worth pinning: the meta item is rewritten by
-    /// every like and every comment, and a `null` attribute appearing on all
-    /// of them is both wasted bytes and a pointless stream diff.
-    #[test]
-    fn a_match_with_no_ask_serializes_without_the_attribute() {
-        let rec = MatchRecord {
-            id: "m1".into(),
-            created_by_user_id: "u1".into(),
-            name: "Tuesday singles".into(),
-            description: String::new(),
-            match_type: "tennis".into(),
-            status: "scheduled".into(),
-            starts_at: "2026-10-20T18:00:00.000Z".into(),
-            allow_unassigned: true,
-            total_player_count: 2,
-            location: None,
-            series_id: None,
-            sides: HashMap::new(),
-            header_photos: Vec::new(),
-            authority: HashMap::new(),
-            confirmed_score: None,
-            pending_score: None,
-            like_count: 0,
-            comment_count: 0,
-            live_seq: 0,
-            live_tip_seq: None,
-            format: None,
-            ranked: true,
-            ranked_prompt: None,
-            created_at: "2026-10-01T00:00:00.000Z".into(),
-        };
-
-        let item: HashMap<String, AttributeValue> =
-            serde_dynamo::to_item(&rec).expect("serializes");
-        assert!(
-            !item.contains_key("ranked_prompt"),
-            "absent, not null: {item:?}"
-        );
-    }
-
-    /// An open ask survives the write/read cycle whole, and the deadline it
-    /// carries is the value the sweep looks for — this item's own `GSI3SK`
-    /// under [`MatchRankedPromptRecord::DUE_GSI3PK`]. The two are written by
-    /// the same update, and nothing but this test ties the record's field to
-    /// the index convention.
-    #[test]
-    fn an_open_ask_round_trips_with_the_deadline_the_sweep_queries() {
-        let ask = MatchRankedPromptRecord {
-            id: "sw1".into(),
-            ladder: "football".into(),
-            opened_at: "2026-10-14T09:00:00.000Z".into(),
-            opened_by_user_id: "u1".into(),
-            deadline: "2026-10-19T18:00:00.000Z".into(),
-            pending: 3,
-        };
-
-        let item: HashMap<String, AttributeValue> = serde_dynamo::to_item(&ask).expect("to item");
-        let back: MatchRankedPromptRecord =
-            serde_dynamo::from_item(item).expect("reads back whole");
-
-        assert_eq!(back, ask);
-        assert_eq!(back.pending, 3);
-        assert_eq!(MatchRankedPromptRecord::DUE_GSI3PK, "RANKEDPROMPTDUE");
-        assert_eq!(
-            back.deadline, "2026-10-19T18:00:00.000Z",
-            "stamped as GSI3SK beside DUE_GSI3PK while the ask is open"
-        );
-    }
-
-    /// `pending` defaults rather than failing, because it is the one field an
-    /// atomic `ADD ranked_prompt.pending :delta` could leave behind if the ask
-    /// were ever written without it. Zero is the safe reading: a sweep skips
-    /// the match, and the roster — not this counter — decides who owes an
-    /// answer.
-    #[test]
-    fn an_ask_missing_its_counter_reads_as_nothing_pending() {
-        let item = HashMap::from([
-            ("id".to_string(), AttributeValue::S("sw1".into())),
-            ("ladder".to_string(), AttributeValue::S("tennis".into())),
-            (
-                "opened_at".to_string(),
-                AttributeValue::S("2026-10-14T09:00:00.000Z".into()),
-            ),
-            (
-                "opened_by_user_id".to_string(),
-                AttributeValue::S("u1".into()),
-            ),
-            (
-                "deadline".to_string(),
-                AttributeValue::S("2026-10-19T18:00:00.000Z".into()),
-            ),
-        ]);
-        let ask: MatchRankedPromptRecord =
-            serde_dynamo::from_attribute_value(AttributeValue::M(item)).unwrap();
-        assert_eq!(ask.pending, 0);
     }
 
     /// `Simple`/`Sets` `entries` round-trip through the side_id-keyed map
@@ -2058,47 +1688,33 @@ mod tests {
         ])
     }
 
+    /// A profile stored before ratings existed reads back unrated, and one
+    /// stored while the opt-in map existed reads back the same — the
+    /// attribute is simply no longer a field, which is what makes removing
+    /// it a no-op for everything already written.
     #[test]
-    fn user_written_before_ratings_existed_is_unrated_and_opted_in_nowhere() {
-        let rec: UserRecord =
-            serde_dynamo::from_attribute_value(AttributeValue::M(legacy_user_fields())).unwrap();
-        assert!(rec.ratings.is_empty(), "nothing rated");
-        assert!(
-            rec.rating_opt_ins.is_empty(),
-            "nobody could opt in before the field existed"
-        );
-        assert!(!rec.has_opted_in("squash"));
+    fn a_user_written_before_or_during_the_opt_in_map_reads_back_unrated() {
+        for extra in [None, Some(("rating_opt_ins", "tennis"))] {
+            let mut item = legacy_user_fields();
+            if let Some((attr, ladder)) = extra {
+                item.insert(
+                    attr.to_string(),
+                    AttributeValue::M(HashMap::from([(
+                        ladder.to_string(),
+                        AttributeValue::S("2026-09-15T10:00:00.000Z".into()),
+                    )])),
+                );
+            }
+            let rec: UserRecord =
+                serde_dynamo::from_attribute_value(AttributeValue::M(item)).unwrap();
+            assert!(rec.ratings.is_empty(), "nothing rated");
+        }
     }
 
-    /// `Dao::opt_in_to_rating` writes the consent time with a raw nested
-    /// `SET rating_opt_ins.#ladder = :opted_in_at` of a string, while this
-    /// side reads `HashMap<String, String>` — two shapes nothing but this test
-    /// ties together. It builds the item the way that write leaves it and
-    /// reads it back. The ladder names are prefixes of one another, to pin
-    /// that `has_opted_in` is an exact-key lookup.
+    /// A rated profile survives the write/read cycle whole — the `ratings`
+    /// map of nested records beside the fields that were already there.
     #[test]
-    fn an_opt_in_as_the_dao_writes_it_reads_back_for_exactly_that_ladder() {
-        let mut item = legacy_user_fields();
-        item.insert(
-            "rating_opt_ins".to_string(),
-            AttributeValue::M(HashMap::from([(
-                "tennis".to_string(),
-                AttributeValue::S("2026-09-15T10:00:00.000Z".into()),
-            )])),
-        );
-        let rec: UserRecord = serde_dynamo::from_attribute_value(AttributeValue::M(item)).unwrap();
-
-        assert!(rec.has_opted_in("tennis"));
-        assert!(!rec.has_opted_in("tennis:doubles"));
-        assert!(!rec.has_opted_in("squash"));
-        assert_eq!(rec.rating_opt_ins["tennis"], "2026-09-15T10:00:00.000Z");
-    }
-
-    /// A rated, opted-in profile survives the write/read cycle whole — the
-    /// `ratings` map of nested records and the `rating_opt_ins` map of
-    /// strings both, beside the fields that were already there.
-    #[test]
-    fn a_rated_opted_in_profile_round_trips() {
+    fn a_rated_profile_round_trips() {
         let rec = UserRecord {
             id: "u1".into(),
             email: "sofia@example.com".into(),
@@ -2117,10 +1733,6 @@ mod tests {
                     last_rated_at: "2026-09-01T19:00:00.000Z".into(),
                 },
             )]),
-            rating_opt_ins: HashMap::from([
-                ("squash".to_string(), "2026-08-01T12:00:00.000Z".to_string()),
-                ("tennis".to_string(), "2026-09-15T10:00:00.000Z".to_string()),
-            ]),
             created_at: "2026-01-01T00:00:00Z".into(),
         };
         let av: AttributeValue = serde_dynamo::to_attribute_value(&rec).unwrap();

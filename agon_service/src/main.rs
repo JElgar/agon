@@ -51,13 +51,12 @@ use mapping::{
     match_score_from_record, match_score_to_record, match_series_from_record,
     match_series_occurrence_from_record, match_status_str, match_type_tag, new_live_event_to_dao,
     notification_actor_id, notification_from_record, ranked_added_players_reason,
-    ranked_lock_reason_for_update, ranked_move_in_reason, rating_consent_step, rating_ladder,
-    rating_ladder_for, rating_opt_ins_from_record, resolve_score_ids, roster_preview_player,
-    score_player_ids, score_side_ids, score_submission_from_record, score_to_record,
-    search_match_from_records, series_end_record_from_input, set_score_players,
-    switch_to_ranked_reason, team_from_records, team_list_item_from_record,
-    team_member_from_record, unrankable_sport_reason, unratable_players, user_profile_from_record,
-    winner_from_score,
+    ranked_lock_reason_for_update, rating_ladder, rating_ladder_for, rating_placements_from_record,
+    resolve_score_ids, roster_preview_player, score_player_ids, score_side_ids,
+    score_submission_from_record, score_to_record, search_match_from_records,
+    series_end_record_from_input, set_score_players, switch_to_ranked_reason, team_from_records,
+    team_list_item_from_record, team_member_from_record, unrankable_sport_reason,
+    unratable_players, user_profile_from_record, winner_from_score,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -170,6 +169,46 @@ pub struct UserProfile {
     pub following_count: u32,
     /// Whether the requesting user follows this profile. False for your own.
     pub is_followed_by_me: bool,
+    /// This user's **published** ratings, ordered by ladder.
+    ///
+    /// A ladder is absent until they have five ranked matches behind them on
+    /// it. Everybody who plays a ranked match is rated for it, but a rating
+    /// still in its placements is shown to nobody — not to other users, and
+    /// not to the user themselves. There is deliberately no field anywhere
+    /// that exposes one: a brand-new rating reads as `1500 ±750` and moves
+    /// eighty points a game, which is `σ` being honest rather than a number
+    /// anybody should be judged on. `User::rating_placements` is what the
+    /// player sees instead, and only the player.
+    pub ratings: Vec<LadderRating>,
+}
+
+/// One ladder a user has a published rating on.
+#[derive(Object)]
+pub struct LadderRating {
+    /// The ladder, as `Match.rating_ladder` names it (e.g. `"tennis"`).
+    pub ladder: String,
+    /// The headline number. 1500 is an average, unproven player.
+    pub rating: i32,
+    /// The `±` half-width to show beside it. Wide for a freshly placed
+    /// player and narrowing as they play.
+    pub confidence: i32,
+    /// `rating - confidence`: the conservative value, for anything that
+    /// ranks or gates rather than displays.
+    pub floor: i32,
+    /// Ranked matches behind this rating — the "· 12 games" beside it. Every
+    /// match that moved it, since friendlies move nothing.
+    pub matches_rated: u32,
+}
+
+/// Progress towards a published rating on one ladder.
+#[derive(Object)]
+pub struct LadderPlacement {
+    /// The ladder, as `Match.rating_ladder` names it.
+    pub ladder: String,
+    /// Ranked matches played so far.
+    pub played: u32,
+    /// How many are needed in all before the rating is published.
+    pub required: u32,
 }
 
 /// The authenticated user's own view: their public `profile` plus private fields
@@ -181,25 +220,19 @@ struct User {
     /// The same public profile others see (id, name, image, stats, follower
     /// counts).
     profile: UserProfile,
-    /// The rating ladders this user has agreed to be rated on, ordered by
-    /// ladder. Empty until they first consent on a ranked match
-    /// (`rating_consent`), and never shrinks: opting in isn't reversible.
+    /// Ladders this user has a rating on but has not been placed on, with
+    /// how far through their placement matches they are — the "3 more games"
+    /// a client shows in place of a rating.
     ///
-    /// Here and not on `UserProfile`, so only the user themselves sees it. An
-    /// opt-in records a consent, which is between the user and Agon; what
-    /// other people get to see is a rating, which only exists once a ranked
-    /// match has been rated.
-    rating_opt_ins: Vec<RatingOptIn>,
-}
-
-/// One ladder a user has opted in to being rated on.
-#[derive(Object)]
-struct RatingOptIn {
-    /// The ladder, as `Match.rating_ladder` names it (e.g. `"tennis"`).
-    ladder: String,
-    /// When they agreed. The first time only: consenting again on a later
-    /// ranked match in the same sport doesn't move it.
-    opted_in_at: chrono::DateTime<chrono::Utc>,
+    /// Private, and the only thing a user sees while placing: the rating
+    /// being settled is deliberately not here, because it is moving fast by
+    /// design and showing it would be showing a number we are in the middle
+    /// of disagreeing with. Progress is theirs to see; a stranger reading it
+    /// would be reading a hint about a number being withheld.
+    ///
+    /// A ladder appears in exactly one of this and `UserProfile::ratings`,
+    /// never both.
+    rating_placements: Vec<LadderPlacement>,
 }
 
 #[derive(Object)]
@@ -880,10 +913,10 @@ struct CreateMatchInput {
     /// friendly, the default. Refused (400) for a sport with no rating ladder
     /// (`other`).
     ///
-    /// Friendly by default because ratings are opt-in, per sport, and a
-    /// ranked match needs everyone playing in it to have opted in. Ranked by
-    /// default would put that requirement in front of most games, which are
-    /// casual; ranked is the organiser's explicit choice instead.
+    /// Friendly by default because a ranked match is the one that counts:
+    /// everybody who plays in one is rated for it, and nothing else moves a
+    /// rating. Most games are casual, so ranked is the organiser's explicit
+    /// choice rather than something a kickabout falls into.
     ///
     /// **Creation is deliberately unconstrained, including for a match that
     /// has already been played.** This endpoint accepts a completed match with
@@ -903,20 +936,6 @@ struct CreateMatchInput {
     /// rather than restricting creation, and isn't worth building before
     /// anyone is seen doing it.
     ranked: Option<bool>,
-    /// "I understand this starts my rating in this sport." Needed only when
-    /// creating a ranked match the creator plays in (`creator_side_client_id`)
-    /// without being opted in to that sport's ladder yet: `true` opts them in
-    /// and creates the match, and omitting it is refused with 422
-    /// (`RatingConsentRequired`), which is how a client knows to ask. Ignored
-    /// for a friendly, for a creator who only organises, and once opted in.
-    ///
-    /// The same field, with the same 422, is on every way into a match that
-    /// someone takes on their own say-so: `RespondToInvitationInput`,
-    /// `RespondByTokenInput` and `JoinMatchInput` (which `POST
-    /// /matches/:match_id/waitlist/join` shares). Invitees consent when they
-    /// accept, so inviting people to a ranked match asks nothing of anyone at
-    /// creation.
-    rating_consent: Option<bool>,
 }
 
 // ===========================================================================
@@ -1644,20 +1663,6 @@ enum CreateMatchResponse {
 
     #[oai(status = 400)]
     ValidationError(PlainText<String>),
-
-    /// The match is ranked, the creator plays in it, and they haven't opted in
-    /// to its sport's ladder: resend with `rating_consent: true` once they've
-    /// agreed. Nothing was created.
-    ///
-    /// 422 on every endpoint that asks for `rating_consent`, and chosen
-    /// because none of them used it: a consent screen has to tell "ask the
-    /// user" apart from every other refusal on the same call, and the others
-    /// already took 400 (create, join), 403 (not your invitation, and any
-    /// device-scoped token), 404 and 409 (full, or already on the roster or
-    /// waitlist). 412 and 428 were the other candidates, but both mean HTTP
-    /// conditional-request headers, which this isn't.
-    #[oai(status = 422)]
-    RatingConsentRequired(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -2267,14 +2272,6 @@ enum JoinMatchResponse {
     /// the roster — see `RosterConflict::kind`.
     #[oai(status = 409)]
     Conflict(Json<RosterConflict>),
-
-    /// The match is ranked and the caller hasn't opted in to its sport's
-    /// ladder: resend with `rating_consent: true` once they've agreed. Nothing
-    /// was written. Only reached once every other check has passed, so a full
-    /// match is still the 409 above. See
-    /// `CreateMatchResponse::RatingConsentRequired` for why 422.
-    #[oai(status = 422)]
-    RatingConsentRequired(PlainText<String>),
 }
 
 /// A person waiting for a spot on a match/side — see
@@ -2329,15 +2326,6 @@ enum WaitlistJoinResponse {
     /// waitlist.
     #[oai(status = 409)]
     Conflict(PlainText<String>),
-
-    /// The match is ranked and the caller hasn't opted in to its sport's
-    /// ladder: resend with `rating_consent: true` once they've agreed. Nothing
-    /// was written, and a pending invitation is still pending. Asked here as
-    /// well as on join, because the admin who later moves someone in off the
-    /// waitlist can't consent for them. See
-    /// `CreateMatchResponse::RatingConsentRequired` for why 422.
-    #[oai(status = 422)]
-    RatingConsentRequired(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -2473,14 +2461,6 @@ enum RespondToInvitationResponse {
     /// invitation and queues for the spot in one step.
     #[oai(status = 409)]
     Conflict(Json<RosterConflict>),
-
-    /// Accepting an invitation to a ranked match whose sport's ladder the
-    /// caller hasn't opted in to: resend with `rating_consent: true` once
-    /// they've agreed. The invitation is still pending. Judged against the
-    /// match as it is now, so an invitation sent while it was a friendly asks
-    /// too. See `CreateMatchResponse::RatingConsentRequired` for why 422.
-    #[oai(status = 422)]
-    RatingConsentRequired(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -2495,10 +2475,6 @@ enum RespondByTokenResponse {
     /// See `RespondToInvitationResponse::Conflict`.
     #[oai(status = 409)]
     Conflict(Json<RosterConflict>),
-
-    /// As `RespondToInvitationResponse::RatingConsentRequired`.
-    #[oai(status = 422)]
-    RatingConsentRequired(PlainText<String>),
 }
 
 /// Result of a follow/unfollow action.
@@ -2607,7 +2583,7 @@ impl Api {
         // Own profile: not "followed by me".
         let profile = user_profile_from_record(&record, false);
         Ok(GetUserResponse::User(Json(User {
-            rating_opt_ins: rating_opt_ins_from_record(&record),
+            rating_placements: rating_placements_from_record(&record),
             email: record.email,
             profile,
         })))
@@ -2661,7 +2637,7 @@ impl Api {
             .ok_or_else(|| Error::from_string("user not found", StatusCode::NOT_FOUND))?;
         let profile = user_profile_from_record(&record, false);
         Ok(UpdateUserResponse::User(Json(User {
-            rating_opt_ins: rating_opt_ins_from_record(&record),
+            rating_placements: rating_placements_from_record(&record),
             email: record.email,
             profile,
         })))
@@ -2804,15 +2780,11 @@ impl Api {
             following_count: 0,
             unread_count: 0,
             stats: dao::records::UserStatsRecord::default(),
-            // A brand-new account has played nothing and consented to
-            // nothing: rated on no ladder, opted in to none — the same state a
-            // profile written before ratings existed deserializes into.
-            // Neither is settable at signup. Opting in is ticking the consent
-            // box on a ranked game, and only the rating pipeline writes
-            // `ratings`; both are later changes, and these are here only
-            // because the record now has the fields.
+            // A brand-new account has played nothing, so it is rated on no
+            // ladder — the same state a profile written before ratings
+            // existed deserializes into. Not settable at signup: only the
+            // rating pipeline writes `ratings`.
             ratings: HashMap::new(),
-            rating_opt_ins: HashMap::new(),
             created_at: now_iso(),
         };
         match dao.create_user(&jwt_data.sub, &record).await {
@@ -2826,7 +2798,7 @@ impl Api {
         }
         let profile = user_profile_from_record(&record, false);
         Ok(CreateUserResponse::User(Json(User {
-            rating_opt_ins: rating_opt_ins_from_record(&record),
+            rating_placements: rating_placements_from_record(&record),
             email: record.email,
             profile,
         })))
@@ -3480,7 +3452,6 @@ impl Api {
                 is_member_of_team: None,
                 invitation: None,
                 joined_via: None,
-                ranked_prompt: None,
             });
         }
         for invite in &input.invites {
@@ -3670,7 +3641,6 @@ impl Api {
             // spot at creation is the caller (who consents inline, above) or
             // an invitee, who is asked when they accept. Prompts exist only
             // for a *switch*, which finds players already in place.
-            ranked_prompt: None,
             authority: authority.clone(),
             created_at: now.clone(),
         };
@@ -3687,17 +3657,6 @@ impl Api {
         // they have an account. It's also why there is no "no externals on a
         // ranked match" check here: creation can only invite people, never add
         // them directly. (`update_match`'s `added_players` can, and is checked.)
-        //
-        // Last before the first write, so that neither a refusal nor any
-        // validation above leaves an opt-in behind.
-        if creator_player_id.is_some()
-            && let Some(message) =
-                settle_rating_consent(dao, &uid, &match_record, input.rating_consent).await?
-        {
-            return Ok(CreateMatchResponse::RatingConsentRequired(PlainText(
-                message,
-            )));
-        }
 
         match dao.create_match(&match_record, &player_records).await {
             Ok(()) => {}
@@ -3936,53 +3895,38 @@ impl Api {
             input.ranked.unwrap_or(agg.match_.ranked),
         );
         let added_players = input.added_players.as_deref().unwrap_or_default();
-        if let Some(ladder) = &resulting_ladder
-            && (ranked_change == Some(true) || !added_players.is_empty())
+        // The ladder itself is no longer needed, only whether the match would
+        // have one: the surviving rules say nothing about which sport it is.
+        if resulting_ladder.is_some() && (ranked_change == Some(true) || !added_players.is_empty())
         {
-            // The players already in, and those waiting, only need judging on a
-            // switch: a match that was already ranked checked each of them on
-            // the way in (bar the race `settle_rating_consent` describes).
-            let (in_a_spot, waitlisted) = if ranked_change == Some(true) {
-                let in_a_spot: Vec<&dao::records::MatchPlayerRecord> =
-                    agg.players.iter().filter(|p| p.occupies_slot()).collect();
-                let waitlisted = dao.list_waitlist(&match_id).await.map_err(dao_internal)?;
-                (in_a_spot, waitlisted)
+            // The players already in only need judging on a switch: a match
+            // that was already ranked judged each of them on the way in.
+            //
+            // This used to read the waitlist and then batch-read every
+            // profile involved, both for the opt-in rule. Nobody has to have
+            // opted in for a match to rate now, so all that is left to check
+            // is whether a player has an account — which their roster row
+            // already says. The switch costs no extra read at all.
+            let in_a_spot: Vec<&dao::records::MatchPlayerRecord> = if ranked_change == Some(true) {
+                agg.players.iter().filter(|p| p.occupies_slot()).collect()
             } else {
-                (Vec::new(), Vec::new())
+                Vec::new()
             };
-            let user_ids: Vec<String> = in_a_spot
-                .iter()
-                .filter_map(|p| p.user_id.clone())
-                .chain(waitlisted.iter().map(|e| e.user_id.clone()))
-                .chain(added_players.iter().filter_map(|p| p.user_id.clone()))
-                .collect();
-            let users = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
 
             let unratable_in_a_spot = unratable_players(
-                ladder,
                 in_a_spot
                     .iter()
                     .map(|p| (p.user_id.as_deref(), p.display_name.as_deref())),
-                &users,
             );
-            let unratable_waitlisted = unratable_players(
-                ladder,
-                waitlisted.iter().map(|e| (Some(e.user_id.as_str()), None)),
-                &users,
-            );
-            if let Some(reason) =
-                switch_to_ranked_reason(ladder, &unratable_in_a_spot, &unratable_waitlisted)
-            {
+            if let Some(reason) = switch_to_ranked_reason(&unratable_in_a_spot) {
                 return Ok(UpdateMatchResponse::ValidationError(PlainText(reason)));
             }
             let unratable_added = unratable_players(
-                ladder,
                 added_players
                     .iter()
                     .map(|p| (p.user_id.as_deref(), p.display_name.as_deref())),
-                &users,
             );
-            if let Some(reason) = ranked_added_players_reason(ladder, &unratable_added) {
+            if let Some(reason) = ranked_added_players_reason(&unratable_added) {
                 return Ok(UpdateMatchResponse::ValidationError(PlainText(reason)));
             }
         }
@@ -4428,7 +4372,6 @@ impl Api {
                     is_member_of_team: None,
                     invitation: None,
                     joined_via: None,
-                    ranked_prompt: None,
                 };
                 dao.add_match_player_tx(&match_id, &player)
                     .await
@@ -4783,13 +4726,10 @@ impl Api {
             live_tip_seq: None,
             format: None,
             // A series occurrence is always friendly. `SeriesRecord` has no
-            // `ranked` of its own, and generation puts *other* people's
-            // players into spots without asking them — which is the one thing
-            // a rating needs (see `rating_consent`). An organiser can switch a
-            // single occurrence to ranked afterwards, which asks everyone in
-            // it. A ranked *series* needs its own consent design first.
+            // `ranked` of its own, so there is nowhere to say otherwise. An
+            // organiser can switch a single occurrence to ranked afterwards;
+            // a ranked *series* needs a design of its own first.
             ranked: false,
-            ranked_prompt: None,
             authority: std::collections::HashMap::from([(
                 uid.clone(),
                 dao::records::MatchPlayerRole::Owner,
@@ -7037,17 +6977,6 @@ impl Api {
             })));
         }
 
-        // Rating consent comes after every other check above (already on the
-        // roster, a revoked link, not eligible for team self-join, a side the
-        // scope doesn't allow, full). That way each of those is reported as
-        // itself rather than as "consent needed", and none of them leaves an
-        // opt-in behind. A full match is a 409 before anyone is asked; the
-        // waitlist join it points to asks in its turn.
-        if let Some(message) =
-            settle_rating_consent(dao, &uid, &agg.match_, input.rating_consent).await?
-        {
-            return Ok(JoinMatchResponse::RatingConsentRequired(PlainText(message)));
-        }
         let target_side = target_side_id
             .as_ref()
             .and_then(|sid| agg.sides.iter().find(|s| &s.side_id == sid));
@@ -7060,11 +6989,6 @@ impl Api {
             is_member_of_team: None,
             invitation: None,
             joined_via: Some(joined_via),
-            // `settle_rating_consent` above means a joiner of a ranked match
-            // is opted in by the time this row exists, so there is nothing to
-            // ask them — even if the match has an open switch-to-ranked ask
-            // that other players still owe an answer to.
-            ranked_prompt: None,
         };
 
         if let Err(e) = dao
@@ -7344,17 +7268,6 @@ impl Api {
                 waitlisted_at: now.clone(),
                 invitation_id: Some(invitation_id.clone()),
             };
-            // Joining a ranked match's waitlist asks for rating consent, like
-            // getting into it does: this is how a waiting player asks to get
-            // in, and the admin who later moves them in can't consent for
-            // them. That includes accepting an invitation onto the waitlist,
-            // which would otherwise be a way round the accept's own check.
-            // Last before the write, so no refusal leaves an opt-in behind.
-            if let Some(refusal) =
-                settle_waitlist_rating_consent(dao, &uid, &agg.match_, input.rating_consent).await?
-            {
-                return Ok(refusal);
-            }
             match dao
                 .accept_invitation_onto_waitlist_tx(&invitation_id, &uid, &now, &now, &entry)
                 .await
@@ -7425,12 +7338,6 @@ impl Api {
                 waitlisted_at: now.clone(),
                 invitation_id: None,
             };
-            // As in the invitation branch above.
-            if let Some(refusal) =
-                settle_waitlist_rating_consent(dao, &uid, &agg.match_, input.rating_consent).await?
-            {
-                return Ok(refusal);
-            }
             match dao.waitlist_join_tx(&match_id, &entry).await {
                 Ok(()) => entry,
                 Err(dao::DaoError::Conflict(msg)) => {
@@ -7562,25 +7469,14 @@ impl Api {
             })));
         }
 
-        // A ranked match only has opted-in players in its spots, and an admin
-        // can't consent for someone else, so a waiting player who isn't opted
-        // in stays waiting. Joining a ranked match's waitlist asks for consent
-        // and switching to ranked judges the waitlist, so this is a backstop
-        // (see `ranked_move_in_reason`). After the capacity check, like every
-        // other way into a spot.
-        if let Some(ladder) = rating_ladder(&agg.match_) {
-            let users = dao
-                .batch_get_users(std::slice::from_ref(&entry.user_id))
-                .await
-                .map_err(dao_internal)?;
-            let unratable =
-                unratable_players(&ladder, [(Some(entry.user_id.as_str()), None)], &users);
-            if let Some(reason) = ranked_move_in_reason(&ladder, &unratable) {
-                return Ok(MoveInFromWaitlistResponse::ValidationError(PlainText(
-                    reason,
-                )));
-            }
-        }
+        // Moving a waiting player into a ranked match used to be refused
+        // unless they had opted in, with a profile read of its own to find
+        // out — an admin can't consent for somebody else, so an unconsented
+        // player stayed waiting. Nothing is gated on consent now, and a
+        // waitlist entry always names an account
+        // (`MatchWaitlistEntryRecord`), so the only rule that survives
+        // elsewhere — no guests in a ranked match — cannot fire here. The
+        // check and its read are both gone.
 
         // A waitlisted player never has a roster row (a pending invitee's
         // placeholder gets deleted, not linked, the moment they land on the
@@ -7602,7 +7498,6 @@ impl Api {
             is_member_of_team: None,
             invitation: None,
             joined_via: Some(dao::records::JoinSourceRecord::Waitlist),
-            ranked_prompt: None,
         };
         if let Err(e) = dao
             .move_in_from_waitlist_tx(
@@ -8190,7 +8085,6 @@ impl Api {
         }
 
         let responded_at = now_iso();
-        let rating_consent = input.rating_consent;
         let status = match input.0.response {
             // Accept synchronously and atomically: bind the accepter to the
             // invitation, link the roster entry, and (match) write the accepter's
@@ -8209,18 +8103,6 @@ impl Api {
                             message: message.into(),
                         },
                     )));
-                }
-                // Rating consent last, after the capacity check, so a full
-                // match reports itself rather than asking for consent it
-                // can't use, and no refusal leaves an opt-in behind. Judged
-                // against the match's `ranked` now, not when it invited them.
-                if let Some(agg) = &invited
-                    && let Some(message) =
-                        settle_rating_consent(dao, &uid, &agg.match_, rating_consent).await?
-                {
-                    return Ok(RespondToInvitationResponse::RatingConsentRequired(
-                        PlainText(message),
-                    ));
                 }
                 let match_id = match dao
                     .accept_invitation_tx(&invitation_id, &uid, &responded_at, &responded_at)
@@ -8342,14 +8224,6 @@ impl Api {
                         kind,
                         message: message.into(),
                     })));
-                }
-                if let Some(agg) = &invited
-                    && let Some(message) =
-                        settle_rating_consent(dao, &uid, &agg.match_, input.rating_consent).await?
-                {
-                    return Ok(RespondByTokenResponse::RatingConsentRequired(PlainText(
-                        message,
-                    )));
                 }
                 let match_id = match dao
                     .accept_invitation_tx(&rec.id, &uid, &responded_at, &responded_at)
@@ -9265,7 +9139,6 @@ fn build_invited_player(
         is_member_of_team: None,
         invitation: Some(embedded),
         joined_via: None,
-        ranked_prompt: None,
     };
 
     let invitation = dao::records::InvitationRecord {
@@ -9381,106 +9254,6 @@ fn asset_status_from_str(s: &str) -> AssetStatus {
         "failed" => AssetStatus::Failed,
         _ => AssetStatus::Pending,
     }
-}
-
-/// Settle `uid`'s rating consent for getting into `match_`: `Some(message)` to
-/// refuse with (`RatingConsentRequired`), or `None` to go ahead, having first
-/// recorded their opt-in if this request is the one that consents. Always
-/// `None` for a friendly, which neither needs consent nor records it. The rule
-/// is [`mapping::rating_consent_step`]; this reads the caller and does the
-/// write.
-///
-/// **The opt-in is its own write, made before the caller's create, join or
-/// accept, not part of it.** A request that consents and then fails further
-/// on (a cap guard tripping in a race, a transaction error) leaves the caller
-/// opted in without having got in. That's accepted: consent isn't reversible
-/// anyway, and folding the opt-in into those writes would put the user's
-/// profile into the match create, the join and move-in transactions and the
-/// two accept transactions, each of which already reads its own failed
-/// conditions as "full" or "already waiting". Every caller runs this last,
-/// after its own validation, so the window is only what can fail during the
-/// write itself.
-///
-/// `ranked` comes from `match_` as the caller loaded it for this request, never
-/// from anything copied onto an invitation or a join link. So an invitation
-/// sent while the match was a friendly still asks for consent once it's been
-/// switched to ranked.
-///
-/// Not atomic with the flag, though. A switch to ranked that lands between
-/// this read and the caller's write lets them in unconsented, and the switch's
-/// own roster and waitlist checks can just as well miss a join that lands
-/// after they read. Closing that would mean conditioning those writes on
-/// `ranked`, where a failed condition already means "full" (or "already
-/// waiting"). That gap is why the rating pipeline must re-check every
-/// participant's opt-in before it rates, rather than trust that this held.
-async fn settle_rating_consent(
-    dao: &dao::Dao,
-    uid: &str,
-    match_: &dao::records::MatchRecord,
-    rating_consent: Option<bool>,
-) -> Result<Option<String>> {
-    let Some(ladder) = rating_ladder(match_) else {
-        return Ok(None);
-    };
-    // `require_uid` resolved the id from its `AUTH#` guard, so a missing
-    // profile is the same "no such user" it reports.
-    let caller = dao
-        .get_user(uid)
-        .await
-        .map_err(dao_internal)?
-        .ok_or_else(|| Error::from_string("user not found", StatusCode::UNAUTHORIZED))?;
-    match rating_consent_step(&ladder, &caller, rating_consent.unwrap_or(false)) {
-        mapping::RatingConsentStep::Proceed => Ok(None),
-        mapping::RatingConsentStep::Refuse(message) => Ok(Some(message)),
-        mapping::RatingConsentStep::OptIn(ladder) => {
-            dao.opt_in_to_rating(uid, &ladder, &now_iso())
-                .await
-                .map_err(|e| match e {
-                    dao::DaoError::NotFound(_) => {
-                        Error::from_string("user not found", StatusCode::UNAUTHORIZED)
-                    }
-                    other => dao_internal(other),
-                })?;
-            Ok(None)
-        }
-    }
-}
-
-/// [`settle_rating_consent`] for `POST /matches/:match_id/waitlist/join`,
-/// which needs one more check first: `Some(response)` to refuse with, `None`
-/// to go ahead with the waitlist write.
-///
-/// On a ranked match, a caller already on the waitlist is refused here, ahead
-/// of consent, rather than by the write's own "already waiting" condition after
-/// it. Otherwise a repeat join that ticked the box would opt them in and then
-/// be refused, and that opt-in, left behind by a refusal, is the one thing
-/// `settle_rating_consent`'s callers promise not to do. It's also not a way to
-/// consent to a match you're already waiting on: that was considered for a
-/// player waiting on a friendly that turns ranked, and rejected as surprising
-/// in favour of `switch_to_ranked_reason` judging the waitlist. A friendly
-/// skips the extra read, since it never opts anyone in.
-async fn settle_waitlist_rating_consent(
-    dao: &dao::Dao,
-    uid: &str,
-    match_: &dao::records::MatchRecord,
-    rating_consent: Option<bool>,
-) -> Result<Option<WaitlistJoinResponse>> {
-    if rating_ladder(match_).is_none() {
-        return Ok(None);
-    }
-    if dao
-        .get_waitlist_entry(&match_.id, uid)
-        .await
-        .map_err(dao_internal)?
-        .is_some()
-    {
-        return Ok(Some(WaitlistJoinResponse::Conflict(PlainText(
-            "already on this match's waitlist".into(),
-        ))));
-    }
-    Ok(settle_rating_consent(dao, uid, match_, rating_consent)
-        .await?
-        .map(|message| WaitlistJoinResponse::RatingConsentRequired(PlainText(message))))
 }
 
 /// One standalone invitation as its API `InvitationDetail`, with a match
@@ -9636,10 +9409,7 @@ fn mock_user() -> User {
     User {
         email: String::from("jamesnelgar@gmail.com"),
         profile: mock_user_profile(String::from("123"), String::from("James Elgar")),
-        rating_opt_ins: vec![RatingOptIn {
-            ladder: String::from("tennis"),
-            opted_in_at: mock_timestamp(),
-        }],
+        rating_placements: Vec::new(),
     }
 }
 
@@ -9682,6 +9452,7 @@ fn mock_user_profile(id: String, name: String) -> UserProfile {
         follower_count: 42,
         following_count: 17,
         is_followed_by_me: false,
+        ratings: Vec::new(),
     }
 }
 

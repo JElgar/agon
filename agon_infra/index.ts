@@ -1415,31 +1415,37 @@ const loki = new k8s.helm.v4.Chart("loki", {
 // dying every restart), which in turn times out every `pulumi up` on main
 // waiting for the StatefulSet to become Ready. Disabling the metrics
 // generator removed one source of memory pressure but wasn't enough on its
-// own. Bumping the limit to 1Gi *also* wasn't enough — it OOMed again on
-// the very next deploy, in roughly the same timeframe, so this isn't just a
-// tight number: something (likely WAL/local-blocks replay backlog from
-// ~36h of crash-looping) is driving memory well past 1Gi at startup. Going
-// much higher while that's investigated, rather than guessing another
-// slightly-bigger number.
-const tempo = new k8s.helm.v4.Chart("tempo", {
-	chart: "tempo",
-	version: "1.18.2",
-	repositoryOpts: { repo: "https://grafana.github.io/helm-charts" },
-	namespace: observabilityNamespace,
-	values: {
-		tempo: {
-			retention: "72h",
-			storage: {
-				trace: { backend: "local", local: { path: "/var/tempo/traces" } },
+// own, and neither was raising the limit to 1Gi, then 3Gi — it OOMed again
+// each time, in roughly the same timeframe, so this was never just a tight
+// number. Something (likely a WAL/local-blocks replay backlog built up over
+// ~38h of crash-looping) is driving memory past even 3Gi at startup, and
+// every deploy on main has been blocked since 2026-10-30 while that got
+// chased. Disabled outright for now so deploys can go out again; re-enable
+// once the actual cause is found (ideally with cluster access to inspect
+// live memory use and the PVC's on-disk state, which this investigation
+// didn't have).
+const tempoEnabled = false;
+const tempo = tempoEnabled
+	? new k8s.helm.v4.Chart("tempo", {
+			chart: "tempo",
+			version: "1.18.2",
+			repositoryOpts: { repo: "https://grafana.github.io/helm-charts" },
+			namespace: observabilityNamespace,
+			values: {
+				tempo: {
+					retention: "72h",
+					storage: {
+						trace: { backend: "local", local: { path: "/var/tempo/traces" } },
+					},
+					resources: {
+						requests: { cpu: "100m", memory: "512Mi" },
+						limits: { memory: "3Gi" },
+					},
+				},
+				persistence: { enabled: true, size: "5Gi" },
 			},
-			resources: {
-				requests: { cpu: "100m", memory: "512Mi" },
-				limits: { memory: "3Gi" },
-			},
-		},
-		persistence: { enabled: true, size: "5Gi" },
-	},
-}, { provider: k8sProvider });
+		}, { provider: k8sProvider })
+	: undefined;
 
 // Grafana Alloy — the single OTLP collector the apps push to. Receives OTLP on
 // 4317 (gRPC) / 4318 (HTTP) and fans out: traces→Tempo, logs→Loki,
@@ -1515,7 +1521,7 @@ const alloy = new k8s.helm.v4.Chart("alloy", {
 		// Single collector instance; no clustering / node-local agent needed.
 		controller: { type: "deployment", replicas: 1 },
 	},
-}, { provider: k8sProvider, dependsOn: [loki, tempo, kubePrometheusStack] });
+}, { provider: k8sProvider, dependsOn: [loki, kubePrometheusStack, ...(tempo ? [tempo] : [])] });
 
 // The OTLP endpoint both apps push to. In-cluster gRPC on the Alloy Service.
 const otlpEndpoint = "http://alloy.observability:4317";

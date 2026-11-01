@@ -646,6 +646,49 @@ class LiveApiClient {
         WatchUi.requestUpdate();
     }
 
+    //! Finish the match (`POST /matches/:id/live/finish`) — completes it
+    //! using whatever score the server has already derived from the live
+    //! event log, so this device sends no body at all. Exists because
+    //! Connect IQ's `Communications.makeWebRequest` has no `PATCH` method
+    //! (confirmed against the Connect IQ forums — see
+    //! docs/garmin-live-scoring.md), so this device can't call
+    //! `PATCH /matches/:id` the way `agon_ui`'s own "Finish match" button
+    //! does; this endpoint is the scoped `POST` equivalent, built for
+    //! exactly this case (see its own doc comment on the server).
+    //!
+    //! Fire-and-forget, same "basics only" scope as `undoLast`/
+    //! `refreshRoster` — a buzz on success is the only feedback, and a
+    //! failure (network error, a live score that disagrees once another
+    //! device has since corrected it, ...) is silently dropped; the wearer
+    //! can just pick "Finish match" again from the menu to retry.
+    function finishMatch() as Void {
+        if (_matchId == null) {
+            return;
+        }
+        var url = API_BASE_URL + "/matches/" + (_matchId as String) + "/live/finish";
+        var options = {
+            :method => Communications.HTTP_REQUEST_METHOD_POST,
+            :headers => { "Authorization" => "Bearer " + DeviceAuth.getAccessToken() },
+            :responseType => Communications.HTTP_RESPONSE_CONTENT_TYPE_JSON
+        };
+        enqueueRequest(url, null, options, method(:onFinishResponse));
+    }
+
+    function onFinishResponse(responseCode as Number, data as Dictionary or String or Null) as Void {
+        System.println("[live-api] onFinishResponse responseCode=" + responseCode);
+        if (responseCode != 200) {
+            // No on-watch error UI for this yet — see the method's own doc
+            // comment. Refresh the score so a stale local tally doesn't
+            // linger if this failed because another device moved the
+            // score on since this device's last poll.
+            refreshScore();
+            return;
+        }
+        if ((Attention has :vibrate) && System.getDeviceSettings().vibrateOn) {
+            Attention.vibrate([new Attention.VibeProfile(50, 250)]);
+        }
+    }
+
     //! Re-fetch `GET /matches/:id` and repopulate `MatchContext`'s sides
     //! and player rosters from it — `MatchContext.populateFrom` otherwise
     //! only ever runs once, when `MatchMenuDelegate.onMatchDetails` first

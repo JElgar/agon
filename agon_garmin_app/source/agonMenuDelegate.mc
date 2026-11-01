@@ -40,8 +40,15 @@ function buildMainMenu() as WatchUi.Menu2 {
     } else if (period == FootballScore.PERIOD_SECOND_HALF) {
         menu.addItem(new WatchUi.MenuItem("Goal", null, :goal, {}));
         menu.addItem(new WatchUi.MenuItem("Full-time", null, :period_full_time, {}));
+    } else if (period == FootballScore.PERIOD_FULL_TIME) {
+        // The one thing left once full-time's been marked: publish the
+        // result so the match doesn't sit "in progress" on the server
+        // forever (see LiveApiClient.finishMatch's doc comment — this used
+        // to be the missing step). Separate from "End match" below, which
+        // is about this watch's own activity recording and posts nothing
+        // to the live score.
+        menu.addItem(new WatchUi.MenuItem("Finish match", null, :finish_match, {}));
     }
-    // PERIOD_FULL_TIME: nothing sport-specific left to record.
 
     if (recorder.isRecording()) {
         menu.addItem(activityMenuItem(recorder));
@@ -171,6 +178,10 @@ class agonMenuDelegate extends WatchUi.Menu2InputDelegate {
                 System.exit();
             }
             return;
+        } else if (item == :finish_match) {
+            // Fire-and-forget too — see LiveApiClient.finishMatch's own
+            // doc comment on feedback/retry.
+            app.liveApiClient.finishMatch();
         } else if (item == :undo_last) {
             // Fire-and-forget, same as recordGoal/recordPeriod — see
             // LiveApiClient.undoLast's own doc comment on why this has

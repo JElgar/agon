@@ -226,7 +226,9 @@ The watch app's lifecycle:
    full-time on the score side, or vice versa; nothing about period
    transitions ever stops it (see step 1's terminal-marker note). End match
    asks Save or Discard (Discard confirmed a second time) and then exits
-   the app, posting nothing to the live score (`EndMatchFlow.mc`). Pausing
+   the app, posting nothing to the live score or the match's status
+   (`EndMatchFlow.mc`) — that's a separate action, "Finish match", offered
+   once the period reaches full-time (see item 17 below). Pausing
    and resuming aren't fully independent of scoring any more, though — step
    1's automatic half-start/half-time pause moved them there — but the menu
    item still toggles Start/Pause/Resume by hand on top of that, for
@@ -587,3 +589,32 @@ Still to do, roughly in order:
     unchanged, deliberately out of scope here. `markLap`'s own propagation
     (item 13) is also unchanged — this is the recording start/pause state
     only, not the FIT lap boundaries.
+17. ~~Recording full-time never actually finished the match~~ — done:
+    marking full-time only ever appended a `Period` event to the live log
+    (`LiveApiClient.recordPeriod`) — nothing called the equivalent of
+    `agon_ui`'s "Finish match" button (`PATCH /matches/:id` with
+    `status: completed` and the derived score), so a match scored end to
+    end on the watch stayed `in_progress` on the server forever, however
+    long after the real full-time whistle anyone looked at it. Fixed with a
+    new, scoped `POST /matches/:match_id/live/finish` endpoint
+    (`agon_service::main::finish_live_match`) rather than having the watch
+    call `PATCH /matches/:id` itself: Connect IQ's `Communications.
+    makeWebRequest` has no `PATCH` method (confirmed against the Connect IQ
+    developer forums — GET/POST/PUT/DELETE only), so this is the `POST`
+    equivalent for exactly the one case a live-scoring device needs —
+    finishing with whatever the live event log already derived, no
+    overrides, no body at all. `agonMenuDelegate`'s main menu offers
+    "Finish match" once the period reaches `PERIOD_FULL_TIME`, calling
+    `LiveApiClient.finishMatch()` — fire-and-forget, same "basics only"
+    scope as `undoLast`/`refreshRoster` (a buzz on success, a silent
+    `refreshScore()` on failure so a stale local tally doesn't linger).
+    Shares its score-submission/confirmation logic with `update_match`'s
+    own `score` field via a new `submit_score` helper, so a watch-finished
+    match goes through the same pending-confirmation flow a web-finished
+    one does (the score-confirmation flow's removal, PR #295, is still
+    open — not yet merged — so that flow still exists today). Separate,
+    still-open problem on the web side: `agon_ui`'s own "Finish match"
+    button has the same shape of failure mode, just by inaction rather than
+    a missing feature — tapping full-time and then navigating away before
+    tapping "Finish match" leaves a match `in_progress` indefinitely too,
+    with no reminder.

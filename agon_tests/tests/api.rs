@@ -6568,6 +6568,116 @@ async fn manual_score_conflicting_with_live_football_detail_is_rejected_even_mid
     assert!(matches!(overridden.status, models::MatchStatus::Completed));
 }
 
+/// POST `/matches/:id/live/finish` directly — not in the generated client
+/// (schema hasn't been regenerated for it; see `make generate-schema`'s own
+/// doc comment on `docs/garmin-live-scoring.md`). Returns the raw response
+/// so callers can assert on either a success or an error case themselves.
+async fn finish_live_match_raw(config: &Configuration, match_id: &str) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{}/matches/{match_id}/live/finish", config.base_path))
+        .bearer_auth(
+            config
+                .bearer_access_token
+                .as_ref()
+                .expect("config has a bearer token"),
+        )
+        .send()
+        .await
+        .expect("send finish request")
+}
+
+/// `POST /matches/:id/live/finish` exists for the Garmin watch app, which
+/// has no way to call `PATCH /matches/:id` the way every other client does
+/// to finish a live-scored match (see the endpoint's own doc comment) — it
+/// completes the match using whatever score the live event log has already
+/// derived, with no body at all.
+#[tokio::test]
+async fn finishing_a_live_scored_match_completes_it_with_the_derived_score() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, football_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    let side_a = created.sides[0].id.clone();
+
+    append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![
+            football_kick_off_event_json(),
+            football_goal_event_json(&side_a),
+        ],
+    )
+    .await;
+
+    let response = finish_live_match_raw(&owner_config, &created.id).await;
+    assert!(
+        response.status().is_success(),
+        "finish failed: {} {}",
+        response.status(),
+        response.text().await.unwrap_or_default()
+    );
+    let score: models::Score = response.json().await.expect("parse Score");
+    match score {
+        models::Score::Football(s) => assert_eq!(s.score.get(&side_a), Some(&1)),
+        other => panic!("expected a football score, got {other:?}"),
+    }
+
+    let finished = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match");
+    assert!(matches!(finished.status, models::MatchStatus::Completed));
+}
+
+/// Nothing to finish with yet — the match has never recorded a live event.
+#[tokio::test]
+async fn finishing_a_match_with_no_live_score_yet_is_rejected() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, football_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+
+    let response = finish_live_match_raw(&owner_config, &created.id).await;
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let body = response.text().await.unwrap_or_default();
+    assert!(
+        body.contains("no live score"),
+        "unexpected body: {body}"
+    );
+}
+
+/// Same admin gate as recording/undoing live events — an accepted
+/// participant with no admin authority can't finish the match either.
+#[tokio::test]
+async fn only_a_match_admin_can_finish_a_live_scored_match() {
+    let (owner_config, _owner) = new_user().await;
+    let (participant_config, participant) = new_user().await;
+
+    let created = matches_post(&owner_config, football_match_input(&participant.profile.id))
+        .await
+        .expect("create match");
+    accept_match_invitation(&participant_config, &created.id).await;
+    let side_a = created.sides[0].id.clone();
+
+    append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![
+            football_kick_off_event_json(),
+            football_goal_event_json(&side_a),
+        ],
+    )
+    .await;
+
+    let response = finish_live_match_raw(&participant_config, &created.id).await;
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
 // ---------------------------------------------------------------------------
 // Join settings, join links, and match roles/ownership
 // ---------------------------------------------------------------------------

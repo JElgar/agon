@@ -618,3 +618,20 @@ Still to do, roughly in order:
     a missing feature — tapping full-time and then navigating away before
     tapping "Finish match" leaves a match `in_progress` indefinitely too,
     with no reminder.
+18. **Finish-or-keep-scoring offered the instant full-time is marked.**
+    Tapping "Full-time" used to just record the period marker and drop the
+    wearer straight back to the score screen, leaving "Finish match" a
+    separate main-menu item to find afterwards (item 17 above, as first
+    built). `agonMenuDelegate`'s `:period_full_time` branch now pushes
+    `FullTimeFlow.mc`'s decision menu immediately after recording that
+    marker — "Finish match" first, and (only when `MatchContext.
+    hasExtraTime` — read off `Match.format`'s football variant,
+    `GET /matches/:id`, already fetched for the roster) "Keep scoring"
+    second. The main menu's own "Finish match" item (item 17) stays as the
+    way back into the same choice for anyone who backs out of the flow
+    without picking either, or opens a match already at full-time.
+    "Keep scoring" is a placeholder: there's still no extra-time period
+    button anywhere in this app (`buildMainMenu` only offers the four
+    normal-time periods), so picking it does nothing beyond returning to
+    the score screen — real extra-time support would give it something to
+    actually do.

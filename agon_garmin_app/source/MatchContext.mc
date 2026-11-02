@@ -40,6 +40,14 @@ class MatchContext {
     //! way without every caller needing to thread the id through again.
     var myUserId as String?;
 
+    //! Whether this match's format allows extra time if level after normal
+    //! time (`Match.format`'s football variant, `extra_time` — `false` if
+    //! no format was configured at all, same "no format = sensible
+    //! default" fallback the server itself documents on `Match.format`).
+    //! Read by `FullTimeFlow` to decide whether "Keep scoring" is worth
+    //! offering alongside "Finish match".
+    var hasExtraTime as Boolean;
+
     function initialize() {
         matchId = "";
         side0Id = "";
@@ -49,6 +57,7 @@ class MatchContext {
         side0Players = [];
         side1Players = [];
         myUserId = null;
+        hasExtraTime = false;
     }
 
     //! Set once, by `MatchMenuDelegate.onMatchDetails`, right before the
@@ -88,6 +97,15 @@ class MatchContext {
             while (i < playersArray.size()) {
                 addPlayer(playersArray[i] as Dictionary);
                 i += 1;
+            }
+        }
+
+        hasExtraTime = false;
+        var format = match.get("format");
+        if (format != null) {
+            var extraTime = (format as Dictionary).get("extra_time");
+            if (extraTime != null) {
+                hasExtraTime = extraTime as Boolean;
             }
         }
 

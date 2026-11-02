@@ -41,12 +41,13 @@ function buildMainMenu() as WatchUi.Menu2 {
         menu.addItem(new WatchUi.MenuItem("Goal", null, :goal, {}));
         menu.addItem(new WatchUi.MenuItem("Full-time", null, :period_full_time, {}));
     } else if (period == FootballScore.PERIOD_FULL_TIME) {
-        // The one thing left once full-time's been marked: publish the
-        // result so the match doesn't sit "in progress" on the server
-        // forever (see LiveApiClient.finishMatch's doc comment — this used
-        // to be the missing step). Separate from "End match" below, which
-        // is about this watch's own activity recording and posts nothing
-        // to the live score.
+        // The same decision `FullTimeFlow` already offers the instant
+        // full-time is marked (:period_full_time, above) — kept here too
+        // as the way back into it for whoever backed out of that flow
+        // without choosing, or reopens the menu later having never seen
+        // it (e.g. a watch that joined the match already at full-time).
+        // Separate from "End match" below, which is about this watch's own
+        // activity recording and posts nothing to the live score.
         menu.addItem(new WatchUi.MenuItem("Finish match", null, :finish_match, {}));
     }
 
@@ -166,6 +167,13 @@ class agonMenuDelegate extends WatchUi.Menu2InputDelegate {
             // picked next, or later).
             app.activityRecorder.markLap();
             app.score.setPeriod(FootballScore.PERIOD_FULL_TIME);
+            // Straight into the finish-or-keep-scoring decision (see
+            // FullTimeFlow.mc) rather than back to the score screen — same
+            // "push the next step" pattern as :goal above, and for the
+            // same reason: nothing is popped mid-flow, so this returns
+            // early rather than falling through to the pop/redraw below.
+            WatchUi.pushView(buildFullTimeMenu(), new FullTimeMenuDelegate(), WatchUi.SLIDE_UP);
+            return;
         } else if (item == :end_match) {
             if (app.activityRecorder.hasSession()) {
                 // Save/Discard choice, pushed on top of this menu (same

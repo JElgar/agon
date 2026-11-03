@@ -307,3 +307,108 @@ pub struct TransferMatchOwnershipInput {
 pub struct SetMatchPlayerRoleInput {
     pub role: MatchPlayerRole,
 }
+
+/// Who may join a match through its open-join policy
+/// (`PUT /matches/:match_id/open-join`).
+#[derive(Enum, Clone, Copy, Debug, PartialEq, Eq)]
+#[oai(rename_all = "snake_case")]
+pub enum OpenJoinAudience {
+    /// Individuals may join directly onto a side with ringers enabled, or
+    /// unassigned.
+    Individuals,
+    /// A whole outside team may claim an unclaimed side.
+    ///
+    /// Not yet wired to a join path — stored so an organiser's choice
+    /// survives until team claiming ships; setting it today has no effect
+    /// beyond what `Individuals` already does.
+    Teams,
+    Both,
+}
+
+/// A match's "open to the public" policy, set via `PUT
+/// /matches/:match_id/open-join`. Mirrors `dao::records::OpenJoinPolicyRecord`,
+/// with its `rules` flattened into named fields matching what an organiser
+/// actually configures (see `OpenMatchSettings` in the design canvas) rather
+/// than exposing the rule-list shape directly.
+#[derive(Object)]
+pub struct OpenJoinPolicyInput {
+    pub audience: OpenJoinAudience,
+    /// Only people who already follow the organiser may join. Omitted =
+    /// `false` = no such restriction.
+    #[oai(default)]
+    pub requires_follow: bool,
+    /// Minimum matches already played in this sport. `None` = no minimum.
+    pub min_matches_played: Option<u32>,
+    /// Ask-to-join first, with an admin approving each request, instead of
+    /// seating an eligible candidate immediately. Omitted = `false` =
+    /// today's instant join. Orthogonal to `audience`/the eligibility
+    /// fields above: it adds a human decision for someone who already
+    /// qualifies, it never relaxes who qualifies.
+    #[oai(default)]
+    pub requires_approval: bool,
+    /// Cap on how many open arrivals this match accepts in total, below the
+    /// match's own derived capacity if set. `None` = uncapped — open
+    /// joining simply fills whatever raw capacity remains.
+    pub max_open_spots: Option<u32>,
+}
+
+/// The policy as stored, returned by `PUT`/`GET /matches/:match_id/open-join`.
+#[derive(Object)]
+pub struct OpenJoinPolicy {
+    pub audience: OpenJoinAudience,
+    pub requires_follow: bool,
+    pub min_matches_played: Option<u32>,
+    pub requires_approval: bool,
+    pub max_open_spots: Option<u32>,
+}
+
+/// Open or close one side to individual ringers, and optionally cap how many
+/// it takes — `PUT /matches/:match_id/sides/:side_id/ringers`. Meaningless
+/// without the match's own open-join policy set, but settable independently
+/// of it (an organiser can prepare a side's ringer settings before opening
+/// the match, or after).
+#[derive(Object)]
+pub struct RingerSettingsInput {
+    pub enabled: bool,
+    /// Cap on this side's own ringer arrivals, independent of the match-wide
+    /// `OpenJoinPolicyInput::max_open_spots`. `None` = uncapped.
+    pub max_ringer_spots: Option<u32>,
+}
+
+/// Request to join a match through its open-join policy, when that policy
+/// requires approval (`OpenJoinPolicyInput::requires_approval`) —
+/// `POST /matches/:match_id/join-requests`. When it doesn't, join directly
+/// via `POST /matches/:match_id/join` instead.
+#[derive(Object)]
+pub struct JoinRequestInput {
+    /// The side to request, if any — must have ringers enabled. Omit for
+    /// unassigned.
+    pub side_id: Option<String>,
+    /// Same meaning as `JoinMatchInput::rating_consent` — asked here because
+    /// this is the requester's own action; the admin who later approves it
+    /// can't consent on their behalf.
+    pub rating_consent: Option<bool>,
+}
+
+/// The decision state of a join request.
+#[derive(Enum, Clone, Copy, Debug, PartialEq, Eq)]
+#[oai(rename_all = "snake_case")]
+pub enum JoinRequestStatus {
+    Pending,
+    Approved,
+    Declined,
+}
+
+/// A request to join a match through its open-join policy — see
+/// `dao::records::MatchJoinRequestRecord`. Lighter than `MatchPlayer`, same
+/// reasoning as `WaitlistEntry`: a request is always a real account.
+#[derive(Object)]
+pub struct JoinRequest {
+    pub user_id: String,
+    pub name: String,
+    pub avatar_url: Option<String>,
+    pub side_id: Option<String>,
+    pub requested_at: chrono::DateTime<chrono::Utc>,
+    pub status: JoinRequestStatus,
+    pub decided_at: Option<chrono::DateTime<chrono::Utc>>,
+}

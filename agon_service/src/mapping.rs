@@ -3233,6 +3233,8 @@ mod tests {
             format: None,
             ranked: true,
             ranked_prompt: None,
+            open_join: None,
+            open_joined_count: 0,
             created_at: "2026-01-01T00:00:00.000Z".to_string(),
         }
     }

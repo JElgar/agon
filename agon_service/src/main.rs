@@ -3684,6 +3684,12 @@ impl Api {
                     colour: side.colour.clone(),
                     max_players: side.max_players,
                     team_join_enabled: side.team_join_enabled.unwrap_or(false),
+                    // Ringers aren't configurable at creation — an organiser
+                    // opens a side to them afterwards, via the open-join
+                    // settings endpoint.
+                    ringers_enabled: false,
+                    max_ringer_spots: None,
+                    ringers_joined_count: 0,
                     // `Dao::create_match` recomputes both from the players
                     // list it's given, in the same transaction — placeholders.
                     player_count: 0,
@@ -3924,6 +3930,10 @@ impl Api {
             // for a *switch*, which finds players already in place.
             ranked_prompt: None,
             authority: authority.clone(),
+            // Not configurable at creation — an organiser opens a match to
+            // the public afterwards, via the open-join settings endpoint.
+            open_join: None,
+            open_joined_count: 0,
             created_at: now.clone(),
         };
 
@@ -5006,6 +5016,9 @@ impl Api {
                     colour: side.colour.clone(),
                     max_players: side.max_players,
                     team_join_enabled: true,
+                    ringers_enabled: false,
+                    max_ringer_spots: None,
+                    ringers_joined_count: 0,
                     player_count: 0,
                     roster_preview: Vec::new(),
                 },
@@ -5052,6 +5065,8 @@ impl Api {
                 uid.clone(),
                 dao::records::MatchPlayerRole::Owner,
             )]),
+            open_join: None,
+            open_joined_count: 0,
             created_at: now,
         };
 

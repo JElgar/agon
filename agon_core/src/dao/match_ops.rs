@@ -1390,6 +1390,9 @@ mod tests {
             player_count: 0,
             roster_preview: Vec::new(),
             team_join_enabled: false,
+            ringers_enabled: false,
+            max_ringer_spots: None,
+            ringers_joined_count: 0,
         }
     }
 

@@ -403,6 +403,8 @@ mod tests {
             format: None,
             ranked: false,
             ranked_prompt: None,
+            open_join: None,
+            open_joined_count: 0,
             created_at: "2026-07-01T10:00:00Z".into(),
         }
     }

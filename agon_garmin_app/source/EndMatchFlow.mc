@@ -9,8 +9,11 @@ import Toybox.WatchUi;
 //! when nothing was ever started.
 //!
 //! Ending the match here is about this watch's recording only. Nothing is
-//! posted to the live score (Full-time is its own menu item), so another
-//! device still scoring the same match is unaffected.
+//! posted to the live score or the match's status (that's "Finish match",
+//! its own menu item once full-time is marked — see
+//! LiveApiClient.finishMatch), so another device still scoring the same
+//! match is unaffected, and ending the activity here doesn't by itself
+//! complete the match on the server.
 //!
 //! Leaves via `System.exit()` rather than going back to the score screen,
 //! the way a finished native activity hands back to the watch face.

@@ -2027,6 +2027,27 @@ enum AppendLiveEventsResponse {
     Conflict(Json<ErrorMessage>),
 }
 
+#[derive(ApiResponse)]
+enum FinishLiveMatchResponse {
+    /// The score the match was completed with — the same one
+    /// `GET /matches/:match_id/score` would already have returned, derived
+    /// from the live event log.
+    #[oai(status = 200)]
+    Ok(Json<Score>),
+
+    /// The match's sport isn't live-scored, or it has no live score
+    /// recorded yet (nothing to finish with).
+    #[oai(status = 400)]
+    ValidationError(Json<ErrorMessage>),
+
+    /// Only a match admin may finish a match.
+    #[oai(status = 403)]
+    Forbidden(Json<ErrorMessage>),
+
+    #[oai(status = 404)]
+    NotFound(Json<ErrorMessage>),
+}
+
 /// One page of a match's live event log, oldest first. `next_cursor` absent
 /// => end.
 #[derive(Object)]
@@ -4218,84 +4239,28 @@ impl Api {
         let mut pending_score: Option<dao::records::PendingScoreRecord> = None;
 
         if let Some(score) = effective_score {
-            // Validate every scored side exists on the match.
-            let score_sides = score_side_ids(score);
-            if score_sides.iter().any(|sid| !valid_sides.contains(sid)) {
-                return Ok(UpdateMatchResponse::ValidationError(PlainText(
-                    "score references a side that is not part of this match".into(),
-                )));
-            }
+            match submit_score(
+                dao,
+                &match_id,
+                &agg,
+                &uid,
+                score,
+                &valid_sides,
+                effective_winner_side_id.clone(),
+            )
+            .await
+            .map_err(dao_internal)?
+            {
+                Err(msg) => return Ok(UpdateMatchResponse::ValidationError(PlainText(msg))),
+                Ok(Some(pending)) => {
+                    pending_score = Some(pending);
 
-            let new_record = score_to_record(score);
-            let differs = agg
-                .match_
-                .confirmed_score
-                .as_ref()
-                .map(|cs| cs.score != new_record)
-                .unwrap_or(true);
-
-            if differs {
-                // The submission is attributed to the caller's own player/side
-                // (needed so their side can be pre-confirmed, same as at
-                // create time), so the caller must be an assigned participant.
-                let caller_player = agg
-                    .players
-                    .iter()
-                    .find(|p| p.user_id.as_deref() == Some(uid.as_str()));
-                let (caller_player_id, caller_side_id) = match caller_player.and_then(|p| {
-                    p.side_id
-                        .as_ref()
-                        .map(|sid| (p.player_id.clone(), sid.clone()))
-                }) {
-                    Some(pair) => pair,
-                    None => {
-                        return Ok(UpdateMatchResponse::ValidationError(PlainText(
-                            "a score can only be submitted by a participant assigned \
-                             to a side"
-                                .into(),
-                        )));
+                    // A not-yet-played match becomes Completed when first scored.
+                    if status_override.is_none() && agg.match_.status != "completed" {
+                        status_override = Some("completed");
                     }
-                };
-
-                let submission_id = new_id();
-                let submitted_at = now_iso();
-                let confirmation = dao::records::ScoreConfirmationRecord {
-                    side_id: caller_side_id.clone(),
-                    confirmed_by_player_id: caller_player_id.clone(),
-                    confirmed_at: submitted_at.clone(),
-                };
-                let pending = dao::records::PendingScoreRecord {
-                    submission_id: submission_id.clone(),
-                    score: new_record.clone(),
-                    winner_side_id: effective_winner_side_id.clone(),
-                    confirmations: vec![confirmation],
-                };
-                let submission = dao::records::ScoreSubmissionRecord {
-                    submission_id,
-                    score: new_record,
-                    winner_side_id: effective_winner_side_id.clone(),
-                    status: String::from("pending"),
-                    submitted_by_player_id: caller_player_id.clone(),
-                    submitted_at: submitted_at.clone(),
-                    // Seed the submitter's side as confirmed, so once the other
-                    // side(s) confirm, the submission becomes fully confirmed.
-                    responses: vec![dao::records::ScoreResponseRecord {
-                        side_id: caller_side_id,
-                        responded_by_player_id: caller_player_id,
-                        response: String::from("confirm"),
-                        responded_at: submitted_at,
-                    }],
-                };
-                dao.put_score_submission(&match_id, &submission)
-                    .await
-                    .map_err(dao_internal)?;
-
-                pending_score = Some(pending);
-
-                // A not-yet-played match becomes Completed when first scored.
-                if status_override.is_none() && agg.match_.status != "completed" {
-                    status_override = Some("completed");
                 }
+                Ok(None) => {}
             }
         }
 
@@ -5182,6 +5147,118 @@ impl Api {
                 },
             ))),
         }
+    }
+
+    /// Finish a live-scored match.
+    ///
+    /// Completes a match using the score the live event log has already
+    /// derived, without the caller having to fetch and resend it first (the
+    /// way `update_match`'s `score` field normally works — see
+    /// `LiveScoringPage`'s `finishMatch` on the web). Exists for the Garmin
+    /// watch app (`agon_garmin_app`, see `docs/garmin-live-scoring.md`):
+    /// Connect IQ's `Communications.makeWebRequest` has no `PATCH` method,
+    /// so a paired device can't call `PATCH /matches/:match_id` directly the
+    /// way every other client does to finish a match — this is a `POST`
+    /// (scoped, like `append_live_events`) that does the same thing for the
+    /// one case a live-scoring device actually needs: finishing with
+    /// whatever the log already says, no overrides. Goes through the same
+    /// `submit_score` confirmation flow a `PATCH`-submitted score would
+    /// (still a pending submission, not an immediately-confirmed result —
+    /// see `submit_score`'s own doc comment).
+    #[oai(path = "/matches/:match_id/live/finish", method = "post")]
+    async fn finish_live_match(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+    ) -> Result<FinishLiveMatchResponse> {
+        let uid = self
+            .require_uid_scoped(dao, &jwt_data, SCOPE_LIVE_SCORING)
+            .await?;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(FinishLiveMatchResponse::NotFound(Json(ErrorMessage {
+                    message: "match not found".into(),
+                })));
+            }
+        };
+
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(FinishLiveMatchResponse::Forbidden(Json(ErrorMessage {
+                message: "only a match admin can finish this match".into(),
+            })));
+        }
+
+        if !is_live_scored_sport(&agg.match_.match_type) {
+            return Ok(FinishLiveMatchResponse::ValidationError(Json(
+                ErrorMessage {
+                    message: format!(
+                        "sport `{}` does not support live scoring",
+                        agg.match_.match_type
+                    ),
+                },
+            )));
+        }
+
+        let Some(record) = dao
+            .get_match_score(&match_id, &agg.match_.match_type)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(FinishLiveMatchResponse::ValidationError(Json(
+                ErrorMessage {
+                    message: "no live score has been recorded for this match yet".into(),
+                },
+            )));
+        };
+
+        let derived_score = match_score_from_record(&record);
+        let side_ids: Vec<String> = agg.sides.iter().map(|s| s.side_id.clone()).collect();
+        let winner_side_id = winner_from_score(&derived_score, &side_ids);
+        let valid_sides: std::collections::HashSet<&str> =
+            agg.sides.iter().map(|s| s.side_id.as_str()).collect();
+
+        let pending_score = match submit_score(
+            dao,
+            &match_id,
+            &agg,
+            &uid,
+            &derived_score,
+            &valid_sides,
+            winner_side_id,
+        )
+        .await
+        .map_err(dao_internal)?
+        {
+            Err(msg) => {
+                return Ok(FinishLiveMatchResponse::ValidationError(Json(
+                    ErrorMessage { message: msg },
+                )));
+            }
+            Ok(pending) => pending,
+        };
+
+        dao.update_match_meta(
+            &match_id,
+            None,
+            None,
+            Some("completed"),
+            None,
+            None,
+            pending_score.map(Some),
+            None,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+        )
+        .await
+        .map_err(dao_internal)?;
+
+        Ok(FinishLiveMatchResponse::Ok(Json(derived_score)))
     }
 
     /// The incremental fast path for an append, either sport: applies just
@@ -8948,6 +9025,102 @@ async fn caller_is_match_admin(
         }
     }
     Ok(false)
+}
+
+/// Submit a score for a match, creating a pending submission (awaiting the
+/// other side(s)' confirmation via `POST /matches/:id/score-submissions/:sid/respond`,
+/// same as a create-time score) unless it matches the match's current
+/// `confirmed_score` already, in which case there's nothing to submit.
+/// Shared by `update_match`'s explicit `score` field and
+/// `finish_live_match`'s derived one, so both go through the same
+/// confirmation flow rather than one of them skipping it.
+///
+/// `Ok(Err(message))` is a validation failure the caller should surface as
+/// a 400 (the score references a side that isn't on the match, or the
+/// caller isn't an assigned participant — attribution needs a player/side
+/// to pre-confirm, same as at create time). `Ok(Ok(None))` means the score
+/// didn't differ from what's already confirmed, so no submission was
+/// created. `Ok(Ok(Some(pending)))` is the new submission to write back via
+/// `update_match_meta`'s `pending_score` field.
+async fn submit_score(
+    dao: &dao::Dao,
+    match_id: &str,
+    agg: &dao::match_ops::MatchAggregate,
+    uid: &str,
+    score: &Score,
+    valid_sides: &std::collections::HashSet<&str>,
+    winner_side_id: Option<String>,
+) -> dao::DaoResult<std::result::Result<Option<dao::records::PendingScoreRecord>, String>> {
+    let score_sides = score_side_ids(score);
+    if score_sides.iter().any(|sid| !valid_sides.contains(sid)) {
+        return Ok(Err(
+            "score references a side that is not part of this match".into(),
+        ));
+    }
+
+    let new_record = score_to_record(score);
+    let differs = agg
+        .match_
+        .confirmed_score
+        .as_ref()
+        .map(|cs| cs.score != new_record)
+        .unwrap_or(true);
+    if !differs {
+        return Ok(Ok(None));
+    }
+
+    // The submission is attributed to the caller's own player/side (needed
+    // so their side can be pre-confirmed, same as at create time), so the
+    // caller must be an assigned participant.
+    let caller_player = agg
+        .players
+        .iter()
+        .find(|p| p.user_id.as_deref() == Some(uid));
+    let (caller_player_id, caller_side_id) = match caller_player.and_then(|p| {
+        p.side_id
+            .as_ref()
+            .map(|sid| (p.player_id.clone(), sid.clone()))
+    }) {
+        Some(pair) => pair,
+        None => {
+            return Ok(Err(
+                "a score can only be submitted by a participant assigned to a side".into(),
+            ));
+        }
+    };
+
+    let submission_id = new_id();
+    let submitted_at = now_iso();
+    let confirmation = dao::records::ScoreConfirmationRecord {
+        side_id: caller_side_id.clone(),
+        confirmed_by_player_id: caller_player_id.clone(),
+        confirmed_at: submitted_at.clone(),
+    };
+    let pending = dao::records::PendingScoreRecord {
+        submission_id: submission_id.clone(),
+        score: new_record.clone(),
+        winner_side_id: winner_side_id.clone(),
+        confirmations: vec![confirmation],
+    };
+    let submission = dao::records::ScoreSubmissionRecord {
+        submission_id,
+        score: new_record,
+        winner_side_id,
+        status: String::from("pending"),
+        submitted_by_player_id: caller_player_id.clone(),
+        submitted_at: submitted_at.clone(),
+        // Seed the submitter's side as confirmed, so once the other side(s)
+        // confirm, the submission becomes fully confirmed.
+        responses: vec![dao::records::ScoreResponseRecord {
+            side_id: caller_side_id,
+            responded_by_player_id: caller_player_id,
+            response: String::from("confirm"),
+            responded_at: submitted_at,
+        }],
+    };
+    dao.put_score_submission(match_id, &submission).await?;
+
+    Ok(Ok(Some(pending)))
 }
 
 /// Side ids the caller may join directly by virtue of an accepted (any

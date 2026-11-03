@@ -375,13 +375,22 @@ agon_core::for_each_sport!(define_sport_dispatch);
 /// unmet rather than silently falling back to a wrong count).
 pub fn matches_played_for_sport(stats: &UserStatsRecord, sport_tag: &str) -> u64 {
     match sport_tag {
-        "cricket" => stats.cricket.as_ref().map_or(0, |s| s.common.matches_played),
-        "football" => stats.football.as_ref().map_or(0, |s| s.common.matches_played),
+        "cricket" => stats
+            .cricket
+            .as_ref()
+            .map_or(0, |s| s.common.matches_played),
+        "football" => stats
+            .football
+            .as_ref()
+            .map_or(0, |s| s.common.matches_played),
         "tennis" => stats.tennis.as_ref().map_or(0, |s| s.matches_played),
         "badminton" => stats.badminton.as_ref().map_or(0, |s| s.matches_played),
         "squash" => stats.squash.as_ref().map_or(0, |s| s.matches_played),
         "table_tennis" => stats.table_tennis.as_ref().map_or(0, |s| s.matches_played),
-        "netball" => stats.netball.as_ref().map_or(0, |s| s.common.matches_played),
+        "netball" => stats
+            .netball
+            .as_ref()
+            .map_or(0, |s| s.common.matches_played),
         _ => 0,
     }
 }

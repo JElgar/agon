@@ -55,8 +55,9 @@ use mapping::{
     rating_ladder, rating_ladder_for, rating_placements_from_record, resolve_score_ids,
     roster_preview_player, score_player_ids, score_side_ids, score_submission_from_record,
     score_to_record, search_match_from_records, series_end_record_from_input, set_score_players,
-    switch_to_ranked_reason, team_from_records, team_list_item_from_record, team_member_from_record,
-    unrankable_sport_reason, unratable_players, user_profile_from_record, winner_from_score,
+    switch_to_ranked_reason, team_from_records, team_list_item_from_record,
+    team_member_from_record, unrankable_sport_reason, unratable_players, user_profile_from_record,
+    winner_from_score,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -76,9 +77,9 @@ use membership::{
     AddInvitationsInput, CreateJoinLinkInput, Invitation, InvitationContext, InvitationDetail,
     InvitationKind, InvitationMatchContext, InvitationStatus, JoinLink, JoinLinkPreview,
     JoinMatchInput, JoinRequest, JoinRequestInput, MatchPlayerRole, Member, OpenJoinPolicy,
-    OpenJoinPolicyInput, RespondByTokenInput,
-    RespondToInvitationInput, RingerSettingsInput, SetMatchPlayerRoleInput, TokenInvitation,
-    TransferMatchOwnershipInput, UserInvitation, UserMember,
+    OpenJoinPolicyInput, RespondByTokenInput, RespondToInvitationInput, RingerSettingsInput,
+    SetMatchPlayerRoleInput, TokenInvitation, TransferMatchOwnershipInput, UserInvitation,
+    UserMember,
 };
 
 mod team;
@@ -7519,8 +7520,7 @@ impl Api {
                 "this match doesn't need a request — join it directly instead".into(),
             )));
         }
-        if let Some(reason) =
-            caller_meets_eligibility_rules(dao, &policy.rules, &agg, &uid).await?
+        if let Some(reason) = caller_meets_eligibility_rules(dao, &policy.rules, &agg, &uid).await?
         {
             return Ok(CreateJoinRequestResponse::ValidationError(PlainText(
                 reason,

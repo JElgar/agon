@@ -260,7 +260,10 @@ impl Dao {
     /// decided" for display (see `JoinRequestStatusRecord`). Draining query,
     /// same as `list_waitlist`.
     #[tracing::instrument(skip(self))]
-    pub async fn list_join_requests(&self, match_id: &str) -> DaoResult<Vec<MatchJoinRequestRecord>> {
+    pub async fn list_join_requests(
+        &self,
+        match_id: &str,
+    ) -> DaoResult<Vec<MatchJoinRequestRecord>> {
         let mut entries = self
             .query_match_collection::<MatchJoinRequestRecord>(match_id, &Sk::join_request_prefix())
             .await?;
@@ -342,7 +345,9 @@ impl Dao {
             .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
             .key(ATTR_SK, s(Sk::JoinRequest(user_id.into()).to_string()))
             .condition_expression("#status = :pending")
-            .update_expression("SET #status = :approved, decided_at = :at, decided_by_user_id = :by")
+            .update_expression(
+                "SET #status = :approved, decided_at = :at, decided_by_user_id = :by",
+            )
             .expression_attribute_names("#status", "status")
             .expression_attribute_values(":pending", s("pending"))
             .expression_attribute_values(":approved", s("approved"))
@@ -384,7 +389,9 @@ impl Dao {
             .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
             .key(ATTR_SK, s(Sk::JoinRequest(user_id.into()).to_string()))
             .condition_expression("#status = :pending")
-            .update_expression("SET #status = :declined, decided_at = :at, decided_by_user_id = :by")
+            .update_expression(
+                "SET #status = :declined, decided_at = :at, decided_by_user_id = :by",
+            )
             .expression_attribute_names("#status", "status")
             .expression_attribute_values(":pending", s("pending"))
             .expression_attribute_values(":declined", s("declined"))

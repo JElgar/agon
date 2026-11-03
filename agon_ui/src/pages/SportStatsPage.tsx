@@ -21,6 +21,8 @@ import { cn } from '@/lib/utils'
 import { sideDisplayName } from '@/lib/members'
 
 type BestBowlingFigures = components['schemas']['BestBowlingFigures']
+type CricketPlayerStats = components['schemas']['CricketPlayerStats']
+type FootballPlayerStats = components['schemas']['FootballPlayerStats']
 type UserProfile = components['schemas']['UserProfile']
 type SearchMatch = components['schemas']['SearchMatch']
 type MatchOutcome = components['schemas']['MatchOutcome']
@@ -115,6 +117,11 @@ export function SportStatsPage() {
 
   const profile = profileQuery.data
   const stats = profile.stats[matchType as keyof typeof profile.stats]
+  // Cricket's and football's stats cards key off the sport itself, not off
+  // which fields happen to be present — a future sport could easily add its
+  // own `assists`-like counter without being football.
+  const cricketStats = matchType === 'cricket' ? (stats as CricketPlayerStats | undefined) : undefined
+  const footballStats = matchType === 'football' ? (stats as FootballPlayerStats | undefined) : undefined
   const Icon = sportIcon(matchType)
   const matches = matchesQuery.data
   const recentByDate = sortedByDate(matches)
@@ -125,68 +132,67 @@ export function SportStatsPage() {
   // beside the win rate (see `DesktopSport.dc.html`) — no other sport has a
   // bespoke desktop board, so everyone else's banner just reflows via its
   // own responsive classes with no `extra` cluster.
-  const bannerExtra =
-    stats && 'goals' in stats ? (
-      <>
-        <PerMatchStat value={stats.goals} label="Goals" matches={stats.matches_played} />
-        <PerMatchStat value={stats.assists} label="Assists" matches={stats.matches_played} />
-      </>
-    ) : undefined
+  const bannerExtra = footballStats ? (
+    <>
+      <PerMatchStat value={footballStats.goals} label="Goals" matches={footballStats.matches_played} />
+      <PerMatchStat value={footballStats.assists} label="Assists" matches={footballStats.matches_played} />
+    </>
+  ) : undefined
 
-  const breakdownEl = !stats ? null : 'runs' in stats ? (
+  const breakdownEl = cricketStats ? (
     <section className="flex flex-col gap-3">
       <SectionHeading>Batting &amp; bowling</SectionHeading>
       <Card className="grid grid-cols-3 gap-3 p-[18px] sm:grid-cols-5">
-        <StatTile value={stats.runs} label="Runs" />
-        <StatTile value={stats.wickets} label="Wickets" />
-        <StatTile value={stats.fours} label="Fours" />
-        <StatTile value={stats.sixes} label="Sixes" />
-        <StatTile value={stats.catches} label="Catches" />
+        <StatTile value={cricketStats.runs} label="Runs" />
+        <StatTile value={cricketStats.wickets} label="Wickets" />
+        <StatTile value={cricketStats.fours} label="Fours" />
+        <StatTile value={cricketStats.sixes} label="Sixes" />
+        <StatTile value={cricketStats.catches} label="Catches" />
       </Card>
       <Card className="grid grid-cols-3 gap-3 p-[18px]">
         <StatTileWithInfo
-          value={stats.batting_average?.toFixed(1) ?? '-'}
+          value={cricketStats.batting_average?.toFixed(1) ?? '-'}
           label="Average"
           info="Runs scored per dismissal — the traditional batting average. Shows “-” until you've been out at least once."
         />
         <StatTileWithInfo
-          value={stats.strike_rate?.toFixed(0) ?? '-'}
+          value={cricketStats.strike_rate?.toFixed(0) ?? '-'}
           label="Strike rate"
           info="Runs scored per 100 balls faced."
         />
         <StatTileWithInfo
-          value={stats.economy?.toFixed(1) ?? '-'}
+          value={cricketStats.economy?.toFixed(1) ?? '-'}
           label="Economy"
           info="Runs conceded per over bowled — lower is better."
         />
       </Card>
     </section>
-  ) : 'goals' in stats ? (
+  ) : footballStats ? (
     <section className="flex flex-col gap-3 xl:hidden">
       <SectionHeading>Goals &amp; assists</SectionHeading>
       <Card className="grid grid-cols-2 gap-4 p-[18px]">
-        <PerMatchStat value={stats.goals} label="Goals" matches={stats.matches_played} />
-        <PerMatchStat value={stats.assists} label="Assists" matches={stats.matches_played} />
+        <PerMatchStat value={footballStats.goals} label="Goals" matches={footballStats.matches_played} />
+        <PerMatchStat value={footballStats.assists} label="Assists" matches={footballStats.matches_played} />
       </Card>
     </section>
   ) : null
 
-  const personalBestsEl = !stats ? null : 'runs' in stats ? (
+  const personalBestsEl = cricketStats ? (
     <section className="flex flex-col gap-3">
       <SectionHeading>Personal bests</SectionHeading>
       <PersonalBestsCard
-        rows={[{ label: 'High score', unit: 'runs', figure: stats.best_runs }]}
-        bowlingFigure={stats.best_bowling}
+        rows={[{ label: 'High score', unit: 'runs', figure: cricketStats.best_runs }]}
+        bowlingFigure={cricketStats.best_bowling}
         onOpen={(id) => navigate(`/matches/${id}`)}
       />
     </section>
-  ) : 'goals' in stats ? (
+  ) : footballStats ? (
     <section className="flex flex-col gap-3">
       <SectionHeading>Personal bests</SectionHeading>
       <PersonalBestsCard
         rows={[
-          { label: 'Most goals in a match', unit: 'goals', figure: stats.best_goals },
-          { label: 'Most goals + assists', sub: 'in one match', figure: stats.best_goal_contributions },
+          { label: 'Most goals in a match', unit: 'goals', figure: footballStats.best_goals },
+          { label: 'Most goals + assists', sub: 'in one match', figure: footballStats.best_goal_contributions },
         ]}
         onOpen={(id) => navigate(`/matches/${id}`)}
       />
@@ -290,7 +296,7 @@ export function SportStatsPage() {
                 recentOutcomes={recentByDate.map((m) => m.outcome)}
                 extra={bannerExtra}
               />
-              {'runs' in stats && breakdownEl}
+              {cricketStats && breakdownEl}
               {recentMatchesEl}
             </div>
             <div className="flex flex-col gap-4">

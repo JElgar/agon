@@ -12,13 +12,12 @@ import {
   Radio,
   Repeat,
   Share,
-  ShieldMinus,
-  ShieldPlus,
   UserMinus,
   UserPlus,
 } from 'lucide-react'
 import type { components } from '@/types/api'
 import { fetchClient } from '@/lib/api-client'
+import { PinnedActionBar } from '@/components/agon/PinnedActionBar'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import {
@@ -36,16 +35,21 @@ import { respondToInvitation } from '@/lib/invitations'
 import {
   MatchTabBar,
   PersonAvatar,
+  PlayerRoleMenuItems,
   SideSwatch,
   CommentsPreviewCard,
+  ViewProfileMenuItem,
 } from '@/components/agon/football/FootballMatchView'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
 import { LeaveMatchDialog } from '@/components/agon/invite/LeaveMatchDialog'
 import { WaitlistSection } from '@/components/agon/WaitlistSection'
+import { MatchJoinSettingsEditor } from '@/components/agon/MatchJoinSettingsEditor'
+import { useJoinMatch } from '@/hooks/useJoinMatch'
 import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
 import { MatchJoinLinksDialog } from '@/components/agon/MatchJoinLinksDialog'
 import { MatchComments } from '@/components/agon/MatchComments'
+import { useSetMatchPlayerRole } from '@/hooks/useSetMatchPlayerRole'
 import {
   memberAvatarUrl,
   memberName,
@@ -204,19 +208,35 @@ export function ScheduledMatchInvite({
   const [editingRoster, setEditingRoster] = useState(false)
   const [inviting, setInviting] = useState(false)
   const [commentsOpen, setCommentsOpen] = useState(false)
+
+  // Team self-join (no invitation, no token — just an accepted member of a
+  // side's team): folded into the same primary action as accepting an
+  // invitation, rather than a separate banner, so there's one "Join" per
+  // match regardless of which route got you eligible.
+  const teamJoinSideIds = match.viewer_team_join_side_ids
+  const teamJoinPickableSides = match.sides.filter((s) => teamJoinSideIds?.includes(s.id))
+  const teamJoinForcedSideId = teamJoinSideIds?.length === 1 ? teamJoinSideIds[0] : undefined
+  const teamJoinNeedsPick = (teamJoinSideIds?.length ?? 0) > 1
+  const canTeamJoin = !invitation && (teamJoinSideIds?.length ?? 0) > 0
+  const [teamJoinPickerOpen, setTeamJoinPickerOpen] = useState(false)
+  const [teamJoinSideId, setTeamJoinSideId] = useState<string | undefined>(undefined)
+  const effectiveTeamJoinSideId = teamJoinForcedSideId ?? teamJoinSideId
+  const teamJoinCanSubmit = teamJoinNeedsPick
+    ? match.allow_unassigned || !!effectiveTeamJoinSideId
+    : true
+  const teamJoin = useJoinMatch(match.id)
+  const teamJoinConflict = teamJoin.data && teamJoin.data !== 'joined' ? teamJoin.data : null
+  const startTeamJoin = () => {
+    if (teamJoinNeedsPick) {
+      setTeamJoinPickerOpen(true)
+      return
+    }
+    teamJoin.mutate({ side_id: teamJoinForcedSideId })
+  }
   const myPlayer = match.players.find((p) => p.member.type === 'User' && p.member.user_id === currentUserId)
   const matchKey = ['match', match.id]
 
-  const setPlayerRole = useMutation({
-    mutationFn: async ({ playerId: pid, role }: { playerId: string; role: 'admin' | 'player' }) => {
-      const { error } = await fetchClient.POST('/matches/{match_id}/players/{player_id}/role', {
-        params: { path: { match_id: match.id, player_id: pid } },
-        body: { role },
-      })
-      if (error) throw new Error('Failed to update role')
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: matchKey }),
-  })
+  const setPlayerRole = useSetMatchPlayerRole(match.id)
 
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false)
   const [removingAdmin, setRemovingAdmin] = useState<MatchPlayer | null>(null)
@@ -390,6 +410,8 @@ export function ScheduledMatchInvite({
                     const id = playerId(p)
                     const isOwnerRow = p.role === 'owner'
                     const isYou = myPlayer && id === playerId(myPlayer)
+                    const userId = p.member.type === 'User' ? p.member.user_id : undefined
+                    const showAdminActions = canEdit && !isOwnerRow
                     return (
                       <div
                         key={id}
@@ -405,7 +427,7 @@ export function ScheduledMatchInvite({
                             <span className="block text-xs text-muted-foreground capitalize">{p.role}</span>
                           )}
                         </div>
-                        {canEdit && !isOwnerRow && (
+                        {(userId || showAdminActions) && (
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                               <Button
@@ -419,39 +441,38 @@ export function ScheduledMatchInvite({
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent>
-                              {p.role === 'admin' ? (
-                                <DropdownMenuItem
-                                  disabled={setPlayerRole.isPending}
-                                  onSelect={(e) => {
-                                    // Opening a Dialog synchronously from a DropdownMenuItem's
-                                    // onSelect races Radix's own close/cleanup of the menu —
-                                    // deferring to the next tick lets the menu finish unmounting
-                                    // first (https://github.com/radix-ui/primitives/issues/1836).
-                                    e.preventDefault()
-                                    setTimeout(() => setRemovingAdmin(p), 0)
-                                  }}
-                                >
-                                  <ShieldMinus /> Remove admin
-                                </DropdownMenuItem>
-                              ) : (
-                                <DropdownMenuItem
-                                  disabled={setPlayerRole.isPending}
-                                  onSelect={() => setPlayerRole.mutate({ playerId: id, role: 'admin' })}
-                                >
-                                  <ShieldPlus /> Make admin
-                                </DropdownMenuItem>
-                              )}
-                              {!isYou && (
-                                <DropdownMenuItem
-                                  className="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                                  disabled={removePlayer.isPending}
-                                  onSelect={(e) => {
-                                    e.preventDefault()
-                                    setTimeout(() => setRemovingPlayer(p), 0)
-                                  }}
-                                >
-                                  <UserMinus /> Remove from match
-                                </DropdownMenuItem>
+                              {userId && <ViewProfileMenuItem userId={userId} />}
+                              {showAdminActions && (
+                                <>
+                                  <PlayerRoleMenuItems
+                                    role={p.role}
+                                    disabled={setPlayerRole.isPending}
+                                    onSetRole={(role, e) => {
+                                      if (role === 'player') {
+                                        // Opening a Dialog synchronously from a DropdownMenuItem's
+                                        // onSelect races Radix's own close/cleanup of the menu —
+                                        // deferring to the next tick lets the menu finish unmounting
+                                        // first (https://github.com/radix-ui/primitives/issues/1836).
+                                        e.preventDefault()
+                                        setTimeout(() => setRemovingAdmin(p), 0)
+                                      } else {
+                                        setPlayerRole.mutate({ playerId: id, role })
+                                      }
+                                    }}
+                                  />
+                                  {!isYou && (
+                                    <DropdownMenuItem
+                                      className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                                      disabled={removePlayer.isPending}
+                                      onSelect={(e) => {
+                                        e.preventDefault()
+                                        setTimeout(() => setRemovingPlayer(p), 0)
+                                      }}
+                                    >
+                                      <UserMinus /> Remove from match
+                                    </DropdownMenuItem>
+                                  )}
+                                </>
                               )}
                             </DropdownMenuContent>
                           </DropdownMenu>
@@ -463,6 +484,8 @@ export function ScheduledMatchInvite({
               )}
 
               <WaitlistSection match={match} currentUserId={currentUserId} canManage={canEdit} />
+
+              {canEdit && <MatchJoinSettingsEditor match={match} canManage={canEdit} />}
 
               {/* Below the fold on mobile; on desktop this moves into the
                   action card's column instead (right-hand `xl:flex` below). */}
@@ -530,7 +553,13 @@ export function ScheduledMatchInvite({
               </div>
               <div className="flex flex-col gap-0.5">
                 <span className="text-[17px] font-bold">
-                  {invitation ? 'Are you playing?' : viewerGoing ? "You're in" : "Don't miss it"}
+                  {invitation
+                    ? 'Are you playing?'
+                    : canTeamJoin
+                      ? "You're on the team"
+                      : viewerGoing
+                        ? "You're in"
+                        : "Don't miss it"}
                 </span>
                 <span className="text-sm text-muted-foreground">
                   {spotsLeft != null ? `${spotsLeft} ${spotsLeft === 1 ? 'spot' : 'spots'} left` : `${going.length} going`}
@@ -553,6 +582,20 @@ export function ScheduledMatchInvite({
                 >
                   Can't make it
                 </Button>
+              </>
+            ) : canTeamJoin ? (
+              <>
+                <Button
+                  size="lg"
+                  className="h-[54px] rounded-2xl text-base font-bold"
+                  disabled={teamJoin.isPending || !teamJoinCanSubmit}
+                  onClick={startTeamJoin}
+                >
+                  {teamJoin.isPending ? 'Joining…' : 'Join'}
+                </Button>
+                {teamJoinConflict && (
+                  <p className="text-xs text-destructive">{teamJoinConflict.message}</p>
+                )}
               </>
             ) : (
               <button
@@ -586,7 +629,7 @@ export function ScheduledMatchInvite({
         </div>
       </div>
 
-      <div className="sticky bottom-0 z-10 -mx-4 mt-auto flex flex-col gap-2 bg-card/95 px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))] backdrop-blur supports-[backdrop-filter]:bg-card/80 md:mt-2 xl:hidden">
+      <PinnedActionBar className="flex flex-col gap-2 md:mt-2 xl:hidden">
         <div className="flex gap-2.5">
           {invitation ? (
             <Button
@@ -596,6 +639,16 @@ export function ScheduledMatchInvite({
               onClick={() => setAction('accept')}
             >
               I'm in
+            </Button>
+          ) : canTeamJoin ? (
+            <Button
+              size="lg"
+              shape="pill"
+              className="h-[54px] flex-1 gap-2 rounded-2xl text-base font-bold"
+              disabled={teamJoin.isPending || !teamJoinCanSubmit}
+              onClick={startTeamJoin}
+            >
+              {teamJoin.isPending ? 'Joining…' : 'Join'}
             </Button>
           ) : (
             <button
@@ -626,7 +679,10 @@ export function ScheduledMatchInvite({
             Can't make it
           </button>
         )}
-      </div>
+        {canTeamJoin && teamJoinConflict && (
+          <p className="px-1 text-xs text-destructive">{teamJoinConflict.message}</p>
+        )}
+      </PinnedActionBar>
 
       <InvitationResponseDialog
         open={action !== null}
@@ -693,6 +749,52 @@ export function ScheduledMatchInvite({
               }}
             >
               {removePlayer.isPending ? 'Removing…' : 'Remove from match'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Only reachable when `teamJoinNeedsPick` — both sides share the
+          viewer's team (an intra-squad/derby match) and there's no single
+          side to auto-assign, same choice a multi-side join link offers. */}
+      <Dialog open={teamJoinPickerOpen} onOpenChange={(open) => !open && setTeamJoinPickerOpen(false)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Choose a side</DialogTitle>
+          </DialogHeader>
+          <select
+            value={teamJoinSideId ?? ''}
+            onChange={(e) => setTeamJoinSideId(e.target.value || undefined)}
+            className="h-10 w-full rounded-md border bg-background px-3 text-sm"
+          >
+            {match.allow_unassigned ? (
+              <option value="">Unassigned — pick a side later</option>
+            ) : (
+              <option value="" disabled>
+                Choose a side…
+              </option>
+            )}
+            {teamJoinPickableSides.map((side, i) => (
+              <option key={side.id} value={side.id}>
+                {sideDisplayName(side) ?? `Side ${i + 1}`}
+              </option>
+            ))}
+          </select>
+          {teamJoinConflict && <p className="text-xs text-destructive">{teamJoinConflict.message}</p>}
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setTeamJoinPickerOpen(false)} disabled={teamJoin.isPending}>
+              Cancel
+            </Button>
+            <Button
+              disabled={teamJoin.isPending || !teamJoinCanSubmit}
+              onClick={() =>
+                teamJoin.mutate(
+                  { side_id: effectiveTeamJoinSideId },
+                  { onSuccess: (result) => result === 'joined' && setTeamJoinPickerOpen(false) },
+                )
+              }
+            >
+              {teamJoin.isPending ? 'Joining…' : 'Join'}
             </Button>
           </DialogFooter>
         </DialogContent>

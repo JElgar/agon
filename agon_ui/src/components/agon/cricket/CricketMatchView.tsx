@@ -1105,6 +1105,7 @@ export function CricketPlayersTab({
   finished,
   footer,
   layout = 'stack',
+  canManage,
 }: {
   match: Match
   innings: CricketScoreInnings[]
@@ -1115,6 +1116,8 @@ export function CricketPlayersTab({
   /** `columns` (desktop) puts the sides side by side and leaves the top
    *  performer out; `top` renders only the top performer card. */
   layout?: PlayersLayout
+  /** Viewer is an owner/admin — shows the make/remove-admin menu on each row. */
+  canManage?: boolean
 }) {
   const following = useViewerFollowing(currentUserId)
   const stats = useMemo(() => {
@@ -1184,6 +1187,8 @@ export function CricketPlayersTab({
       first={i === 0}
       currentUserId={currentUserId}
       followingIds={following.data}
+      matchId={match.id}
+      canManage={canManage}
       line={lineFor(stats.get(p.member.id))}
     />
   )

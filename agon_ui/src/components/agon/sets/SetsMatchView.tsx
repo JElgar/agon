@@ -71,6 +71,7 @@ export function RosterTab({
   result,
   footer,
   layout = 'stack',
+  canManage,
 }: {
   match: Match
   currentUserId?: string
@@ -79,11 +80,21 @@ export function RosterTab({
   footer?: React.ReactNode
   /** `columns` puts the sides side by side on the desktop board. */
   layout?: PlayersLayout
+  /** Viewer is an owner/admin — shows the make/remove-admin menu on each row. */
+  canManage?: boolean
 }) {
   const following = useViewerFollowing(currentUserId)
   const unassigned = match.players.filter((p) => !match.sides.some((s) => s.id === p.side_id))
   const row = (p: MatchPlayer, i: number) => (
-    <PlayerRow key={p.member.id} player={p} first={i === 0} currentUserId={currentUserId} followingIds={following.data} />
+    <PlayerRow
+      key={p.member.id}
+      player={p}
+      first={i === 0}
+      currentUserId={currentUserId}
+      followingIds={following.data}
+      matchId={match.id}
+      canManage={canManage}
+    />
   )
   const count = (n: number) => `${n} ${n === 1 ? 'player' : 'players'}`
   return (

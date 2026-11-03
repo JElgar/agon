@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 
+use crate::sports::SportRecord;
 use serde::{Deserialize, Serialize};
 
 // ===========================================================================
@@ -48,168 +49,68 @@ pub struct HeaderPhotoRecord {
     pub url: String,
 }
 
-/// A match score. Tagged union mirroring the sport's scoring shape.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ScoreRecord {
-    Simple {
-        /// Points per side, keyed by side id.
-        entries: HashMap<String, u32>,
-    },
-    Sets {
-        /// Games won per set per side, keyed by side id.
-        entries: HashMap<String, Vec<u32>>,
-    },
-    Cricket {
-        innings: Vec<CricketScoreInningsRecord>,
-        /// The current/most recent innings' recent-ball window — `None` once
-        /// there isn't a "current" innings (between innings, or the match is
-        /// over) or for a result with no ball-by-ball data behind it.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        recent_deliveries: Option<Vec<CricketDeliveryRecord>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        next_ball_context: Option<NextBallContextRecord>,
-        /// True once the log's last innings has ended and no following one
-        /// has started yet. `None` for a result with no live log behind it.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        awaiting_next_innings: Option<bool>,
-    },
-    Football {
-        /// Goal tally, keyed by side id. `#[serde(default)]` because this
-        /// field didn't exist before the tally was embedded here — a record
-        /// written in that gap has no `score` to fall back to, so it
-        /// deserializes as an empty tally rather than 500ing.
-        #[serde(default)]
-        score: HashMap<String, u32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        goals: Option<Vec<FootballGoalEventRecord>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        cards: Option<Vec<FootballCardEventRecord>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        substitutions: Option<Vec<FootballSubstitutionEventRecord>>,
-        /// The most recent period marker seen, if any.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        period: Option<FootballPeriodRecord>,
-        /// When each period marker was recorded, keyed by kind.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        period_times: Option<HashMap<FootballPeriodRecord, String>>,
-        /// Every penalty-shootout kick recorded, in order taken.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        penalty_shootout: Option<Vec<FootballPenaltyShootoutKickRecord>>,
-        /// Running shootout tally (kicks scored, not taken), keyed by side id.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        penalty_shootout_score: Option<HashMap<String, u32>>,
-    },
-    Netball {
-        /// Goal tally, keyed by side id.
-        #[serde(default)]
-        score: HashMap<String, u32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        goals: Option<Vec<NetballGoalEventRecord>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        fouls: Option<Vec<NetballFoulEventRecord>>,
-        /// The most recent period marker seen, if any.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        period: Option<NetballPeriodRecord>,
-        /// When each period marker was recorded, keyed by kind.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        period_times: Option<HashMap<NetballPeriodRecord, String>>,
-        /// The score as of each quarter-end marker, keyed by kind — the
-        /// *only* source of the score for a quarter-only-scored match. See
-        /// `agon_service::live_score::netball::NetballPeriodEvent::score`'s
-        /// doc comment.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        period_scores: Option<HashMap<NetballPeriodRecord, HashMap<String, u32>>>,
-    },
-}
+/// Every sport-shaped record aggregate, generated from the sport registry
+/// (`crate::for_each_sport!`): one variant or field per modeled sport, holding
+/// that sport's own record type from its `SportRecord` impl.
+macro_rules! define_sport_records {
+    (
+        modeled: [$( $variant:ident { tag: $tag:literal, key: $key:ident } ),+ $(,)?],
+        generic: [$( $gvariant:ident { tag: $gtag:literal, key: $gkey:ident, label: $glabel:literal } ),* $(,)?] $(,)?
+    ) => {
+        /// A match score. Tagged union mirroring the sport's scoring shape.
+        #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        pub enum ScoreRecord {
+            Simple {
+                /// Points per side, keyed by side id.
+                entries: HashMap<String, u32>,
+            },
+            Sets {
+                /// Games won per set per side, keyed by side id.
+                entries: HashMap<String, Vec<u32>>,
+            },
+            $( $variant(<crate::sports::$key::$variant as SportRecord>::ScoreRecord), )+
+        }
 
-/// One innings' final totals, as stored on a match's confirmed/pending
-/// `Score` — mirrors the API's `CricketScoreInnings`. `batting`/`bowling`/
-/// `fall_of_wickets`/`extras` are `None` for a manually-entered result with
-/// no per-player detail to hand over; populated when the result came from a
-/// live-scored (or backfilled) match.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketScoreInningsRecord {
-    pub batting_side_id: String,
-    pub bowling_side_id: String,
-    pub runs: u32,
-    pub wickets: u32,
-    pub overs: OversRecord,
-    pub declared: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub batting: Option<Vec<CricketBattingEntryRecord>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bowling: Option<Vec<CricketBowlingEntryRecord>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fall_of_wickets: Option<Vec<CricketFallOfWicketRecord>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extras: Option<CricketExtrasRecord>,
-}
+        /// A match's configured format, discriminated by sport.
+        #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+        #[serde(tag = "sport", rename_all = "snake_case")]
+        pub enum MatchFormatRecord {
+            $( $variant(<crate::sports::$key::$variant as SportRecord>::FormatRecord), )+
+        }
 
-/// Mirrors the API's `detailed_score::cricket::CricketBattingEntry`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketBattingEntryRecord {
-    pub player_id: String,
-    pub runs: u32,
-    pub balls_faced: u32,
-    pub fours: u32,
-    pub sixes: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dismissal: Option<CricketDismissalRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub batting_position: Option<u32>,
-}
+        /// One stored live-scoring event, discriminated by sport.
+        #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+        #[serde(tag = "sport", rename_all = "snake_case")]
+        pub enum LiveEventPayloadRecord {
+            $( $variant(<crate::sports::$key::$variant as SportRecord>::LiveEventRecord), )+
+        }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketDismissalRecord {
-    pub kind: CricketDismissalKindRecord,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bowler_player_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fielder_player_id: Option<String>,
+        /// A user's lifetime stats, one field per sport — `None` for a sport
+        /// they've never played a confirmed match in. Stored inline on
+        /// `UserRecord::stats`, so each sport is a nested map attribute
+        /// (`stats.cricket`, `stats.football`, ...).
+        ///
+        /// The DAO's write path (`Dao::stats_delta`/`update_best_figures`)
+        /// doesn't use this type: it addresses `stats.<sport>.<counter>` with
+        /// raw `UpdateItem` expressions built from the sport tag and counter
+        /// names, so it is sport-agnostic.
+        #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+        pub struct UserStatsRecord {
+            $(
+                #[serde(default, skip_serializing_if = "Option::is_none")]
+                pub $key: Option<<crate::sports::$key::$variant as SportRecord>::StatsRecord>,
+            )+
+            $(
+                #[serde(default, skip_serializing_if = "Option::is_none")]
+                pub $gkey: Option<GenericSportStatsRecord>,
+            )*
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            pub other: Option<GenericSportStatsRecord>,
+        }
+    };
 }
-
-/// Mirrors the API's `detailed_score::cricket::CricketBowlingEntry`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketBowlingEntryRecord {
-    pub player_id: String,
-    pub overs: OversRecord,
-    pub maidens: u32,
-    pub runs_conceded: u32,
-    pub wickets: u32,
-    pub wides: u32,
-    pub no_balls: u32,
-}
-
-/// Mirrors the API's `detailed_score::cricket::CricketExtras`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketExtrasRecord {
-    pub byes: u32,
-    pub leg_byes: u32,
-    pub wides: u32,
-    pub no_balls: u32,
-    pub penalty: u32,
-}
-
-/// Mirrors the API's `detailed_score::cricket::CricketFallOfWicket`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketFallOfWicketRecord {
-    pub wicket: u32,
-    pub runs: u32,
-    pub player_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub overs: Option<OversRecord>,
-}
-
-/// A count of overs bowled/faced: whole overs plus balls into the current
-/// over — mirrors the API's `detailed_score::cricket::Overs`. Two integer
-/// fields rather than a single float, which can't safely represent a ball
-/// count that doesn't fit in one decimal digit.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OversRecord {
-    pub overs: u32,
-    pub balls: u32,
-}
+crate::for_each_sport!(define_sport_records);
 
 /// The agreed, settled score of a match.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -282,6 +183,12 @@ pub struct EmbeddedInvitationRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub responded_at: Option<String>,
     pub kind: InvitationKindRecord,
+    /// Whether this still-pending invite holds a roster slot for the invitee
+    /// — see `MatchPlayerRecord::occupies_slot`. Meaningless once
+    /// accepted/declined (a real roster spot is counted by presence, not by
+    /// this flag) and for a team invite (teams have no capacity concept).
+    #[serde(default)]
+    pub reserve_spot: bool,
 }
 
 /// `EMAIL#<lowercased-email>` / `#GUARD` — the email-uniqueness guard item.
@@ -335,8 +242,8 @@ pub struct DevicePairingRecord {
 /// `email` is duplicated here for reads; uniqueness is enforced by a separate
 /// `EMAIL#<email>` guard item. `stats` holds per-sport aggregates inline, so a
 /// profile read/batch-read returns everything in one point read — always
-/// present (all `None` for a brand new user). `ratings` and `rating_opt_ins`
-/// ride the same item for the same reason.
+/// present (all `None` for a brand new user). `ratings` rides the same item
+/// for the same reason.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UserRecord {
     pub id: String,
@@ -377,55 +284,12 @@ pub struct UserRecord {
     ///   stored rating (see `rating::Ladder`). A closed struct here would
     ///   re-close exactly what that decision opened.
     ///
-    /// A ladder appears here only once a ranked match on it has been rated,
-    /// so being opted in (`rating_opt_ins`) with no entry yet is normal. The
-    /// reverse — a rating with no opt-in behind it — is what the rating
-    /// pipeline must refuse to produce, by re-checking every participant's
-    /// opt-in before it rates; nothing at this layer enforces it.
+    /// A ladder appears here once a ranked match on it has been rated, and
+    /// not before. Nothing says whether the rating may be shown: that is
+    /// `rating::published`, read off `RatingRecord::matches_rated`.
     #[serde(default)]
     pub ratings: HashMap<String, RatingRecord>,
-    /// The ladders this account has consented to be rated on, each mapped to
-    /// when it did so (RFC 3339). Written by `Dao::opt_in_to_rating` when a
-    /// player ticks "I understand this starts my <sport> rating" on a ranked
-    /// game; read through [`UserRecord::has_opted_in`].
-    ///
-    /// **Entries are never removed.** Opting in is not reversible — a product
-    /// decision, not an omission, and the reason there is no opt-out
-    /// operation — so a ladder seen here once can be relied on from then on.
-    ///
-    /// A map to the consent time rather than a set of ladder names. A
-    /// DynamoDB string set would be the simpler write (`ADD` creates a missing
-    /// set, so there would be no ensure-the-map round trip), but it throws
-    /// away *when* somebody agreed, which is the one fact a consent record
-    /// exists to keep. The map also makes "first tick wins" a single
-    /// `attribute_not_exists` condition on the ladder's path, so ticking the
-    /// box again on a later game never moves the original date.
-    ///
-    /// Keyed by ladder, like `ratings`, and today a ladder is exactly the
-    /// sport tag. If a sport is ever split into several ladders, whether one
-    /// consent covers all of them is for that change to decide; this shape
-    /// does not settle it.
-    ///
-    /// `#[serde(default)]` because no profile written before this field
-    /// existed has it, and an empty map is right for every one of them:
-    /// nobody could opt in before there was anywhere to record it.
-    #[serde(default)]
-    pub rating_opt_ins: HashMap<String, String>,
     pub created_at: String,
-}
-
-impl UserRecord {
-    /// Whether this account has opted in to being rated on `ladder` — the
-    /// check every path into a ranked game makes.
-    ///
-    /// An exact-key lookup. Ladder names can be string prefixes of one
-    /// another (`"tennis"`, `"tennis:doubles"`), and a prefix match would
-    /// quietly decide the open question on `rating_opt_ins` of whether one
-    /// consent covers a split sport.
-    #[must_use]
-    pub fn has_opted_in(&self, ladder: &str) -> bool {
-        self.rating_opt_ins.contains_key(ladder)
-    }
 }
 
 /// `USER#<followeeId>` / `FOLLOWER#<followerId>` — a directed user→user follow
@@ -616,8 +480,8 @@ pub struct MatchRecord {
     /// that item is rewritten by far more than an edit: every like and every
     /// comment `ADD`s a counter on it. A `true` default would enrol the whole
     /// back catalogue into the ladders, one old match per like, rating
-    /// players who never opted in — when opting in is the one thing a rating
-    /// requires. Please don't "fix" this to match a create-time default.
+    /// games nobody meant to count. Please don't "fix" this to match a
+    /// create-time default.
     ///
     /// A ranked match always has a rating ladder (`rating::ladder_for_tag` on
     /// `match_type`), so sport `other` is never ranked. The API enforces that
@@ -627,11 +491,6 @@ pub struct MatchRecord {
     /// see `ranked_lock_reason` in `agon_service`'s mapping.
     #[serde(default)]
     pub ranked: bool,
-    /// The outstanding switch-to-ranked ask, if this match has one — see
-    /// [`MatchRankedPromptRecord`]. `None` on every match that was created
-    /// ranked, or friendly and left alone, which is nearly all of them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ranked_prompt: Option<MatchRankedPromptRecord>,
     /// Who holds `Owner`/`Admin` authority over this match, keyed by user id
     /// — an ordinary player (or an organiser with no roster row at all) is
     /// simply absent from the map, never stored as an explicit `Player`
@@ -672,70 +531,6 @@ pub struct MatchRecord {
 
 fn default_series_timezone() -> String {
     "UTC".to_string()
-}
-
-/// The outstanding switch-to-ranked ask on a match
-/// ([`MatchRecord::ranked_prompt`]): one per match, covering every player it
-/// asked.
-///
-/// One nested struct rather than a handful of sibling fields on `MatchRecord`,
-/// so that a deadline, a counter and the id they belong to cannot drift apart:
-/// clearing the ask is one `REMOVE`, and a half-written ask is a parse failure
-/// rather than a match that expires people against a stale deadline.
-///
-/// `ranked` is still the flag everything else reads. This record says only
-/// "some of the players in a spot haven't agreed yet", and a match carrying it
-/// is already `ranked: true` — the switch takes effect immediately and the
-/// prompts chase the consent, which is what keeps everyone's place.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct MatchRankedPromptRecord {
-    /// Quoted by every [`RankedPromptRecord::prompt_id`] this ask wrote, and
-    /// by every answer to it. A fresh id per switch is what makes a stale
-    /// answer recognisable.
-    pub id: String,
-    /// The ladder being consented to, as of the ask.
-    pub ladder: String,
-    pub opened_at: String,
-    pub opened_by_user_id: String,
-    /// When unanswered prompts expire, and with them the places they were
-    /// holding. Host-set or defaulted to 24h before the start, and always
-    /// within `(opened_at, starts_at]` — the service clamps it, because an
-    /// expiry after kickoff would decide a rating question with the result
-    /// already known.
-    ///
-    /// Also the `GSI3SK` of this match's meta item while the ask is open (see
-    /// [`Self::DUE_GSI3PK`]), which is how the sweep finds matches whose
-    /// deadline has passed without scanning the table.
-    pub deadline: String,
-    /// How many roster rows still carry an unanswered prompt for [`Self::id`].
-    ///
-    /// Maintained by atomic `ADD ranked_prompt.pending :delta` in the same
-    /// transaction as the row it counts — the same nested-path counter pattern
-    /// as `sides.<sideId>.player_count` — and never recomputed from a scan.
-    ///
-    /// Advisory: it exists so the feed, which reads a match's meta without its
-    /// roster, can render "3 still to confirm" without a second read, and so
-    /// the sweep can skip a match in one field. The authoritative question is
-    /// always whether any row in a spot still
-    /// [awaits this ask](MatchPlayerRecord::awaits_ranked_prompt), so a drifted
-    /// counter costs a wrong subtitle, never a wrongly expired player.
-    #[serde(default)]
-    pub pending: u32,
-}
-
-impl MatchRankedPromptRecord {
-    /// The `GSI3PK` stamped on a match's meta item while an ask is open, with
-    /// [`Self::deadline`] as the `GSI3SK`. Both attributes are removed when
-    /// the ask is answered out, expired or withdrawn, so the index is sparse:
-    /// only matches with something outstanding are in it.
-    ///
-    /// A constant value, so every pending ask shares one index partition. At
-    /// the scale this serves — matches with an unanswered prompt, which is a
-    /// subset of matches not yet played — that is a feature: the sweep's whole
-    /// job is one `Query` for `GSI3SK <= now`, which costs about half an RCU
-    /// and usually returns nothing. Bucket the value by date if that ever
-    /// stops being true.
-    pub const DUE_GSI3PK: &'static str = "RANKEDPROMPTDUE";
 }
 
 /// `SERIES#<seriesId>` / `#META` — a recurring match series' template and
@@ -867,60 +662,12 @@ pub enum SeriesEndRecord {
     Never,
 }
 
-/// Mirrors `agon_service::match_format::MatchFormat`, sport-first
-/// discriminated like `LiveEventPayloadRecord` — a typed DAO enum rather
-/// than opaque JSON, so a variant added on the API side and forgotten here
-/// is a compile error, not a silent runtime data loss. New sport = new
-/// variant on both sides.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "sport", rename_all = "snake_case")]
-pub enum MatchFormatRecord {
-    Football(FootballFormatRecord),
-    Cricket(CricketFormatRecord),
-    Netball(NetballFormatRecord),
-}
-
-/// Mirrors `agon_service::match_format::FootballFormat`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct FootballFormatRecord {
-    pub half_length_minutes: u32,
-    pub num_halves: u32,
-    pub extra_time: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extra_time_half_length_minutes: Option<u32>,
-    pub penalties: bool,
-}
-
-/// Mirrors `agon_service::match_format::CricketFormat`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketFormatRecord {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub overs_per_innings: Option<u32>,
-    pub innings_per_side: u32,
-    pub balls_per_over: u32,
-    pub no_ball_penalty_runs: u32,
-    pub wide_penalty_runs: u32,
-    /// `#[serde(default = "default_true")]` for records written before these
-    /// two fields existed — the standard rule (extra ball) is the safe
-    /// default for a match that never configured otherwise.
-    #[serde(default = "default_true")]
-    pub wide_is_extra_ball: bool,
-    #[serde(default = "default_true")]
-    pub no_ball_is_extra_ball: bool,
-    pub free_hit_after_no_ball: bool,
-}
-
-fn default_true() -> bool {
+/// Shared by `MatchRecord::allow_unassigned`, `JoinLinkScopeRecord::allow_unassigned`
+/// and `crate::sports::cricket::CricketFormatRecord`'s extra-ball flags — not
+/// cricket- or match-specific, so it stays here rather than moving into any
+/// one sport module.
+pub(crate) fn default_true() -> bool {
     true
-}
-
-/// Mirrors `agon_service::match_format::NetballFormat`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct NetballFormatRecord {
-    pub num_quarters: u32,
-    pub quarter_length_minutes: u32,
-    pub two_point_zone: bool,
-    pub extra_time: bool,
 }
 
 /// `MATCH#<matchId>` / `SIDE#<sideId>` — one side of a match.
@@ -1031,36 +778,14 @@ pub struct MatchPlayerRecord {
     /// themselves — via a join link or team self-join.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub joined_via: Option<JoinSourceRecord>,
-    /// Set while this player has been asked to confirm a switch to ranked and
-    /// hasn't answered — see [`RankedPromptRecord`].
-    ///
-    /// **[`occupies_slot`](MatchPlayerRecord::occupies_slot) deliberately does
-    /// not look at this field**, and that is the whole point of it. Holding a
-    /// player's place while they decide is what makes switching a friendly to
-    /// ranked bearable: the alternative is evicting everyone until they
-    /// re-consent. A pending *invitation* cannot express it, because a pending
-    /// invite takes no spot at all — so the roster row stays exactly as it
-    /// was, this field rides alongside it, and the headcounts move only on the
-    /// writes that have always moved them (a decline, or the deadline sweep
-    /// removing the row).
-    ///
-    /// Only players who haven't opted in to the match's ladder are prompted.
-    /// Someone already opted in is *told* the match now counts and keeps their
-    /// place whatever they do, so this never appears on their row: the prompt
-    /// exists to collect consent that is missing, not to re-confirm consent
-    /// that already exists.
-    ///
-    /// `#[serde(default)]` → `None` for every row written before prompts
-    /// existed, which is the truth about them: nothing was ever asked.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ranked_prompt: Option<RankedPromptRecord>,
 }
 
 impl MatchPlayerRecord {
     /// Whether this player takes one of the match's spots: they're *in* —
     /// added by an organiser or self-served via a join link/team (no
-    /// invitation), or an invitee who has accepted. A pending or declined
-    /// invite takes nothing; sending an invite doesn't reserve a spot.
+    /// invitation), an invitee who has accepted, or a still-pending invitee
+    /// whose invite was sent with `reserve_spot` on. A declined invite takes
+    /// nothing; an ordinary (non-reserving) pending invite doesn't either.
     ///
     /// A waitlisted player is never represented by a `MatchPlayerRecord` at
     /// all — self-served, their `MatchWaitlistEntryRecord` is the only row;
@@ -1079,54 +804,10 @@ impl MatchPlayerRecord {
     /// ever recomputing from a full scan — see `match_ops::take_slot_update`
     /// and `match_ops::headcount_delta_update`.
     pub fn occupies_slot(&self) -> bool {
-        self.invitation
-            .as_ref()
-            .is_none_or(|inv| inv.status == "accepted")
+        self.invitation.as_ref().is_none_or(|inv| {
+            inv.status == "accepted" || (inv.status == "pending" && inv.reserve_spot)
+        })
     }
-
-    /// Whether this row is still waiting on an answer to `prompt_id` — the
-    /// test the respond endpoint and the deadline sweep both make before they
-    /// touch a row.
-    ///
-    /// Scoped to one id on purpose. A match can be flipped friendly → ranked
-    /// more than once, and a row left carrying a prompt from a withdrawn
-    /// switch must not be mistaken for an answer owed on the current one: the
-    /// authoritative question is never "is there a prompt?" but "is there a
-    /// prompt for *this* ask?".
-    #[must_use]
-    pub fn awaits_ranked_prompt(&self, prompt_id: &str) -> bool {
-        self.ranked_prompt
-            .as_ref()
-            .is_some_and(|p| p.prompt_id == prompt_id)
-    }
-}
-
-/// A player's outstanding "this match is ranked now — confirm, or lose your
-/// place" ask, embedded on their roster row
-/// ([`MatchPlayerRecord::ranked_prompt`]).
-///
-/// Embedded rather than given its own `RANKEDPROMPT#<userId>` item range
-/// because [`Dao::get_match`](crate::dao::Dao::get_match) is a point read of
-/// the meta plus **one** Query of the `PLAYER#` prefix. A separate range would
-/// add a third read to every match page view, to carry three fields that only
-/// ever matter beside the roster row they hang off.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RankedPromptRecord {
-    /// The switch that asked, matching [`MatchRankedPromptRecord::id`] on the
-    /// match's meta item.
-    ///
-    /// An answer quoting any other id is stale — the switch was withdrawn, or
-    /// the match has been flipped since — and is refused rather than applied.
-    /// That is what makes answering idempotent and a re-switch unambiguous,
-    /// without either side having to reason about ordering.
-    pub prompt_id: String,
-    /// The ladder consent is being collected for, as of the ask (e.g.
-    /// `"tennis"`). Stored rather than re-derived from the match's
-    /// `match_type` so a notification can name the sport without reading the
-    /// match, and so a row answered after a `match_type` edit still records
-    /// what was actually agreed to.
-    pub ladder: String,
-    pub asked_at: String,
 }
 
 /// `MATCH#<matchId>` / `WAITLIST#<userId>` — someone queued for a match/side
@@ -1373,304 +1054,11 @@ pub struct LiveEventRecord {
     pub recorded_at: String,
 }
 
-/// DAO-owned mirror of `agon_service::live_score::LiveEventInput`, sport-
-/// first discriminated. New sport = new variant on both sides.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "sport", rename_all = "snake_case")]
-pub enum LiveEventPayloadRecord {
-    Football(FootballLiveEventRecord),
-    Cricket(CricketLiveEventRecord),
-    Netball(NetballLiveEventRecord),
-}
-
-// ---- Football live events --------------------------------------------------
-
-/// Mirrors `agon_service::live_score::football::FootballLiveEvent`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum FootballLiveEventRecord {
-    Goal(FootballGoalEventRecord),
-    Card(FootballCardEventRecord),
-    Substitution(FootballSubstitutionEventRecord),
-    Period(FootballPeriodEventRecord),
-    PenaltyShootoutKick(FootballPenaltyShootoutKickRecord),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct FootballGoalEventRecord {
-    pub side_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scorer_player_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub assist_player_id: Option<String>,
-    pub own_goal: bool,
-    pub penalty: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub minute: Option<u32>,
-    /// Mirrors `agon_service::detailed_score::football::FootballGoalEvent::occurred_at`
-    /// — RFC3339, same string convention as `LiveEventRecord::occurred_at`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub occurred_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct FootballCardEventRecord {
-    pub side_id: String,
-    pub player_id: String,
-    pub color: FootballCardColorRecord,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub minute: Option<u32>,
-    /// Mirrors `FootballGoalEventRecord::occurred_at`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub occurred_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum FootballCardColorRecord {
-    Yellow,
-    Red,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct FootballSubstitutionEventRecord {
-    pub side_id: String,
-    pub player_in_id: String,
-    pub player_out_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub minute: Option<u32>,
-    /// Mirrors `FootballGoalEventRecord::occurred_at`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub occurred_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct FootballPeriodEventRecord {
-    pub period: FootballPeriodRecord,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum FootballPeriodRecord {
-    KickOff,
-    HalfTime,
-    SecondHalfKickOff,
-    FullTime,
-    ExtraTimeKickOff,
-    ExtraTimeHalfTime,
-    ExtraTimeSecondHalfKickOff,
-    ExtraTimeFullTime,
-    PenaltiesComplete,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct FootballPenaltyShootoutKickRecord {
-    pub side_id: String,
-    pub scored: bool,
-}
-
-// ---- Cricket live events ----------------------------------------------------
-
-/// Mirrors `agon_service::live_score::cricket::CricketLiveEvent`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum CricketLiveEventRecord {
-    Delivery(CricketDeliveryRecord),
-    Retire(CricketRetireEventRecord),
-    InningsStart(CricketInningsStartEventRecord),
-    InningsEnd(CricketInningsEndEventRecord),
-}
-
-/// Mirrors `detailed_score::cricket::CricketDelivery` (reused verbatim as the
-/// API's live delivery payload).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketDeliveryRecord {
-    pub over: u32,
-    pub ball: u32,
-    pub bowler_player_id: String,
-    pub striker_player_id: String,
-    pub non_striker_player_id: String,
-    pub runs_off_bat: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extra: Option<CricketDeliveryExtraRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wicket: Option<CricketDeliveryWicketRecord>,
-    /// Mirrors `agon_service::detailed_score::cricket::CricketDelivery::occurred_at`
-    /// — RFC3339, same string convention as `LiveEventRecord::occurred_at`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub occurred_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketDeliveryExtraRecord {
-    pub kind: CricketExtraKindRecord,
-    pub runs: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum CricketExtraKindRecord {
-    Wide,
-    NoBall,
-    Bye,
-    LegBye,
-    Penalty,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketDeliveryWicketRecord {
-    pub kind: CricketDismissalKindRecord,
-    pub dismissed_player_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bowler_player_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fielder_player_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum CricketDismissalKindRecord {
-    Bowled,
-    Caught,
-    LegBeforeWicket,
-    RunOut,
-    Stumped,
-    HitWicket,
-    RetiredOut,
-    RetiredHurt,
-}
-
-/// Mirrors `detailed_score::cricket::NextBallContext`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct NextBallContextRecord {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub striker_player_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub non_striker_player_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bowler_player_id: Option<String>,
-    pub over: u32,
-    pub ball: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub previous_over_bowler_player_id: Option<String>,
-    pub runs_conceded_this_over: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketRetireEventRecord {
-    pub batter_player_id: String,
-    pub retired_out: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketInningsStartEventRecord {
-    pub batting_side_id: String,
-    pub bowling_side_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct CricketInningsEndEventRecord {
-    pub reason: InningsEndReasonRecord,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum InningsEndReasonRecord {
-    AllOut,
-    OversComplete,
-    Declared,
-    TargetReached,
-}
-
-// ---- Netball live events ----------------------------------------------------
-
-/// Mirrors `agon_service::live_score::netball::NetballLiveEvent`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum NetballLiveEventRecord {
-    Goal(NetballGoalEventRecord),
-    Foul(NetballFoulEventRecord),
-    Period(NetballPeriodEventRecord),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct NetballGoalEventRecord {
-    pub side_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scorer_player_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scorer_position: Option<NetballPositionRecord>,
-    pub two_points: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub minute: Option<u32>,
-    /// Mirrors `agon_service::detailed_score::netball::NetballGoalEvent::occurred_at`
-    /// — RFC3339, same string convention as `LiveEventRecord::occurred_at`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub occurred_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum NetballPositionRecord {
-    GoalShooter,
-    GoalAttack,
-    WingAttack,
-    Centre,
-    WingDefence,
-    GoalDefence,
-    GoalKeeper,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct NetballFoulEventRecord {
-    pub side_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub player_id: Option<String>,
-    /// Named `foul_kind`, not `kind` — same collision-avoidance as the API's
-    /// `NetballFoulEvent::foul_kind` (`NetballLiveEventRecord`'s own
-    /// `#[serde(tag = "kind")]` would otherwise fight this field over the
-    /// same wire key once serde flattens the variant's fields in).
-    pub foul_kind: NetballFoulKindRecord,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub minute: Option<u32>,
-    /// Mirrors `NetballGoalEventRecord::occurred_at`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub occurred_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum NetballFoulKindRecord {
-    Contact,
-    Obstruction,
-    Footwork,
-    Offside,
-    HeldBall,
-    Other,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct NetballPeriodEventRecord {
-    pub period: NetballPeriodRecord,
-    /// Cumulative score per side as of this marker — always present, same
-    /// reasoning as `agon_service::live_score::netball::NetballPeriodEvent`.
-    pub score: HashMap<String, u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum NetballPeriodRecord {
-    Start,
-    QuarterOneEnd,
-    QuarterTwoStart,
-    QuarterTwoEnd,
-    QuarterThreeStart,
-    QuarterThreeEnd,
-    QuarterFourStart,
-    FullTime,
-    ExtraTimeStart,
-    ExtraTimeEnd,
-}
+// `LiveEventPayloadRecord` is generated by `define_sport_records!` above.
+// Each sport's live-event record tree (`FootballLiveEventRecord`,
+// `CricketLiveEventRecord`, `NetballLiveEventRecord`, and their nested types)
+// lives in `crate::sports::{football,cricket,netball}` alongside that sport's
+// score/format records.
 
 /// `MATCH#<matchId>` / `SCORESUB#<ts>#<subId>` — a score submission and its
 /// responses. Score and responses are opaque JSON.
@@ -1748,6 +1136,11 @@ pub struct InvitationRecord {
     pub invited_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub responded_at: Option<String>,
+    /// Mirrors `EmbeddedInvitationRecord::reserve_spot` — kept on the
+    /// standalone record too since it's what `Dao::release_reserved_match_slot`
+    /// (decline/revoke) has to go on before it's loaded the roster row.
+    #[serde(default)]
+    pub reserve_spot: bool,
 }
 
 /// `JOINLINK#<linkId>` / `#META` — a shareable, many-use join link. Unlike
@@ -1905,6 +1298,21 @@ pub enum NotificationKindRecord {
         match_id: String,
         match_name: String,
     },
+    /// A scheduled reminder that a match is coming up — sent a fixed time
+    /// before `starts_at` (see `agon_worker`'s `MatchReminder` workflow).
+    /// Covers both an organizer's own matches and a series occurrence
+    /// generated from a recurring series: a series occurrence never gets an
+    /// "invited"-style notification of its own (its sides are team-linked,
+    /// not personally invited), so this is the only heads-up its audience
+    /// gets ahead of kickoff. `actor_user_id` is the match's organizer — no
+    /// more specific "actor" exists for a time-triggered event, same
+    /// reasoning as `TeamMatchJoinable`.
+    MatchReminder {
+        actor_user_id: String,
+        match_id: String,
+        match_name: String,
+        starts_at: String,
+    },
 }
 
 fn default_pending_invitation_status() -> String {
@@ -2055,55 +1463,12 @@ pub struct FeedItemRecord {
     pub viewer_can_join_side_ids: Vec<String>,
 }
 
-/// A user's lifetime stats, one field per sport — `None` for a sport they've
-/// never played a confirmed match in. Stored inline on `UserRecord::stats`.
-///
-/// Explicit named fields rather than a `HashMap<String, _>` keyed by sport
-/// tag: the set of sports is closed (mirrors the API's `MatchType`), so
-/// there's no need to pay for a stringly-keyed map to get "only entries for
-/// sports actually played" — an `Option` field serializes absent the same
-/// way a missing map key would, at the same DynamoDB storage shape
-/// (`stats.cricket`, `stats.football`, ... as nested map attributes either
-/// way). What a named field buys over the map: `CricketStatsRecord`'s
-/// `runs`/`wickets` and football's `goals`/`assists` are real, distinctly
-/// named, compiler-checked fields instead of stringly-keyed lookups into a
-/// generic counters bag.
-///
-/// The DAO's *write* path (`agon_core::dao::stats::Dao::stats_delta` /
-/// `update_best_figures`) doesn't construct or read this type at all — it
-/// addresses `stats.<sport>.<counter>` via raw `UpdateItem` expressions built
-/// from a runtime `sport: &str` and counter-name strings, so it stays fully
-/// sport-agnostic regardless of how strongly-typed the read side is.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct UserStatsRecord {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cricket: Option<CricketStatsRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub football: Option<FootballStatsRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tennis: Option<GenericSportStatsRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub badminton: Option<GenericSportStatsRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub squash: Option<GenericSportStatsRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub table_tennis: Option<GenericSportStatsRecord>,
-    /// Netball has no dedicated stats record yet — a per-player goal/foul
-    /// log exists on `ScoreRecord::Netball` (see `NetballGoalEventRecord`)
-    /// that a future `NetballStatsRecord` (mirroring `CricketStatsRecord`/
-    /// `FootballStatsRecord`) could derive best-figures from, same as
-    /// cricket/football — just not built out yet.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub netball: Option<GenericSportStatsRecord>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub other: Option<GenericSportStatsRecord>,
-}
-
 /// Lifetime counters common to every sport. Also the full shape for a sport
 /// with no richer per-player box score to derive extras from (tennis,
-/// badminton, squash, table tennis, "other") — `CricketStatsRecord`/
-/// `FootballStatsRecord` flatten this in and add their own fields on top, the
-/// DAO-side mirror of the API's `GenericPlayerStats`/`#[oai(flatten)]`.
+/// badminton, squash, table tennis, "other") — each fully-modeled sport's own
+/// stats record (`crate::sports::<sport>`) flattens this in and adds its own
+/// fields on top, the DAO-side mirror of the API's `GenericPlayerStats`/
+/// `#[oai(flatten)]`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct GenericSportStatsRecord {
     // Every counter below is `#[serde(default)]`: `stats_delta` only ever
@@ -2123,112 +1488,19 @@ pub struct GenericSportStatsRecord {
     // Win percentage is derived (wins / matches_played) at the API layer.
 }
 
-/// Lifetime cricket stats: the common counters plus a batting/bowling summary
-/// derived from every confirmed match's box score, and each counter's
-/// personal-best single-match figure.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct CricketStatsRecord {
-    #[serde(flatten)]
-    pub common: GenericSportStatsRecord,
-    // As with `GenericSportStatsRecord`, every counter here is
-    // `#[serde(default)]`: only counters that were ever actually
-    // incremented get written to `stats.cricket` (see `Dao::stats_delta`),
-    // so e.g. a bowler who never batted has no `runs` attribute at all.
-    #[serde(default)]
-    pub runs: u64,
-    #[serde(default)]
-    pub wickets: u64,
-    #[serde(default)]
-    pub fours: u64,
-    #[serde(default)]
-    pub sixes: u64,
-    /// Legal balls faced while batting (career total).
-    #[serde(default)]
-    pub balls_faced: u64,
-    /// Times out as a batter — divisor for batting average. Not-out innings
-    /// aren't counted, same convention as the sport's own "average".
-    #[serde(default)]
-    pub dismissals: u64,
-    /// Catches taken (as the credited fielder on any dismissal, batting side
-    /// or bowling side — a catch isn't tied to which side this player was
-    /// fielding for in that innings).
-    #[serde(default)]
-    pub catches: u64,
-    /// Runs conceded while bowling (career total) — divisor for economy.
-    #[serde(default)]
-    pub runs_conceded: u64,
-    /// Legal balls bowled (career total) — divisor for economy, and the
-    /// source for the displayed "overs bowled". Summed as a raw ball count
-    /// rather than `Overs`, and — critically — each contributing match's
-    /// legal-ball count is computed from *that match's own*
-    /// `CricketFormatRecord::balls_per_over` (5-ball, 6-ball, whatever it
-    /// was), not a fixed assumption, so the accumulation itself is exact
-    /// regardless of how many different formats a career spans. The only
-    /// approximation left is display: turning a cross-format total back into
-    /// an "X overs Y balls" figure has to pick *some* over length, since a
-    /// blended career total isn't really in any one format — this uses the
-    /// standard 6-ball over, the same convention real-world career bowling
-    /// figures are always reported in regardless of which tournaments
-    /// contributed to them.
-    #[serde(default)]
-    pub balls_bowled: u64,
-    /// Highest score in a single match.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub best_runs: Option<BestFigureRecord>,
-    /// Best single-match bowling spell — most wickets, with the runs
-    /// conceded and overs bowled in that same spell so it isn't just a bare
-    /// wicket count. See `Dao::update_best_bowling_figures`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub best_bowling: Option<BestBowlingFiguresRecord>,
-}
-
-/// A personal-best single-match bowling spell: most wickets taken, plus the
-/// runs conceded and overs bowled in that same spell — e.g. "5 wickets for
-/// 32 runs off 5.4 overs", not just "5 wickets". Ranked by `wickets` alone
-/// (ties aren't broken by economy). See `Dao::update_best_bowling_figures`
-/// for why this only ever ratchets up, same as `BestFigureRecord`.
-///
-/// `overs` is the exact figure from that one match (in that match's own
-/// `balls_per_over`), not re-derived from a raw ball count under some
-/// assumed over length — unlike the career `balls_bowled` total above, a
-/// single match's own bowling figures have no cross-format ambiguity to
-/// approximate away.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct BestBowlingFiguresRecord {
-    pub wickets: u64,
-    pub runs_conceded: u64,
-    pub overs: OversRecord,
-    pub match_id: String,
-}
-
-/// Lifetime football stats: the common counters plus goals/assists derived
-/// from every confirmed match's goal log, and personal-best single-match
-/// figures.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-pub struct FootballStatsRecord {
-    #[serde(flatten)]
-    pub common: GenericSportStatsRecord,
-    // Sparse for the same reason as `CricketStatsRecord`'s counters — only
-    // ever written once actually incremented.
-    #[serde(default)]
-    pub goals: u64,
-    #[serde(default)]
-    pub assists: u64,
-    /// Most goals scored in a single match.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub best_goals: Option<BestFigureRecord>,
-    /// Most goals + assists combined in a single match — a more complete
-    /// "best game" than assists alone.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub best_goal_contributions: Option<BestFigureRecord>,
-}
-
 /// A personal-best single-match value for one counter, plus the match it was
 /// set in. See `Dao::update_best_figures` for why this only ever ratchets up.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BestFigureRecord {
     pub value: u64,
     pub match_id: String,
+}
+
+impl crate::sports::PersonalBest for BestFigureRecord {
+    const RANK_FIELD: &'static str = "value";
+    fn rank(&self) -> u64 {
+        self.value
+    }
 }
 
 /// `MATCH#<mid>` / `STATCONTRIB#<uid>` — what a single match currently
@@ -2277,10 +1549,17 @@ pub struct RatingRecord {
     pub mu: f64,
     /// Standard deviation, i.e. how unsure we are — `rating::PlayerRating::sigma`.
     pub sigma: f64,
-    /// How many rated matches have been folded into this rating: the
-    /// "· 6 games" shown beside the number from the first rated match on,
-    /// and the cheap check that a repair replay covered the same matches the
-    /// incremental path did.
+    /// How many matches have been folded into this rating — the "· 6 games"
+    /// shown beside it, the counter that decides whether there is anything
+    /// to show at all (`rating::PLACEMENT_MATCHES`), and the cheap check
+    /// that a repair replay covered the same matches the incremental path
+    /// did.
+    ///
+    /// One number does all three because only ranked matches are rated.
+    /// Friendlies move nobody, so there is no second, larger count of
+    /// "matches that moved this rating but nobody should be judged on" to
+    /// keep alongside it, and two players with the same count have the same
+    /// amount of evidence behind them.
     pub matches_rated: u64,
     /// The `starts_at` of the most recent match folded in — when the newest
     /// rated match was **played**, not when it was rated. That is the
@@ -2422,7 +1701,8 @@ mod tests {
     use aws_sdk_dynamodb::types::AttributeValue;
 
     /// `occupies_slot` is the one rule for who takes a spot: in with no
-    /// invitation, or an accepted invitee — never a pending or declined one.
+    /// invitation, an accepted invitee, or a pending invitee whose invite
+    /// reserved a spot — never an ordinary pending or a declined one.
     #[test]
     fn occupies_slot_counts_only_players_who_are_in() {
         let player = |status: Option<&str>| MatchPlayerRecord {
@@ -2440,9 +1720,9 @@ mod tests {
                 kind: InvitationKindRecord::User {
                     invited_user_id: "u".into(),
                 },
+                reserve_spot: false,
             }),
             joined_via: None,
-            ranked_prompt: None,
         };
         assert!(
             player(None).occupies_slot(),
@@ -2453,196 +1733,33 @@ mod tests {
         assert!(!player(Some("declined")).occupies_slot());
     }
 
-    /// A player row with no `ranked_prompt`, as every row written before
-    /// prompts existed reads back. Nothing was asked of them, so nothing is
-    /// owed — and `awaits_ranked_prompt` says so for any id.
+    /// A reserving invite holds the spot while pending, same as being in —
+    /// but stops the moment it's declined (never resurrected by `reserve_spot`
+    /// alone once the invitee has actually answered).
     #[test]
-    fn a_player_row_written_before_prompts_existed_owes_no_answer() {
-        let item = HashMap::from([
-            ("player_id".to_string(), AttributeValue::S("p1".into())),
-            ("user_id".to_string(), AttributeValue::S("u1".into())),
-            ("role".to_string(), AttributeValue::S("player".into())),
-        ]);
-        let rec: MatchPlayerRecord =
-            serde_dynamo::from_attribute_value(AttributeValue::M(item)).unwrap();
-
-        assert!(rec.ranked_prompt.is_none());
-        assert!(!rec.awaits_ranked_prompt("sw1"));
-        assert!(rec.occupies_slot(), "still in, as they always were");
-    }
-
-    /// The invariant the whole switch-to-ranked flow rests on: **an
-    /// outstanding prompt does not cost the player their spot.** If this ever
-    /// starts failing, switching a friendly to ranked silently empties the
-    /// match — and `sides.*.player_count`/`total_player_count`, which are
-    /// maintained by deltas rather than recomputed, would disagree with the
-    /// roster for good.
-    ///
-    /// The second half pins the other direction: a prompt does not *grant* a
-    /// spot either. A pending invitee who somehow carries one is still out,
-    /// because `occupies_slot` reads the invitation and nothing else.
-    #[test]
-    fn an_outstanding_prompt_neither_costs_nor_grants_a_spot() {
-        let prompt = RankedPromptRecord {
-            prompt_id: "sw1".into(),
-            ladder: "tennis".into(),
-            asked_at: "2026-10-14T09:00:00.000Z".into(),
-        };
-        let row = |invitation_status: Option<&str>| MatchPlayerRecord {
-            player_id: "p1".into(),
-            user_id: Some("u1".into()),
+    fn a_reserved_pending_invite_occupies_a_slot_until_declined() {
+        let player = |status: &str| MatchPlayerRecord {
+            player_id: "p".into(),
+            user_id: Some("u".into()),
             display_name: None,
-            side_id: Some("home".into()),
+            side_id: None,
             is_member_of_team: None,
-            invitation: invitation_status.map(|status| EmbeddedInvitationRecord {
+            invitation: Some(EmbeddedInvitationRecord {
                 id: "inv".into(),
                 status: status.into(),
                 invited_by_user_id: "host".into(),
-                invited_at: "2026-10-01T00:00:00Z".into(),
+                invited_at: "2026-09-14T00:00:00Z".into(),
                 responded_at: None,
                 kind: InvitationKindRecord::User {
-                    invited_user_id: "u1".into(),
+                    invited_user_id: "u".into(),
                 },
+                reserve_spot: true,
             }),
             joined_via: None,
-            ranked_prompt: Some(prompt.clone()),
         };
-
-        assert!(
-            row(None).occupies_slot(),
-            "an unanswered prompt holds the place; that is its purpose"
-        );
-        assert!(row(Some("accepted")).occupies_slot());
-        assert!(
-            !row(Some("pending")).occupies_slot(),
-            "a prompt grants nothing an invitation hasn't"
-        );
-    }
-
-    /// Answering is scoped to one ask. A row still carrying a prompt from a
-    /// withdrawn switch owes nothing on the current one, and an answer quoting
-    /// the old id must not be mistaken for the one owed now.
-    #[test]
-    fn a_prompt_is_only_owed_to_the_ask_that_wrote_it() {
-        let mut rec: MatchPlayerRecord =
-            serde_dynamo::from_attribute_value(AttributeValue::M(HashMap::from([
-                ("player_id".to_string(), AttributeValue::S("p1".into())),
-                ("role".to_string(), AttributeValue::S("player".into())),
-            ])))
-            .unwrap();
-        rec.ranked_prompt = Some(RankedPromptRecord {
-            prompt_id: "sw1".into(),
-            ladder: "tennis".into(),
-            asked_at: "2026-10-14T09:00:00.000Z".into(),
-        });
-
-        assert!(rec.awaits_ranked_prompt("sw1"));
-        assert!(
-            !rec.awaits_ranked_prompt("sw2"),
-            "a later ask, not this one"
-        );
-        assert!(!rec.awaits_ranked_prompt(""));
-    }
-
-    /// `ranked_prompt` is skipped when absent, so the common case — every
-    /// match that was created ranked, or friendly and left alone — writes the
-    /// same item it always did. Worth pinning: the meta item is rewritten by
-    /// every like and every comment, and a `null` attribute appearing on all
-    /// of them is both wasted bytes and a pointless stream diff.
-    #[test]
-    fn a_match_with_no_ask_serializes_without_the_attribute() {
-        let rec = MatchRecord {
-            id: "m1".into(),
-            created_by_user_id: "u1".into(),
-            name: "Tuesday singles".into(),
-            description: String::new(),
-            match_type: "tennis".into(),
-            status: "scheduled".into(),
-            starts_at: "2026-10-20T18:00:00.000Z".into(),
-            allow_unassigned: true,
-            total_player_count: 2,
-            location: None,
-            series_id: None,
-            sides: HashMap::new(),
-            header_photos: Vec::new(),
-            authority: HashMap::new(),
-            confirmed_score: None,
-            pending_score: None,
-            like_count: 0,
-            comment_count: 0,
-            live_seq: 0,
-            live_tip_seq: None,
-            format: None,
-            ranked: true,
-            ranked_prompt: None,
-            open_join: None,
-            open_joined_count: 0,
-            created_at: "2026-10-01T00:00:00.000Z".into(),
-        };
-
-        let item: HashMap<String, AttributeValue> =
-            serde_dynamo::to_item(&rec).expect("serializes");
-        assert!(
-            !item.contains_key("ranked_prompt"),
-            "absent, not null: {item:?}"
-        );
-    }
-
-    /// An open ask survives the write/read cycle whole, and the deadline it
-    /// carries is the value the sweep looks for — this item's own `GSI3SK`
-    /// under [`MatchRankedPromptRecord::DUE_GSI3PK`]. The two are written by
-    /// the same update, and nothing but this test ties the record's field to
-    /// the index convention.
-    #[test]
-    fn an_open_ask_round_trips_with_the_deadline_the_sweep_queries() {
-        let ask = MatchRankedPromptRecord {
-            id: "sw1".into(),
-            ladder: "football".into(),
-            opened_at: "2026-10-14T09:00:00.000Z".into(),
-            opened_by_user_id: "u1".into(),
-            deadline: "2026-10-19T18:00:00.000Z".into(),
-            pending: 3,
-        };
-
-        let item: HashMap<String, AttributeValue> = serde_dynamo::to_item(&ask).expect("to item");
-        let back: MatchRankedPromptRecord =
-            serde_dynamo::from_item(item).expect("reads back whole");
-
-        assert_eq!(back, ask);
-        assert_eq!(back.pending, 3);
-        assert_eq!(MatchRankedPromptRecord::DUE_GSI3PK, "RANKEDPROMPTDUE");
-        assert_eq!(
-            back.deadline, "2026-10-19T18:00:00.000Z",
-            "stamped as GSI3SK beside DUE_GSI3PK while the ask is open"
-        );
-    }
-
-    /// `pending` defaults rather than failing, because it is the one field an
-    /// atomic `ADD ranked_prompt.pending :delta` could leave behind if the ask
-    /// were ever written without it. Zero is the safe reading: a sweep skips
-    /// the match, and the roster — not this counter — decides who owes an
-    /// answer.
-    #[test]
-    fn an_ask_missing_its_counter_reads_as_nothing_pending() {
-        let item = HashMap::from([
-            ("id".to_string(), AttributeValue::S("sw1".into())),
-            ("ladder".to_string(), AttributeValue::S("tennis".into())),
-            (
-                "opened_at".to_string(),
-                AttributeValue::S("2026-10-14T09:00:00.000Z".into()),
-            ),
-            (
-                "opened_by_user_id".to_string(),
-                AttributeValue::S("u1".into()),
-            ),
-            (
-                "deadline".to_string(),
-                AttributeValue::S("2026-10-19T18:00:00.000Z".into()),
-            ),
-        ]);
-        let ask: MatchRankedPromptRecord =
-            serde_dynamo::from_attribute_value(AttributeValue::M(item)).unwrap();
-        assert_eq!(ask.pending, 0);
+        assert!(player("pending").occupies_slot());
+        assert!(player("accepted").occupies_slot());
+        assert!(!player("declined").occupies_slot());
     }
 
     /// `Simple`/`Sets` `entries` round-trip through the side_id-keyed map
@@ -2689,22 +1806,6 @@ mod tests {
                 assert_eq!(entries.get("sideA"), Some(&vec![6, 4]));
             }
             _ => panic!("expected sets"),
-        }
-    }
-
-    /// A `Football` score written in the brief window before the `score`
-    /// tally field existed (just `goals`, no aggregate) deserializes to an
-    /// empty tally rather than 500ing on a missing field.
-    #[test]
-    fn football_score_missing_tally_field_deserializes() {
-        let score_av = AttributeValue::M(HashMap::from([
-            ("type".to_string(), AttributeValue::S("football".into())),
-            ("goals".to_string(), AttributeValue::L(vec![])),
-        ]));
-        let rec: ScoreRecord = serde_dynamo::from_attribute_value(score_av).unwrap();
-        match rec {
-            ScoreRecord::Football { score, .. } => assert!(score.is_empty()),
-            _ => panic!("expected football"),
         }
     }
 
@@ -2786,47 +1887,33 @@ mod tests {
         ])
     }
 
+    /// A profile stored before ratings existed reads back unrated, and one
+    /// stored while the opt-in map existed reads back the same — the
+    /// attribute is simply no longer a field, which is what makes removing
+    /// it a no-op for everything already written.
     #[test]
-    fn user_written_before_ratings_existed_is_unrated_and_opted_in_nowhere() {
-        let rec: UserRecord =
-            serde_dynamo::from_attribute_value(AttributeValue::M(legacy_user_fields())).unwrap();
-        assert!(rec.ratings.is_empty(), "nothing rated");
-        assert!(
-            rec.rating_opt_ins.is_empty(),
-            "nobody could opt in before the field existed"
-        );
-        assert!(!rec.has_opted_in("squash"));
+    fn a_user_written_before_or_during_the_opt_in_map_reads_back_unrated() {
+        for extra in [None, Some(("rating_opt_ins", "tennis"))] {
+            let mut item = legacy_user_fields();
+            if let Some((attr, ladder)) = extra {
+                item.insert(
+                    attr.to_string(),
+                    AttributeValue::M(HashMap::from([(
+                        ladder.to_string(),
+                        AttributeValue::S("2026-09-15T10:00:00.000Z".into()),
+                    )])),
+                );
+            }
+            let rec: UserRecord =
+                serde_dynamo::from_attribute_value(AttributeValue::M(item)).unwrap();
+            assert!(rec.ratings.is_empty(), "nothing rated");
+        }
     }
 
-    /// `Dao::opt_in_to_rating` writes the consent time with a raw nested
-    /// `SET rating_opt_ins.#ladder = :opted_in_at` of a string, while this
-    /// side reads `HashMap<String, String>` — two shapes nothing but this test
-    /// ties together. It builds the item the way that write leaves it and
-    /// reads it back. The ladder names are prefixes of one another, to pin
-    /// that `has_opted_in` is an exact-key lookup.
+    /// A rated profile survives the write/read cycle whole — the `ratings`
+    /// map of nested records beside the fields that were already there.
     #[test]
-    fn an_opt_in_as_the_dao_writes_it_reads_back_for_exactly_that_ladder() {
-        let mut item = legacy_user_fields();
-        item.insert(
-            "rating_opt_ins".to_string(),
-            AttributeValue::M(HashMap::from([(
-                "tennis".to_string(),
-                AttributeValue::S("2026-09-15T10:00:00.000Z".into()),
-            )])),
-        );
-        let rec: UserRecord = serde_dynamo::from_attribute_value(AttributeValue::M(item)).unwrap();
-
-        assert!(rec.has_opted_in("tennis"));
-        assert!(!rec.has_opted_in("tennis:doubles"));
-        assert!(!rec.has_opted_in("squash"));
-        assert_eq!(rec.rating_opt_ins["tennis"], "2026-09-15T10:00:00.000Z");
-    }
-
-    /// A rated, opted-in profile survives the write/read cycle whole — the
-    /// `ratings` map of nested records and the `rating_opt_ins` map of
-    /// strings both, beside the fields that were already there.
-    #[test]
-    fn a_rated_opted_in_profile_round_trips() {
+    fn a_rated_profile_round_trips() {
         let rec = UserRecord {
             id: "u1".into(),
             email: "sofia@example.com".into(),
@@ -2845,10 +1932,6 @@ mod tests {
                     last_rated_at: "2026-09-01T19:00:00.000Z".into(),
                 },
             )]),
-            rating_opt_ins: HashMap::from([
-                ("squash".to_string(), "2026-08-01T12:00:00.000Z".to_string()),
-                ("tennis".to_string(), "2026-09-15T10:00:00.000Z".to_string()),
-            ]),
             created_at: "2026-01-01T00:00:00Z".into(),
         };
         let av: AttributeValue = serde_dynamo::to_attribute_value(&rec).unwrap();

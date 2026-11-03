@@ -58,6 +58,10 @@ pub struct Invitation {
     pub invited_at: chrono::DateTime<chrono::Utc>,
     pub responded_at: Option<chrono::DateTime<chrono::Utc>>,
     pub kind: InvitationKind,
+    /// (Match invitations only) whether this invite holds a roster slot for
+    /// the invitee while still pending — see `AddInvitationsInput.reserve_spot`.
+    /// Always `false` for a team invitation.
+    pub reserve_spot: bool,
 }
 
 /// How an invitation is authorised on acceptance.
@@ -148,6 +152,15 @@ pub struct AddInvitationsInput {
     /// admin and others as member in one call by sending two calls). None
     /// defaults to `Member`. Ignored for match invitations.
     pub role: Option<AssignableTeamRole>,
+    /// (Match invitations only) whether every invitee in this batch holds a
+    /// roster slot while their invite is still pending, rather than only once
+    /// they accept — e.g. a key player the organiser wants to count on before
+    /// filling the rest of the roster. None defaults to `false` (today's
+    /// behaviour: an invite reserves nothing until accepted). An admin invite
+    /// that reserves a spot is uncapped, same as any other admin roster add —
+    /// it can push a side/match over its usual cap. Ignored for team
+    /// invitations, which have no capacity concept.
+    pub reserve_spot: Option<bool>,
 }
 
 #[derive(Object)]
@@ -157,14 +170,6 @@ pub struct RespondToInvitationInput {
     /// accepting a match invitation that was not already assigned a side;
     /// ignored otherwise.
     pub side_id: Option<String>,
-    /// "I understand this starts my rating in this sport." Only read when
-    /// accepting an invitation to a ranked match whose ladder the caller
-    /// hasn't opted in to yet: `true` opts them in and accepts, and omitting
-    /// it is refused with 422 (`RatingConsentRequired`), leaving the
-    /// invitation pending. Ignored when declining, for a friendly or a team,
-    /// and once already opted in. Same field as
-    /// `CreateMatchInput.rating_consent`.
-    pub rating_consent: Option<bool>,
 }
 
 #[derive(Object)]
@@ -175,8 +180,6 @@ pub struct RespondByTokenInput {
     /// accepting a match invitation that was not already assigned a side;
     /// ignored otherwise.
     pub side_id: Option<String>,
-    /// Consent to being rated, exactly as `RespondToInvitationInput.rating_consent`.
-    pub rating_consent: Option<bool>,
 }
 
 #[derive(Enum)]
@@ -278,19 +281,6 @@ pub struct JoinLinkPreview {
 pub struct JoinMatchInput {
     pub token: Option<String>,
     pub side_id: Option<String>,
-    /// "I understand this starts my rating in this sport", for getting into a
-    /// ranked match whose ladder the caller hasn't opted in to yet: `true` opts
-    /// them in and goes ahead, and omitting it is refused with 422
-    /// (`RatingConsentRequired`). Ignored on a friendly and once already opted
-    /// in. Same field as `CreateMatchInput.rating_consent`.
-    ///
-    /// This input is shared by `POST /matches/:match_id/join` and `POST
-    /// /matches/:match_id/waitlist/join`, and both ask. Joining the waitlist
-    /// is asking to get in, and the admin who later moves someone in off it
-    /// can't consent on their behalf, so that is the last point at which they
-    /// can be asked. That includes the waitlist join which accepts a pending
-    /// invitation in the same step.
-    pub rating_consent: Option<bool>,
 }
 
 #[derive(Object)]
@@ -384,10 +374,6 @@ pub struct JoinRequestInput {
     /// The side to request, if any — must have ringers enabled. Omit for
     /// unassigned.
     pub side_id: Option<String>,
-    /// Same meaning as `JoinMatchInput::rating_consent` — asked here because
-    /// this is the requester's own action; the admin who later approves it
-    /// can't consent on their behalf.
-    pub rating_consent: Option<bool>,
 }
 
 /// The decision state of a join request.

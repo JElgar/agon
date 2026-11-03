@@ -15,6 +15,7 @@ import { SportPicker } from '@/components/agon/SportPicker'
 import { MultiImageUploadField } from '@/components/agon/MultiImageUploadField'
 import { LocationField, type LocationValue } from '@/components/agon/LocationField'
 import { Avatar } from '@/components/agon/Avatar'
+import { PinnedActionBar } from '@/components/agon/PinnedActionBar'
 import type { TaggedPlayer } from '@/components/agon/PlayerSideEditor'
 import { FootballScoreFields } from '@/components/agon/FootballScoreFields'
 import { CricketScoreFields } from '@/components/agon/CricketScoreFields'
@@ -27,7 +28,8 @@ import { SetsScoreEditor } from '@/components/agon/logmatch/SetsScoreEditor'
 import { formatDefaultHint, playedSets, type SetRow } from '@/lib/logMatch'
 import { cn } from '@/lib/utils'
 import { ROSTER_IDENTITY_MAX_PLAYERS, rosterIdentityName } from '@/lib/members'
-import { toDateTimeLocal } from '@/lib/datetime'
+import { shortDate, toDateTimeLocal } from '@/lib/datetime'
+import { countOccurrencesThrough, occurrenceDate } from '@/lib/seriesOccurrences'
 import { addPendingMatch } from '@/hooks/usePendingMatches'
 
 type CreateMatchInput = components['schemas']['CreateMatchInput']
@@ -190,6 +192,7 @@ export function LogMatchPage() {
   const [endMode, setEndMode] = useState<SeriesEndMode>('after')
   const [endAfterCount, setEndAfterCount] = useState('10')
   const [endOnDate, setEndOnDate] = useState('')
+  const [showAllOccurrences, setShowAllOccurrences] = useState(false)
 
   const [sets, setSets] = useState<SetRow[]>([
     { a: '', b: '' },
@@ -356,6 +359,41 @@ export function LogMatchPage() {
     }
     return null
   }, [repeatEnabled, endMode, endAfterCount, endOnDate, startsAt])
+
+  // A preview of the dates the series will actually create — computed the
+  // same way the server does (`agon_core::series::occurrence_date`), so it
+  // reflects the recurrence rule immediately rather than only after
+  // submitting. `total` (occurrences including this one) is known for a
+  // bounded series and `null` for `Never`, which has no finite list to show
+  // "all" of. Index 0 is this match's own `starts_at`, already shown by the
+  // date field above, so the preview starts from index 1 — "what's next
+  // after this one".
+  const seriesPreview = useMemo(() => {
+    if (!repeatEnabled || seriesError) return null
+    const first = new Date(startsAt)
+    if (Number.isNaN(first.getTime())) return null
+    const weekday = first.getDay()
+
+    let total: number | null = null
+    if (endMode === 'after') {
+      const n = Number(endAfterCount)
+      total = n
+    } else if (endMode === 'on_date' && endOnDate) {
+      const end = new Date(endOnDate)
+      if (Number.isNaN(end.getTime())) return null
+      total = countOccurrencesThrough(first, frequency, weekday, end)
+    }
+
+    const remaining = total !== null ? total - 1 : 3
+    if (remaining <= 0) return null
+    const count = showAllOccurrences ? remaining : Math.min(3, remaining)
+    const dates = Array.from({ length: count }, (_, i) => occurrenceDate(first, frequency, weekday, i + 1))
+    return { dates, remaining }
+  }, [repeatEnabled, seriesError, startsAt, frequency, endMode, endAfterCount, endOnDate, showAllOccurrences])
+
+  useEffect(() => {
+    setShowAllOccurrences(false)
+  }, [frequency, endMode, endAfterCount, endOnDate, startsAt])
 
   const step2Error = useMemo((): string | null => {
     if (repeatEnabled) {
@@ -612,7 +650,7 @@ export function LogMatchPage() {
   )
 
   return (
-    <div className="mx-auto flex min-h-[calc(100vh-10rem)] max-w-xl flex-col gap-[18px]">
+    <div className="mx-auto -mb-28 flex min-h-[calc(100dvh_-_6rem)] max-w-xl flex-col gap-[18px] md:mb-0 md:min-h-0">
       <header className="-ml-2 flex items-center gap-1">
         <button
           type="button"
@@ -695,6 +733,38 @@ export function LogMatchPage() {
                       <p className="text-xs text-muted-foreground">Keeps generating matches indefinitely.</p>
                     )}
                     {seriesError && <p className="text-xs text-destructive">{seriesError}</p>}
+                    {seriesPreview && (
+                      <div className="flex flex-col gap-2">
+                        <div className="flex items-baseline justify-between px-1">
+                          <span className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
+                            Next up
+                          </span>
+                          {!showAllOccurrences && seriesPreview.remaining > 3 && (
+                            <button
+                              type="button"
+                              onClick={() => setShowAllOccurrences(true)}
+                              className="text-xs font-bold text-primary"
+                            >
+                              Show all {seriesPreview.remaining + 1}
+                            </button>
+                          )}
+                        </div>
+                        <div className="flex flex-col rounded-2xl border bg-card px-3">
+                          {seriesPreview.dates.map((date, i) => (
+                            <div
+                              key={date.toISOString()}
+                              className={cn(
+                                'flex items-center gap-2.5 py-2.5 text-sm font-semibold',
+                                i > 0 && 'border-t',
+                              )}
+                            >
+                              <span className="size-2 shrink-0 rounded-full bg-primary" aria-hidden />
+                              {shortDate(date.toISOString())}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </>
                 )}
               </div>
@@ -930,7 +1000,7 @@ export function LogMatchPage() {
         </>
       )}
 
-      <div className="sticky bottom-0 z-10 -mx-4 mt-auto flex flex-col gap-2 border-t bg-card/95 px-4 pt-3 pb-[max(16px,env(safe-area-inset-bottom))] backdrop-blur supports-[backdrop-filter]:bg-card/80 md:mx-0 md:rounded-2xl md:border">
+      <PinnedActionBar className="flex flex-col gap-2 border-t pb-[max(16px,env(safe-area-inset-bottom))] md:mx-0 md:rounded-2xl md:border">
         {stepError && step > 0 && <p className="text-xs text-muted-foreground">{stepError}</p>}
         {submitErrorMessage && <p className="text-sm text-destructive">{submitErrorMessage}</p>}
         {step < 2 ? (
@@ -952,7 +1022,7 @@ export function LogMatchPage() {
             {submitPending ? 'Posting…' : submitLabel}
           </Button>
         )}
-      </div>
+      </PinnedActionBar>
     </div>
   )
 }

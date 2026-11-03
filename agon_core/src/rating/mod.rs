@@ -1,7 +1,11 @@
 //! Player ratings — the pure engine.
 //!
-//! Ratings are opt-in, per sport: nobody has one until they play a ranked game
-//! in that sport, and a ranked game needs every player in it to have opted in.
+//! Ratings are per sport, and playing a ranked match is the whole of the
+//! agreement: anybody in one is rated for it, and friendlies move nobody.
+//! There is nothing to opt in to, so no player in a match can be refused,
+//! asked, or stood in for with a placeholder prior. What a rating withholds
+//! for a while is only its *visibility* — see [`scale::published`].
+//!
 //! None of that is decided here. This module only knows how to turn a rated
 //! result into new ratings; whether a match is rated at all is the caller's
 //! question (see "What this module does *not* know" below).
@@ -19,12 +23,12 @@
 //! The pieces, one file each:
 //!
 //! - [`ladder`] — which pool a result counts towards. The one place a ladder
-//!   key is minted, so a new sport is a compile error in exactly one match
-//!   arm and an opaque string everywhere else.
+//!   key is minted, so it is an opaque string everywhere else.
 //! - [`engine`] — the Weng-Lin wrapper. 1v1, team-vs-team and N-way, draws
 //!   included, all through one code path.
 //! - [`scale`] — native `μ`/`σ` to the Elo-shaped numbers players see: a
-//!   rating and its `±` confidence. There are no named tiers on top of it.
+//!   rating and its `±` confidence, and whether there is enough behind it
+//!   to show either yet. There are no named tiers on top of it.
 //!
 //! Split per concern, matching how `dao/` is laid out — the three jobs above
 //! have nothing to say to each other beyond their types.
@@ -41,8 +45,8 @@
 //!    football match's players are only in the separate `MATCH#/PLAYER#`
 //!    items. Any record-shaped signature would already be a pair.
 //! 2. Eligibility — `ranked`, `Completed`, every side confirmed, and every
-//!    player who took a spot linked to a real account and opted in to this
-//!    sport's rating — is a question about stored state, and the answer to it
+//!    player who took a spot linked to a real account — is a question about
+//!    stored state, and the answer to it
 //!    is what decides whether the engine is called at all. That filter belongs
 //!    at the storage boundary with the records, not in here.
 //!
@@ -64,6 +68,6 @@ pub use engine::{
 };
 pub use ladder::{Ladder, Sport, ladder_for, ladder_for_tag};
 pub use scale::{
-    CONFIDENCE_SIGMAS, DisplayRating, RATING_ORIGIN, SCALE, display, display_confidence,
-    display_rating,
+    CONFIDENCE_SIGMAS, DisplayRating, PLACEMENT_MATCHES, RATING_ORIGIN, SCALE, display,
+    display_confidence, display_rating, published,
 };

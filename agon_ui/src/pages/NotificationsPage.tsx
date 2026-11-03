@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { formatDistanceToNow } from 'date-fns'
 import {
   Bell,
+  CalendarClock,
   CheckCircle2,
   ClipboardCheck,
   Flame,
@@ -614,6 +615,21 @@ function describe(kind: Kind): NotificationView {
         ),
         badgeIcon: LogIn,
         badgeClass: 'bg-primary',
+        href: `/matches/${kind.match_id}`,
+        actions: { viewLabel: 'View match' },
+      }
+    case 'MatchReminder':
+      return {
+        actorName: kind.organizer.name,
+        actorImage: kind.organizer.profile_image?.image_url,
+        message: (
+          <>
+            <strong className="font-medium">{kind.match_name}</strong> is{' '}
+            {formatDistanceToNow(new Date(kind.starts_at), { addSuffix: true })}.
+          </>
+        ),
+        badgeIcon: CalendarClock,
+        badgeClass: 'bg-muted-foreground',
         href: `/matches/${kind.match_id}`,
         actions: { viewLabel: 'View match' },
       }

@@ -37,23 +37,26 @@ mod auth;
 use auth::{DeviceTokenSigner, JwtClaims, JwtVerifier, SCOPE_LIVE_SCORING};
 // Boundary mapping between API models and DAO records.
 mod mapping;
+// Per-sport API-side surface (types, event fold, dispatch helpers, DAO
+// mapping), one module per sport — see its own doc comment.
+mod sports;
 use mapping::{
-    assignable_team_role_str, comment_from_record, dao_internal, deleted_user_profile,
-    derive_live_score, device_platform_to_record, feed_match_from_records, has_roster_identity,
-    invitation_context_match_id, invitation_detail_from_record, invitation_from_record,
-    invitation_status_from_str, invitation_status_str, join_link_from_record,
-    join_link_scope_from_record, join_link_scope_to_record, live_event_from_record,
-    location_to_record, match_format_sport_tag, match_format_to_record, match_from_records,
-    match_player_role_from_record, match_score_from_record, match_score_to_record,
-    match_series_from_record, match_series_occurrence_from_record, match_status_str,
-    match_type_tag, matches_played_for_sport, new_live_event_to_dao, notification_actor_id,
+    apply_new_live_events, assignable_team_role_str, comment_from_record, dao_internal,
+    deleted_user_profile, derive_live_score, device_platform_to_record, feed_match_from_records,
+    has_roster_identity, invitation_context_match_id, invitation_detail_from_record,
+    invitation_from_record, invitation_status_from_str, invitation_status_str,
+    is_live_scored_sport, join_link_from_record, join_link_scope_from_record,
+    join_link_scope_to_record, live_event_from_record, location_to_record, match_format_sport_tag,
+    match_format_to_record, match_from_records, match_player_role_from_record,
+    match_score_from_record, match_score_to_record, match_series_from_record,
+    match_series_occurrence_from_record, match_status_str, match_type_tag,
+    matches_played_for_sport, new_live_event_to_dao, notification_actor_id,
     notification_from_record, ranked_added_players_reason, ranked_lock_reason_for_update,
-    ranked_move_in_reason,
-    rating_consent_step, rating_ladder, rating_ladder_for, rating_opt_ins_from_record,
-    roster_preview_player, score_submission_from_record, score_to_record,
-    search_match_from_records, series_end_record_from_input, switch_to_ranked_reason,
-    team_from_records, team_list_item_from_record, team_member_from_record,
-    unrankable_sport_reason, unratable_players, user_profile_from_record,
+    rating_ladder, rating_ladder_for, rating_placements_from_record, resolve_score_ids,
+    roster_preview_player, score_player_ids, score_side_ids, score_submission_from_record,
+    score_to_record, search_match_from_records, series_end_record_from_input, set_score_players,
+    switch_to_ranked_reason, team_from_records, team_list_item_from_record, team_member_from_record,
+    unrankable_sport_reason, unratable_players, user_profile_from_record, winner_from_score,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -62,19 +65,6 @@ use assets::Assets;
 
 mod match_format;
 use match_format::MatchFormat;
-
-mod detailed_score;
-use detailed_score::{
-    cricket::{
-        CricketBattingEntry, CricketBowlingEntry, CricketDelivery, CricketDeliveryWicket,
-        CricketDismissal, CricketExtras, CricketFallOfWicket, NextBallContext, Overs,
-    },
-    football::{
-        FootballCardEvent, FootballGoalEvent, FootballPenaltyShootoutKick, FootballPeriod,
-        FootballSubstitutionEvent,
-    },
-    netball::{NetballFoulEvent, NetballGoalEvent, NetballPeriod},
-};
 
 mod live_score;
 use live_score::{
@@ -100,8 +90,8 @@ use team::{
 mod notification;
 use notification::{
     CommentNotification, FollowNotification, InvitationAcceptedNotification, LikeNotification,
-    MatchInvitationNotification, Notification, NotificationKind, NotificationPage,
-    ReplyNotification, ScoreConfirmedNotification, ScoreSubmittedNotification,
+    MatchInvitationNotification, MatchReminderNotification, Notification, NotificationKind,
+    NotificationPage, ReplyNotification, ScoreConfirmedNotification, ScoreSubmittedNotification,
     TeamInvitationNotification, TeamMatchJoinableNotification, UnreadCount,
 };
 
@@ -141,8 +131,9 @@ struct Api;
 /// Lifetime stats common to every sport: matches played and the outcome
 /// breakdown (win/draw/loss), plus a derived win percentage. Also the full
 /// shape for a sport with no richer per-player detail to add (tennis,
-/// badminton, squash, table tennis, "other") — `CricketPlayerStats`/
-/// `FootballPlayerStats` flatten this in and add their own fields on top.
+/// badminton, squash, table tennis, "other") — each fully-modeled sport's own
+/// stats type (`crate::sports::<sport>`) flattens this in and adds its own
+/// fields on top.
 #[derive(Object)]
 pub struct GenericPlayerStats {
     pub matches_played: i32,
@@ -167,94 +158,6 @@ pub struct BestFigure {
     pub match_id: String,
 }
 
-/// A personal-best single-match bowling spell: most wickets taken, plus the
-/// runs conceded and overs bowled in that same spell — e.g. "5 wickets for
-/// 32 runs off 5.4 overs", not just "5 wickets". Ranked by wickets alone
-/// (ties aren't broken by economy). Only ever increases — same reasoning as
-/// `BestFigure`.
-#[derive(Object)]
-pub struct BestBowlingFigures {
-    pub wickets: i32,
-    pub runs_conceded: i32,
-    pub overs: Overs,
-    pub match_id: String,
-}
-
-/// Lifetime cricket stats: the common counters plus a batting/bowling summary
-/// derived from every confirmed match's box score. `strike_rate`/
-/// `batting_average`/`economy` are derived server-side (`None` when their
-/// divisor is zero), the same convention as `GenericPlayerStats::
-/// win_percentage`.
-#[derive(Object)]
-pub struct CricketPlayerStats {
-    #[oai(flatten)]
-    pub common: GenericPlayerStats,
-    pub runs: i32,
-    pub wickets: i32,
-    pub fours: i32,
-    pub sixes: i32,
-    /// Legal balls faced while batting (career total).
-    pub balls_faced: i32,
-    /// Times out as a batter — divisor for `batting_average`.
-    pub dismissals: i32,
-    /// Catches taken.
-    pub catches: i32,
-    /// Runs conceded while bowling (career total) — divisor for `economy`.
-    pub runs_conceded: i32,
-    /// Overs bowled (career total). Each contributing match's legal-ball
-    /// count is exact (computed from that match's own `balls_per_over`, 5 or
-    /// 6 or otherwise, not assumed) — only turning the resulting cross-match
-    /// ball total back into an "X overs Y balls" figure uses a fixed
-    /// standard 6-ball over, the same convention real-world career bowling
-    /// figures are always reported in regardless of which formats
-    /// contributed to them.
-    pub overs_bowled: Overs,
-    /// Runs scored per 100 balls faced. `None` with zero balls faced.
-    pub strike_rate: Option<f32>,
-    /// Runs scored per dismissal — an undismissed batter has no average to
-    /// show. `None` with zero dismissals.
-    pub batting_average: Option<f32>,
-    /// Runs conceded per over bowled. `None` with zero overs bowled.
-    pub economy: Option<f32>,
-    /// Highest score in a single match.
-    pub best_runs: Option<BestFigure>,
-    /// Best single-match bowling spell — `overs` is the exact figure from
-    /// that one match (no cross-format approximation needed, unlike
-    /// `overs_bowled` above).
-    pub best_bowling: Option<BestBowlingFigures>,
-}
-
-/// Lifetime football stats: the common counters plus goals/assists derived
-/// from every confirmed match's goal log.
-#[derive(Object)]
-pub struct FootballPlayerStats {
-    #[oai(flatten)]
-    pub common: GenericPlayerStats,
-    pub goals: i32,
-    pub assists: i32,
-    /// Most goals scored in a single match.
-    pub best_goals: Option<BestFigure>,
-    /// Most goals + assists combined in a single match — a more complete
-    /// "best game" than assists alone.
-    pub best_goal_contributions: Option<BestFigure>,
-}
-
-/// A user's lifetime stats, one field per sport — `None` for a sport they've
-/// never played a confirmed match in. Explicit per-sport fields rather than a
-/// list/map so each sport's shape is self-describing: cricket and football
-/// carry their own typed detail, everything else is the common shape as-is.
-#[derive(Object)]
-pub struct UserStats {
-    pub cricket: Option<CricketPlayerStats>,
-    pub football: Option<FootballPlayerStats>,
-    pub tennis: Option<GenericPlayerStats>,
-    pub badminton: Option<GenericPlayerStats>,
-    pub squash: Option<GenericPlayerStats>,
-    pub table_tennis: Option<GenericPlayerStats>,
-    pub netball: Option<GenericPlayerStats>,
-    pub other: Option<GenericPlayerStats>,
-}
-
 #[derive(Object)]
 pub struct UserProfile {
     pub id: String,
@@ -267,6 +170,46 @@ pub struct UserProfile {
     pub following_count: u32,
     /// Whether the requesting user follows this profile. False for your own.
     pub is_followed_by_me: bool,
+    /// This user's **published** ratings, ordered by ladder.
+    ///
+    /// A ladder is absent until they have five ranked matches behind them on
+    /// it. Everybody who plays a ranked match is rated for it, but a rating
+    /// still in its placements is shown to nobody — not to other users, and
+    /// not to the user themselves. There is deliberately no field anywhere
+    /// that exposes one: a brand-new rating reads as `1500 ±750` and moves
+    /// eighty points a game, which is `σ` being honest rather than a number
+    /// anybody should be judged on. `User::rating_placements` is what the
+    /// player sees instead, and only the player.
+    pub ratings: Vec<LadderRating>,
+}
+
+/// One ladder a user has a published rating on.
+#[derive(Object)]
+pub struct LadderRating {
+    /// The ladder, as `Match.rating_ladder` names it (e.g. `"tennis"`).
+    pub ladder: String,
+    /// The headline number. 1500 is an average, unproven player.
+    pub rating: i32,
+    /// The `±` half-width to show beside it. Wide for a freshly placed
+    /// player and narrowing as they play.
+    pub confidence: i32,
+    /// `rating - confidence`: the conservative value, for anything that
+    /// ranks or gates rather than displays.
+    pub floor: i32,
+    /// Ranked matches behind this rating — the "· 12 games" beside it. Every
+    /// match that moved it, since friendlies move nothing.
+    pub matches_rated: u32,
+}
+
+/// Progress towards a published rating on one ladder.
+#[derive(Object)]
+pub struct LadderPlacement {
+    /// The ladder, as `Match.rating_ladder` names it.
+    pub ladder: String,
+    /// Ranked matches played so far.
+    pub played: u32,
+    /// How many are needed in all before the rating is published.
+    pub required: u32,
 }
 
 /// The authenticated user's own view: their public `profile` plus private fields
@@ -278,25 +221,19 @@ struct User {
     /// The same public profile others see (id, name, image, stats, follower
     /// counts).
     profile: UserProfile,
-    /// The rating ladders this user has agreed to be rated on, ordered by
-    /// ladder. Empty until they first consent on a ranked match
-    /// (`rating_consent`), and never shrinks: opting in isn't reversible.
+    /// Ladders this user has a rating on but has not been placed on, with
+    /// how far through their placement matches they are — the "3 more games"
+    /// a client shows in place of a rating.
     ///
-    /// Here and not on `UserProfile`, so only the user themselves sees it. An
-    /// opt-in records a consent, which is between the user and Agon; what
-    /// other people get to see is a rating, which only exists once a ranked
-    /// match has been rated.
-    rating_opt_ins: Vec<RatingOptIn>,
-}
-
-/// One ladder a user has opted in to being rated on.
-#[derive(Object)]
-struct RatingOptIn {
-    /// The ladder, as `Match.rating_ladder` names it (e.g. `"tennis"`).
-    ladder: String,
-    /// When they agreed. The first time only: consenting again on a later
-    /// ranked match in the same sport doesn't move it.
-    opted_in_at: chrono::DateTime<chrono::Utc>,
+    /// Private, and the only thing a user sees while placing: the rating
+    /// being settled is deliberately not here, because it is moving fast by
+    /// design and showing it would be showing a number we are in the middle
+    /// of disagreeing with. Progress is theirs to see; a stranger reading it
+    /// would be reading a hint about a number being withheld.
+    ///
+    /// A ladder appears in exactly one of this and `UserProfile::ratings`,
+    /// never both.
+    rating_placements: Vec<LadderPlacement>,
 }
 
 #[derive(Object)]
@@ -510,41 +447,62 @@ struct MatchPlayer {
     role: MatchPlayerRole,
 }
 
-/// Match score. Tagged union so each sport's scoring shape is modelled
-/// explicitly; clients switch on `type` to pick a renderer. Add new variants
-/// (e.g. golf) without breaking existing clients.
-///
-/// One type serves three roles for football/cricket: the confirmable result
-/// embedded on `Match.confirmed_score`/`pending_score`, the persisted
-/// live-scoring record, and `GET /matches/:id/score`'s live-poll response —
-/// live or finished, confirmed or not, it's the same shape either way. Every
-/// field beyond the settled headline (goal tally; per-innings totals) is
-/// `Option`: `None` for a bare manually-entered result with no richer detail
-/// behind it, `Some(...)` (possibly containing empty collections) once
-/// there's live or backfilled detail to carry.
-#[derive(Union)]
-#[oai(one_of, discriminator_name = "type")]
-enum Score {
-    /// Single number per side: basketball, rugby, and any other sport with no
-    /// richer native shape.
-    Simple(SimpleScore),
-    /// Set-based: tennis, volleyball, badminton.
-    Sets(SetsScore),
-    /// Per-innings runs/wickets/overs (plus optional per-player detail), the
-    /// result of a completed cricket match — live-scored or manually entered.
-    /// Carries enough to render the completed scorecard tile — and to derive
-    /// the result margin ("won by 4 wickets" / "by 100 runs") — without a
-    /// separate fetch of the match's live event log.
-    Cricket(CricketScore),
-    /// Goals scored (plus optional cards/substitutions), the result of a
-    /// completed football match — live-scored or manually entered. Carries
-    /// enough to render the feed/detail goal ticker without a separate fetch.
-    Football(FootballScore),
-    /// Goals scored (plus optional fouls and per-quarter breakdown), the
-    /// result of a completed netball match — live-scored (either
-    /// event-by-event or quarter-only) or manually entered.
-    Netball(NetballScore),
+/// Builds `Score`, `MatchType` and `UserStats` from the sport registry
+/// (`agon_core::for_each_sport!`). Each modeled sport's types are documented
+/// in its own `crate::sports::<sport>` module.
+macro_rules! define_score_and_match_type {
+    (
+        modeled: [$( $variant:ident { tag: $tag:literal, key: $key:ident } ),+ $(,)?],
+        generic: [$( $gvariant:ident { tag: $gtag:literal, key: $gkey:ident, label: $glabel:literal } ),* $(,)?] $(,)?
+    ) => {
+        /// Match score. Tagged union so each sport's scoring shape is modelled
+        /// explicitly; clients switch on `type` to pick a renderer. New sports
+        /// are added to the sport registry (see `agon_core::sports`) without
+        /// breaking existing clients.
+        ///
+        /// One type serves three roles for football/cricket: the confirmable result
+        /// embedded on `Match.confirmed_score`/`pending_score`, the persisted
+        /// live-scoring record, and `GET /matches/:id/score`'s live-poll response —
+        /// live or finished, confirmed or not, it's the same shape either way. Every
+        /// field beyond the settled headline (goal tally; per-innings totals) is
+        /// `Option`: `None` for a bare manually-entered result with no richer detail
+        /// behind it, `Some(...)` (possibly containing empty collections) once
+        /// there's live or backfilled detail to carry.
+        #[derive(Union)]
+        #[oai(one_of, discriminator_name = "type")]
+        enum Score {
+            /// Single number per side: basketball, rugby, and any other sport with no
+            /// richer native shape.
+            Simple(SimpleScore),
+            /// Set-based: tennis, volleyball, badminton.
+            Sets(SetsScore),
+            $( $variant(<agon_core::sports::$key::$variant as crate::sports::Sport>::Score), )+
+        }
+
+        /// The sport a match was played in. Determines the expected `Score` shape
+        /// (e.g. racket sports use `Score::Sets`, football uses `Score::Football`,
+        /// and cricket uses `Score::Cricket`).
+        #[derive(Enum)]
+        #[oai(rename_all = "snake_case")]
+        pub enum MatchType {
+            $( $gvariant, )*
+            $( $variant, )+
+            /// Fallback for sports not yet modelled explicitly.
+            Other,
+        }
+
+        /// A user's lifetime stats, one field per sport — `None` for a sport
+        /// they've never played a confirmed match in. Each modeled sport
+        /// carries its own typed detail; generic sports use the common shape.
+        #[derive(Object)]
+        pub struct UserStats {
+            $( pub(crate) $key: Option<<agon_core::sports::$key::$variant as crate::sports::Sport>::PlayerStats>, )+
+            $( pub $gkey: Option<GenericPlayerStats>, )*
+            pub other: Option<GenericPlayerStats>,
+        }
+    };
 }
+agon_core::for_each_sport!(define_score_and_match_type);
 
 #[derive(Object)]
 struct SimpleScore {
@@ -561,187 +519,9 @@ struct SetsScore {
     entries: HashMap<String, Vec<u32>>,
 }
 
-#[derive(Object)]
-struct CricketScore {
-    /// One entry per innings played, in the order they were played.
-    innings: Vec<CricketScoreInnings>,
-    /// The current/most recent innings' recent-ball window, for a "this
-    /// over"/recent-balls read. `None` once there isn't a current innings
-    /// (between innings, or the match is over) or for a result with no
-    /// ball-by-ball detail behind it — there's nothing to show. Bounded
-    /// (`detailed_score::cricket::RECENT_DELIVERIES_LIMIT`), not the whole
-    /// innings — a finished match's complete ball-by-ball history reads the
-    /// live event log directly (paginated — `GET /matches/:id/live/events`)
-    /// instead of this field.
-    recent_deliveries: Option<Vec<CricketDelivery>>,
-    /// What's known about who's at the crease/bowling for the *next*
-    /// delivery. `None` once there isn't a next delivery to give context for
-    /// (between innings, match over, or no live detail at all).
-    next_ball_context: Option<NextBallContext>,
-    /// True once the log's last innings has ended and no following one has
-    /// started yet (i.e. between innings, or nothing's been recorded).
-    /// `None` for a result with no live log behind it.
-    awaiting_next_innings: Option<bool>,
-    /// Live name/avatar for every player id referenced anywhere else in this
-    /// score — `next_ball_context`'s striker/non-striker/bowler, each
-    /// innings' batting/bowling/fall-of-wicket entries, `recent_deliveries` —
-    /// keyed by that same (match-scoped) player id. Look a player up here
-    /// instead of scanning `Match.players`, which a feed/search card's
-    /// trimmed match type doesn't carry at all. Resolved separately from
-    /// everything else on this type: `score_from_record`/
-    /// `CricketScore::from_events` (the DAO-only paths) always leave this
-    /// empty, since neither has access to player records;
-    /// `Api::hydrate_score_players` fills it afterward with one targeted
-    /// `Dao::batch_get_match_players` lookup for exactly the ids this score
-    /// references, not a full roster query. Not persisted (no counterpart on
-    /// `ScoreRecord`).
-    players: HashMap<String, RosterPreviewPlayer>,
-}
-
-/// One innings' totals, plus optional per-player detail. The totals
-/// (`runs`/`wickets`/`overs`/`declared`) are always present — enough for a
-/// completed-match tile — while `batting`/`bowling`/`fall_of_wickets`/
-/// `extras` are `None` for a result with no per-player detail to hand over
-/// (a manually-entered result with no card, or one that doesn't include
-/// fall-of-wickets — see `CricketBattingEntry`/`CricketBowlingEntry` etc. in
-/// `detailed_score::cricket`, reused here verbatim) and populated for a
-/// live-scored (or backfilled) match. Never includes ball-by-ball deliveries
-/// — that stays in the live event log for a match that wants it.
-#[derive(Object)]
-struct CricketScoreInnings {
-    /// The batting side for this innings (references MatchSide.id).
-    batting_side_id: String,
-    /// The bowling/fielding side for this innings.
-    bowling_side_id: String,
-    /// Total runs scored in the innings.
-    runs: u32,
-    /// Wickets lost (0-10).
-    wickets: u32,
-    /// Overs bowled, e.g. 19 overs + 4 balls into the 20th.
-    overs: Overs,
-    /// Whether the innings was declared closed rather than bowled/timed out.
-    declared: bool,
-    batting: Option<Vec<CricketBattingEntry>>,
-    bowling: Option<Vec<CricketBowlingEntry>>,
-    fall_of_wickets: Option<Vec<CricketFallOfWicket>>,
-    extras: Option<CricketExtras>,
-}
-
-impl CricketScoreInnings {
-    /// The state before any delivery has been recorded in this innings —
-    /// only ever constructed on a live-scoring path (`InningsStart`), so the
-    /// optional card fields start populated (`Some`, empty) rather than
-    /// `None`: there's a live innings behind this from the moment it exists,
-    /// even before its first ball.
-    fn opening(batting_side_id: String, bowling_side_id: String) -> Self {
-        CricketScoreInnings {
-            batting_side_id,
-            bowling_side_id,
-            runs: 0,
-            wickets: 0,
-            overs: Overs { overs: 0, balls: 0 },
-            declared: false,
-            batting: Some(Vec::new()),
-            bowling: Some(Vec::new()),
-            fall_of_wickets: Some(Vec::new()),
-            extras: Some(CricketExtras::default()),
-        }
-    }
-}
-
-/// A football match's result: the goal tally, plus optional richer detail.
-#[derive(Object)]
-struct FootballScore {
-    /// Goal tally, keyed by side id — exactly one entry per side, so a map
-    /// rather than the `Vec<{side_id, ...}>` shape used where order or
-    /// repeats matter (e.g. `goals`).
-    score: HashMap<String, u32>,
-    /// Every goal scored (normal + extra time; penalty-shootout kicks are
-    /// tracked separately and never appear here), if there's a goal-by-goal
-    /// breakdown to hand over. Reuses `detailed_score::football::
-    /// FootballGoalEvent` verbatim.
-    goals: Option<Vec<FootballGoalEvent>>,
-    cards: Option<Vec<FootballCardEvent>>,
-    substitutions: Option<Vec<FootballSubstitutionEvent>>,
-    /// The most recent period marker seen, if any. `None` for a result with
-    /// no live detail behind it.
-    period: Option<FootballPeriod>,
-    /// When each period marker was recorded, keyed by kind — one entry per
-    /// `FootballPeriod` variant seen so far (a marker recorded twice
-    /// overwrites, it doesn't append). Historical facts, not "current
-    /// state" — nothing here goes blank once the match is over.
-    period_times: Option<HashMap<FootballPeriod, chrono::DateTime<chrono::Utc>>>,
-    /// Every penalty-shootout kick recorded, in order taken. Separate from
-    /// `goals`/`score` — a shootout kick never counts as a match goal, only
-    /// towards `penalty_shootout_score` — since the scoreline it decides
-    /// (e.g. "1-1, Riverside win 4-3 on penalties") keeps the 90/120-minute
-    /// score and the shootout tally visually distinct, same as it's reported
-    /// in the real world.
-    penalty_shootout: Option<Vec<FootballPenaltyShootoutKick>>,
-    /// Running shootout tally (kicks scored, not kicks taken) per side,
-    /// derived from `penalty_shootout` the same way `score` is derived from
-    /// `goals`. Keyed by side id, same reasoning as `score`.
-    penalty_shootout_score: Option<HashMap<String, u32>>,
-    /// Live name/avatar for every player id referenced anywhere else in this
-    /// score — `goals`' scorer/assist, `cards`' player, `substitutions`' in/
-    /// out — keyed by that same (match-scoped) player id. Same mechanism and
-    /// rationale as `CricketScore.players`.
-    players: HashMap<String, RosterPreviewPlayer>,
-}
-
-/// A netball match's result: the goal tally, plus optional richer detail.
-/// See `live_score::netball`'s doc comment for how the two live-scoring
-/// methods (event-by-event, quarter-only) both fold into this one shape.
-#[derive(Object)]
-struct NetballScore {
-    /// Goal tally, keyed by side id — exactly one entry per side, same
-    /// "map, not a list" convention as `FootballScore.score`. In
-    /// event-by-event mode this is folded from `goals`; in quarter-only mode
-    /// it's just whatever the last `Period` marker said.
-    score: HashMap<String, u32>,
-    /// Every goal scored, if there's a goal-by-goal breakdown to hand over —
-    /// `None` for a quarter-only-scored or manually-entered result, which
-    /// has no such detail. Reuses `detailed_score::netball::NetballGoalEvent`
-    /// verbatim.
-    goals: Option<Vec<NetballGoalEvent>>,
-    /// Non-scoring infringements, for stat display — same role as
-    /// `FootballScore.cards`. `None` for a quarter-only-scored or
-    /// manually-entered result.
-    fouls: Option<Vec<NetballFoulEvent>>,
-    /// The most recent period marker seen, if any. `None` for a result with
-    /// no live detail behind it.
-    period: Option<NetballPeriod>,
-    /// When each period marker was recorded, keyed by kind — same convention
-    /// as `FootballScore.period_times`.
-    period_times: Option<HashMap<NetballPeriod, chrono::DateTime<chrono::Utc>>>,
-    /// The score *as of* each quarter-end marker — this is what lets a
-    /// client render "Q1 12-9, Q2 22-18, ..." regardless of which
-    /// live-scoring method produced it (see `live_score::netball::
-    /// NetballPeriodEvent::score`'s doc comment).
-    period_scores: Option<HashMap<NetballPeriod, HashMap<String, u32>>>,
-    /// Live name/avatar for every player id referenced anywhere else in this
-    /// score — goals' scorer, fouls' player — keyed by that same
-    /// (match-scoped) player id. Same mechanism and rationale as
-    /// `FootballScore.players`.
-    players: HashMap<String, RosterPreviewPlayer>,
-}
-
-/// The sport a match was played in. Determines the expected `Score` shape
-/// (e.g. racket sports use `Score::Sets`, football uses `Score::Football`,
-/// and cricket uses `Score::Cricket`). Extend as more sports are supported.
-#[derive(Enum)]
-#[oai(rename_all = "snake_case")]
-pub enum MatchType {
-    Tennis,
-    Badminton,
-    Squash,
-    TableTennis,
-    Football,
-    Cricket,
-    Netball,
-    /// Fallback for sports not yet modelled explicitly.
-    Other,
-}
+// Each fully-modeled sport's own score/format/live-event/stats types live in
+// `crate::sports::<sport>`; `Score`/`MatchType`/`UserStats` above are
+// generated from the sport list by `define_score_and_match_type!`.
 
 /// Lifecycle state of a match. Independent of score confirmation: a `Completed`
 /// match may still have an unconfirmed score.
@@ -1087,6 +867,10 @@ struct CreateMatchInviteInput {
     /// reference them too, the same way `CreateMatchSideInput.client_id`
     /// lets a score reference a side before it has a real id.
     invited_externals: Vec<CreateMatchExternalInviteInput>,
+    /// Whether every invitee in this batch holds a roster slot while their
+    /// invite is still pending, instead of only once they accept. Omit for
+    /// the default (`false`) — see `AddInvitationsInput::reserve_spot`.
+    reserve_spot: Option<bool>,
 }
 
 #[derive(Object)]
@@ -1134,10 +918,10 @@ struct CreateMatchInput {
     /// friendly, the default. Refused (400) for a sport with no rating ladder
     /// (`other`).
     ///
-    /// Friendly by default because ratings are opt-in, per sport, and a
-    /// ranked match needs everyone playing in it to have opted in. Ranked by
-    /// default would put that requirement in front of most games, which are
-    /// casual; ranked is the organiser's explicit choice instead.
+    /// Friendly by default because a ranked match is the one that counts:
+    /// everybody who plays in one is rated for it, and nothing else moves a
+    /// rating. Most games are casual, so ranked is the organiser's explicit
+    /// choice rather than something a kickabout falls into.
     ///
     /// **Creation is deliberately unconstrained, including for a match that
     /// has already been played.** This endpoint accepts a completed match with
@@ -1157,20 +941,6 @@ struct CreateMatchInput {
     /// rather than restricting creation, and isn't worth building before
     /// anyone is seen doing it.
     ranked: Option<bool>,
-    /// "I understand this starts my rating in this sport." Needed only when
-    /// creating a ranked match the creator plays in (`creator_side_client_id`)
-    /// without being opted in to that sport's ladder yet: `true` opts them in
-    /// and creates the match, and omitting it is refused with 422
-    /// (`RatingConsentRequired`), which is how a client knows to ask. Ignored
-    /// for a friendly, for a creator who only organises, and once opted in.
-    ///
-    /// The same field, with the same 422, is on every way into a match that
-    /// someone takes on their own say-so: `RespondToInvitationInput`,
-    /// `RespondByTokenInput` and `JoinMatchInput` (which `POST
-    /// /matches/:match_id/waitlist/join` shares). Invitees consent when they
-    /// accept, so inviting people to a ranked match asks nothing of anyone at
-    /// creation.
-    rating_consent: Option<bool>,
 }
 
 // ===========================================================================
@@ -1898,20 +1668,6 @@ enum CreateMatchResponse {
 
     #[oai(status = 400)]
     ValidationError(PlainText<String>),
-
-    /// The match is ranked, the creator plays in it, and they haven't opted in
-    /// to its sport's ladder: resend with `rating_consent: true` once they've
-    /// agreed. Nothing was created.
-    ///
-    /// 422 on every endpoint that asks for `rating_consent`, and chosen
-    /// because none of them used it: a consent screen has to tell "ask the
-    /// user" apart from every other refusal on the same call, and the others
-    /// already took 400 (create, join), 403 (not your invitation, and any
-    /// device-scoped token), 404 and 409 (full, or already on the roster or
-    /// waitlist). 412 and 428 were the other candidates, but both mean HTTP
-    /// conditional-request headers, which this isn't.
-    #[oai(status = 422)]
-    RatingConsentRequired(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -2521,14 +2277,6 @@ enum JoinMatchResponse {
     /// the roster — see `RosterConflict::kind`.
     #[oai(status = 409)]
     Conflict(Json<RosterConflict>),
-
-    /// The match is ranked and the caller hasn't opted in to its sport's
-    /// ladder: resend with `rating_consent: true` once they've agreed. Nothing
-    /// was written. Only reached once every other check has passed, so a full
-    /// match is still the 409 above. See
-    /// `CreateMatchResponse::RatingConsentRequired` for why 422.
-    #[oai(status = 422)]
-    RatingConsentRequired(PlainText<String>),
 }
 
 /// A person waiting for a spot on a match/side — see
@@ -2583,15 +2331,6 @@ enum WaitlistJoinResponse {
     /// waitlist.
     #[oai(status = 409)]
     Conflict(PlainText<String>),
-
-    /// The match is ranked and the caller hasn't opted in to its sport's
-    /// ladder: resend with `rating_consent: true` once they've agreed. Nothing
-    /// was written, and a pending invitation is still pending. Asked here as
-    /// well as on join, because the admin who later moves someone in off the
-    /// waitlist can't consent for them. See
-    /// `CreateMatchResponse::RatingConsentRequired` for why 422.
-    #[oai(status = 422)]
-    RatingConsentRequired(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -2747,11 +2486,6 @@ enum CreateJoinRequestResponse {
     /// (pending or decided) for this match.
     #[oai(status = 409)]
     Conflict(PlainText<String>),
-
-    /// The match is ranked and the caller hasn't opted in to its sport's
-    /// ladder — same meaning as `JoinMatchResponse::RatingConsentRequired`.
-    #[oai(status = 422)]
-    RatingConsentRequired(PlainText<String>),
 }
 
 /// List a match's join requests, oldest-requested first — admin-only, same
@@ -2777,13 +2511,6 @@ enum DecideJoinRequestResponse {
     /// nothing else changes.
     #[oai(status = 204)]
     Ok,
-
-    /// Approving would need rating consent the requester never gave — same
-    /// backstop as `MoveInFromWaitlistResponse::ValidationError`, since an
-    /// admin can't consent on someone else's behalf. Doesn't apply to a
-    /// decline.
-    #[oai(status = 400)]
-    ValidationError(PlainText<String>),
 
     /// The caller isn't a match admin.
     #[oai(status = 403)]
@@ -2843,14 +2570,6 @@ enum RespondToInvitationResponse {
     /// invitation and queues for the spot in one step.
     #[oai(status = 409)]
     Conflict(Json<RosterConflict>),
-
-    /// Accepting an invitation to a ranked match whose sport's ladder the
-    /// caller hasn't opted in to: resend with `rating_consent: true` once
-    /// they've agreed. The invitation is still pending. Judged against the
-    /// match as it is now, so an invitation sent while it was a friendly asks
-    /// too. See `CreateMatchResponse::RatingConsentRequired` for why 422.
-    #[oai(status = 422)]
-    RatingConsentRequired(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -2865,10 +2584,6 @@ enum RespondByTokenResponse {
     /// See `RespondToInvitationResponse::Conflict`.
     #[oai(status = 409)]
     Conflict(Json<RosterConflict>),
-
-    /// As `RespondToInvitationResponse::RatingConsentRequired`.
-    #[oai(status = 422)]
-    RatingConsentRequired(PlainText<String>),
 }
 
 /// Result of a follow/unfollow action.
@@ -2977,7 +2692,7 @@ impl Api {
         // Own profile: not "followed by me".
         let profile = user_profile_from_record(&record, false);
         Ok(GetUserResponse::User(Json(User {
-            rating_opt_ins: rating_opt_ins_from_record(&record),
+            rating_placements: rating_placements_from_record(&record),
             email: record.email,
             profile,
         })))
@@ -3031,7 +2746,7 @@ impl Api {
             .ok_or_else(|| Error::from_string("user not found", StatusCode::NOT_FOUND))?;
         let profile = user_profile_from_record(&record, false);
         Ok(UpdateUserResponse::User(Json(User {
-            rating_opt_ins: rating_opt_ins_from_record(&record),
+            rating_placements: rating_placements_from_record(&record),
             email: record.email,
             profile,
         })))
@@ -3174,15 +2889,11 @@ impl Api {
             following_count: 0,
             unread_count: 0,
             stats: dao::records::UserStatsRecord::default(),
-            // A brand-new account has played nothing and consented to
-            // nothing: rated on no ladder, opted in to none — the same state a
-            // profile written before ratings existed deserializes into.
-            // Neither is settable at signup. Opting in is ticking the consent
-            // box on a ranked game, and only the rating pipeline writes
-            // `ratings`; both are later changes, and these are here only
-            // because the record now has the fields.
+            // A brand-new account has played nothing, so it is rated on no
+            // ladder — the same state a profile written before ratings
+            // existed deserializes into. Not settable at signup: only the
+            // rating pipeline writes `ratings`.
             ratings: HashMap::new(),
-            rating_opt_ins: HashMap::new(),
             created_at: now_iso(),
         };
         match dao.create_user(&jwt_data.sub, &record).await {
@@ -3196,7 +2907,7 @@ impl Api {
         }
         let profile = user_profile_from_record(&record, false);
         Ok(CreateUserResponse::User(Json(User {
-            rating_opt_ins: rating_opt_ins_from_record(&record),
+            rating_placements: rating_placements_from_record(&record),
             email: record.email,
             profile,
         })))
@@ -3856,7 +3567,6 @@ impl Api {
                 is_member_of_team: None,
                 invitation: None,
                 joined_via: None,
-                ranked_prompt: None,
             });
         }
         for invite in &input.invites {
@@ -3864,6 +3574,7 @@ impl Api {
                 .side_client_id
                 .as_ref()
                 .and_then(|c| side_ids.get(c).cloned());
+            let reserve_spot = invite.reserve_spot.unwrap_or(false);
             for user_id in &invite.invited_user_ids {
                 let (player, inv) = build_invited_player(
                     &match_id,
@@ -3872,6 +3583,7 @@ impl Api {
                     side_id.clone(),
                     Some(user_id.clone()),
                     None,
+                    reserve_spot,
                     &now,
                 );
                 player_ids.insert(user_id.clone(), player.player_id.clone());
@@ -3886,6 +3598,7 @@ impl Api {
                     side_id.clone(),
                     None,
                     Some(external.name.clone()),
+                    reserve_spot,
                     &now,
                 );
                 player_ids.insert(external.client_id.clone(), player.player_id.clone());
@@ -4046,7 +3759,6 @@ impl Api {
             // spot at creation is the caller (who consents inline, above) or
             // an invitee, who is asked when they accept. Prompts exist only
             // for a *switch*, which finds players already in place.
-            ranked_prompt: None,
             authority: authority.clone(),
             // Not configurable at creation — an organiser opens a match to
             // the public afterwards, via the open-join settings endpoint.
@@ -4067,17 +3779,6 @@ impl Api {
         // they have an account. It's also why there is no "no externals on a
         // ranked match" check here: creation can only invite people, never add
         // them directly. (`update_match`'s `added_players` can, and is checked.)
-        //
-        // Last before the first write, so that neither a refusal nor any
-        // validation above leaves an opt-in behind.
-        if creator_player_id.is_some()
-            && let Some(message) =
-                settle_rating_consent(dao, &uid, &match_record, input.rating_consent).await?
-        {
-            return Ok(CreateMatchResponse::RatingConsentRequired(PlainText(
-                message,
-            )));
-        }
 
         match dao.create_match(&match_record, &player_records).await {
             Ok(()) => {}
@@ -4146,8 +3847,15 @@ impl Api {
         m.viewer_role =
             caller_match_authority_role(&agg.match_, &uid).map(match_player_role_from_record);
         // Only worth the extra team lookups for a non-participant on a match
-        // that actually offers team self-join somewhere.
-        if m.viewer_role.is_none() && agg.sides.iter().any(|s| s.team_join_enabled) {
+        // that actually offers team self-join somewhere. Checked against the
+        // roster (`caller_is_participant`), not `viewer_role`: a match's
+        // owner/admin can hold authority without ever being on the roster
+        // (e.g. a series occurrence's organiser never plays in the
+        // template), so gating on `viewer_role.is_none()` hid this caller's
+        // own eligibility to join their own match as a player.
+        if !caller_is_participant(&agg.players, &uid)
+            && agg.sides.iter().any(|s| s.team_join_enabled)
+        {
             let eligible = caller_team_join_sides(dao, &agg, &uid).await?;
             m.viewer_team_join_side_ids = (!eligible.is_empty()).then_some(eligible);
         }
@@ -4309,53 +4017,38 @@ impl Api {
             input.ranked.unwrap_or(agg.match_.ranked),
         );
         let added_players = input.added_players.as_deref().unwrap_or_default();
-        if let Some(ladder) = &resulting_ladder
-            && (ranked_change == Some(true) || !added_players.is_empty())
+        // The ladder itself is no longer needed, only whether the match would
+        // have one: the surviving rules say nothing about which sport it is.
+        if resulting_ladder.is_some() && (ranked_change == Some(true) || !added_players.is_empty())
         {
-            // The players already in, and those waiting, only need judging on a
-            // switch: a match that was already ranked checked each of them on
-            // the way in (bar the race `settle_rating_consent` describes).
-            let (in_a_spot, waitlisted) = if ranked_change == Some(true) {
-                let in_a_spot: Vec<&dao::records::MatchPlayerRecord> =
-                    agg.players.iter().filter(|p| p.occupies_slot()).collect();
-                let waitlisted = dao.list_waitlist(&match_id).await.map_err(dao_internal)?;
-                (in_a_spot, waitlisted)
+            // The players already in only need judging on a switch: a match
+            // that was already ranked judged each of them on the way in.
+            //
+            // This used to read the waitlist and then batch-read every
+            // profile involved, both for the opt-in rule. Nobody has to have
+            // opted in for a match to rate now, so all that is left to check
+            // is whether a player has an account — which their roster row
+            // already says. The switch costs no extra read at all.
+            let in_a_spot: Vec<&dao::records::MatchPlayerRecord> = if ranked_change == Some(true) {
+                agg.players.iter().filter(|p| p.occupies_slot()).collect()
             } else {
-                (Vec::new(), Vec::new())
+                Vec::new()
             };
-            let user_ids: Vec<String> = in_a_spot
-                .iter()
-                .filter_map(|p| p.user_id.clone())
-                .chain(waitlisted.iter().map(|e| e.user_id.clone()))
-                .chain(added_players.iter().filter_map(|p| p.user_id.clone()))
-                .collect();
-            let users = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
 
             let unratable_in_a_spot = unratable_players(
-                ladder,
                 in_a_spot
                     .iter()
                     .map(|p| (p.user_id.as_deref(), p.display_name.as_deref())),
-                &users,
             );
-            let unratable_waitlisted = unratable_players(
-                ladder,
-                waitlisted.iter().map(|e| (Some(e.user_id.as_str()), None)),
-                &users,
-            );
-            if let Some(reason) =
-                switch_to_ranked_reason(ladder, &unratable_in_a_spot, &unratable_waitlisted)
-            {
+            if let Some(reason) = switch_to_ranked_reason(&unratable_in_a_spot) {
                 return Ok(UpdateMatchResponse::ValidationError(PlainText(reason)));
             }
             let unratable_added = unratable_players(
-                ladder,
                 added_players
                     .iter()
                     .map(|p| (p.user_id.as_deref(), p.display_name.as_deref())),
-                &users,
             );
-            if let Some(reason) = ranked_added_players_reason(ladder, &unratable_added) {
+            if let Some(reason) = ranked_added_players_reason(&unratable_added) {
                 return Ok(UpdateMatchResponse::ValidationError(PlainText(reason)));
             }
         }
@@ -4588,10 +4281,7 @@ impl Api {
         // completion time.
         let mut derived_winner_side_id: Option<String> = None;
         if input.score.is_some()
-            && matches!(
-                agg.match_.match_type.as_str(),
-                "football" | "cricket" | "netball"
-            )
+            && is_live_scored_sport(&agg.match_.match_type)
             && let Some(record) = dao
                 .get_match_score(&match_id, &agg.match_.match_type)
                 .await
@@ -4644,17 +4334,7 @@ impl Api {
 
         if let Some(score) = effective_score {
             // Validate every scored side exists on the match.
-            let score_sides: Vec<&str> = match score {
-                Score::Simple(s) => s.entries.keys().map(|k| k.as_str()).collect(),
-                Score::Sets(s) => s.entries.keys().map(|k| k.as_str()).collect(),
-                Score::Cricket(s) => s
-                    .innings
-                    .iter()
-                    .flat_map(|i| [i.batting_side_id.as_str(), i.bowling_side_id.as_str()])
-                    .collect(),
-                Score::Football(s) => s.score.keys().map(|k| k.as_str()).collect(),
-                Score::Netball(s) => s.score.keys().map(|k| k.as_str()).collect(),
-            };
+            let score_sides = score_side_ids(score);
             if score_sides.iter().any(|sid| !valid_sides.contains(sid)) {
                 return Ok(UpdateMatchResponse::ValidationError(PlainText(
                     "score references a side that is not part of this match".into(),
@@ -4814,7 +4494,6 @@ impl Api {
                     is_member_of_team: None,
                     invitation: None,
                     joined_via: None,
-                    ranked_prompt: None,
                 };
                 dao.add_match_player_tx(&match_id, &player)
                     .await
@@ -5172,13 +4851,10 @@ impl Api {
             live_tip_seq: None,
             format: None,
             // A series occurrence is always friendly. `SeriesRecord` has no
-            // `ranked` of its own, and generation puts *other* people's
-            // players into spots without asking them — which is the one thing
-            // a rating needs (see `rating_consent`). An organiser can switch a
-            // single occurrence to ranked afterwards, which asks everyone in
-            // it. A ranked *series* needs its own consent design first.
+            // `ranked` of its own, so there is nowhere to say otherwise. An
+            // organiser can switch a single occurrence to ranked afterwards;
+            // a ranked *series* needs a design of its own first.
             ranked: false,
-            ranked_prompt: None,
             authority: std::collections::HashMap::from([(
                 uid.clone(),
                 dao::records::MatchPlayerRole::Owner,
@@ -5657,44 +5333,8 @@ impl Api {
         }
         let mut score = match_score_from_record(&record);
 
-        match &mut score {
-            Score::Cricket(s) => {
-                let (balls_per_over, wide_is_extra_ball, no_ball_is_extra_ball) =
-                    mapping::cricket_format_args(format);
-                for e in new_events {
-                    let LiveEventInput::Cricket(event) = &e.event else {
-                        // Sport mismatch is already rejected earlier in
-                        // `append_live_events`; unreachable here in practice.
-                        return Ok(None);
-                    };
-                    s.apply_event(
-                        e.occurred_at,
-                        event,
-                        balls_per_over,
-                        wide_is_extra_ball,
-                        no_ball_is_extra_ball,
-                    );
-                }
-            }
-            Score::Football(s) => {
-                for e in new_events {
-                    let LiveEventInput::Football(event) = &e.event else {
-                        return Ok(None);
-                    };
-                    s.apply_event(e.occurred_at, event);
-                }
-            }
-            Score::Netball(s) => {
-                for e in new_events {
-                    let LiveEventInput::Netball(event) = &e.event else {
-                        return Ok(None);
-                    };
-                    s.apply_event(e.occurred_at, event);
-                }
-            }
-            // Live scoring only ever creates a `Cricket`/`Football`/`Netball`
-            // record for this match_id/sport pair — unreachable in practice.
-            Score::Simple(_) | Score::Sets(_) => return Ok(None),
+        if !apply_new_live_events(&mut score, new_events, format) {
+            return Ok(None);
         }
 
         self.persist_score(dao, match_id, &score, Some(new_last_seq))
@@ -7086,6 +6726,7 @@ impl Api {
                     .map(|n| (None, Some(n.clone()))),
             );
 
+        let reserve_spot = input.reserve_spot.unwrap_or(false);
         let mut created = Vec::new();
         for (user_id, display_name) in invitees {
             let (player, invitation) = build_invited_player(
@@ -7095,11 +6736,22 @@ impl Api {
                 input.side_id.clone(),
                 user_id,
                 display_name,
+                reserve_spot,
                 &now,
             );
-            dao.put_match_player(&match_id, &player)
-                .await
-                .map_err(dao_internal)?;
+            // A reserving invite takes a roster spot immediately, so it needs
+            // the same headcount bump an ad-hoc organiser add gets — uncapped,
+            // same as that add (see `Dao::add_match_player_tx`'s doc comment).
+            // A non-reserving invite is unchanged: a bare put, no spot taken.
+            if reserve_spot {
+                dao.add_match_player_tx(&match_id, &player)
+                    .await
+                    .map_err(dao_internal)?;
+            } else {
+                dao.put_match_player(&match_id, &player)
+                    .await
+                    .map_err(dao_internal)?;
+            }
             dao.create_invitation(&invitation)
                 .await
                 .map_err(dao_internal)?;
@@ -7495,17 +7147,6 @@ impl Api {
             })));
         }
 
-        // Rating consent comes after every other check above (already on the
-        // roster, a revoked link, not eligible for team self-join, a side the
-        // scope doesn't allow, full). That way each of those is reported as
-        // itself rather than as "consent needed", and none of them leaves an
-        // opt-in behind. A full match is a 409 before anyone is asked; the
-        // waitlist join it points to asks in its turn.
-        if let Some(message) =
-            settle_rating_consent(dao, &uid, &agg.match_, input.rating_consent).await?
-        {
-            return Ok(JoinMatchResponse::RatingConsentRequired(PlainText(message)));
-        }
         let target_side = target_side_id
             .as_ref()
             .and_then(|sid| agg.sides.iter().find(|s| &s.side_id == sid));
@@ -7518,11 +7159,6 @@ impl Api {
             is_member_of_team: None,
             invitation: None,
             joined_via: Some(joined_via),
-            // `settle_rating_consent` above means a joiner of a ranked match
-            // is opted in by the time this row exists, so there is nothing to
-            // ask them — even if the match has an open switch-to-ranked ask
-            // that other players still owe an answer to.
-            ranked_prompt: None,
         };
 
         let join_result = if is_open_join {
@@ -7895,14 +7531,6 @@ impl Api {
             Err(msg) => return Ok(CreateJoinRequestResponse::ValidationError(PlainText(msg))),
         };
 
-        if let Some(message) =
-            settle_rating_consent(dao, &uid, &agg.match_, input.rating_consent).await?
-        {
-            return Ok(CreateJoinRequestResponse::RatingConsentRequired(PlainText(
-                message,
-            )));
-        }
-
         let request = dao::records::MatchJoinRequestRecord {
             user_id: uid.clone(),
             side_id,
@@ -8024,19 +7652,12 @@ impl Api {
                 message: message.into(),
             })));
         }
-        if let Some(ladder) = rating_ladder(&agg.match_) {
-            let users = dao
-                .batch_get_users(std::slice::from_ref(&request.user_id))
-                .await
-                .map_err(dao_internal)?;
-            let unratable =
-                unratable_players(&ladder, [(Some(request.user_id.as_str()), None)], &users);
-            if let Some(reason) = ranked_move_in_reason(&ladder, &unratable) {
-                return Ok(DecideJoinRequestResponse::ValidationError(PlainText(
-                    reason,
-                )));
-            }
-        }
+        // Nothing is gated on rating consent any more (see
+        // `move_in_from_waitlist`'s own comment on this), and a join
+        // request always names a real account
+        // (`MatchJoinRequestRecord`'s doc comment), so the one rule that
+        // survives elsewhere — no guests in a ranked match — cannot fire
+        // here either.
 
         let target_side = request
             .side_id
@@ -8050,7 +7671,6 @@ impl Api {
             is_member_of_team: None,
             invitation: None,
             joined_via: Some(dao::records::JoinSourceRecord::Open),
-            ranked_prompt: None,
         };
         let now = now_iso();
         if let Err(e) = dao
@@ -8239,17 +7859,6 @@ impl Api {
                 waitlisted_at: now.clone(),
                 invitation_id: Some(invitation_id.clone()),
             };
-            // Joining a ranked match's waitlist asks for rating consent, like
-            // getting into it does: this is how a waiting player asks to get
-            // in, and the admin who later moves them in can't consent for
-            // them. That includes accepting an invitation onto the waitlist,
-            // which would otherwise be a way round the accept's own check.
-            // Last before the write, so no refusal leaves an opt-in behind.
-            if let Some(refusal) =
-                settle_waitlist_rating_consent(dao, &uid, &agg.match_, input.rating_consent).await?
-            {
-                return Ok(refusal);
-            }
             match dao
                 .accept_invitation_onto_waitlist_tx(&invitation_id, &uid, &now, &now, &entry)
                 .await
@@ -8320,12 +7929,6 @@ impl Api {
                 waitlisted_at: now.clone(),
                 invitation_id: None,
             };
-            // As in the invitation branch above.
-            if let Some(refusal) =
-                settle_waitlist_rating_consent(dao, &uid, &agg.match_, input.rating_consent).await?
-            {
-                return Ok(refusal);
-            }
             match dao.waitlist_join_tx(&match_id, &entry).await {
                 Ok(()) => entry,
                 Err(dao::DaoError::Conflict(msg)) => {
@@ -8457,25 +8060,14 @@ impl Api {
             })));
         }
 
-        // A ranked match only has opted-in players in its spots, and an admin
-        // can't consent for someone else, so a waiting player who isn't opted
-        // in stays waiting. Joining a ranked match's waitlist asks for consent
-        // and switching to ranked judges the waitlist, so this is a backstop
-        // (see `ranked_move_in_reason`). After the capacity check, like every
-        // other way into a spot.
-        if let Some(ladder) = rating_ladder(&agg.match_) {
-            let users = dao
-                .batch_get_users(std::slice::from_ref(&entry.user_id))
-                .await
-                .map_err(dao_internal)?;
-            let unratable =
-                unratable_players(&ladder, [(Some(entry.user_id.as_str()), None)], &users);
-            if let Some(reason) = ranked_move_in_reason(&ladder, &unratable) {
-                return Ok(MoveInFromWaitlistResponse::ValidationError(PlainText(
-                    reason,
-                )));
-            }
-        }
+        // Moving a waiting player into a ranked match used to be refused
+        // unless they had opted in, with a profile read of its own to find
+        // out — an admin can't consent for somebody else, so an unconsented
+        // player stayed waiting. Nothing is gated on consent now, and a
+        // waitlist entry always names an account
+        // (`MatchWaitlistEntryRecord`), so the only rule that survives
+        // elsewhere — no guests in a ranked match — cannot fire here. The
+        // check and its read are both gone.
 
         // A waitlisted player never has a roster row (a pending invitee's
         // placeholder gets deleted, not linked, the moment they land on the
@@ -8497,7 +8089,6 @@ impl Api {
             is_member_of_team: None,
             invitation: None,
             joined_via: Some(dao::records::JoinSourceRecord::Waitlist),
-            ranked_prompt: None,
         };
         if let Err(e) = dao
             .move_in_from_waitlist_tx(
@@ -9024,7 +8615,7 @@ impl Api {
     ) -> Result<RevokeInvitationResponse> {
         info!("Revoking invitation {invitation_id}");
         let uid = self.require_uid(dao, &jwt_data).await?;
-        match dao
+        let rec = match dao
             .get_invitation(&invitation_id)
             .await
             .map_err(dao_internal)?
@@ -9039,10 +8630,30 @@ impl Api {
                     "only the inviter can revoke this invitation".into(),
                 )));
             }
-            Some(_) => {}
-        }
+            Some(rec) => rec,
+        };
         match dao.delete_invitation(&invitation_id).await {
-            Ok(()) => Ok(RevokeInvitationResponse::Ok),
+            Ok(()) => {
+                // A revoked reserving invite was holding a roster slot —
+                // free it now. Best-effort: the invitation itself is already
+                // gone, so a failure here leaves a stale (but harmless to
+                // discover and retry) over-count rather than undoing the
+                // revoke.
+                let now = now_iso();
+                if let Err(e) = dao.release_reserved_match_slot(&rec, &now).await {
+                    error!(
+                        "Failed to release reserved slot for revoked invitation {invitation_id}: {e}"
+                    );
+                } else if let dao::records::InvitationContextRecord::Match { match_id, .. } =
+                    &rec.context
+                    && let Err(e) = dao.refresh_side_roster_previews(match_id).await
+                {
+                    error!(
+                        "Failed to refresh roster previews after revoking invitation {invitation_id}: {e}"
+                    );
+                }
+                Ok(RevokeInvitationResponse::Ok)
+            }
             // Revoked by a concurrent request between the check above and here.
             Err(dao::DaoError::NotFound(_)) => Ok(RevokeInvitationResponse::NotFound(PlainText(
                 "invitation not found".into(),
@@ -9085,7 +8696,6 @@ impl Api {
         }
 
         let responded_at = now_iso();
-        let rating_consent = input.rating_consent;
         let status = match input.0.response {
             // Accept synchronously and atomically: bind the accepter to the
             // invitation, link the roster entry, and (match) write the accepter's
@@ -9104,18 +8714,6 @@ impl Api {
                             message: message.into(),
                         },
                     )));
-                }
-                // Rating consent last, after the capacity check, so a full
-                // match reports itself rather than asking for consent it
-                // can't use, and no refusal leaves an opt-in behind. Judged
-                // against the match's `ranked` now, not when it invited them.
-                if let Some(agg) = &invited
-                    && let Some(message) =
-                        settle_rating_consent(dao, &uid, &agg.match_, rating_consent).await?
-                {
-                    return Ok(RespondToInvitationResponse::RatingConsentRequired(
-                        PlainText(message),
-                    ));
                 }
                 let match_id = match dao
                     .accept_invitation_tx(&invitation_id, &uid, &responded_at, &responded_at)
@@ -9165,6 +8763,21 @@ impl Api {
                     }
                     other => dao_internal(other),
                 })?;
+                // A declined reserving invite was holding a roster slot —
+                // free it now. Best-effort, same as the notification flip
+                // below: the decline itself already succeeded.
+                if let Err(e) = dao.release_reserved_match_slot(&rec, &responded_at).await {
+                    error!(
+                        "Failed to release reserved slot for declined invitation {invitation_id}: {e}"
+                    );
+                } else if let dao::records::InvitationContextRecord::Match { match_id, .. } =
+                    &rec.context
+                    && let Err(e) = dao.refresh_side_roster_previews(match_id).await
+                {
+                    error!(
+                        "Failed to refresh roster previews after declining invitation {invitation_id}: {e}"
+                    );
+                }
                 "declined"
             }
         };
@@ -9238,14 +8851,6 @@ impl Api {
                         message: message.into(),
                     })));
                 }
-                if let Some(agg) = &invited
-                    && let Some(message) =
-                        settle_rating_consent(dao, &uid, &agg.match_, input.rating_consent).await?
-                {
-                    return Ok(RespondByTokenResponse::RatingConsentRequired(PlainText(
-                        message,
-                    )));
-                }
                 let match_id = match dao
                     .accept_invitation_tx(&rec.id, &uid, &responded_at, &responded_at)
                     .await
@@ -9294,6 +8899,22 @@ impl Api {
                     }
                     other => dao_internal(other),
                 })?;
+                // As in `respond_to_invitation`: free a reserved slot the
+                // decline just gave up, best-effort.
+                if let Err(e) = dao.release_reserved_match_slot(&rec, &responded_at).await {
+                    error!(
+                        "Failed to release reserved slot for declined invitation {}: {e}",
+                        rec.id
+                    );
+                } else if let dao::records::InvitationContextRecord::Match { match_id, .. } =
+                    &rec.context
+                    && let Err(e) = dao.refresh_side_roster_previews(match_id).await
+                {
+                    error!(
+                        "Failed to refresh roster previews after declining invitation {}: {e}",
+                        rec.id
+                    );
+                }
                 "declined"
             }
         };
@@ -9683,329 +9304,6 @@ impl Api {
     }
 }
 
-/// Re-point a `Score`'s request-scoped client ids to the real side/player ids
-/// assigned at creation — side ids via `CreateMatchSideInput.client_id`,
-/// player ids via a real user's own id or a guest's `CreateMatchExternalInviteInput.client_id`
-/// (see `create_match`). Returns `None` if any referenced side or player is
-/// unknown.
-fn resolve_score_ids(
-    score: &Score,
-    side_ids: &std::collections::HashMap<String, String>,
-    player_ids: &std::collections::HashMap<String, String>,
-) -> Option<Score> {
-    let map = |client_id: &str| side_ids.get(client_id).cloned();
-    let pmap = |client_id: &str| player_ids.get(client_id).cloned();
-    let pmap_opt = |id: &Option<String>| -> Option<Option<String>> {
-        match id {
-            Some(id) => pmap(id).map(Some),
-            None => Some(None),
-        }
-    };
-    match score {
-        Score::Simple(s) => {
-            let mut entries = HashMap::with_capacity(s.entries.len());
-            for (side_id, points) in &s.entries {
-                entries.insert(map(side_id)?, *points);
-            }
-            Some(Score::Simple(SimpleScore { entries }))
-        }
-        Score::Sets(s) => {
-            let mut entries = HashMap::with_capacity(s.entries.len());
-            for (side_id, sets) in &s.entries {
-                entries.insert(map(side_id)?, sets.clone());
-            }
-            Some(Score::Sets(SetsScore { entries }))
-        }
-        Score::Cricket(s) => {
-            let mut innings = Vec::with_capacity(s.innings.len());
-            for i in &s.innings {
-                let batting = match &i.batting {
-                    Some(bs) => {
-                        let mut out = Vec::with_capacity(bs.len());
-                        for b in bs {
-                            let dismissal = match &b.dismissal {
-                                Some(d) => Some(CricketDismissal {
-                                    kind: d.kind.clone(),
-                                    bowler_player_id: pmap_opt(&d.bowler_player_id)?,
-                                    fielder_player_id: pmap_opt(&d.fielder_player_id)?,
-                                }),
-                                None => None,
-                            };
-                            out.push(CricketBattingEntry {
-                                player_id: pmap(&b.player_id)?,
-                                runs: b.runs,
-                                balls_faced: b.balls_faced,
-                                fours: b.fours,
-                                sixes: b.sixes,
-                                dismissal,
-                                batting_position: b.batting_position,
-                            });
-                        }
-                        Some(out)
-                    }
-                    None => None,
-                };
-                let bowling = match &i.bowling {
-                    Some(bs) => {
-                        let mut out = Vec::with_capacity(bs.len());
-                        for b in bs {
-                            out.push(CricketBowlingEntry {
-                                player_id: pmap(&b.player_id)?,
-                                overs: b.overs,
-                                maidens: b.maidens,
-                                runs_conceded: b.runs_conceded,
-                                wickets: b.wickets,
-                                wides: b.wides,
-                                no_balls: b.no_balls,
-                            });
-                        }
-                        Some(out)
-                    }
-                    None => None,
-                };
-                let fall_of_wickets = match &i.fall_of_wickets {
-                    Some(fs) => {
-                        let mut out = Vec::with_capacity(fs.len());
-                        for f in fs {
-                            out.push(CricketFallOfWicket {
-                                wicket: f.wicket,
-                                runs: f.runs,
-                                player_id: pmap(&f.player_id)?,
-                                overs: f.overs,
-                            });
-                        }
-                        Some(out)
-                    }
-                    None => None,
-                };
-                innings.push(CricketScoreInnings {
-                    batting_side_id: map(&i.batting_side_id)?,
-                    bowling_side_id: map(&i.bowling_side_id)?,
-                    runs: i.runs,
-                    wickets: i.wickets,
-                    overs: i.overs,
-                    declared: i.declared,
-                    batting,
-                    bowling,
-                    fall_of_wickets,
-                    extras: i.extras.clone(),
-                });
-            }
-            let recent_deliveries = match &s.recent_deliveries {
-                Some(ds) => {
-                    let mut out = Vec::with_capacity(ds.len());
-                    for d in ds {
-                        out.push(CricketDelivery {
-                            over: d.over,
-                            ball: d.ball,
-                            bowler_player_id: pmap(&d.bowler_player_id)?,
-                            striker_player_id: pmap(&d.striker_player_id)?,
-                            non_striker_player_id: pmap(&d.non_striker_player_id)?,
-                            runs_off_bat: d.runs_off_bat,
-                            extra: d.extra.clone(),
-                            wicket: match &d.wicket {
-                                Some(w) => Some(CricketDeliveryWicket {
-                                    kind: w.kind.clone(),
-                                    dismissed_player_id: pmap(&w.dismissed_player_id)?,
-                                    bowler_player_id: pmap_opt(&w.bowler_player_id)?,
-                                    fielder_player_id: pmap_opt(&w.fielder_player_id)?,
-                                }),
-                                None => None,
-                            },
-                            occurred_at: d.occurred_at,
-                        });
-                    }
-                    Some(out)
-                }
-                None => None,
-            };
-            let next_ball_context = match &s.next_ball_context {
-                Some(ctx) => Some(NextBallContext {
-                    striker_player_id: pmap_opt(&ctx.striker_player_id)?,
-                    non_striker_player_id: pmap_opt(&ctx.non_striker_player_id)?,
-                    bowler_player_id: pmap_opt(&ctx.bowler_player_id)?,
-                    over: ctx.over,
-                    ball: ctx.ball,
-                    previous_over_bowler_player_id: pmap_opt(&ctx.previous_over_bowler_player_id)?,
-                    runs_conceded_this_over: ctx.runs_conceded_this_over,
-                }),
-                None => None,
-            };
-            Some(Score::Cricket(CricketScore {
-                innings,
-                recent_deliveries,
-                next_ball_context,
-                awaiting_next_innings: s.awaiting_next_innings,
-                players: HashMap::new(),
-            }))
-        }
-        Score::Football(s) => {
-            let mut score = HashMap::with_capacity(s.score.len());
-            for (side_id, goals) in &s.score {
-                score.insert(map(side_id)?, *goals);
-            }
-            let goals = match &s.goals {
-                Some(gs) => {
-                    let mut out = Vec::with_capacity(gs.len());
-                    for g in gs {
-                        out.push(FootballGoalEvent {
-                            side_id: map(&g.side_id)?,
-                            scorer_player_id: pmap_opt(&g.scorer_player_id)?,
-                            assist_player_id: pmap_opt(&g.assist_player_id)?,
-                            own_goal: g.own_goal,
-                            penalty: g.penalty,
-                            minute: g.minute,
-                            occurred_at: g.occurred_at,
-                        });
-                    }
-                    Some(out)
-                }
-                None => None,
-            };
-            let cards = match &s.cards {
-                Some(cs) => {
-                    let mut out = Vec::with_capacity(cs.len());
-                    for c in cs {
-                        out.push(FootballCardEvent {
-                            side_id: map(&c.side_id)?,
-                            player_id: pmap(&c.player_id)?,
-                            color: c.color.clone(),
-                            minute: c.minute,
-                            occurred_at: c.occurred_at,
-                        });
-                    }
-                    Some(out)
-                }
-                None => None,
-            };
-            let substitutions = match &s.substitutions {
-                Some(subs) => {
-                    let mut out = Vec::with_capacity(subs.len());
-                    for sub in subs {
-                        out.push(FootballSubstitutionEvent {
-                            side_id: map(&sub.side_id)?,
-                            player_in_id: pmap(&sub.player_in_id)?,
-                            player_out_id: pmap(&sub.player_out_id)?,
-                            minute: sub.minute,
-                            occurred_at: sub.occurred_at,
-                        });
-                    }
-                    Some(out)
-                }
-                None => None,
-            };
-            let penalty_shootout = match &s.penalty_shootout {
-                Some(ks) => {
-                    let mut out = Vec::with_capacity(ks.len());
-                    for k in ks {
-                        out.push(FootballPenaltyShootoutKick {
-                            side_id: map(&k.side_id)?,
-                            scored: k.scored,
-                        });
-                    }
-                    Some(out)
-                }
-                None => None,
-            };
-            let penalty_shootout_score = match &s.penalty_shootout_score {
-                Some(pss) => {
-                    let mut out = HashMap::with_capacity(pss.len());
-                    for (side_id, kicks) in pss {
-                        out.insert(map(side_id)?, *kicks);
-                    }
-                    Some(out)
-                }
-                None => None,
-            };
-            Some(Score::Football(FootballScore {
-                score,
-                goals,
-                cards,
-                substitutions,
-                period: s.period,
-                period_times: s.period_times.clone(),
-                penalty_shootout,
-                penalty_shootout_score,
-                players: HashMap::new(),
-            }))
-        }
-        Score::Netball(s) => {
-            let mut score = HashMap::with_capacity(s.score.len());
-            for (side_id, goals) in &s.score {
-                score.insert(map(side_id)?, *goals);
-            }
-            let goals = match &s.goals {
-                Some(gs) => {
-                    let mut out = Vec::with_capacity(gs.len());
-                    for g in gs {
-                        out.push(NetballGoalEvent {
-                            side_id: map(&g.side_id)?,
-                            scorer_player_id: pmap_opt(&g.scorer_player_id)?,
-                            scorer_position: g.scorer_position,
-                            two_points: g.two_points,
-                            minute: g.minute,
-                            occurred_at: g.occurred_at,
-                        });
-                    }
-                    Some(out)
-                }
-                None => None,
-            };
-            let fouls = match &s.fouls {
-                Some(fs) => {
-                    let mut out = Vec::with_capacity(fs.len());
-                    for fo in fs {
-                        out.push(NetballFoulEvent {
-                            side_id: map(&fo.side_id)?,
-                            player_id: pmap_opt(&fo.player_id)?,
-                            foul_kind: fo.foul_kind,
-                            minute: fo.minute,
-                            occurred_at: fo.occurred_at,
-                        });
-                    }
-                    Some(out)
-                }
-                None => None,
-            };
-            let period_scores = match &s.period_scores {
-                Some(pss) => {
-                    let mut out = HashMap::with_capacity(pss.len());
-                    for (period, entries) in pss {
-                        let mut mapped = HashMap::with_capacity(entries.len());
-                        for (side_id, goals) in entries {
-                            mapped.insert(map(side_id)?, *goals);
-                        }
-                        out.insert(*period, mapped);
-                    }
-                    Some(out)
-                }
-                None => None,
-            };
-            Some(Score::Netball(NetballScore {
-                score,
-                goals,
-                fouls,
-                period: s.period,
-                period_times: s.period_times.clone(),
-                period_scores,
-                players: HashMap::new(),
-            }))
-        }
-    }
-}
-
-/// Set a score's resolved-players map (`CricketScore.players`/
-/// `FootballScore.players`), whichever variant it is. No-op for
-/// `Score::Simple`/`Score::Sets`, which have no such field.
-fn set_score_players(score: &mut Score, resolved: HashMap<String, RosterPreviewPlayer>) {
-    match score {
-        Score::Cricket(s) => s.players = resolved,
-        Score::Football(s) => s.players = resolved,
-        Score::Netball(s) => s.players = resolved,
-        Score::Simple(_) | Score::Sets(_) => {}
-    }
-}
-
 /// Look up `score`'s own referenced player ids (`score_player_ids`) in a
 /// cross-match batch result (keyed by `(match_id, player_id)`) and set
 /// `score`'s resolved-players map from whichever of them belong to
@@ -10034,142 +9332,16 @@ fn resolve_score_players_for_match(
     set_score_players(score, resolved);
 }
 
-/// Every player id referenced anywhere in a score — the set
-/// `Api::hydrate_score_players` resolves names for. Empty (nothing to
-/// resolve) for `Score::Simple`/`Score::Sets`, which don't reference
-/// players by id at all.
-fn score_player_ids(score: &Score) -> Vec<String> {
-    match score {
-        Score::Cricket(s) => cricket_score_player_ids(s),
-        Score::Football(s) => football_score_player_ids(s),
-        Score::Netball(s) => netball_score_player_ids(s),
-        Score::Simple(_) | Score::Sets(_) => Vec::new(),
-    }
-}
-
-/// Every player id referenced in a `CricketScore`: `next_ball_context`'s
-/// striker/non-striker/bowler/previous-over-bowler, each innings' batting/
-/// bowling/fall-of-wicket entries (plus a batting entry's dismissal bowler/
-/// fielder), and `recent_deliveries` (plus each delivery's wicket). May
-/// repeat the same id many times over (e.g. a bowler across several
-/// deliveries) — `Dao::batch_get_match_players` dedupes before querying.
-fn cricket_score_player_ids(score: &CricketScore) -> Vec<String> {
-    let mut ids = Vec::new();
-    if let Some(ctx) = &score.next_ball_context {
-        ids.extend(ctx.striker_player_id.clone());
-        ids.extend(ctx.non_striker_player_id.clone());
-        ids.extend(ctx.bowler_player_id.clone());
-        ids.extend(ctx.previous_over_bowler_player_id.clone());
-    }
-    for innings in &score.innings {
-        for entry in innings.batting.iter().flatten() {
-            ids.push(entry.player_id.clone());
-            if let Some(d) = &entry.dismissal {
-                ids.extend(d.bowler_player_id.clone());
-                ids.extend(d.fielder_player_id.clone());
-            }
-        }
-        for entry in innings.bowling.iter().flatten() {
-            ids.push(entry.player_id.clone());
-        }
-        for fow in innings.fall_of_wickets.iter().flatten() {
-            ids.push(fow.player_id.clone());
-        }
-    }
-    for delivery in score.recent_deliveries.iter().flatten() {
-        ids.push(delivery.bowler_player_id.clone());
-        ids.push(delivery.striker_player_id.clone());
-        ids.push(delivery.non_striker_player_id.clone());
-        if let Some(w) = &delivery.wicket {
-            ids.push(w.dismissed_player_id.clone());
-            ids.extend(w.bowler_player_id.clone());
-            ids.extend(w.fielder_player_id.clone());
-        }
-    }
-    ids
-}
-
-/// Every player id referenced in a `FootballScore`: each goal's scorer/
-/// assist, each card's player, each substitution's player in/out. Same
-/// "may repeat, deduped downstream" contract as [`cricket_score_player_ids`].
-fn football_score_player_ids(score: &FootballScore) -> Vec<String> {
-    let mut ids = Vec::new();
-    for goal in score.goals.iter().flatten() {
-        ids.extend(goal.scorer_player_id.clone());
-        ids.extend(goal.assist_player_id.clone());
-    }
-    for card in score.cards.iter().flatten() {
-        ids.push(card.player_id.clone());
-    }
-    for sub in score.substitutions.iter().flatten() {
-        ids.push(sub.player_in_id.clone());
-        ids.push(sub.player_out_id.clone());
-    }
-    ids
-}
-
-/// Every player id referenced in a `NetballScore`: each goal's scorer, each
-/// foul's player. Same "may repeat, deduped downstream" contract as
-/// [`cricket_score_player_ids`].
-fn netball_score_player_ids(score: &NetballScore) -> Vec<String> {
-    let mut ids = Vec::new();
-    for goal in score.goals.iter().flatten() {
-        ids.extend(goal.scorer_player_id.clone());
-    }
-    for foul in score.fouls.iter().flatten() {
-        ids.extend(foul.player_id.clone());
-    }
-    ids
-}
-
-/// Derives the winner (when decidable) from a live-scored match's persisted
-/// score — used by `update_match` to finish a live-scored match without the
-/// client having to work out and resubmit a margin the server already has
-/// enough to compute (see `LiveScoringPage`/`CricketLiveScoringPage`'s
-/// `finishMatch`). `side_ids` is the match's own two side ids, needed
-/// because a tally map only holds entries for sides that are actually on the
-/// board — "absence means zero" — so the winner comparison needs to know
-/// both ids to look up, not just iterate whatever's present. `None` for
-/// `Score::Simple`/`Score::Sets` — winner derivation for those sports isn't
-/// this function's job (the client always supplies `winner_side_id` itself
-/// for a manual entry/correction on those sports).
-fn winner_from_score(score: &Score, side_ids: &[String]) -> Option<String> {
-    match score {
-        Score::Football(s) => {
-            // Still level on goals falls back to the penalty-shootout tally,
-            // same as the client-side logic this replaces.
-            two_side_winner(side_ids, |sid| *s.score.get(sid).unwrap_or(&0) as i64).or_else(|| {
-                two_side_winner(side_ids, |sid| {
-                    s.penalty_shootout_score
-                        .as_ref()
-                        .and_then(|pss| pss.get(sid))
-                        .copied()
-                        .unwrap_or(0) as i64
-                })
-            })
-        }
-        Score::Cricket(s) => {
-            // The winner is the summed match totals (two-innings formats add
-            // up both) — the same comparison `CricketLiveScoringPage` used to
-            // make client-side.
-            let mut totals: HashMap<&str, u32> = HashMap::new();
-            for i in &s.innings {
-                *totals.entry(i.batting_side_id.as_str()).or_insert(0) += i.runs;
-            }
-            two_side_winner(side_ids, |sid| *totals.get(sid).unwrap_or(&0) as i64)
-        }
-        Score::Netball(s) => {
-            two_side_winner(side_ids, |sid| *s.score.get(sid).unwrap_or(&0) as i64)
-        }
-        Score::Simple(_) | Score::Sets(_) => None,
-    }
-}
-
 /// Compares two sides by a score function and returns the higher-scoring
 /// side's id — `None` if tied, or if there aren't exactly two sides (every
 /// match today is exactly two, but this stays honest rather than guessing
-/// for a hypothetical multi-side match).
-fn two_side_winner(side_ids: &[String], score_for: impl Fn(&str) -> i64) -> Option<String> {
+/// for a hypothetical multi-side match). Shared by each sport's own
+/// `winner` (`crate::sports::{football,cricket,netball}`) — not sport-
+/// specific itself, so it stays here rather than moving into any one of them.
+pub(crate) fn two_side_winner(
+    side_ids: &[String],
+    score_for: impl Fn(&str) -> i64,
+) -> Option<String> {
     let [a_id, b_id] = side_ids else { return None };
     let a = score_for(a_id);
     let b = score_for(b_id);
@@ -10654,11 +9826,18 @@ fn invite_full_reason(
     agg: &dao::match_ops::MatchAggregate,
     rec: &dao::records::InvitationRecord,
 ) -> Option<(RosterConflictKind, &'static str)> {
-    let target_side_id = agg
+    let target = agg
         .players
         .iter()
-        .find(|p| p.invitation.as_ref().is_some_and(|i| i.id == rec.id))
-        .and_then(|p| p.side_id.clone());
+        .find(|p| p.invitation.as_ref().is_some_and(|i| i.id == rec.id));
+    // A reserving invite already holds its spot (it's counted in
+    // `occupies_slot` from the moment it was sent) — accepting just confirms
+    // a slot the invitee already has, never a new one, so there's nothing to
+    // guard against here.
+    if target.is_some_and(|p| p.invitation.as_ref().is_some_and(|i| i.reserve_spot)) {
+        return None;
+    }
+    let target_side_id = target.and_then(|p| p.side_id.clone());
     full_reason(agg, target_side_id.as_deref())
 }
 
@@ -10699,6 +9878,7 @@ fn build_invited_player(
     side_id: Option<String>,
     user_id: Option<String>,
     display_name: Option<String>,
+    reserve_spot: bool,
     now: &str,
 ) -> (
     dao::records::MatchPlayerRecord,
@@ -10734,6 +9914,7 @@ fn build_invited_player(
         invited_at: now.to_string(),
         responded_at: None,
         kind: kind.clone(),
+        reserve_spot,
     };
 
     let player = dao::records::MatchPlayerRecord {
@@ -10744,7 +9925,6 @@ fn build_invited_player(
         is_member_of_team: None,
         invitation: Some(embedded),
         joined_via: None,
-        ranked_prompt: None,
     };
 
     let invitation = dao::records::InvitationRecord {
@@ -10760,6 +9940,7 @@ fn build_invited_player(
         },
         invited_at: now.to_string(),
         responded_at: None,
+        reserve_spot,
     };
 
     (player, invitation)
@@ -10814,6 +9995,8 @@ fn build_invited_team_member(
         invited_at: now.to_string(),
         responded_at: None,
         kind: kind.clone(),
+        // Teams have no capacity concept — never reserves a spot.
+        reserve_spot: false,
     };
 
     let member = dao::records::TeamMemberRecord {
@@ -10839,6 +10022,7 @@ fn build_invited_team_member(
         },
         invited_at: now.to_string(),
         responded_at: None,
+        reserve_spot: false,
     };
 
     (member, invitation)
@@ -10860,106 +10044,6 @@ fn asset_status_from_str(s: &str) -> AssetStatus {
         "failed" => AssetStatus::Failed,
         _ => AssetStatus::Pending,
     }
-}
-
-/// Settle `uid`'s rating consent for getting into `match_`: `Some(message)` to
-/// refuse with (`RatingConsentRequired`), or `None` to go ahead, having first
-/// recorded their opt-in if this request is the one that consents. Always
-/// `None` for a friendly, which neither needs consent nor records it. The rule
-/// is [`mapping::rating_consent_step`]; this reads the caller and does the
-/// write.
-///
-/// **The opt-in is its own write, made before the caller's create, join or
-/// accept, not part of it.** A request that consents and then fails further
-/// on (a cap guard tripping in a race, a transaction error) leaves the caller
-/// opted in without having got in. That's accepted: consent isn't reversible
-/// anyway, and folding the opt-in into those writes would put the user's
-/// profile into the match create, the join and move-in transactions and the
-/// two accept transactions, each of which already reads its own failed
-/// conditions as "full" or "already waiting". Every caller runs this last,
-/// after its own validation, so the window is only what can fail during the
-/// write itself.
-///
-/// `ranked` comes from `match_` as the caller loaded it for this request, never
-/// from anything copied onto an invitation or a join link. So an invitation
-/// sent while the match was a friendly still asks for consent once it's been
-/// switched to ranked.
-///
-/// Not atomic with the flag, though. A switch to ranked that lands between
-/// this read and the caller's write lets them in unconsented, and the switch's
-/// own roster and waitlist checks can just as well miss a join that lands
-/// after they read. Closing that would mean conditioning those writes on
-/// `ranked`, where a failed condition already means "full" (or "already
-/// waiting"). That gap is why the rating pipeline must re-check every
-/// participant's opt-in before it rates, rather than trust that this held.
-async fn settle_rating_consent(
-    dao: &dao::Dao,
-    uid: &str,
-    match_: &dao::records::MatchRecord,
-    rating_consent: Option<bool>,
-) -> Result<Option<String>> {
-    let Some(ladder) = rating_ladder(match_) else {
-        return Ok(None);
-    };
-    // `require_uid` resolved the id from its `AUTH#` guard, so a missing
-    // profile is the same "no such user" it reports.
-    let caller = dao
-        .get_user(uid)
-        .await
-        .map_err(dao_internal)?
-        .ok_or_else(|| Error::from_string("user not found", StatusCode::UNAUTHORIZED))?;
-    match rating_consent_step(&ladder, &caller, rating_consent.unwrap_or(false)) {
-        mapping::RatingConsentStep::Proceed => Ok(None),
-        mapping::RatingConsentStep::Refuse(message) => Ok(Some(message)),
-        mapping::RatingConsentStep::OptIn(ladder) => {
-            dao.opt_in_to_rating(uid, &ladder, &now_iso())
-                .await
-                .map_err(|e| match e {
-                    dao::DaoError::NotFound(_) => {
-                        Error::from_string("user not found", StatusCode::UNAUTHORIZED)
-                    }
-                    other => dao_internal(other),
-                })?;
-            Ok(None)
-        }
-    }
-}
-
-/// [`settle_rating_consent`] for `POST /matches/:match_id/waitlist/join`,
-/// which needs one more check first: `Some(response)` to refuse with, `None`
-/// to go ahead with the waitlist write.
-///
-/// On a ranked match, a caller already on the waitlist is refused here, ahead
-/// of consent, rather than by the write's own "already waiting" condition after
-/// it. Otherwise a repeat join that ticked the box would opt them in and then
-/// be refused, and that opt-in, left behind by a refusal, is the one thing
-/// `settle_rating_consent`'s callers promise not to do. It's also not a way to
-/// consent to a match you're already waiting on: that was considered for a
-/// player waiting on a friendly that turns ranked, and rejected as surprising
-/// in favour of `switch_to_ranked_reason` judging the waitlist. A friendly
-/// skips the extra read, since it never opts anyone in.
-async fn settle_waitlist_rating_consent(
-    dao: &dao::Dao,
-    uid: &str,
-    match_: &dao::records::MatchRecord,
-    rating_consent: Option<bool>,
-) -> Result<Option<WaitlistJoinResponse>> {
-    if rating_ladder(match_).is_none() {
-        return Ok(None);
-    }
-    if dao
-        .get_waitlist_entry(&match_.id, uid)
-        .await
-        .map_err(dao_internal)?
-        .is_some()
-    {
-        return Ok(Some(WaitlistJoinResponse::Conflict(PlainText(
-            "already on this match's waitlist".into(),
-        ))));
-    }
-    Ok(settle_rating_consent(dao, uid, match_, rating_consent)
-        .await?
-        .map(|message| WaitlistJoinResponse::RatingConsentRequired(PlainText(message))))
 }
 
 /// One standalone invitation as its API `InvitationDetail`, with a match
@@ -11115,10 +10199,7 @@ fn mock_user() -> User {
     User {
         email: String::from("jamesnelgar@gmail.com"),
         profile: mock_user_profile(String::from("123"), String::from("James Elgar")),
-        rating_opt_ins: vec![RatingOptIn {
-            ladder: String::from("tennis"),
-            opted_in_at: mock_timestamp(),
-        }],
+        rating_placements: Vec::new(),
     }
 }
 
@@ -11149,25 +10230,19 @@ fn mock_user_profile(id: String, name: String) -> UserProfile {
             image_url: String::from("https://cdn.example.com/users/avatar.jpg"),
             asset_id: None,
         }),
-        stats: UserStats {
-            cricket: None,
-            football: None,
-            tennis: Some(GenericPlayerStats {
+        stats: mapping::user_stats_from_record(&dao::records::UserStatsRecord {
+            tennis: Some(dao::records::GenericSportStatsRecord {
                 matches_played: 12,
                 wins: 7,
                 draws: 0,
                 losses: 5,
-                win_percentage: Some(58.3),
             }),
-            badminton: None,
-            squash: None,
-            table_tennis: None,
-            netball: None,
-            other: None,
-        },
+            ..Default::default()
+        }),
         follower_count: 42,
         following_count: 17,
         is_followed_by_me: false,
+        ratings: Vec::new(),
     }
 }
 
@@ -11407,6 +10482,7 @@ fn mock_invitations_for_input(
     input: &AddInvitationsInput,
     invited_by_user_id: &str,
 ) -> Vec<Invitation> {
+    let reserve_spot = input.reserve_spot.unwrap_or(false);
     let mut invitations = Vec::new();
     for (i, user_id) in input.invited_user_ids.iter().enumerate() {
         invitations.push(Invitation {
@@ -11418,6 +10494,7 @@ fn mock_invitations_for_input(
             kind: InvitationKind::User(UserInvitation {
                 invited_user_id: user_id.clone(),
             }),
+            reserve_spot,
         });
     }
     for (i, _name) in input.invited_external_names.iter().enumerate() {
@@ -11430,6 +10507,7 @@ fn mock_invitations_for_input(
             kind: InvitationKind::Token(TokenInvitation {
                 invite_token: format!("token_{i}"),
             }),
+            reserve_spot,
         });
     }
     invitations
@@ -11446,6 +10524,7 @@ fn mock_user_invitation(id: String) -> Invitation {
         kind: InvitationKind::User(UserInvitation {
             invited_user_id: String::from("user_2"),
         }),
+        reserve_spot: false,
     }
 }
 
@@ -11581,6 +10660,17 @@ fn mock_notifications() -> Vec<Notification> {
                 match_name: String::from("Kent vs Surrey"),
             }),
         },
+        Notification {
+            id: String::from("notif_match_reminder"),
+            is_read: false,
+            created_at: mock_timestamp(),
+            kind: NotificationKind::MatchReminder(MatchReminderNotification {
+                organizer: actor("user_2", "Raj Patel"),
+                match_id: String::from("match_456"),
+                match_name: String::from("Kent vs Surrey"),
+                starts_at: mock_timestamp(),
+            }),
+        },
     ]
 }
 
@@ -11628,6 +10718,7 @@ fn mock_team_member_page() -> TeamMemberPage {
                         kind: InvitationKind::User(UserInvitation {
                             invited_user_id: String::from("user_1"),
                         }),
+                        reserve_spot: false,
                     }),
                     name: String::from("Alex Kim"),
                     avatar_url: None,
@@ -11648,6 +10739,7 @@ fn mock_team_member_page() -> TeamMemberPage {
                         kind: InvitationKind::Token(TokenInvitation {
                             invite_token: String::from("team_invite_abc123"),
                         }),
+                        reserve_spot: false,
                     }),
                 }),
                 role: TeamRole::Member,
@@ -11770,10 +10862,29 @@ enum Commands {
     },
 }
 
-fn log_request(uri: &Uri, status: StatusCode) {
+/// Request bodies longer than this are truncated before logging, so one
+/// oversized payload can't blow up a log line (the field still names the
+/// original length).
+const MAX_LOGGED_BODY_CHARS: usize = 2048;
+
+fn log_request(
+    method: &str,
+    uri: &Uri,
+    status: StatusCode,
+    latency: std::time::Duration,
+    sub: Option<&str>,
+    body: Option<&str>,
+    error: Option<&str>,
+) {
     info!(
+        method,
         path = uri.path(),
+        query = uri.query().unwrap_or(""),
         status = status.as_u16(),
+        latency_ms = latency.as_millis() as u64,
+        user.sub = sub.unwrap_or_default(),
+        body = body.unwrap_or_default(),
+        error = error.unwrap_or_default(),
         "Request complete"
     );
 }
@@ -11813,23 +10924,70 @@ impl RequestMetrics {
     }
 }
 
-async fn log_middleware<E: Endpoint>(next: E, req: Request) -> Result<Response> {
+async fn log_middleware<E: Endpoint>(next: E, mut req: Request) -> Result<Response> {
     use opentelemetry::KeyValue;
     use std::time::Instant;
 
     let uri = req.uri().clone();
     let method = req.method().to_string();
+    // Unverified — just for log correlation, read before `req` moves into
+    // `next.call` below. See `auth::unverified_sub`.
+    let sub = req
+        .headers()
+        .get(poem::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(auth::unverified_sub);
+
+    // Buffer the body so it can be logged, then hand the same bytes back to
+    // the real handler — nothing downstream notices. Only for text/JSON
+    // bodies: uploads go straight to S3 via presigned URLs, never through
+    // this API, so there's no large/binary request body to worry about here.
+    let is_text_body = req
+        .content_type()
+        .is_some_and(|ct| ct.starts_with("application/json") || ct.starts_with("text/"));
+    let body = if is_text_body {
+        match req.take_body().into_bytes().await {
+            Ok(bytes) => {
+                req.set_body(bytes.clone());
+                Some(String::from_utf8_lossy(&bytes).into_owned())
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    let body = body.map(|b| {
+        if b.chars().count() > MAX_LOGGED_BODY_CHARS {
+            b.chars().take(MAX_LOGGED_BODY_CHARS).collect::<String>() + "...(truncated)"
+        } else {
+            b
+        }
+    });
+
     let start = Instant::now();
 
-    let (status, result) = match next.call(req).await {
+    let (status, error, result) = match next.call(req).await {
         Ok(resp) => {
             let resp = resp.into_response();
-            (resp.status(), Ok(resp))
+            (resp.status(), None, Ok(resp))
         }
-        Err(err) => (err.status(), Err(err)),
+        Err(err) => {
+            let message = err.to_string();
+            (err.status(), Some(message), Err(err))
+        }
     };
 
-    log_request(&uri, status);
+    let elapsed = start.elapsed();
+    log_request(
+        &method,
+        &uri,
+        status,
+        elapsed,
+        sub.as_deref(),
+        body.as_deref(),
+        error.as_deref(),
+    );
 
     // Record request count + latency on the global meter. Attributes are kept to
     // bounded-cardinality dimensions only (see RequestMetrics).
@@ -11839,9 +10997,7 @@ async fn log_middleware<E: Endpoint>(next: E, req: Request) -> Result<Response> 
     ];
     let metrics = RequestMetrics::global();
     metrics.count.add(1, &attrs);
-    metrics
-        .duration
-        .record(start.elapsed().as_secs_f64(), &attrs);
+    metrics.duration.record(elapsed.as_secs_f64(), &attrs);
 
     result
 }

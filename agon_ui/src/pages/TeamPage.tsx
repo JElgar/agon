@@ -131,8 +131,14 @@ export function TeamPage() {
     queryKey: ['team-activity', teamId],
     enabled: !!teamId,
     queryFn: async (): Promise<SearchMatch[]> => {
+      // `to: now` keeps this to matches that have already started — without
+      // it, the default `starts_at_ts desc` sort ranks scheduled matches
+      // (future timestamps) above recently played ones, so "recent matches"
+      // filled up with nothing but upcoming fixtures.
       const { data, error } = await fetchClient.GET('/matches', {
-        params: { query: { team_id: [teamId!], limit: RECENT_LIMIT } },
+        params: {
+          query: { team_id: [teamId!], limit: RECENT_LIMIT, to: new Date().toISOString() },
+        },
       })
       if (error || !data) throw new Error('Failed to load recent matches')
       return data.items

@@ -6233,6 +6233,52 @@ async fn undoing_the_bumped_tip_with_nothing_left_to_delete_is_not_found() {
     assert_not_found(response);
 }
 
+/// Recording a match's first live event auto-promotes it `scheduled ->
+/// in_progress` (`append_live_events`'s own auto-promotion). Undoing that
+/// same event — leaving the log empty again — should reverse it: a match
+/// that never really started shouldn't linger "live" forever just because
+/// someone tapped an event and then immediately corrected it.
+#[tokio::test]
+async fn undoing_a_matchs_only_live_event_takes_it_out_of_in_progress() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    let created = matches_post(&owner_config, netball_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    assert!(matches!(created.status, models::MatchStatus::Scheduled));
+    let side_a = created.sides[0].id.clone();
+
+    append_live_events_raw(
+        &owner_config,
+        &created.id,
+        0,
+        vec![netball_goal_event_json(&side_a, false)],
+    )
+    .await;
+
+    let mid_scoring = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match");
+    assert!(matches!(
+        mid_scoring.status,
+        models::MatchStatus::InProgress
+    ));
+
+    matches_match_id_live_events_seq_delete(&owner_config, &created.id, 1)
+        .await
+        .expect("undo the only event");
+
+    let after_undo = matches_match_id_get(&owner_config, &created.id)
+        .await
+        .expect("get match");
+    assert!(
+        matches!(after_undo.status, models::MatchStatus::Scheduled),
+        "match should fall back to scheduled once its only live event is undone, got {:?}",
+        after_undo.status
+    );
+}
+
 /// Two, then three, successful undos in a row — each one targeting the log's
 /// *real* physical tip at that point (2, then 1), not the previous undo's
 /// bumped `last_seq`. This is the scenario the UI's `useUndoTargetSeq` split

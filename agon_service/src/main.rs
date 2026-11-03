@@ -2027,6 +2027,46 @@ enum AppendLiveEventsResponse {
     Conflict(Json<ErrorMessage>),
 }
 
+/// Up to this many samples in one `POST .../metrics/:metric/batches` call —
+/// generous headroom above the agreed 6-samples/30s device flush cadence
+/// (see the "Add Garmin heart rate to matches" design discussion), same
+/// "cap a batch, don't paginate a single call" reasoning as
+/// `MAX_LIVE_EVENTS_PER_BATCH`.
+const MAX_METRIC_SAMPLES_PER_BATCH: usize = 60;
+
+/// One wearable-metric sample to append, `offset_s` seconds after the
+/// batch's `started_at`.
+#[derive(Object)]
+struct MetricSampleInput {
+    offset_s: i64,
+    value: f64,
+}
+
+/// A batch of wearable-metric samples to append for the calling device's own
+/// account.
+#[derive(Object)]
+struct AppendMetricBatchInput {
+    /// When the device started this batch (its first sample's wall-clock
+    /// time) — `offset_s` on each sample is relative to this.
+    started_at: chrono::DateTime<chrono::Utc>,
+    samples: Vec<MetricSampleInput>,
+}
+
+#[derive(ApiResponse)]
+enum AppendMetricBatchResponse {
+    /// Appended; the current derived summary (if any) is read separately,
+    /// not echoed back here — see `docs/garmin-heart-rate.md`'s follow-up
+    /// notes on the read endpoint.
+    #[oai(status = 204)]
+    Ok,
+
+    #[oai(status = 400)]
+    ValidationError(Json<ErrorMessage>),
+
+    #[oai(status = 404)]
+    NotFound(Json<ErrorMessage>),
+}
+
 /// One page of a match's live event log, oldest first. `next_cursor` absent
 /// => end.
 #[derive(Object)]
@@ -5182,6 +5222,98 @@ impl Api {
                 },
             ))),
         }
+    }
+
+    /// Append a batch of wearable-metric samples (heart rate today) for the
+    /// calling device's own paired account, during a match.
+    ///
+    /// Scoped like `append_live_events` (the same paired-device identity —
+    /// see `docs/garmin-live-scoring.md`), but with no match-admin check:
+    /// unlike recording a goal, posting your own heart rate isn't an
+    /// organiser action, and there's nothing to authorize beyond "this is
+    /// really this account's own device" — `caller_uid` from the scoped
+    /// token *is* the `user_id` samples are attributed to, never a
+    /// caller-supplied id, so there's no way to post on anyone else's
+    /// behalf.
+    #[oai(path = "/matches/:match_id/metrics/:metric/batches", method = "post")]
+    async fn append_metric_batch(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        Path(metric): Path<String>,
+        input: Json<AppendMetricBatchInput>,
+    ) -> Result<AppendMetricBatchResponse> {
+        let caller_uid = self
+            .require_uid_scoped(dao, &jwt_data, SCOPE_LIVE_SCORING)
+            .await?;
+        let input = input.0;
+
+        // Only `heart_rate` is understood today — the key/DAO layer already
+        // accept any metric string (see `Sk::MetricBatch`'s doc comment), so
+        // widening this is just adding another arm here, not new plumbing.
+        if metric != dao::metrics::METRIC_HEART_RATE {
+            return Ok(AppendMetricBatchResponse::ValidationError(Json(
+                ErrorMessage {
+                    message: format!("unsupported metric `{metric}`"),
+                },
+            )));
+        }
+
+        if input.samples.is_empty() {
+            return Ok(AppendMetricBatchResponse::ValidationError(Json(
+                ErrorMessage {
+                    message: "samples must not be empty".into(),
+                },
+            )));
+        }
+        if input.samples.len() > MAX_METRIC_SAMPLES_PER_BATCH {
+            return Ok(AppendMetricBatchResponse::ValidationError(Json(
+                ErrorMessage {
+                    message: format!(
+                        "batch of {} exceeds the {MAX_METRIC_SAMPLES_PER_BATCH}-sample limit per request",
+                        input.samples.len()
+                    ),
+                },
+            )));
+        }
+
+        if dao
+            .get_match(&match_id)
+            .await
+            .map_err(dao_internal)?
+            .is_none()
+        {
+            return Ok(AppendMetricBatchResponse::NotFound(Json(ErrorMessage {
+                message: "match not found".into(),
+            })));
+        }
+
+        let started_at = input
+            .started_at
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let recorded_at = now_iso();
+        let samples: Vec<dao::metrics::NewMetricSample> = input
+            .samples
+            .iter()
+            .map(|smp| dao::metrics::NewMetricSample {
+                offset_s: smp.offset_s,
+                value: smp.value,
+            })
+            .collect();
+
+        dao.append_metric_batch(
+            &match_id,
+            &metric,
+            &caller_uid,
+            &started_at,
+            &samples,
+            &recorded_at,
+        )
+        .await
+        .map_err(dao_internal)?;
+
+        Ok(AppendMetricBatchResponse::Ok)
     }
 
     /// The incremental fast path for an append, either sport: applies just

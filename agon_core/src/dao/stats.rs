@@ -130,6 +130,12 @@ impl Dao {
             out.item.map(from_item).transpose()?
         };
 
+        // `heart_rate` is never computed here — it's accumulated live by
+        // `Dao::append_metric_batch`, independently of the match's confirmed
+        // score — so it's carried forward from whatever's already stored
+        // rather than left to default back to `None` on every reconcile.
+        let stored_heart_rate = stored.as_ref().and_then(|c| c.heart_rate);
+
         let desired_record = StatContributionRecord {
             match_type: sport.to_string(),
             played: desired.outcome.is_some() as u64,
@@ -137,6 +143,7 @@ impl Dao {
             drawn: matches!(desired.outcome, Some(MatchOutcome::Drawn)) as u64,
             lost: matches!(desired.outcome, Some(MatchOutcome::Lost)) as u64,
             counters: desired.counters.clone(),
+            heart_rate: stored_heart_rate,
         };
 
         // A missing contribution is effectively zero in the desired sport, so a
@@ -164,7 +171,15 @@ impl Dao {
 
         // 1. Update the contribution item to the desired value (or delete it when
         //    the match no longer contributes), guarded on the value we read.
-        if desired_record.played == 0 {
+        //
+        //    A contribution with no box-score outcome (`played == 0`) is
+        //    normally deleted outright — but not while it's still carrying a
+        //    live `heart_rate` accumulation: that happens routinely for
+        //    every in-progress match (not yet confirmed, so `played` is 0
+        //    for everyone) that gets reconciled by an unrelated like/comment
+        //    event while a watch is mid-match. Deleting here would silently
+        //    wipe out heart-rate data that's still accumulating.
+        if desired_record.played == 0 && stored_heart_rate.is_none() {
             let mut b = Delete::builder()
                 .table_name(self.table())
                 .key(ATTR_PK, s(&contrib_pk))

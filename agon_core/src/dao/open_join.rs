@@ -146,6 +146,7 @@ impl Dao {
     /// here (mirrors `join_match_tx`'s own contract).
     ///
     /// `Conflict` if any cap has been reached since the caller last read it.
+    #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(skip(self, player), fields(player_id = %player.player_id))]
     pub async fn join_open_match_tx(
         &self,
@@ -175,6 +176,7 @@ impl Dao {
     /// `approve_join_request_tx` sends alongside deciding the request —
     /// shared the same way `match_ops::join_match_items` is shared with
     /// `Dao::move_in_from_waitlist_tx`.
+    #[allow(clippy::too_many_arguments)]
     fn join_open_match_items(
         &self,
         match_id: &str,

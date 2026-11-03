@@ -38,6 +38,22 @@ pub struct NewLiveEvent {
     pub recorded_at: String,
 }
 
+/// The result of a successful [`Dao::delete_live_event`].
+#[derive(Debug, Clone, Copy)]
+pub struct DeletedLiveEvent {
+    /// The match's new tip seq (`MatchRecord.live_seq`) — see
+    /// `delete_live_event`'s doc comment on why this is a fresh read, not
+    /// `seq + 1`.
+    pub new_tip: u32,
+    /// `true` when the deleted event was the log's only remaining entry, so
+    /// the physical event log is now empty — the caller's cue that a match
+    /// auto-promoted to `in_progress` by its first live event (see
+    /// `append_live_events`) should fall back to `scheduled`, the same way
+    /// that promotion would never have happened had the event never been
+    /// recorded.
+    pub log_now_empty: bool,
+}
+
 impl Dao {
     /// Atomically reserve the next `events.len()` seq numbers and write them,
     /// all-or-nothing. `expected_last_seq` must match the match's current tip
@@ -195,7 +211,7 @@ impl Dao {
     /// strongly consistent, since it's read immediately after this same
     /// method's own write and must reflect it.
     #[tracing::instrument(skip(self))]
-    pub async fn delete_live_event(&self, match_id: &str, seq: u32) -> DaoResult<u32> {
+    pub async fn delete_live_event(&self, match_id: &str, seq: u32) -> DaoResult<DeletedLiveEvent> {
         // Resolve what `live_tip_seq` must become if this delete succeeds,
         // before starting the transaction: the next-highest surviving
         // event's seq, or none if deleting `seq` empties the log. A plain
@@ -255,7 +271,13 @@ impl Dao {
             .await;
 
         match result {
-            Ok(_) => self.live_seq_after_delete(match_id).await,
+            Ok(_) => {
+                let new_tip = self.live_seq_after_delete(match_id).await?;
+                Ok(DeletedLiveEvent {
+                    new_tip,
+                    log_now_empty: previous_seq.is_none(),
+                })
+            }
             Err(e) => match delete_live_event_failure(&e) {
                 Some(DeleteLiveEventFailure::EventMissing) => Err(DaoError::NotFound(format!(
                     "live event {seq} on match {match_id}"

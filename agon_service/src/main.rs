@@ -5356,8 +5356,8 @@ impl Api {
             })));
         }
 
-        let new_tip = match dao.delete_live_event(&match_id, seq).await {
-            Ok(new_tip) => new_tip,
+        let deleted = match dao.delete_live_event(&match_id, seq).await {
+            Ok(deleted) => deleted,
             Err(dao::DaoError::NotFound(_)) => {
                 return Ok(DeleteLiveEventResponse::NotFound(Json(ErrorMessage {
                     message: "live event not found".into(),
@@ -5373,6 +5373,36 @@ impl Api {
             Err(e) => return Err(dao_internal(e)),
         };
 
+        // Undoing a match's only recorded event leaves its live log empty —
+        // the same state it was in before the first event ever auto-promoted
+        // it to `in_progress` (see `append_live_events`), so reverse that
+        // promotion rather than leaving the match stuck "live" with nothing
+        // in its log. Skipped once a score has actually been confirmed
+        // (finishing a live-scored match, or a later manual score edit),
+        // since that's a real result to preserve, not a promotion to undo.
+        if deleted.log_now_empty
+            && agg.match_.status == "in_progress"
+            && agg.match_.confirmed_score.is_none()
+        {
+            dao.update_match_meta(
+                &match_id,
+                None,
+                None,
+                Some("scheduled"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &[],
+                &[],
+            )
+            .await
+            .map_err(dao_internal)?;
+        }
+
         match self
             .derive_live_snapshot(
                 dao,
@@ -5382,7 +5412,7 @@ impl Api {
                 // The DAO's freshly-bumped counter, not `agg.match_.live_seq`
                 // (fetched before the delete — now stale, since the delete
                 // itself advances the counter).
-                new_tip,
+                deleted.new_tip,
             )
             .await?
         {

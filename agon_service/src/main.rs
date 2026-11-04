@@ -4869,8 +4869,13 @@ impl Api {
             let mut o = match_series_occurrence_from_record(occurrence);
             o.match_data = summaries.get(&occurrence.match_id).map(|summary| {
                 let i_liked = liked.contains(&occurrence.match_id);
-                let mut m =
-                    search_match_from_records(&summary.match_, &summary.sides, &users, None, i_liked);
+                let mut m = search_match_from_records(
+                    &summary.match_,
+                    &summary.sides,
+                    &users,
+                    None,
+                    i_liked,
+                );
                 Self::hydrate_sides_from_cache(&mut m.sides, &team_metas);
                 sign_search_match_headers(assets, &mut m);
                 m

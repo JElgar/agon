@@ -315,11 +315,14 @@ pub enum OpenJoinAudience {
     Both,
 }
 
-/// A match's "open to the public" policy, set via `PUT
-/// /matches/:match_id/open-join`. Mirrors `dao::records::OpenJoinPolicyRecord`,
-/// with its `rules` flattened into named fields matching what an organiser
-/// actually configures (see `OpenMatchSettings` in the design canvas) rather
-/// than exposing the rule-list shape directly.
+/// A match's open-join policy, flattening `dao::records::
+/// OpenJoinPolicyRecord`/`SideOpenJoinPolicyRecord`'s `rules` into named
+/// fields matching what an organiser actually configures (see
+/// `OpenMatchSettings` in the design canvas) rather than exposing the
+/// rule-list shape directly. Shared by the match-wide policy (`PUT
+/// /matches/:match_id/open-join`) and a side's own policy (`PUT
+/// /matches/:match_id/sides/:side_id/ringers`, under `per_side` scope) —
+/// same fields either way, `max_open_spots` simply unused at the side level.
 #[derive(Object)]
 pub struct OpenJoinPolicyInput {
     pub audience: OpenJoinAudience,
@@ -338,11 +341,14 @@ pub struct OpenJoinPolicyInput {
     pub requires_approval: bool,
     /// Cap on how many open arrivals this match accepts in total, below the
     /// match's own derived capacity if set. `None` = uncapped — open
-    /// joining simply fills whatever raw capacity remains.
+    /// joining simply fills whatever raw capacity remains. Match-wide scope
+    /// only — ignored (and not returned) for a side's own policy, which caps
+    /// via `RingerSettingsInput::max_ringer_spots` instead.
     pub max_open_spots: Option<u32>,
 }
 
-/// The policy as stored, returned by `PUT`/`GET /matches/:match_id/open-join`.
+/// The policy as stored, returned by `PUT`/`GET /matches/:match_id/open-join`
+/// under `match_wide` scope.
 #[derive(Object)]
 pub struct OpenJoinPolicy {
     pub audience: OpenJoinAudience,
@@ -352,16 +358,72 @@ pub struct OpenJoinPolicy {
     pub max_open_spots: Option<u32>,
 }
 
+/// Whether a match's open-join policy applies to the whole match, or is
+/// delegated to each side individually — `OpenJoinScopeInput::mode`.
+#[derive(Enum, Clone, Copy, Debug, PartialEq, Eq)]
+#[oai(rename_all = "snake_case")]
+pub enum OpenJoinScopeKind {
+    /// One policy for the whole match — today's shape. A side still needs
+    /// its own `RingerSettingsInput::enabled` flipped on to actually accept
+    /// ringers; the match-wide policy only decides who's eligible and
+    /// whether approval is required.
+    MatchWide,
+    /// No match-wide policy at all — each side sets its own policy via `PUT
+    /// /matches/:match_id/sides/:side_id/ringers`. There's no "join
+    /// unassigned" option under this scope: a joiner always has to pick one
+    /// of the open sides.
+    PerSide,
+}
+
+/// A match's open-join scope, set via `PUT /matches/:match_id/open-join`.
+/// `policy` is required when `mode` is `match_wide` and ignored (should be
+/// omitted) when `mode` is `per_side` — a `per_side` match carries no
+/// match-level policy; each side's own policy is set separately via `PUT
+/// /matches/:match_id/sides/:side_id/ringers`.
+#[derive(Object)]
+pub struct OpenJoinScopeInput {
+    pub mode: OpenJoinScopeKind,
+    pub policy: Option<OpenJoinPolicyInput>,
+}
+
+/// The scope as stored, returned by `PUT`/`GET /matches/:match_id/open-join`.
+#[derive(Object)]
+pub struct OpenJoinScope {
+    pub mode: OpenJoinScopeKind,
+    pub policy: Option<OpenJoinPolicy>,
+}
+
+/// A side's own open-join policy, under `per_side` scope — part of the
+/// response from `PUT /matches/:match_id/sides/:side_id/ringers`. Same
+/// shape as `OpenJoinPolicy` minus `max_open_spots`, which is a match-wide
+/// concept; a side caps itself via `RingerSettingsInput::max_ringer_spots`
+/// instead.
+#[derive(Object)]
+pub struct SideOpenJoinPolicy {
+    pub audience: OpenJoinAudience,
+    pub requires_follow: bool,
+    pub min_matches_played: Option<u32>,
+    pub requires_approval: bool,
+}
+
 /// Open or close one side to individual ringers, and optionally cap how many
-/// it takes — `PUT /matches/:match_id/sides/:side_id/ringers`. Meaningless
-/// without the match's own open-join policy set, but settable independently
-/// of it (an organiser can prepare a side's ringer settings before opening
-/// the match, or after).
+/// it takes — `PUT /matches/:match_id/sides/:side_id/ringers`. Settable
+/// independently of the match's own open-join scope (an organiser can
+/// prepare a side's ringer settings before opening the match, or after), but
+/// which fields matter depends on that scope:
+/// - Under `match_wide`: `enabled` toggles whether this side takes ringers
+///   under the match-wide policy (the policy itself decides who's eligible).
+///   `side_policy` is ignored.
+/// - Under `per_side`: `side_policy` *is* this side's policy (`None` closes
+///   the side to ringers); `enabled` is ignored.
 #[derive(Object)]
 pub struct RingerSettingsInput {
+    #[oai(default)]
     pub enabled: bool,
+    pub side_policy: Option<OpenJoinPolicyInput>,
     /// Cap on this side's own ringer arrivals, independent of the match-wide
-    /// `OpenJoinPolicyInput::max_open_spots`. `None` = uncapped.
+    /// `OpenJoinPolicyInput::max_open_spots` (under `match_wide` scope).
+    /// `None` = uncapped.
     pub max_ringer_spots: Option<u32>,
 }
 

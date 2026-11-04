@@ -1,6 +1,7 @@
-//! Open joining ("ringers"): a match's opt-in public-join policy
-//! (`OpenJoinPolicyRecord`), per-side ringer settings, the cap-guarded
-//! open-join write itself, and the optional approval queue
+//! Open joining ("ringers"): a match's opt-in public-join scope
+//! (`OpenJoinScopeRecord`, either one match-wide `OpenJoinPolicyRecord` or
+//! each side's own `SideOpenJoinPolicyRecord`), per-side ringer settings, the
+//! cap-guarded open-join write itself, and the optional approval queue
 //! (`MatchJoinRequestRecord`) for a policy that requires one. See the design
 //! doc for the full picture; this module covers only the DAO-level pieces:
 //! eligibility (who *may* join) is evaluated by the caller (`agon_service`)
@@ -18,19 +19,21 @@ use super::error::{DaoError, DaoResult};
 use super::is_update_conditional_failure;
 use super::item::{ATTR_PK, ATTR_SK, from_item, s, to_item};
 use super::keys::{Pk, Sk};
-use super::records::{MatchJoinRequestRecord, MatchPlayerRecord, OpenJoinPolicyRecord};
+use super::records::{
+    MatchJoinRequestRecord, MatchPlayerRecord, OpenJoinScopeRecord, SideOpenJoinPolicyRecord,
+};
 
 pub const TYPE_MATCH_JOIN_REQUEST: &str = "match_join_request";
 
 impl Dao {
-    /// Set or clear a match's open-join policy (`MatchRecord::open_join`).
+    /// Set or clear a match's open-join scope (`MatchRecord::open_join`).
     /// `None` closes the match back to invite/link/team-only. `NotFound` if
     /// the match is absent.
     #[tracing::instrument(skip(self, policy))]
     pub async fn set_match_open_join_policy(
         &self,
         match_id: &str,
-        policy: Option<&OpenJoinPolicyRecord>,
+        policy: Option<&OpenJoinScopeRecord>,
     ) -> DaoResult<()> {
         let mut request = self
             .client
@@ -133,6 +136,75 @@ impl Dao {
             Err(e) if is_update_conditional_failure(&e) => {
                 Err(DaoError::NotFound(format!("match {match_id}")))
             }
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// Set or clear one side's own open-join policy and ringer cap — the
+    /// `PerSide`-scope analogue of `update_side_ringer_settings`
+    /// (`MatchWide`-scope's `ringers_enabled` toggle). `policy: None` closes
+    /// the side to ringers. `NotFound` if the match or side is absent.
+    #[tracing::instrument(skip(self, policy))]
+    pub async fn set_side_open_join_policy(
+        &self,
+        match_id: &str,
+        side_id: &str,
+        policy: Option<&SideOpenJoinPolicyRecord>,
+        max_ringer_spots: Option<u32>,
+    ) -> DaoResult<()> {
+        let mut set: Vec<String> = Vec::new();
+        let mut remove: Vec<String> = Vec::new();
+        let mut names: HashMap<String, String> = HashMap::new();
+        let mut values: HashMap<String, AttributeValue> = HashMap::new();
+        names.insert("#pk".into(), ATTR_PK.into());
+        names.insert("#sid".into(), side_id.to_string());
+
+        match policy {
+            Some(p) => {
+                set.push("sides.#sid.open_join = :oj".to_string());
+                values.insert(":oj".into(), to_attr(p)?);
+            }
+            None => remove.push("sides.#sid.open_join".to_string()),
+        }
+        match max_ringer_spots {
+            Some(max) => {
+                set.push("sides.#sid.max_ringer_spots = :mr".to_string());
+                values.insert(":mr".into(), AttributeValue::N(max.to_string()));
+            }
+            None => remove.push("sides.#sid.max_ringer_spots".to_string()),
+        }
+
+        let mut expr = String::new();
+        if !set.is_empty() {
+            expr.push_str("SET ");
+            expr.push_str(&set.join(", "));
+        }
+        if !remove.is_empty() {
+            if !expr.is_empty() {
+                expr.push(' ');
+            }
+            expr.push_str("REMOVE ");
+            expr.push_str(&remove.join(", "));
+        }
+
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .update_expression(expr)
+            .condition_expression("attribute_exists(#pk) AND attribute_exists(sides.#sid)")
+            .set_expression_attribute_names(Some(names))
+            .set_expression_attribute_values(Some(values))
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => Err(DaoError::NotFound(format!(
+                "match {match_id} or side {side_id}"
+            ))),
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
     }

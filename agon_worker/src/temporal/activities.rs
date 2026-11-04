@@ -170,6 +170,7 @@ impl AgonActivities {
                     // occurrence.
                     team_join_enabled: true,
                     ringers_enabled: false,
+                    open_join: None,
                     max_ringer_spots: None,
                     ringers_joined_count: 0,
                     player_count: 0,

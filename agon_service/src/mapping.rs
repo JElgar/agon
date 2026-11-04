@@ -14,8 +14,8 @@ use crate::match_format::MatchFormat;
 use crate::membership::{
     ExternalMember, Invitation, InvitationContext, InvitationKind, InvitationMatchContext,
     InvitationStatus, InvitationTeamContext, JoinLink, JoinLinkScope, JoinRequest,
-    JoinRequestStatus, MatchPlayerRole, Member, OpenJoinAudience, OpenJoinPolicy, TokenInvitation,
-    UserInvitation, UserMember,
+    JoinRequestStatus, MatchPlayerRole, Member, OpenJoinAudience, OpenJoinPolicy, OpenJoinScope,
+    OpenJoinScopeKind, SideOpenJoinPolicy, TokenInvitation, UserInvitation, UserMember,
 };
 use crate::notification::{
     CommentNotification, FollowNotification, InvitationAcceptedNotification, LikeNotification,
@@ -47,9 +47,10 @@ use agon_core::dao::records::{
     MatchFormatRecord, MatchJoinRequestRecord, MatchLikeRecord, MatchPlayerRecord,
     MatchPlayerRole as MatchPlayerRoleRecord, MatchRecord, MatchScoreRecord, MatchSideRecord,
     NotificationKindRecord, NotificationRecord, OpenJoinAudienceRecord, OpenJoinPolicyRecord,
-    PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord,
-    ScoreSubmissionRecord, SeriesEndRecord, SeriesOccurrenceRecord, SeriesRecord, SeriesSideRecord,
-    TeamMemberRecord, TeamRecord, UserRecord, UserStatsRecord,
+    OpenJoinScopeRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord,
+    ScoreResponseRecord, ScoreSubmissionRecord, SeriesEndRecord, SeriesOccurrenceRecord,
+    SeriesRecord, SeriesSideRecord, SideOpenJoinPolicyRecord, TeamMemberRecord, TeamRecord,
+    UserRecord, UserStatsRecord,
 };
 use agon_core::rating::ladder_for_tag;
 use agon_core::rating::{PLACEMENT_MATCHES, display, published};
@@ -440,6 +441,21 @@ pub fn open_join_policy_from_record(rec: &OpenJoinPolicyRecord) -> OpenJoinPolic
 pub fn open_join_policy_to_record(
     input: &crate::membership::OpenJoinPolicyInput,
 ) -> OpenJoinPolicyRecord {
+    OpenJoinPolicyRecord {
+        audience: open_join_audience_to_record(input.audience),
+        rules: open_join_rules_to_record(input),
+        requires_approval: input.requires_approval,
+        max_open_spots: input.max_open_spots,
+    }
+}
+
+/// Flatten an `OpenJoinPolicyInput`'s named eligibility fields into
+/// `EligibilityRuleRecord`s — shared by `open_join_policy_to_record` (match-
+/// wide) and `side_open_join_policy_to_record` (per-side), which differ only
+/// in what they do with `max_open_spots`.
+fn open_join_rules_to_record(
+    input: &crate::membership::OpenJoinPolicyInput,
+) -> Vec<EligibilityRuleRecord> {
     let mut rules = Vec::new();
     if input.requires_follow {
         rules.push(EligibilityRuleRecord::FollowedByOrganiser);
@@ -447,11 +463,56 @@ pub fn open_join_policy_to_record(
     if let Some(min) = input.min_matches_played {
         rules.push(EligibilityRuleRecord::MinMatchesPlayed { min });
     }
-    OpenJoinPolicyRecord {
+    rules
+}
+
+/// Build the API `OpenJoinScope` from the stored record — the inverse of
+/// how `set_open_join_policy` builds an `OpenJoinScopeRecord` from
+/// `OpenJoinScopeInput`.
+pub fn open_join_scope_from_record(rec: &OpenJoinScopeRecord) -> OpenJoinScope {
+    match rec {
+        OpenJoinScopeRecord::MatchWide(policy) => OpenJoinScope {
+            mode: OpenJoinScopeKind::MatchWide,
+            policy: Some(open_join_policy_from_record(policy)),
+        },
+        OpenJoinScopeRecord::PerSide => OpenJoinScope {
+            mode: OpenJoinScopeKind::PerSide,
+            policy: None,
+        },
+    }
+}
+
+/// Build a side's own stored policy from the API input — the `per_side`-
+/// scope analogue of `open_join_policy_to_record`. `max_open_spots` has no
+/// side-level meaning (a side caps itself via `max_ringer_spots` instead),
+/// so it's dropped rather than surfaced on `OpenJoinPolicyInput`'s reused
+/// shape.
+pub fn side_open_join_policy_to_record(
+    input: &crate::membership::OpenJoinPolicyInput,
+) -> SideOpenJoinPolicyRecord {
+    SideOpenJoinPolicyRecord {
         audience: open_join_audience_to_record(input.audience),
-        rules,
+        rules: open_join_rules_to_record(input),
         requires_approval: input.requires_approval,
-        max_open_spots: input.max_open_spots,
+    }
+}
+
+/// Build the API `SideOpenJoinPolicy` from a side's stored policy — the
+/// inverse of `side_open_join_policy_to_record`.
+pub fn side_open_join_policy_from_record(rec: &SideOpenJoinPolicyRecord) -> SideOpenJoinPolicy {
+    let requires_follow = rec
+        .rules
+        .iter()
+        .any(|r| matches!(r, EligibilityRuleRecord::FollowedByOrganiser));
+    let min_matches_played = rec.rules.iter().find_map(|r| match r {
+        EligibilityRuleRecord::MinMatchesPlayed { min } => Some(*min),
+        _ => None,
+    });
+    SideOpenJoinPolicy {
+        audience: open_join_audience_from_record(rec.audience),
+        requires_follow,
+        min_matches_played,
+        requires_approval: rec.requires_approval,
     }
 }
 

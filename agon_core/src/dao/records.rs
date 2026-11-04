@@ -511,9 +511,9 @@ pub struct MatchRecord {
     pub authority: std::collections::HashMap<String, MatchPlayerRole>,
     /// This match's "open to the public" policy — `None` means invite/
     /// link/team-only, as every match was before this field existed. See
-    /// [`OpenJoinPolicyRecord`].
+    /// [`OpenJoinScopeRecord`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub open_join: Option<OpenJoinPolicyRecord>,
+    pub open_join: Option<OpenJoinScopeRecord>,
     /// How many of `total_player_count` arrived through the open-join
     /// policy (`JoinSourceRecord::Open`, including an approved
     /// `MatchJoinRequestRecord`) — what
@@ -702,19 +702,27 @@ pub struct MatchSideRecord {
     pub team_join_enabled: bool,
     /// Whether an individual ringer — someone with no team connection to
     /// this side at all — may join it directly through the match's
-    /// open-join policy (`MatchRecord::open_join`). Meaningless without
-    /// `open_join` being `Some`. Distinct from `team_join_enabled`: a side
-    /// a team has already claimed can still set this to take ringers on
-    /// its remaining slots, which is exactly why this lives per-side rather
-    /// than as one match-wide switch. `#[serde(default)]` for sides written
-    /// before open joining existed.
+    /// open-join policy, when that policy is `OpenJoinScopeRecord::
+    /// MatchWide` (meaningless under `PerSide`, where `open_join` below
+    /// governs instead, and meaningless whenever `MatchRecord::open_join`
+    /// is `None`). Distinct from `team_join_enabled`: a side a team has
+    /// already claimed can still set this to take ringers on its remaining
+    /// slots, which is exactly why this lives per-side rather than as one
+    /// match-wide switch. `#[serde(default)]` for sides written before open
+    /// joining existed.
     #[serde(default)]
     pub ringers_enabled: bool,
+    /// This side's own open-join policy, when the match's own
+    /// `MatchRecord::open_join` is `OpenJoinScopeRecord::PerSide`
+    /// (meaningless under `MatchWide`, where `ringers_enabled` above
+    /// governs instead). `None` means this side is closed to ringers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_join: Option<SideOpenJoinPolicyRecord>,
     /// Cap on how many ringers *this side* accepts, independent of (and
     /// possibly tighter than) both the match-wide
-    /// `OpenJoinPolicyRecord::max_open_spots` and this side's own
-    /// `max_players`. `None` = uncapped — ringers simply fill whatever raw
-    /// capacity remains on the side. Compared against
+    /// `OpenJoinPolicyRecord::max_open_spots` (under `MatchWide` scope) and
+    /// this side's own `max_players`. `None` = uncapped — ringers simply
+    /// fill whatever raw capacity remains on the side. Compared against
     /// `ringers_joined_count`, never `player_count`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_ringer_spots: Option<u32>,
@@ -939,11 +947,11 @@ pub enum EligibilityRuleRecord {
     FollowedByOrganiser,
 }
 
-/// A match's opt-in "open to the public" policy
-/// (`MatchRecord::open_join`) — absent (the default on every match) means
-/// invite/link/team-only, as every match behaved before this field existed.
-/// A match carrying this is surfaced by Discover search, subject to `rules`
-/// and remaining capacity.
+/// A match's opt-in "open to the public" policy, carried by
+/// `OpenJoinScopeRecord::MatchWide` — absent entirely
+/// (`MatchRecord::open_join` is `None`) means invite/link/team-only, as every
+/// match behaved before this field existed. A match carrying this is
+/// surfaced by Discover search, subject to `rules` and remaining capacity.
 ///
 /// `requires_approval` is deliberately orthogonal to `audience`/`rules`: it
 /// adds a human decision for someone who has *already* been determined
@@ -964,9 +972,44 @@ pub struct OpenJoinPolicyRecord {
     /// uncapped — open joining simply fills whatever raw capacity remains,
     /// which was the only behaviour before this field existed. Enforced
     /// against `MatchRecord::open_joined_count`, never
-    /// `total_player_count` — see that field's doc comment for why.
+    /// `total_player_count` — see that field's doc comment for why. Only
+    /// meaningful under `OpenJoinScopeRecord::MatchWide`: a `PerSide` match
+    /// has no single policy to cap, since every side's own
+    /// `MatchSideRecord::max_ringer_spots` already caps that side.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_open_spots: Option<u32>,
+}
+
+/// `MatchRecord::open_join`'s two shapes: one policy governing the whole
+/// match (today's shape, unchanged — see `OpenJoinPolicyRecord`), or each
+/// side configuring its own policy independently via
+/// `MatchSideRecord::open_join`. Never both at once — an organiser picks one
+/// or the other for the whole match.
+///
+/// Under `PerSide`, there's no "join unassigned" option: an unassigned
+/// landing has no side to carry a policy, so a joiner always has to pick one
+/// of the open sides (same as a join link with `allow_unassigned: false`
+/// today).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OpenJoinScopeRecord {
+    MatchWide(OpenJoinPolicyRecord),
+    PerSide,
+}
+
+/// One side's own open-join policy, carried by `MatchSideRecord::open_join`
+/// — meaningful only when the match's own `MatchRecord::open_join` is
+/// `OpenJoinScopeRecord::PerSide`. Same fields as `OpenJoinPolicyRecord`
+/// minus `max_open_spots` (a side's own cap is `MatchSideRecord::
+/// max_ringer_spots` instead, which already exists independent of scope).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SideOpenJoinPolicyRecord {
+    pub audience: OpenJoinAudienceRecord,
+    /// AND'd — see [`EligibilityRuleRecord`]'s doc comment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<EligibilityRuleRecord>,
+    #[serde(default)]
+    pub requires_approval: bool,
 }
 
 /// `MATCH#<matchId>` / `JOINREQ#<userId>` — a request to join a match through

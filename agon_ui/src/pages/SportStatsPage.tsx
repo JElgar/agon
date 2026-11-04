@@ -16,8 +16,10 @@ import { sportIcon, sportLabel, type MatchType } from '@/lib/sports'
 import { formatWinRate, type BestFigure } from '@/lib/stats'
 import { formatOvers } from '@/lib/cricketScore'
 import { StatInfo } from '@/components/agon/StatInfo'
+import { RatingCard } from '@/components/agon/RatingCard'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { useProfileView } from '@/hooks/useProfileView'
+import { placementFor, ratingFor } from '@/lib/rating'
 import { cn } from '@/lib/utils'
 import { sideDisplayName } from '@/lib/members'
 
@@ -101,7 +103,7 @@ export function SportStatsPage() {
     )
   }
 
-  const { profile } = profileQuery.data
+  const { profile, placements } = profileQuery.data
   const stats = profile.stats[matchType as keyof typeof profile.stats]
   // Cricket's and football's stats cards key off the sport itself, not off
   // which fields happen to be present — a future sport could easily add its
@@ -185,6 +187,15 @@ export function SportStatsPage() {
     </section>
   ) : null
 
+  const ratingEl = (
+    <RatingCard
+      sport={matchType}
+      rating={ratingFor(profile.ratings, matchType)}
+      placement={placementFor(placements, matchType)}
+      isOwnProfile={isOwnProfile}
+    />
+  )
+
   const chartEl = (
     <section className="flex flex-col gap-3">
       <SectionHeading>Matches per month</SectionHeading>
@@ -263,6 +274,7 @@ export function SportStatsPage() {
               verified against the "Sport" board's mobile mock. */}
           <div className="flex flex-col gap-4 xl:hidden">
             <WinRateBanner stats={stats} recentOutcomes={recentByDate.map((m) => m.outcome)} />
+            {ratingEl}
             {breakdownEl}
             {personalBestsEl}
             {chartEl}
@@ -282,6 +294,7 @@ export function SportStatsPage() {
                 recentOutcomes={recentByDate.map((m) => m.outcome)}
                 extra={bannerExtra}
               />
+              {ratingEl}
               {cricketStats && breakdownEl}
               {recentMatchesEl}
             </div>

@@ -33,6 +33,7 @@ pub mod join_link;
 pub mod live_score_ops;
 pub mod match_ops;
 pub mod match_social;
+pub mod metrics;
 pub mod notification;
 pub mod paired_device;
 pub mod rating;

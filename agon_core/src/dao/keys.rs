@@ -276,6 +276,32 @@ pub enum Sk {
     /// instead of one per kind.
     RatingContribution(String),
 
+    /// A batch of raw wearable-metric samples (heart rate, and later things
+    /// like GPS/cadence) for one user, posted by a paired device during a
+    /// match. `METRIC#<metric>#<userId>#<startedAt>`.
+    ///
+    /// Keyed on `user_id`, not a match-specific `player_id`, so it lines up
+    /// with `Sk::StatContribution`'s own key — `Dao::append_metric_batch`
+    /// updates both for the same identifier in one call, and a device can
+    /// only ever attribute samples to its own paired account's internal id
+    /// (never a caller-supplied player/roster id), so there's no
+    /// impersonation surface.
+    ///
+    /// `metric` leads so every user's batches for one metric can be listed
+    /// together in one query (`Sk::metric_prefix`, e.g. every player's GPS
+    /// points for a heat map); `user_id` is next so one user's own trace for
+    /// one metric is also a single prefix (`Sk::metric_player_prefix`, e.g.
+    /// one player's HR graph); `started_at` trails so that per-user trace is
+    /// time-ordered and range-queryable, the same reasoning as
+    /// [`Sk::Rating`]'s `played_at` placement. Never mutated once written — a
+    /// new batch is always a new item, the same append-only shape as
+    /// [`Sk::LiveEvent`].
+    MetricBatch {
+        metric: String,
+        user_id: String,
+        started_at: String,
+    },
+
     /// One match's effect on one player's rating, in that player's own
     /// partition (`USER#<uid>`). `RATING#<ladder>#<played_at>#<matchId>`.
     ///
@@ -330,6 +356,7 @@ impl Sk {
             Sk::PairedDevice(_) => "PAIREDDEV",
             Sk::StatContribution(_) => "STATCONTRIB",
             Sk::Feed { .. } => "FEED",
+            Sk::MetricBatch { .. } => "METRIC",
             Sk::RatingContribution(_) => "RATINGCONTRIB",
             Sk::Rating { .. } => "RATING",
         }
@@ -414,6 +441,33 @@ impl Sk {
             }
             .prefix()
         )
+    }
+
+    /// The stem every metric's prefix extends: `METRIC#`. Parameterized the
+    /// same way [`Sk::rating_stem`] is — private, because no caller wants a
+    /// query over every metric at once (HR and GPS are read independently).
+    fn metric_stem() -> String {
+        format!(
+            "{}{DELIMITER}",
+            Sk::MetricBatch {
+                metric: String::new(),
+                user_id: String::new(),
+                started_at: String::new(),
+            }
+            .prefix()
+        )
+    }
+
+    /// Lists every player's batches for one metric in a match: `METRIC#<metric>#`
+    /// — e.g. every player's GPS points for a heat map.
+    pub fn metric_prefix(metric: &str) -> String {
+        format!("{}{metric}{DELIMITER}", Sk::metric_stem())
+    }
+
+    /// Lists one player's batches for one metric, time-ordered:
+    /// `METRIC#<metric>#<playerId>#` — e.g. one player's HR trace.
+    pub fn metric_player_prefix(metric: &str, user_id: &str) -> String {
+        format!("{}{user_id}{DELIMITER}", Sk::metric_prefix(metric))
     }
 
     /// Lists a match's rating contributions: `RATINGCONTRIB#`.
@@ -529,6 +583,19 @@ impl fmt::Display for Sk {
                 write!(f, "FEED{DELIMITER}{starts_at}{DELIMITER}{match_id}")
             }
 
+            // Metric batches keep the metric, player and batch start time in
+            // the key (list-only, ordered within a player by when recorded).
+            Sk::MetricBatch {
+                metric,
+                user_id,
+                started_at,
+            } => {
+                write!(
+                    f,
+                    "METRIC{DELIMITER}{metric}{DELIMITER}{user_id}{DELIMITER}{started_at}"
+                )
+            }
+
             // Rating history keeps the ladder and the match's start time in
             // the key (list-only, ordered by when the match was played).
             Sk::Rating {
@@ -609,6 +676,14 @@ impl FromStr for Sk {
                 Ok(Sk::Feed {
                     starts_at,
                     match_id,
+                })
+            }
+            "METRIC" => {
+                let (metric, user_id, started_at) = three(rest)?;
+                Ok(Sk::MetricBatch {
+                    metric,
+                    user_id,
+                    started_at,
                 })
             }
             "RATINGCONTRIB" => Ok(Sk::RatingContribution(rest.into())),
@@ -721,6 +796,18 @@ mod tests {
                 match_id: "m1".into(),
             },
             "FEED#2026-06-01T10:00:00Z#m1",
+        );
+    }
+
+    #[test]
+    fn sk_metric_batch_variant_roundtrips() {
+        sk_roundtrip(
+            Sk::MetricBatch {
+                metric: "heart_rate".into(),
+                user_id: "p1".into(),
+                started_at: "2026-06-01T10:00:00.000Z".into(),
+            },
+            "METRIC#heart_rate#p1#2026-06-01T10:00:00.000Z",
         );
     }
 
@@ -906,6 +993,11 @@ mod tests {
             "RATING#squash#2026-06-01T10:00:00Z"
         );
         assert_eq!(Sk::rating_history_end("squash"), "RATING#squash#~");
+        assert_eq!(Sk::metric_prefix("heart_rate"), "METRIC#heart_rate#");
+        assert_eq!(
+            Sk::metric_player_prefix("heart_rate", "p1"),
+            "METRIC#heart_rate#p1#"
+        );
     }
 
     #[test]
@@ -943,6 +1035,7 @@ mod tests {
             Sk::paired_device_prefix(),
             Sk::rating_contribution_prefix(),
             Sk::rating_stem(),
+            Sk::metric_stem(),
             "SCORESUB#".to_string(),
         ];
         for (i, a) in prefixes.iter().enumerate() {
@@ -963,6 +1056,19 @@ mod tests {
                 assert!(
                     prefix.starts_with(&stem),
                     "{prefix:?} must extend the guarded stem {stem:?}"
+                );
+            }
+        }
+
+        let metric_stem = Sk::metric_stem();
+        for metric in ["heart_rate", "gps"] {
+            for prefix in [
+                Sk::metric_prefix(metric),
+                Sk::metric_player_prefix(metric, "p1"),
+            ] {
+                assert!(
+                    prefix.starts_with(&metric_stem),
+                    "{prefix:?} must extend the guarded stem {metric_stem:?}"
                 );
             }
         }

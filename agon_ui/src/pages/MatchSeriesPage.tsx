@@ -1,4 +1,4 @@
-import { useQueries, useQuery } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ChevronLeft } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
@@ -8,8 +8,6 @@ import { sportIcon } from '@/lib/sports'
 import { seriesCadenceLabel, seriesEndLabel, seriesGeneratingLabel, seriesStatusLabel } from '@/lib/matchSeries'
 import { MatchCard } from '@/components/agon/MatchCard'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
-
-type Match = components['schemas']['Match']
 
 /** A series' cadence hasn't finished generating occurrences while its
  *  `status` is `generating` — poll until it flips to `active`. */
@@ -58,24 +56,6 @@ export function MatchSeriesPage() {
 
   const occurrences = occurrencesQuery.data ?? []
 
-  // Each occurrence only carries its index/start time/match id — render the
-  // same `MatchCard` the recent-matches list uses by fetching each
-  // occurrence's full match. Shares a cache entry (and refetch) with
-  // `MatchDetailPage`, so opening a match from here then navigating back
-  // doesn't refetch it.
-  const matchQueries = useQueries({
-    queries: occurrences.map((occurrence) => ({
-      queryKey: ['match', occurrence.match_id],
-      queryFn: async (): Promise<Match> => {
-        const { data, error } = await fetchClient.GET('/matches/{match_id}', {
-          params: { path: { match_id: occurrence.match_id } },
-        })
-        if (error || !data) throw new Error('Failed to load match')
-        return data
-      },
-    })),
-  })
-
   const series = seriesQuery.data
 
   return (
@@ -123,36 +103,23 @@ export function MatchSeriesPage() {
           <section className="flex flex-col gap-2.5">
             <h2 className="px-1 font-display text-[17px] font-bold">Matches in this series</h2>
             <div className="flex flex-col gap-3">
-              {occurrences.map((occurrence, i) => {
-                const matchQuery = matchQueries[i]
-                if (matchQuery.isLoading) {
-                  return (
-                    <div
-                      key={occurrence.match_id}
-                      className="h-28 animate-pulse rounded-2xl border bg-card"
-                      aria-hidden
-                    />
-                  )
-                }
-                if (matchQuery.isError || !matchQuery.data) {
-                  return (
-                    <div
-                      key={occurrence.match_id}
-                      className="rounded-2xl border bg-card p-3.5 text-sm text-muted-foreground"
-                    >
-                      Couldn't load match {occurrence.index + 1}.
-                    </div>
-                  )
-                }
-                return (
+              {occurrences.map((occurrence) =>
+                occurrence.match ? (
                   <MatchCard
                     key={occurrence.match_id}
-                    match={matchQuery.data}
+                    match={occurrence.match}
                     currentUserId={currentUserId}
                     onOpen={() => navigate(`/matches/${occurrence.match_id}`)}
                   />
-                )
-              })}
+                ) : (
+                  <div
+                    key={occurrence.match_id}
+                    className="rounded-2xl border bg-card p-3.5 text-sm text-muted-foreground"
+                  >
+                    Couldn't load match {occurrence.index + 1}.
+                  </div>
+                ),
+              )}
               {occurrencesQuery.isLoading && (
                 <div className="h-28 animate-pulse rounded-2xl border bg-card" aria-hidden />
               )}

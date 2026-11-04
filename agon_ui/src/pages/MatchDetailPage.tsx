@@ -534,7 +534,7 @@ function MatchDetail({
         )
       )}
       {!cancelled && <TeamJoinBanner match={match} />}
-      {!cancelled && <JoinLinkBanner match={match} />}
+      {!cancelled && matchView !== 'finished' && <JoinLinkBanner match={match} />}
       {editingResult && <MatchResultEditor match={match} onDone={() => setEditingResult(false)} />}
     </>
   )

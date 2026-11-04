@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { LogOut, Search, Settings, Share2, Users, Watch } from 'lucide-react'
+import { Info, LogOut, Search, Settings, Share2, Users, Watch } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Avatar } from '@/components/agon/Avatar'
@@ -25,8 +25,15 @@ import { ThemeToggle } from '@/components/ThemeToggle'
 import { useAuth } from '@/hooks/useAuth'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { useMatchesTogether } from '@/hooks/useMatchesTogether'
+import { useProfileView } from '@/hooks/useProfileView'
 import { sortedByActivity, totalMatches, overallWinRate, formatWinRate } from '@/lib/stats'
 import { sportLabel, type MatchType } from '@/lib/sports'
+import {
+  canBeRanked,
+  placementFor,
+  ratingFor,
+  type LadderPlacement,
+} from '@/lib/rating'
 
 type UserProfile = components['schemas']['UserProfile']
 type SearchMatch = components['schemas']['SearchMatch']
@@ -49,21 +56,7 @@ export function ProfilePage() {
   const isOwnProfile = !userId
   const currentUserId = useCurrentUserId()
 
-  const profileQuery = useQuery({
-    queryKey: ['profile', userId ?? 'me'],
-    queryFn: async (): Promise<UserProfile> => {
-      if (userId) {
-        const { data, error } = await fetchClient.GET('/users/{user_id}', {
-          params: { path: { user_id: userId } },
-        })
-        if (error || !data) throw new Error('Failed to load profile')
-        return data
-      }
-      const { data, error } = await fetchClient.GET('/users/me')
-      if (error || !data) throw new Error('Failed to load profile')
-      return data.profile
-    },
-  })
+  const profileQuery = useProfileView(userId)
 
   if (profileQuery.isLoading) return <ProfileSkeleton />
 
@@ -78,7 +71,7 @@ export function ProfilePage() {
     )
   }
 
-  const profile = profileQuery.data
+  const { profile, placements } = profileQuery.data
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4 xl:max-w-none">
@@ -88,7 +81,11 @@ export function ProfilePage() {
       </header>
 
       {isOwnProfile ? (
-        <OwnProfile profile={profile} onOpenMatch={(id) => navigate(`/matches/${id}`)} />
+        <OwnProfile
+          profile={profile}
+          placements={placements}
+          onOpenMatch={(id) => navigate(`/matches/${id}`)}
+        />
       ) : (
         <OtherProfile
           profile={profile}
@@ -184,9 +181,12 @@ function sportsIn(matches: SearchMatch[]): MatchType[] {
 
 function OwnProfile({
   profile,
+  placements,
   onOpenMatch,
 }: {
   profile: UserProfile
+  /** The viewer's own unpublished ladders — see `ProfileView.placements`. */
+  placements: LadderPlacement[] | undefined
   onOpenMatch: (id: string) => void
 }) {
   const [q, setQ] = useState('')
@@ -280,7 +280,10 @@ function OwnProfile({
       <div className="flex flex-col gap-4 xl:grid xl:grid-cols-[1fr_380px] xl:items-start xl:gap-6">
         {sportRows.length > 0 && (
           <div className="flex flex-col gap-4 xl:order-2 xl:min-w-0">
-            <h3 className="px-1 pt-2 font-display text-[19px] font-bold xl:pt-0">Your sports</h3>
+            <div className="flex items-baseline justify-between px-1 pt-2 xl:pt-0">
+              <h3 className="font-display text-[19px] font-bold">Your sports</h3>
+              <span className="text-[13px] text-muted-foreground">Ratings from ranked games</span>
+            </div>
             <Card className="flex flex-col overflow-hidden">
               {sportRows.map(({ sport, stats }, i) => (
                 <SportProgressRow
@@ -290,8 +293,20 @@ function OwnProfile({
                   winPercentage={stats.win_percentage}
                   to={`/profile/stats/${sport}`}
                   isFirst={i === 0}
+                  rating={ratingFor(profile.ratings, sport)}
+                  placement={placementFor(placements, sport)}
                 />
               ))}
+              <UnratedSportsNote
+                sports={sportRows
+                  .map(({ sport }) => sport)
+                  .filter(
+                    (sport) =>
+                      canBeRanked(sport) &&
+                      !ratingFor(profile.ratings, sport) &&
+                      !placementFor(placements, sport),
+                  )}
+              />
             </Card>
           </div>
         )}
@@ -334,6 +349,39 @@ function OwnProfile({
           />
         </div>
       </div>
+    </div>
+  )
+}
+
+/**
+ * The last row of the viewer's own sports card: the sports they play that
+ * have no rating going at all, because every match in them has been a
+ * friendly. Without it, a sport simply shows nothing where a rating would be
+ * and there's no way to tell "we're not telling you yet" from "nothing has
+ * counted yet" — the first is the placements chip, this is the second.
+ *
+ * Own profile only. For somebody else there's no way to tell those two apart
+ * from what the API returns, and the copy would be asking them to go and play
+ * a ranked match.
+ */
+function UnratedSportsNote({ sports }: { sports: MatchType[] }) {
+  if (sports.length === 0) return null
+  const names = sports.map((s) => sportLabel(s))
+  // `Intl.ListFormat` would do this, but it isn't in the project's TS lib
+  // (`ES2020`), and one sentence doesn't justify raising that.
+  const list =
+    names.length === 1
+      ? names[0]
+      : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+
+  return (
+    <div className="flex items-center gap-3 border-t px-4 pt-3 pb-3.5 text-[13px] text-muted-foreground">
+      <Info className="size-[18px] shrink-0" />
+      <span className="flex-grow">
+        {sports.length === 1
+          ? `${list} has no rating yet. Play a ranked ${names[0].toLowerCase()} match to start one.`
+          : `${list} have no rating yet. Play a ranked match to start one.`}
+      </span>
     </div>
   )
 }
@@ -441,6 +489,10 @@ function OtherProfile({
                 {firstName(profile.name)}'s sports
               </h3>
               <Card className="flex flex-col overflow-hidden">
+                {/* No `placement` here, and none available: another user's
+                    placement progress isn't in the API at all, so a sport of
+                    theirs mid-placements looks exactly like one they've only
+                    played friendlies in. That's the intended reading. */}
                 {sportRows.map(({ sport, stats }, i) => (
                   <SportProgressRow
                     key={sport}
@@ -449,6 +501,7 @@ function OtherProfile({
                     winPercentage={stats.win_percentage}
                     to={`/users/${profile.id}/stats/${sport}`}
                     isFirst={i === 0}
+                    rating={ratingFor(profile.ratings, sport)}
                   />
                 ))}
               </Card>

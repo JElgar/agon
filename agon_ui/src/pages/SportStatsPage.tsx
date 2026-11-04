@@ -17,13 +17,13 @@ import { formatWinRate, type BestFigure } from '@/lib/stats'
 import { formatOvers } from '@/lib/cricketScore'
 import { StatInfo } from '@/components/agon/StatInfo'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
+import { useProfileView } from '@/hooks/useProfileView'
 import { cn } from '@/lib/utils'
 import { sideDisplayName } from '@/lib/members'
 
 type BestBowlingFigures = components['schemas']['BestBowlingFigures']
 type CricketPlayerStats = components['schemas']['CricketPlayerStats']
 type FootballPlayerStats = components['schemas']['FootballPlayerStats']
-type UserProfile = components['schemas']['UserProfile']
 type SearchMatch = components['schemas']['SearchMatch']
 type MatchOutcome = components['schemas']['MatchOutcome']
 
@@ -67,23 +67,9 @@ export function SportStatsPage() {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<ResultFilter>('all')
 
-  const profileQuery = useQuery({
-    queryKey: ['profile', userId ?? 'me'],
-    queryFn: async (): Promise<UserProfile> => {
-      if (userId) {
-        const { data, error } = await fetchClient.GET('/users/{user_id}', {
-          params: { path: { user_id: userId } },
-        })
-        if (error || !data) throw new Error('Failed to load profile')
-        return data
-      }
-      const { data, error } = await fetchClient.GET('/users/me')
-      if (error || !data) throw new Error('Failed to load profile')
-      return data.profile
-    },
-  })
+  const profileQuery = useProfileView(userId)
 
-  const profileId = profileQuery.data?.id
+  const profileId = profileQuery.data?.profile.id
   const matchType = sport as MatchType
 
   const matchesQuery = useQuery({
@@ -115,7 +101,7 @@ export function SportStatsPage() {
     )
   }
 
-  const profile = profileQuery.data
+  const { profile } = profileQuery.data
   const stats = profile.stats[matchType as keyof typeof profile.stats]
   // Cricket's and football's stats cards key off the sport itself, not off
   // which fields happen to be present — a future sport could easily add its

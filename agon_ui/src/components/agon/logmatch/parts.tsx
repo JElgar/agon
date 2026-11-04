@@ -48,7 +48,9 @@ export function Stepper({ labels, current }: { labels: string[]; current: number
   )
 }
 
-/** A segmented single-choice control (radio group styled as tabs). */
+/** A segmented single-choice control (radio group styled as tabs). An
+ *  option's `label` takes a node, not just a string, so a choice that needs
+ *  an icon beside it (e.g. "Ranked") doesn't need its own control. */
 export function Segmented<T extends string>({
   label,
   options,
@@ -57,7 +59,7 @@ export function Segmented<T extends string>({
   className,
 }: {
   label: string
-  options: { value: T; label: string }[]
+  options: { value: T; label: React.ReactNode }[]
   value: T
   onChange: (value: T) => void
   className?: string

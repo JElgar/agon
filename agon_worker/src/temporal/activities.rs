@@ -169,6 +169,10 @@ impl AgonActivities {
                     // has to be on or nobody can ever get onto a generated
                     // occurrence.
                     team_join_enabled: true,
+                    ringers_enabled: false,
+                    open_join: None,
+                    max_ringer_spots: None,
+                    ringers_joined_count: 0,
                     player_count: 0,
                     roster_preview: Vec::new(),
                 },
@@ -211,6 +215,8 @@ impl AgonActivities {
             // single occurrence to ranked afterwards, which asks everyone in
             // it. A ranked *series* needs its own consent design first.
             ranked: false,
+            open_join: None,
+            open_joined_count: 0,
             created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         };
 

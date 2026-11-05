@@ -197,6 +197,16 @@ pub enum Sk {
     /// at most one entry per (match, user), so this doubles as the
     /// "already waitlisted" uniqueness guard.
     WaitlistEntry(String),
+    /// A pending (or decided) request to join a match through its open-join
+    /// policy, when that policy requires approval
+    /// (`OpenJoinPolicyRecord::requires_approval`) — see
+    /// `MatchJoinRequestRecord`'s doc comment. `JOINREQ#<userId>` — like
+    /// `WaitlistEntry`, at most one per (match, user), so this doubles as the
+    /// "already requested" uniqueness guard. Unlike a waitlist entry it is
+    /// never deleted on approval/decline, only soft-updated (same convention
+    /// as `JoinLinkRecord::revoked_at`), so a decided request still shows in
+    /// "recently decided".
+    JoinRequest(String),
     /// A claim on one series occurrence's generation slot, in the series'
     /// own partition. `OCCURRENCE#<startsAt>` — keyed on the occurrence's
     /// `starts_at` (not its 0-based index) so that two occurrences a date-math
@@ -318,6 +328,7 @@ impl Sk {
             Sk::Side(_) => "SIDE",
             Sk::Player(_) => "PLAYER",
             Sk::WaitlistEntry(_) => "WAITLIST",
+            Sk::JoinRequest(_) => "JOINREQ",
             Sk::Occurrence(_) => "OCCURRENCE",
             Sk::Score(_) => "LIVESCORE",
             Sk::Like(_) => "LIKE",
@@ -379,6 +390,11 @@ impl Sk {
     /// Lists a match's waitlist entries: `WAITLIST#`.
     pub fn waitlist_prefix() -> String {
         format!("{}{DELIMITER}", Sk::WaitlistEntry(String::new()).prefix())
+    }
+
+    /// Lists a match's open-join requests, pending and decided alike: `JOINREQ#`.
+    pub fn join_request_prefix() -> String {
+        format!("{}{DELIMITER}", Sk::JoinRequest(String::new()).prefix())
     }
 
     /// Lists a series' claimed occurrences, ordered by `starts_at`: `OCCURRENCE#`.
@@ -506,6 +522,7 @@ impl fmt::Display for Sk {
             | Sk::Side(v)
             | Sk::Player(v)
             | Sk::WaitlistEntry(v)
+            | Sk::JoinRequest(v)
             | Sk::Occurrence(v)
             | Sk::Score(v)
             | Sk::Like(v)
@@ -590,6 +607,7 @@ impl FromStr for Sk {
             "SIDE" => Ok(Sk::Side(rest.into())),
             "PLAYER" => Ok(Sk::Player(rest.into())),
             "WAITLIST" => Ok(Sk::WaitlistEntry(rest.into())),
+            "JOINREQ" => Ok(Sk::JoinRequest(rest.into())),
             "OCCURRENCE" => Ok(Sk::Occurrence(rest.into())),
             "LIVESCORE" => Ok(Sk::Score(rest.into())),
             "LIKE" => Ok(Sk::Like(rest.into())),
@@ -693,6 +711,7 @@ mod tests {
         sk_roundtrip(Sk::Side("side_red".into()), "SIDE#side_red");
         sk_roundtrip(Sk::Player("p1".into()), "PLAYER#p1");
         sk_roundtrip(Sk::WaitlistEntry("w1".into()), "WAITLIST#w1");
+        sk_roundtrip(Sk::JoinRequest("u4".into()), "JOINREQ#u4");
         sk_roundtrip(
             Sk::Occurrence("2026-06-01T10:00:00Z".into()),
             "OCCURRENCE#2026-06-01T10:00:00Z",
@@ -893,6 +912,7 @@ mod tests {
         assert_eq!(Sk::side_prefix(), "SIDE#");
         assert_eq!(Sk::player_prefix(), "PLAYER#");
         assert_eq!(Sk::waitlist_prefix(), "WAITLIST#");
+        assert_eq!(Sk::join_request_prefix(), "JOINREQ#");
         assert_eq!(Sk::occurrence_prefix(), "OCCURRENCE#");
         assert_eq!(Sk::like_prefix(), "LIKE#");
         assert_eq!(Sk::live_event_prefix(), "LIVEEVT#");
@@ -935,6 +955,7 @@ mod tests {
             Sk::side_prefix(),
             Sk::player_prefix(),
             Sk::waitlist_prefix(),
+            Sk::join_request_prefix(),
             Sk::occurrence_prefix(),
             Sk::like_prefix(),
             Sk::live_event_prefix(),

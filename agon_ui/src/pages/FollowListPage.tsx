@@ -1,5 +1,5 @@
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import { ChevronLeft } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
@@ -7,6 +7,7 @@ import { UserCard } from '@/components/agon/UserCard'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
+import { useAppNav } from '@/hooks/useAppNavigation'
 
 type UserPage = components['schemas']['UserPage']
 
@@ -24,8 +25,11 @@ export type FollowListMode = 'followers' | 'following'
  */
 export function FollowListPage({ mode }: { mode: FollowListMode }) {
   const { userId } = useParams()
-  const navigate = useNavigate()
+  const { goBack } = useAppNav()
   const currentUserId = useCurrentUserId()
+  // The list is always reached from a profile — back should return to it
+  // even if this visit arrived with no in-app history (e.g. a reload).
+  const profilePath = userId && userId === currentUserId ? '/profile' : `/users/${userId}`
 
   // The subject's name, for the heading. Cheap and usually already cached from
   // the profile page the viewer came from.
@@ -69,7 +73,7 @@ export function FollowListPage({ mode }: { mode: FollowListMode }) {
           size="icon"
           className="size-8"
           aria-label="Back"
-          onClick={() => navigate(-1)}
+          onClick={() => goBack(profilePath)}
         >
           <ChevronLeft className="size-4" />
         </Button>

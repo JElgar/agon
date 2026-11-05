@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { ArrowLeft, ChevronDown, Search, X } from 'lucide-react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
+import { useAppNav, type GoTo } from '@/hooks/useAppNavigation'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { MatchCard } from '@/components/agon/MatchCard'
@@ -111,7 +112,7 @@ interface SubjectGroup {
  * applied client-side over each loaded page.
  */
 export function BrowseMatchesPage() {
-  const navigate = useNavigate()
+  const { goTo, goBack } = useAppNav()
   const currentUserId = useCurrentUserId()
   const [searchParams, setSearchParams] = useSearchParams()
 
@@ -135,7 +136,7 @@ export function BrowseMatchesPage() {
           variant="ghost"
           size="icon"
           className="-ml-2"
-          onClick={() => navigate(-1)}
+          onClick={() => goBack('/feed')}
           aria-label="Back"
         >
           <ArrowLeft className="size-5" />
@@ -163,9 +164,9 @@ export function BrowseMatchesPage() {
       </div>
 
       {tab === 'all' ? (
-        <AllMatchesTab currentUserId={currentUserId} navigate={navigate} />
+        <AllMatchesTab currentUserId={currentUserId} navigate={goTo} />
       ) : (
-        <ScheduledTab currentUserId={currentUserId} navigate={navigate} />
+        <ScheduledTab currentUserId={currentUserId} navigate={goTo} />
       )}
     </div>
   )
@@ -173,7 +174,7 @@ export function BrowseMatchesPage() {
 
 interface TabProps {
   currentUserId?: string
-  navigate: ReturnType<typeof useNavigate>
+  navigate: GoTo
 }
 
 function AllMatchesTab({ currentUserId, navigate }: TabProps) {
@@ -727,7 +728,7 @@ interface ResultsProps<T extends BrowseItem> {
   query: ReturnType<typeof useInfiniteQuery<{ items: T[]; next_cursor?: string | null }>>
   items: T[]
   currentUserId?: string
-  navigate: ReturnType<typeof useNavigate>
+  navigate: GoTo
 }
 
 function Results<T extends BrowseItem>({ query, items, currentUserId, navigate }: ResultsProps<T>) {

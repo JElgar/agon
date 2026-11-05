@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
+import { useAppNav } from '@/hooks/useAppNavigation'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CalendarClock, MapPin, Swords } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
@@ -35,7 +36,7 @@ type Match = components['schemas']['Match']
  */
 export function JoinMatchPage() {
   const { token } = useParams<{ token: string }>()
-  const navigate = useNavigate()
+  const { goTo } = useAppNav()
   const queryClient = useQueryClient()
   const [sideId, setSideId] = useState<string | undefined>(undefined)
 
@@ -91,9 +92,9 @@ export function JoinMatchPage() {
   useEffect(() => {
     if (match && alreadyIn) {
       clearPendingInvite()
-      navigate(`/matches/${match.id}`, { replace: true })
+      goTo(`/matches/${match.id}`, { replace: true })
     }
-  }, [alreadyIn, match, navigate])
+  }, [alreadyIn, match, goTo])
 
   const choice = preview.data && match ? joinChoiceFor(preview.data, match) : undefined
   const pickableSides = choice && match ? sidesFor(choice, match) : []
@@ -135,7 +136,7 @@ export function JoinMatchPage() {
       forgetJoinLink(matchId)
       queryClient.invalidateQueries({ queryKey: ['match', matchId] })
       queryClient.invalidateQueries({ queryKey: ['feed'] })
-      navigate(`/matches/${matchId}`, { replace: true })
+      goTo(`/matches/${matchId}`, { replace: true })
     },
   })
 
@@ -155,7 +156,7 @@ export function JoinMatchPage() {
       clearPendingInvite()
       forgetJoinLink(matchId)
       queryClient.invalidateQueries({ queryKey: ['match', matchId] })
-      navigate(`/matches/${matchId}`, { replace: true })
+      goTo(`/matches/${matchId}`, { replace: true })
     },
   })
 
@@ -176,7 +177,7 @@ export function JoinMatchPage() {
           shape="pill"
           size="lg"
           className="w-full"
-          onClick={() => navigate('/feed', { replace: true })}
+          onClick={() => goTo('/feed', { replace: true })}
         >
           Go to your feed
         </Button>
@@ -338,7 +339,7 @@ export function JoinMatchPage() {
       <Button
         variant="ghost"
         className="mt-2 w-full"
-        onClick={() => navigate(`/matches/${matchId}`)}
+        onClick={() => goTo(`/matches/${matchId}`)}
       >
         View match
       </Button>

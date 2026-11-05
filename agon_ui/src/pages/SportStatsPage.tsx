@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
+import { useAppNav, type GoTo } from '@/hooks/useAppNavigation'
 import { ChevronLeft, Search } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
@@ -61,9 +62,10 @@ type ResultFilter = 'all' | 'won' | 'lost' | 'drawn'
  */
 export function SportStatsPage() {
   const { userId, sport } = useParams<{ userId?: string; sport: string }>()
-  const navigate = useNavigate()
+  const { goTo, goBack } = useAppNav()
   const currentUserId = useCurrentUserId()
   const isOwnProfile = !userId
+  const profilePath = isOwnProfile ? '/profile' : `/users/${userId}`
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<ResultFilter>('all')
 
@@ -183,7 +185,7 @@ export function SportStatsPage() {
       <PersonalBestsCard
         rows={[{ label: 'High score', unit: 'runs', figure: cricketStats.best_runs }]}
         bowlingFigure={cricketStats.best_bowling}
-        onOpen={(id) => navigate(`/matches/${id}`)}
+        onOpen={(id) => goTo(`/matches/${id}`)}
       />
     </section>
   ) : footballStats ? (
@@ -194,7 +196,7 @@ export function SportStatsPage() {
           { label: 'Most goals in a match', unit: 'goals', figure: footballStats.best_goals },
           { label: 'Most goals + assists', sub: 'in one match', figure: footballStats.best_goal_contributions },
         ]}
-        onOpen={(id) => navigate(`/matches/${id}`)}
+        onOpen={(id) => goTo(`/matches/${id}`)}
       />
     </section>
   ) : null
@@ -227,7 +229,7 @@ export function SportStatsPage() {
       filter={filter}
       onFilter={setFilter}
       currentUserId={currentUserId}
-      navigate={navigate}
+      navigate={goTo}
     />
   )
 
@@ -237,7 +239,7 @@ export function SportStatsPage() {
         <Button
           variant="ghost"
           className="hidden h-11 w-fit gap-1.5 rounded-full pl-2 xl:flex"
-          onClick={() => navigate(isOwnProfile ? '/profile' : `/users/${userId}`)}
+          onClick={() => goTo(profilePath)}
         >
           <ChevronLeft className="size-5" />
           Profile
@@ -248,7 +250,7 @@ export function SportStatsPage() {
             size="icon"
             className="size-11 rounded-full xl:hidden"
             aria-label="Back"
-            onClick={() => navigate(-1)}
+            onClick={() => goBack(profilePath)}
           >
             <ChevronLeft className="size-5" />
           </Button>
@@ -523,7 +525,7 @@ interface RecentMatchesProps {
   filter: ResultFilter
   onFilter: (f: ResultFilter) => void
   currentUserId?: string
-  navigate: ReturnType<typeof useNavigate>
+  navigate: GoTo
 }
 
 const FILTERS: { id: ResultFilter; label: string }[] = [

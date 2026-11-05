@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useAppNav } from '@/hooks/useAppNavigation'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { format as formatDate } from 'date-fns'
 import { ChevronLeft, Clock } from 'lucide-react'
@@ -146,7 +146,7 @@ function formatSummary(format: MatchFormat | null): string | undefined {
  * Posts `CreateMatchInput` to `POST /matches`, then returns to the feed.
  */
 export function LogMatchPage() {
-  const navigate = useNavigate()
+  const { goTo } = useAppNav()
   const queryClient = useQueryClient()
 
   const [step, setStep] = useState(0)
@@ -448,7 +448,7 @@ export function LogMatchPage() {
     onSuccess: async (created) => {
       addPendingMatch(queryClient, created)
       queryClient.invalidateQueries({ queryKey: ['feed'] })
-      navigate('/feed')
+      goTo('/feed', { replace: true })
     },
   })
 
@@ -460,7 +460,7 @@ export function LogMatchPage() {
     },
     onSuccess: async (created) => {
       queryClient.invalidateQueries({ queryKey: ['feed'] })
-      navigate(`/match-series/${created.series.id}`)
+      goTo(`/match-series/${created.series.id}`, { replace: true })
     },
   })
 
@@ -617,7 +617,7 @@ export function LogMatchPage() {
   const startsDate = new Date(startsAt)
   const whenLabel = Number.isNaN(startsDate.getTime()) ? '' : formatDate(startsDate, 'EEE d MMM · HH:mm')
 
-  const goBack = () => (step === 0 ? navigate('/feed') : setStep(step - 1))
+  const goBack = () => (step === 0 ? goTo('/feed') : setStep(step - 1))
   const submitLabel = repeatEnabled
     ? 'Create series'
     : mode === 'completed'

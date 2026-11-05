@@ -9,6 +9,7 @@ import {
 } from 'react-router-dom'
 import { Bell, Search } from 'lucide-react'
 import { AuthProvider, useAuth } from '@/hooks/useAuth'
+import { AppNavigationProvider } from '@/hooks/useAppNavigation'
 import { PushNotificationsProvider } from '@/hooks/usePushNotifications'
 import { LoginForm } from '@/components/auth/LoginForm'
 import { CreateProfileForm } from '@/components/auth/CreateProfileForm'
@@ -337,10 +338,12 @@ function App() {
   return (
     <ThemeProvider defaultTheme="system" storageKey="agon-ui-theme">
       <BrowserRouter>
-        <OfflineBanner />
-        <AuthProvider>
-          <AuthenticatedApp />
-        </AuthProvider>
+        <AppNavigationProvider>
+          <OfflineBanner />
+          <AuthProvider>
+            <AuthenticatedApp />
+          </AuthProvider>
+        </AppNavigationProvider>
       </BrowserRouter>
     </ThemeProvider>
   )

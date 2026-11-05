@@ -6,7 +6,8 @@ import {
   useQueryClient,
   type InfiniteData,
 } from '@tanstack/react-query'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
+import { useAppNav } from '@/hooks/useAppNavigation'
 import {
   ChevronLeft,
   ChevronRight,
@@ -89,7 +90,7 @@ const TEAM_STATS_MATCH_LIMIT = 50
  */
 export function TeamPage() {
   const { teamId } = useParams()
-  const navigate = useNavigate()
+  const { goTo, goBack } = useAppNav()
   const currentUserId = useCurrentUserId()
 
   const teamQuery = useQuery({
@@ -202,7 +203,7 @@ export function TeamPage() {
           size="icon"
           className="size-11 rounded-full"
           aria-label="Back"
-          onClick={() => navigate(-1)}
+          onClick={() => goBack('/teams')}
         >
           <ChevronLeft className="size-5" />
         </Button>
@@ -218,7 +219,7 @@ export function TeamPage() {
             size="icon"
             className="hidden size-11 shrink-0 rounded-full md:inline-flex"
             aria-label="Back"
-            onClick={() => navigate(-1)}
+            onClick={() => goBack('/teams')}
           >
             <ChevronLeft className="size-5" />
           </Button>
@@ -262,7 +263,7 @@ export function TeamPage() {
                 <DeleteTeamDialog
                   teamId={team.id}
                   teamName={team.name}
-                  onDeleted={() => navigate('/teams')}
+                  onDeleted={() => goTo('/teams', { replace: true })}
                 >
                   <Button
                     variant="outline"
@@ -285,7 +286,7 @@ export function TeamPage() {
               myRole={myRole}
               members={members}
               currentUserId={currentUserId}
-              onLeft={() => navigate('/teams')}
+              onLeft={() => goTo('/teams', { replace: true })}
             >
               <Button variant="outline" className="flex-1 gap-2 rounded-2xl md:flex-none">
                 <LogOut className="size-4" />
@@ -782,7 +783,7 @@ interface RecentMatchesProps {
 /** Recent-matches list: loading / error / empty states, else the match cards
  *  — same states as `ProfilePage`'s `RecentActivity`. */
 function RecentMatches({ query, currentUserId }: RecentMatchesProps) {
-  const navigate = useNavigate()
+  const { goTo } = useAppNav()
 
   if (query.isLoading) {
     return (
@@ -828,7 +829,7 @@ function RecentMatches({ query, currentUserId }: RecentMatchesProps) {
           key={match.id}
           match={match}
           currentUserId={currentUserId}
-          onOpen={() => navigate(`/matches/${match.id}`)}
+          onOpen={() => goTo(`/matches/${match.id}`)}
         />
       ))}
     </div>

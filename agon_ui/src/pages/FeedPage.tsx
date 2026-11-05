@@ -6,7 +6,7 @@ import { MatchCard } from '@/components/agon/MatchCard'
 import { StatBanner } from '@/components/agon/StatBanner'
 import { UpcomingMatchCard } from '@/components/agon/UpcomingMatchCard'
 import { Button } from '@/components/ui/button'
-import { useNavigate } from 'react-router-dom'
+import { useAppNav } from '@/hooks/useAppNavigation'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { useIsDesktop } from '@/hooks/use-mobile'
 import { dayLabel } from '@/lib/datetime'
@@ -34,7 +34,7 @@ const PAGE_SIZE = 20
  * profile gates pass).
  */
 export function FeedPage() {
-  const navigate = useNavigate()
+  const { goTo } = useAppNav()
   const currentUserId = useCurrentUserId()
   const queryClient = useQueryClient()
   // At the `xl` desktop breakpoint the feed restructures into two columns
@@ -130,7 +130,7 @@ export function FeedPage() {
           variant="ghost"
           size="sm"
           className="h-auto p-0 text-sm font-semibold text-primary hover:bg-transparent"
-          onClick={() => navigate('/matches/search?tab=scheduled')}
+          onClick={() => goTo('/matches/search?tab=scheduled')}
         >
           Browse all matches
         </Button>
@@ -148,7 +148,7 @@ export function FeedPage() {
           <UpcomingMatchCard
             key={m.id}
             match={m}
-            onOpen={() => navigate(`/matches/${m.id}`)}
+            onOpen={() => goTo(`/matches/${m.id}`)}
             fullWidth={upcoming.length === 1}
           />
         ))}
@@ -204,7 +204,7 @@ export function FeedPage() {
           <p className="mb-4 text-sm text-muted-foreground">
             Matches you play and the people you follow show up here.
           </p>
-          <Button onClick={() => navigate('/matches/new')}>Log a match</Button>
+          <Button onClick={() => goTo('/matches/new')}>Log a match</Button>
         </div>
       </div>
     )
@@ -215,7 +215,7 @@ export function FeedPage() {
       key={item.id}
       match={item}
       currentUserId={currentUserId}
-      onOpen={() => navigate(`/matches/${item.id}`)}
+      onOpen={() => goTo(`/matches/${item.id}`)}
     />
   )
 

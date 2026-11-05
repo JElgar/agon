@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate, useParams, Link } from 'react-router-dom'
+import { useParams, Link } from 'react-router-dom'
+import { useAppNav } from '@/hooks/useAppNavigation'
 import { ChevronLeft, CircleDot, Flag, Repeat2, TimerReset } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
@@ -102,7 +103,7 @@ const CLOCK_TICK_MS = 15_000
  * so it's the same for every viewer, not just this device.
  */
 function FootballLiveScoringPage({ match }: { match: Match }) {
-  const navigate = useNavigate()
+  const { goTo } = useAppNav()
   const queryClient = useQueryClient()
 
   const scoreQuery = useMatchScore(match.id, { refetchInterval: 8000 })
@@ -153,7 +154,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })
       queryClient.invalidateQueries({ queryKey: ['feed'] })
-      navigate(`/matches/${match.id}`)
+      goTo(`/matches/${match.id}`)
     },
   })
 
@@ -273,7 +274,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
       <div className="flex items-center justify-between">
-        <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${match.id}`)}>
+        <Button variant="ghost" size="sm" onClick={() => goTo(`/matches/${match.id}`)}>
           <ChevronLeft className="size-4" /> Back
         </Button>
         <div className="flex items-center gap-1">

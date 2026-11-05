@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
+import { useAppNav } from '@/hooks/useAppNavigation'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
@@ -18,7 +19,7 @@ const GENERATING_POLL_MS = 3000
  */
 export function MatchSeriesPage() {
   const { seriesId } = useParams<{ seriesId: string }>()
-  const navigate = useNavigate()
+  const { goTo, goBack } = useAppNav()
 
   const seriesQuery = useQuery({
     queryKey: ['match-series', seriesId],
@@ -57,7 +58,7 @@ export function MatchSeriesPage() {
   return (
     <div className="mx-auto flex w-full max-w-xl flex-col gap-4 md:max-w-2xl">
       <div className="flex items-center gap-1">
-        <Button variant="ghost" size="icon" className="-ml-2" onClick={() => navigate(-1)} aria-label="Back">
+        <Button variant="ghost" size="icon" className="-ml-2" onClick={() => goBack('/feed')} aria-label="Back">
           <ChevronLeft className="size-5" />
         </Button>
         <h1 className="font-display text-xl font-extrabold md:text-2xl">Recurring match</h1>
@@ -103,7 +104,7 @@ export function MatchSeriesPage() {
                 <button
                   key={occurrence.match_id}
                   type="button"
-                  onClick={() => navigate(`/matches/${occurrence.match_id}`)}
+                  onClick={() => goTo(`/matches/${occurrence.match_id}`)}
                   className="flex items-center gap-3 rounded-2xl border bg-card p-3.5 text-left transition-colors hover:bg-accent/50"
                 >
                   <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted text-sm font-bold text-muted-foreground">

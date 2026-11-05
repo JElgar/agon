@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
+import { useAppNav, type GoTo } from '@/hooks/useAppNavigation'
 import { formatDistanceToNow } from 'date-fns'
 import {
   Bell,
@@ -60,7 +60,7 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000
  * marks it read, and "Mark all read" clears the lot.
  */
 export function NotificationsPage() {
-  const navigate = useNavigate()
+  const { goTo } = useAppNav()
   const queryClient = useQueryClient()
 
   const query = useInfiniteQuery({
@@ -163,7 +163,7 @@ export function NotificationsPage() {
   }
 
   const rowProps = {
-    navigate,
+    navigate: goTo,
     respondToInvitation: (
       invitationId: string,
       response: components['schemas']['InvitationResponse'],
@@ -232,7 +232,7 @@ export function NotificationsPage() {
 
 interface NotificationRowProps {
   notification: Notification
-  navigate: ReturnType<typeof useNavigate>
+  navigate: GoTo
   onMarkRead: () => void
   respondToInvitation: (
     invitationId: string,

@@ -1,4 +1,3 @@
-import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronLeft, Watch } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
@@ -6,6 +5,7 @@ import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { RevokeDeviceDialog } from '@/components/agon/RevokeDeviceDialog'
 import { relativeTime } from '@/lib/datetime'
+import { useAppNav } from '@/hooks/useAppNavigation'
 
 type PairedDeviceInfo = components['schemas']['PairedDeviceInfo']
 
@@ -18,7 +18,7 @@ type PairedDeviceInfo = components['schemas']['PairedDeviceInfo']
  * from this page.
  */
 export function PairedDevicesPage() {
-  const navigate = useNavigate()
+  const { goBack } = useAppNav()
 
   const query = useQuery({
     queryKey: ['paired-devices'],
@@ -32,7 +32,7 @@ export function PairedDevicesPage() {
   return (
     <div className="mx-auto flex max-w-md flex-col gap-4">
       <div className="flex items-center gap-2">
-        <Button variant="ghost" size="icon" onClick={() => navigate(-1)} aria-label="Back">
+        <Button variant="ghost" size="icon" onClick={() => goBack('/profile')} aria-label="Back">
           <ChevronLeft className="size-5" />
         </Button>
         <h1 className="text-lg font-semibold">Paired devices</h1>

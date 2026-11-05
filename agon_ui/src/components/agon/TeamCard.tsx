@@ -1,6 +1,6 @@
-import { useNavigate } from 'react-router-dom'
 import { ChevronRight } from 'lucide-react'
 import type { components } from '@/types/api'
+import { useAppNav } from '@/hooks/useAppNavigation'
 import { Avatar } from './Avatar'
 
 type TeamListItem = components['schemas']['TeamListItem']
@@ -29,12 +29,12 @@ export interface TeamCardProps {
  * for that grid, on top of the same content and mobile-width appearance.
  */
 export function TeamCard({ team }: TeamCardProps) {
-  const navigate = useNavigate()
+  const { goTo } = useAppNav()
 
   return (
     <button
       type="button"
-      onClick={() => navigate(`/teams/${team.id}`)}
+      onClick={() => goTo(`/teams/${team.id}`)}
       className="flex w-full items-center gap-3.5 px-4 py-3.5 text-left transition-colors hover:bg-accent/40 md:rounded-2xl md:border md:bg-card md:px-5 md:py-4"
     >
       <Avatar

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
+import { useAppNav } from '@/hooks/useAppNavigation'
 import { ChevronLeft } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
@@ -68,7 +69,7 @@ function TrackRow({
  */
 export function LiveScoringSetupPage() {
   const { matchId } = useParams()
-  const navigate = useNavigate()
+  const { goTo } = useAppNav()
 
   const query = useQuery({
     queryKey: ['match', matchId],
@@ -114,7 +115,7 @@ export function LiveScoringSetupPage() {
       }
     },
     onSuccess: () => {
-      navigate(`/matches/${matchId}/live`, { replace: true })
+      goTo(`/matches/${matchId}/live`, { replace: true })
     },
   })
 
@@ -144,7 +145,7 @@ export function LiveScoringSetupPage() {
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
       <div className="flex items-center gap-3">
-        <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${matchId}`)}>
+        <Button variant="ghost" size="sm" onClick={() => goTo(`/matches/${matchId}`)}>
           <ChevronLeft className="size-4" /> Back
         </Button>
       </div>

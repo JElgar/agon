@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
+import { useAppNav } from '@/hooks/useAppNavigation'
 import { ChevronLeft } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
@@ -54,7 +54,7 @@ const END_REASONS: { value: InningsEndReason; label: string }[] = [
  * were needed to support this screen.
  */
 export function CricketLiveScoringPage({ match }: { match: Match }) {
-  const navigate = useNavigate()
+  const { goTo } = useAppNav()
   const queryClient = useQueryClient()
 
   const scoreQuery = useMatchScore(match.id, { refetchInterval: 8000 })
@@ -232,7 +232,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })
       queryClient.invalidateQueries({ queryKey: ['feed'] })
-      navigate(`/matches/${match.id}`)
+      goTo(`/matches/${match.id}`)
     },
   })
 
@@ -246,7 +246,7 @@ export function CricketLiveScoringPage({ match }: { match: Match }) {
 
   const header = (
     <div className="flex items-center justify-between">
-      <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${match.id}`)}>
+      <Button variant="ghost" size="sm" onClick={() => goTo(`/matches/${match.id}`)}>
         <ChevronLeft className="size-4" /> Back
       </Button>
       <div className="flex items-center gap-1">

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
+import { useAppNav } from '@/hooks/useAppNavigation'
 import { CalendarPlus, ChevronLeft, Link2, MailOpen, MoreHorizontal, Navigation, Pencil, Radio, Repeat, Share, UserPlus } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
@@ -154,7 +155,7 @@ async function shareMatch(match: Match) {
 
 export function MatchDetailPage() {
   const { matchId } = useParams()
-  const navigate = useNavigate()
+  const { goBack } = useAppNav()
   const currentUserId = useCurrentUserId()
 
   const query = useQuery({
@@ -192,7 +193,7 @@ export function MatchDetailPage() {
     <MatchDetail
       match={query.data}
       currentUserId={currentUserId}
-      onBack={() => navigate(-1)}
+      onBack={() => goBack('/feed')}
     />
   )
 }
@@ -219,7 +220,7 @@ function MatchDetail({
   const [rulesOpen, setRulesOpen] = useState(false)
   const toggleLike = useToggleLike(match)
   const isDesktop = useIsDesktop()
-  const navigate = useNavigate()
+  const { goTo } = useAppNav()
 
   // Owner or admin only, mirroring the server's `caller_is_match_admin` — an
   // ordinary player is read-only on the match itself; `LeaveMatch` below is
@@ -386,7 +387,7 @@ function MatchDetail({
           </DropdownMenuItem>
         )}
         {canEdit && isLiveSport && !cancelled && match.status !== 'completed' && (
-          <DropdownMenuItem onSelect={() => navigate(liveEntryPath)}>
+          <DropdownMenuItem onSelect={() => goTo(liveEntryPath)}>
             <Radio className="size-4" /> {hasLiveState ? 'Continue scoring' : 'Score live'}
           </DropdownMenuItem>
         )}

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
+import { useAppNav } from '@/hooks/useAppNavigation'
 import { LogOut, Search, Settings, Share2, Users, Watch } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
@@ -45,7 +46,7 @@ const MATCHES_LIMIT = 50
  */
 export function ProfilePage() {
   const { userId } = useParams()
-  const navigate = useNavigate()
+  const { goTo } = useAppNav()
   const isOwnProfile = !userId
   const currentUserId = useCurrentUserId()
 
@@ -88,12 +89,12 @@ export function ProfilePage() {
       </header>
 
       {isOwnProfile ? (
-        <OwnProfile profile={profile} onOpenMatch={(id) => navigate(`/matches/${id}`)} />
+        <OwnProfile profile={profile} onOpenMatch={(id) => goTo(`/matches/${id}`)} />
       ) : (
         <OtherProfile
           profile={profile}
           currentUserId={currentUserId}
-          onOpenMatch={(id) => navigate(`/matches/${id}`)}
+          onOpenMatch={(id) => goTo(`/matches/${id}`)}
         />
       )}
     </div>

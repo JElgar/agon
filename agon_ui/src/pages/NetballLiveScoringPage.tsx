@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useNavigate, Link } from 'react-router-dom'
+import { Link } from 'react-router-dom'
+import { useAppNav } from '@/hooks/useAppNavigation'
 import { CircleDot, OctagonAlert, TimerReset } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
@@ -169,7 +170,7 @@ function NetballScoringMethodPicker({
  *  this device's own view of the live-derived score, same pattern (and same
  *  409-on-disagreement handling) as football's `finishMatch`. */
 function useFinishNetballMatch(match: Match) {
-  const navigate = useNavigate()
+  const { goTo } = useAppNav()
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async () => {
@@ -190,7 +191,7 @@ function useFinishNetballMatch(match: Match) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })
       queryClient.invalidateQueries({ queryKey: ['feed'] })
-      navigate(`/matches/${match.id}`)
+      goTo(`/matches/${match.id}`)
     },
   })
 }
@@ -220,7 +221,7 @@ function NetballEventByEventScoringPage({
    *  `NetballLiveScoringPage`'s doc comment. */
   onBackToPicker?: () => void
 }) {
-  const navigate = useNavigate()
+  const { goTo } = useAppNav()
   const queryClient = useQueryClient()
   // Not read directly here (only `undoSeq` feeds `UndoLastEventButton`) —
   // called for its side effect of seeding the append-token cache
@@ -310,7 +311,7 @@ function NetballEventByEventScoringPage({
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
       <div className="flex items-center justify-between">
-        <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${match.id}`)}>
+        <Button variant="ghost" size="sm" onClick={() => goTo(`/matches/${match.id}`)}>
           Back
         </Button>
         <div className="flex items-center gap-1">
@@ -457,7 +458,7 @@ function NetballQuarterOnlyScoringPage({
    *  `NetballLiveScoringPage`'s doc comment. */
   onBackToPicker?: () => void
 }) {
-  const navigate = useNavigate()
+  const { goTo } = useAppNav()
   const queryClient = useQueryClient()
   // Not read directly here (only `undoSeq` feeds `UndoLastEventButton`) —
   // called for its side effect of seeding the append-token cache
@@ -522,7 +523,7 @@ function NetballQuarterOnlyScoringPage({
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
       <div className="flex items-center justify-between">
-        <Button variant="ghost" size="sm" onClick={() => navigate(`/matches/${match.id}`)}>
+        <Button variant="ghost" size="sm" onClick={() => goTo(`/matches/${match.id}`)}>
           Back
         </Button>
         <div className="flex items-center gap-1">

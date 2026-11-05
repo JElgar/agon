@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom'
+import { useAppNav } from '@/hooks/useAppNavigation'
 import type { components } from '@/types/api'
 import { Avatar } from './Avatar'
 import { FollowButton } from './FollowButton'
@@ -19,7 +19,7 @@ export interface UserCardProps {
  * three render identically and stay in sync via the shared `FollowButton`.
  */
 export function UserCard({ user, currentUserId }: UserCardProps) {
-  const navigate = useNavigate()
+  const { goTo } = useAppNav()
   const isSelf = currentUserId === user.id
   const matches = totalMatches(user.stats)
 
@@ -27,7 +27,7 @@ export function UserCard({ user, currentUserId }: UserCardProps) {
     <div className="flex items-center gap-3 px-4 py-3.5">
       <button
         type="button"
-        onClick={() => navigate(`/users/${user.id}`)}
+        onClick={() => goTo(`/users/${user.id}`)}
         className="flex min-w-0 flex-1 items-center gap-3 text-left"
       >
         <Avatar

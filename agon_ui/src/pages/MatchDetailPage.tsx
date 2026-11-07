@@ -45,9 +45,12 @@ import { respondToInvitation } from '@/lib/invitations'
 import { MatchDetailsEditor } from '@/components/agon/MatchDetailsEditor'
 import { MatchFormatCard } from '@/components/agon/MatchFormatCard'
 import { MatchJoinSettingsEditor } from '@/components/agon/MatchJoinSettingsEditor'
+import { MatchOpenJoinEditor } from '@/components/agon/MatchOpenJoinEditor'
+import { JoinRequestsCard } from '@/components/agon/JoinRequestsCard'
 import { MatchJoinLinksDialog } from '@/components/agon/MatchJoinLinksDialog'
 import { TeamJoinBanner } from '@/components/agon/TeamJoinBanner'
 import { JoinLinkBanner } from '@/components/agon/JoinLinkBanner'
+import { OpenJoinBanner } from '@/components/agon/OpenJoinBanner'
 import { MatchResultEditor } from '@/components/agon/MatchResultEditor'
 import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
@@ -535,6 +538,7 @@ function MatchDetail({
       )}
       {!cancelled && <TeamJoinBanner match={match} />}
       {!cancelled && matchView !== 'finished' && <JoinLinkBanner match={match} />}
+      {!cancelled && matchView !== 'finished' && <OpenJoinBanner match={match} />}
       {editingResult && <MatchResultEditor match={match} onDone={() => setEditingResult(false)} />}
     </>
   )
@@ -594,6 +598,8 @@ function MatchDetail({
   const adminFooter = (
     <>
       {canEdit && !cancelled && <MatchJoinSettingsEditor match={match} canManage={canEdit} />}
+      {canEdit && !cancelled && <MatchOpenJoinEditor match={match} canManage={canEdit} />}
+      {canEdit && !cancelled && <JoinRequestsCard match={match} canManage={canEdit} />}
       {canEdit && !cancelled && <CancelMatch match={match} />}
       {iAmParticipant && !cancelled && <LeaveMatch match={match} isOwner={iAmOwner} />}
     </>

@@ -78,8 +78,8 @@ use membership::{
     InvitationKind, InvitationMatchContext, InvitationStatus, JoinLink, JoinLinkPreview,
     JoinMatchInput, JoinRequest, JoinRequestInput, MatchPlayerRole, Member, OpenJoinScope,
     OpenJoinScopeInput, OpenJoinScopeKind, RespondByTokenInput, RespondToInvitationInput,
-    SetMatchPlayerRoleInput, SideOpenJoinInput, TokenInvitation, TransferMatchOwnershipInput,
-    UserInvitation, UserMember,
+    SetMatchPlayerRoleInput, SideOpenJoinInput, SideOpenJoinPolicy, TokenInvitation,
+    TransferMatchOwnershipInput, UserInvitation, UserMember,
 };
 
 mod team;
@@ -415,6 +415,22 @@ struct MatchSide {
     /// See `CreateMatchSideInput.team_join_enabled` — not yet read by any
     /// join flow.
     team_join_enabled: bool,
+    /// Whether this side takes individual ringers under the match's own
+    /// `Match.open_join` policy, when that policy's `mode` is `match_wide`
+    /// (meaningless under `per_side`, where `open_join` below governs
+    /// instead, and meaningless whenever `Match.open_join` is `None`).
+    open_join_enabled: bool,
+    /// This side's own open-join policy, present only when `Match.open_join`
+    /// is set with `mode: per_side` and this side is open to ringers.
+    /// `None` under `match_wide` scope (where `open_join_enabled` above
+    /// governs instead) or when this side is closed.
+    open_join: Option<SideOpenJoinPolicy>,
+    /// Cap on how many ringers this side accepts, independent of the
+    /// match-wide `OpenJoinPolicy::max_open_spots`. `None` = uncapped.
+    max_open_spots: Option<u32>,
+    /// How many of `player_count` arrived as a ringer through open joining
+    /// — what `max_open_spots` is enforced against.
+    open_joined_count: u32,
 }
 
 /// A player in a side's `roster_preview` — name/avatar only, not the full
@@ -624,6 +640,10 @@ struct Match {
     /// every other `Match`-returning response, not because it doesn't
     /// apply, just because nothing reads it there.
     viewer_team_join_side_ids: Option<Vec<String>>,
+    /// This match's open-join scope and policy, set via `PUT
+    /// /matches/:match_id/open-join`. `None` means invite/link/team-only —
+    /// as every match was before open joining existed.
+    open_join: Option<OpenJoinScope>,
     /// The recurring series this match was generated from, if any
     /// (`GET /match-series/:id` fetches the series itself).
     series_id: Option<String>,
@@ -10399,6 +10419,10 @@ fn mock_match(id: String) -> Match {
                 player_count: 2,
                 max_players: None,
                 team_join_enabled: false,
+                open_join_enabled: false,
+                open_join: None,
+                max_open_spots: None,
+                open_joined_count: 0,
             },
             MatchSide {
                 id: String::from("side_blue"),
@@ -10411,6 +10435,10 @@ fn mock_match(id: String) -> Match {
                 player_count: 1,
                 max_players: None,
                 team_join_enabled: false,
+                open_join_enabled: false,
+                open_join: None,
+                max_open_spots: None,
+                open_joined_count: 0,
             },
         ],
         players: vec![
@@ -10470,6 +10498,7 @@ fn mock_match(id: String) -> Match {
         allow_unassigned: true,
         viewer_role: Some(MatchPlayerRole::Owner),
         viewer_team_join_side_ids: None,
+        open_join: None,
         series_id: None,
         ranked: true,
         rating_ladder: Some(String::from("football")),

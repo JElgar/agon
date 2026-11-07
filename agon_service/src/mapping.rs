@@ -2120,6 +2120,7 @@ mod tests {
             stats: UserStatsRecord::default(),
             ratings: HashMap::new(),
             created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            is_admin: false,
         }
     }
 

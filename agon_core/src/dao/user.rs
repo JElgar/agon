@@ -252,4 +252,31 @@ impl Dao {
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
     }
+
+    /// Grant or revoke admin-panel access. Fails with `NotFound` if the user
+    /// doesn't exist.
+    #[tracing::instrument(skip(self))]
+    pub async fn set_user_admin(&self, user_id: &str, is_admin: bool) -> DaoResult<()> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::User(user_id.into()).to_string()))
+            .key("SK", s(Sk::Profile.to_string()))
+            .update_expression("SET #is_admin = :is_admin")
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_names("#is_admin", "is_admin")
+            .expression_attribute_values(":is_admin", AttributeValue::Bool(is_admin))
+            .send()
+            .await;
+
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => {
+                Err(DaoError::NotFound(format!("user {user_id}")))
+            }
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
 }

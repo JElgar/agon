@@ -1093,6 +1093,7 @@ mod tests {
             stats: UserStatsRecord::default(),
             ratings: HashMap::from([("squash".to_string(), rating(27.6, 1))]),
             created_at: NOW.into(),
+            is_admin: false,
         };
         let item: HashMap<String, AttributeValue> = serde_dynamo::to_item(&user).unwrap();
         assert!(

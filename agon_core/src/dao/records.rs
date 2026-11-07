@@ -941,10 +941,6 @@ pub enum EligibilityRuleRecord {
     MinRating { min: u32 },
     /// The candidate must have played at least `min` matches in this sport.
     MinMatchesPlayed { min: u32 },
-    /// The candidate must already follow the match's organiser
-    /// (`MatchRecord::created_by_user_id`, or the current owner — the
-    /// service resolves which).
-    FollowedByOrganiser,
 }
 
 /// A match's opt-in "open to the public" policy, carried by

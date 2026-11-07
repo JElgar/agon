@@ -9707,19 +9707,6 @@ fn open_join_max_open_spots(scope: &dao::records::OpenJoinScopeRecord) -> Option
     }
 }
 
-/// The match's organiser — the `Owner` authority, falling back to
-/// `created_by_user_id` the same way `caller_match_authority_role` does.
-/// Used to evaluate `EligibilityRuleRecord::FollowedByOrganiser`.
-fn match_organiser_id(match_: &dao::records::MatchRecord) -> &str {
-    match_
-        .authority
-        .iter()
-        .find_map(|(uid, role)| {
-            (*role == dao::records::MatchPlayerRole::Owner).then_some(uid.as_str())
-        })
-        .unwrap_or(&match_.created_by_user_id)
-}
-
 /// The eligibility rules and approval requirement that apply to a given
 /// open-join target (`target_side_id: None` means unassigned, only ever
 /// reachable under `MatchWide`) — the match-wide policy under `MatchWide`,
@@ -9851,21 +9838,6 @@ async fn caller_meets_eligibility_rules(
                     return Ok(Some(format!(
                         "this match needs at least {min} matches played in this sport to join directly"
                     )));
-                }
-            }
-            dao::records::EligibilityRuleRecord::FollowedByOrganiser => {
-                let organiser_id = match_organiser_id(&agg.match_);
-                if organiser_id == uid {
-                    continue;
-                }
-                let followed = dao
-                    .is_following_user(organiser_id, uid)
-                    .await
-                    .map_err(dao_internal)?;
-                if !followed {
-                    return Ok(Some(
-                        "this match is only open to people the organiser follows".into(),
-                    ));
                 }
             }
         }

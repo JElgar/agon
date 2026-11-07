@@ -326,10 +326,6 @@ pub enum OpenJoinAudience {
 #[derive(Object)]
 pub struct OpenJoinPolicyInput {
     pub audience: OpenJoinAudience,
-    /// Only people who already follow the organiser may join. Omitted =
-    /// `false` = no such restriction.
-    #[oai(default)]
-    pub requires_follow: bool,
     /// Minimum matches already played in this sport. `None` = no minimum.
     pub min_matches_played: Option<u32>,
     /// Ask-to-join first, with an admin approving each request, instead of
@@ -352,7 +348,6 @@ pub struct OpenJoinPolicyInput {
 #[derive(Object)]
 pub struct OpenJoinPolicy {
     pub audience: OpenJoinAudience,
-    pub requires_follow: bool,
     pub min_matches_played: Option<u32>,
     pub requires_approval: bool,
     pub max_open_spots: Option<u32>,
@@ -401,7 +396,6 @@ pub struct OpenJoinScope {
 #[derive(Object)]
 pub struct SideOpenJoinPolicy {
     pub audience: OpenJoinAudience,
-    pub requires_follow: bool,
     pub min_matches_played: Option<u32>,
     pub requires_approval: bool,
 }

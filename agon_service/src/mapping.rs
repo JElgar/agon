@@ -413,23 +413,18 @@ pub fn open_join_audience_to_record(audience: OpenJoinAudience) -> OpenJoinAudie
 }
 
 /// Build the API `OpenJoinPolicy` from the stored record, flattening
-/// `rules` back into `requires_follow`/`min_matches_played` — the inverse of
+/// `rules` back into `min_matches_played` — the inverse of
 /// `open_join_policy_to_record`. A stored `MinRating` rule (not settable
 /// through this API today, only ever written directly) is silently dropped
 /// rather than surfaced, same as any other field this read side doesn't
 /// have a slot for.
 pub fn open_join_policy_from_record(rec: &OpenJoinPolicyRecord) -> OpenJoinPolicy {
-    let requires_follow = rec
-        .rules
-        .iter()
-        .any(|r| matches!(r, EligibilityRuleRecord::FollowedByOrganiser));
     let min_matches_played = rec.rules.iter().find_map(|r| match r {
         EligibilityRuleRecord::MinMatchesPlayed { min } => Some(*min),
         _ => None,
     });
     OpenJoinPolicy {
         audience: open_join_audience_from_record(rec.audience),
-        requires_follow,
         min_matches_played,
         requires_approval: rec.requires_approval,
         max_open_spots: rec.max_open_spots,
@@ -457,9 +452,6 @@ fn open_join_rules_to_record(
     input: &crate::membership::OpenJoinPolicyInput,
 ) -> Vec<EligibilityRuleRecord> {
     let mut rules = Vec::new();
-    if input.requires_follow {
-        rules.push(EligibilityRuleRecord::FollowedByOrganiser);
-    }
     if let Some(min) = input.min_matches_played {
         rules.push(EligibilityRuleRecord::MinMatchesPlayed { min });
     }
@@ -500,17 +492,12 @@ pub fn side_open_join_policy_to_record(
 /// Build the API `SideOpenJoinPolicy` from a side's stored policy — the
 /// inverse of `side_open_join_policy_to_record`.
 pub fn side_open_join_policy_from_record(rec: &SideOpenJoinPolicyRecord) -> SideOpenJoinPolicy {
-    let requires_follow = rec
-        .rules
-        .iter()
-        .any(|r| matches!(r, EligibilityRuleRecord::FollowedByOrganiser));
     let min_matches_played = rec.rules.iter().find_map(|r| match r {
         EligibilityRuleRecord::MinMatchesPlayed { min } => Some(*min),
         _ => None,
     });
     SideOpenJoinPolicy {
         audience: open_join_audience_from_record(rec.audience),
-        requires_follow,
         min_matches_played,
         requires_approval: rec.requires_approval,
     }

@@ -78,7 +78,7 @@ use membership::{
     InvitationKind, InvitationMatchContext, InvitationStatus, JoinLink, JoinLinkPreview,
     JoinMatchInput, JoinRequest, JoinRequestInput, MatchPlayerRole, Member, OpenJoinScope,
     OpenJoinScopeInput, OpenJoinScopeKind, RespondByTokenInput, RespondToInvitationInput,
-    RingerSettingsInput, SetMatchPlayerRoleInput, TokenInvitation, TransferMatchOwnershipInput,
+    SetMatchPlayerRoleInput, SideOpenJoinInput, TokenInvitation, TransferMatchOwnershipInput,
     UserInvitation, UserMember,
 };
 
@@ -2456,9 +2456,9 @@ enum ClearOpenJoinPolicyResponse {
 }
 
 /// Open or close one side to individual ringers — `PUT
-/// /matches/:match_id/sides/:side_id/ringers`.
+/// /matches/:match_id/sides/:side_id/open-join`.
 #[derive(ApiResponse)]
-enum SetRingerSettingsResponse {
+enum SetSideOpenJoinResponse {
     #[oai(status = 204)]
     Ok,
 
@@ -7378,7 +7378,7 @@ impl Api {
     /// `OpenJoinScopeInput`'s doc comment for what each mode means.
     ///
     /// Under `match_wide`, opening a match this way doesn't by itself make
-    /// any side joinable: `PUT /matches/:match_id/sides/:side_id/ringers`
+    /// any side joinable: `PUT /matches/:match_id/sides/:side_id/open-join`
     /// still has to enable ringers on at least one side (or the match has to
     /// allow unassigned) for `audience: individuals`/`both` to have any
     /// effect. Under `per_side`, the same endpoint sets each side's own
@@ -7466,37 +7466,37 @@ impl Api {
 
     /// Open or close one side to individual ringers.
     ///
-    /// Match-admin only. See `RingerSettingsInput`'s doc comment — settable
+    /// Match-admin only. See `SideOpenJoinInput`'s doc comment — settable
     /// independently of the match's own open-join scope, but which of
     /// `enabled`/`side_policy` applies depends on that scope (`match_wide`
     /// or `per_side`).
-    #[oai(path = "/matches/:match_id/sides/:side_id/ringers", method = "put")]
-    async fn set_ringer_settings(
+    #[oai(path = "/matches/:match_id/sides/:side_id/open-join", method = "put")]
+    async fn set_side_open_join(
         &self,
         Data(dao): Data<&dao::Dao>,
         AuthSchema(jwt_data): AuthSchema,
         Path(match_id): Path<String>,
         Path(side_id): Path<String>,
-        input: Json<RingerSettingsInput>,
-    ) -> Result<SetRingerSettingsResponse> {
+        input: Json<SideOpenJoinInput>,
+    ) -> Result<SetSideOpenJoinResponse> {
         let uid = self.require_uid(dao, &jwt_data).await?;
         let input = input.0;
 
         let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
             Some(a) => a,
             None => {
-                return Ok(SetRingerSettingsResponse::NotFound(PlainText(
+                return Ok(SetSideOpenJoinResponse::NotFound(PlainText(
                     "match not found".into(),
                 )));
             }
         };
         if !caller_is_match_admin(dao, &agg, &uid).await? {
-            return Ok(SetRingerSettingsResponse::Forbidden(PlainText(
+            return Ok(SetSideOpenJoinResponse::Forbidden(PlainText(
                 "only a match admin can change a side's ringer settings".into(),
             )));
         }
         if !agg.sides.iter().any(|s| s.side_id == side_id) {
-            return Ok(SetRingerSettingsResponse::NotFound(PlainText(
+            return Ok(SetSideOpenJoinResponse::NotFound(PlainText(
                 "side not found".into(),
             )));
         }
@@ -7511,10 +7511,10 @@ impl Api {
             }
             _ => dao::open_join::SideRingerSetting::Enabled(input.enabled),
         };
-        dao.set_side_ringer_settings(&match_id, &side_id, setting, input.max_ringer_spots)
+        dao.set_side_ringer_settings(&match_id, &side_id, setting, input.max_open_spots)
             .await
             .map_err(dao_internal)?;
-        Ok(SetRingerSettingsResponse::Ok)
+        Ok(SetSideOpenJoinResponse::Ok)
     }
 
     /// Request to join a match through its open-join policy.

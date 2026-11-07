@@ -1178,6 +1178,13 @@ pub fn match_side_from_record(rec: &MatchSideRecord) -> MatchSide {
         colour: rec.colour.clone(),
         max_players: rec.max_players,
         team_join_enabled: rec.team_join_enabled,
+        open_join_enabled: rec.open_join_enabled,
+        open_join: rec
+            .open_join
+            .as_ref()
+            .map(side_open_join_policy_from_record),
+        max_open_spots: rec.max_open_spots,
+        open_joined_count: rec.open_joined_count,
         // Live-overwritten for `Match` (`Api::hydrate_sides`); left as
         // the denormalized cache value for a feed's `FeedMatch`/a search
         // hit's `SearchMatch`, same as `roster_preview` below.
@@ -1371,6 +1378,7 @@ pub fn match_from_records(
         // function has no viewer to resolve it against.
         viewer_role: None,
         viewer_team_join_side_ids: None,
+        open_join: rec.open_join.as_ref().map(open_join_scope_from_record),
         series_id: rec.series_id.clone(),
     }
 }

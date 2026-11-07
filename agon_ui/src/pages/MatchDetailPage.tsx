@@ -45,9 +45,13 @@ import { respondToInvitation } from '@/lib/invitations'
 import { MatchDetailsEditor } from '@/components/agon/MatchDetailsEditor'
 import { MatchFormatCard } from '@/components/agon/MatchFormatCard'
 import { MatchJoinSettingsEditor } from '@/components/agon/MatchJoinSettingsEditor'
+import { MatchOpenJoinEditor } from '@/components/agon/MatchOpenJoinEditor'
+import { JoinRequestsCard } from '@/components/agon/JoinRequestsCard'
 import { MatchJoinLinksDialog } from '@/components/agon/MatchJoinLinksDialog'
 import { TeamJoinBanner } from '@/components/agon/TeamJoinBanner'
 import { JoinLinkBanner } from '@/components/agon/JoinLinkBanner'
+import { OpenJoinAction } from '@/components/agon/OpenJoinAction'
+import { openJoinEligible } from '@/lib/openJoin'
 import { MatchResultEditor } from '@/components/agon/MatchResultEditor'
 import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
@@ -594,6 +598,8 @@ function MatchDetail({
   const adminFooter = (
     <>
       {canEdit && !cancelled && <MatchJoinSettingsEditor match={match} canManage={canEdit} />}
+      {canEdit && !cancelled && <MatchOpenJoinEditor match={match} canManage={canEdit} />}
+      {canEdit && !cancelled && <JoinRequestsCard match={match} canManage={canEdit} />}
       {canEdit && !cancelled && <CancelMatch match={match} />}
       {iAmParticipant && !cancelled && <LeaveMatch match={match} isOwner={iAmOwner} />}
     </>
@@ -694,6 +700,8 @@ function MatchDetail({
       >
         <Pencil className="size-5" /> Add result
       </button>
+    ) : !cancelled && matchView !== 'finished' && openJoinEligible(match, currentUserId) ? (
+      <OpenJoinAction match={match} />
     ) : !isLiveSport ? (
       <KudosButton liked={match.social.i_liked} onToggle={() => toggleLike.mutate(!match.social.i_liked)} />
     ) : canEdit && !cancelled && !isCricket && matchTab === 'timeline' && match.status === 'in_progress' ? (

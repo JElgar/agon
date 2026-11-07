@@ -50,7 +50,8 @@ import { JoinRequestsCard } from '@/components/agon/JoinRequestsCard'
 import { MatchJoinLinksDialog } from '@/components/agon/MatchJoinLinksDialog'
 import { TeamJoinBanner } from '@/components/agon/TeamJoinBanner'
 import { JoinLinkBanner } from '@/components/agon/JoinLinkBanner'
-import { OpenJoinBanner } from '@/components/agon/OpenJoinBanner'
+import { OpenJoinAction } from '@/components/agon/OpenJoinAction'
+import { openJoinEligible } from '@/lib/openJoin'
 import { MatchResultEditor } from '@/components/agon/MatchResultEditor'
 import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
@@ -538,7 +539,6 @@ function MatchDetail({
       )}
       {!cancelled && <TeamJoinBanner match={match} />}
       {!cancelled && matchView !== 'finished' && <JoinLinkBanner match={match} />}
-      {!cancelled && matchView !== 'finished' && <OpenJoinBanner match={match} />}
       {editingResult && <MatchResultEditor match={match} onDone={() => setEditingResult(false)} />}
     </>
   )
@@ -700,6 +700,8 @@ function MatchDetail({
       >
         <Pencil className="size-5" /> Add result
       </button>
+    ) : !cancelled && matchView !== 'finished' && openJoinEligible(match, currentUserId) ? (
+      <OpenJoinAction match={match} />
     ) : !isLiveSport ? (
       <KudosButton liked={match.social.i_liked} onToggle={() => toggleLike.mutate(!match.social.i_liked)} />
     ) : canEdit && !cancelled && !isCricket && matchTab === 'timeline' && match.status === 'in_progress' ? (

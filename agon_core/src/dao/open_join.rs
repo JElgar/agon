@@ -1,11 +1,12 @@
 //! Open joining ("ringers"): a match's opt-in public-join scope
 //! (`OpenJoinScopeRecord`, either one match-wide `OpenJoinPolicyRecord` or
-//! each side's own `SideOpenJoinPolicyRecord`), per-side ringer settings, the
-//! cap-guarded open-join write itself, and the optional approval queue
-//! (`MatchJoinRequestRecord`) for a policy that requires one. See the design
-//! doc for the full picture; this module covers only the DAO-level pieces:
-//! eligibility (who *may* join) is evaluated by the caller (`agon_service`)
-//! against a fresh read, never stored or baked into a query here.
+//! each side's own `SideOpenJoinPolicyRecord`), per-side ringer settings
+//! (`SideRingerSetting`), the cap-guarded open-join write itself, and the
+//! optional approval queue (`MatchJoinRequestRecord`) for a policy that
+//! requires one. See the design doc for the full picture; this module covers
+//! only the DAO-level pieces: eligibility (who *may* join) is evaluated by
+//! the caller (`agon_service`) against a fresh read, never stored or baked
+//! into a query here.
 
 use std::collections::HashMap;
 
@@ -24,6 +25,17 @@ use super::records::{
 };
 
 pub const TYPE_MATCH_JOIN_REQUEST: &str = "match_join_request";
+
+/// What `Dao::set_side_ringer_settings` writes to a side's own ringer
+/// settings, picked by the match's current `OpenJoinScopeRecord`:
+/// `Enabled` under `MatchWide` (the side's `ringers_enabled` bool, audience
+/// and eligibility coming from the match-wide policy), `Policy` under
+/// `PerSide` (the side's own `SideOpenJoinPolicyRecord`, or `None` to close
+/// it to ringers).
+pub enum SideRingerSetting<'a> {
+    Enabled(bool),
+    Policy(Option<&'a SideOpenJoinPolicyRecord>),
+}
 
 impl Dao {
     /// Set or clear a match's open-join scope (`MatchRecord::open_join`).
@@ -59,97 +71,21 @@ impl Dao {
         }
     }
 
-    /// Set one or more sides' ringer settings: `(side_id, ringers_enabled,
-    /// max_ringer_spots)`. Kept separate from `update_match_join_settings`
-    /// (team self-join's own settings call) the same way that call is
-    /// separate from `update_match_meta` — a distinct concern, no atomicity
-    /// lost by it being its own call. `NotFound` if the match is absent. A
-    /// no-op for an empty slice.
-    #[tracing::instrument(skip(self))]
-    pub async fn update_side_ringer_settings(
-        &self,
-        match_id: &str,
-        side_settings: &[(String, bool, Option<u32>)],
-    ) -> DaoResult<()> {
-        if side_settings.is_empty() {
-            return Ok(());
-        }
-
-        let mut set: Vec<String> = Vec::new();
-        let mut remove: Vec<String> = Vec::new();
-        let mut names: HashMap<String, String> = HashMap::new();
-        let mut values: HashMap<String, AttributeValue> = HashMap::new();
-        names.insert("#pk".into(), ATTR_PK.into());
-
-        for (i, (side_id, ringers_enabled, max_ringer_spots)) in side_settings.iter().enumerate() {
-            let side_alias = format!("#s{i}");
-            names.insert(side_alias.clone(), side_id.clone());
-
-            let enabled_alias = format!(":re{i}");
-            set.push(format!(
-                "sides.{side_alias}.ringers_enabled = {enabled_alias}"
-            ));
-            values.insert(enabled_alias, AttributeValue::Bool(*ringers_enabled));
-
-            match max_ringer_spots {
-                Some(max) => {
-                    let value_alias = format!(":mr{i}");
-                    set.push(format!(
-                        "sides.{side_alias}.max_ringer_spots = {value_alias}"
-                    ));
-                    values.insert(value_alias, AttributeValue::N(max.to_string()));
-                }
-                None => {
-                    remove.push(format!("sides.{side_alias}.max_ringer_spots"));
-                }
-            }
-        }
-
-        let mut expr = String::new();
-        if !set.is_empty() {
-            expr.push_str("SET ");
-            expr.push_str(&set.join(", "));
-        }
-        if !remove.is_empty() {
-            if !expr.is_empty() {
-                expr.push(' ');
-            }
-            expr.push_str("REMOVE ");
-            expr.push_str(&remove.join(", "));
-        }
-
-        let result = self
-            .client
-            .update_item()
-            .table_name(self.table())
-            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
-            .key(ATTR_SK, s(Sk::Meta.to_string()))
-            .update_expression(expr)
-            .condition_expression("attribute_exists(#pk)")
-            .set_expression_attribute_names(Some(names))
-            .set_expression_attribute_values(Some(values))
-            .send()
-            .await;
-
-        match result {
-            Ok(_) => Ok(()),
-            Err(e) if is_update_conditional_failure(&e) => {
-                Err(DaoError::NotFound(format!("match {match_id}")))
-            }
-            Err(e) => Err(DaoError::Dynamo(e.to_string())),
-        }
-    }
-
-    /// Set or clear one side's own open-join policy and ringer cap — the
-    /// `PerSide`-scope analogue of `update_side_ringer_settings`
-    /// (`MatchWide`-scope's `ringers_enabled` toggle). `policy: None` closes
-    /// the side to ringers. `NotFound` if the match or side is absent.
-    #[tracing::instrument(skip(self, policy))]
-    pub async fn set_side_open_join_policy(
+    /// Set one side's ringer settings: either `MatchWide` scope's
+    /// `ringers_enabled` toggle, or `PerSide` scope's own open-join policy
+    /// (`None` closes the side to ringers) — whichever `SideRingerSetting`
+    /// the caller passes, decided by the match's current scope. Either way
+    /// also sets/clears `max_ringer_spots`. Kept separate from
+    /// `update_match_join_settings` (team self-join's own settings call) the
+    /// same way that call is separate from `update_match_meta` — a distinct
+    /// concern, no atomicity lost by it being its own call. `NotFound` if the
+    /// match or side is absent.
+    #[tracing::instrument(skip(self, setting))]
+    pub async fn set_side_ringer_settings(
         &self,
         match_id: &str,
         side_id: &str,
-        policy: Option<&SideOpenJoinPolicyRecord>,
+        setting: SideRingerSetting<'_>,
         max_ringer_spots: Option<u32>,
     ) -> DaoResult<()> {
         let mut set: Vec<String> = Vec::new();
@@ -159,12 +95,16 @@ impl Dao {
         names.insert("#pk".into(), ATTR_PK.into());
         names.insert("#sid".into(), side_id.to_string());
 
-        match policy {
-            Some(p) => {
+        match setting {
+            SideRingerSetting::Enabled(enabled) => {
+                set.push("sides.#sid.ringers_enabled = :re".to_string());
+                values.insert(":re".into(), AttributeValue::Bool(enabled));
+            }
+            SideRingerSetting::Policy(Some(p)) => {
                 set.push("sides.#sid.open_join = :oj".to_string());
                 values.insert(":oj".into(), to_attr(p)?);
             }
-            None => remove.push("sides.#sid.open_join".to_string()),
+            SideRingerSetting::Policy(None) => remove.push("sides.#sid.open_join".to_string()),
         }
         match max_ringer_spots {
             Some(max) => {

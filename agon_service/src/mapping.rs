@@ -13,8 +13,9 @@ use crate::live_score::{LiveEvent, LiveEventInput, NewLiveEventInput};
 use crate::match_format::MatchFormat;
 use crate::membership::{
     ExternalMember, Invitation, InvitationContext, InvitationKind, InvitationMatchContext,
-    InvitationStatus, InvitationTeamContext, JoinLink, JoinLinkScope, MatchPlayerRole, Member,
-    TokenInvitation, UserInvitation, UserMember,
+    InvitationStatus, InvitationTeamContext, JoinLink, JoinLinkScope, JoinRequest,
+    JoinRequestStatus, MatchPlayerRole, Member, OpenJoinAudience, OpenJoinPolicy, OpenJoinScope,
+    OpenJoinScopeKind, SideOpenJoinPolicy, TokenInvitation, UserInvitation, UserMember,
 };
 use crate::notification::{
     CommentNotification, FollowNotification, InvitationAcceptedNotification, LikeNotification,
@@ -40,14 +41,16 @@ use crate::sports::Sport;
 use agon_core::dao::live_score_ops::NewLiveEvent;
 use agon_core::dao::records::{
     BestFigureRecord, CommentRecord, ConfirmedScoreRecord, DevicePlatform as DevicePlatformRecord,
-    EmbeddedInvitationRecord, GenericSportStatsRecord, InvitationContextRecord,
-    InvitationKindRecord, InvitationRecord, JoinLinkRecord, JoinLinkScopeRecord,
-    LiveEventPayloadRecord, LiveEventRecord, LocationRecord, MatchFormatRecord, MatchLikeRecord,
-    MatchPlayerRecord, MatchPlayerRole as MatchPlayerRoleRecord, MatchRecord, MatchScoreRecord,
-    MatchSideRecord, NotificationKindRecord, NotificationRecord, PendingScoreRecord,
-    ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord, ScoreSubmissionRecord,
-    SeriesEndRecord, SeriesOccurrenceRecord, SeriesRecord, SeriesSideRecord, TeamMemberRecord,
-    TeamRecord, UserRecord, UserStatsRecord,
+    EligibilityRuleRecord, EmbeddedInvitationRecord, GenericSportStatsRecord,
+    InvitationContextRecord, InvitationKindRecord, InvitationRecord, JoinLinkRecord,
+    JoinLinkScopeRecord, LiveEventPayloadRecord, LiveEventRecord, LocationRecord,
+    MatchFormatRecord, MatchJoinRequestRecord, MatchLikeRecord, MatchPlayerRecord,
+    MatchPlayerRole as MatchPlayerRoleRecord, MatchRecord, MatchScoreRecord, MatchSideRecord,
+    NotificationKindRecord, NotificationRecord, OpenJoinAudienceRecord, OpenJoinPolicyRecord,
+    OpenJoinScopeRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord,
+    ScoreResponseRecord, ScoreSubmissionRecord, SeriesEndRecord, SeriesOccurrenceRecord,
+    SeriesRecord, SeriesSideRecord, SideOpenJoinPolicyRecord, TeamMemberRecord, TeamRecord,
+    UserRecord, UserStatsRecord,
 };
 use agon_core::rating::ladder_for_tag;
 use agon_core::rating::{PLACEMENT_MATCHES, display, published};
@@ -362,6 +365,167 @@ macro_rules! define_sport_dispatch {
     };
 }
 agon_core::for_each_sport!(define_sport_dispatch);
+
+/// How many matches `stats` records played in `sport_tag` (`match_type_tag`'s
+/// output) — the figure an `EligibilityRuleRecord::MinMatchesPlayed` rule
+/// judges a candidate against. `0` for a sport with no stored entry at all
+/// (nothing played, same as every sparse per-sport counter) and for `"other"`
+/// (no dedicated stats record for it — see `UserStatsRecord::other`, which
+/// *is* a `GenericSportStatsRecord`, but open-join eligibility on an
+/// uncategorized sport has nothing meaningful to compare, so it's always
+/// unmet rather than silently falling back to a wrong count).
+pub fn matches_played_for_sport(stats: &UserStatsRecord, sport_tag: &str) -> u64 {
+    match sport_tag {
+        "cricket" => stats
+            .cricket
+            .as_ref()
+            .map_or(0, |s| s.common.matches_played),
+        "football" => stats
+            .football
+            .as_ref()
+            .map_or(0, |s| s.common.matches_played),
+        "tennis" => stats.tennis.as_ref().map_or(0, |s| s.matches_played),
+        "badminton" => stats.badminton.as_ref().map_or(0, |s| s.matches_played),
+        "squash" => stats.squash.as_ref().map_or(0, |s| s.matches_played),
+        "table_tennis" => stats.table_tennis.as_ref().map_or(0, |s| s.matches_played),
+        "netball" => stats
+            .netball
+            .as_ref()
+            .map_or(0, |s| s.common.matches_played),
+        _ => 0,
+    }
+}
+
+pub fn open_join_audience_from_record(rec: OpenJoinAudienceRecord) -> OpenJoinAudience {
+    match rec {
+        OpenJoinAudienceRecord::Individuals => OpenJoinAudience::Individuals,
+        OpenJoinAudienceRecord::Teams => OpenJoinAudience::Teams,
+        OpenJoinAudienceRecord::Both => OpenJoinAudience::Both,
+    }
+}
+
+pub fn open_join_audience_to_record(audience: OpenJoinAudience) -> OpenJoinAudienceRecord {
+    match audience {
+        OpenJoinAudience::Individuals => OpenJoinAudienceRecord::Individuals,
+        OpenJoinAudience::Teams => OpenJoinAudienceRecord::Teams,
+        OpenJoinAudience::Both => OpenJoinAudienceRecord::Both,
+    }
+}
+
+/// Build the API `OpenJoinPolicy` from the stored record, flattening
+/// `rules` back into `min_matches_played` — the inverse of
+/// `open_join_policy_to_record`. A stored `MinRating` rule (not settable
+/// through this API today, only ever written directly) is silently dropped
+/// rather than surfaced, same as any other field this read side doesn't
+/// have a slot for.
+pub fn open_join_policy_from_record(rec: &OpenJoinPolicyRecord) -> OpenJoinPolicy {
+    let min_matches_played = rec.rules.iter().find_map(|r| match r {
+        EligibilityRuleRecord::MinMatchesPlayed { min } => Some(*min),
+        _ => None,
+    });
+    OpenJoinPolicy {
+        audience: open_join_audience_from_record(rec.audience),
+        min_matches_played,
+        requires_approval: rec.requires_approval,
+        max_open_spots: rec.max_open_spots,
+    }
+}
+
+/// Build the stored record from the API input — the inverse of
+/// `open_join_policy_from_record`.
+pub fn open_join_policy_to_record(
+    input: &crate::membership::OpenJoinPolicyInput,
+) -> OpenJoinPolicyRecord {
+    OpenJoinPolicyRecord {
+        audience: open_join_audience_to_record(input.audience),
+        rules: open_join_rules_to_record(input),
+        requires_approval: input.requires_approval,
+        max_open_spots: input.max_open_spots,
+    }
+}
+
+/// Flatten an `OpenJoinPolicyInput`'s named eligibility fields into
+/// `EligibilityRuleRecord`s — shared by `open_join_policy_to_record` (match-
+/// wide) and `side_open_join_policy_to_record` (per-side), which differ only
+/// in what they do with `max_open_spots`.
+fn open_join_rules_to_record(
+    input: &crate::membership::OpenJoinPolicyInput,
+) -> Vec<EligibilityRuleRecord> {
+    let mut rules = Vec::new();
+    if let Some(min) = input.min_matches_played {
+        rules.push(EligibilityRuleRecord::MinMatchesPlayed { min });
+    }
+    rules
+}
+
+/// Build the API `OpenJoinScope` from the stored record — the inverse of
+/// how `set_open_join_policy` builds an `OpenJoinScopeRecord` from
+/// `OpenJoinScopeInput`.
+pub fn open_join_scope_from_record(rec: &OpenJoinScopeRecord) -> OpenJoinScope {
+    match rec {
+        OpenJoinScopeRecord::MatchWide(policy) => OpenJoinScope {
+            mode: OpenJoinScopeKind::MatchWide,
+            policy: Some(open_join_policy_from_record(policy)),
+        },
+        OpenJoinScopeRecord::PerSide => OpenJoinScope {
+            mode: OpenJoinScopeKind::PerSide,
+            policy: None,
+        },
+    }
+}
+
+/// Build a side's own stored policy from the API input — the `per_side`-
+/// scope analogue of `open_join_policy_to_record`. The match-wide
+/// `max_open_spots` field has no side-level meaning here (a side caps
+/// itself via `MatchSideRecord::max_open_spots` instead), so it's dropped
+/// rather than surfaced on `OpenJoinPolicyInput`'s reused shape.
+pub fn side_open_join_policy_to_record(
+    input: &crate::membership::OpenJoinPolicyInput,
+) -> SideOpenJoinPolicyRecord {
+    SideOpenJoinPolicyRecord {
+        audience: open_join_audience_to_record(input.audience),
+        rules: open_join_rules_to_record(input),
+        requires_approval: input.requires_approval,
+    }
+}
+
+/// Build the API `SideOpenJoinPolicy` from a side's stored policy — the
+/// inverse of `side_open_join_policy_to_record`.
+pub fn side_open_join_policy_from_record(rec: &SideOpenJoinPolicyRecord) -> SideOpenJoinPolicy {
+    let min_matches_played = rec.rules.iter().find_map(|r| match r {
+        EligibilityRuleRecord::MinMatchesPlayed { min } => Some(*min),
+        _ => None,
+    });
+    SideOpenJoinPolicy {
+        audience: open_join_audience_from_record(rec.audience),
+        min_matches_played,
+        requires_approval: rec.requires_approval,
+    }
+}
+
+/// Build the API `JoinRequest` for one request, hydrating name/avatar from
+/// an already fetched `users` batch — same pattern as
+/// `waitlist_entry_response`.
+pub fn join_request_response(
+    rec: &MatchJoinRequestRecord,
+    users: &std::collections::HashMap<String, UserRecord>,
+) -> JoinRequest {
+    let record = users.get(&rec.user_id);
+    let status = match rec.status.as_str() {
+        "approved" => JoinRequestStatus::Approved,
+        "declined" => JoinRequestStatus::Declined,
+        _ => JoinRequestStatus::Pending,
+    };
+    JoinRequest {
+        user_id: rec.user_id.clone(),
+        name: record.map(|u| u.name.clone()).unwrap_or_default(),
+        avatar_url: record.and_then(|u| u.profile_image_url.clone()),
+        side_id: rec.side_id.clone(),
+        requested_at: parse_ts(&rec.requested_at),
+        status,
+        decided_at: rec.decided_at.as_deref().map(parse_ts),
+    }
+}
 
 /// The largest `max_players` at which a side with no team and no custom
 /// name is identified by its players' names ("Sam" or "Sam & Alex"). Past
@@ -1868,6 +2032,8 @@ mod tests {
             live_tip_seq: None,
             format: None,
             ranked: true,
+            open_join: None,
+            open_joined_count: 0,
             created_at: "2026-01-01T00:00:00.000Z".to_string(),
         }
     }

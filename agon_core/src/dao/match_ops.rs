@@ -1390,6 +1390,10 @@ mod tests {
             player_count: 0,
             roster_preview: Vec::new(),
             team_join_enabled: false,
+            open_join_enabled: false,
+            open_join: None,
+            max_open_spots: None,
+            open_joined_count: 0,
         }
     }
 

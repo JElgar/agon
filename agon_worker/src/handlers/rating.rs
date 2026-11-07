@@ -874,6 +874,10 @@ mod tests {
                 team_join_enabled: false,
                 player_count: 1,
                 roster_preview: Vec::new(),
+                open_join_enabled: false,
+                open_join: None,
+                max_open_spots: None,
+                open_joined_count: 0,
             },
         )
     }
@@ -909,6 +913,8 @@ mod tests {
             format: None,
             ranked: true,
             authority: HashMap::new(),
+            open_join: None,
+            open_joined_count: 0,
             created_at: "2026-05-01T10:00:00.000Z".into(),
         }
     }
@@ -946,6 +952,7 @@ mod tests {
             kind: InvitationKindRecord::Token {
                 invite_token: "token".into(),
             },
+            reserve_spot: false,
         });
         player
     }

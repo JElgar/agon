@@ -49,14 +49,15 @@ use mapping::{
     join_link_scope_to_record, live_event_from_record, location_to_record, match_format_sport_tag,
     match_format_to_record, match_from_records, match_player_role_from_record,
     match_score_from_record, match_score_to_record, match_series_from_record,
-    match_series_occurrence_from_record, match_status_str, match_type_tag, new_live_event_to_dao,
-    notification_actor_id, notification_from_record, ranked_added_players_reason,
-    ranked_lock_reason_for_update, rating_ladder, rating_ladder_for, rating_placements_from_record,
-    resolve_score_ids, roster_preview_player, score_player_ids, score_side_ids,
-    score_submission_from_record, score_to_record, search_match_from_records,
-    series_end_record_from_input, set_score_players, switch_to_ranked_reason, team_from_records,
-    team_list_item_from_record, team_member_from_record, unrankable_sport_reason,
-    unratable_players, user_profile_from_record, winner_from_score,
+    match_series_occurrence_from_record, match_status_str, match_type_tag,
+    matches_played_for_sport, new_live_event_to_dao, notification_actor_id,
+    notification_from_record, ranked_added_players_reason, ranked_lock_reason_for_update,
+    rating_ladder, rating_ladder_for, rating_placements_from_record, resolve_score_ids,
+    roster_preview_player, score_player_ids, score_side_ids, score_submission_from_record,
+    score_to_record, search_match_from_records, series_end_record_from_input, set_score_players,
+    switch_to_ranked_reason, team_from_records, team_list_item_from_record,
+    team_member_from_record, unrankable_sport_reason, unratable_players, user_profile_from_record,
+    winner_from_score,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -75,9 +76,10 @@ mod membership;
 use membership::{
     AddInvitationsInput, CreateJoinLinkInput, Invitation, InvitationContext, InvitationDetail,
     InvitationKind, InvitationMatchContext, InvitationStatus, JoinLink, JoinLinkPreview,
-    JoinMatchInput, MatchPlayerRole, Member, RespondByTokenInput, RespondToInvitationInput,
-    SetMatchPlayerRoleInput, TokenInvitation, TransferMatchOwnershipInput, UserInvitation,
-    UserMember,
+    JoinMatchInput, JoinRequest, JoinRequestInput, MatchPlayerRole, Member, OpenJoinScope,
+    OpenJoinScopeInput, OpenJoinScopeKind, RespondByTokenInput, RespondToInvitationInput,
+    SetMatchPlayerRoleInput, SideOpenJoinInput, TokenInvitation, TransferMatchOwnershipInput,
+    UserInvitation, UserMember,
 };
 
 mod team;
@@ -2421,6 +2423,113 @@ enum SetMatchPlayerRoleResponse {
     NotFound(PlainText<String>),
 }
 
+/// Set a match's open-join scope — `PUT /matches/:match_id/open-join`.
+#[derive(ApiResponse)]
+enum SetOpenJoinPolicyResponse {
+    #[oai(status = 200)]
+    Scope(Json<OpenJoinScope>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// Close a match back to invite/link/team-only — `DELETE
+/// /matches/:match_id/open-join`. Idempotent.
+#[derive(ApiResponse)]
+enum ClearOpenJoinPolicyResponse {
+    #[oai(status = 204)]
+    Ok,
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// Open or close one side to individual ringers — `PUT
+/// /matches/:match_id/sides/:side_id/open-join`.
+#[derive(ApiResponse)]
+enum SetSideOpenJoinResponse {
+    #[oai(status = 204)]
+    Ok,
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    /// The match doesn't exist, or the side isn't part of it.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// Request to join a match through its open-join policy — `POST
+/// /matches/:match_id/join-requests`. Used only when the policy requires
+/// approval; otherwise `POST /matches/:match_id/join` seats the caller
+/// directly. See `JoinRequestInput`'s doc comment.
+#[derive(ApiResponse)]
+enum CreateJoinRequestResponse {
+    #[oai(status = 201)]
+    Request(Json<JoinRequest>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+
+    /// The caller is already on the roster, or already has a request
+    /// (pending or decided) for this match.
+    #[oai(status = 409)]
+    Conflict(PlainText<String>),
+}
+
+/// List a match's join requests, oldest-requested first — admin-only, same
+/// as `GET /matches/:match_id/waitlist`.
+#[derive(ApiResponse)]
+enum ListJoinRequestsResponse {
+    #[oai(status = 200)]
+    Requests(Json<Vec<JoinRequest>>),
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// Approve or decline a pending join request — admin-only.
+#[derive(ApiResponse)]
+enum DecideJoinRequestResponse {
+    /// Approved: the requester is now seated and the match/side headcounts
+    /// already reflect it. Declined: the request is marked `Declined`;
+    /// nothing else changes.
+    #[oai(status = 204)]
+    Ok,
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    /// The match doesn't exist, or there's no such request.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+
+    /// The request is no longer pending (already decided), or (approving
+    /// only) a cap has been reached since the caller's own read.
+    #[oai(status = 409)]
+    Conflict(Json<RosterConflict>),
+}
+
 #[derive(ApiResponse)]
 enum LeaveMatchResponse {
     /// The caller is no longer on the roster.
@@ -3408,6 +3517,13 @@ impl Api {
                     colour: side.colour.clone(),
                     max_players: side.max_players,
                     team_join_enabled: side.team_join_enabled.unwrap_or(false),
+                    // Ringers aren't configurable at creation — an organiser
+                    // opens a side to them afterwards, via the open-join
+                    // settings endpoint.
+                    open_join_enabled: false,
+                    open_join: None,
+                    max_open_spots: None,
+                    open_joined_count: 0,
                     // `Dao::create_match` recomputes both from the players
                     // list it's given, in the same transaction — placeholders.
                     player_count: 0,
@@ -3649,6 +3765,10 @@ impl Api {
             // an invitee, who is asked when they accept. Prompts exist only
             // for a *switch*, which finds players already in place.
             authority: authority.clone(),
+            // Not configurable at creation — an organiser opens a match to
+            // the public afterwards, via the open-join settings endpoint.
+            open_join: None,
+            open_joined_count: 0,
             created_at: now.clone(),
         };
 
@@ -4698,6 +4818,10 @@ impl Api {
                     colour: side.colour.clone(),
                     max_players: side.max_players,
                     team_join_enabled: true,
+                    open_join_enabled: false,
+                    open_join: None,
+                    max_open_spots: None,
+                    open_joined_count: 0,
                     player_count: 0,
                     roster_preview: Vec::new(),
                 },
@@ -4741,6 +4865,8 @@ impl Api {
                 uid.clone(),
                 dao::records::MatchPlayerRole::Owner,
             )]),
+            open_join: None,
+            open_joined_count: 0,
             created_at: now,
         };
 
@@ -6994,20 +7120,24 @@ impl Api {
             }
             None => {
                 let eligible = caller_team_join_sides(dao, &agg, &uid).await?;
-                if eligible.is_empty() {
+                if !eligible.is_empty() {
+                    let scope = JoinScope {
+                        allowed_side_ids: Some(eligible),
+                        allow_unassigned: agg.match_.allow_unassigned,
+                    };
+                    (scope, dao::records::JoinSourceRecord::SelfServe)
+                } else if let Some(scope) = open_join_individual_scope(&agg) {
+                    (scope, dao::records::JoinSourceRecord::Open)
+                } else {
                     return Ok(JoinMatchResponse::ValidationError(PlainText(
                         "you're not eligible to join this match directly — ask for a join link \
                          or invite instead"
                             .into(),
                     )));
                 }
-                let scope = JoinScope {
-                    allowed_side_ids: Some(eligible),
-                    allow_unassigned: agg.match_.allow_unassigned,
-                };
-                (scope, dao::records::JoinSourceRecord::SelfServe)
             }
         };
+        let is_open_join = matches!(joined_via, dao::records::JoinSourceRecord::Open);
 
         let target_side_id = match resolve_join_target(&scope, input.side_id.as_deref(), &agg.sides)
         {
@@ -7015,11 +7145,41 @@ impl Api {
             Err(msg) => return Ok(JoinMatchResponse::ValidationError(PlainText(msg))),
         };
 
-        // Capacity, checked here for a precise error; `Dao::join_match_tx`
-        // re-checks atomically as the last-moment race guard (its own doc
-        // comment covers why the split).
+        if is_open_join {
+            // `open_join_individual_scope` only ever offers a target
+            // (side or unassigned) that has an effective policy, so this
+            // is safe. Checked against the *resolved* target rather than
+            // up front, since under `PerSide` each candidate side can carry
+            // different rules/approval.
+            let policy = open_join_effective_policy(&agg, target_side_id.as_deref())
+                .expect("a resolved open-join target always has an effective policy");
+            if policy.requires_approval {
+                return Ok(JoinMatchResponse::ValidationError(PlainText(
+                    "this match asks you to request to join first — see \
+                     POST /matches/:match_id/join-requests"
+                        .into(),
+                )));
+            }
+            if let Some(reason) =
+                caller_meets_eligibility_rules(dao, policy.rules, &agg, &uid).await?
+            {
+                return Ok(JoinMatchResponse::ValidationError(PlainText(reason)));
+            }
+        }
+
+        // Capacity, checked here for a precise error; `Dao::join_match_tx`/
+        // `Dao::join_open_match_tx` re-checks atomically as the last-moment
+        // race guard (its own doc comment covers why the split). An open
+        // join additionally respects the open/ringer-specific caps, via
+        // `open_full_reason`.
         let effective_max = agg.effective_max_players();
-        if let Some((kind, message)) = full_reason(&agg, target_side_id.as_deref()) {
+        let full = if is_open_join {
+            let max_open_spots = agg.match_.open_join.as_ref().map(open_join_max_open_spots);
+            open_full_reason(&agg, target_side_id.as_deref(), max_open_spots.flatten())
+        } else {
+            full_reason(&agg, target_side_id.as_deref())
+        };
+        if let Some((kind, message)) = full {
             return Ok(JoinMatchResponse::Conflict(Json(RosterConflict {
                 kind,
                 message: message.into(),
@@ -7040,8 +7200,26 @@ impl Api {
             joined_via: Some(joined_via),
         };
 
-        if let Err(e) = dao
-            .join_match_tx(
+        let join_result = if is_open_join {
+            let max_open_spots = agg
+                .match_
+                .open_join
+                .as_ref()
+                .and_then(open_join_max_open_spots);
+            let side_max_open_spots = target_side.and_then(|s| s.max_open_spots);
+            dao.join_open_match_tx(
+                &match_id,
+                &player,
+                target_side.and_then(|s| s.max_players),
+                effective_max,
+                side_max_open_spots,
+                max_open_spots,
+                &agg.match_.starts_at,
+                &now_iso(),
+            )
+            .await
+        } else {
+            dao.join_match_tx(
                 &match_id,
                 &player,
                 target_side.and_then(|s| s.max_players),
@@ -7050,7 +7228,8 @@ impl Api {
                 &now_iso(),
             )
             .await
-        {
+        };
+        if let Err(e) = join_result {
             return match e {
                 // The atomic guard caught a race the pre-check above missed —
                 // capacity changed underneath it (the player put's own
@@ -7062,7 +7241,15 @@ impl Api {
                     let fresh = dao.get_match(&match_id).await.map_err(dao_internal)?;
                     let (kind, message) = fresh
                         .as_ref()
-                        .and_then(|agg| full_reason(agg, target_side_id.as_deref()))
+                        .and_then(|agg| match (is_open_join, agg.match_.open_join.as_ref()) {
+                            (true, Some(scope)) => open_full_reason(
+                                agg,
+                                target_side_id.as_deref(),
+                                open_join_max_open_spots(scope),
+                            ),
+                            (true, None) => None,
+                            (false, _) => full_reason(agg, target_side_id.as_deref()),
+                        })
                         .unwrap_or((RosterConflictKind::MatchFull, "this match is full"));
                     Ok(JoinMatchResponse::Conflict(Json(RosterConflict {
                         kind,
@@ -7213,6 +7400,439 @@ impl Api {
             .await
             .map_err(dao_internal)?;
         Ok(SetMatchPlayerRoleResponse::Ok)
+    }
+
+    /// Set a match's open-join ("ringers") scope.
+    ///
+    /// Match-admin only. Replaces any existing scope wholesale — see
+    /// `OpenJoinScopeInput`'s doc comment for what each mode means.
+    ///
+    /// Under `match_wide`, opening a match this way doesn't by itself make
+    /// any side joinable: `PUT /matches/:match_id/sides/:side_id/open-join`
+    /// still has to enable ringers on at least one side (or the match has to
+    /// allow unassigned) for `audience: individuals`/`both` to have any
+    /// effect. Under `per_side`, the same endpoint sets each side's own
+    /// policy directly instead.
+    #[oai(path = "/matches/:match_id/open-join", method = "put")]
+    async fn set_open_join_policy(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        input: Json<OpenJoinScopeInput>,
+    ) -> Result<SetOpenJoinPolicyResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let input = input.0;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(SetOpenJoinPolicyResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(SetOpenJoinPolicyResponse::Forbidden(PlainText(
+                "only a match admin can set the open-join scope".into(),
+            )));
+        }
+
+        let record = match (input.mode, input.policy) {
+            (OpenJoinScopeKind::MatchWide, Some(policy)) => {
+                dao::records::OpenJoinScopeRecord::MatchWide(mapping::open_join_policy_to_record(
+                    &policy,
+                ))
+            }
+            (OpenJoinScopeKind::MatchWide, None) => {
+                return Ok(SetOpenJoinPolicyResponse::ValidationError(PlainText(
+                    "mode: match_wide needs a policy".into(),
+                )));
+            }
+            (OpenJoinScopeKind::PerSide, _) => dao::records::OpenJoinScopeRecord::PerSide,
+        };
+        dao.set_match_open_join_policy(&match_id, Some(&record))
+            .await
+            .map_err(dao_internal)?;
+        Ok(SetOpenJoinPolicyResponse::Scope(Json(
+            mapping::open_join_scope_from_record(&record),
+        )))
+    }
+
+    /// Close a match back to invite/link/team-only.
+    ///
+    /// Match-admin only. Idempotent — clearing an already-closed match is a
+    /// no-op success. Doesn't touch any side's ringer settings or disturb
+    /// anyone already seated via the open-join path; it only stops new
+    /// open/ringer arrivals.
+    #[oai(path = "/matches/:match_id/open-join", method = "delete")]
+    async fn clear_open_join_policy(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+    ) -> Result<ClearOpenJoinPolicyResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(ClearOpenJoinPolicyResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(ClearOpenJoinPolicyResponse::Forbidden(PlainText(
+                "only a match admin can clear the open-join policy".into(),
+            )));
+        }
+
+        dao.set_match_open_join_policy(&match_id, None)
+            .await
+            .map_err(dao_internal)?;
+        Ok(ClearOpenJoinPolicyResponse::Ok)
+    }
+
+    /// Open or close one side to individual ringers.
+    ///
+    /// Match-admin only. See `SideOpenJoinInput`'s doc comment — settable
+    /// independently of the match's own open-join scope, but which of
+    /// `enabled`/`side_policy` applies depends on that scope (`match_wide`
+    /// or `per_side`).
+    #[oai(path = "/matches/:match_id/sides/:side_id/open-join", method = "put")]
+    async fn set_side_open_join(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        Path(side_id): Path<String>,
+        input: Json<SideOpenJoinInput>,
+    ) -> Result<SetSideOpenJoinResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let input = input.0;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(SetSideOpenJoinResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(SetSideOpenJoinResponse::Forbidden(PlainText(
+                "only a match admin can change a side's ringer settings".into(),
+            )));
+        }
+        if !agg.sides.iter().any(|s| s.side_id == side_id) {
+            return Ok(SetSideOpenJoinResponse::NotFound(PlainText(
+                "side not found".into(),
+            )));
+        }
+
+        let per_side_policy = input
+            .side_policy
+            .as_ref()
+            .map(mapping::side_open_join_policy_to_record);
+        let setting = match agg.match_.open_join.as_ref() {
+            Some(dao::records::OpenJoinScopeRecord::PerSide) => {
+                dao::open_join::SideOpenJoinSetting::Policy(per_side_policy.as_ref())
+            }
+            _ => dao::open_join::SideOpenJoinSetting::Enabled(input.enabled),
+        };
+        dao.set_side_open_join_settings(&match_id, &side_id, setting, input.max_open_spots)
+            .await
+            .map_err(dao_internal)?;
+        Ok(SetSideOpenJoinResponse::Ok)
+    }
+
+    /// Request to join a match through its open-join policy.
+    ///
+    /// Only for a match whose policy has `requires_approval: true` —
+    /// otherwise `POST /matches/:match_id/join` seats the caller directly,
+    /// same eligibility rules either way. An admin later approves or
+    /// declines via `POST .../join-requests/:user_id/approve|decline`.
+    #[oai(path = "/matches/:match_id/join-requests", method = "post")]
+    async fn create_join_request(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        input: Json<JoinRequestInput>,
+    ) -> Result<CreateJoinRequestResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let input = input.0;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(CreateJoinRequestResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if caller_is_participant(&agg.players, &uid) {
+            return Ok(CreateJoinRequestResponse::Conflict(PlainText(
+                "you're already on this match's roster".into(),
+            )));
+        }
+        let Some(scope) = open_join_individual_scope(&agg) else {
+            return Ok(CreateJoinRequestResponse::ValidationError(PlainText(
+                "this match isn't open for individuals to join".into(),
+            )));
+        };
+        let side_id = match resolve_join_target(&scope, input.side_id.as_deref(), &agg.sides) {
+            Ok(t) => t,
+            Err(msg) => return Ok(CreateJoinRequestResponse::ValidationError(PlainText(msg))),
+        };
+        // Checked against the *resolved* target, not up front — under
+        // `PerSide` each candidate side can carry different rules/approval.
+        let policy = open_join_effective_policy(&agg, side_id.as_deref())
+            .expect("a resolved open-join target always has an effective policy");
+        if !policy.requires_approval {
+            return Ok(CreateJoinRequestResponse::ValidationError(PlainText(
+                "this match doesn't need a request — join it directly instead".into(),
+            )));
+        }
+        if let Some(reason) = caller_meets_eligibility_rules(dao, policy.rules, &agg, &uid).await? {
+            return Ok(CreateJoinRequestResponse::ValidationError(PlainText(
+                reason,
+            )));
+        }
+
+        let request = dao::records::MatchJoinRequestRecord {
+            user_id: uid.clone(),
+            side_id,
+            requested_at: now_iso(),
+            status: "pending".into(),
+            decided_at: None,
+            decided_by_user_id: None,
+        };
+        if let Err(e) = dao.create_join_request_tx(&match_id, &request).await {
+            return match e {
+                dao::DaoError::Conflict(msg) => {
+                    Ok(CreateJoinRequestResponse::Conflict(PlainText(msg)))
+                }
+                other => Err(dao_internal(other)),
+            };
+        }
+
+        let users = dao
+            .batch_get_users(std::slice::from_ref(&uid))
+            .await
+            .map_err(dao_internal)?;
+        Ok(CreateJoinRequestResponse::Request(Json(
+            mapping::join_request_response(&request, &users),
+        )))
+    }
+
+    /// List a match's join requests, oldest-requested first.
+    ///
+    /// Match-admin only.
+    #[oai(path = "/matches/:match_id/join-requests", method = "get")]
+    async fn list_join_requests(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+    ) -> Result<ListJoinRequestsResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(ListJoinRequestsResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(ListJoinRequestsResponse::Forbidden(PlainText(
+                "only a match admin can see this match's join requests".into(),
+            )));
+        }
+
+        let requests = dao
+            .list_join_requests(&match_id)
+            .await
+            .map_err(dao_internal)?;
+        let user_ids: Vec<String> = requests.iter().map(|r| r.user_id.clone()).collect();
+        let users = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
+        let out = requests
+            .iter()
+            .map(|r| mapping::join_request_response(r, &users))
+            .collect();
+        Ok(ListJoinRequestsResponse::Requests(Json(out)))
+    }
+
+    /// Approve a pending join request.
+    ///
+    /// Match-admin only. Seats the requester atomically with marking the
+    /// request `Approved` — see `Dao::approve_join_request_tx`'s doc
+    /// comment. `Conflict` if a cap has been reached since the caller's own
+    /// read, or the request is no longer pending.
+    #[oai(
+        path = "/matches/:match_id/join-requests/:user_id/approve",
+        method = "post"
+    )]
+    async fn approve_join_request(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        Path(user_id): Path<String>,
+    ) -> Result<DecideJoinRequestResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(DecideJoinRequestResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(DecideJoinRequestResponse::Forbidden(PlainText(
+                "only a match admin can decide a join request".into(),
+            )));
+        }
+        let Some(request) = dao
+            .get_join_request(&match_id, &user_id)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(DecideJoinRequestResponse::NotFound(PlainText(
+                "no such join request".into(),
+            )));
+        };
+        if request.status != "pending" {
+            return Ok(DecideJoinRequestResponse::Conflict(Json(
+                RosterConflict::already_on_roster("this request is no longer pending"),
+            )));
+        }
+
+        let max_open_spots = agg
+            .match_
+            .open_join
+            .as_ref()
+            .and_then(open_join_max_open_spots);
+        if let Some((kind, message)) =
+            open_full_reason(&agg, request.side_id.as_deref(), max_open_spots)
+        {
+            return Ok(DecideJoinRequestResponse::Conflict(Json(RosterConflict {
+                kind,
+                message: message.into(),
+            })));
+        }
+        // Nothing is gated on rating consent any more (see
+        // `move_in_from_waitlist`'s own comment on this), and a join
+        // request always names a real account
+        // (`MatchJoinRequestRecord`'s doc comment), so the one rule that
+        // survives elsewhere — no guests in a ranked match — cannot fire
+        // here either.
+
+        let target_side = request
+            .side_id
+            .as_ref()
+            .and_then(|sid| agg.sides.iter().find(|s| &s.side_id == sid));
+        let player = dao::records::MatchPlayerRecord {
+            player_id: new_id(),
+            user_id: Some(request.user_id.clone()),
+            display_name: None,
+            side_id: request.side_id.clone(),
+            is_member_of_team: None,
+            invitation: None,
+            joined_via: Some(dao::records::JoinSourceRecord::Open),
+        };
+        let now = now_iso();
+        if let Err(e) = dao
+            .approve_join_request_tx(
+                &match_id,
+                &user_id,
+                &uid,
+                &now,
+                &player,
+                target_side.and_then(|s| s.max_players),
+                agg.effective_max_players(),
+                target_side.and_then(|s| s.max_open_spots),
+                max_open_spots,
+                &agg.match_.starts_at,
+                &now,
+            )
+            .await
+        {
+            return match e {
+                dao::DaoError::Conflict(_) => {
+                    let fresh = dao.get_match(&match_id).await.map_err(dao_internal)?;
+                    let (kind, message) = fresh
+                        .as_ref()
+                        .and_then(|agg| match agg.match_.open_join.as_ref() {
+                            Some(scope) => open_full_reason(
+                                agg,
+                                request.side_id.as_deref(),
+                                open_join_max_open_spots(scope),
+                            ),
+                            None => None,
+                        })
+                        .unwrap_or((RosterConflictKind::MatchFull, "this match is full"));
+                    Ok(DecideJoinRequestResponse::Conflict(Json(RosterConflict {
+                        kind,
+                        message: message.into(),
+                    })))
+                }
+                other => Err(dao_internal(other)),
+            };
+        }
+
+        dao.refresh_side_roster_previews(&match_id)
+            .await
+            .map_err(dao_internal)?;
+        Ok(DecideJoinRequestResponse::Ok)
+    }
+
+    /// Decline a pending join request.
+    ///
+    /// Match-admin only. A soft status update — same convention as
+    /// revoking a join link.
+    #[oai(
+        path = "/matches/:match_id/join-requests/:user_id/decline",
+        method = "post"
+    )]
+    async fn decline_join_request(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        Path(user_id): Path<String>,
+    ) -> Result<DecideJoinRequestResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(DecideJoinRequestResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(DecideJoinRequestResponse::Forbidden(PlainText(
+                "only a match admin can decide a join request".into(),
+            )));
+        }
+
+        match dao
+            .decline_join_request(&match_id, &user_id, &uid, &now_iso())
+            .await
+        {
+            Ok(()) => Ok(DecideJoinRequestResponse::Ok),
+            Err(dao::DaoError::Conflict(msg)) => Ok(DecideJoinRequestResponse::Conflict(Json(
+                RosterConflict::already_on_roster(msg),
+            ))),
+            Err(other) => Err(dao_internal(other)),
+        }
     }
 
     /// Leave a match.
@@ -9076,6 +9696,183 @@ fn full_reason(
         return Some((RosterConflictKind::SideFull, "that side is full"));
     }
     None
+}
+
+/// The open-join analogue of `full_reason`: everything `full_reason` checks,
+/// plus the open-specific caps (`max_open_spots`, only meaningful under
+/// `OpenJoinScopeRecord::MatchWide` — `None` under `PerSide`, which has no
+/// match-wide cap — and the target side's own `max_open_spots`) that only
+/// apply to an arrival via the open-join path. Checked in the same order as
+/// `take_open_slot_update` guards them, so the two never disagree about
+/// what's full.
+fn open_full_reason(
+    agg: &dao::match_ops::MatchAggregate,
+    target_side_id: Option<&str>,
+    max_open_spots: Option<u32>,
+) -> Option<(RosterConflictKind, &'static str)> {
+    if let Some(reason) = full_reason(agg, target_side_id) {
+        return Some(reason);
+    }
+    if let Some(max) = max_open_spots
+        && agg.match_.open_joined_count >= max
+    {
+        return Some((RosterConflictKind::MatchFull, "this match is full"));
+    }
+    let target_side = target_side_id.and_then(|sid| agg.sides.iter().find(|s| s.side_id == sid));
+    if let Some(side) = target_side
+        && let Some(max) = side.max_open_spots
+        && side.open_joined_count >= max
+    {
+        return Some((RosterConflictKind::SideFull, "that side is full"));
+    }
+    None
+}
+
+/// `OpenJoinScopeRecord::MatchWide`'s cap, or `None` under `PerSide` (which
+/// has no match-wide cap to enforce — see `open_full_reason`).
+fn open_join_max_open_spots(scope: &dao::records::OpenJoinScopeRecord) -> Option<u32> {
+    match scope {
+        dao::records::OpenJoinScopeRecord::MatchWide(policy) => policy.max_open_spots,
+        dao::records::OpenJoinScopeRecord::PerSide => None,
+    }
+}
+
+/// The eligibility rules and approval requirement that apply to a given
+/// open-join target (`target_side_id: None` means unassigned, only ever
+/// reachable under `MatchWide`) — the match-wide policy under `MatchWide`,
+/// or that specific side's own policy under `PerSide`. `None` if the match
+/// has no open-join scope, or (under `PerSide`) the target side has none set.
+struct OpenJoinEffectivePolicy<'a> {
+    rules: &'a [dao::records::EligibilityRuleRecord],
+    requires_approval: bool,
+}
+
+fn open_join_effective_policy<'a>(
+    agg: &'a dao::match_ops::MatchAggregate,
+    target_side_id: Option<&str>,
+) -> Option<OpenJoinEffectivePolicy<'a>> {
+    match agg.match_.open_join.as_ref()? {
+        dao::records::OpenJoinScopeRecord::MatchWide(policy) => Some(OpenJoinEffectivePolicy {
+            rules: &policy.rules,
+            requires_approval: policy.requires_approval,
+        }),
+        dao::records::OpenJoinScopeRecord::PerSide => {
+            let side =
+                target_side_id.and_then(|sid| agg.sides.iter().find(|s| s.side_id == sid))?;
+            let policy = side.open_join.as_ref()?;
+            Some(OpenJoinEffectivePolicy {
+                rules: &policy.rules,
+                requires_approval: policy.requires_approval,
+            })
+        }
+    }
+}
+
+/// Which side(s) (if any) an individual may join directly through a match's
+/// open-join scope, and whether landing unassigned is an option:
+/// - `MatchWide`: a side with `open_join_enabled` set, or unassigned if the
+///   match allows it — `None` if the policy's audience is `Teams`-only.
+/// - `PerSide`: every side carrying its own policy whose audience isn't
+///   `Teams`-only. Never offers unassigned — there's no single policy to
+///   apply to a landing with no side (see `OpenJoinScopeRecord::PerSide`'s
+///   doc comment).
+///
+/// `None` if the match has no open-join scope, or there are no candidate
+/// sides and no unassigned option either way. Mirrors `JoinScope`/
+/// `caller_team_join_sides`, but doesn't check eligibility rules — the
+/// caller (`join_match`, `create_join_request`) does that separately via
+/// `open_join_effective_policy`/`caller_meets_eligibility_rules`, once the
+/// actual target side is known, since under `PerSide` each candidate side
+/// may carry different rules.
+fn open_join_individual_scope(agg: &dao::match_ops::MatchAggregate) -> Option<JoinScope> {
+    match agg.match_.open_join.as_ref()? {
+        dao::records::OpenJoinScopeRecord::MatchWide(policy) => {
+            if matches!(policy.audience, dao::records::OpenJoinAudienceRecord::Teams) {
+                return None;
+            }
+            let open_side_ids: Vec<String> = agg
+                .sides
+                .iter()
+                .filter(|s| s.open_join_enabled)
+                .map(|s| s.side_id.clone())
+                .collect();
+            if open_side_ids.is_empty() && !agg.match_.allow_unassigned {
+                return None;
+            }
+            Some(JoinScope {
+                allowed_side_ids: if open_side_ids.is_empty() {
+                    Some(Vec::new())
+                } else {
+                    Some(open_side_ids)
+                },
+                allow_unassigned: agg.match_.allow_unassigned,
+            })
+        }
+        dao::records::OpenJoinScopeRecord::PerSide => {
+            let open_side_ids: Vec<String> = agg
+                .sides
+                .iter()
+                .filter(|s| {
+                    s.open_join.as_ref().is_some_and(|p| {
+                        !matches!(p.audience, dao::records::OpenJoinAudienceRecord::Teams)
+                    })
+                })
+                .map(|s| s.side_id.clone())
+                .collect();
+            if open_side_ids.is_empty() {
+                return None;
+            }
+            Some(JoinScope {
+                allowed_side_ids: Some(open_side_ids),
+                allow_unassigned: false,
+            })
+        }
+    }
+}
+
+/// Checks `rules` against `uid` for an open-join candidate, returning
+/// `Some(message)` for the first rule they fail (a user-facing validation
+/// message) or `None` if they meet every rule. Evaluated fresh on each
+/// attempt — eligibility is never stored or baked into a query (see
+/// `open_join.rs`'s module doc comment).
+async fn caller_meets_eligibility_rules(
+    dao: &dao::Dao,
+    rules: &[dao::records::EligibilityRuleRecord],
+    agg: &dao::match_ops::MatchAggregate,
+    uid: &str,
+) -> Result<Option<String>> {
+    for rule in rules {
+        match rule {
+            dao::records::EligibilityRuleRecord::MinRating { min } => {
+                let Some(ladder) = rating_ladder(&agg.match_) else {
+                    continue;
+                };
+                let rating = dao
+                    .get_rating(uid, &ladder)
+                    .await
+                    .map_err(dao_internal)?
+                    .map(|r| agon_core::rating::display_rating(r.mu).round() as i64)
+                    .unwrap_or(agon_core::rating::RATING_ORIGIN as i64);
+                if rating < *min as i64 {
+                    return Ok(Some(format!(
+                        "this match needs a rating of at least {min} to join directly"
+                    )));
+                }
+            }
+            dao::records::EligibilityRuleRecord::MinMatchesPlayed { min } => {
+                let Some(user) = dao.get_user(uid).await.map_err(dao_internal)? else {
+                    return Ok(Some("you're not eligible to join this match".into()));
+                };
+                let played = matches_played_for_sport(&user.stats, &agg.match_.match_type);
+                if played < *min as u64 {
+                    return Ok(Some(format!(
+                        "this match needs at least {min} matches played in this sport to join directly"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// A waitlist entry's 1-based place in the queue: how many entries waiting

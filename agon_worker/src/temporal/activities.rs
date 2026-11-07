@@ -169,10 +169,10 @@ impl AgonActivities {
                     // has to be on or nobody can ever get onto a generated
                     // occurrence.
                     team_join_enabled: true,
-                    ringers_enabled: false,
+                    open_join_enabled: false,
                     open_join: None,
-                    max_ringer_spots: None,
-                    ringers_joined_count: 0,
+                    max_open_spots: None,
+                    open_joined_count: 0,
                     player_count: 0,
                     roster_preview: Vec::new(),
                 },

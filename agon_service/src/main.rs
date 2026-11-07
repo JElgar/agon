@@ -3520,10 +3520,10 @@ impl Api {
                     // Ringers aren't configurable at creation — an organiser
                     // opens a side to them afterwards, via the open-join
                     // settings endpoint.
-                    ringers_enabled: false,
+                    open_join_enabled: false,
                     open_join: None,
-                    max_ringer_spots: None,
-                    ringers_joined_count: 0,
+                    max_open_spots: None,
+                    open_joined_count: 0,
                     // `Dao::create_match` recomputes both from the players
                     // list it's given, in the same transaction — placeholders.
                     player_count: 0,
@@ -4818,10 +4818,10 @@ impl Api {
                     colour: side.colour.clone(),
                     max_players: side.max_players,
                     team_join_enabled: true,
-                    ringers_enabled: false,
+                    open_join_enabled: false,
                     open_join: None,
-                    max_ringer_spots: None,
-                    ringers_joined_count: 0,
+                    max_open_spots: None,
+                    open_joined_count: 0,
                     player_count: 0,
                     roster_preview: Vec::new(),
                 },
@@ -7176,13 +7176,13 @@ impl Api {
                 .open_join
                 .as_ref()
                 .and_then(open_join_max_open_spots);
-            let max_ringer_spots = target_side.and_then(|s| s.max_ringer_spots);
+            let side_max_open_spots = target_side.and_then(|s| s.max_open_spots);
             dao.join_open_match_tx(
                 &match_id,
                 &player,
                 target_side.and_then(|s| s.max_players),
                 effective_max,
-                max_ringer_spots,
+                side_max_open_spots,
                 max_open_spots,
                 &agg.match_.starts_at,
                 &now_iso(),
@@ -7507,11 +7507,11 @@ impl Api {
             .map(mapping::side_open_join_policy_to_record);
         let setting = match agg.match_.open_join.as_ref() {
             Some(dao::records::OpenJoinScopeRecord::PerSide) => {
-                dao::open_join::SideRingerSetting::Policy(per_side_policy.as_ref())
+                dao::open_join::SideOpenJoinSetting::Policy(per_side_policy.as_ref())
             }
-            _ => dao::open_join::SideRingerSetting::Enabled(input.enabled),
+            _ => dao::open_join::SideOpenJoinSetting::Enabled(input.enabled),
         };
-        dao.set_side_ringer_settings(&match_id, &side_id, setting, input.max_open_spots)
+        dao.set_side_open_join_settings(&match_id, &side_id, setting, input.max_open_spots)
             .await
             .map_err(dao_internal)?;
         Ok(SetSideOpenJoinResponse::Ok)
@@ -7726,7 +7726,7 @@ impl Api {
                 &player,
                 target_side.and_then(|s| s.max_players),
                 agg.effective_max_players(),
-                target_side.and_then(|s| s.max_ringer_spots),
+                target_side.and_then(|s| s.max_open_spots),
                 max_open_spots,
                 &agg.match_.starts_at,
                 &now,
@@ -9671,7 +9671,7 @@ fn full_reason(
 /// The open-join analogue of `full_reason`: everything `full_reason` checks,
 /// plus the open-specific caps (`max_open_spots`, only meaningful under
 /// `OpenJoinScopeRecord::MatchWide` — `None` under `PerSide`, which has no
-/// match-wide cap — and the target side's `max_ringer_spots`) that only
+/// match-wide cap — and the target side's own `max_open_spots`) that only
 /// apply to an arrival via the open-join path. Checked in the same order as
 /// `take_open_slot_update` guards them, so the two never disagree about
 /// what's full.
@@ -9690,8 +9690,8 @@ fn open_full_reason(
     }
     let target_side = target_side_id.and_then(|sid| agg.sides.iter().find(|s| s.side_id == sid));
     if let Some(side) = target_side
-        && let Some(max) = side.max_ringer_spots
-        && side.ringers_joined_count >= max
+        && let Some(max) = side.max_open_spots
+        && side.open_joined_count >= max
     {
         return Some((RosterConflictKind::SideFull, "that side is full"));
     }
@@ -9740,7 +9740,7 @@ fn open_join_effective_policy<'a>(
 
 /// Which side(s) (if any) an individual may join directly through a match's
 /// open-join scope, and whether landing unassigned is an option:
-/// - `MatchWide`: a side with `ringers_enabled` set, or unassigned if the
+/// - `MatchWide`: a side with `open_join_enabled` set, or unassigned if the
 ///   match allows it — `None` if the policy's audience is `Teams`-only.
 /// - `PerSide`: every side carrying its own policy whose audience isn't
 ///   `Teams`-only. Never offers unassigned — there's no single policy to
@@ -9760,20 +9760,20 @@ fn open_join_individual_scope(agg: &dao::match_ops::MatchAggregate) -> Option<Jo
             if matches!(policy.audience, dao::records::OpenJoinAudienceRecord::Teams) {
                 return None;
             }
-            let ringer_side_ids: Vec<String> = agg
+            let open_side_ids: Vec<String> = agg
                 .sides
                 .iter()
-                .filter(|s| s.ringers_enabled)
+                .filter(|s| s.open_join_enabled)
                 .map(|s| s.side_id.clone())
                 .collect();
-            if ringer_side_ids.is_empty() && !agg.match_.allow_unassigned {
+            if open_side_ids.is_empty() && !agg.match_.allow_unassigned {
                 return None;
             }
             Some(JoinScope {
-                allowed_side_ids: if ringer_side_ids.is_empty() {
+                allowed_side_ids: if open_side_ids.is_empty() {
                     Some(Vec::new())
                 } else {
-                    Some(ringer_side_ids)
+                    Some(open_side_ids)
                 },
                 allow_unassigned: agg.match_.allow_unassigned,
             })

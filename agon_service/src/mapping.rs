@@ -475,10 +475,10 @@ pub fn open_join_scope_from_record(rec: &OpenJoinScopeRecord) -> OpenJoinScope {
 }
 
 /// Build a side's own stored policy from the API input — the `per_side`-
-/// scope analogue of `open_join_policy_to_record`. `max_open_spots` has no
-/// side-level meaning (a side caps itself via `max_ringer_spots` instead),
-/// so it's dropped rather than surfaced on `OpenJoinPolicyInput`'s reused
-/// shape.
+/// scope analogue of `open_join_policy_to_record`. The match-wide
+/// `max_open_spots` field has no side-level meaning here (a side caps
+/// itself via `MatchSideRecord::max_open_spots` instead), so it's dropped
+/// rather than surfaced on `OpenJoinPolicyInput`'s reused shape.
 pub fn side_open_join_policy_to_record(
     input: &crate::membership::OpenJoinPolicyInput,
 ) -> SideOpenJoinPolicyRecord {

@@ -1,7 +1,7 @@
 //! Open joining ("ringers"): a match's opt-in public-join scope
 //! (`OpenJoinScopeRecord`, either one match-wide `OpenJoinPolicyRecord` or
-//! each side's own `SideOpenJoinPolicyRecord`), per-side ringer settings
-//! (`SideRingerSetting`), the cap-guarded open-join write itself, and the
+//! each side's own `SideOpenJoinPolicyRecord`), per-side open-join settings
+//! (`SideOpenJoinSetting`), the cap-guarded open-join write itself, and the
 //! optional approval queue (`MatchJoinRequestRecord`) for a policy that
 //! requires one. See the design doc for the full picture; this module covers
 //! only the DAO-level pieces: eligibility (who *may* join) is evaluated by
@@ -26,13 +26,13 @@ use super::records::{
 
 pub const TYPE_MATCH_JOIN_REQUEST: &str = "match_join_request";
 
-/// What `Dao::set_side_ringer_settings` writes to a side's own ringer
+/// What `Dao::set_side_open_join_settings` writes to a side's own open-join
 /// settings, picked by the match's current `OpenJoinScopeRecord`:
-/// `Enabled` under `MatchWide` (the side's `ringers_enabled` bool, audience
-/// and eligibility coming from the match-wide policy), `Policy` under
-/// `PerSide` (the side's own `SideOpenJoinPolicyRecord`, or `None` to close
-/// it to ringers).
-pub enum SideRingerSetting<'a> {
+/// `Enabled` under `MatchWide` (the side's `open_join_enabled` bool,
+/// audience and eligibility coming from the match-wide policy), `Policy`
+/// under `PerSide` (the side's own `SideOpenJoinPolicyRecord`, or `None` to
+/// close it to ringers).
+pub enum SideOpenJoinSetting<'a> {
     Enabled(bool),
     Policy(Option<&'a SideOpenJoinPolicyRecord>),
 }
@@ -71,22 +71,22 @@ impl Dao {
         }
     }
 
-    /// Set one side's ringer settings: either `MatchWide` scope's
-    /// `ringers_enabled` toggle, or `PerSide` scope's own open-join policy
-    /// (`None` closes the side to ringers) — whichever `SideRingerSetting`
+    /// Set one side's open-join settings: either `MatchWide` scope's
+    /// `open_join_enabled` toggle, or `PerSide` scope's own open-join policy
+    /// (`None` closes the side to ringers) — whichever `SideOpenJoinSetting`
     /// the caller passes, decided by the match's current scope. Either way
-    /// also sets/clears `max_ringer_spots`. Kept separate from
+    /// also sets/clears `max_open_spots`. Kept separate from
     /// `update_match_join_settings` (team self-join's own settings call) the
     /// same way that call is separate from `update_match_meta` — a distinct
     /// concern, no atomicity lost by it being its own call. `NotFound` if the
     /// match or side is absent.
     #[tracing::instrument(skip(self, setting))]
-    pub async fn set_side_ringer_settings(
+    pub async fn set_side_open_join_settings(
         &self,
         match_id: &str,
         side_id: &str,
-        setting: SideRingerSetting<'_>,
-        max_ringer_spots: Option<u32>,
+        setting: SideOpenJoinSetting<'_>,
+        max_open_spots: Option<u32>,
     ) -> DaoResult<()> {
         let mut set: Vec<String> = Vec::new();
         let mut remove: Vec<String> = Vec::new();
@@ -96,22 +96,22 @@ impl Dao {
         names.insert("#sid".into(), side_id.to_string());
 
         match setting {
-            SideRingerSetting::Enabled(enabled) => {
-                set.push("sides.#sid.ringers_enabled = :re".to_string());
-                values.insert(":re".into(), AttributeValue::Bool(enabled));
+            SideOpenJoinSetting::Enabled(enabled) => {
+                set.push("sides.#sid.open_join_enabled = :oje".to_string());
+                values.insert(":oje".into(), AttributeValue::Bool(enabled));
             }
-            SideRingerSetting::Policy(Some(p)) => {
+            SideOpenJoinSetting::Policy(Some(p)) => {
                 set.push("sides.#sid.open_join = :oj".to_string());
                 values.insert(":oj".into(), to_attr(p)?);
             }
-            SideRingerSetting::Policy(None) => remove.push("sides.#sid.open_join".to_string()),
+            SideOpenJoinSetting::Policy(None) => remove.push("sides.#sid.open_join".to_string()),
         }
-        match max_ringer_spots {
+        match max_open_spots {
             Some(max) => {
-                set.push("sides.#sid.max_ringer_spots = :mr".to_string());
-                values.insert(":mr".into(), AttributeValue::N(max.to_string()));
+                set.push("sides.#sid.max_open_spots = :mos".to_string());
+                values.insert(":mos".into(), AttributeValue::N(max.to_string()));
             }
-            None => remove.push("sides.#sid.max_ringer_spots".to_string()),
+            None => remove.push("sides.#sid.max_open_spots".to_string()),
         }
 
         let mut expr = String::new();
@@ -151,7 +151,7 @@ impl Dao {
 
     /// Join a match through its open-join policy directly — no approval
     /// step. The direct analogue of `Dao::join_match_tx`, but guarded by the
-    /// open/ringer caps (`max_open_spots`/`max_ringer_spots`) *in addition
+    /// open-join caps (`max_open_spots`/`side_max_open_spots`) *in addition
     /// to* the ordinary side/match caps, via `take_open_slot_update` rather
     /// than `match_ops::take_slot_update`. `player.joined_via` must already
     /// be `Some(JoinSourceRecord::Open)` — set by the caller, not asserted
@@ -166,7 +166,7 @@ impl Dao {
         player: &MatchPlayerRecord,
         side_max_players: Option<u32>,
         total_max_players: Option<u32>,
-        max_ringer_spots: Option<u32>,
+        side_max_open_spots: Option<u32>,
         max_open_spots: Option<u32>,
         starts_at: &str,
         now: &str,
@@ -176,7 +176,7 @@ impl Dao {
             player,
             side_max_players,
             total_max_players,
-            max_ringer_spots,
+            side_max_open_spots,
             max_open_spots,
             starts_at,
             now,
@@ -195,7 +195,7 @@ impl Dao {
         player: &MatchPlayerRecord,
         side_max_players: Option<u32>,
         total_max_players: Option<u32>,
-        max_ringer_spots: Option<u32>,
+        side_max_open_spots: Option<u32>,
         max_open_spots: Option<u32>,
         starts_at: &str,
         now: &str,
@@ -214,7 +214,7 @@ impl Dao {
             player.side_id.as_deref(),
             side_max_players,
             total_max_players,
-            max_ringer_spots,
+            side_max_open_spots,
             max_open_spots,
         )?;
 
@@ -349,7 +349,7 @@ impl Dao {
         player: &MatchPlayerRecord,
         side_max_players: Option<u32>,
         total_max_players: Option<u32>,
-        max_ringer_spots: Option<u32>,
+        side_max_open_spots: Option<u32>,
         max_open_spots: Option<u32>,
         starts_at: &str,
         now: &str,
@@ -376,7 +376,7 @@ impl Dao {
             player,
             side_max_players,
             total_max_players,
-            max_ringer_spots,
+            side_max_open_spots,
             max_open_spots,
             starts_at,
             now,
@@ -428,25 +428,25 @@ fn to_attr<T: serde::Serialize>(value: &T) -> DaoResult<AttributeValue> {
     Ok(serde_dynamo::to_attribute_value(value)?)
 }
 
-/// The cap-guarded `ADD` for a write that takes an open/ringer spot:
+/// The cap-guarded `ADD` for a write that takes an open-join spot:
 /// `total_player_count` + `open_joined_count`, plus
-/// `sides.<side_id>.player_count` + `sides.<side_id>.ringers_joined_count`
+/// `sides.<side_id>.player_count` + `sides.<side_id>.open_joined_count`
 /// when `side_id` is given — conditioned on the match existing and, for
 /// whichever cap is `Some`, there still being room under it: the ordinary
 /// side/match caps (`side_max_players`/`total_max_players`, same meaning as
 /// `match_ops::take_slot_update`'s) *and* the open-specific ones
-/// (`max_ringer_spots`/`max_open_spots`). A separate builder rather than an
-/// extension of `take_slot_update` — DynamoDB allows only one `Update`
-/// transact item per key, so an open/ringer join's single `Update` has to
-/// express every cap it must respect in one `ADD`/one `ConditionExpression`,
-/// not two `Update`s layered on top of each other.
+/// (`side_max_open_spots`/`max_open_spots`). A separate builder rather than
+/// an extension of `take_slot_update` — DynamoDB allows only one `Update`
+/// transact item per key, so an open-join's single `Update` has to express
+/// every cap it must respect in one `ADD`/one `ConditionExpression`, not two
+/// `Update`s layered on top of each other.
 fn take_open_slot_update(
     table: &str,
     match_id: &str,
     side_id: Option<&str>,
     side_max_players: Option<u32>,
     total_max_players: Option<u32>,
-    max_ringer_spots: Option<u32>,
+    side_max_open_spots: Option<u32>,
     max_open_spots: Option<u32>,
 ) -> DaoResult<Update> {
     let mut names: HashMap<String, String> = HashMap::new();
@@ -474,7 +474,7 @@ fn take_open_slot_update(
     if let Some(side_id) = side_id {
         names.insert("#sid".into(), side_id.to_string());
         add_clauses.push("sides.#sid.player_count :one".to_string());
-        add_clauses.push("sides.#sid.ringers_joined_count :one".to_string());
+        add_clauses.push("sides.#sid.open_joined_count :one".to_string());
         if let Some(max) = side_max_players {
             conditions.push(
                 "(attribute_not_exists(sides.#sid.max_players) OR sides.#sid.player_count < :sidemax)"
@@ -482,12 +482,12 @@ fn take_open_slot_update(
             );
             values.insert(":sidemax".into(), AttributeValue::N(max.to_string()));
         }
-        if let Some(max) = max_ringer_spots {
+        if let Some(max) = side_max_open_spots {
             conditions.push(
-                "(attribute_not_exists(sides.#sid.ringers_joined_count) OR sides.#sid.ringers_joined_count < :ringermax)"
+                "(attribute_not_exists(sides.#sid.open_joined_count) OR sides.#sid.open_joined_count < :sideopenmax)"
                     .into(),
             );
-            values.insert(":ringermax".into(), AttributeValue::N(max.to_string()));
+            values.insert(":sideopenmax".into(), AttributeValue::N(max.to_string()));
         }
     }
 
@@ -523,7 +523,7 @@ mod tests {
             Some("side_a"),
             Some(10), // side_max_players
             Some(20), // total_max_players
-            Some(2),  // max_ringer_spots
+            Some(2),  // side_max_open_spots
             Some(4),  // max_open_spots
         )
         .unwrap();
@@ -531,13 +531,13 @@ mod tests {
         assert!(expr.contains("total_player_count"));
         assert!(expr.contains("open_joined_count"));
         assert!(expr.contains("sides.#sid.player_count"));
-        assert!(expr.contains("sides.#sid.ringers_joined_count"));
+        assert!(expr.contains("sides.#sid.open_joined_count"));
 
         let cond = update.condition_expression().unwrap();
         assert!(cond.contains("total_player_count"));
         assert!(cond.contains("open_joined_count"));
         assert!(cond.contains("sides.#sid.max_players"));
-        assert!(cond.contains("sides.#sid.ringers_joined_count"));
+        assert!(cond.contains("sides.#sid.open_joined_count"));
     }
 
     #[test]

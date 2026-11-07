@@ -874,10 +874,10 @@ mod tests {
                 team_join_enabled: false,
                 player_count: 1,
                 roster_preview: Vec::new(),
-                ringers_enabled: false,
+                open_join_enabled: false,
                 open_join: None,
-                max_ringer_spots: None,
-                ringers_joined_count: 0,
+                max_open_spots: None,
+                open_joined_count: 0,
             },
         )
     }

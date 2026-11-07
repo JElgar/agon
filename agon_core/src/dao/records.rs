@@ -711,10 +711,10 @@ pub struct MatchSideRecord {
     /// match-wide switch. `#[serde(default)]` for sides written before open
     /// joining existed.
     #[serde(default)]
-    pub ringers_enabled: bool,
+    pub open_join_enabled: bool,
     /// This side's own open-join policy, when the match's own
     /// `MatchRecord::open_join` is `OpenJoinScopeRecord::PerSide`
-    /// (meaningless under `MatchWide`, where `ringers_enabled` above
+    /// (meaningless under `MatchWide`, where `open_join_enabled` above
     /// governs instead). `None` means this side is closed to ringers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_join: Option<SideOpenJoinPolicyRecord>,
@@ -723,15 +723,15 @@ pub struct MatchSideRecord {
     /// `OpenJoinPolicyRecord::max_open_spots` (under `MatchWide` scope) and
     /// this side's own `max_players`. `None` = uncapped — ringers simply
     /// fill whatever raw capacity remains on the side. Compared against
-    /// `ringers_joined_count`, never `player_count`.
+    /// `open_joined_count`, never `player_count`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_ringer_spots: Option<u32>,
+    pub max_open_spots: Option<u32>,
     /// How many of `player_count` arrived as a ringer on this side — what
-    /// `max_ringer_spots` is enforced against. See
+    /// `max_open_spots` is enforced against. See
     /// `MatchRecord::open_joined_count`'s doc comment for why this counts
     /// only ringer arrivals rather than every player.
     #[serde(default)]
-    pub ringers_joined_count: u32,
+    pub open_joined_count: u32,
     /// How many players currently take a spot on this side
     /// (`MatchPlayerRecord::occupies_slot`) — the number `max_players` caps.
     /// Pending and declined invitees placed on the side aren't counted,
@@ -971,7 +971,7 @@ pub struct OpenJoinPolicyRecord {
     /// `total_player_count` — see that field's doc comment for why. Only
     /// meaningful under `OpenJoinScopeRecord::MatchWide`: a `PerSide` match
     /// has no single policy to cap, since every side's own
-    /// `MatchSideRecord::max_ringer_spots` already caps that side.
+    /// `MatchSideRecord::max_open_spots` already caps that side.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_open_spots: Option<u32>,
 }
@@ -997,7 +997,7 @@ pub enum OpenJoinScopeRecord {
 /// — meaningful only when the match's own `MatchRecord::open_join` is
 /// `OpenJoinScopeRecord::PerSide`. Same fields as `OpenJoinPolicyRecord`
 /// minus `max_open_spots` (a side's own cap is `MatchSideRecord::
-/// max_ringer_spots` instead, which already exists independent of scope).
+/// max_open_spots` instead, which already exists independent of scope).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SideOpenJoinPolicyRecord {
     pub audience: OpenJoinAudienceRecord,

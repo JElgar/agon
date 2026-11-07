@@ -7501,30 +7501,19 @@ impl Api {
             )));
         }
 
-        match agg.match_.open_join.as_ref() {
+        let per_side_policy = input
+            .side_policy
+            .as_ref()
+            .map(mapping::side_open_join_policy_to_record);
+        let setting = match agg.match_.open_join.as_ref() {
             Some(dao::records::OpenJoinScopeRecord::PerSide) => {
-                let policy = input
-                    .side_policy
-                    .as_ref()
-                    .map(mapping::side_open_join_policy_to_record);
-                dao.set_side_open_join_policy(
-                    &match_id,
-                    &side_id,
-                    policy.as_ref(),
-                    input.max_ringer_spots,
-                )
-                .await
-                .map_err(dao_internal)?;
+                dao::open_join::SideRingerSetting::Policy(per_side_policy.as_ref())
             }
-            _ => {
-                dao.update_side_ringer_settings(
-                    &match_id,
-                    &[(side_id, input.enabled, input.max_ringer_spots)],
-                )
-                .await
-                .map_err(dao_internal)?;
-            }
-        }
+            _ => dao::open_join::SideRingerSetting::Enabled(input.enabled),
+        };
+        dao.set_side_ringer_settings(&match_id, &side_id, setting, input.max_ringer_spots)
+            .await
+            .map_err(dao_internal)?;
         Ok(SetRingerSettingsResponse::Ok)
     }
 

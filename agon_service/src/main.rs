@@ -52,9 +52,9 @@ use mapping::{
     match_series_occurrence_from_record, match_status_str, match_type_tag,
     matches_played_for_sport, new_live_event_to_dao, notification_actor_id,
     notification_from_record, ranked_added_players_reason, ranked_guest_invites_reason,
-    ranked_lock_reason_for_update, rating_ladder, rating_ladder_for, rating_placements_from_record,
-    resolve_score_ids, roster_preview_player, score_player_ids, score_side_ids,
-    score_submission_from_record, score_to_record, search_match_from_records,
+    ranked_lock_reason_for_update, rated_ranked_edit_reason, rating_ladder, rating_ladder_for,
+    rating_placements_from_record, resolve_score_ids, roster_preview_player, score_player_ids,
+    score_side_ids, score_submission_from_record, score_to_record, search_match_from_records,
     series_end_record_from_input, set_score_players, switch_to_ranked_reason, team_from_records,
     team_list_item_from_record, team_member_from_record, unrankable_sport_reason,
     unratable_players, user_profile_from_record, winner_from_score,
@@ -4054,6 +4054,34 @@ impl Api {
         {
             return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
                 "a match can no longer be changed between ranked and friendly: {reason}"
+            ))));
+        }
+
+        // A rated ranked match's inputs are closed: only its score can still
+        // be corrected. See `rated_ranked_edit_reason` for why each of the
+        // three is in the list, and why the score deliberately isn't.
+        // Checked here, before anything below writes, because this handler's
+        // writes aren't one transaction — a refusal after the first of them
+        // would leave the roster half-edited.
+        if let Some(reason) = rated_ranked_edit_reason(
+            &agg.match_,
+            input.added_players.as_ref().is_some_and(|p| !p.is_empty())
+                || input
+                    .removed_player_ids
+                    .as_ref()
+                    .is_some_and(|p| !p.is_empty())
+                || input
+                    .side_assignments
+                    .as_ref()
+                    .is_some_and(|p| !p.is_empty()),
+            resulting_starts_at
+                .as_deref()
+                .is_some_and(|at| at != agg.match_.starts_at.as_str()),
+            resulting_status != agg.match_.status.as_str(),
+        ) {
+            return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                "{reason}: a rating can't be recomputed from a changed match, \
+                 so only the score can be corrected"
             ))));
         }
 

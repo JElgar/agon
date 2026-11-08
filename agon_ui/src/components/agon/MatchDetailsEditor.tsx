@@ -5,20 +5,12 @@ import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from '@/components/ui/dialog'
 import { DateTimePicker } from '@/components/ui/date-time-picker'
 import { isoToDateTimeLocal } from '@/lib/datetime'
 import { MultiImageUploadField } from '@/components/agon/MultiImageUploadField'
 import { LocationField, type LocationValue } from '@/components/agon/LocationField'
 import { SIDE_COLOURS, defaultSideColour } from '@/lib/sideColours'
 import { sideDisplayName } from '@/lib/members'
-import { listFutureSeriesOccurrences } from '@/lib/matchSeries'
 import { cn } from '@/lib/utils'
 
 type Match = components['schemas']['Match']
@@ -37,11 +29,11 @@ function isRenameable(side: MatchSide, sides: MatchSide[]): boolean {
 }
 
 /**
- * Inline editor for a match's metadata — name, description, start time,
- * header photos, and side names — shown in place of the details card when a
- * match admin taps "Edit". Saves via `PATCH /matches/{id}` (only the changed
- * fields are sent) and, on success, refreshes the match and feed then closes
- * back to the read-only card.
+ * Inline editor for a *single* match's metadata — name, description, start
+ * time, header photos, and side names — shown in place of the details card
+ * when a match admin taps "Edit". Saves via `PATCH /matches/{id}` (only the
+ * changed fields are sent) and, on success, refreshes the match and feed
+ * then closes back to the read-only card.
  *
  * Roster and result are edited elsewhere (invite control, result editor), so
  * this deliberately covers just the descriptive fields, photos, and side
@@ -51,20 +43,23 @@ function isRenameable(side: MatchSide, sides: MatchSide[]): boolean {
  * — are applied on top of that seed before being sent back as the complete
  * list on save.
  *
- * When the match belongs to a series, saving first asks whether the edit
- * should land on just this match or on this and every future occurrence too.
- * For "future occurrences", only the series-describing fields (name,
- * description, location, header photos, and — kept as a time of day rather
- * than an absolute instant — the new kickoff time) are carried over; side
- * names/colours stay local to this match, since each occurrence mints its
- * own side ids with no stable way to match them up across matches.
+ * For a match that belongs to a series, `EditMatchDetailsFlow` decides
+ * *before* this renders whether the edit is scoped to just this match (this
+ * component) or to the whole series (`MatchSeriesDetailsEditor`, a
+ * deliberately smaller field set — see its own doc comment for why) — `
+ * onBack`, when given, lets the user change that choice.
  */
 export function MatchDetailsEditor({
   match,
   onDone,
+  onBack,
 }: {
   match: Match
   onDone: () => void
+  /** Shown as a small link back to the "just this match / the whole series"
+   *  choice, when this editor was reached through that choice. Omitted (and
+   *  nothing rendered) for a match outside any series. */
+  onBack?: () => void
 }) {
   const queryClient = useQueryClient()
   const [name, setName] = useState(match.name)
@@ -116,65 +111,46 @@ export function MatchDetailsEditor({
     : null
   const valid = !nameError && !timeError
 
-  // Asked only when this match belongs to a series and there's something to
-  // save — which of the series' matches the edit should land on.
-  const [scopePromptOpen, setScopePromptOpen] = useState(false)
-
-  /** Only the fields that make sense to carry across every future occurrence
-   *  of a series: the metadata an organiser would think of as describing the
-   *  series itself (name, description, location, header photos), plus — if
-   *  the kickoff *time* changed — that new time of day, kept on each future
-   *  occurrence's own date rather than overwriting it outright. Side
-   *  names/colours are deliberately left out: they're keyed by a side id
-   *  that's independently generated per occurrence, so there's no reliable
-   *  way to say "the same side" across matches. */
-  function buildBody(): components['schemas']['UpdateMatchInput'] {
-    const body: components['schemas']['UpdateMatchInput'] = {}
-    if (name.trim() !== match.name) body.name = name.trim()
-    if (description !== match.description) body.description = description
-    const newIso = new Date(startsAt).toISOString()
-    if (newIso !== match.starts_at) body.starts_at = newIso
-    if (JSON.stringify(headerAssetIds) !== JSON.stringify(existingHeaderAssetIds)) {
-      body.header_photo_asset_ids = headerAssetIds
-    }
-    if (JSON.stringify(location) !== JSON.stringify(match.location ?? null)) {
-      if (location) body.location = location
-    }
-    return body
-  }
-
-  function buildSideUpdates(body: components['schemas']['UpdateMatchInput']) {
-    const sideNameUpdates: UpdateMatchSideNameInput[] = []
-    for (const side of match.sides) {
-      if (!isRenameable(side, match.sides)) continue
-      const original = (side.name ?? '').trim()
-      const next = (sideNames[side.id] ?? '').trim()
-      if (next === original) continue
-      // An empty field clears the custom name (omitting `name` — the
-      // server treats a missing key the same as `null`), falling back to
-      // the side's default name rather than sending an empty string.
-      sideNameUpdates.push(next ? { side_id: side.id, name: next } : { side_id: side.id })
-    }
-    if (sideNameUpdates.length > 0) body.side_names = sideNameUpdates
-
-    const sideColourUpdates: UpdateMatchSideColourInput[] = []
-    for (const side of match.sides) {
-      if (!isRenameable(side, match.sides)) continue
-      const original = side.colour ?? undefined
-      const next = sideColours[side.id]
-      if (next === original) continue
-      // Omitting `colour` clears it (only valid for a derby side — a
-      // team-less one is never left unset, see the picker below).
-      sideColourUpdates.push(next ? { side_id: side.id, colour: next } : { side_id: side.id })
-    }
-    if (sideColourUpdates.length > 0) body.side_colours = sideColourUpdates
-  }
-
   const save = useMutation({
-    mutationFn: async (scope: 'single' | 'series') => {
-      const body = buildBody()
-      buildSideUpdates(body)
-      const sharedStartsAt = body.starts_at
+    mutationFn: async () => {
+      // Send only fields that actually changed, so we don't rewrite untouched
+      // values (and a no-op save stays a no-op).
+      const body: components['schemas']['UpdateMatchInput'] = {}
+      if (name.trim() !== match.name) body.name = name.trim()
+      if (description !== match.description) body.description = description
+      const newIso = new Date(startsAt).toISOString()
+      if (newIso !== match.starts_at) body.starts_at = newIso
+      if (JSON.stringify(headerAssetIds) !== JSON.stringify(existingHeaderAssetIds)) {
+        body.header_photo_asset_ids = headerAssetIds
+      }
+      if (JSON.stringify(location) !== JSON.stringify(match.location ?? null)) {
+        if (location) body.location = location
+      }
+
+      const sideNameUpdates: UpdateMatchSideNameInput[] = []
+      for (const side of match.sides) {
+        if (!isRenameable(side, match.sides)) continue
+        const original = (side.name ?? '').trim()
+        const next = (sideNames[side.id] ?? '').trim()
+        if (next === original) continue
+        // An empty field clears the custom name (omitting `name` — the
+        // server treats a missing key the same as `null`), falling back to
+        // the side's default name rather than sending an empty string.
+        sideNameUpdates.push(next ? { side_id: side.id, name: next } : { side_id: side.id })
+      }
+      if (sideNameUpdates.length > 0) body.side_names = sideNameUpdates
+
+      const sideColourUpdates: UpdateMatchSideColourInput[] = []
+      for (const side of match.sides) {
+        if (!isRenameable(side, match.sides)) continue
+        const original = side.colour ?? undefined
+        const next = sideColours[side.id]
+        if (next === original) continue
+        // Omitting `colour` clears it (only valid for a derby side — a
+        // team-less one is never left unset, see the picker below).
+        sideColourUpdates.push(next ? { side_id: side.id, colour: next } : { side_id: side.id })
+      }
+      if (sideColourUpdates.length > 0) body.side_colours = sideColourUpdates
 
       if (Object.keys(body).length === 0) return // nothing changed
 
@@ -183,60 +159,26 @@ export function MatchDetailsEditor({
         body,
       })
       if (error) throw new Error('Failed to save changes')
-
-      if (scope === 'series' && match.series_id) {
-        const future = await listFutureSeriesOccurrences(match.series_id, match.starts_at)
-        // Only the series-wide fields carry over — never this match's own
-        // side names/colours or its exact date, just (optionally) its new
-        // time of day, applied to each occurrence's own date.
-        const sharedBody: components['schemas']['UpdateMatchInput'] = { ...body }
-        delete sharedBody.side_names
-        delete sharedBody.side_colours
-        delete sharedBody.starts_at
-        const newTime = sharedStartsAt ? new Date(sharedStartsAt) : null
-
-        const results = await Promise.all(
-          future.map(async (occurrence) => {
-            const occBody: components['schemas']['UpdateMatchInput'] = { ...sharedBody }
-            if (newTime) {
-              const occDate = new Date(occurrence.starts_at)
-              occDate.setHours(newTime.getHours(), newTime.getMinutes(), 0, 0)
-              occBody.starts_at = occDate.toISOString()
-            }
-            if (Object.keys(occBody).length === 0) return { error: null }
-            return fetchClient.PATCH('/matches/{match_id}', {
-              params: { path: { match_id: occurrence.match_id } },
-              body: occBody,
-            })
-          }),
-        )
-        if (results.some((r) => r.error)) {
-          throw new Error('Saved this match, but some future matches in the series failed to update')
-        }
-      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['match', match.id] })
-      queryClient.invalidateQueries({ queryKey: ['match-series', match.series_id] })
       queryClient.invalidateQueries({ queryKey: ['feed'] })
-      setScopePromptOpen(false)
       onDone()
     },
   })
 
-  function handleSaveClick() {
-    const body = buildBody()
-    buildSideUpdates(body)
-    if (Object.keys(body).length === 0) return
-    if (match.series_id) {
-      setScopePromptOpen(true)
-      return
-    }
-    save.mutate('single')
-  }
-
   return (
     <div className="flex flex-col gap-3 rounded-xl border bg-card p-4">
+      {onBack && (
+        <button
+          type="button"
+          onClick={onBack}
+          className="-mb-1 self-start text-xs font-semibold text-muted-foreground hover:text-foreground"
+        >
+          ‹ Just this match, or the whole series?
+        </button>
+      )}
+
       <div>
         <Label htmlFor="match-name" className="text-xs text-muted-foreground">
           Match name
@@ -386,7 +328,7 @@ export function MatchDetailsEditor({
 
       {save.isError && (
         <p className="text-xs text-destructive">
-          {save.error instanceof Error ? save.error.message : 'Something went wrong. Please try again.'}
+          Something went wrong. Please try again.
         </p>
       )}
 
@@ -394,7 +336,7 @@ export function MatchDetailsEditor({
         <Button
           size="sm"
           disabled={!valid || save.isPending}
-          onClick={handleSaveClick}
+          onClick={() => save.mutate()}
         >
           {save.isPending ? 'Saving…' : 'Save'}
         </Button>
@@ -407,26 +349,6 @@ export function MatchDetailsEditor({
           Cancel
         </Button>
       </div>
-
-      <Dialog open={scopePromptOpen} onOpenChange={(open) => !save.isPending && setScopePromptOpen(open)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Edit recurring match</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            This match is part of a recurring series. Apply these changes just here, or to this and every
-            future match in the series too?
-          </p>
-          <DialogFooter className="sm:flex-col sm:items-stretch sm:space-x-0">
-            <Button disabled={save.isPending} onClick={() => save.mutate('series')}>
-              {save.isPending ? 'Saving…' : 'This and future matches'}
-            </Button>
-            <Button variant="outline" disabled={save.isPending} onClick={() => save.mutate('single')}>
-              Just this match
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

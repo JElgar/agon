@@ -42,7 +42,7 @@ import {
   withInvitationStatus,
 } from '@/lib/members'
 import { respondToInvitation } from '@/lib/invitations'
-import { MatchDetailsEditor } from '@/components/agon/MatchDetailsEditor'
+import { EditMatchDetailsFlow } from '@/components/agon/EditMatchDetailsFlow'
 import { MatchFormatCard } from '@/components/agon/MatchFormatCard'
 import { MatchJoinSettingsEditor } from '@/components/agon/MatchJoinSettingsEditor'
 import { MatchOpenJoinEditor } from '@/components/agon/MatchOpenJoinEditor'
@@ -458,7 +458,7 @@ function MatchDetail({
           onShare={() => shareMatch(match)}
           onEdit={() => setEditingDetails(true)}
         />
-        {editingDetails && <MatchDetailsEditor match={match} onDone={() => setEditingDetails(false)} />}
+        {editingDetails && <EditMatchDetailsFlow match={match} onDone={() => setEditingDetails(false)} />}
       </div>
     )
   }
@@ -767,7 +767,7 @@ function MatchDetail({
             <MatchHeaderCarousel photos={match.header_photos} hero />
           </div>
         )}
-        {editingDetails && <MatchDetailsEditor match={match} onDone={() => setEditingDetails(false)} />}
+        {editingDetails && <EditMatchDetailsFlow match={match} onDone={() => setEditingDetails(false)} />}
         {titleBlock}
 
         <div className="grid grid-cols-[minmax(0,1fr)_380px] items-start gap-6">
@@ -847,7 +847,7 @@ function MatchDetail({
         </div>
       )}
 
-      {editingDetails && <MatchDetailsEditor match={match} onDone={() => setEditingDetails(false)} />}
+      {editingDetails && <EditMatchDetailsFlow match={match} onDone={() => setEditingDetails(false)} />}
 
       {matchTab === 'summary' ? (
         <>

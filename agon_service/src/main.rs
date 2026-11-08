@@ -34,7 +34,6 @@ use tracing::{error, info};
 use agon_core::dao;
 // JWT verification (asymmetric; Supabase JWKS + static test key).
 mod admin;
-use admin::models as admin_models;
 mod auth;
 use auth::{DeviceTokenSigner, JwtClaims, JwtVerifier, SCOPE_LIVE_SCORING};
 // Boundary mapping between API models and DAO records.
@@ -2508,34 +2507,6 @@ enum ListFollowsResponse {
     NotFound(PlainText<String>),
 }
 
-#[derive(ApiResponse)]
-enum ListAdminUsersResponse {
-    #[oai(status = 200)]
-    Users(Json<admin_models::UserPage>),
-
-    /// The `cursor` query parameter isn't a valid offset.
-    #[oai(status = 400)]
-    ValidationError(PlainText<String>),
-}
-
-#[derive(ApiResponse)]
-enum GetAdminUserResponse {
-    #[oai(status = 200)]
-    User(Json<admin_models::User>),
-
-    #[oai(status = 404)]
-    NotFound(PlainText<String>),
-}
-
-#[derive(ApiResponse)]
-enum UpdateAdminUserResponse {
-    #[oai(status = 200)]
-    User(Json<admin_models::User>),
-
-    #[oai(status = 404)]
-    NotFound(PlainText<String>),
-}
-
 #[OpenApi]
 impl Api {
     #[oai(path = "/ping", method = "get")]
@@ -2556,11 +2527,7 @@ impl Api {
     /// new endpoint is closed to devices unless someone deliberately opens
     /// it, not the other way around.
     async fn require_uid(&self, dao: &dao::Dao, jwt: &JwtClaims) -> Result<String> {
-        check_scope(jwt, None)?;
-        dao.get_user_id_by_sub(&jwt.sub)
-            .await
-            .map_err(dao_internal)?
-            .ok_or_else(|| Error::from_string("user not found", StatusCode::UNAUTHORIZED))
+        require_uid(dao, jwt).await
     }
 
     /// Same as `require_uid`, but also accepts a token whose `device_scope`
@@ -2580,27 +2547,6 @@ impl Api {
             .await
             .map_err(dao_internal)?
             .ok_or_else(|| Error::from_string("user not found", StatusCode::UNAUTHORIZED))
-    }
-
-    /// Like `require_uid`, but also requires the caller's account to have
-    /// `is_admin` set. Every admin-panel endpoint (`/admin/...`) starts with
-    /// this instead of `require_uid` — a real but non-admin account gets a
-    /// 403, the same signal a stranger would get probing an endpoint they
-    /// have no business calling.
-    async fn require_admin(&self, dao: &dao::Dao, jwt: &JwtClaims) -> Result<String> {
-        let uid = self.require_uid(dao, jwt).await?;
-        let user = dao
-            .get_user(&uid)
-            .await
-            .map_err(dao_internal)?
-            .ok_or_else(|| Error::from_string("user not found", StatusCode::UNAUTHORIZED))?;
-        if !user.is_admin {
-            return Err(Error::from_string(
-                "admin access required",
-                StatusCode::FORBIDDEN,
-            ));
-        }
-        Ok(uid)
     }
 
     #[oai(path = "/users/me", method = "get")]
@@ -2895,128 +2841,6 @@ impl Api {
             .hydrate_user_profiles(dao, &hits.ids, Some(&uid))
             .await?;
         Ok(SearchUsersResponse::Users(Json(profiles)))
-    }
-
-    /// Admin panel: list/search every user, full account detail. Reuses the
-    /// same `users` Meilisearch index `GET /users/search` queries — an empty
-    /// `q` browses everyone. Matches/series/teams get their own `/admin/...`
-    /// list endpoints as those resources are added to the panel.
-    #[oai(path = "/admin/users", method = "get")]
-    async fn list_admin_users(
-        &self,
-        Data(dao): Data<&dao::Dao>,
-        Data(search): Data<&agon_core::search::SearchClient>,
-        AuthSchema(jwt_data): AuthSchema,
-        /// Free-text search over name/email. Omit or empty to list everyone.
-        #[oai(name = "q")]
-        Query(query): Query<Option<String>>,
-        /// Opaque cursor from the previous page's `next_cursor`. Omit for the first page.
-        Query(cursor): Query<Option<String>>,
-        Query(limit): Query<Option<u32>>,
-    ) -> Result<ListAdminUsersResponse> {
-        self.require_admin(dao, &jwt_data).await?;
-
-        let offset = match search_offset(cursor.as_deref()) {
-            Ok(o) => o,
-            Err(()) => {
-                return Ok(ListAdminUsersResponse::ValidationError(PlainText(
-                    "invalid cursor".into(),
-                )));
-            }
-        };
-        let q = agon_core::search::SearchQuery {
-            q: query.unwrap_or_default(),
-            offset,
-            limit: page_limit(limit),
-            ..Default::default()
-        };
-        let hits = search
-            .search(agon_core::search::Index::Users, &q)
-            .await
-            .map_err(search_internal)?;
-
-        let records = dao.batch_get_users(&hits.ids).await.map_err(dao_internal)?;
-        let items = hits
-            .ids
-            .iter()
-            .filter_map(|id| records.get(id))
-            .map(admin_user_from_record)
-            .collect();
-
-        Ok(ListAdminUsersResponse::Users(Json(
-            admin_models::UserPage {
-                items,
-                next_cursor: search_cursor(hits.next_offset),
-            },
-        )))
-    }
-
-    /// Admin panel: fetch one user's full account detail by id.
-    #[oai(path = "/admin/users/:user_id", method = "get")]
-    async fn get_admin_user(
-        &self,
-        Data(dao): Data<&dao::Dao>,
-        AuthSchema(jwt_data): AuthSchema,
-        Path(user_id): Path<String>,
-    ) -> Result<GetAdminUserResponse> {
-        self.require_admin(dao, &jwt_data).await?;
-        match dao.get_user(&user_id).await.map_err(dao_internal)? {
-            Some(record) => Ok(GetAdminUserResponse::User(Json(admin_user_from_record(
-                &record,
-            )))),
-            None => Ok(GetAdminUserResponse::NotFound(PlainText(
-                "user not found".into(),
-            ))),
-        }
-    }
-
-    /// Admin panel: edit a user's name and/or grant/revoke admin access.
-    /// Deletion isn't supported yet — a user has too much referencing data
-    /// (matches, teams, follows) to remove safely without a dedicated
-    /// cleanup pass, tracked as follow-up work rather than done half-right
-    /// here.
-    #[oai(path = "/admin/users/:user_id", method = "patch")]
-    async fn update_admin_user(
-        &self,
-        Data(dao): Data<&dao::Dao>,
-        AuthSchema(jwt_data): AuthSchema,
-        Path(user_id): Path<String>,
-        input: Json<admin_models::UpdateUserInput>,
-    ) -> Result<UpdateAdminUserResponse> {
-        self.require_admin(dao, &jwt_data).await?;
-        let input = input.0;
-
-        if let Some(name) = input.name.as_deref() {
-            match dao.update_user_profile(&user_id, Some(name), None).await {
-                Ok(()) => {}
-                Err(dao::DaoError::NotFound(_)) => {
-                    return Ok(UpdateAdminUserResponse::NotFound(PlainText(
-                        "user not found".into(),
-                    )));
-                }
-                Err(e) => return Err(dao_internal(e)),
-            }
-        }
-        if let Some(is_admin) = input.is_admin {
-            match dao.set_user_admin(&user_id, is_admin).await {
-                Ok(()) => {}
-                Err(dao::DaoError::NotFound(_)) => {
-                    return Ok(UpdateAdminUserResponse::NotFound(PlainText(
-                        "user not found".into(),
-                    )));
-                }
-                Err(e) => return Err(dao_internal(e)),
-            }
-        }
-
-        let record = dao
-            .get_user(&user_id)
-            .await
-            .map_err(dao_internal)?
-            .ok_or_else(|| Error::from_string("user not found", StatusCode::NOT_FOUND))?;
-        Ok(UpdateAdminUserResponse::User(Json(admin_user_from_record(
-            &record,
-        ))))
     }
 
     #[oai(path = "/feed", method = "get")]
@@ -9865,6 +9689,18 @@ fn check_scope(jwt: &JwtClaims, allowed_scope: Option<&str>) -> Result<()> {
     }
 }
 
+/// Free-function core of `Api::require_uid`, pulled out so an `OpenApi`
+/// type other than `Api` (e.g. `admin::AdminApi`) can resolve a caller's
+/// internal user id without needing an `Api` instance to call a method on —
+/// `Api` is a unit struct, so this never actually depended on `self`.
+async fn require_uid(dao: &dao::Dao, jwt: &JwtClaims) -> Result<String> {
+    check_scope(jwt, None)?;
+    dao.get_user_id_by_sub(&jwt.sub)
+        .await
+        .map_err(dao_internal)?
+        .ok_or_else(|| Error::from_string("user not found", StatusCode::UNAUTHORIZED))
+}
+
 #[cfg(test)]
 mod scope_tests {
     use super::*;
@@ -10295,19 +10131,6 @@ fn search_cursor(next_offset: Option<u32>) -> Option<String> {
     next_offset.map(|o| o.to_string())
 }
 
-/// Map a full `UserRecord` to its admin-panel representation.
-fn admin_user_from_record(record: &dao::records::UserRecord) -> admin_models::User {
-    admin_models::User {
-        id: record.id.clone(),
-        email: record.email.clone(),
-        name: record.name.clone(),
-        is_admin: record.is_admin,
-        follower_count: record.follower_count as u32,
-        following_count: record.following_count as u32,
-        created_at: mapping::parse_ts(&record.created_at),
-    }
-}
-
 /// Map an `agon_core` search error to a 500 (an index outage is our problem, not
 /// the client's).
 fn search_internal(err: agon_core::error::SearchError) -> poem::Error {
@@ -10514,7 +10337,7 @@ async fn main() {
     //     this service's own `/ping`.
     // See OpenAPI 3's Server Object: server URLs may be relative to the
     // document's own serving location.
-    let api_service = OpenApiService::new(Api, "Agon API", "1.0").server(".");
+    let api_service = OpenApiService::new((Api, admin::AdminApi), "Agon API", "1.0").server(".");
 
     match args.command {
         Commands::RunServer { url: _ } => {

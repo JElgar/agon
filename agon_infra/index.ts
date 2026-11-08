@@ -103,7 +103,10 @@ const ctrl = new nginx.IngressController("nginx-ingress", {
 	// help when GitHub's release-asset serving is down (as it was here).
 	helmOptions: {
 		chart: "oci://registry.k8s.io/ingress-nginx/charts/ingress-nginx",
-		version: "4.15.1",
+		// This registry tags the chart as "v4.15.1" (with the "v"), not the
+		// bare semver "4.15.1" the chart itself reports — Pulumi's OCI pull
+		// matches the tag literally, so the "v" has to be included here.
+		version: "v4.15.1",
 	},
 }, { provider: k8sProvider });
 

@@ -33,7 +33,7 @@ use crate::{
     ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus,
     SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
 };
-use crate::{LadderPlacement, LadderRating};
+use crate::{LadderPlacement, LadderRating, RatingHistoryPoint};
 use agon_core::dao::error::DaoError;
 use agon_core::sports::SportRecord;
 
@@ -630,6 +630,30 @@ pub fn published_ratings_from_record(user: &UserRecord) -> Vec<LadderRating> {
 /// A ladder with no rating stored is simply absent. There is no act that
 /// starts placements early any more: the counter and the rating are written
 /// by the same match, so nought played and no rating are the same state.
+/// One stored rating movement as a chart point.
+///
+/// `rating`, `confidence`, `floor` and `rating_before` are all *displayed*
+/// numbers, computed through `rating::scale` here like every other rating the
+/// API returns, so retuning the scale moves every chart at once rather than
+/// needing a backfill. `delta` is the deliberate exception: it is read
+/// straight off the record because it is a log of what the player was told on
+/// the day, and recomputing it would quietly rewrite that.
+#[must_use]
+pub fn rating_history_point_from_record(
+    rec: &agon_core::dao::records::RatingHistoryRecord,
+) -> RatingHistoryPoint {
+    let after = display(rec.movement.mu_after, rec.movement.sigma_after);
+    RatingHistoryPoint {
+        match_id: rec.match_id.clone(),
+        played_at: parse_ts(&rec.played_at),
+        rating: after.rating,
+        confidence: after.confidence,
+        floor: after.floor,
+        rating_before: display(rec.movement.mu_before, rec.movement.sigma_before).rating,
+        delta: rec.movement.display_delta,
+    }
+}
+
 pub fn rating_placements_from_record(user: &UserRecord) -> Vec<LadderPlacement> {
     let mut placements: Vec<LadderPlacement> = user
         .ratings
@@ -2184,6 +2208,39 @@ mod tests {
         assert_eq!(
             ranked_lock_reason(&m, lock_now()),
             Some("the match is no longer scheduled")
+        );
+    }
+
+    /// A point reports the rating *after* its match, the band after it, and
+    /// the delta exactly as stored — not recomputed from the two ends, which
+    /// is what keeps a retuned scale from rewriting what a card once said.
+    #[test]
+    fn a_history_point_reports_the_rating_after_its_match() {
+        let rec = agon_core::dao::records::RatingHistoryRecord {
+            ladder: "squash".to_string(),
+            match_id: "m1".to_string(),
+            played_at: "2026-06-01T18:00:00.000Z".to_string(),
+            movement: agon_core::dao::records::RatingMovementRecord {
+                mu_before: 25.0,
+                sigma_before: 8.333,
+                mu_after: 26.0,
+                sigma_after: 7.5,
+                // Deliberately not what the mu change implies, so the test
+                // can tell a stored delta from a recomputed one.
+                display_delta: 7,
+            },
+            applied_at: "2026-06-02T09:00:00.000Z".to_string(),
+        };
+
+        let point = rating_history_point_from_record(&rec);
+        assert_eq!(point.match_id, "m1");
+        assert_eq!(point.delta, 7, "the stored delta, not mu_after - mu_before");
+        assert_eq!(point.rating, display(26.0, 7.5).rating);
+        assert_eq!(point.confidence, display(26.0, 7.5).confidence);
+        assert_eq!(point.rating_before, 1500, "mu 25 is the scale's origin");
+        assert!(
+            point.confidence < display(25.0, 8.333).confidence,
+            "the band narrows as sigma falls, which is what the chart shows"
         );
     }
 

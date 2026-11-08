@@ -1185,9 +1185,12 @@ struct UpdateMatchInput {
     status: Option<MatchStatus>,
     /// Ad-hoc players who actually played but weren't invited (e.g. ringers).
     /// They take a spot without being asked anything, so on a match that is
-    /// (or this request makes) ranked, only users already opted in to its
-    /// ladder can be added this way: a player without an account, or one who
-    /// hasn't opted in, is refused (400), and should be invited instead.
+    /// (or this request makes) ranked, every one of them needs an Agon
+    /// account: one without is refused (400), and should be invited instead.
+    /// Nothing further is asked of them — playing a ranked match is the whole
+    /// of the agreement — but a guest has no profile to keep a rating on, and
+    /// the pipeline refuses to rate such a match at all rather than rate
+    /// around them (see `UnratablePlayers::without_account`).
     added_players: Option<Vec<AddMatchPlayerInput>>,
     /// Reassign existing players to sides (late changes to who played for whom).
     side_assignments: Option<Vec<SetPlayerSideInput>>,
@@ -1278,11 +1281,11 @@ struct UpdateMatchInput {
     /// unconstrained even for an already-played match; see
     /// `CreateMatchInput.ranked` for why, and for what limits it instead.
     ///
-    /// Switching **to** ranked also needs everyone it would rate, or could
-    /// move in, to have agreed to it: every player in a spot must have an
-    /// account and be opted in to the ladder, and so must everyone on the
-    /// waitlist. Otherwise it's refused (400) naming them. Pending invitees
-    /// don't count; they're asked when they accept.
+    /// Switching **to** ranked also needs everyone it would rate to be
+    /// rateable: every player in a spot must have an Agon account, or it's
+    /// refused (400) naming them. Pending invitees don't count — they hold no
+    /// spot until they accept — and the waitlist isn't read at all, because a
+    /// waitlist entry always names an account and so can never fail this.
     ranked: Option<bool>,
     // Note: no `match_type`. A match's sport is fixed at creation, and a
     // ranked match relies on that: a new sport would move its result to

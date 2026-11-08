@@ -1548,8 +1548,10 @@ pub struct UnratablePlayers {
     ///
     /// Once the only reason a player could be unratable. Not being opted in
     /// used to be the other, and is not a reason for anything now: every
-    /// account is rated from the first match it completes, published only
-    /// once it opts in (`agon_core::rating::placement`).
+    /// account is rated from the first match it completes, and the number is
+    /// published once its placement matches are behind it
+    /// (`agon_core::rating::placement`) — which nobody can opt into or out
+    /// of, so it is not a reason to keep anyone out of a match.
     pub without_account: Vec<String>,
 }
 

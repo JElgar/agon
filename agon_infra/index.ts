@@ -97,14 +97,13 @@ const ctrl = new nginx.IngressController("nginx-ingress", {
 			enabled: true,
 		},
 	},
-	// Pull the chart from the official Helm repo instead of this component's
-	// default GitHub Releases tarball URL, which intermittently 504s.
+	// Pull the chart via OCI from registry.k8s.io instead of this component's
+	// default GitHub Releases tarball URL. The official Helm repo's index.yaml
+	// just redirects back to that same GitHub Releases asset, so it doesn't
+	// help when GitHub's release-asset serving is down (as it was here).
 	helmOptions: {
-		chart: "ingress-nginx",
+		chart: "oci://registry.k8s.io/ingress-nginx/charts/ingress-nginx",
 		version: "4.15.1",
-		repositoryOpts: {
-			repo: "https://kubernetes.github.io/ingress-nginx",
-		},
 	},
 }, { provider: k8sProvider });
 

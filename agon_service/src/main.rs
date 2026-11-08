@@ -431,6 +431,12 @@ struct MatchSide {
     /// How many of `player_count` arrived as a ringer through open joining
     /// — what `max_open_spots` is enforced against.
     open_joined_count: u32,
+    /// Users with `MatchPlayerRole::SideAdmin` over this side — full
+    /// authority over just its own ringer settings and inviting people to
+    /// it. Set via `PUT /matches/:match_id/sides/:side_id/admins`
+    /// (match-admin only); doesn't require being a player on this side, or
+    /// anywhere on the roster.
+    side_admin_user_ids: Vec<String>,
 }
 
 /// A player in a side's `roster_preview` — name/avatar only, not the full
@@ -2491,6 +2497,30 @@ enum SetSideOpenJoinResponse {
     NotFound(PlainText<String>),
 }
 
+/// Whole-value replace of one side's `MatchPlayerRole::SideAdmin` grants —
+/// `PUT /matches/:match_id/sides/:side_id/admins`.
+#[derive(Object)]
+struct SetSideAdminsInput {
+    /// The users who should hold `SideAdmin` over this side afterward — an
+    /// empty list clears it. Replaces the side's current grants wholesale,
+    /// same convention as `SideOpenJoinInput`.
+    user_ids: Vec<String>,
+}
+
+#[derive(ApiResponse)]
+enum SetSideAdminsResponse {
+    #[oai(status = 204)]
+    Ok,
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    /// The match doesn't exist, or the side isn't part of it.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
 /// Request to join a match through its open-join policy — `POST
 /// /matches/:match_id/join-requests`. Used only when the policy requires
 /// approval; otherwise `POST /matches/:match_id/join` seats the caller
@@ -3799,6 +3829,9 @@ impl Api {
             // an invitee, who is asked when they accept. Prompts exist only
             // for a *switch*, which finds players already in place.
             authority: authority.clone(),
+            // No side-admin grants at creation — an organiser adds them
+            // afterwards, via `PUT /matches/:match_id/sides/:side_id/admins`.
+            side_authority: std::collections::HashMap::new(),
             // Not configurable at creation — an organiser opens a match to
             // the public afterwards, via the open-join settings endpoint.
             open_join: None,
@@ -4559,11 +4592,27 @@ impl Api {
                     if let Some(existing) = agg.players.iter().find(|p| p.player_id == a.player_id)
                     {
                         let old_side_id = existing.side_id.clone();
+                        let user_id = existing.user_id.clone();
                         let mut updated = existing.clone();
                         updated.side_id = a.side_id.clone();
                         dao.reassign_match_player_tx(&match_id, &updated, old_side_id.as_deref())
                             .await
                             .map_err(dao_internal)?;
+
+                        // Moving off a side revokes any `SideAdmin` grant for
+                        // the side they left, by default — see
+                        // `MatchRecord::side_authority`'s doc comment.
+                        if old_side_id != updated.side_id
+                            && let (Some(old_side_id), Some(user_id)) = (&old_side_id, &user_id)
+                            && let Some(admins) = agg.match_.side_authority.get(old_side_id)
+                            && admins.iter().any(|u| u == user_id)
+                        {
+                            let remaining: Vec<String> =
+                                admins.iter().filter(|u| *u != user_id).cloned().collect();
+                            dao.set_side_admins(&match_id, old_side_id, &remaining)
+                                .await
+                                .map_err(dao_internal)?;
+                        }
                     }
                 }
             }
@@ -4899,6 +4948,7 @@ impl Api {
                 uid.clone(),
                 dao::records::MatchPlayerRole::Owner,
             )]),
+            side_authority: std::collections::HashMap::new(),
             open_join: None,
             open_joined_count: 0,
             created_at: now,
@@ -6764,11 +6814,17 @@ impl Api {
             }
         };
 
-        // Only a match admin may invite others.
+        // A match admin may invite anyone, to any side (or unassigned); a
+        // side admin may only invite to their own side.
         if !caller_is_match_admin(dao, &agg, &uid).await? {
-            return Ok(AddInvitationsResponse::Forbidden(PlainText(
-                "only a match admin can invite people to this match".into(),
-            )));
+            let own_side = caller_side_admin_side_id(&agg.match_, &uid);
+            if own_side.is_none() || input.side_id.as_deref() != own_side {
+                return Ok(AddInvitationsResponse::Forbidden(PlainText(
+                    "only a match admin, or a side admin inviting to their own side, can invite \
+                     people to this match"
+                        .into(),
+                )));
+            }
         }
 
         // If a side was named, it must be one of this match's sides.
@@ -7554,9 +7610,10 @@ impl Api {
                 )));
             }
         };
-        if !caller_is_match_admin(dao, &agg, &uid).await? {
+        if !caller_can_manage_side(dao, &agg, &side_id, &uid).await? {
             return Ok(SetSideOpenJoinResponse::Forbidden(PlainText(
-                "only a match admin can change a side's ringer settings".into(),
+                "only a match admin, or this side's own admin, can change its ringer settings"
+                    .into(),
             )));
         }
         if !agg.sides.iter().any(|s| s.side_id == side_id) {
@@ -7579,6 +7636,50 @@ impl Api {
             .await
             .map_err(dao_internal)?;
         Ok(SetSideOpenJoinResponse::Ok)
+    }
+
+    /// Replace the set of `MatchPlayerRole::SideAdmin` grants for one side.
+    ///
+    /// Match-admin only — granting the role itself isn't delegated to a
+    /// side admin, unlike the side's own ringer settings and invites (see
+    /// `caller_can_manage_side`). A granted user doesn't need to be on the
+    /// side, or on the roster at all — see `MatchRecord::side_authority`'s
+    /// doc comment.
+    #[oai(path = "/matches/:match_id/sides/:side_id/admins", method = "put")]
+    async fn set_side_admins(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        Path(side_id): Path<String>,
+        input: Json<SetSideAdminsInput>,
+    ) -> Result<SetSideAdminsResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let input = input.0;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(SetSideAdminsResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(SetSideAdminsResponse::Forbidden(PlainText(
+                "only a match admin can change a side's admins".into(),
+            )));
+        }
+        if !agg.sides.iter().any(|s| s.side_id == side_id) {
+            return Ok(SetSideAdminsResponse::NotFound(PlainText(
+                "side not found".into(),
+            )));
+        }
+
+        dao.set_side_admins(&match_id, &side_id, &input.user_ids)
+            .await
+            .map_err(dao_internal)?;
+        Ok(SetSideAdminsResponse::Ok)
     }
 
     /// Request to join a match through its open-join policy.
@@ -9556,9 +9657,51 @@ fn caller_match_authority_role(
     match_: &dao::records::MatchRecord,
     uid: &str,
 ) -> Option<dao::records::MatchPlayerRole> {
-    match_.authority.get(uid).copied().or_else(|| {
-        (match_.created_by_user_id == uid).then_some(dao::records::MatchPlayerRole::Owner)
-    })
+    match_
+        .authority
+        .get(uid)
+        .copied()
+        .or_else(|| {
+            (match_.created_by_user_id == uid).then_some(dao::records::MatchPlayerRole::Owner)
+        })
+        .or_else(|| {
+            caller_side_admin_side_id(match_, uid).map(|_| dao::records::MatchPlayerRole::SideAdmin)
+        })
+}
+
+/// Which side, if any, `uid` holds `MatchPlayerRole::SideAdmin` over — see
+/// `MatchRecord::side_authority`'s doc comment. Doesn't check match-wide
+/// `Owner`/`Admin` authority, which supersedes this for every side anyway
+/// (see `caller_can_manage_side`, the caller that matters for).
+fn caller_side_admin_side_id<'a>(
+    match_: &'a dao::records::MatchRecord,
+    uid: &str,
+) -> Option<&'a str> {
+    match_
+        .side_authority
+        .iter()
+        .find_map(|(side_id, user_ids)| {
+            user_ids
+                .iter()
+                .any(|u| u == uid)
+                .then_some(side_id.as_str())
+        })
+}
+
+/// Whether `uid` may manage one side's own settings specifically (its
+/// ringer settings, inviting people to it): full match-admin authority
+/// (`caller_is_match_admin`, which covers every side), or a `side_authority`
+/// grant naming this exact `side_id`.
+async fn caller_can_manage_side(
+    dao: &dao::Dao,
+    agg: &dao::match_ops::MatchAggregate,
+    side_id: &str,
+    uid: &str,
+) -> Result<bool> {
+    if caller_is_match_admin(dao, agg, uid).await? {
+        return Ok(true);
+    }
+    Ok(caller_side_admin_side_id(&agg.match_, uid) == Some(side_id))
 }
 
 /// Whether the caller owns the match — see `caller_match_authority_role`.
@@ -10437,6 +10580,7 @@ fn mock_match(id: String) -> Match {
                 open_join: None,
                 max_open_spots: None,
                 open_joined_count: 0,
+                side_admin_user_ids: Vec::new(),
             },
             MatchSide {
                 id: String::from("side_blue"),
@@ -10453,6 +10597,7 @@ fn mock_match(id: String) -> Match {
                 open_join: None,
                 max_open_spots: None,
                 open_joined_count: 0,
+                side_admin_user_ids: Vec::new(),
             },
         ],
         players: vec![

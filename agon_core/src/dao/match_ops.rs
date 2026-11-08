@@ -1240,6 +1240,43 @@ impl Dao {
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
     }
+
+    /// Whole-value replace of one side's `MatchPlayerRole::SideAdmin` grants
+    /// — see `MatchRecord::side_authority`'s doc comment. An empty slice
+    /// clears it. Conditioned only on the match existing; unlike
+    /// `set_match_player_role`, there's no owner-entry to guard against,
+    /// since `side_authority` never carries `Owner`/`Admin`.
+    #[tracing::instrument(skip(self))]
+    pub async fn set_side_admins(
+        &self,
+        match_id: &str,
+        side_id: &str,
+        user_ids: &[String],
+    ) -> DaoResult<()> {
+        let mut request = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_names("#sid", side_id);
+        request = if user_ids.is_empty() {
+            request.update_expression("REMOVE side_authority.#sid")
+        } else {
+            request
+                .update_expression("SET side_authority.#sid = :uids")
+                .expression_attribute_values(":uids", to_attr(&user_ids.to_vec())?)
+        };
+        match request.send().await {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => {
+                Err(DaoError::NotFound(format!("match {match_id} not found")))
+            }
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
 }
 
 /// Serialize any record value into a DynamoDB AttributeValue (nested map/list).

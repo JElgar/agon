@@ -59,8 +59,22 @@ function sideSummary(side: MatchSide, i: number, mode: OpenJoinScopeKind): strin
  * editor only ever writes `audience: individuals`. Read-only for everyone;
  * an admin (`canManage`) gets an "Edit" affordance, same posture as
  * `MatchJoinSettingsEditor`: whole-value replace on save, not a diff.
+ *
+ * A side admin (`restrictedSideId`, from `mySideAdminSideId`) gets the same
+ * affordance but scoped to just their own side: no mode switch, no
+ * match-wide fields (those stay match-admin-only), and save only PUTs that
+ * one side's settings — the server rejects anything wider for them anyway
+ * (`caller_can_manage_side`).
  */
-export function MatchOpenJoinEditor({ match, canManage }: { match: Match; canManage: boolean }) {
+export function MatchOpenJoinEditor({
+  match,
+  canManage,
+  restrictedSideId,
+}: {
+  match: Match
+  canManage: boolean
+  restrictedSideId?: string
+}) {
   const queryClient = useQueryClient()
   const [editing, setEditing] = useState(false)
   const [openEnabled, setOpenEnabled] = useState(match.open_join != null)
@@ -90,7 +104,7 @@ export function MatchOpenJoinEditor({ match, canManage }: { match: Match; canMan
 
   const save = useMutation({
     mutationFn: async () => {
-      if (!openEnabled) {
+      if (!restrictedSideId && !openEnabled) {
         const { error } = await fetchClient.DELETE('/matches/{match_id}/open-join', {
           params: { path: { match_id: match.id } },
         })
@@ -98,26 +112,31 @@ export function MatchOpenJoinEditor({ match, canManage }: { match: Match; canMan
         return
       }
 
-      const { error: scopeError } = await fetchClient.PUT('/matches/{match_id}/open-join', {
-        params: { path: { match_id: match.id } },
-        body: {
-          mode,
-          policy:
-            mode === 'match_wide'
-              ? {
-                  audience: 'individuals',
-                  min_matches_played: minMatchesPlayed.trim()
-                    ? Number(minMatchesPlayed)
-                    : undefined,
-                  requires_approval: requiresApproval,
-                  max_open_spots: maxOpenSpots.trim() ? Number(maxOpenSpots) : undefined,
-                }
-              : undefined,
-        },
-      })
-      if (scopeError) throw new Error('Failed to save open-join policy')
+      if (!restrictedSideId) {
+        const { error: scopeError } = await fetchClient.PUT('/matches/{match_id}/open-join', {
+          params: { path: { match_id: match.id } },
+          body: {
+            mode,
+            policy:
+              mode === 'match_wide'
+                ? {
+                    audience: 'individuals',
+                    min_matches_played: minMatchesPlayed.trim()
+                      ? Number(minMatchesPlayed)
+                      : undefined,
+                    requires_approval: requiresApproval,
+                    max_open_spots: maxOpenSpots.trim() ? Number(maxOpenSpots) : undefined,
+                  }
+                : undefined,
+          },
+        })
+        if (scopeError) throw new Error('Failed to save open-join policy')
+      }
 
-      for (const side of match.sides) {
+      const sidesToSave = restrictedSideId
+        ? match.sides.filter((s) => s.id === restrictedSideId)
+        : match.sides
+      for (const side of sidesToSave) {
         const draft = sides[side.id]
         const sideMaxOpenSpots = draft?.maxOpenSpots.trim() ? Number(draft.maxOpenSpots) : undefined
         const { error: sideError } = await fetchClient.PUT(
@@ -187,7 +206,7 @@ export function MatchOpenJoinEditor({ match, canManage }: { match: Match; canMan
             </>
           )}
         </div>
-        {canManage && (
+        {(canManage || restrictedSideId) && (
           <Button
             variant="ghost"
             size="sm"
@@ -200,6 +219,109 @@ export function MatchOpenJoinEditor({ match, canManage }: { match: Match; canMan
             <Pencil className="size-3" /> Edit
           </Button>
         )}
+      </div>
+    )
+  }
+
+  if (restrictedSideId) {
+    const side = match.sides.find((s) => s.id === restrictedSideId)
+    const draft = sides[restrictedSideId]
+    if (!side || !draft || match.open_join == null) {
+      return (
+        <div className="rounded-xl border bg-card p-4">
+          <p className="mb-1 text-sm font-medium">Ringers</p>
+          <p className="text-xs text-muted-foreground">
+            Closed for this match — ask a match admin to open ringers first.
+          </p>
+        </div>
+      )
+    }
+    return (
+      <div className="rounded-xl border bg-card p-4">
+        <p className="mb-3 text-sm font-medium">Ringers — {sideDisplayName(side) ?? 'your side'}</p>
+        <label className="mb-3 flex items-center gap-2 text-xs">
+          <input
+            type="checkbox"
+            checked={draft.open}
+            onChange={(e) =>
+              setSides((prev) => ({
+                ...prev,
+                [restrictedSideId]: { ...prev[restrictedSideId], open: e.target.checked },
+              }))
+            }
+          />
+          Accept ringers on this side
+        </label>
+        {draft.open && (
+          <div className="flex flex-col gap-2">
+            {mode === 'per_side' && (
+              <>
+                <div className="flex items-center gap-2">
+                  <Label htmlFor={`side-min-matches-${restrictedSideId}`} className="flex-1 text-xs">
+                    Minimum matches played
+                  </Label>
+                  <input
+                    id={`side-min-matches-${restrictedSideId}`}
+                    type="number"
+                    min={0}
+                    placeholder="No minimum"
+                    value={draft.minMatchesPlayed}
+                    onChange={(e) =>
+                      setSides((prev) => ({
+                        ...prev,
+                        [restrictedSideId]: { ...prev[restrictedSideId], minMatchesPlayed: e.target.value },
+                      }))
+                    }
+                    className="h-8 w-24 rounded-md border bg-background px-2 text-sm"
+                  />
+                </div>
+                <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={draft.requiresApproval}
+                    onChange={(e) =>
+                      setSides((prev) => ({
+                        ...prev,
+                        [restrictedSideId]: { ...prev[restrictedSideId], requiresApproval: e.target.checked },
+                      }))
+                    }
+                  />
+                  Ask-to-join: an admin approves each request
+                </label>
+              </>
+            )}
+            <div className="flex items-center gap-2">
+              <Label htmlFor={`side-max-spots-${restrictedSideId}`} className="flex-1 text-xs">
+                Max ringers on this side
+              </Label>
+              <input
+                id={`side-max-spots-${restrictedSideId}`}
+                type="number"
+                min={1}
+                placeholder="No cap"
+                value={draft.maxOpenSpots}
+                onChange={(e) =>
+                  setSides((prev) => ({
+                    ...prev,
+                    [restrictedSideId]: { ...prev[restrictedSideId], maxOpenSpots: e.target.value },
+                  }))
+                }
+                className="h-8 w-24 rounded-md border bg-background px-2 text-sm"
+              />
+            </div>
+          </div>
+        )}
+        {save.isError && (
+          <p className="mt-2 text-xs text-destructive">{(save.error as Error).message}</p>
+        )}
+        <div className="mt-3 flex gap-2">
+          <Button size="sm" disabled={save.isPending} onClick={() => save.mutate()}>
+            {save.isPending ? 'Saving…' : 'Save'}
+          </Button>
+          <Button size="sm" variant="outline" disabled={save.isPending} onClick={() => setEditing(false)}>
+            Cancel
+          </Button>
+        </div>
       </div>
     )
   }

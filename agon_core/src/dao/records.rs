@@ -509,6 +509,20 @@ pub struct MatchRecord {
     /// `created_by_user_id` as `Owner` for exactly that case.
     #[serde(default)]
     pub authority: std::collections::HashMap<String, MatchPlayerRole>,
+    /// Per-side admin grants, keyed by `side_id`: which users hold
+    /// `MatchPlayerRole::SideAdmin` over that side — full authority over
+    /// just its own ringer settings and inviting people to it, nothing
+    /// match-wide. Kept separate from `authority` (whose value has no room
+    /// for a side id, and already has serialized history as a bare
+    /// `Owner`/`Admin` string for every match) rather than folded into it.
+    /// A user doesn't need to be a player on the side (or on the roster at
+    /// all) to hold this. When a player's own `side_id` is reassigned (`PATCH
+    /// /matches/:match_id`'s `side_assignments`), their grant for the side
+    /// they're leaving is revoked by default — see
+    /// `Dao::reassign_match_player_tx`. `#[serde(default)]` for matches
+    /// written before this field existed, which have no entries here at all.
+    #[serde(default)]
+    pub side_authority: std::collections::HashMap<String, Vec<String>>,
     /// This match's "open to the public" policy — `None` means invite/
     /// link/team-only, as every match was before this field existed. See
     /// [`OpenJoinScopeRecord`].
@@ -877,6 +891,15 @@ pub enum MatchPlayerRole {
     /// Full authority over the match short of transferring ownership: manage
     /// `join_policy`/caps, mint or revoke join-links, invite people.
     Admin,
+    /// Authority over just one side — which side is `MatchRecord::
+    /// side_authority`'s business, not this enum's (so this variant alone
+    /// never tells you which); configure that side's own ringer settings
+    /// and invite people to it, nothing match-wide. Granted via
+    /// `side_authority`, never `authority` (which only ever stores `Owner`/
+    /// `Admin`) — this variant exists so `caller_match_authority_role` can
+    /// still return one `MatchPlayerRole` whichever map answered. Doesn't
+    /// require being a player on that side, or anywhere on the roster.
+    SideAdmin,
     /// An ordinary roster member, or anyone else with no entry in
     /// `authority`. Can still invite named people (today's "any participant"
     /// behavior), just not the more structural actions above.

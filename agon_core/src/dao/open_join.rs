@@ -606,6 +606,7 @@ mod tests {
             format: None,
             ranked: false,
             authority: HashMap::new(),
+            side_authority: HashMap::new(),
             open_join,
             open_joined_count: 0,
             created_at: "2026-05-01T10:00:00.000Z".into(),

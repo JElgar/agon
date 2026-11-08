@@ -939,6 +939,7 @@ export function LogMatchPage() {
                   player_count: 0,
                   open_join_enabled: false,
                   open_joined_count: 0,
+                  side_admin_user_ids: [],
                 }
                 const sideBObj: MatchSide = {
                   id: SIDE_B,
@@ -948,6 +949,7 @@ export function LogMatchPage() {
                   player_count: 0,
                   open_join_enabled: false,
                   open_joined_count: 0,
+                  side_admin_user_ids: [],
                 }
                 const players = [...toMatchPlayers(sideA, SIDE_A), ...toMatchPlayers(sideB, SIDE_B)]
                 const Editor = isFootball ? FootballScoreFields : isCricket ? CricketScoreFields : NetballScoreFields

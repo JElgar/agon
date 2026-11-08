@@ -201,6 +201,7 @@ impl AgonActivities {
             header_photos: Vec::new(),
             sides,
             authority,
+            side_authority: std::collections::HashMap::new(),
             confirmed_score: None,
             pending_score: None,
             like_count: 0,

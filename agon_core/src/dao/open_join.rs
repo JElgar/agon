@@ -20,11 +20,55 @@ use super::error::{DaoError, DaoResult};
 use super::is_update_conditional_failure;
 use super::item::{ATTR_PK, ATTR_SK, from_item, s, to_item};
 use super::keys::{Pk, Sk};
+use super::match_ops::MatchAggregate;
 use super::records::{
-    MatchJoinRequestRecord, MatchPlayerRecord, OpenJoinScopeRecord, SideOpenJoinPolicyRecord,
+    MatchJoinRequestRecord, MatchPlayerRecord, MatchSideRecord, OpenJoinScopeRecord,
+    SideOpenJoinPolicyRecord,
 };
 
 pub const TYPE_MATCH_JOIN_REQUEST: &str = "match_join_request";
+
+/// Whether this match's open-join policy currently has room for another
+/// individual arrival — used to index `open_has_space` for `GET /matches`'s
+/// discovery filter, not to gate an actual join attempt (that's enforced
+/// transactionally, with the up-to-date counts, by `join_open_match_tx`/
+/// `approve_join_request_tx`). An approximation in one respect: an
+/// `allow_unassigned` match-wide match is counted as having room without
+/// checking the match's *general* roster capacity (every side's
+/// `max_players` already full), the same "can lag a just-now change" trade
+/// every denormalized search/feed counter in this codebase already makes.
+pub fn open_has_space(agg: &MatchAggregate) -> bool {
+    let Some(scope) = &agg.match_.open_join else {
+        return false;
+    };
+    let match_wide_cap_ok = match scope {
+        OpenJoinScopeRecord::MatchWide(policy) => policy
+            .max_open_spots
+            .is_none_or(|max| agg.match_.open_joined_count < max),
+        OpenJoinScopeRecord::PerSide => true,
+    };
+    if !match_wide_cap_ok {
+        return false;
+    }
+
+    let side_is_open = |side: &MatchSideRecord| match scope {
+        OpenJoinScopeRecord::MatchWide(_) => side.open_join_enabled,
+        OpenJoinScopeRecord::PerSide => side.open_join.is_some(),
+    };
+    let side_has_room = |side: &MatchSideRecord| {
+        side.max_open_spots
+            .is_none_or(|max| side.open_joined_count < max)
+            && side.max_players.is_none_or(|max| side.player_count < max)
+    };
+    let any_side_open_with_room = agg
+        .sides
+        .iter()
+        .any(|s| side_is_open(s) && side_has_room(s));
+    let unassigned_room =
+        matches!(scope, OpenJoinScopeRecord::MatchWide(_)) && agg.match_.allow_unassigned;
+
+    any_side_open_with_room || unassigned_room
+}
 
 /// What `Dao::set_side_open_join_settings` writes to a side's own open-join
 /// settings, picked by the match's current `OpenJoinScopeRecord`:
@@ -513,7 +557,153 @@ fn is_put_conditional_failure(err: &SdkError<PutItemError>) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
+    use super::super::match_ops::MatchAggregate;
+    use super::super::records::{
+        MatchRecord, MatchSideRecord, OpenJoinAudienceRecord, OpenJoinPolicyRecord,
+    };
     use super::*;
+
+    fn side(side_id: &str) -> MatchSideRecord {
+        MatchSideRecord {
+            side_id: side_id.to_string(),
+            team_id: None,
+            name: None,
+            colour: None,
+            max_players: None,
+            team_join_enabled: false,
+            player_count: 1,
+            roster_preview: Vec::new(),
+            open_join_enabled: false,
+            open_join: None,
+            max_open_spots: None,
+            open_joined_count: 0,
+        }
+    }
+
+    fn match_record(open_join: Option<OpenJoinScopeRecord>, allow_unassigned: bool) -> MatchRecord {
+        MatchRecord {
+            id: "m1".into(),
+            created_by_user_id: "u1".into(),
+            name: "Tuesday".into(),
+            description: String::new(),
+            match_type: "football".into(),
+            status: "scheduled".into(),
+            series_id: None,
+            starts_at: "2026-06-01T10:00:00.000Z".into(),
+            allow_unassigned,
+            total_player_count: 2,
+            location: None,
+            sides: HashMap::new(),
+            header_photos: Vec::new(),
+            confirmed_score: None,
+            pending_score: None,
+            like_count: 0,
+            comment_count: 0,
+            live_seq: 0,
+            live_tip_seq: None,
+            format: None,
+            ranked: false,
+            authority: HashMap::new(),
+            open_join,
+            open_joined_count: 0,
+            created_at: "2026-05-01T10:00:00.000Z".into(),
+        }
+    }
+
+    fn match_wide_policy(max_open_spots: Option<u32>) -> OpenJoinScopeRecord {
+        OpenJoinScopeRecord::MatchWide(OpenJoinPolicyRecord {
+            audience: OpenJoinAudienceRecord::Individuals,
+            rules: Vec::new(),
+            requires_approval: false,
+            max_open_spots,
+        })
+    }
+
+    #[test]
+    fn open_has_space_false_when_not_open() {
+        let agg = MatchAggregate {
+            match_: match_record(None, true),
+            sides: vec![side("a")],
+            players: Vec::new(),
+        };
+        assert!(!open_has_space(&agg));
+    }
+
+    #[test]
+    fn open_has_space_true_when_match_wide_side_enabled() {
+        let mut a = side("a");
+        a.open_join_enabled = true;
+        let agg = MatchAggregate {
+            match_: match_record(Some(match_wide_policy(None)), false),
+            sides: vec![a, side("b")],
+            players: Vec::new(),
+        };
+        assert!(open_has_space(&agg));
+    }
+
+    #[test]
+    fn open_has_space_true_when_unassigned_allowed_even_with_no_open_side() {
+        let agg = MatchAggregate {
+            match_: match_record(Some(match_wide_policy(None)), true),
+            sides: vec![side("a"), side("b")],
+            players: Vec::new(),
+        };
+        assert!(open_has_space(&agg));
+    }
+
+    #[test]
+    fn open_has_space_false_once_match_wide_cap_is_reached() {
+        let mut m = match_record(Some(match_wide_policy(Some(2))), true);
+        m.open_joined_count = 2;
+        let agg = MatchAggregate {
+            match_: m,
+            sides: vec![side("a")],
+            players: Vec::new(),
+        };
+        assert!(!open_has_space(&agg));
+    }
+
+    #[test]
+    fn open_has_space_false_once_every_enabled_side_is_full() {
+        let mut a = side("a");
+        a.open_join_enabled = true;
+        a.max_open_spots = Some(1);
+        a.open_joined_count = 1;
+        let agg = MatchAggregate {
+            match_: match_record(Some(match_wide_policy(None)), false),
+            sides: vec![a],
+            players: Vec::new(),
+        };
+        assert!(!open_has_space(&agg));
+    }
+
+    #[test]
+    fn open_has_space_per_side_checks_each_sides_own_policy() {
+        let mut a = side("a");
+        a.open_join = Some(SideOpenJoinPolicyRecord {
+            audience: OpenJoinAudienceRecord::Individuals,
+            rules: Vec::new(),
+            requires_approval: false,
+        });
+        let agg = MatchAggregate {
+            match_: match_record(Some(OpenJoinScopeRecord::PerSide), false),
+            sides: vec![a, side("b")],
+            players: Vec::new(),
+        };
+        assert!(open_has_space(&agg));
+    }
+
+    #[test]
+    fn open_has_space_per_side_false_when_no_side_has_a_policy() {
+        let agg = MatchAggregate {
+            match_: match_record(Some(OpenJoinScopeRecord::PerSide), false),
+            sides: vec![side("a"), side("b")],
+            players: Vec::new(),
+        };
+        assert!(!open_has_space(&agg));
+    }
 
     #[test]
     fn take_open_slot_update_combines_ordinary_and_open_caps() {

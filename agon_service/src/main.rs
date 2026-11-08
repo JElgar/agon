@@ -3197,6 +3197,14 @@ impl Api {
         /// Only matches in this lifecycle state (e.g. `scheduled`) — powers the
         /// "all scheduled matches" browse view.
         Query(status): Query<Option<MatchStatus>>,
+        /// Only matches with an open-join policy set — the Discover "open to
+        /// ringers" filter.
+        Query(open): Query<Option<bool>>,
+        /// Only matches that are `open` and currently have room for another
+        /// individual arrival — see `agon_core::dao::open_join::
+        /// open_has_space`'s doc comment on what this approximates. Ignored
+        /// (not applied) unless `open` is also `true`.
+        Query(open_has_space): Query<Option<bool>>,
         /// Only matches at or after this time (inclusive).
         Query(from): Query<Option<chrono::DateTime<chrono::Utc>>>,
         /// Only matches at or before this time (inclusive).
@@ -3288,6 +3296,12 @@ impl Api {
         }
         if let Some(to) = to {
             clauses.push(format!("starts_at_ts <= {}", to.timestamp()));
+        }
+        if let Some(open) = open {
+            clauses.push(format!("open = {open}"));
+            if open && open_has_space == Some(true) {
+                clauses.push("open_has_space = true".to_string());
+            }
         }
         let filter = (!clauses.is_empty()).then(|| clauses.join(" AND "));
 

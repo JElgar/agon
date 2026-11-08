@@ -31,7 +31,7 @@ use crate::{
     MatchSeries, MatchSeriesOccurrence, MatchSeriesSide, MatchSeriesStatus, MatchSide, MatchSocial,
     MatchStatus, MatchType, PendingScore, Photo, RosterPreviewPlayer, Score, ScoreConfirmation,
     ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus,
-    SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
+    SearchMatch, SetsScore, SimpleScore, Tournament, TournamentEntry, UserProfile, UserStats,
 };
 use crate::{LadderPlacement, LadderRating};
 use agon_core::dao::error::DaoError;
@@ -50,7 +50,8 @@ use agon_core::dao::records::{
     OpenJoinScopeRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord,
     ScoreResponseRecord, ScoreSubmissionRecord, SeriesEndRecord, SeriesOccurrenceRecord,
     SeriesRecord, SeriesSideRecord, SideOpenJoinPolicyRecord, TeamMemberRecord, TeamRecord,
-    UserRecord, UserStatsRecord,
+    TournamentEntryAudienceRecord, TournamentEntryRecord, TournamentRecord,
+    TournamentTeamFormationRecord, UserRecord, UserStatsRecord,
 };
 use agon_core::rating::ladder_for_tag;
 use agon_core::rating::{PLACEMENT_MATCHES, display, published};
@@ -787,6 +788,59 @@ pub fn match_series_occurrence_from_record(rec: &SeriesOccurrenceRecord) -> Matc
         index: rec.index,
         starts_at: parse_ts(&rec.starts_at),
         match_id: rec.match_id.clone(),
+    }
+}
+
+/// Collapses `TournamentRecord::team_formation` (`None` for every
+/// tournament except a teamless one) into the two plain strings the API
+/// exposes, same spirit as `format`/`seeding`'s own open-string fields.
+pub fn tournament_from_record(rec: &TournamentRecord) -> Tournament {
+    let (team_formation, team_formation_auto_by) = match &rec.team_formation {
+        None => (None, None),
+        Some(TournamentTeamFormationRecord::Manual) => (Some("manual".to_string()), None),
+        Some(TournamentTeamFormationRecord::Auto { by }) => {
+            (Some("auto".to_string()), Some(by.clone()))
+        }
+    };
+    Tournament {
+        id: rec.id.clone(),
+        created_by_user_id: rec.created_by_user_id.clone(),
+        name: rec.name.clone(),
+        description: rec.description.clone(),
+        match_type: match_type_from_tag(&rec.match_type),
+        format: rec.format.clone(),
+        status: rec.status.clone(),
+        entry_audience: match rec.entry_audience {
+            TournamentEntryAudienceRecord::Teams => "teams".to_string(),
+            TournamentEntryAudienceRecord::Players => "players".to_string(),
+        },
+        team_formation,
+        team_formation_auto_by,
+        squad_size: rec.squad_size,
+        min_teams: rec.min_teams,
+        max_teams: rec.max_teams,
+        location: rec.location.as_ref().map(location_from_record),
+        frequency: rec.frequency.clone(),
+        weekday: rec.weekday,
+        first_round_starts_at: parse_ts(&rec.first_round_starts_at),
+        timezone: rec.timezone.clone(),
+        points_win: rec.points_win,
+        points_draw: rec.points_draw,
+        points_loss: rec.points_loss,
+        seeding: rec.seeding.clone(),
+        entry_count: rec.entry_count,
+        created_at: parse_ts(&rec.created_at),
+    }
+}
+
+pub fn tournament_entry_from_record(rec: &TournamentEntryRecord) -> TournamentEntry {
+    TournamentEntry {
+        tournament_id: rec.tournament_id.clone(),
+        entrant_id: rec.entrant_id.clone(),
+        status: rec.status.clone(),
+        seed: rec.seed,
+        added_by_user_id: rec.added_by_user_id.clone(),
+        created_at: parse_ts(&rec.created_at),
     }
 }
 
@@ -2029,6 +2083,8 @@ mod tests {
             total_player_count: 0,
             location: None,
             series_id: None,
+            tournament_id: None,
+            tournament_round: None,
             sides: HashMap::new(),
             header_photos: Vec::new(),
             authority: HashMap::new(),

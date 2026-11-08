@@ -14,10 +14,12 @@ use aws_sdk_dynamodb::types::AttributeValue;
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::is_update_conditional_failure;
-use super::item::{ATTR_PK, ATTR_SK, from_item, s, to_item};
+use super::item::{ATTR_GSI1PK, ATTR_PK, ATTR_SK, from_item, s, to_item};
 use super::keys::{Pk, Sk};
 use super::page::Page;
-use super::records::{TournamentBracketEdgeRecord, TournamentEntryRecord, TournamentRecord};
+use super::records::{
+    MatchRecord, TournamentBracketEdgeRecord, TournamentEntryRecord, TournamentRecord,
+};
 
 pub const TYPE_TOURNAMENT: &str = "tournament";
 pub const TYPE_TOURNAMENT_ENTRY: &str = "tournament_entry";
@@ -309,6 +311,73 @@ impl Dao {
             Some(item) => Ok(Some(from_item(item)?)),
             None => Ok(None),
         }
+    }
+
+    /// Fill a knockout bracket match's side with the winning team, once its
+    /// feeder match's score is confirmed (see `agon_worker`'s tournament
+    /// progression handler). Guarded on the side still being empty
+    /// (`attribute_not_exists(sides.#sid.team_id)`) — a confirmed score
+    /// never un-confirms, so a retry/replay that finds the side already
+    /// filled is a harmless no-op success, same idempotency role as
+    /// `Dao::set_tournament_status`. Also clears the placeholder `"TBD"`
+    /// name and turns on `team_join_enabled`, same shape as an ordinary
+    /// team-linked side.
+    #[tracing::instrument(skip(self))]
+    pub async fn fill_tournament_bracket_side(
+        &self,
+        match_id: &str,
+        side_id: &str,
+        team_id: &str,
+    ) -> DaoResult<()> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .update_expression(
+                "SET sides.#sid.team_id = :team, sides.#sid.team_join_enabled = :true REMOVE sides.#sid.#name",
+            )
+            .condition_expression(
+                "attribute_exists(#pk) AND attribute_exists(sides.#sid) AND attribute_not_exists(sides.#sid.team_id)",
+            )
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_names("#sid", side_id)
+            .expression_attribute_names("#name", "name")
+            .expression_attribute_values(":team", s(team_id))
+            .expression_attribute_values(":true", AttributeValue::Bool(true))
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => Ok(()),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// List a tournament's generated matches via their GSI1 projection
+    /// (`TMATCHES#<id>` / `<round>#<matchId>` — see `Dao::create_match`),
+    /// ordered by round. Paginated — used by standings computation and any
+    /// future `GET /tournaments/{id}/matches`.
+    #[tracing::instrument(skip(self))]
+    pub async fn list_tournament_matches(
+        &self,
+        tournament_id: &str,
+        cursor: Option<&str>,
+        limit: u32,
+    ) -> DaoResult<Page<MatchRecord>> {
+        self.query_page(
+            self.client
+                .query()
+                .table_name(self.table())
+                .index_name("GSI1")
+                .key_condition_expression("#pk = :pk")
+                .expression_attribute_names("#pk", ATTR_GSI1PK)
+                .expression_attribute_values(":pk", s(format!("TMATCHES#{tournament_id}"))),
+            cursor,
+            limit,
+        )
+        .await
     }
 }
 

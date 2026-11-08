@@ -226,7 +226,11 @@ pub fn round_robin_fixtures(entrant_count: usize) -> Vec<Matchday> {
     // applies unchanged; whichever real entrant is paired with it each
     // matchday simply sits out.
     let byes = entrant_count % 2 == 1;
-    let n = if byes { entrant_count + 1 } else { entrant_count };
+    let n = if byes {
+        entrant_count + 1
+    } else {
+        entrant_count
+    };
     let mut circle: Vec<usize> = (0..n).collect();
     let matchdays_count = n - 1;
 
@@ -276,6 +280,18 @@ pub fn snake_draft(entrants: &[String], squad_count: usize) -> Vec<Vec<String>> 
         }
     }
     squads
+}
+
+/// A random seeding order for `entrants` — used when a tournament's
+/// `seeding` is `"random"` rather than `"manual"` (caller-supplied `seed`
+/// order, sorted by the caller instead). Pure, one-shot: there's no stored
+/// state to keep consistent across calls, since the service layer calls
+/// this exactly once, right before writing the generated bracket/fixtures.
+pub fn random_seed_order(entrants: &[String]) -> Vec<String> {
+    use rand::seq::SliceRandom;
+    let mut order = entrants.to_vec();
+    order.shuffle(&mut rand::rng());
+    order
 }
 
 /// Resolve placeholder match ids in a [`KnockoutBracketPlan`] (and its
@@ -412,7 +428,11 @@ mod tests {
             }
             seen.sort();
             seen.dedup();
-            assert_eq!(seen.len(), n, "n={n}: every entrant should appear exactly once as a direct seed somewhere");
+            assert_eq!(
+                seen.len(),
+                n,
+                "n={n}: every entrant should appear exactly once as a direct seed somewhere"
+            );
         }
     }
 

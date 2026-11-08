@@ -56,8 +56,8 @@ use mapping::{
     roster_preview_player, score_player_ids, score_side_ids, score_submission_from_record,
     score_to_record, search_match_from_records, series_end_record_from_input, set_score_players,
     switch_to_ranked_reason, team_from_records, team_list_item_from_record,
-    team_member_from_record, unrankable_sport_reason, unratable_players, user_profile_from_record,
-    winner_from_score,
+    team_member_from_record, tournament_entry_from_record, tournament_from_record,
+    unrankable_sport_reason, unratable_players, user_profile_from_record, winner_from_score,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -1162,6 +1162,127 @@ struct MatchSeriesOccurrencePage {
     next_cursor: Option<String>,
 }
 
+/// `POST /tournaments` input. v1 only supports `entry_audience: "teams"` —
+/// a teamless tournament (`"players"` on a team sport, squads reassembled
+/// each round) is designed but not yet buildable (see `team_formation`'s doc
+/// comment on `TournamentTeamFormationRecord`); this input still accepts the
+/// fields so the schema doesn't need to change again once it is.
+#[derive(Object)]
+struct CreateTournamentInput {
+    match_type: MatchType,
+    name: String,
+    description: String,
+    /// `"knockout"` | `"league"`.
+    format: String,
+    /// `"teams"` | `"players"`. Only `"teams"` is supported by `start` today.
+    entry_audience: String,
+    /// `"manual"` | `"auto"` — only meaningful (and only accepted) when
+    /// `entry_audience` is `"players"` on a team sport.
+    team_formation: Option<String>,
+    /// `"wins"` | `"rating"` | `"games_played"` — required when
+    /// `team_formation` is `"auto"`.
+    team_formation_auto_by: Option<String>,
+    squad_size: Option<u32>,
+    min_teams: u32,
+    max_teams: Option<u32>,
+    location: Option<Location>,
+    /// "weekly" | "fortnightly" | "monthly" | "yearly".
+    frequency: String,
+    /// 0 = Sunday .. 6 = Saturday.
+    weekday: u8,
+    /// Round/matchday 0's start — same weekday-match and future-dated
+    /// validation as `CreateMatchSeriesInput::starts_at`.
+    first_round_starts_at: chrono::DateTime<chrono::Utc>,
+    timezone: String,
+    /// Defaults to 3/1/0 when omitted; irrelevant for knockout.
+    points_win: Option<u32>,
+    points_draw: Option<u32>,
+    points_loss: Option<u32>,
+    /// `"random"` | `"manual"` — manual reads each entry's `seed` at `start`.
+    seeding: String,
+}
+
+/// `TOURNAMENT#<id>` as the API sees it — see `TournamentRecord`'s doc
+/// comment for the full lifecycle.
+#[derive(Object)]
+struct Tournament {
+    id: String,
+    created_by_user_id: String,
+    name: String,
+    description: String,
+    match_type: MatchType,
+    format: String,
+    /// `"open"` | `"in_progress"` | `"completed"` | `"cancelled"`.
+    status: String,
+    entry_audience: String,
+    team_formation: Option<String>,
+    team_formation_auto_by: Option<String>,
+    squad_size: Option<u32>,
+    min_teams: u32,
+    max_teams: Option<u32>,
+    location: Option<Location>,
+    frequency: String,
+    weekday: u8,
+    first_round_starts_at: chrono::DateTime<chrono::Utc>,
+    timezone: String,
+    points_win: u32,
+    points_draw: u32,
+    points_loss: u32,
+    seeding: String,
+    entry_count: u64,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// One entrant's place in a tournament (`entrant_id` is a team id when
+/// `entry_audience` is `"teams"`, a user id when `"players"`).
+#[derive(Object)]
+struct TournamentEntry {
+    tournament_id: String,
+    entrant_id: String,
+    /// `"requested"` | `"accepted"` — v1 only ever writes `"accepted"`
+    /// (direct add by the organiser; no open-entry/approval flow yet).
+    status: String,
+    seed: Option<u32>,
+    added_by_user_id: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// One page of `GET /tournaments/{id}/entries`. `next_cursor` absent => end.
+#[derive(Object)]
+struct TournamentEntryPage {
+    items: Vec<TournamentEntry>,
+    next_cursor: Option<String>,
+}
+
+/// `POST /tournaments/{id}/entries` input — the organiser directly adding an
+/// entrant (v1 has no request/approve flow).
+#[derive(Object)]
+struct AddTournamentEntryInput {
+    /// A team id when the tournament's `entry_audience` is `"teams"`.
+    entrant_id: String,
+    /// Required when the tournament's `seeding` is `"manual"`.
+    seed: Option<u32>,
+}
+
+/// One entrant's standing in a league tournament, computed on read from its
+/// generated matches (see `GET /tournaments/{id}/standings`'s doc comment) —
+/// never denormalized onto the tournament or entry records.
+#[derive(Object)]
+struct TournamentStandingsRow {
+    entrant_id: String,
+    played: u32,
+    won: u32,
+    drawn: u32,
+    lost: u32,
+    points: u32,
+}
+
+/// `GET /tournaments/{id}/standings` — ordered by `points` descending.
+#[derive(Object)]
+struct TournamentStandings {
+    rows: Vec<TournamentStandingsRow>,
+}
+
 /// The organiser's one-stop update for a match: edit metadata, reconcile the
 /// actual line-up, and/or record the result — all in one validated, atomic call.
 /// All fields optional; only supplied fields take effect. The server validates
@@ -1738,6 +1859,118 @@ enum ListMatchSeriesOccurrencesResponse {
 
     #[oai(status = 400)]
     ValidationError(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum CreateTournamentResponse {
+    #[oai(status = 200)]
+    Tournament(Json<Tournament>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum GetTournamentResponse {
+    #[oai(status = 200)]
+    Tournament(Json<Tournament>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum ListTournamentEntriesResponse {
+    #[oai(status = 200)]
+    Entries(Json<TournamentEntryPage>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum AddTournamentEntryResponse {
+    #[oai(status = 200)]
+    Entry(Json<TournamentEntry>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't the tournament's owner/admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    /// The tournament (or, for `"teams"`, the entrant team) doesn't exist.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+
+    /// This entrant already has an entry.
+    #[oai(status = 409)]
+    Conflict(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum WithdrawTournamentEntryResponse {
+    /// The entry no longer exists.
+    #[oai(status = 204)]
+    Ok,
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't the tournament's owner/admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum StartTournamentResponse {
+    #[oai(status = 200)]
+    Tournament(Json<Tournament>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't the tournament's owner/admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum GetTournamentStandingsResponse {
+    #[oai(status = 200)]
+    Standings(Json<TournamentStandings>),
+
+    /// Standings aren't meaningful for a knockout tournament, or a
+    /// teamless one (not supported yet).
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum CancelTournamentResponse {
+    #[oai(status = 200)]
+    Tournament(Json<Tournament>),
+
+    /// The tournament is already `"completed"`/`"cancelled"`.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't the tournament's owner/admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
@@ -5002,6 +5235,768 @@ impl Api {
                 items,
                 next_cursor: page.next_cursor,
             },
+        )))
+    }
+
+    /// Create a tournament. Entries are added afterwards (`POST
+    /// /tournaments/:id/entries`, organiser-direct-add only in v1) and the
+    /// match list is generated once the organiser calls `start`. v1 only
+    /// supports `entry_audience: "teams"` — see `CreateTournamentInput`'s
+    /// doc comment.
+    #[oai(path = "/tournaments", method = "post")]
+    async fn create_tournament(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        input: Json<CreateTournamentInput>,
+    ) -> Result<CreateTournamentResponse> {
+        info!("Creating tournament {}", input.name);
+        let input = input.0;
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        if !matches!(input.format.as_str(), "knockout" | "league") {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                format!("format `{}` must be one of knockout, league", input.format),
+            )));
+        }
+        let entry_audience = match input.entry_audience.as_str() {
+            "teams" => dao::records::TournamentEntryAudienceRecord::Teams,
+            "players" => dao::records::TournamentEntryAudienceRecord::Players,
+            other => {
+                return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                    format!("entry_audience `{other}` must be one of teams, players"),
+                )));
+            }
+        };
+        // Teamless tournaments are designed (see `TournamentTeamFormationRecord`)
+        // but `start` doesn't generate them yet — refused up front rather than
+        // accepted and stuck forever in `"open"`.
+        if entry_audience == dao::records::TournamentEntryAudienceRecord::Players {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                "entry_audience `players` (teamless tournaments) isn't supported yet".into(),
+            )));
+        }
+        if input.team_formation.is_some() || input.team_formation_auto_by.is_some() {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                "team_formation only applies to a teamless tournament".into(),
+            )));
+        }
+        if !matches!(input.seeding.as_str(), "random" | "manual") {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                format!("seeding `{}` must be one of random, manual", input.seeding),
+            )));
+        }
+        if !matches!(
+            input.frequency.as_str(),
+            "weekly" | "fortnightly" | "monthly" | "yearly"
+        ) {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                format!(
+                    "frequency `{}` must be one of weekly, fortnightly, monthly, yearly",
+                    input.frequency
+                ),
+            )));
+        }
+        if input.weekday > 6 {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                "weekday must be 0..=6 (0 = Sunday .. 6 = Saturday)".to_string(),
+            )));
+        }
+        let Ok(timezone) = input.timezone.parse::<chrono_tz::Tz>() else {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                format!(
+                    "timezone `{}` is not a recognised IANA timezone name",
+                    input.timezone
+                ),
+            )));
+        };
+        use chrono::Datelike;
+        let first_local = input.first_round_starts_at.with_timezone(&timezone);
+        let starts_at_weekday = first_local.weekday().num_days_from_sunday() as u8;
+        if starts_at_weekday != input.weekday {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                format!(
+                    "first_round_starts_at falls on weekday {starts_at_weekday}, not the configured weekday {}",
+                    input.weekday
+                ),
+            )));
+        }
+        if input.first_round_starts_at <= chrono::Utc::now() {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                "first_round_starts_at must be in the future".to_string(),
+            )));
+        }
+        if input.min_teams < 2 {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                "min_teams must be at least 2".to_string(),
+            )));
+        }
+        if let Some(max) = input.max_teams
+            && max < input.min_teams
+        {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                "max_teams can't be less than min_teams".to_string(),
+            )));
+        }
+
+        let now = now_iso();
+        let tournament_id = new_id();
+        let tournament = dao::records::TournamentRecord {
+            id: tournament_id,
+            created_by_user_id: uid.clone(),
+            name: input.name,
+            description: input.description,
+            match_type: match_type_tag(&input.match_type).to_string(),
+            format: input.format,
+            status: "open".to_string(),
+            entry_audience,
+            team_formation: None,
+            squad_size: None,
+            min_teams: input.min_teams,
+            max_teams: input.max_teams,
+            location: input.location.as_ref().map(location_to_record),
+            frequency: input.frequency,
+            weekday: input.weekday,
+            first_round_starts_at: input
+                .first_round_starts_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            timezone: input.timezone,
+            points_win: input.points_win.unwrap_or(3),
+            points_draw: input.points_draw.unwrap_or(0),
+            points_loss: input.points_loss.unwrap_or(0),
+            seeding: input.seeding,
+            entry_count: 0,
+            authority: std::collections::HashMap::from([(
+                uid,
+                dao::records::MatchPlayerRole::Owner,
+            )]),
+            created_at: now,
+        };
+
+        match dao.create_tournament(&tournament).await {
+            Ok(()) => {}
+            Err(dao::DaoError::Conflict(msg)) => {
+                return Ok(CreateTournamentResponse::ValidationError(PlainText(msg)));
+            }
+            Err(e) => return Err(dao_internal(e)),
+        }
+
+        Ok(CreateTournamentResponse::Tournament(Json(
+            tournament_from_record(&tournament),
+        )))
+    }
+
+    /// Fetch a tournament by id. Read-only, no authority check — same
+    /// posture as `GET /match-series/:id`.
+    #[oai(path = "/tournaments/:tournament_id", method = "get")]
+    async fn get_tournament(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+    ) -> Result<GetTournamentResponse> {
+        info!("Getting tournament {tournament_id}");
+        self.require_uid(dao, &jwt_data).await?;
+        match dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+        {
+            Some(t) => Ok(GetTournamentResponse::Tournament(Json(
+                tournament_from_record(&t),
+            ))),
+            None => Ok(GetTournamentResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            ))),
+        }
+    }
+
+    /// List a tournament's entries, paginated. Read-only, no authority check.
+    #[oai(path = "/tournaments/:tournament_id/entries", method = "get")]
+    async fn list_tournament_entries(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+        /// Opaque cursor from the previous page's `next_cursor`. Omit for the first page.
+        Query(cursor): Query<Option<String>>,
+        /// Maximum number of items to return (defaults to 20, capped at 50).
+        Query(limit): Query<Option<u32>>,
+    ) -> Result<ListTournamentEntriesResponse> {
+        info!("Listing entries of tournament {tournament_id}");
+        self.require_uid(dao, &jwt_data).await?;
+        if dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+            .is_none()
+        {
+            return Ok(ListTournamentEntriesResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            )));
+        }
+        let page = dao
+            .list_tournament_entries(&tournament_id, cursor.as_deref(), page_limit(limit))
+            .await
+            .map_err(dao_internal)?;
+        Ok(ListTournamentEntriesResponse::Entries(Json(
+            TournamentEntryPage {
+                items: page
+                    .items
+                    .iter()
+                    .map(tournament_entry_from_record)
+                    .collect(),
+                next_cursor: page.next_cursor,
+            },
+        )))
+    }
+
+    /// The organiser directly adds an entrant (v1 has no request/approve
+    /// flow — see `AddTournamentEntryInput`'s doc comment). Only while the
+    /// tournament is still `"open"`.
+    #[oai(path = "/tournaments/:tournament_id/entries", method = "post")]
+    async fn add_tournament_entry(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+        input: Json<AddTournamentEntryInput>,
+    ) -> Result<AddTournamentEntryResponse> {
+        info!(
+            "Adding entry {} to tournament {tournament_id}",
+            input.entrant_id
+        );
+        let input = input.0;
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let Some(tournament) = dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(AddTournamentEntryResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            )));
+        };
+        if !caller_is_tournament_admin(&tournament, &uid) {
+            return Ok(AddTournamentEntryResponse::Forbidden(PlainText(
+                "only the tournament's owner or an admin can add entries".into(),
+            )));
+        }
+        if tournament.status != "open" {
+            return Ok(AddTournamentEntryResponse::ValidationError(PlainText(
+                format!("tournament is `{}`, not `open`", tournament.status),
+            )));
+        }
+        if tournament.seeding == "manual" && input.seed.is_none() {
+            return Ok(AddTournamentEntryResponse::ValidationError(PlainText(
+                "this tournament uses manual seeding — seed is required".into(),
+            )));
+        }
+        if let Some(max) = tournament.max_teams
+            && tournament.entry_count >= max as u64
+        {
+            return Ok(AddTournamentEntryResponse::ValidationError(PlainText(
+                format!("tournament is already full ({max} entries)"),
+            )));
+        }
+        if tournament.entry_audience == dao::records::TournamentEntryAudienceRecord::Teams
+            && dao
+                .get_team(&input.entrant_id)
+                .await
+                .map_err(dao_internal)?
+                .is_none()
+        {
+            return Ok(AddTournamentEntryResponse::NotFound(PlainText(
+                "team not found".into(),
+            )));
+        }
+
+        let entry = dao::records::TournamentEntryRecord {
+            tournament_id: tournament_id.clone(),
+            entrant_id: input.entrant_id,
+            status: "accepted".to_string(),
+            seed: input.seed,
+            added_by_user_id: uid,
+            created_at: now_iso(),
+        };
+        match dao.create_tournament_entry(&entry).await {
+            Ok(()) => {}
+            Err(dao::DaoError::Conflict(msg)) => {
+                return Ok(AddTournamentEntryResponse::Conflict(PlainText(msg)));
+            }
+            Err(e) => return Err(dao_internal(e)),
+        }
+        dao.bump_tournament_entry_count(&tournament_id, 1)
+            .await
+            .map_err(dao_internal)?;
+
+        Ok(AddTournamentEntryResponse::Entry(Json(
+            tournament_entry_from_record(&entry),
+        )))
+    }
+
+    /// Withdraw an entry (organiser-only in v1). Only while the tournament
+    /// is still `"open"` — once `start` has generated matches, an entrant's
+    /// place in the bracket/fixture list can't be pulled back out.
+    #[oai(
+        path = "/tournaments/:tournament_id/entries/:entrant_id",
+        method = "delete"
+    )]
+    async fn withdraw_tournament_entry(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+        Path(entrant_id): Path<String>,
+    ) -> Result<WithdrawTournamentEntryResponse> {
+        info!("Withdrawing entry {entrant_id} from tournament {tournament_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let Some(tournament) = dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(WithdrawTournamentEntryResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            )));
+        };
+        if !caller_is_tournament_admin(&tournament, &uid) {
+            return Ok(WithdrawTournamentEntryResponse::Forbidden(PlainText(
+                "only the tournament's owner or an admin can withdraw entries".into(),
+            )));
+        }
+        if tournament.status != "open" {
+            return Ok(WithdrawTournamentEntryResponse::ValidationError(PlainText(
+                format!("tournament is `{}`, not `open`", tournament.status),
+            )));
+        }
+        if dao
+            .get_tournament_entry(&tournament_id, &entrant_id)
+            .await
+            .map_err(dao_internal)?
+            .is_none()
+        {
+            return Ok(WithdrawTournamentEntryResponse::NotFound(PlainText(
+                "entry not found".into(),
+            )));
+        }
+        dao.delete_tournament_entry(&tournament_id, &entrant_id)
+            .await
+            .map_err(dao_internal)?;
+        dao.bump_tournament_entry_count(&tournament_id, -1)
+            .await
+            .map_err(dao_internal)?;
+        Ok(WithdrawTournamentEntryResponse::Ok)
+    }
+
+    /// Generate every match upfront from the accepted entry list (knockout
+    /// bracket or league fixture list — see `agon_core::tournament`) and
+    /// flip the tournament to `"in_progress"`. Synchronous: real tournament
+    /// sizes are small (tens of matches at most), so this doesn't need the
+    /// rolling-window async machinery `agon_worker`'s `materialize_series`
+    /// uses for an open-ended series.
+    #[oai(path = "/tournaments/:tournament_id/start", method = "post")]
+    async fn start_tournament(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+    ) -> Result<StartTournamentResponse> {
+        info!("Starting tournament {tournament_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let Some(tournament) = dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(StartTournamentResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            )));
+        };
+        if !caller_is_tournament_admin(&tournament, &uid) {
+            return Ok(StartTournamentResponse::Forbidden(PlainText(
+                "only the tournament's owner or an admin can start it".into(),
+            )));
+        }
+        if tournament.status != "open" {
+            return Ok(StartTournamentResponse::ValidationError(PlainText(
+                format!("tournament is `{}`, not `open`", tournament.status),
+            )));
+        }
+        if tournament.entry_audience != dao::records::TournamentEntryAudienceRecord::Teams {
+            return Ok(StartTournamentResponse::ValidationError(PlainText(
+                "starting a teamless tournament isn't supported yet".into(),
+            )));
+        }
+
+        let mut entries: Vec<dao::records::TournamentEntryRecord> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = dao
+                .list_tournament_entries(&tournament_id, cursor.as_deref(), 50)
+                .await
+                .map_err(dao_internal)?;
+            entries.extend(page.items.into_iter().filter(|e| e.status == "accepted"));
+            match page.next_cursor {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+
+        if (entries.len() as u32) < tournament.min_teams {
+            return Ok(StartTournamentResponse::ValidationError(PlainText(
+                format!(
+                    "need at least {} accepted entries to start (have {})",
+                    tournament.min_teams,
+                    entries.len()
+                ),
+            )));
+        }
+
+        let ordered: Vec<String> = if tournament.seeding == "manual" {
+            if entries.iter().any(|e| e.seed.is_none()) {
+                return Ok(StartTournamentResponse::ValidationError(PlainText(
+                    "manual seeding requires every accepted entry to have a seed".into(),
+                )));
+            }
+            let mut sorted = entries;
+            sorted.sort_by_key(|e| e.seed.unwrap());
+            sorted.into_iter().map(|e| e.entrant_id).collect()
+        } else {
+            let ids: Vec<String> = entries.into_iter().map(|e| e.entrant_id).collect();
+            agon_core::tournament::random_seed_order(&ids)
+        };
+
+        use chrono::Datelike;
+        let timezone: chrono_tz::Tz = tournament.timezone.parse().unwrap_or(chrono_tz::UTC);
+        let first_round_starts_at = mapping::parse_ts(&tournament.first_round_starts_at);
+        let weekday = first_round_starts_at
+            .with_timezone(&timezone)
+            .date_naive()
+            .weekday();
+
+        let round_starts_at = |round: u32| -> String {
+            agon_core::series::occurrence_starts_at(
+                first_round_starts_at,
+                timezone,
+                &tournament.frequency,
+                weekday,
+                round,
+            )
+            .unwrap_or(first_round_starts_at)
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        };
+
+        let team_side = |team_id: &str| -> dao::records::MatchSideRecord {
+            dao::records::MatchSideRecord {
+                side_id: new_id(),
+                team_id: Some(team_id.to_string()),
+                name: None,
+                colour: None,
+                max_players: None,
+                team_join_enabled: true,
+                open_join_enabled: false,
+                open_join: None,
+                max_open_spots: None,
+                open_joined_count: 0,
+                player_count: 0,
+                roster_preview: Vec::new(),
+            }
+        };
+        let tbd_side = || -> dao::records::MatchSideRecord {
+            dao::records::MatchSideRecord {
+                side_id: new_id(),
+                team_id: None,
+                name: Some("TBD".to_string()),
+                colour: None,
+                max_players: None,
+                team_join_enabled: false,
+                open_join_enabled: false,
+                open_join: None,
+                max_open_spots: None,
+                open_joined_count: 0,
+                player_count: 0,
+                roster_preview: Vec::new(),
+            }
+        };
+        let knockout_side_record = |side: &agon_core::tournament::KnockoutSide| match side {
+            agon_core::tournament::KnockoutSide::Entrant(team_id) => team_side(team_id),
+            agon_core::tournament::KnockoutSide::Tbd(_) => tbd_side(),
+        };
+
+        let build_match =
+            |match_id: String,
+             round: u32,
+             slot: u32,
+             sides: std::collections::HashMap<String, dao::records::MatchSideRecord>|
+             -> dao::records::MatchRecord {
+                dao::records::MatchRecord {
+                    id: match_id,
+                    created_by_user_id: uid.clone(),
+                    name: tournament.name.clone(),
+                    description: tournament.description.clone(),
+                    match_type: tournament.match_type.clone(),
+                    status: "scheduled".to_string(),
+                    starts_at: round_starts_at(round),
+                    allow_unassigned: true,
+                    total_player_count: 0,
+                    location: tournament.location.clone(),
+                    series_id: None,
+                    tournament_id: Some(tournament_id.clone()),
+                    tournament_round: Some(dao::records::TournamentRoundInfo { round, slot }),
+                    header_photos: Vec::new(),
+                    sides,
+                    confirmed_score: None,
+                    pending_score: None,
+                    like_count: 0,
+                    comment_count: 0,
+                    live_seq: 0,
+                    live_tip_seq: None,
+                    format: None,
+                    ranked: false,
+                    authority: tournament.authority.clone(),
+                    open_join: None,
+                    open_joined_count: 0,
+                    created_at: now_iso(),
+                }
+            };
+
+        match tournament.format.as_str() {
+            "knockout" => {
+                let plan = agon_core::tournament::plan_knockout_bracket(&ordered);
+                let minted: HashMap<String, String> = plan
+                    .matches
+                    .iter()
+                    .map(|m| (m.id.clone(), new_id()))
+                    .collect();
+                let resolved =
+                    agon_core::tournament::knockout_placeholder_to_real_id(&plan, &minted);
+
+                let mut side_ids_by_match: HashMap<String, (String, String)> = HashMap::new();
+                for m in &resolved.matches {
+                    let side_a = knockout_side_record(&m.side_a);
+                    let side_b = knockout_side_record(&m.side_b);
+                    side_ids_by_match.insert(
+                        m.id.clone(),
+                        (side_a.side_id.clone(), side_b.side_id.clone()),
+                    );
+                    let mut sides = std::collections::HashMap::new();
+                    sides.insert(side_a.side_id.clone(), side_a);
+                    sides.insert(side_b.side_id.clone(), side_b);
+                    let match_record = build_match(m.id.clone(), m.round, m.slot, sides);
+                    match dao.create_match(&match_record, &[]).await {
+                        Ok(()) => {}
+                        Err(dao::DaoError::Conflict(msg)) => {
+                            return Ok(StartTournamentResponse::ValidationError(PlainText(msg)));
+                        }
+                        Err(e) => return Err(dao_internal(e)),
+                    }
+                }
+                for (from, into, side_char) in &resolved.edges {
+                    let (side_id_a, side_id_b) = side_ids_by_match
+                        .get(into)
+                        .expect("every edge target was just created above");
+                    let target_side_id = if *side_char == 'A' {
+                        side_id_a.clone()
+                    } else {
+                        side_id_b.clone()
+                    };
+                    dao.create_tournament_bracket_edge(
+                        &dao::records::TournamentBracketEdgeRecord {
+                            tournament_id: tournament_id.clone(),
+                            match_id: from.clone(),
+                            winner_feeds_into_match_id: Some(into.clone()),
+                            winner_feeds_into_side: Some(target_side_id),
+                        },
+                    )
+                    .await
+                    .map_err(dao_internal)?;
+                }
+            }
+            "league" => {
+                let fixtures = agon_core::tournament::round_robin_fixtures(ordered.len());
+                for (round, matchday) in fixtures.iter().enumerate() {
+                    for (slot, (a_idx, b_idx)) in matchday.iter().enumerate() {
+                        let side_a = team_side(&ordered[*a_idx]);
+                        let side_b = team_side(&ordered[*b_idx]);
+                        let mut sides = std::collections::HashMap::new();
+                        sides.insert(side_a.side_id.clone(), side_a);
+                        sides.insert(side_b.side_id.clone(), side_b);
+                        let match_record = build_match(new_id(), round as u32, slot as u32, sides);
+                        match dao.create_match(&match_record, &[]).await {
+                            Ok(()) => {}
+                            Err(dao::DaoError::Conflict(msg)) => {
+                                return Ok(StartTournamentResponse::ValidationError(PlainText(
+                                    msg,
+                                )));
+                            }
+                            Err(e) => return Err(dao_internal(e)),
+                        }
+                    }
+                }
+            }
+            other => {
+                return Ok(StartTournamentResponse::ValidationError(PlainText(
+                    format!("unknown tournament format `{other}`"),
+                )));
+            }
+        }
+
+        dao.set_tournament_status(&tournament_id, "open", "in_progress")
+            .await
+            .map_err(dao_internal)?;
+        let tournament = dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+            .unwrap_or(tournament);
+        Ok(StartTournamentResponse::Tournament(Json(
+            tournament_from_record(&tournament),
+        )))
+    }
+
+    /// League standings, computed on read from the tournament's generated
+    /// matches (via their GSI1 `TMATCHES#<id>` projection — see
+    /// `Dao::list_tournament_matches`) rather than denormalized: a
+    /// tournament has at most a few dozen matches, so summing on every read
+    /// is cheap and can never drift from the matches themselves. Every
+    /// confirmed match counts, win/draw/loss read straight off
+    /// `MatchRecord::confirmed_score::winner_side_id` (no side is
+    /// unaccounted for, since every tournament side is team-linked).
+    #[oai(path = "/tournaments/:tournament_id/standings", method = "get")]
+    async fn get_tournament_standings(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+    ) -> Result<GetTournamentStandingsResponse> {
+        info!("Getting standings for tournament {tournament_id}");
+        self.require_uid(dao, &jwt_data).await?;
+
+        let Some(tournament) = dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(GetTournamentStandingsResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            )));
+        };
+        if tournament.format != "league" {
+            return Ok(GetTournamentStandingsResponse::ValidationError(PlainText(
+                "standings only apply to a league tournament".into(),
+            )));
+        }
+
+        let mut rows: HashMap<String, TournamentStandingsRow> = HashMap::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = dao
+                .list_tournament_matches(&tournament_id, cursor.as_deref(), 50)
+                .await
+                .map_err(dao_internal)?;
+            for m in &page.items {
+                let Some(confirmed) = &m.confirmed_score else {
+                    continue;
+                };
+                let team_ids: Vec<(String, String)> = m
+                    .sides
+                    .values()
+                    .filter_map(|s| s.team_id.as_ref().map(|t| (s.side_id.clone(), t.clone())))
+                    .collect();
+                for (_, team_id) in &team_ids {
+                    rows.entry(team_id.clone())
+                        .or_insert(TournamentStandingsRow {
+                            entrant_id: team_id.clone(),
+                            played: 0,
+                            won: 0,
+                            drawn: 0,
+                            lost: 0,
+                            points: 0,
+                        });
+                }
+                match &confirmed.winner_side_id {
+                    Some(winner_side_id) => {
+                        for (side_id, team_id) in &team_ids {
+                            let row = rows.get_mut(team_id).unwrap();
+                            row.played += 1;
+                            if side_id == winner_side_id {
+                                row.won += 1;
+                                row.points += tournament.points_win;
+                            } else {
+                                row.lost += 1;
+                                row.points += tournament.points_loss;
+                            }
+                        }
+                    }
+                    None => {
+                        for (_, team_id) in &team_ids {
+                            let row = rows.get_mut(team_id).unwrap();
+                            row.played += 1;
+                            row.drawn += 1;
+                            row.points += tournament.points_draw;
+                        }
+                    }
+                }
+            }
+            match page.next_cursor {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+
+        let mut rows: Vec<TournamentStandingsRow> = rows.into_values().collect();
+        rows.sort_by_key(|r| std::cmp::Reverse(r.points));
+        Ok(GetTournamentStandingsResponse::Standings(Json(
+            TournamentStandings { rows },
+        )))
+    }
+
+    /// Cancel a tournament (organiser-only). Doesn't touch any already-generated
+    /// matches — same posture as cancelling a series' remaining occurrences
+    /// without retracting the ones already created.
+    #[oai(path = "/tournaments/:tournament_id/cancel", method = "post")]
+    async fn cancel_tournament(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+    ) -> Result<CancelTournamentResponse> {
+        info!("Cancelling tournament {tournament_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let Some(tournament) = dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(CancelTournamentResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            )));
+        };
+        if !caller_is_tournament_admin(&tournament, &uid) {
+            return Ok(CancelTournamentResponse::Forbidden(PlainText(
+                "only the tournament's owner or an admin can cancel it".into(),
+            )));
+        }
+        if !matches!(tournament.status.as_str(), "open" | "in_progress") {
+            return Ok(CancelTournamentResponse::ValidationError(PlainText(
+                format!("tournament is already `{}`", tournament.status),
+            )));
+        }
+        dao.set_tournament_status(&tournament_id, &tournament.status, "cancelled")
+            .await
+            .map_err(dao_internal)?;
+        let tournament = dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+            .unwrap_or(tournament);
+        Ok(CancelTournamentResponse::Tournament(Json(
+            tournament_from_record(&tournament),
         )))
     }
 
@@ -9563,6 +10558,28 @@ fn caller_match_authority_role(
     match_.authority.get(uid).copied().or_else(|| {
         (match_.created_by_user_id == uid).then_some(dao::records::MatchPlayerRole::Owner)
     })
+}
+
+/// The caller's authority on a tournament — same lookup-with-creator-fallback
+/// shape as `caller_match_authority_role`, over `TournamentRecord::authority`.
+fn caller_tournament_authority_role(
+    tournament: &dao::records::TournamentRecord,
+    uid: &str,
+) -> Option<dao::records::MatchPlayerRole> {
+    tournament.authority.get(uid).copied().or_else(|| {
+        (tournament.created_by_user_id == uid).then_some(dao::records::MatchPlayerRole::Owner)
+    })
+}
+
+/// Whether the caller may manage the tournament (add/withdraw entries,
+/// start, cancel): `Owner`/`Admin` authority, no team-admin extension — a
+/// narrower rule than `caller_is_match_admin`'s, since a tournament has no
+/// sides of its own to delegate through.
+fn caller_is_tournament_admin(tournament: &dao::records::TournamentRecord, uid: &str) -> bool {
+    matches!(
+        caller_tournament_authority_role(tournament, uid),
+        Some(dao::records::MatchPlayerRole::Owner) | Some(dao::records::MatchPlayerRole::Admin)
+    )
 }
 
 /// Whether the caller owns the match — see `caller_match_authority_role`.

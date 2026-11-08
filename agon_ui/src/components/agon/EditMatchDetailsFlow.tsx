@@ -20,12 +20,10 @@ type Match = components['schemas']['Match']
 export function EditMatchDetailsFlow({ match, onDone }: { match: Match; onDone: () => void }) {
   const [scope, setScope] = useState<'single' | 'series' | null>(match.series_id ? null : 'single')
 
-  // This can render far below the "Edit" button that opened it — the single-
-  // match/series editors get scrolled into view for free from their name
-  // field's `autoFocus`, but the choice screen below has nothing to focus,
-  // so without this it can render entirely off-screen and look like tapping
-  // Edit did nothing. Re-runs on every scope change too, since picking an
-  // option doesn't remount this component.
+  // Switching scope (e.g. the "‹ Just this match, or the whole series?" back
+  // link) doesn't remount this component or reset scroll — if the viewer had
+  // scrolled down filling in a long form, flipping back to the short choice
+  // screen could otherwise leave it scrolled past, looking blank.
   const containerRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })

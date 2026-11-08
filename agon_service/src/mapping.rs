@@ -31,7 +31,8 @@ use crate::{
     MatchSeries, MatchSeriesOccurrence, MatchSeriesSide, MatchSeriesStatus, MatchSide, MatchSocial,
     MatchStatus, MatchType, PendingScore, Photo, RosterPreviewPlayer, Score, ScoreConfirmation,
     ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus,
-    SearchMatch, SetsScore, SimpleScore, Tournament, TournamentEntry, UserProfile, UserStats,
+    SearchMatch, SetsScore, SimpleScore, Tournament, TournamentEntry, TournamentEntryAudience,
+    TournamentFormat, TournamentSeeding, UserProfile, UserStats,
 };
 use crate::{LadderPlacement, LadderRating};
 use agon_core::dao::error::DaoError;
@@ -50,8 +51,8 @@ use agon_core::dao::records::{
     OpenJoinScopeRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord,
     ScoreResponseRecord, ScoreSubmissionRecord, SeriesEndRecord, SeriesOccurrenceRecord,
     SeriesRecord, SeriesSideRecord, SideOpenJoinPolicyRecord, TeamMemberRecord, TeamRecord,
-    TournamentEntryAudienceRecord, TournamentEntryRecord, TournamentRecord,
-    TournamentTeamFormationRecord, UserRecord, UserStatsRecord,
+    TournamentEntryAudienceRecord, TournamentEntryRecord, TournamentFormatRecord, TournamentRecord,
+    TournamentSeedingRecord, TournamentTeamFormationRecord, UserRecord, UserStatsRecord,
 };
 use agon_core::rating::ladder_for_tag;
 use agon_core::rating::{PLACEMENT_MATCHES, display, published};
@@ -808,12 +809,9 @@ pub fn tournament_from_record(rec: &TournamentRecord) -> Tournament {
         name: rec.name.clone(),
         description: rec.description.clone(),
         match_type: match_type_from_tag(&rec.match_type),
-        format: rec.format.clone(),
+        format: tournament_format_from_record(rec.format),
         status: rec.status.clone(),
-        entry_audience: match rec.entry_audience {
-            TournamentEntryAudienceRecord::Teams => "teams".to_string(),
-            TournamentEntryAudienceRecord::Players => "players".to_string(),
-        },
+        entry_audience: tournament_entry_audience_from_record(rec.entry_audience),
         team_formation,
         team_formation_auto_by,
         squad_size: rec.squad_size,
@@ -827,9 +825,32 @@ pub fn tournament_from_record(rec: &TournamentRecord) -> Tournament {
         points_win: rec.points_win,
         points_draw: rec.points_draw,
         points_loss: rec.points_loss,
-        seeding: rec.seeding.clone(),
+        seeding: tournament_seeding_from_record(rec.seeding),
         entry_count: rec.entry_count,
         created_at: parse_ts(&rec.created_at),
+    }
+}
+
+pub fn tournament_format_from_record(rec: TournamentFormatRecord) -> TournamentFormat {
+    match rec {
+        TournamentFormatRecord::Knockout => TournamentFormat::Knockout,
+        TournamentFormatRecord::League => TournamentFormat::League,
+    }
+}
+
+pub fn tournament_entry_audience_from_record(
+    rec: TournamentEntryAudienceRecord,
+) -> TournamentEntryAudience {
+    match rec {
+        TournamentEntryAudienceRecord::Teams => TournamentEntryAudience::Teams,
+        TournamentEntryAudienceRecord::Players => TournamentEntryAudience::Players,
+    }
+}
+
+pub fn tournament_seeding_from_record(rec: TournamentSeedingRecord) -> TournamentSeeding {
+    match rec {
+        TournamentSeedingRecord::Random => TournamentSeeding::Random,
+        TournamentSeedingRecord::Manual => TournamentSeeding::Manual,
     }
 }
 

@@ -1162,6 +1162,31 @@ struct MatchSeriesOccurrencePage {
     next_cursor: Option<String>,
 }
 
+/// A tournament's generation format.
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+#[oai(rename_all = "snake_case")]
+enum TournamentFormat {
+    Knockout,
+    League,
+}
+
+/// Who enters a tournament.
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+#[oai(rename_all = "snake_case")]
+enum TournamentEntryAudience {
+    Teams,
+    Players,
+}
+
+/// How entrants are ordered into the bracket/fixture list at `start`.
+/// `Manual` reads each entry's `seed`; `Random` shuffles.
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+#[oai(rename_all = "snake_case")]
+enum TournamentSeeding {
+    Random,
+    Manual,
+}
+
 /// `POST /tournaments` input. v1 only supports `entry_audience: "teams"` —
 /// a teamless tournament (`"players"` on a team sport, squads reassembled
 /// each round) is designed but not yet buildable (see `team_formation`'s doc
@@ -1172,10 +1197,9 @@ struct CreateTournamentInput {
     match_type: MatchType,
     name: String,
     description: String,
-    /// `"knockout"` | `"league"`.
-    format: String,
-    /// `"teams"` | `"players"`. Only `"teams"` is supported by `start` today.
-    entry_audience: String,
+    format: TournamentFormat,
+    /// Only `Teams` is supported by `start` today.
+    entry_audience: TournamentEntryAudience,
     /// `"manual"` | `"auto"` — only meaningful (and only accepted) when
     /// `entry_audience` is `"players"` on a team sport.
     team_formation: Option<String>,
@@ -1198,8 +1222,7 @@ struct CreateTournamentInput {
     points_win: Option<u32>,
     points_draw: Option<u32>,
     points_loss: Option<u32>,
-    /// `"random"` | `"manual"` — manual reads each entry's `seed` at `start`.
-    seeding: String,
+    seeding: TournamentSeeding,
 }
 
 /// `TOURNAMENT#<id>` as the API sees it — see `TournamentRecord`'s doc
@@ -1211,10 +1234,10 @@ struct Tournament {
     name: String,
     description: String,
     match_type: MatchType,
-    format: String,
+    format: TournamentFormat,
     /// `"open"` | `"in_progress"` | `"completed"` | `"cancelled"`.
     status: String,
-    entry_audience: String,
+    entry_audience: TournamentEntryAudience,
     team_formation: Option<String>,
     team_formation_auto_by: Option<String>,
     squad_size: Option<u32>,
@@ -1228,13 +1251,13 @@ struct Tournament {
     points_win: u32,
     points_draw: u32,
     points_loss: u32,
-    seeding: String,
+    seeding: TournamentSeeding,
     entry_count: u64,
     created_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// One entrant's place in a tournament (`entrant_id` is a team id when
-/// `entry_audience` is `"teams"`, a user id when `"players"`).
+/// `entry_audience` is `Teams`, a user id when `Players`).
 #[derive(Object)]
 struct TournamentEntry {
     tournament_id: String,
@@ -5284,18 +5307,14 @@ impl Api {
         let input = input.0;
         let uid = self.require_uid(dao, &jwt_data).await?;
 
-        if !matches!(input.format.as_str(), "knockout" | "league") {
-            return Ok(CreateTournamentResponse::ValidationError(PlainText(
-                format!("format `{}` must be one of knockout, league", input.format),
-            )));
-        }
-        let entry_audience = match input.entry_audience.as_str() {
-            "teams" => dao::records::TournamentEntryAudienceRecord::Teams,
-            "players" => dao::records::TournamentEntryAudienceRecord::Players,
-            other => {
-                return Ok(CreateTournamentResponse::ValidationError(PlainText(
-                    format!("entry_audience `{other}` must be one of teams, players"),
-                )));
+        let format = match input.format {
+            TournamentFormat::Knockout => dao::records::TournamentFormatRecord::Knockout,
+            TournamentFormat::League => dao::records::TournamentFormatRecord::League,
+        };
+        let entry_audience = match input.entry_audience {
+            TournamentEntryAudience::Teams => dao::records::TournamentEntryAudienceRecord::Teams,
+            TournamentEntryAudience::Players => {
+                dao::records::TournamentEntryAudienceRecord::Players
             }
         };
         // A teamless tournament's squads are fixed once, manually, before
@@ -5335,16 +5354,11 @@ impl Api {
                 "squad_size only applies when entry_audience is `players`".into(),
             )));
         }
-        if !matches!(input.seeding.as_str(), "random" | "manual") {
-            return Ok(CreateTournamentResponse::ValidationError(PlainText(
-                format!("seeding `{}` must be one of random, manual", input.seeding),
-            )));
-        }
         // A squad has no single seed of its own (its members might each
         // have one, but that doesn't resolve to a squad order) — manual
         // seeding only makes sense for `Teams`.
         if entry_audience == dao::records::TournamentEntryAudienceRecord::Players
-            && input.seeding == "manual"
+            && input.seeding == TournamentSeeding::Manual
         {
             return Ok(CreateTournamentResponse::ValidationError(PlainText(
                 "a teamless tournament only supports seeding: \"random\" — squads have no single seed"
@@ -5412,7 +5426,7 @@ impl Api {
             name: input.name,
             description: input.description,
             match_type: match_type_tag(&input.match_type).to_string(),
-            format: input.format,
+            format,
             status: "open".to_string(),
             entry_audience,
             team_formation,
@@ -5429,7 +5443,10 @@ impl Api {
             points_win: input.points_win.unwrap_or(3),
             points_draw: input.points_draw.unwrap_or(0),
             points_loss: input.points_loss.unwrap_or(0),
-            seeding: input.seeding,
+            seeding: match input.seeding {
+                TournamentSeeding::Random => dao::records::TournamentSeedingRecord::Random,
+                TournamentSeeding::Manual => dao::records::TournamentSeedingRecord::Manual,
+            },
             entry_count: 0,
             authority: std::collections::HashMap::from([(
                 uid,
@@ -5553,7 +5570,9 @@ impl Api {
                 format!("tournament is `{}`, not `open`", tournament.status),
             )));
         }
-        if tournament.seeding == "manual" && input.seed.is_none() {
+        if tournament.seeding == dao::records::TournamentSeedingRecord::Manual
+            && input.seed.is_none()
+        {
             return Ok(AddTournamentEntryResponse::ValidationError(PlainText(
                 "this tournament uses manual seeding — seed is required".into(),
             )));
@@ -5595,9 +5614,6 @@ impl Api {
             }
             Err(e) => return Err(dao_internal(e)),
         }
-        dao.bump_tournament_entry_count(&tournament_id, 1)
-            .await
-            .map_err(dao_internal)?;
 
         Ok(AddTournamentEntryResponse::Entry(Json(
             tournament_entry_from_record(&entry),
@@ -5717,9 +5733,6 @@ impl Api {
         dao.delete_tournament_entry(&tournament_id, &entrant_id)
             .await
             .map_err(dao_internal)?;
-        dao.bump_tournament_entry_count(&tournament_id, -1)
-            .await
-            .map_err(dao_internal)?;
         Ok(WithdrawTournamentEntryResponse::Ok)
     }
 
@@ -5789,7 +5802,7 @@ impl Api {
                         ),
                     )));
                 }
-                if tournament.seeding == "manual" {
+                if tournament.seeding == dao::records::TournamentSeedingRecord::Manual {
                     if entries.iter().any(|e| e.seed.is_none()) {
                         return Ok(StartTournamentResponse::ValidationError(PlainText(
                             "manual seeding requires every accepted entry to have a seed".into(),
@@ -5812,7 +5825,7 @@ impl Api {
             // copied into the next match too, which that handler doesn't
             // do yet.
             dao::records::TournamentEntryAudienceRecord::Players => {
-                if tournament.format != "league" {
+                if tournament.format != dao::records::TournamentFormatRecord::League {
                     return Ok(StartTournamentResponse::ValidationError(PlainText(
                         "starting a teamless knockout tournament isn't supported yet".into(),
                     )));
@@ -6013,8 +6026,8 @@ impl Api {
                 }
             };
 
-        match tournament.format.as_str() {
-            "knockout" => {
+        match tournament.format {
+            dao::records::TournamentFormatRecord::Knockout => {
                 let plan = agon_core::tournament::plan_knockout_bracket(&ordered);
                 let minted: HashMap<String, String> = plan
                     .matches
@@ -6065,7 +6078,7 @@ impl Api {
                     .map_err(dao_internal)?;
                 }
             }
-            "league" => {
+            dao::records::TournamentFormatRecord::League => {
                 let fixtures = agon_core::tournament::round_robin_fixtures(ordered.len());
                 for (round, matchday) in fixtures.iter().enumerate() {
                     for (slot, (a_idx, b_idx)) in matchday.iter().enumerate() {
@@ -6088,11 +6101,6 @@ impl Api {
                         }
                     }
                 }
-            }
-            other => {
-                return Ok(StartTournamentResponse::ValidationError(PlainText(
-                    format!("unknown tournament format `{other}`"),
-                )));
             }
         }
 
@@ -6136,7 +6144,7 @@ impl Api {
                 "tournament not found".into(),
             )));
         };
-        if tournament.format != "league" {
+        if tournament.format != dao::records::TournamentFormatRecord::League {
             return Ok(GetTournamentStandingsResponse::ValidationError(PlainText(
                 "standings only apply to a league tournament".into(),
             )));

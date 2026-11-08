@@ -687,6 +687,26 @@ pub enum TournamentEntryAudienceRecord {
     Players,
 }
 
+/// A tournament's generation format — a small closed set with branching
+/// logic throughout (`TournamentRecord::format`), unlike the genuinely
+/// open-ended `SeriesRecord::frequency`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TournamentFormatRecord {
+    Knockout,
+    League,
+}
+
+/// How entrants are ordered into the bracket/fixture list at `start`
+/// (`TournamentRecord::seeding`). `Manual` reads each entry's `seed`;
+/// `Random` shuffles via `agon_core::tournament::random_seed_order`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TournamentSeedingRecord {
+    Random,
+    Manual,
+}
+
 /// How a teamless tournament (`entry_audience: Players` on a team sport)
 /// assembles each round's squads. `None` on `TournamentRecord` for every
 /// other tournament (`Teams`, or `Players` on a 1v1 sport) — this field only
@@ -733,10 +753,7 @@ pub struct TournamentRecord {
     pub description: String,
     /// Sport tag, same meaning as `MatchRecord::match_type`.
     pub match_type: String,
-    /// `"knockout"` | `"league"` — an open string, same spirit as
-    /// `SeriesRecord::frequency`, so a later format doesn't need a schema
-    /// migration, only new generation logic.
-    pub format: String,
+    pub format: TournamentFormatRecord,
     /// Lifecycle: `"open"` | `"in_progress"` | `"completed"` | `"cancelled"`
     /// — entries are only accepted while `"open"`; `start` flips it to
     /// `"in_progress"` and locks the entry list.
@@ -772,8 +789,7 @@ pub struct TournamentRecord {
     pub points_draw: u32,
     #[serde(default)]
     pub points_loss: u32,
-    /// `"random"` | `"manual"` — manual reads each entry's `seed`.
-    pub seeding: String,
+    pub seeding: TournamentSeedingRecord,
     /// Denormalized, same pattern as `TeamRecord::follower_count`. Maintained
     /// via atomic `ADD` (`Dao::bump_tournament_entry_count`), never
     /// recomputed from a scan.

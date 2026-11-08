@@ -9,7 +9,7 @@
 
 use aws_sdk_dynamodb::error::SdkError;
 use aws_sdk_dynamodb::operation::put_item::PutItemError;
-use aws_sdk_dynamodb::types::AttributeValue;
+use aws_sdk_dynamodb::types::{AttributeValue, Delete, Put, TransactWriteItem, Update};
 
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
@@ -105,9 +105,12 @@ impl Dao {
     }
 
     /// Add an entry (a fresh request, an organiser's direct add, or an
-    /// approved request's acceptance). `Conflict` if this entrant already
-    /// has an entry — at most one entry per entrant, the same "doubles as
-    /// the uniqueness guard" convention as `Sk::WaitlistEntry`.
+    /// approved request's acceptance) and bump the tournament's
+    /// `entry_count` atomically in one `TransactWriteItems`, so the counter
+    /// can never drift from the actual entry rows (e.g. on a crash between
+    /// the two writes). `Conflict` if this entrant already has an entry —
+    /// at most one entry per entrant, the same "doubles as the uniqueness
+    /// guard" convention as `Sk::WaitlistEntry`.
     #[tracing::instrument(skip(self, entry), fields(tournament_id = %entry.tournament_id, entrant_id = %entry.entrant_id))]
     pub async fn create_tournament_entry(&self, entry: &TournamentEntryRecord) -> DaoResult<()> {
         let item = to_item(
@@ -116,23 +119,46 @@ impl Dao {
             TYPE_TOURNAMENT_ENTRY,
             entry,
         )?;
-        let result = self
-            .client
-            .put_item()
+        let put = Put::builder()
             .table_name(self.table())
             .set_item(Some(item))
             .condition_expression("attribute_not_exists(#pk)")
             .expression_attribute_names("#pk", ATTR_PK)
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+
+        let result = self
+            .client
+            .transact_write_items()
+            .transact_items(TransactWriteItem::builder().put(put).build())
+            .transact_items(
+                TransactWriteItem::builder()
+                    .update(self.tournament_entry_count_counter(&entry.tournament_id, 1)?)
+                    .build(),
+            )
             .send()
             .await;
         match result {
             Ok(_) => Ok(()),
-            Err(e) if is_put_conditional_failure(&e) => Err(DaoError::Conflict(format!(
-                "{} already has an entry in tournament {}",
-                entry.entrant_id, entry.tournament_id
-            ))),
+            Err(e) if super::is_transaction_conditional_failure(&e) => {
+                Err(DaoError::Conflict(format!(
+                    "{} already has an entry in tournament {}",
+                    entry.entrant_id, entry.tournament_id
+                )))
+            }
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
+    }
+
+    fn tournament_entry_count_counter(&self, tournament_id: &str, delta: i64) -> DaoResult<Update> {
+        Update::builder()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Tournament(tournament_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .update_expression("ADD entry_count :delta")
+            .expression_attribute_values(":delta", AttributeValue::N(delta.to_string()))
+            .build()
+            .map_err(|e| DaoError::Dynamo(e.to_string()))
     }
 
     /// Fetch one entrant's entry. `None` if absent.
@@ -250,38 +276,31 @@ impl Dao {
     /// Withdraw/remove an entry outright (only while the tournament is
     /// still `"open"` — enforced by the caller, not here).
     #[tracing::instrument(skip(self))]
+    /// Remove an entry and decrement the tournament's `entry_count`
+    /// atomically in one `TransactWriteItems` — same reasoning as
+    /// `create_tournament_entry`: the counter must never be able to drift
+    /// from the actual entry rows.
+    #[tracing::instrument(skip(self))]
     pub async fn delete_tournament_entry(
         &self,
         tournament_id: &str,
         entrant_id: &str,
     ) -> DaoResult<()> {
-        self.client
-            .delete_item()
+        let delete = Delete::builder()
             .table_name(self.table())
             .key(ATTR_PK, s(Pk::Tournament(tournament_id.into()).to_string()))
             .key(ATTR_SK, s(Sk::Entry(entrant_id.into()).to_string()))
-            .send()
-            .await
+            .build()
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-        Ok(())
-    }
 
-    /// Adjust `entry_count` by `delta` (positive on add, negative on
-    /// withdraw) — an atomic `ADD`, same convention as every other
-    /// denormalized counter in this DAO (never recomputed from a scan).
-    #[tracing::instrument(skip(self))]
-    pub async fn bump_tournament_entry_count(
-        &self,
-        tournament_id: &str,
-        delta: i64,
-    ) -> DaoResult<()> {
         self.client
-            .update_item()
-            .table_name(self.table())
-            .key(ATTR_PK, s(Pk::Tournament(tournament_id.into()).to_string()))
-            .key(ATTR_SK, s(Sk::Meta.to_string()))
-            .update_expression("ADD entry_count :delta")
-            .expression_attribute_values(":delta", AttributeValue::N(delta.to_string()))
+            .transact_write_items()
+            .transact_items(TransactWriteItem::builder().delete(delete).build())
+            .transact_items(
+                TransactWriteItem::builder()
+                    .update(self.tournament_entry_count_counter(tournament_id, -1)?)
+                    .build(),
+            )
             .send()
             .await
             .map_err(|e| DaoError::Dynamo(e.to_string()))?;

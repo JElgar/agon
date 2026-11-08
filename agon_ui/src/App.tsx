@@ -29,6 +29,7 @@ import { BrowseMatchesPage } from '@/pages/BrowseMatchesPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { LogMatchPage } from '@/pages/LogMatchPage'
 import { MatchDetailPage } from '@/pages/MatchDetailPage'
+import { EditMatchPage } from '@/pages/EditMatchPage'
 import { MatchSeriesPage } from '@/pages/MatchSeriesPage'
 import { LiveScoringSetupPage } from '@/pages/LiveScoringSetupPage'
 import { LiveScoringPage } from '@/pages/LiveScoringPage'
@@ -131,6 +132,7 @@ function AppShell({ onSignOut }: { onSignOut: () => void }) {
           />
           <Route path="/matches/search" element={<BrowseMatchesPage />} />
           <Route path="/matches/:matchId" element={<MatchDetailPage />} />
+          <Route path="/matches/:matchId/edit" element={<EditMatchPage />} />
           <Route path="/match-series/:seriesId" element={<MatchSeriesPage />} />
           <Route path="/matches/:matchId/live/setup" element={<LiveScoringSetupPage />} />
           <Route path="/matches/:matchId/live" element={<LiveScoringPage />} />

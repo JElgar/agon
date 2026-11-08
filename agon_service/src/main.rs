@@ -10235,6 +10235,39 @@ impl RequestMetrics {
     }
 }
 
+/// Gatekeeps every `/admin/...` route in one place, so `AdminApi`'s handlers
+/// don't each call `admin::require_admin` themselves. Verifies the bearer
+/// token and checks `is_admin` here, before the request ever reaches
+/// poem-openapi's routing; anything outside `/admin` passes straight
+/// through. Must sit inside (run after) the `.data(dao)`/`.data(verifier)`
+/// layers in the `Route` chain below, since it reads both from request data.
+async fn admin_auth_middleware<E: Endpoint>(next: E, req: Request) -> Result<Response> {
+    if !req.uri().path().starts_with("/admin") {
+        return next.call(req).await.map(IntoResponse::into_response);
+    }
+
+    let token = req
+        .headers()
+        .get(poem::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(|| Error::from_string("missing bearer token", StatusCode::UNAUTHORIZED))?;
+
+    let verifier = req
+        .data::<auth::JwtVerifier>()
+        .expect("JwtVerifier missing from request data");
+    let claims = verifier.verify(token).await.map_err(|err| {
+        Error::from_string(format!("Invalid JWT: {}", err.0), StatusCode::UNAUTHORIZED)
+    })?;
+
+    let dao = req
+        .data::<dao::Dao>()
+        .expect("Dao missing from request data");
+    admin::require_admin(dao, &claims).await?;
+
+    next.call(req).await.map(IntoResponse::into_response)
+}
+
 async fn log_middleware<E: Endpoint>(next: E, mut req: Request) -> Result<Response> {
     use opentelemetry::KeyValue;
     use std::time::Instant;
@@ -10408,6 +10441,7 @@ async fn main() {
                 .nest("/docs", ui)
                 .nest("/share", share::routes())
                 .with(cors)
+                .around(admin_auth_middleware)
                 .data(dao)
                 .data(search)
                 .data(verifier)

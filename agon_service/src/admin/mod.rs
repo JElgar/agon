@@ -19,15 +19,16 @@ use poem_openapi::{ApiResponse, OpenApi};
 
 use crate::auth::JwtClaims;
 use crate::mapping::{dao_internal, parse_ts};
-use crate::{AuthSchema, page_limit, require_uid, search_cursor, search_internal, search_offset};
+use crate::{page_limit, require_uid, search_cursor, search_internal, search_offset};
 
 pub struct AdminApi;
 
 /// Like `require_uid`, but also requires the caller's account to have
-/// `is_admin` set. Every admin-panel endpoint starts with this instead — a
-/// real but non-admin account gets a 403, the same signal a stranger would
-/// get probing an endpoint they have no business calling.
-async fn require_admin(dao: &dao::Dao, jwt: &JwtClaims) -> Result<String> {
+/// `is_admin` set. Called once per request by `admin_auth_middleware`
+/// (`main.rs`, wrapping every `/admin/...` route) rather than by each
+/// handler below — a real but non-admin account gets a 403, the same signal
+/// a stranger would get probing an endpoint they have no business calling.
+pub(crate) async fn require_admin(dao: &dao::Dao, jwt: &JwtClaims) -> Result<String> {
     let uid = require_uid(dao, jwt).await?;
     let user = dao
         .get_user(&uid)
@@ -95,7 +96,6 @@ impl AdminApi {
         &self,
         Data(dao): Data<&dao::Dao>,
         Data(search): Data<&agon_core::search::SearchClient>,
-        AuthSchema(jwt_data): AuthSchema,
         /// Free-text search over name/email. Omit or empty to list everyone.
         #[oai(name = "q")]
         Query(query): Query<Option<String>>,
@@ -103,8 +103,6 @@ impl AdminApi {
         Query(cursor): Query<Option<String>>,
         Query(limit): Query<Option<u32>>,
     ) -> Result<ListUsersResponse> {
-        require_admin(dao, &jwt_data).await?;
-
         let offset = match search_offset(cursor.as_deref()) {
             Ok(o) => o,
             Err(()) => {
@@ -143,10 +141,8 @@ impl AdminApi {
     async fn get_user(
         &self,
         Data(dao): Data<&dao::Dao>,
-        AuthSchema(jwt_data): AuthSchema,
         Path(user_id): Path<String>,
     ) -> Result<GetUserResponse> {
-        require_admin(dao, &jwt_data).await?;
         match dao.get_user(&user_id).await.map_err(dao_internal)? {
             Some(record) => Ok(GetUserResponse::User(Json(admin_user_from_record(&record)))),
             None => Ok(GetUserResponse::NotFound(PlainText(
@@ -164,11 +160,9 @@ impl AdminApi {
     async fn update_user(
         &self,
         Data(dao): Data<&dao::Dao>,
-        AuthSchema(jwt_data): AuthSchema,
         Path(user_id): Path<String>,
         input: Json<models::UpdateUserInput>,
     ) -> Result<UpdateUserResponse> {
-        require_admin(dao, &jwt_data).await?;
         let input = input.0;
 
         if let Some(name) = input.name.as_deref() {

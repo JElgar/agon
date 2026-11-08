@@ -1555,6 +1555,62 @@ pub fn ranked_lock_reason_for_update(
     None
 }
 
+/// Why a **rated** ranked match refuses this edit, or `None` if the request
+/// changes nothing its ratings were computed from.
+///
+/// A Weng-Lin update is not invertible: what a match did to you depends on
+/// every opponent's sigma at that moment, so there is no delta to subtract
+/// and a correction can only be made by replaying the ladder forward in
+/// played order. `RepairRatings` is that replay and isn't built, so today an
+/// edit that moves what a rating was built on leaves the stored number
+/// quietly wrong with nothing in the system that notices.
+///
+/// Three inputs are therefore closed once a ranked match has a confirmed
+/// score — the moment the pipeline will have rated it:
+///
+/// - **the roster**, because who played and which side they played for is
+///   literally what `rate_match` was given,
+/// - **the start time**, because ratings are applied in played order and
+///   moving a match reorders somebody's ladder,
+/// - **the status**, because cancelling a match it has already rated would
+///   need its effect withdrawn, which is the same non-invertible problem.
+///
+/// The **score stays editable, deliberately.** A wrong result is the thing
+/// most worth being able to fix, it is the one correction the pipeline
+/// already detects (`RepairTrigger::Rerated`), and refusing it would leave
+/// a typo permanent — strictly worse than a replayable mistake. Cosmetic
+/// fields (name, description, location, photos, side names and colours) are
+/// not considered here at all: no rating was ever computed from them.
+///
+/// Gated on `confirmed_score` rather than on a pending submission, because
+/// that is exactly what the rating pipeline gates on. A score still awaiting
+/// confirmation has rated nobody, so a roster edit underneath it is applied
+/// *before* the rating exists and is correct by construction.
+///
+/// Before any score, nothing is refused: the match hasn't been rated, and
+/// organising one is mostly roster edits.
+#[must_use]
+pub fn rated_ranked_edit_reason(
+    stored: &MatchRecord,
+    edits_roster: bool,
+    moves_start_time: bool,
+    changes_status: bool,
+) -> Option<&'static str> {
+    if !stored.ranked || stored.confirmed_score.is_none() {
+        return None;
+    }
+    if edits_roster {
+        return Some("a ranked match's roster is fixed once it has a score");
+    }
+    if moves_start_time {
+        return Some("a ranked match can't be rescheduled once it has a score");
+    }
+    if changes_status {
+        return Some("a ranked match's status is fixed once it has a score");
+    }
+    None
+}
+
 /// The players a match ranked on some ladder can't have in it, sorted by why.
 /// Built by [`unratable_players`]; empty means all of them can play.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -1568,8 +1624,10 @@ pub struct UnratablePlayers {
     ///
     /// Once the only reason a player could be unratable. Not being opted in
     /// used to be the other, and is not a reason for anything now: every
-    /// account is rated from the first match it completes, published only
-    /// once it opts in (`agon_core::rating::placement`).
+    /// account is rated from the first match it completes, and the number is
+    /// published once its placement matches are behind it
+    /// (`agon_core::rating::placement`) — which nobody can opt into or out
+    /// of, so it is not a reason to keep anyone out of a match.
     pub without_account: Vec<String>,
 }
 
@@ -1610,6 +1668,27 @@ pub fn unratable_players<'a>(
 /// fine now: the match rates them latently, and nothing they or the organiser
 /// does about it changes the result.
 #[must_use]
+/// The refusal for *creating* a match ranked with guests invited to it, or
+/// `None` if everyone invited could be rated.
+///
+/// Separate from [`switch_to_ranked_reason`] because the way out is
+/// different, and the message is most of what this function is. On a switch
+/// the match already exists and the guests are already on it, so the advice
+/// is to remove them. At creation nothing has happened yet: the organiser is
+/// choosing between a ranked match made of accounts and a friendly, and
+/// telling them to "remove" someone they are in the middle of inviting would
+/// describe an edit they haven't made.
+pub fn ranked_guest_invites_reason(unratable: &UnratablePlayers) -> Option<String> {
+    if !unratable.without_account.is_empty() {
+        return Some(format!(
+            "a ranked match can't include guests without an Agon account: {}. \
+             Invite them to Agon, or create this match as a friendly",
+            unratable.without_account.join(", ")
+        ));
+    }
+    None
+}
+
 pub fn ranked_added_players_reason(unratable: &UnratablePlayers) -> Option<String> {
     if !unratable.without_account.is_empty() {
         return Some(format!(
@@ -2186,6 +2265,59 @@ mod tests {
         );
     }
 
+    /// A squash match with a confirmed score, i.e. one the pipeline has
+    /// rated.
+    fn rated_match() -> MatchRecord {
+        let mut m = scheduled_match("2026-06-01T18:00:00.000Z");
+        m.status = "completed".to_string();
+        m.confirmed_score = Some(ConfirmedScoreRecord {
+            score: ScoreRecord::Simple {
+                entries: HashMap::new(),
+            },
+            winner_side_id: None,
+        });
+        m
+    }
+
+    /// Each of the three rating inputs is refused on its own, and the score
+    /// is the one thing left open.
+    #[test]
+    fn a_rated_ranked_match_closes_its_rating_inputs() {
+        let m = rated_match();
+        assert_eq!(
+            rated_ranked_edit_reason(&m, true, false, false),
+            Some("a ranked match's roster is fixed once it has a score")
+        );
+        assert_eq!(
+            rated_ranked_edit_reason(&m, false, true, false),
+            Some("a ranked match can't be rescheduled once it has a score")
+        );
+        assert_eq!(
+            rated_ranked_edit_reason(&m, false, false, true),
+            Some("a ranked match's status is fixed once it has a score")
+        );
+        // Nothing the rating was built from: a score edit, or a rename.
+        assert_eq!(rated_ranked_edit_reason(&m, false, false, false), None);
+    }
+
+    /// Before a score there is no rating to protect, and setting a match up
+    /// is mostly roster edits — so the lock mustn't apply yet. Getting this
+    /// wrong would make a ranked match impossible to organise.
+    #[test]
+    fn an_unscored_ranked_match_refuses_nothing() {
+        let m = scheduled_match("2026-06-01T18:00:00.000Z");
+        assert_eq!(rated_ranked_edit_reason(&m, true, true, true), None);
+    }
+
+    /// A friendly's roster was never anybody's rating input, so none of this
+    /// applies however the match was scored.
+    #[test]
+    fn a_scored_friendly_refuses_nothing() {
+        let mut m = rated_match();
+        m.ranked = false;
+        assert_eq!(rated_ranked_edit_reason(&m, true, true, true), None);
+    }
+
     /// **Regression.** The first version of this lock read the stored record
     /// alone, which let a single PATCH walk through it and close it behind
     /// itself: `{ score, ranked: false }` on a match still stored `scheduled`
@@ -2405,13 +2537,14 @@ mod tests {
     }
 
     /// Each refusal is silent when there's nobody to refuse, and otherwise
-    /// names who. Both remaining refusals are about accounts, so both say
-    /// so — there is no longer a second kind to report underneath.
+    /// names who. All three remaining refusals are about accounts, so all
+    /// three say so — there is no longer a second kind to report underneath.
     #[test]
     fn the_roster_refusals_name_who_and_what_to_do() {
         let nobody = UnratablePlayers::default();
         assert_eq!(ranked_added_players_reason(&nobody), None);
         assert_eq!(switch_to_ranked_reason(&nobody), None);
+        assert_eq!(ranked_guest_invites_reason(&nobody), None);
 
         let guest = UnratablePlayers {
             without_account: vec!["Ringer".to_string()],
@@ -2419,10 +2552,23 @@ mod tests {
         for reason in [
             ranked_added_players_reason(&guest).unwrap(),
             switch_to_ranked_reason(&guest).unwrap(),
+            ranked_guest_invites_reason(&guest).unwrap(),
         ] {
             assert!(reason.contains("Agon account"), "{reason}");
             assert!(reason.contains("Ringer"), "{reason}");
         }
+
+        // The refusals on an existing match tell you to take the guest off
+        // it. The creation one can't say that — nothing has been created, and
+        // the organiser is mid-invite — so it names the two choices actually
+        // still open instead.
+        assert!(
+            switch_to_ranked_reason(&guest).unwrap().contains("remove"),
+            "a switch is refused on a match the guests are already on"
+        );
+        let creating = ranked_guest_invites_reason(&guest).unwrap();
+        assert!(!creating.contains("remove"), "{creating}");
+        assert!(creating.contains("friendly"), "{creating}");
     }
 
     fn rated(matches_rated: u64) -> agon_core::dao::records::RatingRecord {

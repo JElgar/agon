@@ -51,13 +51,14 @@ use mapping::{
     match_score_from_record, match_score_to_record, match_series_from_record,
     match_series_occurrence_from_record, match_status_str, match_type_tag,
     matches_played_for_sport, new_live_event_to_dao, notification_actor_id,
-    notification_from_record, ranked_added_players_reason, ranked_lock_reason_for_update,
-    rating_ladder, rating_ladder_for, rating_placements_from_record, resolve_score_ids,
-    roster_preview_player, score_player_ids, score_side_ids, score_submission_from_record,
-    score_to_record, search_match_from_records, series_end_record_from_input, set_score_players,
-    switch_to_ranked_reason, team_from_records, team_list_item_from_record,
-    team_member_from_record, tournament_entry_from_record, tournament_from_record,
-    unrankable_sport_reason, unratable_players, user_profile_from_record, winner_from_score,
+    notification_from_record, ranked_added_players_reason, ranked_guest_invites_reason,
+    ranked_lock_reason_for_update, rated_ranked_edit_reason, rating_ladder, rating_ladder_for,
+    rating_placements_from_record, resolve_score_ids, roster_preview_player, score_player_ids,
+    score_side_ids, score_submission_from_record, score_to_record, search_match_from_records,
+    series_end_record_from_input, set_score_players, switch_to_ranked_reason, team_from_records,
+    team_list_item_from_record, team_member_from_record, tournament_entry_from_record,
+    tournament_from_record, unrankable_sport_reason, unratable_players, user_profile_from_record,
+    winner_from_score,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -1342,9 +1343,12 @@ struct UpdateMatchInput {
     status: Option<MatchStatus>,
     /// Ad-hoc players who actually played but weren't invited (e.g. ringers).
     /// They take a spot without being asked anything, so on a match that is
-    /// (or this request makes) ranked, only users already opted in to its
-    /// ladder can be added this way: a player without an account, or one who
-    /// hasn't opted in, is refused (400), and should be invited instead.
+    /// (or this request makes) ranked, every one of them needs an Agon
+    /// account: one without is refused (400), and should be invited instead.
+    /// Nothing further is asked of them — playing a ranked match is the whole
+    /// of the agreement — but a guest has no profile to keep a rating on, and
+    /// the pipeline refuses to rate such a match at all rather than rate
+    /// around them (see `UnratablePlayers::without_account`).
     added_players: Option<Vec<AddMatchPlayerInput>>,
     /// Reassign existing players to sides (late changes to who played for whom).
     side_assignments: Option<Vec<SetPlayerSideInput>>,
@@ -1435,11 +1439,11 @@ struct UpdateMatchInput {
     /// unconstrained even for an already-played match; see
     /// `CreateMatchInput.ranked` for why, and for what limits it instead.
     ///
-    /// Switching **to** ranked also needs everyone it would rate, or could
-    /// move in, to have agreed to it: every player in a spot must have an
-    /// account and be opted in to the ladder, and so must everyone on the
-    /// waitlist. Otherwise it's refused (400) naming them. Pending invitees
-    /// don't count; they're asked when they accept.
+    /// Switching **to** ranked also needs everyone it would rate to be
+    /// rateable: every player in a spot must have an Agon account, or it's
+    /// refused (400) naming them. Pending invitees don't count — they hold no
+    /// spot until they accept — and the waitlist isn't read at all, because a
+    /// waitlist entry always names an account and so can never fail this.
     ranked: Option<bool>,
     // Note: no `match_type`. A match's sport is fixed at creation, and a
     // ranked match relies on that: a new sport would move its result to
@@ -3793,6 +3797,34 @@ impl Api {
             return Ok(CreateMatchResponse::ValidationError(PlainText(reason)));
         }
 
+        // A guest on a side makes a ranked match rate *nobody* — not them
+        // (there is no profile to keep a rating on) and not anyone else
+        // (Weng-Lin sums a side's beliefs, so rating around them would credit
+        // their share of the result to their team-mates). The pipeline
+        // refuses the whole match rather than rate part of it, which means
+        // the organiser picks ranked, everyone plays, the score is agreed,
+        // and nothing moves — with no response saying so, only a `warn` in
+        // the worker. `update_match` has refused this for a while; creation
+        // was the last way to reach a ranked match that can never be rated.
+        //
+        // Every external invited is judged, not only those given a side. An
+        // unassigned guest is harmless to the gate as it stands, but someone
+        // invited to a ranked match is meant to play in it, and the first
+        // thing that puts them on a side makes the match unrateable — by
+        // which point the result exists and this answer is far too late.
+        // Creation is the only moment the choice is still free.
+        if input.ranked == Some(true) {
+            let guests = unratable_players(input.invites.iter().flat_map(|invite| {
+                invite
+                    .invited_externals
+                    .iter()
+                    .map(|external| (None, Some(external.name.as_str())))
+            }));
+            if let Some(reason) = ranked_guest_invites_reason(&guests) {
+                return Ok(CreateMatchResponse::ValidationError(PlainText(reason)));
+            }
+        }
+
         // The `starts_at` time must be consistent with whether a result is being
         // recorded: a match created with a score is already played (Completed),
         // so it must have started in the past; one without a score is upcoming
@@ -4314,6 +4346,34 @@ impl Api {
         {
             return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
                 "a match can no longer be changed between ranked and friendly: {reason}"
+            ))));
+        }
+
+        // A rated ranked match's inputs are closed: only its score can still
+        // be corrected. See `rated_ranked_edit_reason` for why each of the
+        // three is in the list, and why the score deliberately isn't.
+        // Checked here, before anything below writes, because this handler's
+        // writes aren't one transaction — a refusal after the first of them
+        // would leave the roster half-edited.
+        if let Some(reason) = rated_ranked_edit_reason(
+            &agg.match_,
+            input.added_players.as_ref().is_some_and(|p| !p.is_empty())
+                || input
+                    .removed_player_ids
+                    .as_ref()
+                    .is_some_and(|p| !p.is_empty())
+                || input
+                    .side_assignments
+                    .as_ref()
+                    .is_some_and(|p| !p.is_empty()),
+            resulting_starts_at
+                .as_deref()
+                .is_some_and(|at| at != agg.match_.starts_at.as_str()),
+            resulting_status != agg.match_.status.as_str(),
+        ) {
+            return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                "{reason}: a rating can't be recomputed from a changed match, \
+                 so only the score can be corrected"
             ))));
         }
 

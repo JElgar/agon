@@ -19,11 +19,10 @@ function isoToTime(iso: string): string {
 }
 
 /**
- * Inline editor for the fields that describe a recurring series as a whole —
- * name, description, kickoff *time* (not date — each occurrence keeps its
- * own), location, and header photos — shown in place of the details card
- * when the viewer picks "the whole series" from `EditMatchDetailsFlow`'s
- * choice.
+ * Editor for the fields that describe a recurring series as a whole — name,
+ * description, kickoff *time* (not date — each occurrence keeps its own),
+ * location, and header photos — on `/matches/:id/edit` when the viewer picks
+ * "the whole series" from `EditMatchDetailsFlow`'s choice.
  *
  * Deliberately a smaller field set than `MatchDetailsEditor`: a specific
  * date and side names/colours describe *this* occurrence, not the series,

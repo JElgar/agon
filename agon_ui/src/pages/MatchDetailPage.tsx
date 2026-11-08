@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { CalendarPlus, ChevronLeft, Link2, MailOpen, MoreHorizontal, Navigation, Pencil, Radio, Repeat, Share, UserPlus } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
@@ -42,7 +42,7 @@ import {
   withInvitationStatus,
 } from '@/lib/members'
 import { respondToInvitation } from '@/lib/invitations'
-import { EditMatchDetailsFlow } from '@/components/agon/EditMatchDetailsFlow'
+import { useMatchQuery } from '@/hooks/useMatch'
 import { MatchFormatCard } from '@/components/agon/MatchFormatCard'
 import { MatchJoinSettingsEditor } from '@/components/agon/MatchJoinSettingsEditor'
 import { MatchOpenJoinEditor } from '@/components/agon/MatchOpenJoinEditor'
@@ -161,17 +161,7 @@ export function MatchDetailPage() {
   const navigate = useNavigate()
   const currentUserId = useCurrentUserId()
 
-  const query = useQuery({
-    queryKey: ['match', matchId],
-    enabled: !!matchId,
-    queryFn: async (): Promise<Match> => {
-      const { data, error } = await fetchClient.GET('/matches/{match_id}', {
-        params: { path: { match_id: matchId! } },
-      })
-      if (error || !data) throw new Error('Failed to load match')
-      return data
-    },
-  })
+  const query = useMatchQuery(matchId)
 
   if (query.isLoading) {
     return (
@@ -212,7 +202,6 @@ function MatchDetail({
   currentUserId?: string
   onBack: () => void
 }) {
-  const [editingDetails, setEditingDetails] = useState(false)
   const [editingResult, setEditingResult] = useState(false)
   const [editingRoster, setEditingRoster] = useState(false)
   const [inviting, setInviting] = useState(false)
@@ -385,7 +374,7 @@ function MatchDetail({
           </DropdownMenuItem>
         )}
         {canEdit && !cancelled && (
-          <DropdownMenuItem onSelect={() => setEditingDetails(true)}>
+          <DropdownMenuItem onSelect={() => navigate(`/matches/${match.id}/edit`)}>
             <Pencil className="size-4" /> Edit match details
           </DropdownMenuItem>
         )}
@@ -456,9 +445,8 @@ function MatchDetail({
           canEdit={canEdit}
           onBack={onBack}
           onShare={() => shareMatch(match)}
-          onEdit={() => setEditingDetails(true)}
+          onEdit={() => navigate(`/matches/${match.id}/edit`)}
         />
-        {editingDetails && <EditMatchDetailsFlow match={match} onDone={() => setEditingDetails(false)} />}
       </div>
     )
   }
@@ -767,7 +755,6 @@ function MatchDetail({
             <MatchHeaderCarousel photos={match.header_photos} hero />
           </div>
         )}
-        {editingDetails && <EditMatchDetailsFlow match={match} onDone={() => setEditingDetails(false)} />}
         {titleBlock}
 
         <div className="grid grid-cols-[minmax(0,1fr)_380px] items-start gap-6">
@@ -847,7 +834,6 @@ function MatchDetail({
         </div>
       )}
 
-      {editingDetails && <EditMatchDetailsFlow match={match} onDone={() => setEditingDetails(false)} />}
 
       {matchTab === 'summary' ? (
         <>

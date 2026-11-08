@@ -1310,7 +1310,7 @@ pub(super) fn take_slot_update(
 ///
 /// `Ok(None)` if every delta is zero (nothing to write) — `total_delta == 0`
 /// and every side delta cancels out.
-fn headcount_delta_update(
+pub(super) fn headcount_delta_update(
     table: &str,
     match_id: &str,
     total_delta: i64,
@@ -1375,6 +1375,10 @@ mod tests {
             player_count: 0,
             roster_preview: Vec::new(),
             team_join_enabled: false,
+            open_join_enabled: false,
+            open_join: None,
+            max_open_spots: None,
+            open_joined_count: 0,
         }
     }
 

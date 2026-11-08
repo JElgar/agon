@@ -58,6 +58,10 @@ pub struct Invitation {
     pub invited_at: chrono::DateTime<chrono::Utc>,
     pub responded_at: Option<chrono::DateTime<chrono::Utc>>,
     pub kind: InvitationKind,
+    /// (Match invitations only) whether this invite holds a roster slot for
+    /// the invitee while still pending — see `AddInvitationsInput.reserve_spot`.
+    /// Always `false` for a team invitation.
+    pub reserve_spot: bool,
 }
 
 /// How an invitation is authorised on acceptance.
@@ -148,6 +152,15 @@ pub struct AddInvitationsInput {
     /// admin and others as member in one call by sending two calls). None
     /// defaults to `Member`. Ignored for match invitations.
     pub role: Option<AssignableTeamRole>,
+    /// (Match invitations only) whether every invitee in this batch holds a
+    /// roster slot while their invite is still pending, rather than only once
+    /// they accept — e.g. a key player the organiser wants to count on before
+    /// filling the rest of the roster. None defaults to `false` (today's
+    /// behaviour: an invite reserves nothing until accepted). An admin invite
+    /// that reserves a spot is uncapped, same as any other admin roster add —
+    /// it can push a side/match over its usual cap. Ignored for team
+    /// invitations, which have no capacity concept.
+    pub reserve_spot: Option<bool>,
 }
 
 #[derive(Object)]
@@ -157,14 +170,6 @@ pub struct RespondToInvitationInput {
     /// accepting a match invitation that was not already assigned a side;
     /// ignored otherwise.
     pub side_id: Option<String>,
-    /// "I understand this starts my rating in this sport." Only read when
-    /// accepting an invitation to a ranked match whose ladder the caller
-    /// hasn't opted in to yet: `true` opts them in and accepts, and omitting
-    /// it is refused with 422 (`RatingConsentRequired`), leaving the
-    /// invitation pending. Ignored when declining, for a friendly or a team,
-    /// and once already opted in. Same field as
-    /// `CreateMatchInput.rating_consent`.
-    pub rating_consent: Option<bool>,
 }
 
 #[derive(Object)]
@@ -175,8 +180,6 @@ pub struct RespondByTokenInput {
     /// accepting a match invitation that was not already assigned a side;
     /// ignored otherwise.
     pub side_id: Option<String>,
-    /// Consent to being rated, exactly as `RespondToInvitationInput.rating_consent`.
-    pub rating_consent: Option<bool>,
 }
 
 #[derive(Enum)]
@@ -278,19 +281,6 @@ pub struct JoinLinkPreview {
 pub struct JoinMatchInput {
     pub token: Option<String>,
     pub side_id: Option<String>,
-    /// "I understand this starts my rating in this sport", for getting into a
-    /// ranked match whose ladder the caller hasn't opted in to yet: `true` opts
-    /// them in and goes ahead, and omitting it is refused with 422
-    /// (`RatingConsentRequired`). Ignored on a friendly and once already opted
-    /// in. Same field as `CreateMatchInput.rating_consent`.
-    ///
-    /// This input is shared by `POST /matches/:match_id/join` and `POST
-    /// /matches/:match_id/waitlist/join`, and both ask. Joining the waitlist
-    /// is asking to get in, and the admin who later moves someone in off it
-    /// can't consent on their behalf, so that is the last point at which they
-    /// can be asked. That includes the waitlist join which accepts a pending
-    /// invitation in the same step.
-    pub rating_consent: Option<bool>,
 }
 
 #[derive(Object)]
@@ -306,4 +296,161 @@ pub struct TransferMatchOwnershipInput {
 #[derive(Object)]
 pub struct SetMatchPlayerRoleInput {
     pub role: MatchPlayerRole,
+}
+
+/// Who may join a match through its open-join policy
+/// (`PUT /matches/:match_id/open-join`).
+#[derive(Enum, Clone, Copy, Debug, PartialEq, Eq)]
+#[oai(rename_all = "snake_case")]
+pub enum OpenJoinAudience {
+    /// Individuals may join directly onto a side with ringers enabled, or
+    /// unassigned.
+    Individuals,
+    /// A whole outside team may claim an unclaimed side.
+    ///
+    /// Not yet wired to a join path — stored so an organiser's choice
+    /// survives until team claiming ships; setting it today has no effect
+    /// beyond what `Individuals` already does.
+    Teams,
+    Both,
+}
+
+/// A match's open-join policy, flattening `dao::records::
+/// OpenJoinPolicyRecord`/`SideOpenJoinPolicyRecord`'s `rules` into named
+/// fields matching what an organiser actually configures (see
+/// `OpenMatchSettings` in the design canvas) rather than exposing the
+/// rule-list shape directly. Shared by the match-wide policy (`PUT
+/// /matches/:match_id/open-join`) and a side's own policy (`PUT
+/// /matches/:match_id/sides/:side_id/open-join`, under `per_side` scope) —
+/// same fields either way, `max_open_spots` simply unused at the side level.
+#[derive(Object)]
+pub struct OpenJoinPolicyInput {
+    pub audience: OpenJoinAudience,
+    /// Minimum matches already played in this sport. `None` = no minimum.
+    pub min_matches_played: Option<u32>,
+    /// Ask-to-join first, with an admin approving each request, instead of
+    /// seating an eligible candidate immediately. Omitted = `false` =
+    /// today's instant join. Orthogonal to `audience`/the eligibility
+    /// fields above: it adds a human decision for someone who already
+    /// qualifies, it never relaxes who qualifies.
+    #[oai(default)]
+    pub requires_approval: bool,
+    /// Cap on how many open arrivals this match accepts in total, below the
+    /// match's own derived capacity if set. `None` = uncapped — open
+    /// joining simply fills whatever raw capacity remains. Match-wide scope
+    /// only — ignored (and not returned) for a side's own policy, which caps
+    /// via `SideOpenJoinInput::max_open_spots` instead.
+    pub max_open_spots: Option<u32>,
+}
+
+/// The policy as stored, returned by `PUT`/`GET /matches/:match_id/open-join`
+/// under `match_wide` scope.
+#[derive(Object)]
+pub struct OpenJoinPolicy {
+    pub audience: OpenJoinAudience,
+    pub min_matches_played: Option<u32>,
+    pub requires_approval: bool,
+    pub max_open_spots: Option<u32>,
+}
+
+/// Whether a match's open-join policy applies to the whole match, or is
+/// delegated to each side individually — `OpenJoinScopeInput::mode`.
+#[derive(Enum, Clone, Copy, Debug, PartialEq, Eq)]
+#[oai(rename_all = "snake_case")]
+pub enum OpenJoinScopeKind {
+    /// One policy for the whole match — today's shape. A side still needs
+    /// its own `SideOpenJoinInput::enabled` flipped on to actually accept
+    /// ringers; the match-wide policy only decides who's eligible and
+    /// whether approval is required.
+    MatchWide,
+    /// No match-wide policy at all — each side sets its own policy via `PUT
+    /// /matches/:match_id/sides/:side_id/open-join`. There's no "join
+    /// unassigned" option under this scope: a joiner always has to pick one
+    /// of the open sides.
+    PerSide,
+}
+
+/// A match's open-join scope, set via `PUT /matches/:match_id/open-join`.
+/// `policy` is required when `mode` is `match_wide` and ignored (should be
+/// omitted) when `mode` is `per_side` — a `per_side` match carries no
+/// match-level policy; each side's own policy is set separately via `PUT
+/// /matches/:match_id/sides/:side_id/open-join`.
+#[derive(Object)]
+pub struct OpenJoinScopeInput {
+    pub mode: OpenJoinScopeKind,
+    pub policy: Option<OpenJoinPolicyInput>,
+}
+
+/// The scope as stored, returned by `PUT`/`GET /matches/:match_id/open-join`.
+#[derive(Object)]
+pub struct OpenJoinScope {
+    pub mode: OpenJoinScopeKind,
+    pub policy: Option<OpenJoinPolicy>,
+}
+
+/// A side's own open-join policy, under `per_side` scope — part of the
+/// response from `PUT /matches/:match_id/sides/:side_id/open-join`. Same
+/// shape as `OpenJoinPolicy` minus `max_open_spots`, which is a match-wide
+/// concept; a side caps itself via `SideOpenJoinInput::max_open_spots`
+/// instead.
+#[derive(Object)]
+pub struct SideOpenJoinPolicy {
+    pub audience: OpenJoinAudience,
+    pub min_matches_played: Option<u32>,
+    pub requires_approval: bool,
+}
+
+/// Open or close one side to individual ringers, and optionally cap how many
+/// it takes — `PUT /matches/:match_id/sides/:side_id/open-join`. Settable
+/// independently of the match's own open-join scope (an organiser can
+/// prepare a side's settings before opening the match, or after), but which
+/// fields matter depends on that scope:
+/// - Under `match_wide`: `enabled` toggles whether this side takes ringers
+///   under the match-wide policy (the policy itself decides who's eligible).
+///   `side_policy` is ignored.
+/// - Under `per_side`: `side_policy` *is* this side's policy (`None` closes
+///   the side to ringers); `enabled` is ignored.
+#[derive(Object)]
+pub struct SideOpenJoinInput {
+    #[oai(default)]
+    pub enabled: bool,
+    pub side_policy: Option<OpenJoinPolicyInput>,
+    /// Cap on this side's own arrivals, independent of the match-wide
+    /// `OpenJoinPolicyInput::max_open_spots` (under `match_wide` scope).
+    /// `None` = uncapped.
+    pub max_open_spots: Option<u32>,
+}
+
+/// Request to join a match through its open-join policy, when that policy
+/// requires approval (`OpenJoinPolicyInput::requires_approval`) —
+/// `POST /matches/:match_id/join-requests`. When it doesn't, join directly
+/// via `POST /matches/:match_id/join` instead.
+#[derive(Object)]
+pub struct JoinRequestInput {
+    /// The side to request, if any — must have ringers enabled. Omit for
+    /// unassigned.
+    pub side_id: Option<String>,
+}
+
+/// The decision state of a join request.
+#[derive(Enum, Clone, Copy, Debug, PartialEq, Eq)]
+#[oai(rename_all = "snake_case")]
+pub enum JoinRequestStatus {
+    Pending,
+    Approved,
+    Declined,
+}
+
+/// A request to join a match through its open-join policy — see
+/// `dao::records::MatchJoinRequestRecord`. Lighter than `MatchPlayer`, same
+/// reasoning as `WaitlistEntry`: a request is always a real account.
+#[derive(Object)]
+pub struct JoinRequest {
+    pub user_id: String,
+    pub name: String,
+    pub avatar_url: Option<String>,
+    pub side_id: Option<String>,
+    pub requested_at: chrono::DateTime<chrono::Utc>,
+    pub status: JoinRequestStatus,
+    pub decided_at: Option<chrono::DateTime<chrono::Utc>>,
 }

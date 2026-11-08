@@ -34,7 +34,7 @@ const RECENT_LIMIT = 10
 const FETCH_LIMIT = 50
 /** Trailing months shown in the activity chart. */
 const CHART_MONTHS = 6
-/** Outcomes shown in the "recent form" row, most recent first. */
+/** Outcomes shown in the "recent form" row, most recent last (on the right). */
 const FORM_LIMIT = 5
 
 const MONTH_LABELS = [
@@ -337,7 +337,10 @@ function WinRateBanner({
    *  hidden below `xl` regardless of what's passed. */
   extra?: React.ReactNode
 }) {
-  const form = recentOutcomes.filter((o): o is MatchOutcome => !!o).slice(0, FORM_LIMIT)
+  const form = recentOutcomes
+    .filter((o): o is MatchOutcome => !!o)
+    .slice(0, FORM_LIMIT)
+    .reverse()
 
   return (
     <Card className="flex flex-col gap-4 p-[18px] xl:gap-5 xl:p-6">

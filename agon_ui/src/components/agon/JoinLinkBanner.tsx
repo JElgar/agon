@@ -6,7 +6,8 @@ import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { joinChoiceFor, sidesFor } from '@/lib/joinLink'
 import { forgetJoinLink, getRememberedJoinLink } from '@/lib/joinLinkMemory'
-import { sidePlayerCountLabel, sideDisplayName } from '@/lib/members'
+import { isParticipant, sidePlayerCountLabel, sideDisplayName } from '@/lib/members'
+import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { offersWaitlist, type RosterConflict } from '@/lib/waitlist'
 
 type Match = components['schemas']['Match']
@@ -22,12 +23,21 @@ type JoinLinkPreview = components['schemas']['JoinLinkPreview']
  *
  * Renders nothing when there's no remembered token, the viewer is already a
  * participant, or the link no longer resolves (revoked since it was seen) —
- * in the last case the stale token is forgotten so this stops re-checking it.
+ * in the last two cases the token is forgotten so this stops re-checking it.
+ * "Participant" is the roster (`isParticipant`), not `viewer_role`: that's
+ * owner/admin authority only, so an ordinary player an admin put on a side
+ * has none and would otherwise still be offered the link.
  */
 export function JoinLinkBanner({ match }: { match: Match }) {
   const queryClient = useQueryClient()
   const [sideId, setSideId] = useState<string | undefined>(undefined)
-  const token = match.viewer_role == null ? getRememberedJoinLink(match.id) : null
+  const currentUserId = useCurrentUserId()
+  const alreadyIn = isParticipant(match, currentUserId)
+  const token = alreadyIn ? null : getRememberedJoinLink(match.id)
+
+  useEffect(() => {
+    if (alreadyIn) forgetJoinLink(match.id)
+  }, [alreadyIn, match.id])
 
   const preview = useQuery({
     queryKey: ['join-link-by-token', token],

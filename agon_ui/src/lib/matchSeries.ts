@@ -1,6 +1,8 @@
+import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 
 type MatchSeries = components['schemas']['MatchSeries']
+type MatchSeriesOccurrence = components['schemas']['MatchSeriesOccurrence']
 
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
@@ -49,4 +51,35 @@ export function seriesStatusLabel(status: MatchSeries['status']): string {
     case 'ended':
       return 'Ended'
   }
+}
+
+/** Every occurrence a series has generated so far, oldest first — walks
+ *  `GET /match-series/{series_id}/occurrences` to the end. Used by the "edit
+ *  this and future matches" flow to find which other matches to apply the
+ *  same edit to. */
+export async function listAllSeriesOccurrences(seriesId: string): Promise<MatchSeriesOccurrence[]> {
+  const items: MatchSeriesOccurrence[] = []
+  let cursor: string | undefined
+  do {
+    const { data, error } = await fetchClient.GET('/match-series/{series_id}/occurrences', {
+      params: { path: { series_id: seriesId }, query: { cursor, limit: 50 } },
+    })
+    if (error || !data) throw new Error("Failed to load this series' matches")
+    items.push(...data.items)
+    cursor = data.next_cursor
+  } while (cursor)
+  return items
+}
+
+/** This series' occurrences strictly after `afterIso` (an occurrence's own
+ *  `starts_at`), oldest first — the "future matches" an "apply to the whole
+ *  series" edit reaches, starting from (but not including) the one being
+ *  edited. ISO instants from the same API compare correctly as plain
+ *  strings. */
+export async function listFutureSeriesOccurrences(
+  seriesId: string,
+  afterIso: string,
+): Promise<MatchSeriesOccurrence[]> {
+  const all = await listAllSeriesOccurrences(seriesId)
+  return all.filter((o) => o.starts_at > afterIso)
 }

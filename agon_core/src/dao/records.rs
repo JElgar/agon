@@ -155,6 +155,12 @@ pub struct EmbeddedInvitationRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub responded_at: Option<String>,
     pub kind: InvitationKindRecord,
+    /// Whether this still-pending invite holds a roster slot for the invitee
+    /// — see `MatchPlayerRecord::occupies_slot`. Meaningless once
+    /// accepted/declined (a real roster spot is counted by presence, not by
+    /// this flag) and for a team invite (teams have no capacity concept).
+    #[serde(default)]
+    pub reserve_spot: bool,
 }
 
 /// `EMAIL#<lowercased-email>` / `#GUARD` — the email-uniqueness guard item.
@@ -208,8 +214,8 @@ pub struct DevicePairingRecord {
 /// `email` is duplicated here for reads; uniqueness is enforced by a separate
 /// `EMAIL#<email>` guard item. `stats` holds per-sport aggregates inline, so a
 /// profile read/batch-read returns everything in one point read — always
-/// present (all `None` for a brand new user). `ratings` and `rating_opt_ins`
-/// ride the same item for the same reason.
+/// present (all `None` for a brand new user). `ratings` rides the same item
+/// for the same reason.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UserRecord {
     pub id: String,
@@ -250,55 +256,12 @@ pub struct UserRecord {
     ///   stored rating (see `rating::Ladder`). A closed struct here would
     ///   re-close exactly what that decision opened.
     ///
-    /// A ladder appears here only once a ranked match on it has been rated,
-    /// so being opted in (`rating_opt_ins`) with no entry yet is normal. The
-    /// reverse — a rating with no opt-in behind it — is what the rating
-    /// pipeline must refuse to produce, by re-checking every participant's
-    /// opt-in before it rates; nothing at this layer enforces it.
+    /// A ladder appears here once a ranked match on it has been rated, and
+    /// not before. Nothing says whether the rating may be shown: that is
+    /// `rating::published`, read off `RatingRecord::matches_rated`.
     #[serde(default)]
     pub ratings: HashMap<String, RatingRecord>,
-    /// The ladders this account has consented to be rated on, each mapped to
-    /// when it did so (RFC 3339). Written by `Dao::opt_in_to_rating` when a
-    /// player ticks "I understand this starts my <sport> rating" on a ranked
-    /// game; read through [`UserRecord::has_opted_in`].
-    ///
-    /// **Entries are never removed.** Opting in is not reversible — a product
-    /// decision, not an omission, and the reason there is no opt-out
-    /// operation — so a ladder seen here once can be relied on from then on.
-    ///
-    /// A map to the consent time rather than a set of ladder names. A
-    /// DynamoDB string set would be the simpler write (`ADD` creates a missing
-    /// set, so there would be no ensure-the-map round trip), but it throws
-    /// away *when* somebody agreed, which is the one fact a consent record
-    /// exists to keep. The map also makes "first tick wins" a single
-    /// `attribute_not_exists` condition on the ladder's path, so ticking the
-    /// box again on a later game never moves the original date.
-    ///
-    /// Keyed by ladder, like `ratings`, and today a ladder is exactly the
-    /// sport tag. If a sport is ever split into several ladders, whether one
-    /// consent covers all of them is for that change to decide; this shape
-    /// does not settle it.
-    ///
-    /// `#[serde(default)]` because no profile written before this field
-    /// existed has it, and an empty map is right for every one of them:
-    /// nobody could opt in before there was anywhere to record it.
-    #[serde(default)]
-    pub rating_opt_ins: HashMap<String, String>,
     pub created_at: String,
-}
-
-impl UserRecord {
-    /// Whether this account has opted in to being rated on `ladder` — the
-    /// check every path into a ranked game makes.
-    ///
-    /// An exact-key lookup. Ladder names can be string prefixes of one
-    /// another (`"tennis"`, `"tennis:doubles"`), and a prefix match would
-    /// quietly decide the open question on `rating_opt_ins` of whether one
-    /// consent covers a split sport.
-    #[must_use]
-    pub fn has_opted_in(&self, ladder: &str) -> bool {
-        self.rating_opt_ins.contains_key(ladder)
-    }
 }
 
 /// `USER#<followeeId>` / `FOLLOWER#<followerId>` — a directed user→user follow
@@ -486,8 +449,8 @@ pub struct MatchRecord {
     /// that item is rewritten by far more than an edit: every like and every
     /// comment `ADD`s a counter on it. A `true` default would enrol the whole
     /// back catalogue into the ladders, one old match per like, rating
-    /// players who never opted in — when opting in is the one thing a rating
-    /// requires. Please don't "fix" this to match a create-time default.
+    /// games nobody meant to count. Please don't "fix" this to match a
+    /// create-time default.
     ///
     /// A ranked match always has a rating ladder (`rating::ladder_for_tag` on
     /// `match_type`), so sport `other` is never ranked. The API enforces that
@@ -497,11 +460,6 @@ pub struct MatchRecord {
     /// see `ranked_lock_reason` in `agon_service`'s mapping.
     #[serde(default)]
     pub ranked: bool,
-    /// The outstanding switch-to-ranked ask, if this match has one — see
-    /// [`MatchRankedPromptRecord`]. `None` on every match that was created
-    /// ranked, or friendly and left alone, which is nearly all of them.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ranked_prompt: Option<MatchRankedPromptRecord>,
     /// Who holds `Owner`/`Admin` authority over this match, keyed by user id
     /// — an ordinary player (or an organiser with no roster row at all) is
     /// simply absent from the map, never stored as an explicit `Player`
@@ -520,75 +478,28 @@ pub struct MatchRecord {
     /// `created_by_user_id` as `Owner` for exactly that case.
     #[serde(default)]
     pub authority: std::collections::HashMap<String, MatchPlayerRole>,
+    /// This match's "open to the public" policy — `None` means invite/
+    /// link/team-only, as every match was before this field existed. See
+    /// [`OpenJoinScopeRecord`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_join: Option<OpenJoinScopeRecord>,
+    /// How many of `total_player_count` arrived through the open-join
+    /// policy (`JoinSourceRecord::Open`, including an approved
+    /// `MatchJoinRequestRecord`) — what
+    /// `OpenJoinPolicyRecord::max_open_spots` is enforced against, bumped
+    /// atomically alongside `total_player_count` in the same join
+    /// transaction (never recomputed from a scan, same convention as
+    /// `total_player_count` itself). Counts only open arrivals specifically
+    /// — an organiser adding an invited player afterwards must never
+    /// tighten this cap. `#[serde(default)]` for matches written before
+    /// open joining existed.
+    #[serde(default)]
+    pub open_joined_count: u32,
     pub created_at: String,
 }
 
 fn default_series_timezone() -> String {
     "UTC".to_string()
-}
-
-/// The outstanding switch-to-ranked ask on a match
-/// ([`MatchRecord::ranked_prompt`]): one per match, covering every player it
-/// asked.
-///
-/// One nested struct rather than a handful of sibling fields on `MatchRecord`,
-/// so that a deadline, a counter and the id they belong to cannot drift apart:
-/// clearing the ask is one `REMOVE`, and a half-written ask is a parse failure
-/// rather than a match that expires people against a stale deadline.
-///
-/// `ranked` is still the flag everything else reads. This record says only
-/// "some of the players in a spot haven't agreed yet", and a match carrying it
-/// is already `ranked: true` — the switch takes effect immediately and the
-/// prompts chase the consent, which is what keeps everyone's place.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct MatchRankedPromptRecord {
-    /// Quoted by every [`RankedPromptRecord::prompt_id`] this ask wrote, and
-    /// by every answer to it. A fresh id per switch is what makes a stale
-    /// answer recognisable.
-    pub id: String,
-    /// The ladder being consented to, as of the ask.
-    pub ladder: String,
-    pub opened_at: String,
-    pub opened_by_user_id: String,
-    /// When unanswered prompts expire, and with them the places they were
-    /// holding. Host-set or defaulted to 24h before the start, and always
-    /// within `(opened_at, starts_at]` — the service clamps it, because an
-    /// expiry after kickoff would decide a rating question with the result
-    /// already known.
-    ///
-    /// Also the `GSI3SK` of this match's meta item while the ask is open (see
-    /// [`Self::DUE_GSI3PK`]), which is how the sweep finds matches whose
-    /// deadline has passed without scanning the table.
-    pub deadline: String,
-    /// How many roster rows still carry an unanswered prompt for [`Self::id`].
-    ///
-    /// Maintained by atomic `ADD ranked_prompt.pending :delta` in the same
-    /// transaction as the row it counts — the same nested-path counter pattern
-    /// as `sides.<sideId>.player_count` — and never recomputed from a scan.
-    ///
-    /// Advisory: it exists so the feed, which reads a match's meta without its
-    /// roster, can render "3 still to confirm" without a second read, and so
-    /// the sweep can skip a match in one field. The authoritative question is
-    /// always whether any row in a spot still
-    /// [awaits this ask](MatchPlayerRecord::awaits_ranked_prompt), so a drifted
-    /// counter costs a wrong subtitle, never a wrongly expired player.
-    #[serde(default)]
-    pub pending: u32,
-}
-
-impl MatchRankedPromptRecord {
-    /// The `GSI3PK` stamped on a match's meta item while an ask is open, with
-    /// [`Self::deadline`] as the `GSI3SK`. Both attributes are removed when
-    /// the ask is answered out, expired or withdrawn, so the index is sparse:
-    /// only matches with something outstanding are in it.
-    ///
-    /// A constant value, so every pending ask shares one index partition. At
-    /// the scale this serves — matches with an unanswered prompt, which is a
-    /// subset of matches not yet played — that is a feature: the sweep's whole
-    /// job is one `Query` for `GSI3SK <= now`, which costs about half an RCU
-    /// and usually returns nothing. Bucket the value by date if that ever
-    /// stops being true.
-    pub const DUE_GSI3PK: &'static str = "RANKEDPROMPTDUE";
 }
 
 /// `SERIES#<seriesId>` / `#META` — a recurring match series' template and
@@ -758,6 +669,38 @@ pub struct MatchSideRecord {
     /// opt-in for team self-join. Meaningless without a `team_id`.
     #[serde(default)]
     pub team_join_enabled: bool,
+    /// Whether an individual ringer — someone with no team connection to
+    /// this side at all — may join it directly through the match's
+    /// open-join policy, when that policy is `OpenJoinScopeRecord::
+    /// MatchWide` (meaningless under `PerSide`, where `open_join` below
+    /// governs instead, and meaningless whenever `MatchRecord::open_join`
+    /// is `None`). Distinct from `team_join_enabled`: a side a team has
+    /// already claimed can still set this to take ringers on its remaining
+    /// slots, which is exactly why this lives per-side rather than as one
+    /// match-wide switch. `#[serde(default)]` for sides written before open
+    /// joining existed.
+    #[serde(default)]
+    pub open_join_enabled: bool,
+    /// This side's own open-join policy, when the match's own
+    /// `MatchRecord::open_join` is `OpenJoinScopeRecord::PerSide`
+    /// (meaningless under `MatchWide`, where `open_join_enabled` above
+    /// governs instead). `None` means this side is closed to ringers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_join: Option<SideOpenJoinPolicyRecord>,
+    /// Cap on how many ringers *this side* accepts, independent of (and
+    /// possibly tighter than) both the match-wide
+    /// `OpenJoinPolicyRecord::max_open_spots` (under `MatchWide` scope) and
+    /// this side's own `max_players`. `None` = uncapped — ringers simply
+    /// fill whatever raw capacity remains on the side. Compared against
+    /// `open_joined_count`, never `player_count`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_open_spots: Option<u32>,
+    /// How many of `player_count` arrived as a ringer on this side — what
+    /// `max_open_spots` is enforced against. See
+    /// `MatchRecord::open_joined_count`'s doc comment for why this counts
+    /// only ringer arrivals rather than every player.
+    #[serde(default)]
+    pub open_joined_count: u32,
     /// How many players currently take a spot on this side
     /// (`MatchPlayerRecord::occupies_slot`) — the number `max_players` caps.
     /// Pending and declined invitees placed on the side aren't counted,
@@ -812,36 +755,14 @@ pub struct MatchPlayerRecord {
     /// themselves — via a join link or team self-join.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub joined_via: Option<JoinSourceRecord>,
-    /// Set while this player has been asked to confirm a switch to ranked and
-    /// hasn't answered — see [`RankedPromptRecord`].
-    ///
-    /// **[`occupies_slot`](MatchPlayerRecord::occupies_slot) deliberately does
-    /// not look at this field**, and that is the whole point of it. Holding a
-    /// player's place while they decide is what makes switching a friendly to
-    /// ranked bearable: the alternative is evicting everyone until they
-    /// re-consent. A pending *invitation* cannot express it, because a pending
-    /// invite takes no spot at all — so the roster row stays exactly as it
-    /// was, this field rides alongside it, and the headcounts move only on the
-    /// writes that have always moved them (a decline, or the deadline sweep
-    /// removing the row).
-    ///
-    /// Only players who haven't opted in to the match's ladder are prompted.
-    /// Someone already opted in is *told* the match now counts and keeps their
-    /// place whatever they do, so this never appears on their row: the prompt
-    /// exists to collect consent that is missing, not to re-confirm consent
-    /// that already exists.
-    ///
-    /// `#[serde(default)]` → `None` for every row written before prompts
-    /// existed, which is the truth about them: nothing was ever asked.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ranked_prompt: Option<RankedPromptRecord>,
 }
 
 impl MatchPlayerRecord {
     /// Whether this player takes one of the match's spots: they're *in* —
     /// added by an organiser or self-served via a join link/team (no
-    /// invitation), or an invitee who has accepted. A pending or declined
-    /// invite takes nothing; sending an invite doesn't reserve a spot.
+    /// invitation), an invitee who has accepted, or a still-pending invitee
+    /// whose invite was sent with `reserve_spot` on. A declined invite takes
+    /// nothing; an ordinary (non-reserving) pending invite doesn't either.
     ///
     /// A waitlisted player is never represented by a `MatchPlayerRecord` at
     /// all — self-served, their `MatchWaitlistEntryRecord` is the only row;
@@ -860,54 +781,10 @@ impl MatchPlayerRecord {
     /// ever recomputing from a full scan — see `match_ops::take_slot_update`
     /// and `match_ops::headcount_delta_update`.
     pub fn occupies_slot(&self) -> bool {
-        self.invitation
-            .as_ref()
-            .is_none_or(|inv| inv.status == "accepted")
+        self.invitation.as_ref().is_none_or(|inv| {
+            inv.status == "accepted" || (inv.status == "pending" && inv.reserve_spot)
+        })
     }
-
-    /// Whether this row is still waiting on an answer to `prompt_id` — the
-    /// test the respond endpoint and the deadline sweep both make before they
-    /// touch a row.
-    ///
-    /// Scoped to one id on purpose. A match can be flipped friendly → ranked
-    /// more than once, and a row left carrying a prompt from a withdrawn
-    /// switch must not be mistaken for an answer owed on the current one: the
-    /// authoritative question is never "is there a prompt?" but "is there a
-    /// prompt for *this* ask?".
-    #[must_use]
-    pub fn awaits_ranked_prompt(&self, prompt_id: &str) -> bool {
-        self.ranked_prompt
-            .as_ref()
-            .is_some_and(|p| p.prompt_id == prompt_id)
-    }
-}
-
-/// A player's outstanding "this match is ranked now — confirm, or lose your
-/// place" ask, embedded on their roster row
-/// ([`MatchPlayerRecord::ranked_prompt`]).
-///
-/// Embedded rather than given its own `RANKEDPROMPT#<userId>` item range
-/// because [`Dao::get_match`](crate::dao::Dao::get_match) is a point read of
-/// the meta plus **one** Query of the `PLAYER#` prefix. A separate range would
-/// add a third read to every match page view, to carry three fields that only
-/// ever matter beside the roster row they hang off.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RankedPromptRecord {
-    /// The switch that asked, matching [`MatchRankedPromptRecord::id`] on the
-    /// match's meta item.
-    ///
-    /// An answer quoting any other id is stale — the switch was withdrawn, or
-    /// the match has been flipped since — and is refused rather than applied.
-    /// That is what makes answering idempotent and a re-switch unambiguous,
-    /// without either side having to reason about ordering.
-    pub prompt_id: String,
-    /// The ladder consent is being collected for, as of the ask (e.g.
-    /// `"tennis"`). Stored rather than re-derived from the match's
-    /// `match_type` so a notification can name the sport without reading the
-    /// match, and so a row answered after a `match_type` edit still records
-    /// what was actually agreed to.
-    pub ladder: String,
-    pub asked_at: String,
 }
 
 /// `MATCH#<matchId>` / `WAITLIST#<userId>` — someone queued for a match/side
@@ -989,6 +866,152 @@ pub enum JoinSourceRecord {
     /// Moved in off the waitlist by a match admin
     /// (`Dao::move_in_from_waitlist_tx`) once a spot freed up.
     Waitlist,
+    /// Joined through the match's open-join policy
+    /// (`MatchRecord::open_join`) — either directly (the policy didn't
+    /// require approval) or by having a `MatchJoinRequestRecord` approved.
+    /// Either way they're a "ringer": nobody who already had a link,
+    /// invite or team connection to the side needs this variant.
+    Open,
+}
+
+/// Who may join a match through its open-join policy
+/// (`OpenJoinPolicyRecord::audience`). Free-standing rather than nested
+/// inside `OpenJoinPolicyRecord` so the tournaments-joining feature's "who
+/// may enter" setting can reuse this exact type instead of duplicating it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenJoinAudienceRecord {
+    /// Individuals may join directly onto an open side/unassigned.
+    Individuals,
+    /// A whole outside team may claim an unclaimed side (joining "as one" —
+    /// see the design doc). Not yet wired to a join path; stored so an
+    /// organiser's choice survives until team claiming ships.
+    Teams,
+    /// Both of the above.
+    Both,
+}
+
+/// One eligibility condition an open-join (or, eventually, tournament-entry)
+/// candidate must meet. Free-standing — not nested inside
+/// `OpenJoinPolicyRecord` — for the same reason as
+/// [`OpenJoinAudienceRecord`]: the tournaments-joining feature ANDs the same
+/// rule set rather than inventing its own. Every rule in a policy's `rules`
+/// must pass; an empty list means anyone in `audience` qualifies. Evaluated
+/// per-viewer at request time (join, or list/search), never baked into a
+/// search index — see the design doc's "Eligibility evaluation" section.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum EligibilityRuleRecord {
+    /// The candidate's ladder rating for this match's sport must be at
+    /// least `min`. Inert in practice until ranks are a user-facing
+    /// concept — nothing stops an organiser setting this today, but the
+    /// service should refuse to accept it until then (see the design
+    /// doc's phasing), since nobody can see the rating they'd need to meet.
+    MinRating { min: u32 },
+    /// The candidate must have played at least `min` matches in this sport.
+    MinMatchesPlayed { min: u32 },
+}
+
+/// A match's opt-in "open to the public" policy, carried by
+/// `OpenJoinScopeRecord::MatchWide` — absent entirely
+/// (`MatchRecord::open_join` is `None`) means invite/link/team-only, as every
+/// match behaved before this field existed. A match carrying this is
+/// surfaced by Discover search, subject to `rules` and remaining capacity.
+///
+/// `requires_approval` is deliberately orthogonal to `audience`/`rules`: it
+/// adds a human decision for someone who has *already* been determined
+/// eligible, it never relaxes who's eligible. So a declined candidate was
+/// always one who passed every rule — approval is about who the organiser
+/// actually wants, not a second eligibility gate.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpenJoinPolicyRecord {
+    pub audience: OpenJoinAudienceRecord,
+    /// AND'd — see [`EligibilityRuleRecord`]'s doc comment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<EligibilityRuleRecord>,
+    #[serde(default)]
+    pub requires_approval: bool,
+    /// Cap on how many open arrivals this match accepts in total,
+    /// independent of (and possibly tighter than) the match's own derived
+    /// capacity (`MatchAggregate::effective_max_players`). `None` =
+    /// uncapped — open joining simply fills whatever raw capacity remains,
+    /// which was the only behaviour before this field existed. Enforced
+    /// against `MatchRecord::open_joined_count`, never
+    /// `total_player_count` — see that field's doc comment for why. Only
+    /// meaningful under `OpenJoinScopeRecord::MatchWide`: a `PerSide` match
+    /// has no single policy to cap, since every side's own
+    /// `MatchSideRecord::max_open_spots` already caps that side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_open_spots: Option<u32>,
+}
+
+/// `MatchRecord::open_join`'s two shapes: one policy governing the whole
+/// match (today's shape, unchanged — see `OpenJoinPolicyRecord`), or each
+/// side configuring its own policy independently via
+/// `MatchSideRecord::open_join`. Never both at once — an organiser picks one
+/// or the other for the whole match.
+///
+/// Under `PerSide`, there's no "join unassigned" option: an unassigned
+/// landing has no side to carry a policy, so a joiner always has to pick one
+/// of the open sides (same as a join link with `allow_unassigned: false`
+/// today).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OpenJoinScopeRecord {
+    MatchWide(OpenJoinPolicyRecord),
+    PerSide,
+}
+
+/// One side's own open-join policy, carried by `MatchSideRecord::open_join`
+/// — meaningful only when the match's own `MatchRecord::open_join` is
+/// `OpenJoinScopeRecord::PerSide`. Same fields as `OpenJoinPolicyRecord`
+/// minus `max_open_spots` (a side's own cap is `MatchSideRecord::
+/// max_open_spots` instead, which already exists independent of scope).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SideOpenJoinPolicyRecord {
+    pub audience: OpenJoinAudienceRecord,
+    /// AND'd — see [`EligibilityRuleRecord`]'s doc comment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<EligibilityRuleRecord>,
+    #[serde(default)]
+    pub requires_approval: bool,
+}
+
+/// `MATCH#<matchId>` / `JOINREQ#<userId>` — a request to join a match through
+/// its open-join policy, when that policy requires approval
+/// (`OpenJoinPolicyRecord::requires_approval`). Keyed by `user_id`, the same
+/// convention as [`MatchWaitlistEntryRecord`]: at most one request per
+/// (match, user) is meaningful, which makes "already requested" a
+/// conditional-put guard on the key itself.
+///
+/// Unlike a waitlist entry, this is never deleted. Approving or declining it
+/// is a soft status update in place (mirrors `JoinLinkRecord::revoked_at`),
+/// so a decided request stays listable for "recently decided" — and so a
+/// declined candidate can't just retry: the conditional put that creates a
+/// request fails the moment one exists at that key, whatever its status.
+/// Eligibility (`EligibilityRuleRecord`) still gates who may *request* —
+/// approval only decides who the organiser actually wants among those who
+/// already qualify.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MatchJoinRequestRecord {
+    pub user_id: String,
+    /// The side requested, mirroring `JoinMatchInput::side_id` — `None` for
+    /// unassigned. For a `Teams`-audience request this is the side being
+    /// claimed (not yet wired to a join path — see
+    /// `OpenJoinAudienceRecord::Teams`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_id: Option<String>,
+    pub requested_at: String,
+    /// "pending" | "approved" | "declined" — same plain-string convention as
+    /// `InvitationRecord::status`, rather than an enum carrying the decision
+    /// facts: `decided_at`/`decided_by_user_id` below are flat siblings, not
+    /// nested inside a variant, which keeps every DynamoDB update expression
+    /// against this item a plain top-level `SET`.
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by_user_id: Option<String>,
 }
 
 /// `MATCH#<matchId>` / `SCORE#<sport>` — the match's live-scoring score
@@ -1105,6 +1128,11 @@ pub struct InvitationRecord {
     pub invited_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub responded_at: Option<String>,
+    /// Mirrors `EmbeddedInvitationRecord::reserve_spot` — kept on the
+    /// standalone record too since it's what `Dao::release_reserved_match_slot`
+    /// (decline/revoke) has to go on before it's loaded the roster row.
+    #[serde(default)]
+    pub reserve_spot: bool,
 }
 
 /// `JOINLINK#<linkId>` / `#META` — a shareable, many-use join link. Unlike
@@ -1493,37 +1521,18 @@ pub struct RatingRecord {
     pub mu: f64,
     /// Standard deviation, i.e. how unsure we are — `rating::PlayerRating::sigma`.
     pub sigma: f64,
-    /// How many matches have been folded into this rating in total,
-    /// **including unranked ones** — the cheap check that a repair replay
-    /// covered the same matches the incremental path did.
+    /// How many matches have been folded into this rating — the "· 6 games"
+    /// shown beside it, the counter that decides whether there is anything
+    /// to show at all (`rating::PLACEMENT_MATCHES`), and the cheap check
+    /// that a repair replay covered the same matches the incremental path
+    /// did.
     ///
-    /// Not the number a player is shown. Every completed match in a rated
-    /// sport moves a rating now, ranked or not, so this counts the casual
-    /// play that builds a latent prior as well as the ranked play that
-    /// surfaces — see [`RatingRecord::ranked_matches_rated`] for the half
-    /// that does. It is also not comparable between two players: someone who
-    /// logs every kickabout and someone who logs only league games can reach
-    /// the same count off very different amounts of evidence.
+    /// One number does all three because only ranked matches are rated.
+    /// Friendlies move nobody, so there is no second, larger count of
+    /// "matches that moved this rating but nobody should be judged on" to
+    /// keep alongside it, and two players with the same count have the same
+    /// amount of evidence behind them.
     pub matches_rated: u64,
-    /// How many **ranked** matches have been folded in since this ladder's
-    /// opt-in: the "· 6 games" shown beside a published rating, and the
-    /// counter that decides whether there is a published rating at all
-    /// (`rating::PLACEMENT_MATCHES`).
-    ///
-    /// Zero means one of two things, and the rating is displayed in neither:
-    /// the player has never opted in to this ladder (the rating is latent,
-    /// built from casual play, shown to nobody — not even to them), or they
-    /// have opted in and not yet finished placements. Which of the two it is
-    /// comes from `UserRecord::rating_opt_ins`, not from here.
-    ///
-    /// It carries a second job: it is what stops the opt-in confidence reset
-    /// from firing twice. See `rating::sigma_on_entry`.
-    ///
-    /// `#[serde(default)]` is a formality rather than a migration — the
-    /// rating write path has never run (see `dao::rating`'s module doc), so
-    /// no stored rating predates this field.
-    #[serde(default)]
-    pub ranked_matches_rated: u64,
     /// The `starts_at` of the most recent match folded in — when the newest
     /// rated match was **played**, not when it was rated. That is the
     /// comparison the pipeline actually needs: a match arriving with an
@@ -1586,22 +1595,6 @@ pub struct RatingHistoryRecord {
     /// The match's `starts_at` — the key's ordering segment. See
     /// `Sk::Rating` on why played order and not confirmation order.
     pub played_at: String,
-    /// Whether the match was `ranked`, and so counted towards the player's
-    /// published standing rather than only their latent rating.
-    ///
-    /// Duplicated out of the match record because the repair replay pages
-    /// through these history items and never reads the matches behind them.
-    /// This is the only place it can learn which entries advanced
-    /// `RatingRecord::ranked_matches_rated`, and therefore where in the
-    /// sequence the opt-in confidence reset fell — get that wrong and the
-    /// replay lands on different numbers than the incremental path did,
-    /// which is the one thing the repair design may not do.
-    ///
-    /// Same justification as [`RatingContributionRecord::ladder`]: what was
-    /// true when the entry was applied is not answerable from the match's
-    /// current state.
-    #[serde(default)]
-    pub ranked: bool,
     pub movement: RatingMovementRecord,
     /// Wall clock at the moment this was applied. Distinct from `played_at`,
     /// and worth keeping alongside it: the gap between the two is exactly how
@@ -1646,18 +1639,6 @@ pub struct RatingContributionRecord {
     /// withdrawing a contribution can address its `RATING#` history item
     /// (whose key contains it) without re-reading the match.
     pub played_at: String,
-    /// Whether the match was `ranked` when this was applied — mirrored onto
-    /// the history entry this contribution derives, where the repair replay
-    /// reads it ([`RatingHistoryRecord::ranked`] explains why it has to be
-    /// stored rather than looked up).
-    ///
-    /// Part of [`RatingContributionRecord::has_same_effect_as`], because a
-    /// match toggled between ranked and friendly has genuinely changed its
-    /// effect even when the movement is identical: the same `mu` and `sigma`
-    /// arrived, but one advanced the player's placement progress and the
-    /// other did not.
-    #[serde(default)]
-    pub ranked: bool,
     pub movement: RatingMovementRecord,
     /// Wall clock at the moment this was applied. Deliberately *excluded*
     /// from the "has anything changed?" comparison — see
@@ -1682,7 +1663,6 @@ impl RatingContributionRecord {
             && self.ladder == other.ladder
             && self.side_id == other.side_id
             && self.played_at == other.played_at
-            && self.ranked == other.ranked
             && self.movement == other.movement
     }
 }
@@ -1693,7 +1673,8 @@ mod tests {
     use aws_sdk_dynamodb::types::AttributeValue;
 
     /// `occupies_slot` is the one rule for who takes a spot: in with no
-    /// invitation, or an accepted invitee — never a pending or declined one.
+    /// invitation, an accepted invitee, or a pending invitee whose invite
+    /// reserved a spot — never an ordinary pending or a declined one.
     #[test]
     fn occupies_slot_counts_only_players_who_are_in() {
         let player = |status: Option<&str>| MatchPlayerRecord {
@@ -1711,9 +1692,9 @@ mod tests {
                 kind: InvitationKindRecord::User {
                     invited_user_id: "u".into(),
                 },
+                reserve_spot: false,
             }),
             joined_via: None,
-            ranked_prompt: None,
         };
         assert!(
             player(None).occupies_slot(),
@@ -1724,193 +1705,33 @@ mod tests {
         assert!(!player(Some("declined")).occupies_slot());
     }
 
-    /// A player row with no `ranked_prompt`, as every row written before
-    /// prompts existed reads back. Nothing was asked of them, so nothing is
-    /// owed — and `awaits_ranked_prompt` says so for any id.
+    /// A reserving invite holds the spot while pending, same as being in —
+    /// but stops the moment it's declined (never resurrected by `reserve_spot`
+    /// alone once the invitee has actually answered).
     #[test]
-    fn a_player_row_written_before_prompts_existed_owes_no_answer() {
-        let item = HashMap::from([
-            ("player_id".to_string(), AttributeValue::S("p1".into())),
-            ("user_id".to_string(), AttributeValue::S("u1".into())),
-            ("role".to_string(), AttributeValue::S("player".into())),
-        ]);
-        let rec: MatchPlayerRecord =
-            serde_dynamo::from_attribute_value(AttributeValue::M(item)).unwrap();
-
-        assert!(rec.ranked_prompt.is_none());
-        assert!(!rec.awaits_ranked_prompt("sw1"));
-        assert!(rec.occupies_slot(), "still in, as they always were");
-    }
-
-    /// The invariant the whole switch-to-ranked flow rests on: **an
-    /// outstanding prompt does not cost the player their spot.** If this ever
-    /// starts failing, switching a friendly to ranked silently empties the
-    /// match — and `sides.*.player_count`/`total_player_count`, which are
-    /// maintained by deltas rather than recomputed, would disagree with the
-    /// roster for good.
-    ///
-    /// The second half pins the other direction: a prompt does not *grant* a
-    /// spot either. A pending invitee who somehow carries one is still out,
-    /// because `occupies_slot` reads the invitation and nothing else.
-    #[test]
-    fn an_outstanding_prompt_neither_costs_nor_grants_a_spot() {
-        let prompt = RankedPromptRecord {
-            prompt_id: "sw1".into(),
-            ladder: "tennis".into(),
-            asked_at: "2026-10-14T09:00:00.000Z".into(),
-        };
-        let row = |invitation_status: Option<&str>| MatchPlayerRecord {
-            player_id: "p1".into(),
-            user_id: Some("u1".into()),
+    fn a_reserved_pending_invite_occupies_a_slot_until_declined() {
+        let player = |status: &str| MatchPlayerRecord {
+            player_id: "p".into(),
+            user_id: Some("u".into()),
             display_name: None,
-            side_id: Some("home".into()),
+            side_id: None,
             is_member_of_team: None,
-            invitation: invitation_status.map(|status| EmbeddedInvitationRecord {
+            invitation: Some(EmbeddedInvitationRecord {
                 id: "inv".into(),
                 status: status.into(),
                 invited_by_user_id: "host".into(),
-                invited_at: "2026-10-01T00:00:00Z".into(),
+                invited_at: "2026-09-14T00:00:00Z".into(),
                 responded_at: None,
                 kind: InvitationKindRecord::User {
-                    invited_user_id: "u1".into(),
+                    invited_user_id: "u".into(),
                 },
+                reserve_spot: true,
             }),
             joined_via: None,
-            ranked_prompt: Some(prompt.clone()),
         };
-
-        assert!(
-            row(None).occupies_slot(),
-            "an unanswered prompt holds the place; that is its purpose"
-        );
-        assert!(row(Some("accepted")).occupies_slot());
-        assert!(
-            !row(Some("pending")).occupies_slot(),
-            "a prompt grants nothing an invitation hasn't"
-        );
-    }
-
-    /// Answering is scoped to one ask. A row still carrying a prompt from a
-    /// withdrawn switch owes nothing on the current one, and an answer quoting
-    /// the old id must not be mistaken for the one owed now.
-    #[test]
-    fn a_prompt_is_only_owed_to_the_ask_that_wrote_it() {
-        let mut rec: MatchPlayerRecord =
-            serde_dynamo::from_attribute_value(AttributeValue::M(HashMap::from([
-                ("player_id".to_string(), AttributeValue::S("p1".into())),
-                ("role".to_string(), AttributeValue::S("player".into())),
-            ])))
-            .unwrap();
-        rec.ranked_prompt = Some(RankedPromptRecord {
-            prompt_id: "sw1".into(),
-            ladder: "tennis".into(),
-            asked_at: "2026-10-14T09:00:00.000Z".into(),
-        });
-
-        assert!(rec.awaits_ranked_prompt("sw1"));
-        assert!(
-            !rec.awaits_ranked_prompt("sw2"),
-            "a later ask, not this one"
-        );
-        assert!(!rec.awaits_ranked_prompt(""));
-    }
-
-    /// `ranked_prompt` is skipped when absent, so the common case — every
-    /// match that was created ranked, or friendly and left alone — writes the
-    /// same item it always did. Worth pinning: the meta item is rewritten by
-    /// every like and every comment, and a `null` attribute appearing on all
-    /// of them is both wasted bytes and a pointless stream diff.
-    #[test]
-    fn a_match_with_no_ask_serializes_without_the_attribute() {
-        let rec = MatchRecord {
-            id: "m1".into(),
-            created_by_user_id: "u1".into(),
-            name: "Tuesday singles".into(),
-            description: String::new(),
-            match_type: "tennis".into(),
-            status: "scheduled".into(),
-            starts_at: "2026-10-20T18:00:00.000Z".into(),
-            allow_unassigned: true,
-            total_player_count: 2,
-            location: None,
-            series_id: None,
-            sides: HashMap::new(),
-            header_photos: Vec::new(),
-            authority: HashMap::new(),
-            confirmed_score: None,
-            like_count: 0,
-            comment_count: 0,
-            live_seq: 0,
-            live_tip_seq: None,
-            format: None,
-            ranked: true,
-            ranked_prompt: None,
-            created_at: "2026-10-01T00:00:00.000Z".into(),
-        };
-
-        let item: HashMap<String, AttributeValue> =
-            serde_dynamo::to_item(&rec).expect("serializes");
-        assert!(
-            !item.contains_key("ranked_prompt"),
-            "absent, not null: {item:?}"
-        );
-    }
-
-    /// An open ask survives the write/read cycle whole, and the deadline it
-    /// carries is the value the sweep looks for — this item's own `GSI3SK`
-    /// under [`MatchRankedPromptRecord::DUE_GSI3PK`]. The two are written by
-    /// the same update, and nothing but this test ties the record's field to
-    /// the index convention.
-    #[test]
-    fn an_open_ask_round_trips_with_the_deadline_the_sweep_queries() {
-        let ask = MatchRankedPromptRecord {
-            id: "sw1".into(),
-            ladder: "football".into(),
-            opened_at: "2026-10-14T09:00:00.000Z".into(),
-            opened_by_user_id: "u1".into(),
-            deadline: "2026-10-19T18:00:00.000Z".into(),
-            pending: 3,
-        };
-
-        let item: HashMap<String, AttributeValue> = serde_dynamo::to_item(&ask).expect("to item");
-        let back: MatchRankedPromptRecord =
-            serde_dynamo::from_item(item).expect("reads back whole");
-
-        assert_eq!(back, ask);
-        assert_eq!(back.pending, 3);
-        assert_eq!(MatchRankedPromptRecord::DUE_GSI3PK, "RANKEDPROMPTDUE");
-        assert_eq!(
-            back.deadline, "2026-10-19T18:00:00.000Z",
-            "stamped as GSI3SK beside DUE_GSI3PK while the ask is open"
-        );
-    }
-
-    /// `pending` defaults rather than failing, because it is the one field an
-    /// atomic `ADD ranked_prompt.pending :delta` could leave behind if the ask
-    /// were ever written without it. Zero is the safe reading: a sweep skips
-    /// the match, and the roster — not this counter — decides who owes an
-    /// answer.
-    #[test]
-    fn an_ask_missing_its_counter_reads_as_nothing_pending() {
-        let item = HashMap::from([
-            ("id".to_string(), AttributeValue::S("sw1".into())),
-            ("ladder".to_string(), AttributeValue::S("tennis".into())),
-            (
-                "opened_at".to_string(),
-                AttributeValue::S("2026-10-14T09:00:00.000Z".into()),
-            ),
-            (
-                "opened_by_user_id".to_string(),
-                AttributeValue::S("u1".into()),
-            ),
-            (
-                "deadline".to_string(),
-                AttributeValue::S("2026-10-19T18:00:00.000Z".into()),
-            ),
-        ]);
-        let ask: MatchRankedPromptRecord =
-            serde_dynamo::from_attribute_value(AttributeValue::M(item)).unwrap();
-        assert_eq!(ask.pending, 0);
+        assert!(player("pending").occupies_slot());
+        assert!(player("accepted").occupies_slot());
+        assert!(!player("declined").occupies_slot());
     }
 
     /// `Simple`/`Sets` `entries` round-trip through the side_id-keyed map
@@ -2037,47 +1858,33 @@ mod tests {
         ])
     }
 
+    /// A profile stored before ratings existed reads back unrated, and one
+    /// stored while the opt-in map existed reads back the same — the
+    /// attribute is simply no longer a field, which is what makes removing
+    /// it a no-op for everything already written.
     #[test]
-    fn user_written_before_ratings_existed_is_unrated_and_opted_in_nowhere() {
-        let rec: UserRecord =
-            serde_dynamo::from_attribute_value(AttributeValue::M(legacy_user_fields())).unwrap();
-        assert!(rec.ratings.is_empty(), "nothing rated");
-        assert!(
-            rec.rating_opt_ins.is_empty(),
-            "nobody could opt in before the field existed"
-        );
-        assert!(!rec.has_opted_in("squash"));
+    fn a_user_written_before_or_during_the_opt_in_map_reads_back_unrated() {
+        for extra in [None, Some(("rating_opt_ins", "tennis"))] {
+            let mut item = legacy_user_fields();
+            if let Some((attr, ladder)) = extra {
+                item.insert(
+                    attr.to_string(),
+                    AttributeValue::M(HashMap::from([(
+                        ladder.to_string(),
+                        AttributeValue::S("2026-09-15T10:00:00.000Z".into()),
+                    )])),
+                );
+            }
+            let rec: UserRecord =
+                serde_dynamo::from_attribute_value(AttributeValue::M(item)).unwrap();
+            assert!(rec.ratings.is_empty(), "nothing rated");
+        }
     }
 
-    /// `Dao::opt_in_to_rating` writes the consent time with a raw nested
-    /// `SET rating_opt_ins.#ladder = :opted_in_at` of a string, while this
-    /// side reads `HashMap<String, String>` — two shapes nothing but this test
-    /// ties together. It builds the item the way that write leaves it and
-    /// reads it back. The ladder names are prefixes of one another, to pin
-    /// that `has_opted_in` is an exact-key lookup.
+    /// A rated profile survives the write/read cycle whole — the `ratings`
+    /// map of nested records beside the fields that were already there.
     #[test]
-    fn an_opt_in_as_the_dao_writes_it_reads_back_for_exactly_that_ladder() {
-        let mut item = legacy_user_fields();
-        item.insert(
-            "rating_opt_ins".to_string(),
-            AttributeValue::M(HashMap::from([(
-                "tennis".to_string(),
-                AttributeValue::S("2026-09-15T10:00:00.000Z".into()),
-            )])),
-        );
-        let rec: UserRecord = serde_dynamo::from_attribute_value(AttributeValue::M(item)).unwrap();
-
-        assert!(rec.has_opted_in("tennis"));
-        assert!(!rec.has_opted_in("tennis:doubles"));
-        assert!(!rec.has_opted_in("squash"));
-        assert_eq!(rec.rating_opt_ins["tennis"], "2026-09-15T10:00:00.000Z");
-    }
-
-    /// A rated, opted-in profile survives the write/read cycle whole — the
-    /// `ratings` map of nested records and the `rating_opt_ins` map of
-    /// strings both, beside the fields that were already there.
-    #[test]
-    fn a_rated_opted_in_profile_round_trips() {
+    fn a_rated_profile_round_trips() {
         let rec = UserRecord {
             id: "u1".into(),
             email: "sofia@example.com".into(),
@@ -2093,14 +1900,9 @@ mod tests {
                     mu: 27.638_888_888_888_89,
                     sigma: 7.171_442_936_549_223,
                     matches_rated: 6,
-                    ranked_matches_rated: 5,
                     last_rated_at: "2026-09-01T19:00:00.000Z".into(),
                 },
             )]),
-            rating_opt_ins: HashMap::from([
-                ("squash".to_string(), "2026-08-01T12:00:00.000Z".to_string()),
-                ("tennis".to_string(), "2026-09-15T10:00:00.000Z".to_string()),
-            ]),
             created_at: "2026-01-01T00:00:00Z".into(),
         };
         let av: AttributeValue = serde_dynamo::to_attribute_value(&rec).unwrap();
@@ -2127,7 +1929,6 @@ mod tests {
                 mu,
                 sigma,
                 matches_rated: 7,
-                ranked_matches_rated: 4,
                 last_rated_at: "2026-06-01T10:00:00.000Z".into(),
             };
             let av: AttributeValue = serde_dynamo::to_attribute_value(&rec).unwrap();
@@ -2149,7 +1950,6 @@ mod tests {
             ladder: "squash".into(),
             side_id: "sideA".into(),
             played_at: "2026-06-01T10:00:00.000Z".into(),
-            ranked: true,
             movement: RatingMovementRecord {
                 mu_before: 25.0,
                 sigma_before: 25.0 / 3.0,
@@ -2202,19 +2002,6 @@ mod tests {
                 "another player",
                 RatingContributionRecord {
                     user_id: "u2".into(),
-                    ..base.clone()
-                },
-            ),
-            // The movement is byte-for-byte identical and the effect is
-            // still different: the same mu and sigma arrived, but one of
-            // these advanced the player's placement progress and the other
-            // did not. Without `ranked` in the comparison, switching a
-            // rated match to friendly would look like a redelivery and the
-            // counter would keep the match it no longer has.
-            (
-                "switched to friendly",
-                RatingContributionRecord {
-                    ranked: false,
                     ..base.clone()
                 },
             ),

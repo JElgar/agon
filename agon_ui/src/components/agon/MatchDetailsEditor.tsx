@@ -29,11 +29,11 @@ function isRenameable(side: MatchSide, sides: MatchSide[]): boolean {
 }
 
 /**
- * Inline editor for a match's metadata — name, description, start time,
- * header photos, and side names — shown in place of the details card when a
- * match admin taps "Edit". Saves via `PATCH /matches/{id}` (only the changed
- * fields are sent) and, on success, refreshes the match and feed then closes
- * back to the read-only card.
+ * Inline editor for a *single* match's metadata — name, description, start
+ * time, header photos, and side names — shown in place of the details card
+ * when a match admin taps "Edit". Saves via `PATCH /matches/{id}` (only the
+ * changed fields are sent) and, on success, refreshes the match and feed
+ * then closes back to the read-only card.
  *
  * Roster and result are edited elsewhere (invite control, result editor), so
  * this deliberately covers just the descriptive fields, photos, and side
@@ -42,13 +42,24 @@ function isRenameable(side: MatchSide, sides: MatchSide[]): boolean {
  * *current* photos (by asset id) and the user's edits — reorder, remove, add
  * — are applied on top of that seed before being sent back as the complete
  * list on save.
+ *
+ * For a match that belongs to a series, `EditMatchDetailsFlow` decides
+ * *before* this renders whether the edit is scoped to just this match (this
+ * component) or to the whole series (`MatchSeriesDetailsEditor`, a
+ * deliberately smaller field set — see its own doc comment for why) — `
+ * onBack`, when given, lets the user change that choice.
  */
 export function MatchDetailsEditor({
   match,
   onDone,
+  onBack,
 }: {
   match: Match
   onDone: () => void
+  /** Shown as a small link back to the "just this match / the whole series"
+   *  choice, when this editor was reached through that choice. Omitted (and
+   *  nothing rendered) for a match outside any series. */
+  onBack?: () => void
 }) {
   const queryClient = useQueryClient()
   const [name, setName] = useState(match.name)
@@ -158,6 +169,16 @@ export function MatchDetailsEditor({
 
   return (
     <div className="flex flex-col gap-3 rounded-xl border bg-card p-4">
+      {onBack && (
+        <button
+          type="button"
+          onClick={onBack}
+          className="-mb-1 self-start text-xs font-semibold text-muted-foreground hover:text-foreground"
+        >
+          ‹ Just this match, or the whole series?
+        </button>
+      )}
+
       <div>
         <Label htmlFor="match-name" className="text-xs text-muted-foreground">
           Match name

@@ -59,6 +59,27 @@ pub struct JwtClaims {
 /// pairing exists for so far.
 pub const SCOPE_LIVE_SCORING: &str = "live_scoring";
 
+/// Best-effort, **unverified** read of a bearer token's `sub` claim, for
+/// request-log correlation only — never for authorization decisions, which
+/// stay on `JwtVerifier::verify`. Lets the request-logging middleware tag
+/// each log line with the caller without re-verifying (or hitting the JWKS)
+/// on every single request just to log.
+pub fn unverified_sub(bearer_token: &str) -> Option<String> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    #[derive(serde::Deserialize)]
+    struct Payload {
+        sub: String,
+    }
+
+    let payload = bearer_token.split('.').nth(1)?;
+    let bytes = URL_SAFE_NO_PAD.decode(payload).ok()?;
+    serde_json::from_slice::<Payload>(&bytes)
+        .ok()
+        .map(|p| p.sub)
+}
+
 /// Verifies bearer tokens against the trusted key sources. Cheap to clone
 /// (shares one inner instance); inject once via `.data(..)`.
 #[derive(Clone)]
@@ -524,5 +545,21 @@ rdMKmVzU3xhtCEnDnDWxqRISC9Ylad533olIZCkeALgwXkkDIW+V1ePB\n\
             std::env::remove_var("AGON_DEVICE_JWT_PRIVATE_KEY");
         }
         assert!(DeviceTokenSigner::from_env().is_none());
+    }
+
+    #[test]
+    fn unverified_sub_reads_the_claim_without_checking_the_signature() {
+        let token = sign_with(
+            &claims(FUTURE, Some("authenticated")),
+            Some("agon-test"),
+            Algorithm::ES256,
+        );
+        assert_eq!(unverified_sub(&token), Some("user-1".to_string()));
+    }
+
+    #[test]
+    fn unverified_sub_is_none_for_garbage_input() {
+        assert_eq!(unverified_sub("not-a-jwt"), None);
+        assert_eq!(unverified_sub(""), None);
     }
 }

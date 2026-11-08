@@ -393,6 +393,7 @@ mod tests {
             context,
             invited_at: "2026-07-01T10:00:00Z".into(),
             responded_at: Some("2026-07-02T09:00:00Z".into()),
+            reserve_spot: false,
         }
     }
 
@@ -433,7 +434,8 @@ mod tests {
             live_tip_seq: None,
             format: None,
             ranked: false,
-            ranked_prompt: None,
+            open_join: None,
+            open_joined_count: 0,
             created_at: "2026-07-01T10:00:00Z".into(),
         }
     }

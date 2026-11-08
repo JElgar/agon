@@ -184,6 +184,7 @@ function AllMatchesTab({ currentUserId, navigate }: TabProps) {
   const [subjectTerm, setSubjectTerm] = useState('')
   const [subjectDebounced, setSubjectDebounced] = useState('')
   const [result, setResult] = useState<MatchOutcome | null>(null)
+  const [openOnly, setOpenOnly] = useState(false)
 
   useEffect(() => {
     const id = setTimeout(() => setDebounced(term.trim()), DEBOUNCE_MS)
@@ -201,7 +202,7 @@ function AllMatchesTab({ currentUserId, navigate }: TabProps) {
   const resultEnabled = subject?.kind === 'user'
 
   const query = useInfiniteQuery({
-    queryKey: ['browse-matches', debounced, sports, participant, teamId],
+    queryKey: ['browse-matches', debounced, sports, participant, teamId, openOnly],
     enabled: !!currentUserId,
     initialPageParam: undefined as string | undefined,
     queryFn: async ({ pageParam }): Promise<{ items: SearchMatch[]; next_cursor?: string | null }> => {
@@ -212,6 +213,8 @@ function AllMatchesTab({ currentUserId, navigate }: TabProps) {
             match_type: sports.length ? sports : undefined,
             participant,
             team_id: teamId ? [teamId] : undefined,
+            open: openOnly || undefined,
+            open_has_space: openOnly || undefined,
             cursor: pageParam,
             limit: PAGE_SIZE,
           },
@@ -254,6 +257,10 @@ function AllMatchesTab({ currentUserId, navigate }: TabProps) {
             setSubjectDebounced('')
           }}
         />
+
+        <Chip pressed={openOnly} onClick={() => setOpenOnly(!openOnly)}>
+          Open to ringers
+        </Chip>
 
         {resultEnabled &&
           RESULTS.map((r) => (

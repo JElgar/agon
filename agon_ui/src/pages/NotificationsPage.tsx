@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { formatDistanceToNow } from 'date-fns'
 import {
   Bell,
-  Clock,
+  CalendarClock,
   Flame,
   LogIn,
   MessageCircle,
@@ -579,12 +579,12 @@ function describe(kind: Kind): NotificationView {
         actorImage: kind.organizer.profile_image?.image_url,
         message: (
           <>
-            <strong className="font-medium">{kind.match_name}</strong> starts
-            soon.
+            <strong className="font-medium">{kind.match_name}</strong> is{' '}
+            {formatDistanceToNow(new Date(kind.starts_at), { addSuffix: true })}.
           </>
         ),
-        badgeIcon: Clock,
-        badgeClass: 'bg-primary',
+        badgeIcon: CalendarClock,
+        badgeClass: 'bg-muted-foreground',
         href: `/matches/${kind.match_id}`,
         actions: { viewLabel: 'View match' },
       }

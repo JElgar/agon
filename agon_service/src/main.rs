@@ -49,14 +49,15 @@ use mapping::{
     join_link_scope_to_record, live_event_from_record, location_to_record, match_format_sport_tag,
     match_format_to_record, match_from_records, match_player_role_from_record,
     match_score_from_record, match_score_to_record, match_series_from_record,
-    match_series_occurrence_from_record, match_status_str, match_type_tag, new_live_event_to_dao,
-    notification_actor_id, notification_from_record, ranked_added_players_reason,
-    ranked_lock_reason_for_update, ranked_move_in_reason, rating_consent_step, rating_ladder,
-    rating_ladder_for, rating_opt_ins_from_record, resolve_score_ids, roster_preview_player,
-    score_player_ids, score_side_ids, score_to_record, search_match_from_records,
-    series_end_record_from_input, set_score_players, switch_to_ranked_reason, team_from_records,
-    team_list_item_from_record, team_member_from_record, unrankable_sport_reason,
-    unratable_players, user_profile_from_record, winner_from_score,
+    match_series_occurrence_from_record, match_status_str, match_type_tag,
+    matches_played_for_sport, new_live_event_to_dao, notification_actor_id,
+    notification_from_record, ranked_added_players_reason, ranked_lock_reason_for_update,
+    rating_ladder, rating_ladder_for, rating_placements_from_record, resolve_score_ids,
+    roster_preview_player, score_player_ids, score_side_ids, score_to_record,
+    search_match_from_records, series_end_record_from_input, set_score_players,
+    switch_to_ranked_reason, team_from_records, team_list_item_from_record,
+    team_member_from_record, unrankable_sport_reason, unratable_players, user_profile_from_record,
+    winner_from_score,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -75,9 +76,10 @@ mod membership;
 use membership::{
     AddInvitationsInput, CreateJoinLinkInput, Invitation, InvitationContext, InvitationDetail,
     InvitationKind, InvitationMatchContext, InvitationStatus, JoinLink, JoinLinkPreview,
-    JoinMatchInput, MatchPlayerRole, Member, RespondByTokenInput, RespondToInvitationInput,
-    SetMatchPlayerRoleInput, TokenInvitation, TransferMatchOwnershipInput, UserInvitation,
-    UserMember,
+    JoinMatchInput, JoinRequest, JoinRequestInput, MatchPlayerRole, Member, OpenJoinScope,
+    OpenJoinScopeInput, OpenJoinScopeKind, RespondByTokenInput, RespondToInvitationInput,
+    SetMatchPlayerRoleInput, SideOpenJoinInput, SideOpenJoinPolicy, TokenInvitation,
+    TransferMatchOwnershipInput, UserInvitation, UserMember,
 };
 
 mod team;
@@ -169,6 +171,46 @@ pub struct UserProfile {
     pub following_count: u32,
     /// Whether the requesting user follows this profile. False for your own.
     pub is_followed_by_me: bool,
+    /// This user's **published** ratings, ordered by ladder.
+    ///
+    /// A ladder is absent until they have five ranked matches behind them on
+    /// it. Everybody who plays a ranked match is rated for it, but a rating
+    /// still in its placements is shown to nobody — not to other users, and
+    /// not to the user themselves. There is deliberately no field anywhere
+    /// that exposes one: a brand-new rating reads as `1500 ±750` and moves
+    /// eighty points a game, which is `σ` being honest rather than a number
+    /// anybody should be judged on. `User::rating_placements` is what the
+    /// player sees instead, and only the player.
+    pub ratings: Vec<LadderRating>,
+}
+
+/// One ladder a user has a published rating on.
+#[derive(Object)]
+pub struct LadderRating {
+    /// The ladder, as `Match.rating_ladder` names it (e.g. `"tennis"`).
+    pub ladder: String,
+    /// The headline number. 1500 is an average, unproven player.
+    pub rating: i32,
+    /// The `±` half-width to show beside it. Wide for a freshly placed
+    /// player and narrowing as they play.
+    pub confidence: i32,
+    /// `rating - confidence`: the conservative value, for anything that
+    /// ranks or gates rather than displays.
+    pub floor: i32,
+    /// Ranked matches behind this rating — the "· 12 games" beside it. Every
+    /// match that moved it, since friendlies move nothing.
+    pub matches_rated: u32,
+}
+
+/// Progress towards a published rating on one ladder.
+#[derive(Object)]
+pub struct LadderPlacement {
+    /// The ladder, as `Match.rating_ladder` names it.
+    pub ladder: String,
+    /// Ranked matches played so far.
+    pub played: u32,
+    /// How many are needed in all before the rating is published.
+    pub required: u32,
 }
 
 /// The authenticated user's own view: their public `profile` plus private fields
@@ -180,25 +222,19 @@ struct User {
     /// The same public profile others see (id, name, image, stats, follower
     /// counts).
     profile: UserProfile,
-    /// The rating ladders this user has agreed to be rated on, ordered by
-    /// ladder. Empty until they first consent on a ranked match
-    /// (`rating_consent`), and never shrinks: opting in isn't reversible.
+    /// Ladders this user has a rating on but has not been placed on, with
+    /// how far through their placement matches they are — the "3 more games"
+    /// a client shows in place of a rating.
     ///
-    /// Here and not on `UserProfile`, so only the user themselves sees it. An
-    /// opt-in records a consent, which is between the user and Agon; what
-    /// other people get to see is a rating, which only exists once a ranked
-    /// match has been rated.
-    rating_opt_ins: Vec<RatingOptIn>,
-}
-
-/// One ladder a user has opted in to being rated on.
-#[derive(Object)]
-struct RatingOptIn {
-    /// The ladder, as `Match.rating_ladder` names it (e.g. `"tennis"`).
-    ladder: String,
-    /// When they agreed. The first time only: consenting again on a later
-    /// ranked match in the same sport doesn't move it.
-    opted_in_at: chrono::DateTime<chrono::Utc>,
+    /// Private, and the only thing a user sees while placing: the rating
+    /// being settled is deliberately not here, because it is moving fast by
+    /// design and showing it would be showing a number we are in the middle
+    /// of disagreeing with. Progress is theirs to see; a stranger reading it
+    /// would be reading a hint about a number being withheld.
+    ///
+    /// A ladder appears in exactly one of this and `UserProfile::ratings`,
+    /// never both.
+    rating_placements: Vec<LadderPlacement>,
 }
 
 #[derive(Object)]
@@ -379,6 +415,22 @@ struct MatchSide {
     /// See `CreateMatchSideInput.team_join_enabled` — not yet read by any
     /// join flow.
     team_join_enabled: bool,
+    /// Whether this side takes individual ringers under the match's own
+    /// `Match.open_join` policy, when that policy's `mode` is `match_wide`
+    /// (meaningless under `per_side`, where `open_join` below governs
+    /// instead, and meaningless whenever `Match.open_join` is `None`).
+    open_join_enabled: bool,
+    /// This side's own open-join policy, present only when `Match.open_join`
+    /// is set with `mode: per_side` and this side is open to ringers.
+    /// `None` under `match_wide` scope (where `open_join_enabled` above
+    /// governs instead) or when this side is closed.
+    open_join: Option<SideOpenJoinPolicy>,
+    /// Cap on how many ringers this side accepts, independent of the
+    /// match-wide `OpenJoinPolicy::max_open_spots`. `None` = uncapped.
+    max_open_spots: Option<u32>,
+    /// How many of `player_count` arrived as a ringer through open joining
+    /// — what `max_open_spots` is enforced against.
+    open_joined_count: u32,
 }
 
 /// A player in a side's `roster_preview` — name/avatar only, not the full
@@ -583,6 +635,10 @@ struct Match {
     /// every other `Match`-returning response, not because it doesn't
     /// apply, just because nothing reads it there.
     viewer_team_join_side_ids: Option<Vec<String>>,
+    /// This match's open-join scope and policy, set via `PUT
+    /// /matches/:match_id/open-join`. `None` means invite/link/team-only —
+    /// as every match was before open joining existed.
+    open_join: Option<OpenJoinScope>,
     /// The recurring series this match was generated from, if any
     /// (`GET /match-series/:id` fetches the series itself).
     series_id: Option<String>,
@@ -752,6 +808,10 @@ struct CreateMatchInviteInput {
     /// reference them too, the same way `CreateMatchSideInput.client_id`
     /// lets a score reference a side before it has a real id.
     invited_externals: Vec<CreateMatchExternalInviteInput>,
+    /// Whether every invitee in this batch holds a roster slot while their
+    /// invite is still pending, instead of only once they accept. Omit for
+    /// the default (`false`) — see `AddInvitationsInput::reserve_spot`.
+    reserve_spot: Option<bool>,
 }
 
 #[derive(Object)]
@@ -799,10 +859,10 @@ struct CreateMatchInput {
     /// friendly, the default. Refused (400) for a sport with no rating ladder
     /// (`other`).
     ///
-    /// Friendly by default because ratings are opt-in, per sport, and a
-    /// ranked match needs everyone playing in it to have opted in. Ranked by
-    /// default would put that requirement in front of most games, which are
-    /// casual; ranked is the organiser's explicit choice instead.
+    /// Friendly by default because a ranked match is the one that counts:
+    /// everybody who plays in one is rated for it, and nothing else moves a
+    /// rating. Most games are casual, so ranked is the organiser's explicit
+    /// choice rather than something a kickabout falls into.
     ///
     /// **Creation is deliberately unconstrained, including for a match that
     /// has already been played.** This endpoint accepts a completed match with
@@ -820,20 +880,6 @@ struct CreateMatchInput {
     /// flag, is checked against anything else. Worth fixing if anyone is ever
     /// seen doing it; not worth building ahead of that.
     ranked: Option<bool>,
-    /// "I understand this starts my rating in this sport." Needed only when
-    /// creating a ranked match the creator plays in (`creator_side_client_id`)
-    /// without being opted in to that sport's ladder yet: `true` opts them in
-    /// and creates the match, and omitting it is refused with 422
-    /// (`RatingConsentRequired`), which is how a client knows to ask. Ignored
-    /// for a friendly, for a creator who only organises, and once opted in.
-    ///
-    /// The same field, with the same 422, is on every way into a match that
-    /// someone takes on their own say-so: `RespondToInvitationInput`,
-    /// `RespondByTokenInput` and `JoinMatchInput` (which `POST
-    /// /matches/:match_id/waitlist/join` shares). Invitees consent when they
-    /// accept, so inviting people to a ranked match asks nothing of anyone at
-    /// creation.
-    rating_consent: Option<bool>,
 }
 
 // ===========================================================================
@@ -1559,20 +1605,6 @@ enum CreateMatchResponse {
 
     #[oai(status = 400)]
     ValidationError(PlainText<String>),
-
-    /// The match is ranked, the creator plays in it, and they haven't opted in
-    /// to its sport's ladder: resend with `rating_consent: true` once they've
-    /// agreed. Nothing was created.
-    ///
-    /// 422 on every endpoint that asks for `rating_consent`, and chosen
-    /// because none of them used it: a consent screen has to tell "ask the
-    /// user" apart from every other refusal on the same call, and the others
-    /// already took 400 (create, join), 403 (not your invitation, and any
-    /// device-scoped token), 404 and 409 (full, or already on the roster or
-    /// waitlist). 412 and 428 were the other candidates, but both mean HTTP
-    /// conditional-request headers, which this isn't.
-    #[oai(status = 422)]
-    RatingConsentRequired(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -2145,14 +2177,6 @@ enum JoinMatchResponse {
     /// the roster — see `RosterConflict::kind`.
     #[oai(status = 409)]
     Conflict(Json<RosterConflict>),
-
-    /// The match is ranked and the caller hasn't opted in to its sport's
-    /// ladder: resend with `rating_consent: true` once they've agreed. Nothing
-    /// was written. Only reached once every other check has passed, so a full
-    /// match is still the 409 above. See
-    /// `CreateMatchResponse::RatingConsentRequired` for why 422.
-    #[oai(status = 422)]
-    RatingConsentRequired(PlainText<String>),
 }
 
 /// A person waiting for a spot on a match/side — see
@@ -2207,15 +2231,6 @@ enum WaitlistJoinResponse {
     /// waitlist.
     #[oai(status = 409)]
     Conflict(PlainText<String>),
-
-    /// The match is ranked and the caller hasn't opted in to its sport's
-    /// ladder: resend with `rating_consent: true` once they've agreed. Nothing
-    /// was written, and a pending invitation is still pending. Asked here as
-    /// well as on join, because the admin who later moves someone in off the
-    /// waitlist can't consent for them. See
-    /// `CreateMatchResponse::RatingConsentRequired` for why 422.
-    #[oai(status = 422)]
-    RatingConsentRequired(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -2307,6 +2322,113 @@ enum SetMatchPlayerRoleResponse {
     NotFound(PlainText<String>),
 }
 
+/// Set a match's open-join scope — `PUT /matches/:match_id/open-join`.
+#[derive(ApiResponse)]
+enum SetOpenJoinPolicyResponse {
+    #[oai(status = 200)]
+    Scope(Json<OpenJoinScope>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// Close a match back to invite/link/team-only — `DELETE
+/// /matches/:match_id/open-join`. Idempotent.
+#[derive(ApiResponse)]
+enum ClearOpenJoinPolicyResponse {
+    #[oai(status = 204)]
+    Ok,
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// Open or close one side to individual ringers — `PUT
+/// /matches/:match_id/sides/:side_id/open-join`.
+#[derive(ApiResponse)]
+enum SetSideOpenJoinResponse {
+    #[oai(status = 204)]
+    Ok,
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    /// The match doesn't exist, or the side isn't part of it.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// Request to join a match through its open-join policy — `POST
+/// /matches/:match_id/join-requests`. Used only when the policy requires
+/// approval; otherwise `POST /matches/:match_id/join` seats the caller
+/// directly. See `JoinRequestInput`'s doc comment.
+#[derive(ApiResponse)]
+enum CreateJoinRequestResponse {
+    #[oai(status = 201)]
+    Request(Json<JoinRequest>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+
+    /// The caller is already on the roster, or already has a request
+    /// (pending or decided) for this match.
+    #[oai(status = 409)]
+    Conflict(PlainText<String>),
+}
+
+/// List a match's join requests, oldest-requested first — admin-only, same
+/// as `GET /matches/:match_id/waitlist`.
+#[derive(ApiResponse)]
+enum ListJoinRequestsResponse {
+    #[oai(status = 200)]
+    Requests(Json<Vec<JoinRequest>>),
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// Approve or decline a pending join request — admin-only.
+#[derive(ApiResponse)]
+enum DecideJoinRequestResponse {
+    /// Approved: the requester is now seated and the match/side headcounts
+    /// already reflect it. Declined: the request is marked `Declined`;
+    /// nothing else changes.
+    #[oai(status = 204)]
+    Ok,
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    /// The match doesn't exist, or there's no such request.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+
+    /// The request is no longer pending (already decided), or (approving
+    /// only) a cap has been reached since the caller's own read.
+    #[oai(status = 409)]
+    Conflict(Json<RosterConflict>),
+}
+
 #[derive(ApiResponse)]
 enum LeaveMatchResponse {
     /// The caller is no longer on the roster.
@@ -2351,14 +2473,6 @@ enum RespondToInvitationResponse {
     /// invitation and queues for the spot in one step.
     #[oai(status = 409)]
     Conflict(Json<RosterConflict>),
-
-    /// Accepting an invitation to a ranked match whose sport's ladder the
-    /// caller hasn't opted in to: resend with `rating_consent: true` once
-    /// they've agreed. The invitation is still pending. Judged against the
-    /// match as it is now, so an invitation sent while it was a friendly asks
-    /// too. See `CreateMatchResponse::RatingConsentRequired` for why 422.
-    #[oai(status = 422)]
-    RatingConsentRequired(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -2373,10 +2487,6 @@ enum RespondByTokenResponse {
     /// See `RespondToInvitationResponse::Conflict`.
     #[oai(status = 409)]
     Conflict(Json<RosterConflict>),
-
-    /// As `RespondToInvitationResponse::RatingConsentRequired`.
-    #[oai(status = 422)]
-    RatingConsentRequired(PlainText<String>),
 }
 
 /// Result of a follow/unfollow action.
@@ -2485,7 +2595,7 @@ impl Api {
         // Own profile: not "followed by me".
         let profile = user_profile_from_record(&record, false);
         Ok(GetUserResponse::User(Json(User {
-            rating_opt_ins: rating_opt_ins_from_record(&record),
+            rating_placements: rating_placements_from_record(&record),
             email: record.email,
             profile,
         })))
@@ -2539,7 +2649,7 @@ impl Api {
             .ok_or_else(|| Error::from_string("user not found", StatusCode::NOT_FOUND))?;
         let profile = user_profile_from_record(&record, false);
         Ok(UpdateUserResponse::User(Json(User {
-            rating_opt_ins: rating_opt_ins_from_record(&record),
+            rating_placements: rating_placements_from_record(&record),
             email: record.email,
             profile,
         })))
@@ -2682,15 +2792,11 @@ impl Api {
             following_count: 0,
             unread_count: 0,
             stats: dao::records::UserStatsRecord::default(),
-            // A brand-new account has played nothing and consented to
-            // nothing: rated on no ladder, opted in to none — the same state a
-            // profile written before ratings existed deserializes into.
-            // Neither is settable at signup. Opting in is ticking the consent
-            // box on a ranked game, and only the rating pipeline writes
-            // `ratings`; both are later changes, and these are here only
-            // because the record now has the fields.
+            // A brand-new account has played nothing, so it is rated on no
+            // ladder — the same state a profile written before ratings
+            // existed deserializes into. Not settable at signup: only the
+            // rating pipeline writes `ratings`.
             ratings: HashMap::new(),
-            rating_opt_ins: HashMap::new(),
             created_at: now_iso(),
         };
         match dao.create_user(&jwt_data.sub, &record).await {
@@ -2704,7 +2810,7 @@ impl Api {
         }
         let profile = user_profile_from_record(&record, false);
         Ok(CreateUserResponse::User(Json(User {
-            rating_opt_ins: rating_opt_ins_from_record(&record),
+            rating_placements: rating_placements_from_record(&record),
             email: record.email,
             profile,
         })))
@@ -2970,6 +3076,14 @@ impl Api {
         /// Only matches in this lifecycle state (e.g. `scheduled`) — powers the
         /// "all scheduled matches" browse view.
         Query(status): Query<Option<MatchStatus>>,
+        /// Only matches with an open-join policy set — the Discover "open to
+        /// ringers" filter.
+        Query(open): Query<Option<bool>>,
+        /// Only matches that are `open` and currently have room for another
+        /// individual arrival — see `agon_core::dao::open_join::
+        /// open_has_space`'s doc comment on what this approximates. Ignored
+        /// (not applied) unless `open` is also `true`.
+        Query(open_has_space): Query<Option<bool>>,
         /// Only matches at or after this time (inclusive).
         Query(from): Query<Option<chrono::DateTime<chrono::Utc>>>,
         /// Only matches at or before this time (inclusive).
@@ -3061,6 +3175,12 @@ impl Api {
         }
         if let Some(to) = to {
             clauses.push(format!("starts_at_ts <= {}", to.timestamp()));
+        }
+        if let Some(open) = open {
+            clauses.push(format!("open = {open}"));
+            if open && open_has_space == Some(true) {
+                clauses.push("open_has_space = true".to_string());
+            }
         }
         let filter = (!clauses.is_empty()).then(|| clauses.join(" AND "));
 
@@ -3310,6 +3430,13 @@ impl Api {
                     colour: side.colour.clone(),
                     max_players: side.max_players,
                     team_join_enabled: side.team_join_enabled.unwrap_or(false),
+                    // Ringers aren't configurable at creation — an organiser
+                    // opens a side to them afterwards, via the open-join
+                    // settings endpoint.
+                    open_join_enabled: false,
+                    open_join: None,
+                    max_open_spots: None,
+                    open_joined_count: 0,
                     // `Dao::create_match` recomputes both from the players
                     // list it's given, in the same transaction — placeholders.
                     player_count: 0,
@@ -3332,7 +3459,6 @@ impl Api {
         // If the creator opted to play, add them as an already-accepted player on
         // the chosen side — no invitation (they're the source of truth, not an
         // invitee, so there's no pending self-invite / notification to accept).
-        let mut creator_player_id: Option<String> = None;
         // The creator always gets `Owner` in `authority`, whether or not
         // they play — see `MatchRecord::authority`'s doc comment.
         let authority =
@@ -3344,7 +3470,6 @@ impl Api {
                 )));
             };
             let player_id = new_id();
-            creator_player_id = Some(player_id.clone());
             player_ids.insert(uid.clone(), player_id.clone());
             player_records.push(dao::records::MatchPlayerRecord {
                 player_id,
@@ -3354,7 +3479,6 @@ impl Api {
                 is_member_of_team: None,
                 invitation: None,
                 joined_via: None,
-                ranked_prompt: None,
             });
         }
         for invite in &input.invites {
@@ -3362,6 +3486,7 @@ impl Api {
                 .side_client_id
                 .as_ref()
                 .and_then(|c| side_ids.get(c).cloned());
+            let reserve_spot = invite.reserve_spot.unwrap_or(false);
             for user_id in &invite.invited_user_ids {
                 let (player, inv) = build_invited_player(
                     &match_id,
@@ -3370,6 +3495,7 @@ impl Api {
                     side_id.clone(),
                     Some(user_id.clone()),
                     None,
+                    reserve_spot,
                     &now,
                 );
                 player_ids.insert(user_id.clone(), player.player_id.clone());
@@ -3384,6 +3510,7 @@ impl Api {
                     side_id.clone(),
                     None,
                     Some(external.name.clone()),
+                    reserve_spot,
                     &now,
                 );
                 player_ids.insert(external.client_id.clone(), player.player_id.clone());
@@ -3494,8 +3621,11 @@ impl Api {
             // spot at creation is the caller (who consents inline, above) or
             // an invitee, who is asked when they accept. Prompts exist only
             // for a *switch*, which finds players already in place.
-            ranked_prompt: None,
             authority: authority.clone(),
+            // Not configurable at creation — an organiser opens a match to
+            // the public afterwards, via the open-join settings endpoint.
+            open_join: None,
+            open_joined_count: 0,
             created_at: now.clone(),
         };
 
@@ -3511,17 +3641,6 @@ impl Api {
         // they have an account. It's also why there is no "no externals on a
         // ranked match" check here: creation can only invite people, never add
         // them directly. (`update_match`'s `added_players` can, and is checked.)
-        //
-        // Last before the first write, so that neither a refusal nor any
-        // validation above leaves an opt-in behind.
-        if creator_player_id.is_some()
-            && let Some(message) =
-                settle_rating_consent(dao, &uid, &match_record, input.rating_consent).await?
-        {
-            return Ok(CreateMatchResponse::RatingConsentRequired(PlainText(
-                message,
-            )));
-        }
 
         match dao.create_match(&match_record, &player_records).await {
             Ok(()) => {}
@@ -3752,53 +3871,38 @@ impl Api {
             input.ranked.unwrap_or(agg.match_.ranked),
         );
         let added_players = input.added_players.as_deref().unwrap_or_default();
-        if let Some(ladder) = &resulting_ladder
-            && (ranked_change == Some(true) || !added_players.is_empty())
+        // The ladder itself is no longer needed, only whether the match would
+        // have one: the surviving rules say nothing about which sport it is.
+        if resulting_ladder.is_some() && (ranked_change == Some(true) || !added_players.is_empty())
         {
-            // The players already in, and those waiting, only need judging on a
-            // switch: a match that was already ranked checked each of them on
-            // the way in (bar the race `settle_rating_consent` describes).
-            let (in_a_spot, waitlisted) = if ranked_change == Some(true) {
-                let in_a_spot: Vec<&dao::records::MatchPlayerRecord> =
-                    agg.players.iter().filter(|p| p.occupies_slot()).collect();
-                let waitlisted = dao.list_waitlist(&match_id).await.map_err(dao_internal)?;
-                (in_a_spot, waitlisted)
+            // The players already in only need judging on a switch: a match
+            // that was already ranked judged each of them on the way in.
+            //
+            // This used to read the waitlist and then batch-read every
+            // profile involved, both for the opt-in rule. Nobody has to have
+            // opted in for a match to rate now, so all that is left to check
+            // is whether a player has an account — which their roster row
+            // already says. The switch costs no extra read at all.
+            let in_a_spot: Vec<&dao::records::MatchPlayerRecord> = if ranked_change == Some(true) {
+                agg.players.iter().filter(|p| p.occupies_slot()).collect()
             } else {
-                (Vec::new(), Vec::new())
+                Vec::new()
             };
-            let user_ids: Vec<String> = in_a_spot
-                .iter()
-                .filter_map(|p| p.user_id.clone())
-                .chain(waitlisted.iter().map(|e| e.user_id.clone()))
-                .chain(added_players.iter().filter_map(|p| p.user_id.clone()))
-                .collect();
-            let users = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
 
             let unratable_in_a_spot = unratable_players(
-                ladder,
                 in_a_spot
                     .iter()
                     .map(|p| (p.user_id.as_deref(), p.display_name.as_deref())),
-                &users,
             );
-            let unratable_waitlisted = unratable_players(
-                ladder,
-                waitlisted.iter().map(|e| (Some(e.user_id.as_str()), None)),
-                &users,
-            );
-            if let Some(reason) =
-                switch_to_ranked_reason(ladder, &unratable_in_a_spot, &unratable_waitlisted)
-            {
+            if let Some(reason) = switch_to_ranked_reason(&unratable_in_a_spot) {
                 return Ok(UpdateMatchResponse::ValidationError(PlainText(reason)));
             }
             let unratable_added = unratable_players(
-                ladder,
                 added_players
                     .iter()
                     .map(|p| (p.user_id.as_deref(), p.display_name.as_deref())),
-                &users,
             );
-            if let Some(reason) = ranked_added_players_reason(ladder, &unratable_added) {
+            if let Some(reason) = ranked_added_players_reason(&unratable_added) {
                 return Ok(UpdateMatchResponse::ValidationError(PlainText(reason)));
             }
         }
@@ -4187,7 +4291,6 @@ impl Api {
                     is_member_of_team: None,
                     invitation: None,
                     joined_via: None,
-                    ranked_prompt: None,
                 };
                 dao.add_match_player_tx(&match_id, &player)
                     .await
@@ -4507,6 +4610,10 @@ impl Api {
                     colour: side.colour.clone(),
                     max_players: side.max_players,
                     team_join_enabled: true,
+                    open_join_enabled: false,
+                    open_join: None,
+                    max_open_spots: None,
+                    open_joined_count: 0,
                     player_count: 0,
                     roster_preview: Vec::new(),
                 },
@@ -4541,17 +4648,16 @@ impl Api {
             live_tip_seq: None,
             format: None,
             // A series occurrence is always friendly. `SeriesRecord` has no
-            // `ranked` of its own, and generation puts *other* people's
-            // players into spots without asking them — which is the one thing
-            // a rating needs (see `rating_consent`). An organiser can switch a
-            // single occurrence to ranked afterwards, which asks everyone in
-            // it. A ranked *series* needs its own consent design first.
+            // `ranked` of its own, so there is nowhere to say otherwise. An
+            // organiser can switch a single occurrence to ranked afterwards;
+            // a ranked *series* needs a design of its own first.
             ranked: false,
-            ranked_prompt: None,
             authority: std::collections::HashMap::from([(
                 uid.clone(),
                 dao::records::MatchPlayerRole::Owner,
             )]),
+            open_join: None,
+            open_joined_count: 0,
             created_at: now,
         };
 
@@ -5156,8 +5262,8 @@ impl Api {
             })));
         }
 
-        let new_tip = match dao.delete_live_event(&match_id, seq).await {
-            Ok(new_tip) => new_tip,
+        let deleted = match dao.delete_live_event(&match_id, seq).await {
+            Ok(deleted) => deleted,
             Err(dao::DaoError::NotFound(_)) => {
                 return Ok(DeleteLiveEventResponse::NotFound(Json(ErrorMessage {
                     message: "live event not found".into(),
@@ -5173,6 +5279,35 @@ impl Api {
             Err(e) => return Err(dao_internal(e)),
         };
 
+        // Undoing a match's only recorded event leaves its live log empty —
+        // the same state it was in before the first event ever auto-promoted
+        // it to `in_progress` (see `append_live_events`), so reverse that
+        // promotion rather than leaving the match stuck "live" with nothing
+        // in its log. Skipped once a score has actually been confirmed
+        // (finishing a live-scored match, or a later manual score edit),
+        // since that's a real result to preserve, not a promotion to undo.
+        if deleted.log_now_empty
+            && agg.match_.status == "in_progress"
+            && agg.match_.confirmed_score.is_none()
+        {
+            dao.update_match_meta(
+                &match_id,
+                None,
+                None,
+                Some("scheduled"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &[],
+                &[],
+            )
+            .await
+            .map_err(dao_internal)?;
+        }
+
         match self
             .derive_live_snapshot(
                 dao,
@@ -5182,7 +5317,7 @@ impl Api {
                 // The DAO's freshly-bumped counter, not `agg.match_.live_seq`
                 // (fetched before the delete — now stale, since the delete
                 // itself advances the counter).
-                new_tip,
+                deleted.new_tip,
             )
             .await?
         {
@@ -6199,6 +6334,7 @@ impl Api {
                     .map(|n| (None, Some(n.clone()))),
             );
 
+        let reserve_spot = input.reserve_spot.unwrap_or(false);
         let mut created = Vec::new();
         for (user_id, display_name) in invitees {
             let (player, invitation) = build_invited_player(
@@ -6208,11 +6344,22 @@ impl Api {
                 input.side_id.clone(),
                 user_id,
                 display_name,
+                reserve_spot,
                 &now,
             );
-            dao.put_match_player(&match_id, &player)
-                .await
-                .map_err(dao_internal)?;
+            // A reserving invite takes a roster spot immediately, so it needs
+            // the same headcount bump an ad-hoc organiser add gets — uncapped,
+            // same as that add (see `Dao::add_match_player_tx`'s doc comment).
+            // A non-reserving invite is unchanged: a bare put, no spot taken.
+            if reserve_spot {
+                dao.add_match_player_tx(&match_id, &player)
+                    .await
+                    .map_err(dao_internal)?;
+            } else {
+                dao.put_match_player(&match_id, &player)
+                    .await
+                    .map_err(dao_internal)?;
+            }
             dao.create_invitation(&invitation)
                 .await
                 .map_err(dao_internal)?;
@@ -6544,20 +6691,24 @@ impl Api {
             }
             None => {
                 let eligible = caller_team_join_sides(dao, &agg, &uid).await?;
-                if eligible.is_empty() {
+                if !eligible.is_empty() {
+                    let scope = JoinScope {
+                        allowed_side_ids: Some(eligible),
+                        allow_unassigned: agg.match_.allow_unassigned,
+                    };
+                    (scope, dao::records::JoinSourceRecord::SelfServe)
+                } else if let Some(scope) = open_join_individual_scope(&agg) {
+                    (scope, dao::records::JoinSourceRecord::Open)
+                } else {
                     return Ok(JoinMatchResponse::ValidationError(PlainText(
                         "you're not eligible to join this match directly — ask for a join link \
                          or invite instead"
                             .into(),
                     )));
                 }
-                let scope = JoinScope {
-                    allowed_side_ids: Some(eligible),
-                    allow_unassigned: agg.match_.allow_unassigned,
-                };
-                (scope, dao::records::JoinSourceRecord::SelfServe)
             }
         };
+        let is_open_join = matches!(joined_via, dao::records::JoinSourceRecord::Open);
 
         let target_side_id = match resolve_join_target(&scope, input.side_id.as_deref(), &agg.sides)
         {
@@ -6565,28 +6716,47 @@ impl Api {
             Err(msg) => return Ok(JoinMatchResponse::ValidationError(PlainText(msg))),
         };
 
-        // Capacity, checked here for a precise error; `Dao::join_match_tx`
-        // re-checks atomically as the last-moment race guard (its own doc
-        // comment covers why the split).
+        if is_open_join {
+            // `open_join_individual_scope` only ever offers a target
+            // (side or unassigned) that has an effective policy, so this
+            // is safe. Checked against the *resolved* target rather than
+            // up front, since under `PerSide` each candidate side can carry
+            // different rules/approval.
+            let policy = open_join_effective_policy(&agg, target_side_id.as_deref())
+                .expect("a resolved open-join target always has an effective policy");
+            if policy.requires_approval {
+                return Ok(JoinMatchResponse::ValidationError(PlainText(
+                    "this match asks you to request to join first — see \
+                     POST /matches/:match_id/join-requests"
+                        .into(),
+                )));
+            }
+            if let Some(reason) =
+                caller_meets_eligibility_rules(dao, policy.rules, &agg, &uid).await?
+            {
+                return Ok(JoinMatchResponse::ValidationError(PlainText(reason)));
+            }
+        }
+
+        // Capacity, checked here for a precise error; `Dao::join_match_tx`/
+        // `Dao::join_open_match_tx` re-checks atomically as the last-moment
+        // race guard (its own doc comment covers why the split). An open
+        // join additionally respects the open/ringer-specific caps, via
+        // `open_full_reason`.
         let effective_max = agg.effective_max_players();
-        if let Some((kind, message)) = full_reason(&agg, target_side_id.as_deref()) {
+        let full = if is_open_join {
+            let max_open_spots = agg.match_.open_join.as_ref().map(open_join_max_open_spots);
+            open_full_reason(&agg, target_side_id.as_deref(), max_open_spots.flatten())
+        } else {
+            full_reason(&agg, target_side_id.as_deref())
+        };
+        if let Some((kind, message)) = full {
             return Ok(JoinMatchResponse::Conflict(Json(RosterConflict {
                 kind,
                 message: message.into(),
             })));
         }
 
-        // Rating consent comes after every other check above (already on the
-        // roster, a revoked link, not eligible for team self-join, a side the
-        // scope doesn't allow, full). That way each of those is reported as
-        // itself rather than as "consent needed", and none of them leaves an
-        // opt-in behind. A full match is a 409 before anyone is asked; the
-        // waitlist join it points to asks in its turn.
-        if let Some(message) =
-            settle_rating_consent(dao, &uid, &agg.match_, input.rating_consent).await?
-        {
-            return Ok(JoinMatchResponse::RatingConsentRequired(PlainText(message)));
-        }
         let target_side = target_side_id
             .as_ref()
             .and_then(|sid| agg.sides.iter().find(|s| &s.side_id == sid));
@@ -6599,15 +6769,28 @@ impl Api {
             is_member_of_team: None,
             invitation: None,
             joined_via: Some(joined_via),
-            // `settle_rating_consent` above means a joiner of a ranked match
-            // is opted in by the time this row exists, so there is nothing to
-            // ask them — even if the match has an open switch-to-ranked ask
-            // that other players still owe an answer to.
-            ranked_prompt: None,
         };
 
-        if let Err(e) = dao
-            .join_match_tx(
+        let join_result = if is_open_join {
+            let max_open_spots = agg
+                .match_
+                .open_join
+                .as_ref()
+                .and_then(open_join_max_open_spots);
+            let side_max_open_spots = target_side.and_then(|s| s.max_open_spots);
+            dao.join_open_match_tx(
+                &match_id,
+                &player,
+                target_side.and_then(|s| s.max_players),
+                effective_max,
+                side_max_open_spots,
+                max_open_spots,
+                &agg.match_.starts_at,
+                &now_iso(),
+            )
+            .await
+        } else {
+            dao.join_match_tx(
                 &match_id,
                 &player,
                 target_side.and_then(|s| s.max_players),
@@ -6616,7 +6799,8 @@ impl Api {
                 &now_iso(),
             )
             .await
-        {
+        };
+        if let Err(e) = join_result {
             return match e {
                 // The atomic guard caught a race the pre-check above missed —
                 // capacity changed underneath it (the player put's own
@@ -6628,7 +6812,15 @@ impl Api {
                     let fresh = dao.get_match(&match_id).await.map_err(dao_internal)?;
                     let (kind, message) = fresh
                         .as_ref()
-                        .and_then(|agg| full_reason(agg, target_side_id.as_deref()))
+                        .and_then(|agg| match (is_open_join, agg.match_.open_join.as_ref()) {
+                            (true, Some(scope)) => open_full_reason(
+                                agg,
+                                target_side_id.as_deref(),
+                                open_join_max_open_spots(scope),
+                            ),
+                            (true, None) => None,
+                            (false, _) => full_reason(agg, target_side_id.as_deref()),
+                        })
                         .unwrap_or((RosterConflictKind::MatchFull, "this match is full"));
                     Ok(JoinMatchResponse::Conflict(Json(RosterConflict {
                         kind,
@@ -6781,6 +6973,439 @@ impl Api {
         Ok(SetMatchPlayerRoleResponse::Ok)
     }
 
+    /// Set a match's open-join ("ringers") scope.
+    ///
+    /// Match-admin only. Replaces any existing scope wholesale — see
+    /// `OpenJoinScopeInput`'s doc comment for what each mode means.
+    ///
+    /// Under `match_wide`, opening a match this way doesn't by itself make
+    /// any side joinable: `PUT /matches/:match_id/sides/:side_id/open-join`
+    /// still has to enable ringers on at least one side (or the match has to
+    /// allow unassigned) for `audience: individuals`/`both` to have any
+    /// effect. Under `per_side`, the same endpoint sets each side's own
+    /// policy directly instead.
+    #[oai(path = "/matches/:match_id/open-join", method = "put")]
+    async fn set_open_join_policy(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        input: Json<OpenJoinScopeInput>,
+    ) -> Result<SetOpenJoinPolicyResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let input = input.0;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(SetOpenJoinPolicyResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(SetOpenJoinPolicyResponse::Forbidden(PlainText(
+                "only a match admin can set the open-join scope".into(),
+            )));
+        }
+
+        let record = match (input.mode, input.policy) {
+            (OpenJoinScopeKind::MatchWide, Some(policy)) => {
+                dao::records::OpenJoinScopeRecord::MatchWide(mapping::open_join_policy_to_record(
+                    &policy,
+                ))
+            }
+            (OpenJoinScopeKind::MatchWide, None) => {
+                return Ok(SetOpenJoinPolicyResponse::ValidationError(PlainText(
+                    "mode: match_wide needs a policy".into(),
+                )));
+            }
+            (OpenJoinScopeKind::PerSide, _) => dao::records::OpenJoinScopeRecord::PerSide,
+        };
+        dao.set_match_open_join_policy(&match_id, Some(&record))
+            .await
+            .map_err(dao_internal)?;
+        Ok(SetOpenJoinPolicyResponse::Scope(Json(
+            mapping::open_join_scope_from_record(&record),
+        )))
+    }
+
+    /// Close a match back to invite/link/team-only.
+    ///
+    /// Match-admin only. Idempotent — clearing an already-closed match is a
+    /// no-op success. Doesn't touch any side's ringer settings or disturb
+    /// anyone already seated via the open-join path; it only stops new
+    /// open/ringer arrivals.
+    #[oai(path = "/matches/:match_id/open-join", method = "delete")]
+    async fn clear_open_join_policy(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+    ) -> Result<ClearOpenJoinPolicyResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(ClearOpenJoinPolicyResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(ClearOpenJoinPolicyResponse::Forbidden(PlainText(
+                "only a match admin can clear the open-join policy".into(),
+            )));
+        }
+
+        dao.set_match_open_join_policy(&match_id, None)
+            .await
+            .map_err(dao_internal)?;
+        Ok(ClearOpenJoinPolicyResponse::Ok)
+    }
+
+    /// Open or close one side to individual ringers.
+    ///
+    /// Match-admin only. See `SideOpenJoinInput`'s doc comment — settable
+    /// independently of the match's own open-join scope, but which of
+    /// `enabled`/`side_policy` applies depends on that scope (`match_wide`
+    /// or `per_side`).
+    #[oai(path = "/matches/:match_id/sides/:side_id/open-join", method = "put")]
+    async fn set_side_open_join(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        Path(side_id): Path<String>,
+        input: Json<SideOpenJoinInput>,
+    ) -> Result<SetSideOpenJoinResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let input = input.0;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(SetSideOpenJoinResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(SetSideOpenJoinResponse::Forbidden(PlainText(
+                "only a match admin can change a side's ringer settings".into(),
+            )));
+        }
+        if !agg.sides.iter().any(|s| s.side_id == side_id) {
+            return Ok(SetSideOpenJoinResponse::NotFound(PlainText(
+                "side not found".into(),
+            )));
+        }
+
+        let per_side_policy = input
+            .side_policy
+            .as_ref()
+            .map(mapping::side_open_join_policy_to_record);
+        let setting = match agg.match_.open_join.as_ref() {
+            Some(dao::records::OpenJoinScopeRecord::PerSide) => {
+                dao::open_join::SideOpenJoinSetting::Policy(per_side_policy.as_ref())
+            }
+            _ => dao::open_join::SideOpenJoinSetting::Enabled(input.enabled),
+        };
+        dao.set_side_open_join_settings(&match_id, &side_id, setting, input.max_open_spots)
+            .await
+            .map_err(dao_internal)?;
+        Ok(SetSideOpenJoinResponse::Ok)
+    }
+
+    /// Request to join a match through its open-join policy.
+    ///
+    /// Only for a match whose policy has `requires_approval: true` —
+    /// otherwise `POST /matches/:match_id/join` seats the caller directly,
+    /// same eligibility rules either way. An admin later approves or
+    /// declines via `POST .../join-requests/:user_id/approve|decline`.
+    #[oai(path = "/matches/:match_id/join-requests", method = "post")]
+    async fn create_join_request(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        input: Json<JoinRequestInput>,
+    ) -> Result<CreateJoinRequestResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let input = input.0;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(CreateJoinRequestResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if caller_is_participant(&agg.players, &uid) {
+            return Ok(CreateJoinRequestResponse::Conflict(PlainText(
+                "you're already on this match's roster".into(),
+            )));
+        }
+        let Some(scope) = open_join_individual_scope(&agg) else {
+            return Ok(CreateJoinRequestResponse::ValidationError(PlainText(
+                "this match isn't open for individuals to join".into(),
+            )));
+        };
+        let side_id = match resolve_join_target(&scope, input.side_id.as_deref(), &agg.sides) {
+            Ok(t) => t,
+            Err(msg) => return Ok(CreateJoinRequestResponse::ValidationError(PlainText(msg))),
+        };
+        // Checked against the *resolved* target, not up front — under
+        // `PerSide` each candidate side can carry different rules/approval.
+        let policy = open_join_effective_policy(&agg, side_id.as_deref())
+            .expect("a resolved open-join target always has an effective policy");
+        if !policy.requires_approval {
+            return Ok(CreateJoinRequestResponse::ValidationError(PlainText(
+                "this match doesn't need a request — join it directly instead".into(),
+            )));
+        }
+        if let Some(reason) = caller_meets_eligibility_rules(dao, policy.rules, &agg, &uid).await? {
+            return Ok(CreateJoinRequestResponse::ValidationError(PlainText(
+                reason,
+            )));
+        }
+
+        let request = dao::records::MatchJoinRequestRecord {
+            user_id: uid.clone(),
+            side_id,
+            requested_at: now_iso(),
+            status: "pending".into(),
+            decided_at: None,
+            decided_by_user_id: None,
+        };
+        if let Err(e) = dao.create_join_request_tx(&match_id, &request).await {
+            return match e {
+                dao::DaoError::Conflict(msg) => {
+                    Ok(CreateJoinRequestResponse::Conflict(PlainText(msg)))
+                }
+                other => Err(dao_internal(other)),
+            };
+        }
+
+        let users = dao
+            .batch_get_users(std::slice::from_ref(&uid))
+            .await
+            .map_err(dao_internal)?;
+        Ok(CreateJoinRequestResponse::Request(Json(
+            mapping::join_request_response(&request, &users),
+        )))
+    }
+
+    /// List a match's join requests, oldest-requested first.
+    ///
+    /// Match-admin only.
+    #[oai(path = "/matches/:match_id/join-requests", method = "get")]
+    async fn list_join_requests(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+    ) -> Result<ListJoinRequestsResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(ListJoinRequestsResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(ListJoinRequestsResponse::Forbidden(PlainText(
+                "only a match admin can see this match's join requests".into(),
+            )));
+        }
+
+        let requests = dao
+            .list_join_requests(&match_id)
+            .await
+            .map_err(dao_internal)?;
+        let user_ids: Vec<String> = requests.iter().map(|r| r.user_id.clone()).collect();
+        let users = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
+        let out = requests
+            .iter()
+            .map(|r| mapping::join_request_response(r, &users))
+            .collect();
+        Ok(ListJoinRequestsResponse::Requests(Json(out)))
+    }
+
+    /// Approve a pending join request.
+    ///
+    /// Match-admin only. Seats the requester atomically with marking the
+    /// request `Approved` — see `Dao::approve_join_request_tx`'s doc
+    /// comment. `Conflict` if a cap has been reached since the caller's own
+    /// read, or the request is no longer pending.
+    #[oai(
+        path = "/matches/:match_id/join-requests/:user_id/approve",
+        method = "post"
+    )]
+    async fn approve_join_request(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        Path(user_id): Path<String>,
+    ) -> Result<DecideJoinRequestResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(DecideJoinRequestResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(DecideJoinRequestResponse::Forbidden(PlainText(
+                "only a match admin can decide a join request".into(),
+            )));
+        }
+        let Some(request) = dao
+            .get_join_request(&match_id, &user_id)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(DecideJoinRequestResponse::NotFound(PlainText(
+                "no such join request".into(),
+            )));
+        };
+        if request.status != "pending" {
+            return Ok(DecideJoinRequestResponse::Conflict(Json(
+                RosterConflict::already_on_roster("this request is no longer pending"),
+            )));
+        }
+
+        let max_open_spots = agg
+            .match_
+            .open_join
+            .as_ref()
+            .and_then(open_join_max_open_spots);
+        if let Some((kind, message)) =
+            open_full_reason(&agg, request.side_id.as_deref(), max_open_spots)
+        {
+            return Ok(DecideJoinRequestResponse::Conflict(Json(RosterConflict {
+                kind,
+                message: message.into(),
+            })));
+        }
+        // Nothing is gated on rating consent any more (see
+        // `move_in_from_waitlist`'s own comment on this), and a join
+        // request always names a real account
+        // (`MatchJoinRequestRecord`'s doc comment), so the one rule that
+        // survives elsewhere — no guests in a ranked match — cannot fire
+        // here either.
+
+        let target_side = request
+            .side_id
+            .as_ref()
+            .and_then(|sid| agg.sides.iter().find(|s| &s.side_id == sid));
+        let player = dao::records::MatchPlayerRecord {
+            player_id: new_id(),
+            user_id: Some(request.user_id.clone()),
+            display_name: None,
+            side_id: request.side_id.clone(),
+            is_member_of_team: None,
+            invitation: None,
+            joined_via: Some(dao::records::JoinSourceRecord::Open),
+        };
+        let now = now_iso();
+        if let Err(e) = dao
+            .approve_join_request_tx(
+                &match_id,
+                &user_id,
+                &uid,
+                &now,
+                &player,
+                target_side.and_then(|s| s.max_players),
+                agg.effective_max_players(),
+                target_side.and_then(|s| s.max_open_spots),
+                max_open_spots,
+                &agg.match_.starts_at,
+                &now,
+            )
+            .await
+        {
+            return match e {
+                dao::DaoError::Conflict(_) => {
+                    let fresh = dao.get_match(&match_id).await.map_err(dao_internal)?;
+                    let (kind, message) = fresh
+                        .as_ref()
+                        .and_then(|agg| match agg.match_.open_join.as_ref() {
+                            Some(scope) => open_full_reason(
+                                agg,
+                                request.side_id.as_deref(),
+                                open_join_max_open_spots(scope),
+                            ),
+                            None => None,
+                        })
+                        .unwrap_or((RosterConflictKind::MatchFull, "this match is full"));
+                    Ok(DecideJoinRequestResponse::Conflict(Json(RosterConflict {
+                        kind,
+                        message: message.into(),
+                    })))
+                }
+                other => Err(dao_internal(other)),
+            };
+        }
+
+        dao.refresh_side_roster_previews(&match_id)
+            .await
+            .map_err(dao_internal)?;
+        Ok(DecideJoinRequestResponse::Ok)
+    }
+
+    /// Decline a pending join request.
+    ///
+    /// Match-admin only. A soft status update — same convention as
+    /// revoking a join link.
+    #[oai(
+        path = "/matches/:match_id/join-requests/:user_id/decline",
+        method = "post"
+    )]
+    async fn decline_join_request(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        Path(user_id): Path<String>,
+    ) -> Result<DecideJoinRequestResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(DecideJoinRequestResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(DecideJoinRequestResponse::Forbidden(PlainText(
+                "only a match admin can decide a join request".into(),
+            )));
+        }
+
+        match dao
+            .decline_join_request(&match_id, &user_id, &uid, &now_iso())
+            .await
+        {
+            Ok(()) => Ok(DecideJoinRequestResponse::Ok),
+            Err(dao::DaoError::Conflict(msg)) => Ok(DecideJoinRequestResponse::Conflict(Json(
+                RosterConflict::already_on_roster(msg),
+            ))),
+            Err(other) => Err(dao_internal(other)),
+        }
+    }
+
     /// Leave a match.
     ///
     /// Leave a match the caller is an accepted player on. Mirrors `POST
@@ -6883,17 +7508,6 @@ impl Api {
                 waitlisted_at: now.clone(),
                 invitation_id: Some(invitation_id.clone()),
             };
-            // Joining a ranked match's waitlist asks for rating consent, like
-            // getting into it does: this is how a waiting player asks to get
-            // in, and the admin who later moves them in can't consent for
-            // them. That includes accepting an invitation onto the waitlist,
-            // which would otherwise be a way round the accept's own check.
-            // Last before the write, so no refusal leaves an opt-in behind.
-            if let Some(refusal) =
-                settle_waitlist_rating_consent(dao, &uid, &agg.match_, input.rating_consent).await?
-            {
-                return Ok(refusal);
-            }
             match dao
                 .accept_invitation_onto_waitlist_tx(&invitation_id, &uid, &now, &now, &entry)
                 .await
@@ -6964,12 +7578,6 @@ impl Api {
                 waitlisted_at: now.clone(),
                 invitation_id: None,
             };
-            // As in the invitation branch above.
-            if let Some(refusal) =
-                settle_waitlist_rating_consent(dao, &uid, &agg.match_, input.rating_consent).await?
-            {
-                return Ok(refusal);
-            }
             match dao.waitlist_join_tx(&match_id, &entry).await {
                 Ok(()) => entry,
                 Err(dao::DaoError::Conflict(msg)) => {
@@ -7101,25 +7709,14 @@ impl Api {
             })));
         }
 
-        // A ranked match only has opted-in players in its spots, and an admin
-        // can't consent for someone else, so a waiting player who isn't opted
-        // in stays waiting. Joining a ranked match's waitlist asks for consent
-        // and switching to ranked judges the waitlist, so this is a backstop
-        // (see `ranked_move_in_reason`). After the capacity check, like every
-        // other way into a spot.
-        if let Some(ladder) = rating_ladder(&agg.match_) {
-            let users = dao
-                .batch_get_users(std::slice::from_ref(&entry.user_id))
-                .await
-                .map_err(dao_internal)?;
-            let unratable =
-                unratable_players(&ladder, [(Some(entry.user_id.as_str()), None)], &users);
-            if let Some(reason) = ranked_move_in_reason(&ladder, &unratable) {
-                return Ok(MoveInFromWaitlistResponse::ValidationError(PlainText(
-                    reason,
-                )));
-            }
-        }
+        // Moving a waiting player into a ranked match used to be refused
+        // unless they had opted in, with a profile read of its own to find
+        // out — an admin can't consent for somebody else, so an unconsented
+        // player stayed waiting. Nothing is gated on consent now, and a
+        // waitlist entry always names an account
+        // (`MatchWaitlistEntryRecord`), so the only rule that survives
+        // elsewhere — no guests in a ranked match — cannot fire here. The
+        // check and its read are both gone.
 
         // A waitlisted player never has a roster row (a pending invitee's
         // placeholder gets deleted, not linked, the moment they land on the
@@ -7141,7 +7738,6 @@ impl Api {
             is_member_of_team: None,
             invitation: None,
             joined_via: Some(dao::records::JoinSourceRecord::Waitlist),
-            ranked_prompt: None,
         };
         if let Err(e) = dao
             .move_in_from_waitlist_tx(
@@ -7668,7 +8264,7 @@ impl Api {
     ) -> Result<RevokeInvitationResponse> {
         info!("Revoking invitation {invitation_id}");
         let uid = self.require_uid(dao, &jwt_data).await?;
-        match dao
+        let rec = match dao
             .get_invitation(&invitation_id)
             .await
             .map_err(dao_internal)?
@@ -7683,10 +8279,30 @@ impl Api {
                     "only the inviter can revoke this invitation".into(),
                 )));
             }
-            Some(_) => {}
-        }
+            Some(rec) => rec,
+        };
         match dao.delete_invitation(&invitation_id).await {
-            Ok(()) => Ok(RevokeInvitationResponse::Ok),
+            Ok(()) => {
+                // A revoked reserving invite was holding a roster slot —
+                // free it now. Best-effort: the invitation itself is already
+                // gone, so a failure here leaves a stale (but harmless to
+                // discover and retry) over-count rather than undoing the
+                // revoke.
+                let now = now_iso();
+                if let Err(e) = dao.release_reserved_match_slot(&rec, &now).await {
+                    error!(
+                        "Failed to release reserved slot for revoked invitation {invitation_id}: {e}"
+                    );
+                } else if let dao::records::InvitationContextRecord::Match { match_id, .. } =
+                    &rec.context
+                    && let Err(e) = dao.refresh_side_roster_previews(match_id).await
+                {
+                    error!(
+                        "Failed to refresh roster previews after revoking invitation {invitation_id}: {e}"
+                    );
+                }
+                Ok(RevokeInvitationResponse::Ok)
+            }
             // Revoked by a concurrent request between the check above and here.
             Err(dao::DaoError::NotFound(_)) => Ok(RevokeInvitationResponse::NotFound(PlainText(
                 "invitation not found".into(),
@@ -7729,7 +8345,6 @@ impl Api {
         }
 
         let responded_at = now_iso();
-        let rating_consent = input.rating_consent;
         let status = match input.0.response {
             // Accept synchronously and atomically: bind the accepter to the
             // invitation, link the roster entry, and (match) write the accepter's
@@ -7748,18 +8363,6 @@ impl Api {
                             message: message.into(),
                         },
                     )));
-                }
-                // Rating consent last, after the capacity check, so a full
-                // match reports itself rather than asking for consent it
-                // can't use, and no refusal leaves an opt-in behind. Judged
-                // against the match's `ranked` now, not when it invited them.
-                if let Some(agg) = &invited
-                    && let Some(message) =
-                        settle_rating_consent(dao, &uid, &agg.match_, rating_consent).await?
-                {
-                    return Ok(RespondToInvitationResponse::RatingConsentRequired(
-                        PlainText(message),
-                    ));
                 }
                 let match_id = match dao
                     .accept_invitation_tx(&invitation_id, &uid, &responded_at, &responded_at)
@@ -7809,6 +8412,21 @@ impl Api {
                     }
                     other => dao_internal(other),
                 })?;
+                // A declined reserving invite was holding a roster slot —
+                // free it now. Best-effort, same as the notification flip
+                // below: the decline itself already succeeded.
+                if let Err(e) = dao.release_reserved_match_slot(&rec, &responded_at).await {
+                    error!(
+                        "Failed to release reserved slot for declined invitation {invitation_id}: {e}"
+                    );
+                } else if let dao::records::InvitationContextRecord::Match { match_id, .. } =
+                    &rec.context
+                    && let Err(e) = dao.refresh_side_roster_previews(match_id).await
+                {
+                    error!(
+                        "Failed to refresh roster previews after declining invitation {invitation_id}: {e}"
+                    );
+                }
                 "declined"
             }
         };
@@ -7882,14 +8500,6 @@ impl Api {
                         message: message.into(),
                     })));
                 }
-                if let Some(agg) = &invited
-                    && let Some(message) =
-                        settle_rating_consent(dao, &uid, &agg.match_, input.rating_consent).await?
-                {
-                    return Ok(RespondByTokenResponse::RatingConsentRequired(PlainText(
-                        message,
-                    )));
-                }
                 let match_id = match dao
                     .accept_invitation_tx(&rec.id, &uid, &responded_at, &responded_at)
                     .await
@@ -7938,6 +8548,22 @@ impl Api {
                     }
                     other => dao_internal(other),
                 })?;
+                // As in `respond_to_invitation`: free a reserved slot the
+                // decline just gave up, best-effort.
+                if let Err(e) = dao.release_reserved_match_slot(&rec, &responded_at).await {
+                    error!(
+                        "Failed to release reserved slot for declined invitation {}: {e}",
+                        rec.id
+                    );
+                } else if let dao::records::InvitationContextRecord::Match { match_id, .. } =
+                    &rec.context
+                    && let Err(e) = dao.refresh_side_roster_previews(match_id).await
+                {
+                    error!(
+                        "Failed to refresh roster previews after declining invitation {}: {e}",
+                        rec.id
+                    );
+                }
                 "declined"
             }
         };
@@ -8643,6 +9269,183 @@ fn full_reason(
     None
 }
 
+/// The open-join analogue of `full_reason`: everything `full_reason` checks,
+/// plus the open-specific caps (`max_open_spots`, only meaningful under
+/// `OpenJoinScopeRecord::MatchWide` — `None` under `PerSide`, which has no
+/// match-wide cap — and the target side's own `max_open_spots`) that only
+/// apply to an arrival via the open-join path. Checked in the same order as
+/// `take_open_slot_update` guards them, so the two never disagree about
+/// what's full.
+fn open_full_reason(
+    agg: &dao::match_ops::MatchAggregate,
+    target_side_id: Option<&str>,
+    max_open_spots: Option<u32>,
+) -> Option<(RosterConflictKind, &'static str)> {
+    if let Some(reason) = full_reason(agg, target_side_id) {
+        return Some(reason);
+    }
+    if let Some(max) = max_open_spots
+        && agg.match_.open_joined_count >= max
+    {
+        return Some((RosterConflictKind::MatchFull, "this match is full"));
+    }
+    let target_side = target_side_id.and_then(|sid| agg.sides.iter().find(|s| s.side_id == sid));
+    if let Some(side) = target_side
+        && let Some(max) = side.max_open_spots
+        && side.open_joined_count >= max
+    {
+        return Some((RosterConflictKind::SideFull, "that side is full"));
+    }
+    None
+}
+
+/// `OpenJoinScopeRecord::MatchWide`'s cap, or `None` under `PerSide` (which
+/// has no match-wide cap to enforce — see `open_full_reason`).
+fn open_join_max_open_spots(scope: &dao::records::OpenJoinScopeRecord) -> Option<u32> {
+    match scope {
+        dao::records::OpenJoinScopeRecord::MatchWide(policy) => policy.max_open_spots,
+        dao::records::OpenJoinScopeRecord::PerSide => None,
+    }
+}
+
+/// The eligibility rules and approval requirement that apply to a given
+/// open-join target (`target_side_id: None` means unassigned, only ever
+/// reachable under `MatchWide`) — the match-wide policy under `MatchWide`,
+/// or that specific side's own policy under `PerSide`. `None` if the match
+/// has no open-join scope, or (under `PerSide`) the target side has none set.
+struct OpenJoinEffectivePolicy<'a> {
+    rules: &'a [dao::records::EligibilityRuleRecord],
+    requires_approval: bool,
+}
+
+fn open_join_effective_policy<'a>(
+    agg: &'a dao::match_ops::MatchAggregate,
+    target_side_id: Option<&str>,
+) -> Option<OpenJoinEffectivePolicy<'a>> {
+    match agg.match_.open_join.as_ref()? {
+        dao::records::OpenJoinScopeRecord::MatchWide(policy) => Some(OpenJoinEffectivePolicy {
+            rules: &policy.rules,
+            requires_approval: policy.requires_approval,
+        }),
+        dao::records::OpenJoinScopeRecord::PerSide => {
+            let side =
+                target_side_id.and_then(|sid| agg.sides.iter().find(|s| s.side_id == sid))?;
+            let policy = side.open_join.as_ref()?;
+            Some(OpenJoinEffectivePolicy {
+                rules: &policy.rules,
+                requires_approval: policy.requires_approval,
+            })
+        }
+    }
+}
+
+/// Which side(s) (if any) an individual may join directly through a match's
+/// open-join scope, and whether landing unassigned is an option:
+/// - `MatchWide`: a side with `open_join_enabled` set, or unassigned if the
+///   match allows it — `None` if the policy's audience is `Teams`-only.
+/// - `PerSide`: every side carrying its own policy whose audience isn't
+///   `Teams`-only. Never offers unassigned — there's no single policy to
+///   apply to a landing with no side (see `OpenJoinScopeRecord::PerSide`'s
+///   doc comment).
+///
+/// `None` if the match has no open-join scope, or there are no candidate
+/// sides and no unassigned option either way. Mirrors `JoinScope`/
+/// `caller_team_join_sides`, but doesn't check eligibility rules — the
+/// caller (`join_match`, `create_join_request`) does that separately via
+/// `open_join_effective_policy`/`caller_meets_eligibility_rules`, once the
+/// actual target side is known, since under `PerSide` each candidate side
+/// may carry different rules.
+fn open_join_individual_scope(agg: &dao::match_ops::MatchAggregate) -> Option<JoinScope> {
+    match agg.match_.open_join.as_ref()? {
+        dao::records::OpenJoinScopeRecord::MatchWide(policy) => {
+            if matches!(policy.audience, dao::records::OpenJoinAudienceRecord::Teams) {
+                return None;
+            }
+            let open_side_ids: Vec<String> = agg
+                .sides
+                .iter()
+                .filter(|s| s.open_join_enabled)
+                .map(|s| s.side_id.clone())
+                .collect();
+            if open_side_ids.is_empty() && !agg.match_.allow_unassigned {
+                return None;
+            }
+            Some(JoinScope {
+                allowed_side_ids: if open_side_ids.is_empty() {
+                    Some(Vec::new())
+                } else {
+                    Some(open_side_ids)
+                },
+                allow_unassigned: agg.match_.allow_unassigned,
+            })
+        }
+        dao::records::OpenJoinScopeRecord::PerSide => {
+            let open_side_ids: Vec<String> = agg
+                .sides
+                .iter()
+                .filter(|s| {
+                    s.open_join.as_ref().is_some_and(|p| {
+                        !matches!(p.audience, dao::records::OpenJoinAudienceRecord::Teams)
+                    })
+                })
+                .map(|s| s.side_id.clone())
+                .collect();
+            if open_side_ids.is_empty() {
+                return None;
+            }
+            Some(JoinScope {
+                allowed_side_ids: Some(open_side_ids),
+                allow_unassigned: false,
+            })
+        }
+    }
+}
+
+/// Checks `rules` against `uid` for an open-join candidate, returning
+/// `Some(message)` for the first rule they fail (a user-facing validation
+/// message) or `None` if they meet every rule. Evaluated fresh on each
+/// attempt — eligibility is never stored or baked into a query (see
+/// `open_join.rs`'s module doc comment).
+async fn caller_meets_eligibility_rules(
+    dao: &dao::Dao,
+    rules: &[dao::records::EligibilityRuleRecord],
+    agg: &dao::match_ops::MatchAggregate,
+    uid: &str,
+) -> Result<Option<String>> {
+    for rule in rules {
+        match rule {
+            dao::records::EligibilityRuleRecord::MinRating { min } => {
+                let Some(ladder) = rating_ladder(&agg.match_) else {
+                    continue;
+                };
+                let rating = dao
+                    .get_rating(uid, &ladder)
+                    .await
+                    .map_err(dao_internal)?
+                    .map(|r| agon_core::rating::display_rating(r.mu).round() as i64)
+                    .unwrap_or(agon_core::rating::RATING_ORIGIN as i64);
+                if rating < *min as i64 {
+                    return Ok(Some(format!(
+                        "this match needs a rating of at least {min} to join directly"
+                    )));
+                }
+            }
+            dao::records::EligibilityRuleRecord::MinMatchesPlayed { min } => {
+                let Some(user) = dao.get_user(uid).await.map_err(dao_internal)? else {
+                    return Ok(Some("you're not eligible to join this match".into()));
+                };
+                let played = matches_played_for_sport(&user.stats, &agg.match_.match_type);
+                if played < *min as u64 {
+                    return Ok(Some(format!(
+                        "this match needs at least {min} matches played in this sport to join directly"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// A waitlist entry's 1-based place in the queue: how many entries waiting
 /// for the same target (`side_id`, or the whole match if unassigned) have an
 /// equal-or-earlier `waitlisted_at`. `all` must already be `Dao::list_waitlist`'s
@@ -8714,11 +9517,18 @@ fn invite_full_reason(
     agg: &dao::match_ops::MatchAggregate,
     rec: &dao::records::InvitationRecord,
 ) -> Option<(RosterConflictKind, &'static str)> {
-    let target_side_id = agg
+    let target = agg
         .players
         .iter()
-        .find(|p| p.invitation.as_ref().is_some_and(|i| i.id == rec.id))
-        .and_then(|p| p.side_id.clone());
+        .find(|p| p.invitation.as_ref().is_some_and(|i| i.id == rec.id));
+    // A reserving invite already holds its spot (it's counted in
+    // `occupies_slot` from the moment it was sent) — accepting just confirms
+    // a slot the invitee already has, never a new one, so there's nothing to
+    // guard against here.
+    if target.is_some_and(|p| p.invitation.as_ref().is_some_and(|i| i.reserve_spot)) {
+        return None;
+    }
+    let target_side_id = target.and_then(|p| p.side_id.clone());
     full_reason(agg, target_side_id.as_deref())
 }
 
@@ -8759,6 +9569,7 @@ fn build_invited_player(
     side_id: Option<String>,
     user_id: Option<String>,
     display_name: Option<String>,
+    reserve_spot: bool,
     now: &str,
 ) -> (
     dao::records::MatchPlayerRecord,
@@ -8794,6 +9605,7 @@ fn build_invited_player(
         invited_at: now.to_string(),
         responded_at: None,
         kind: kind.clone(),
+        reserve_spot,
     };
 
     let player = dao::records::MatchPlayerRecord {
@@ -8804,7 +9616,6 @@ fn build_invited_player(
         is_member_of_team: None,
         invitation: Some(embedded),
         joined_via: None,
-        ranked_prompt: None,
     };
 
     let invitation = dao::records::InvitationRecord {
@@ -8820,6 +9631,7 @@ fn build_invited_player(
         },
         invited_at: now.to_string(),
         responded_at: None,
+        reserve_spot,
     };
 
     (player, invitation)
@@ -8874,6 +9686,8 @@ fn build_invited_team_member(
         invited_at: now.to_string(),
         responded_at: None,
         kind: kind.clone(),
+        // Teams have no capacity concept — never reserves a spot.
+        reserve_spot: false,
     };
 
     let member = dao::records::TeamMemberRecord {
@@ -8899,6 +9713,7 @@ fn build_invited_team_member(
         },
         invited_at: now.to_string(),
         responded_at: None,
+        reserve_spot: false,
     };
 
     (member, invitation)
@@ -8920,106 +9735,6 @@ fn asset_status_from_str(s: &str) -> AssetStatus {
         "failed" => AssetStatus::Failed,
         _ => AssetStatus::Pending,
     }
-}
-
-/// Settle `uid`'s rating consent for getting into `match_`: `Some(message)` to
-/// refuse with (`RatingConsentRequired`), or `None` to go ahead, having first
-/// recorded their opt-in if this request is the one that consents. Always
-/// `None` for a friendly, which neither needs consent nor records it. The rule
-/// is [`mapping::rating_consent_step`]; this reads the caller and does the
-/// write.
-///
-/// **The opt-in is its own write, made before the caller's create, join or
-/// accept, not part of it.** A request that consents and then fails further
-/// on (a cap guard tripping in a race, a transaction error) leaves the caller
-/// opted in without having got in. That's accepted: consent isn't reversible
-/// anyway, and folding the opt-in into those writes would put the user's
-/// profile into the match create, the join and move-in transactions and the
-/// two accept transactions, each of which already reads its own failed
-/// conditions as "full" or "already waiting". Every caller runs this last,
-/// after its own validation, so the window is only what can fail during the
-/// write itself.
-///
-/// `ranked` comes from `match_` as the caller loaded it for this request, never
-/// from anything copied onto an invitation or a join link. So an invitation
-/// sent while the match was a friendly still asks for consent once it's been
-/// switched to ranked.
-///
-/// Not atomic with the flag, though. A switch to ranked that lands between
-/// this read and the caller's write lets them in unconsented, and the switch's
-/// own roster and waitlist checks can just as well miss a join that lands
-/// after they read. Closing that would mean conditioning those writes on
-/// `ranked`, where a failed condition already means "full" (or "already
-/// waiting"). That gap is why the rating pipeline must re-check every
-/// participant's opt-in before it rates, rather than trust that this held.
-async fn settle_rating_consent(
-    dao: &dao::Dao,
-    uid: &str,
-    match_: &dao::records::MatchRecord,
-    rating_consent: Option<bool>,
-) -> Result<Option<String>> {
-    let Some(ladder) = rating_ladder(match_) else {
-        return Ok(None);
-    };
-    // `require_uid` resolved the id from its `AUTH#` guard, so a missing
-    // profile is the same "no such user" it reports.
-    let caller = dao
-        .get_user(uid)
-        .await
-        .map_err(dao_internal)?
-        .ok_or_else(|| Error::from_string("user not found", StatusCode::UNAUTHORIZED))?;
-    match rating_consent_step(&ladder, &caller, rating_consent.unwrap_or(false)) {
-        mapping::RatingConsentStep::Proceed => Ok(None),
-        mapping::RatingConsentStep::Refuse(message) => Ok(Some(message)),
-        mapping::RatingConsentStep::OptIn(ladder) => {
-            dao.opt_in_to_rating(uid, &ladder, &now_iso())
-                .await
-                .map_err(|e| match e {
-                    dao::DaoError::NotFound(_) => {
-                        Error::from_string("user not found", StatusCode::UNAUTHORIZED)
-                    }
-                    other => dao_internal(other),
-                })?;
-            Ok(None)
-        }
-    }
-}
-
-/// [`settle_rating_consent`] for `POST /matches/:match_id/waitlist/join`,
-/// which needs one more check first: `Some(response)` to refuse with, `None`
-/// to go ahead with the waitlist write.
-///
-/// On a ranked match, a caller already on the waitlist is refused here, ahead
-/// of consent, rather than by the write's own "already waiting" condition after
-/// it. Otherwise a repeat join that ticked the box would opt them in and then
-/// be refused, and that opt-in, left behind by a refusal, is the one thing
-/// `settle_rating_consent`'s callers promise not to do. It's also not a way to
-/// consent to a match you're already waiting on: that was considered for a
-/// player waiting on a friendly that turns ranked, and rejected as surprising
-/// in favour of `switch_to_ranked_reason` judging the waitlist. A friendly
-/// skips the extra read, since it never opts anyone in.
-async fn settle_waitlist_rating_consent(
-    dao: &dao::Dao,
-    uid: &str,
-    match_: &dao::records::MatchRecord,
-    rating_consent: Option<bool>,
-) -> Result<Option<WaitlistJoinResponse>> {
-    if rating_ladder(match_).is_none() {
-        return Ok(None);
-    }
-    if dao
-        .get_waitlist_entry(&match_.id, uid)
-        .await
-        .map_err(dao_internal)?
-        .is_some()
-    {
-        return Ok(Some(WaitlistJoinResponse::Conflict(PlainText(
-            "already on this match's waitlist".into(),
-        ))));
-    }
-    Ok(settle_rating_consent(dao, uid, match_, rating_consent)
-        .await?
-        .map(|message| WaitlistJoinResponse::RatingConsentRequired(PlainText(message))))
 }
 
 /// One standalone invitation as its API `InvitationDetail`, with a match
@@ -9175,10 +9890,7 @@ fn mock_user() -> User {
     User {
         email: String::from("jamesnelgar@gmail.com"),
         profile: mock_user_profile(String::from("123"), String::from("James Elgar")),
-        rating_opt_ins: vec![RatingOptIn {
-            ladder: String::from("tennis"),
-            opted_in_at: mock_timestamp(),
-        }],
+        rating_placements: Vec::new(),
     }
 }
 
@@ -9221,6 +9933,7 @@ fn mock_user_profile(id: String, name: String) -> UserProfile {
         follower_count: 42,
         following_count: 17,
         is_followed_by_me: false,
+        ratings: Vec::new(),
     }
 }
 
@@ -9257,6 +9970,10 @@ fn mock_match(id: String) -> Match {
                 player_count: 2,
                 max_players: None,
                 team_join_enabled: false,
+                open_join_enabled: false,
+                open_join: None,
+                max_open_spots: None,
+                open_joined_count: 0,
             },
             MatchSide {
                 id: String::from("side_blue"),
@@ -9269,6 +9986,10 @@ fn mock_match(id: String) -> Match {
                 player_count: 1,
                 max_players: None,
                 team_join_enabled: false,
+                open_join_enabled: false,
+                open_join: None,
+                max_open_spots: None,
+                open_joined_count: 0,
             },
         ],
         players: vec![
@@ -9327,6 +10048,7 @@ fn mock_match(id: String) -> Match {
         allow_unassigned: true,
         viewer_role: Some(MatchPlayerRole::Owner),
         viewer_team_join_side_ids: None,
+        open_join: None,
         series_id: None,
         ranked: true,
         rating_ladder: Some(String::from("football")),
@@ -9436,6 +10158,7 @@ fn mock_invitations_for_input(
     input: &AddInvitationsInput,
     invited_by_user_id: &str,
 ) -> Vec<Invitation> {
+    let reserve_spot = input.reserve_spot.unwrap_or(false);
     let mut invitations = Vec::new();
     for (i, user_id) in input.invited_user_ids.iter().enumerate() {
         invitations.push(Invitation {
@@ -9447,6 +10170,7 @@ fn mock_invitations_for_input(
             kind: InvitationKind::User(UserInvitation {
                 invited_user_id: user_id.clone(),
             }),
+            reserve_spot,
         });
     }
     for (i, _name) in input.invited_external_names.iter().enumerate() {
@@ -9459,6 +10183,7 @@ fn mock_invitations_for_input(
             kind: InvitationKind::Token(TokenInvitation {
                 invite_token: format!("token_{i}"),
             }),
+            reserve_spot,
         });
     }
     invitations
@@ -9475,6 +10200,7 @@ fn mock_user_invitation(id: String) -> Invitation {
         kind: InvitationKind::User(UserInvitation {
             invited_user_id: String::from("user_2"),
         }),
+        reserve_spot: false,
     }
 }
 
@@ -9645,6 +10371,7 @@ fn mock_team_member_page() -> TeamMemberPage {
                         kind: InvitationKind::User(UserInvitation {
                             invited_user_id: String::from("user_1"),
                         }),
+                        reserve_spot: false,
                     }),
                     name: String::from("Alex Kim"),
                     avatar_url: None,
@@ -9665,6 +10392,7 @@ fn mock_team_member_page() -> TeamMemberPage {
                         kind: InvitationKind::Token(TokenInvitation {
                             invite_token: String::from("team_invite_abc123"),
                         }),
+                        reserve_spot: false,
                     }),
                 }),
                 role: TeamRole::Member,
@@ -9787,10 +10515,29 @@ enum Commands {
     },
 }
 
-fn log_request(uri: &Uri, status: StatusCode) {
+/// Request bodies longer than this are truncated before logging, so one
+/// oversized payload can't blow up a log line (the field still names the
+/// original length).
+const MAX_LOGGED_BODY_CHARS: usize = 2048;
+
+fn log_request(
+    method: &str,
+    uri: &Uri,
+    status: StatusCode,
+    latency: std::time::Duration,
+    sub: Option<&str>,
+    body: Option<&str>,
+    error: Option<&str>,
+) {
     info!(
+        method,
         path = uri.path(),
+        query = uri.query().unwrap_or(""),
         status = status.as_u16(),
+        latency_ms = latency.as_millis() as u64,
+        user.sub = sub.unwrap_or_default(),
+        body = body.unwrap_or_default(),
+        error = error.unwrap_or_default(),
         "Request complete"
     );
 }
@@ -9830,23 +10577,70 @@ impl RequestMetrics {
     }
 }
 
-async fn log_middleware<E: Endpoint>(next: E, req: Request) -> Result<Response> {
+async fn log_middleware<E: Endpoint>(next: E, mut req: Request) -> Result<Response> {
     use opentelemetry::KeyValue;
     use std::time::Instant;
 
     let uri = req.uri().clone();
     let method = req.method().to_string();
+    // Unverified — just for log correlation, read before `req` moves into
+    // `next.call` below. See `auth::unverified_sub`.
+    let sub = req
+        .headers()
+        .get(poem::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(auth::unverified_sub);
+
+    // Buffer the body so it can be logged, then hand the same bytes back to
+    // the real handler — nothing downstream notices. Only for text/JSON
+    // bodies: uploads go straight to S3 via presigned URLs, never through
+    // this API, so there's no large/binary request body to worry about here.
+    let is_text_body = req
+        .content_type()
+        .is_some_and(|ct| ct.starts_with("application/json") || ct.starts_with("text/"));
+    let body = if is_text_body {
+        match req.take_body().into_bytes().await {
+            Ok(bytes) => {
+                req.set_body(bytes.clone());
+                Some(String::from_utf8_lossy(&bytes).into_owned())
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    let body = body.map(|b| {
+        if b.chars().count() > MAX_LOGGED_BODY_CHARS {
+            b.chars().take(MAX_LOGGED_BODY_CHARS).collect::<String>() + "...(truncated)"
+        } else {
+            b
+        }
+    });
+
     let start = Instant::now();
 
-    let (status, result) = match next.call(req).await {
+    let (status, error, result) = match next.call(req).await {
         Ok(resp) => {
             let resp = resp.into_response();
-            (resp.status(), Ok(resp))
+            (resp.status(), None, Ok(resp))
         }
-        Err(err) => (err.status(), Err(err)),
+        Err(err) => {
+            let message = err.to_string();
+            (err.status(), Some(message), Err(err))
+        }
     };
 
-    log_request(&uri, status);
+    let elapsed = start.elapsed();
+    log_request(
+        &method,
+        &uri,
+        status,
+        elapsed,
+        sub.as_deref(),
+        body.as_deref(),
+        error.as_deref(),
+    );
 
     // Record request count + latency on the global meter. Attributes are kept to
     // bounded-cardinality dimensions only (see RequestMetrics).
@@ -9856,9 +10650,7 @@ async fn log_middleware<E: Endpoint>(next: E, req: Request) -> Result<Response> 
     ];
     let metrics = RequestMetrics::global();
     metrics.count.add(1, &attrs);
-    metrics
-        .duration
-        .record(start.elapsed().as_secs_f64(), &attrs);
+    metrics.duration.record(elapsed.as_secs_f64(), &attrs);
 
     result
 }

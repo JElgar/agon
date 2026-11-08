@@ -41,12 +41,16 @@ import {
   withInvitationStatus,
 } from '@/lib/members'
 import { respondToInvitation } from '@/lib/invitations'
-import { MatchDetailsEditor } from '@/components/agon/MatchDetailsEditor'
+import { EditMatchDetailsFlow } from '@/components/agon/EditMatchDetailsFlow'
 import { MatchFormatCard } from '@/components/agon/MatchFormatCard'
 import { MatchJoinSettingsEditor } from '@/components/agon/MatchJoinSettingsEditor'
+import { MatchOpenJoinEditor } from '@/components/agon/MatchOpenJoinEditor'
+import { JoinRequestsCard } from '@/components/agon/JoinRequestsCard'
 import { MatchJoinLinksDialog } from '@/components/agon/MatchJoinLinksDialog'
 import { TeamJoinBanner } from '@/components/agon/TeamJoinBanner'
 import { JoinLinkBanner } from '@/components/agon/JoinLinkBanner'
+import { OpenJoinAction } from '@/components/agon/OpenJoinAction'
+import { openJoinEligible } from '@/lib/openJoin'
 import { MatchResultEditor } from '@/components/agon/MatchResultEditor'
 import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
@@ -453,7 +457,7 @@ function MatchDetail({
           onShare={() => shareMatch(match)}
           onEdit={() => setEditingDetails(true)}
         />
-        {editingDetails && <MatchDetailsEditor match={match} onDone={() => setEditingDetails(false)} />}
+        {editingDetails && <EditMatchDetailsFlow match={match} onDone={() => setEditingDetails(false)} />}
       </div>
     )
   }
@@ -529,7 +533,7 @@ function MatchDetail({
         <InviteBanner match={match} currentUserId={currentUserId} />
       )}
       {!cancelled && <TeamJoinBanner match={match} />}
-      {!cancelled && <JoinLinkBanner match={match} />}
+      {!cancelled && matchView !== 'finished' && <JoinLinkBanner match={match} />}
       {editingResult && <MatchResultEditor match={match} onDone={() => setEditingResult(false)} />}
     </>
   )
@@ -589,6 +593,8 @@ function MatchDetail({
   const adminFooter = (
     <>
       {canEdit && !cancelled && <MatchJoinSettingsEditor match={match} canManage={canEdit} />}
+      {canEdit && !cancelled && <MatchOpenJoinEditor match={match} canManage={canEdit} />}
+      {canEdit && !cancelled && <JoinRequestsCard match={match} canManage={canEdit} />}
       {canEdit && !cancelled && <CancelMatch match={match} />}
       {iAmParticipant && !cancelled && <LeaveMatch match={match} isOwner={iAmOwner} />}
     </>
@@ -689,6 +695,8 @@ function MatchDetail({
       >
         <Pencil className="size-5" /> Add result
       </button>
+    ) : !cancelled && matchView !== 'finished' && openJoinEligible(match, currentUserId) ? (
+      <OpenJoinAction match={match} />
     ) : !isLiveSport ? (
       <KudosButton liked={match.social.i_liked} onToggle={() => toggleLike.mutate(!match.social.i_liked)} />
     ) : canEdit && !cancelled && !isCricket && matchTab === 'timeline' && match.status === 'in_progress' ? (
@@ -754,7 +762,7 @@ function MatchDetail({
             <MatchHeaderCarousel photos={match.header_photos} hero />
           </div>
         )}
-        {editingDetails && <MatchDetailsEditor match={match} onDone={() => setEditingDetails(false)} />}
+        {editingDetails && <EditMatchDetailsFlow match={match} onDone={() => setEditingDetails(false)} />}
         {titleBlock}
 
         <div className="grid grid-cols-[minmax(0,1fr)_380px] items-start gap-6">
@@ -834,7 +842,7 @@ function MatchDetail({
         </div>
       )}
 
-      {editingDetails && <MatchDetailsEditor match={match} onDone={() => setEditingDetails(false)} />}
+      {editingDetails && <EditMatchDetailsFlow match={match} onDone={() => setEditingDetails(false)} />}
 
       {matchTab === 'summary' ? (
         <>

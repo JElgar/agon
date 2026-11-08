@@ -979,8 +979,11 @@ mod tests {
         }
     }
 
-    /// Profiles for `ids`, each opted in to squash.
-    fn opted_in(ids: &[&str]) -> HashMap<String, UserRecord> {
+    /// Profiles for `ids`. Nothing distinguishes them from each other, or
+    /// from any other account: with consent gone there is nothing on a
+    /// profile the gate reads. The store still has to hand one back per
+    /// participant, which is all this is for.
+    fn profiles(ids: &[&str]) -> HashMap<String, UserRecord> {
         ids.iter().map(|id| (id.to_string(), user(id))).collect()
     }
 
@@ -1502,7 +1505,7 @@ mod tests {
         ) -> Self {
             let store = FakeStore::default();
             store.put_match(record, players);
-            store.users.borrow_mut().extend(opted_in(users));
+            store.users.borrow_mut().extend(profiles(users));
             store
         }
 

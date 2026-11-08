@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ChevronRight } from 'lucide-react'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
@@ -20,9 +20,20 @@ type Match = components['schemas']['Match']
 export function EditMatchDetailsFlow({ match, onDone }: { match: Match; onDone: () => void }) {
   const [scope, setScope] = useState<'single' | 'series' | null>(match.series_id ? null : 'single')
 
+  // This can render far below the "Edit" button that opened it — the single-
+  // match/series editors get scrolled into view for free from their name
+  // field's `autoFocus`, but the choice screen below has nothing to focus,
+  // so without this it can render entirely off-screen and look like tapping
+  // Edit did nothing. Re-runs on every scope change too, since picking an
+  // option doesn't remount this component.
+  const containerRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [scope])
+
   if (match.series_id && scope === null) {
     return (
-      <div className="flex flex-col gap-3 rounded-xl border bg-card p-4">
+      <div ref={containerRef} className="flex flex-col gap-3 rounded-xl border bg-card p-4">
         <p className="text-sm font-medium">This match is part of a recurring series. What do you want to edit?</p>
         <button
           type="button"
@@ -60,10 +71,20 @@ export function EditMatchDetailsFlow({ match, onDone }: { match: Match; onDone: 
   }
 
   if (scope === 'series') {
-    return <MatchSeriesDetailsEditor match={match} onDone={onDone} onBack={() => setScope(null)} />
+    return (
+      <div ref={containerRef}>
+        <MatchSeriesDetailsEditor match={match} onDone={onDone} onBack={() => setScope(null)} />
+      </div>
+    )
   }
 
   return (
-    <MatchDetailsEditor match={match} onDone={onDone} onBack={match.series_id ? () => setScope(null) : undefined} />
+    <div ref={containerRef}>
+      <MatchDetailsEditor
+        match={match}
+        onDone={onDone}
+        onBack={match.series_id ? () => setScope(null) : undefined}
+      />
+    </div>
   )
 }

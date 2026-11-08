@@ -5,24 +5,22 @@ import { cn } from '@/lib/utils'
 type Match = components['schemas']['Match']
 
 /**
- * The badge state for a match. Confirmation (confirmed/unconfirmed) only applies
- * to a match that has actually been played; a match still to come is "scheduled"
- * (and "in_progress"/"cancelled" cover the other lifecycle states). Deriving the
- * badge purely from score confirmation would mislabel a scheduled match — which
- * has no score yet — as "Unconfirmed".
+ * The badge state for a match. "Scored"/"awaiting_score" only apply to a
+ * match that has actually been played; a match still to come is "scheduled"
+ * (and "in_progress"/"cancelled" cover the other lifecycle states).
  */
 export type MatchBadgeStatus =
   | 'scheduled'
   | 'in_progress'
-  | 'confirmed'
-  | 'unconfirmed'
+  | 'scored'
+  | 'awaiting_score'
   | 'cancelled'
 
 /**
- * The badge status for a match: its lifecycle status drives the label, except a
- * completed match distinguishes confirmed vs unconfirmed by whether its score is
- * agreed. A completed match with no confirmed score is "unconfirmed" (awaiting
- * agreement); anything not yet completed shows its lifecycle state.
+ * The badge status for a match: its lifecycle status drives the label,
+ * except a completed match distinguishes scored vs awaiting a score. A
+ * completed match with no score yet is "awaiting_score"; anything not yet
+ * completed shows its lifecycle state.
  */
 export function matchBadgeStatus(
   match: Pick<Match, 'status' | 'confirmed_score'>,
@@ -35,7 +33,7 @@ export function matchBadgeStatus(
     case 'cancelled':
       return 'cancelled'
     case 'completed':
-      return match.confirmed_score ? 'confirmed' : 'unconfirmed'
+      return match.confirmed_score ? 'scored' : 'awaiting_score'
   }
 }
 
@@ -48,12 +46,12 @@ const BADGE: Record<MatchBadgeStatus, { label: string; className: string }> = {
     label: 'In progress',
     className: 'border-primary/30 bg-primary/10 text-primary',
   },
-  confirmed: {
-    label: 'Confirmed',
+  scored: {
+    label: 'Scored',
     className: 'border-success/30 bg-success/10 text-success',
   },
-  unconfirmed: {
-    label: 'Unconfirmed',
+  awaiting_score: {
+    label: 'Awaiting score',
     className: 'border-warning/30 bg-warning/10 text-warning',
   },
   cancelled: {

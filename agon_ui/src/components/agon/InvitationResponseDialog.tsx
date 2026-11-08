@@ -1,9 +1,7 @@
-import { useEffect, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
-import { Switch } from '@/components/ui/switch'
 import {
   Dialog,
   DialogContent,
@@ -13,8 +11,6 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { SportBadge } from '@/components/agon/SportBadge'
-import { useCurrentUserId } from '@/hooks/useCurrentUserId'
-import { confirmationState } from '@/lib/confirmation'
 import { displayScore, headlineBySide, headlineLabel } from '@/lib/score'
 import { cricketScoreFrom, formatOvers, sideNameFor } from '@/lib/cricketScore'
 import { RosterConflictError, offersWaitlist } from '@/lib/waitlist'
@@ -32,26 +28,19 @@ export interface InvitationResponseDialogProps {
   name: string
   /** Trailing qualifier appended after the name, e.g. ' as a member' for a team. */
   suffix?: string
-  /** Present only for a match invite — fetched to preview the score and, if
-   *  one's already pending on the invitee's side, offer to confirm it too. */
+  /** Present only for a match invite — fetched to preview the score. */
   matchId?: string
   /** Perform the invitation accept/decline call itself (by-id vs by-token
    *  differs per surface). Should throw on failure. */
   respond: (response: InvitationResponse) => Promise<void>
-  /** Called once the response (and, if applicable, the score confirmation)
-   *  has succeeded. */
+  /** Called once the response has succeeded. */
   onSuccess: (response: InvitationResponse) => void
 }
 
 /**
  * Shared accept/decline dialog for match and team invitations. For a match
  * invite it fetches the match (reusing the cache if it's already loaded
- * elsewhere, e.g. the match detail page) to preview the score, and — when
- * that score is already submitted and awaiting the invitee's side — offers a
- * toggle (on by default) to confirm it in the same action as accepting,
- * instead of a separate trip to the match page afterwards. A failed score
- * confirmation doesn't undo the (already-succeeded) invite response — the
- * score can still be confirmed separately from the match page.
+ * elsewhere, e.g. the match detail page) to preview the score.
  */
 export function InvitationResponseDialog({
   open,
@@ -63,14 +52,6 @@ export function InvitationResponseDialog({
   respond,
   onSuccess,
 }: InvitationResponseDialogProps) {
-  const [confirmScore, setConfirmScore] = useState(true)
-  const currentUserId = useCurrentUserId()
-
-  // Default the toggle back on each time the dialog opens.
-  useEffect(() => {
-    if (open) setConfirmScore(true)
-  }, [open])
-
   const matchQuery = useQuery({
     queryKey: ['match', matchId],
     enabled: open && !!matchId,
@@ -84,11 +65,6 @@ export function InvitationResponseDialog({
   })
 
   const match = matchQuery.data
-  const score = match ? confirmationState(match, currentUserId) : null
-  const pendingScore =
-    score?.canRespond && score.submissionId
-      ? { matchId: matchId!, submissionId: score.submissionId }
-      : null
   const preview = match ? displayScore(match) : null
   const cricketScore = preview ? cricketScoreFrom(preview.score) : null
 
@@ -97,20 +73,6 @@ export function InvitationResponseDialog({
       if (!action) return undefined
       const response: InvitationResponse = action === 'accept' ? 'accepted' : 'declined'
       await respond(response)
-      if (action === 'accept' && pendingScore && confirmScore) {
-        await fetchClient.POST(
-          '/matches/{match_id}/score-submissions/{submission_id}/respond',
-          {
-            params: {
-              path: {
-                match_id: pendingScore.matchId,
-                submission_id: pendingScore.submissionId,
-              },
-            },
-            body: { response: 'confirm' },
-          },
-        )
-      }
       return response
     },
     onSuccess: (response) => {
@@ -179,7 +141,7 @@ export function InvitationResponseDialog({
               ))}
             </div>
             <div className="mt-1 text-[10px] uppercase tracking-widest text-muted-foreground">
-              {preview.confirmed ? 'result' : 'pending'}
+              result
             </div>
           </div>
         )}
@@ -199,7 +161,7 @@ export function InvitationResponseDialog({
                 {headlineBySide(preview.score)[match.sides[1]?.id ?? ''] ?? 0}
               </div>
               <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                {preview.confirmed ? headlineLabel(preview.score) : 'pending'}
+                {headlineLabel(preview.score)}
               </div>
             </div>
           </div>
@@ -208,22 +170,6 @@ export function InvitationResponseDialog({
           <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2.5 text-sm text-muted-foreground">
             <SportBadge sport={match.match_type} />
             No score recorded yet.
-          </div>
-        )}
-
-        {isAccept && pendingScore && (
-          <div className="flex items-center justify-between gap-3 rounded-lg border bg-muted/40 px-3 py-2.5">
-            <div>
-              <p className="text-sm font-medium">Also confirm the score</p>
-              <p className="text-xs text-muted-foreground">
-                The result above is still waiting on your side.
-              </p>
-            </div>
-            <Switch
-              checked={confirmScore}
-              onCheckedChange={setConfirmScore}
-              aria-label="Also confirm the score"
-            />
           </div>
         )}
 

@@ -598,7 +598,6 @@ mod tests {
             sides: HashMap::new(),
             header_photos: Vec::new(),
             confirmed_score: None,
-            pending_score: None,
             like_count: 0,
             comment_count: 0,
             live_seq: 0,

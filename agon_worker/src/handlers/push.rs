@@ -87,8 +87,6 @@ fn push_link(ui_base_url: &str, kind: &NotificationKindRecord) -> String {
         NotificationKindRecord::Like { match_id, .. } => format!("/matches/{match_id}"),
         NotificationKindRecord::Comment { match_id, .. } => format!("/matches/{match_id}"),
         NotificationKindRecord::Reply { match_id, .. } => format!("/matches/{match_id}"),
-        NotificationKindRecord::ScoreSubmitted { match_id, .. } => format!("/matches/{match_id}"),
-        NotificationKindRecord::ScoreConfirmed { match_id, .. } => format!("/matches/{match_id}"),
         NotificationKindRecord::TeamMatchJoinable { match_id, .. } => {
             format!("/matches/{match_id}")
         }
@@ -130,22 +128,6 @@ fn push_text(kind: &NotificationKindRecord) -> (String, String) {
             ("New comment".to_string(), preview.clone())
         }
         NotificationKindRecord::Reply { preview, .. } => ("New reply".to_string(), preview.clone()),
-        NotificationKindRecord::ScoreSubmitted {
-            match_name,
-            needs_confirmation,
-            ..
-        } => {
-            let body = if *needs_confirmation {
-                format!("Please confirm the score for {match_name}")
-            } else {
-                format!("A score was submitted for {match_name}")
-            };
-            ("Score submitted".to_string(), body)
-        }
-        NotificationKindRecord::ScoreConfirmed { match_name, .. } => (
-            "Score confirmed".to_string(),
-            format!("Your score for {match_name} was confirmed"),
-        ),
         NotificationKindRecord::TeamMatchJoinable {
             team_name,
             match_name,
@@ -165,9 +147,8 @@ fn push_text(kind: &NotificationKindRecord) -> (String, String) {
 mod tests {
     use super::*;
 
-    /// One of each `NotificationKindRecord` variant (`ScoreSubmitted` twice,
-    /// for both values of `needs_confirmation`), shared by the `push_text` and
-    /// `push_link` coverage tests below.
+    /// One of each `NotificationKindRecord` variant, shared by the `push_text`
+    /// and `push_link` coverage tests below.
     fn sample_kinds() -> Vec<NotificationKindRecord> {
         vec![
             NotificationKindRecord::MatchInvitation {
@@ -213,26 +194,6 @@ mod tests {
                 parent_comment_id: "c1".into(),
                 preview: "agreed!".into(),
             },
-            NotificationKindRecord::ScoreSubmitted {
-                actor_user_id: "u1".into(),
-                match_id: "m1".into(),
-                match_name: "Sunday Tennis".into(),
-                submission_id: "s1".into(),
-                needs_confirmation: true,
-            },
-            NotificationKindRecord::ScoreSubmitted {
-                actor_user_id: "u1".into(),
-                match_id: "m1".into(),
-                match_name: "Sunday Tennis".into(),
-                submission_id: "s1".into(),
-                needs_confirmation: false,
-            },
-            NotificationKindRecord::ScoreConfirmed {
-                actor_user_id: "u1".into(),
-                match_id: "m1".into(),
-                match_name: "Sunday Tennis".into(),
-                submission_id: "s1".into(),
-            },
             NotificationKindRecord::TeamMatchJoinable {
                 actor_user_id: "u1".into(),
                 team_id: "t1".into(),
@@ -262,12 +223,6 @@ mod tests {
             assert!(!title.is_empty(), "empty title for {kind:?}");
             assert!(!body.is_empty(), "empty body for {kind:?}");
         }
-
-        // The two ScoreSubmitted variants (needs_confirmation true/false) must
-        // produce different copy — that's the whole point of the flag.
-        let (_, needs_confirm_body) = push_text(&kinds[7]);
-        let (_, informational_body) = push_text(&kinds[8]);
-        assert_ne!(needs_confirm_body, informational_body);
     }
 
     /// `push_link` produces a URL under `ui_base_url` for every kind (again,

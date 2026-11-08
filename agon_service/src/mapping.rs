@@ -20,8 +20,7 @@ use crate::membership::{
 use crate::notification::{
     CommentNotification, FollowNotification, InvitationAcceptedNotification, LikeNotification,
     MatchInvitationNotification, MatchReminderNotification, Notification, NotificationKind,
-    ReplyNotification, ScoreConfirmedNotification, ScoreSubmittedNotification,
-    TeamInvitationNotification, TeamMatchJoinableNotification,
+    ReplyNotification, TeamInvitationNotification, TeamMatchJoinableNotification,
 };
 use crate::team::{AssignableTeamRole, Team, TeamListItem, TeamMember, TeamRole};
 use crate::{
@@ -29,9 +28,8 @@ use crate::{
     CreateMatchSeriesEndInput, CreateMatchSeriesEndNeverInput, CreateMatchSeriesEndOnDateInput,
     DevicePlatform, FeedMatch, GenericPlayerStats, Location, Match, MatchOutcome, MatchPlayer,
     MatchSeries, MatchSeriesOccurrence, MatchSeriesSide, MatchSeriesStatus, MatchSide, MatchSocial,
-    MatchStatus, MatchType, PendingScore, Photo, RosterPreviewPlayer, Score, ScoreConfirmation,
-    ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus,
-    SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
+    MatchStatus, MatchType, Photo, RosterPreviewPlayer, Score, SearchMatch, SetsScore, SimpleScore,
+    UserProfile, UserStats,
 };
 use crate::{LadderPlacement, LadderRating};
 use agon_core::dao::error::DaoError;
@@ -47,10 +45,9 @@ use agon_core::dao::records::{
     MatchFormatRecord, MatchJoinRequestRecord, MatchLikeRecord, MatchPlayerRecord,
     MatchPlayerRole as MatchPlayerRoleRecord, MatchRecord, MatchScoreRecord, MatchSideRecord,
     NotificationKindRecord, NotificationRecord, OpenJoinAudienceRecord, OpenJoinPolicyRecord,
-    OpenJoinScopeRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord,
-    ScoreResponseRecord, ScoreSubmissionRecord, SeriesEndRecord, SeriesOccurrenceRecord,
-    SeriesRecord, SeriesSideRecord, SideOpenJoinPolicyRecord, TeamMemberRecord, TeamRecord,
-    UserRecord, UserStatsRecord,
+    OpenJoinScopeRecord, ScoreRecord, SeriesEndRecord, SeriesOccurrenceRecord, SeriesRecord,
+    SeriesSideRecord, SideOpenJoinPolicyRecord, TeamMemberRecord, TeamRecord, UserRecord,
+    UserStatsRecord,
 };
 use agon_core::rating::ladder_for_tag;
 use agon_core::rating::{PLACEMENT_MATCHES, display, published};
@@ -801,89 +798,6 @@ pub fn confirmed_score_from_record(rec: &ConfirmedScoreRecord) -> ConfirmedScore
     }
 }
 
-pub fn pending_score_from_record(rec: &PendingScoreRecord) -> PendingScore {
-    PendingScore {
-        submission_id: rec.submission_id.clone(),
-        score: score_from_record(&rec.score),
-        winner_side_id: rec.winner_side_id.clone(),
-        confirmations: rec
-            .confirmations
-            .iter()
-            .map(score_confirmation_from_record)
-            .collect(),
-    }
-}
-
-pub fn score_confirmation_from_record(rec: &ScoreConfirmationRecord) -> ScoreConfirmation {
-    ScoreConfirmation {
-        side_id: rec.side_id.clone(),
-        confirmed_by_player_id: rec.confirmed_by_player_id.clone(),
-        confirmed_at: parse_ts(&rec.confirmed_at),
-    }
-}
-
-// ===========================================================================
-// Score submissions
-// ===========================================================================
-
-pub fn score_submission_status_from_str(s: &str) -> ScoreSubmissionStatus {
-    match s {
-        "pending" => ScoreSubmissionStatus::Pending,
-        "confirmed" => ScoreSubmissionStatus::Confirmed,
-        "disputed" => ScoreSubmissionStatus::Disputed,
-        "superseded" => ScoreSubmissionStatus::Superseded,
-        _ => ScoreSubmissionStatus::Pending,
-    }
-}
-
-pub fn score_submission_status_str(s: &ScoreSubmissionStatus) -> &'static str {
-    match s {
-        ScoreSubmissionStatus::Pending => "pending",
-        ScoreSubmissionStatus::Confirmed => "confirmed",
-        ScoreSubmissionStatus::Disputed => "disputed",
-        ScoreSubmissionStatus::Superseded => "superseded",
-    }
-}
-
-pub fn score_response_kind_from_str(s: &str) -> ScoreResponseKind {
-    match s {
-        "dispute" => ScoreResponseKind::Dispute,
-        _ => ScoreResponseKind::Confirm,
-    }
-}
-
-pub fn score_response_kind_str(k: &ScoreResponseKind) -> &'static str {
-    match k {
-        ScoreResponseKind::Confirm => "confirm",
-        ScoreResponseKind::Dispute => "dispute",
-    }
-}
-
-pub fn score_response_from_record(rec: &ScoreResponseRecord) -> ScoreSubmissionResponse {
-    ScoreSubmissionResponse {
-        side_id: rec.side_id.clone(),
-        responded_by_player_id: rec.responded_by_player_id.clone(),
-        response: score_response_kind_from_str(&rec.response),
-        responded_at: parse_ts(&rec.responded_at),
-    }
-}
-
-pub fn score_submission_from_record(rec: &ScoreSubmissionRecord) -> ScoreSubmission {
-    ScoreSubmission {
-        id: rec.submission_id.clone(),
-        score: score_from_record(&rec.score),
-        winner_side_id: rec.winner_side_id.clone(),
-        status: score_submission_status_from_str(&rec.status),
-        submitted_by_player_id: rec.submitted_by_player_id.clone(),
-        submitted_at: parse_ts(&rec.submitted_at),
-        responses: rec
-            .responses
-            .iter()
-            .map(score_response_from_record)
-            .collect(),
-    }
-}
-
 // ===========================================================================
 // Invitations
 // ===========================================================================
@@ -1363,7 +1277,6 @@ pub fn match_from_records(
             .confirmed_score
             .as_ref()
             .map(confirmed_score_from_record),
-        pending_score: rec.pending_score.as_ref().map(pending_score_from_record),
         social: MatchSocial {
             like_count: rec.like_count as u32,
             comment_count: rec.comment_count as u32,
@@ -1391,11 +1304,8 @@ pub fn match_from_records(
 /// decide whether it counts towards your rating.
 ///
 /// Three closing conditions, in this order. A submitted score first, because
-/// it is the one that matters, read off the record's own score fields. That
-/// alone is not enough: **a dispute clears `pending_score`**, so a match that
-/// has been scored and disputed has neither score set and would otherwise
-/// reopen — on precisely the match whose result everyone has already seen.
-/// `status != "scheduled"` closes that (and covers live scoring having
+/// it is the one that matters, read off the record's own `confirmed_score`.
+/// `status != "scheduled"` closes it too (and covers live scoring having
 /// started, and a cancelled match), and is the same test the format lock in
 /// `update_match` uses, so the two locks agree about what "scoring has
 /// started" means. The clock comes last because a match can be scored before
@@ -1414,7 +1324,7 @@ pub fn ranked_lock_reason(
     rec: &MatchRecord,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Option<&'static str> {
-    if rec.confirmed_score.is_some() || rec.pending_score.is_some() {
+    if rec.confirmed_score.is_some() {
         return Some("a score has already been submitted");
     }
     if rec.status != "scheduled" {
@@ -1621,7 +1531,6 @@ pub fn feed_match_from_records(
             .confirmed_score
             .as_ref()
             .map(confirmed_score_from_record),
-        pending_score: rec.pending_score.as_ref().map(pending_score_from_record),
         social: MatchSocial {
             like_count: rec.like_count as u32,
             comment_count: rec.comment_count as u32,
@@ -1673,7 +1582,6 @@ pub fn search_match_from_records(
             .confirmed_score
             .as_ref()
             .map(confirmed_score_from_record),
-        pending_score: rec.pending_score.as_ref().map(pending_score_from_record),
         social: MatchSocial {
             like_count: rec.like_count as u32,
             comment_count: rec.comment_count as u32,
@@ -1728,7 +1636,7 @@ pub fn like_user_id(rec: &MatchLikeRecord) -> String {
 // ===========================================================================
 // Live-scoring score record: MatchScoreRecord (DAO) <-> Score (API). Reuses
 // score_from_record/score_to_record directly — a match's live-scoring score
-// is the exact same type as its confirmed/pending score, just a separate
+// is the exact same type as its confirmed score, just a separate
 // DynamoDB item for write-frequency/stream-isolation reasons (see
 // `MatchScoreRecord`'s doc comment).
 // ===========================================================================
@@ -1803,8 +1711,6 @@ pub fn notification_actor_id(kind: &NotificationKindRecord) -> &str {
         NotificationKindRecord::Like { actor_user_id, .. } => actor_user_id,
         NotificationKindRecord::Comment { actor_user_id, .. } => actor_user_id,
         NotificationKindRecord::Reply { actor_user_id, .. } => actor_user_id,
-        NotificationKindRecord::ScoreSubmitted { actor_user_id, .. } => actor_user_id,
-        NotificationKindRecord::ScoreConfirmed { actor_user_id, .. } => actor_user_id,
         NotificationKindRecord::TeamMatchJoinable { actor_user_id, .. } => actor_user_id,
         NotificationKindRecord::MatchReminder { actor_user_id, .. } => actor_user_id,
     }
@@ -1917,30 +1823,6 @@ pub fn notification_from_record(
             parent_comment_id: parent_comment_id.clone(),
             preview: preview.clone(),
         }),
-        NotificationKindRecord::ScoreSubmitted {
-            match_id,
-            match_name,
-            submission_id,
-            needs_confirmation,
-            ..
-        } => NotificationKind::ScoreSubmitted(ScoreSubmittedNotification {
-            submitted_by: actor,
-            match_id: match_id.clone(),
-            match_name: match_name.clone(),
-            submission_id: submission_id.clone(),
-            needs_confirmation: *needs_confirmation,
-        }),
-        NotificationKindRecord::ScoreConfirmed {
-            match_id,
-            match_name,
-            submission_id,
-            ..
-        } => NotificationKind::ScoreConfirmed(ScoreConfirmedNotification {
-            confirmed_by: actor,
-            match_id: match_id.clone(),
-            match_name: match_name.clone(),
-            submission_id: submission_id.clone(),
-        }),
         NotificationKindRecord::TeamMatchJoinable {
             team_id,
             team_name,
@@ -2033,7 +1915,6 @@ mod tests {
             header_photos: Vec::new(),
             authority: HashMap::new(),
             confirmed_score: None,
-            pending_score: None,
             like_count: 0,
             comment_count: 0,
             live_seq: 0,
@@ -2080,13 +1961,11 @@ mod tests {
     #[test]
     fn ranked_locks_on_a_submitted_score_even_before_the_start_time() {
         let mut m = scheduled_match("2026-06-01T18:00:00.000Z");
-        m.pending_score = Some(PendingScoreRecord {
-            submission_id: "s1".to_string(),
+        m.confirmed_score = Some(ConfirmedScoreRecord {
             score: ScoreRecord::Simple {
                 entries: HashMap::new(),
             },
             winner_side_id: None,
-            confirmations: Vec::new(),
         });
         assert_eq!(
             ranked_lock_reason(&m, lock_now()),
@@ -2094,12 +1973,11 @@ mod tests {
         );
     }
 
-    /// What a check on `confirmed_score`/`pending_score` alone would miss: a
-    /// dispute *clears* `pending_score`, so a scored-then-disputed match has
-    /// neither field set. Without the status arm the lock would reopen on
-    /// exactly the match whose result everybody has already seen.
+    /// The status arm of the lock, independent of `confirmed_score`: a match
+    /// no longer scheduled (completed, in progress, or cancelled) stays
+    /// locked even if nothing ever set its score.
     #[test]
-    fn ranked_stays_locked_after_a_submitted_score_is_disputed() {
+    fn ranked_stays_locked_once_the_match_is_no_longer_scheduled() {
         let mut m = scheduled_match("2026-06-01T18:00:00.000Z");
         m.status = "completed".to_string();
         assert_eq!(

@@ -13,8 +13,8 @@ export function matchScoreQueryKey(matchId: string | undefined) {
  * per-player breakdown alongside the headline totals, distinct from the
  * live-scoring event log. Populated whether the match was scored live
  * (ball-by-ball) or entered as a finished result directly — it's the same
- * `Score` served here, embedded on `Match.confirmed_score`/`pending_score`,
- * and persisted as the match's live-scoring record. `null` (not `undefined`)
+ * `Score` served here, embedded on `Match.confirmed_score`, and persisted as
+ * the match's live-scoring record. `null` (not `undefined`)
  * means the match has no score recorded, a normal state distinct from
  * "still loading".
  */

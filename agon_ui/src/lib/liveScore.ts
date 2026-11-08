@@ -228,7 +228,7 @@ export interface FootballScorerLine {
 
 /** All of a football match's goals, grouped by crediting side and then by
  *  scorer — a side-by-side scorer list for a finished match's feed card,
- *  built straight from the goals embedded in its confirmed/pending
+ *  built straight from the goals embedded in its confirmed
  *  `Score.Football` rather than a full live fetch, which a completed match
  *  no longer needs just to show who scored. Multiple goals by the same
  *  player become one line with every minute, ascending; lines are ordered by

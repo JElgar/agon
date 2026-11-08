@@ -23,7 +23,7 @@ pub struct CricketScoreRecord {
     pub awaiting_next_innings: Option<bool>,
 }
 
-/// One innings' final totals, as stored on a match's confirmed/pending
+/// One innings' final totals, as stored on a match's confirmed
 /// `Score` — mirrors the API's `CricketScoreInnings`. `batting`/`bowling`/
 /// `fall_of_wickets`/`extras` are `None` for a manually-entered result with
 /// no per-player detail to hand over; populated when the result came from a

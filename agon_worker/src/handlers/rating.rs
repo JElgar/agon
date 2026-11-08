@@ -905,7 +905,6 @@ mod tests {
                 },
                 winner_side_id: Some("a".into()),
             }),
-            pending_score: None,
             like_count: 0,
             comment_count: 0,
             live_seq: 0,

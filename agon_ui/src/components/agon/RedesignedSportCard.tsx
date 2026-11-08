@@ -538,10 +538,10 @@ export function FootballFeedCardBody({
   nameB: string
   isLive: boolean
   liveState: FootballScore | null
-  /** The confirmed/pending goal tally by side id, for a finished match — the
+  /** The confirmed goal tally by side id, for a finished match — the
    *  same map `displayScore`/`headlineBySide` already produce for the
    *  generic score box, since a finished football match's score comes from
-   *  `match.confirmed_score`/`pending_score`, not the live poll. */
+   *  `match.confirmed_score`, not the live poll. */
   finishedHeadline?: Record<string, number>
   finishedGoals: FootballGoalEvent[] | null
   finishedPlayers?: ScorePlayers
@@ -1223,7 +1223,7 @@ export function TennisFeedCardBody({
   nameA: string
   nameB: string
   sport: 'tennis' | 'badminton'
-  /** The match's `Sets` score (confirmed/pending) — `null` before any sets
+  /** The match's `Sets` score (confirmed) — `null` before any sets
    *  are recorded. */
   score: SetsScore | null
   aWon?: boolean
@@ -1395,7 +1395,7 @@ export function SquashFeedCardBody({
   nameA: string
   nameB: string
   sport: 'squash' | 'table_tennis'
-  /** The match's `Sets` score (confirmed/pending) — `null` before any games
+  /** The match's `Sets` score (confirmed) — `null` before any games
    *  are recorded. Squash/table_tennis's "sets" are individual games. */
   score: SetsScore | null
   /** Games won per side — the same map `MatchCard`'s generic score box

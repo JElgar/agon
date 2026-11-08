@@ -2,13 +2,13 @@
 //!
 //! On any write to a match's `#META`, we recompute what the match *currently*
 //! contributes to each participant's stats and reconcile it (see
-//! [`Dao::reconcile_match_contribution`]): a match with a **confirmed** score
+//! [`Dao::reconcile_match_contribution`]): a match with a score set
 //! contributes an outcome (won/drawn/lost) for everyone who actually played,
 //! plus any sport-specific counters (cricket runs/wickets/fours/sixes/
 //! catches/balls faced/balls bowled/runs conceded/dismissals, football
-//! goals/assists) derived from the confirmed score's per-player box score;
-//! anything else (scheduled, cancelled, pending/disputed score, roster
-//! change) is reconciled to its new value, backing out stale contributions.
+//! goals/assists) derived from the score's per-player box score; anything
+//! else (scheduled, cancelled, no score yet, roster change) is reconciled to
+//! its new value, backing out stale contributions.
 //!
 //! **Idempotency / correctness**: the worker sees a match-meta event on *every*
 //! write to it (status changes, but also each like/comment counter bump), and
@@ -55,10 +55,9 @@ pub async fn reconcile_match_stats(dao: &Dao, match_id: &str) -> WorkerResult<()
         return Ok(());
     };
 
-    // A match only contributes to stats once its score is confirmed — a
-    // completed-but-pending (or disputed) score isn't agreed yet, and counting
-    // it would inflate `matches_played` with no corresponding win, dragging
-    // down (or zeroing) the win rate for a game nobody has actually lost.
+    // A match only contributes to stats once its score is set — otherwise
+    // counting it would inflate `matches_played` with no corresponding win,
+    // dragging down (or zeroing) the win rate for a game with no result yet.
     let confirmed_score = agg.match_.confirmed_score.as_ref();
     let sport = agg.match_.match_type.clone();
     let winner_side_id = confirmed_score.and_then(|cs| cs.winner_side_id.clone());

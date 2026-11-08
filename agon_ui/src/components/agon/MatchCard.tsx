@@ -9,7 +9,6 @@ import { Avatar } from './Avatar'
 import { Button } from '@/components/ui/button'
 import { SportBadge } from './SportBadge'
 import { StatusBadge, matchBadgeStatus } from './StatusBadge'
-import { ScoreConfirmationBar } from './ScoreConfirmationBar'
 import { MatchHeaderCarousel } from './MatchHeaderCarousel'
 import { InvitationResponseDialog } from './InvitationResponseDialog'
 import { respondToInvitation } from '@/lib/invitations'
@@ -67,8 +66,8 @@ export interface MatchCardProps extends React.HTMLAttributes<HTMLDivElement> {
   match: Match | FeedMatch | SearchMatch
   /** Called when the card body is activated (navigate to match detail). */
   onOpen?: () => void
-  /** The signed-in user's id. When they're a participant with a pending score to
-   *  respond to, an inline confirm/dispute prompt is shown. */
+  /** The signed-in user's id. When they have a pending invitation to this
+   *  match, an inline accept/decline prompt is shown. */
   currentUserId?: string
 }
 
@@ -244,7 +243,7 @@ export function MatchCard({
     match.match_type === 'football' || match.match_type === 'cricket' || match.match_type === 'netball'
   const isCurrentlyLive = isLiveSport && match.status === 'in_progress'
   // Only fetched while live — a finished match doesn't need it. Football's
-  // confirmed/pending `Score.Football` already embeds its goals (see
+  // confirmed `Score.Football` already embeds its goals (see
   // `footballGoalsFromScore`/`FootballScorersBySide` below), and cricket's
   // confirmed `Score.Cricket` already embeds its per-innings detail
   // (`cricketScore` below) — both produced by finishing a live-scored match
@@ -266,13 +265,13 @@ export function MatchCard({
   const cricketState = isCurrentlyLive ? cricketScoreFrom(scoreQuery.data) : null
   const netballState = isCurrentlyLive ? netballScoreFrom(scoreQuery.data) : null
   // Goals for a finished football/netball match, read straight off the
-  // confirmed/pending score (no fetch) — shown under the plain score box
-  // below (the live ticker in `LiveMatchBlock`/`NetballMatchBlock` only
-  // renders while still in progress).
+  // confirmed score (no fetch) — shown under the plain score box below (the
+  // live ticker in `LiveMatchBlock`/`NetballMatchBlock` only renders while
+  // still in progress).
   const finishedFootballGoals = scoreInfo && !isCurrentlyLive ? footballGoalsFromScore(scoreInfo.score) : null
   const finishedNetballGoals = scoreInfo && !isCurrentlyLive ? netballGoalsFromScore(scoreInfo.score) : null
-  // Resolved server-side on `confirmed_score`/`pending_score` itself (see
-  // `Api::hydrate_confirmed_pending_score_players`) — this card's `match` is
+  // Resolved server-side on `confirmed_score` itself (see
+  // `Api::hydrate_confirmed_score_players`) — this card's `match` is
   // a `FeedMatch`/`SearchMatch`/`Match`, none of which reliably carry a full
   // player roster to resolve scorer names from locally.
   const finishedFootballScorePlayers =
@@ -292,7 +291,7 @@ export function MatchCard({
   // tennis/badminton/squash/table_tennis redesigned card bodies below. No
   // live poll backs this (see `TennisFeedCardBody`'s doc comment on why
   // `isLiveSport` doesn't include these sports), so this is always the
-  // confirmed/pending score, never a live one.
+  // confirmed score, never a live one.
   const setsScore = scoreInfo ? setsScoreFrom(scoreInfo.score) : null
   // Cricket's own state-of-game line ("England won by 4 wickets" / "...need
   // 200 to win" / "...lead by 30 runs") is a strictly better headline than
@@ -477,7 +476,7 @@ export function MatchCard({
       )}
 
       {/* Score block — a live-scored match shows the mini-ticker instead of
-          the usual confirmed/pending result; a finished cricket match with
+          the usual confirmed result; a finished cricket match with
           per-innings detail gets its own tile too. */}
       {footballState ? (
         <div className="mx-3.5 mb-3">
@@ -614,27 +613,15 @@ export function MatchCard({
         </div>
       )}
 
-      {/* Respond to a pending invite first; only once joined does the score
-          confirm/dispute prompt apply — the two are mutually exclusive. */}
-      {myPendingInvitation(match, currentUserId) ? (
+      {/* Respond to a pending invite. */}
+      {myPendingInvitation(match, currentUserId) && (
         <div className="px-3.5 pb-2.5">
           <InviteResponseBar match={match} currentUserId={currentUserId} />
         </div>
-      ) : (
-        match.pending_score && (
-          <div className="px-3.5 pb-2.5">
-            <ScoreConfirmationBar
-              match={match}
-              currentUserId={currentUserId}
-              variant="card"
-            />
-          </div>
-        )
       )}
 
       {/* Footer: kudos + comments + share. The redesigned sports match the
-          mock exactly (a "Kudos" label, not a count; no lifecycle badge —
-          the score confirmation prompt above already covers that state);
+          mock exactly (a "Kudos" label, not a count; no lifecycle badge);
           the generic ("other" sport) layout keeps its original footer. */}
       {isRedesignedSport ? (
         <div className="flex items-center gap-1 border-t px-2 py-1 text-muted-foreground">

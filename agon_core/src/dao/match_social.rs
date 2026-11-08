@@ -10,12 +10,11 @@ use super::error::{DaoError, DaoResult};
 use super::item::{ATTR_GSI1PK, ATTR_PK, ATTR_SK, ItemBuilder, item_pk, s, to_item};
 use super::keys::{Pk, Sk};
 use super::page::Page;
-use super::records::{CommentRecord, MatchLikeRecord, ScoreSubmissionRecord};
+use super::records::{CommentRecord, MatchLikeRecord};
 
 pub const TYPE_MATCH_LIKE: &str = "match_like";
 pub const TYPE_COMMENT: &str = "comment";
 pub const TYPE_REPLY: &str = "reply";
-pub const TYPE_SCORE_SUBMISSION: &str = "score_submission";
 
 impl Dao {
     // ---- Likes ------------------------------------------------------------
@@ -463,89 +462,6 @@ impl Dao {
             )),
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
-    }
-
-    // ---- Score submissions -----------------------------------------------
-    //
-    // Addressed by id (base SK `SCORESUB#<id>`); time ordering for the history
-    // list is via GSI1 (`MSUBMISSIONS#<matchId>` / `<submittedAt>#<id>`).
-
-    /// Fetch a single score submission by id. `None` if absent.
-    #[tracing::instrument(skip(self))]
-    pub async fn get_score_submission(
-        &self,
-        match_id: &str,
-        submission_id: &str,
-    ) -> DaoResult<Option<ScoreSubmissionRecord>> {
-        let out = self
-            .client
-            .get_item()
-            .table_name(self.table())
-            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
-            .key(
-                "SK",
-                s(Sk::ScoreSubmission(submission_id.into()).to_string()),
-            )
-            .send()
-            .await
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-        match out.item {
-            Some(item) => Ok(Some(super::item::from_item(item)?)),
-            None => Ok(None),
-        }
-    }
-
-    /// Append a score submission to a match's history. Also used to overwrite an
-    /// existing submission (same id) after recording a response — the full item
-    /// (incl. its GSI1 projection) is rewritten.
-    #[tracing::instrument(skip(self, submission), fields(submission_id = %submission.submission_id))]
-    pub async fn put_score_submission(
-        &self,
-        match_id: &str,
-        submission: &ScoreSubmissionRecord,
-    ) -> DaoResult<()> {
-        let item = ItemBuilder::new(to_item(
-            &Pk::Match(match_id.into()),
-            &Sk::ScoreSubmission(submission.submission_id.clone()),
-            TYPE_SCORE_SUBMISSION,
-            submission,
-        )?)
-        .gsi1(
-            format!("MSUBMISSIONS#{match_id}"),
-            format!("{}#{}", submission.submitted_at, submission.submission_id),
-        )
-        .build();
-        self.client
-            .put_item()
-            .table_name(self.table())
-            .set_item(Some(item))
-            .send()
-            .await
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-        Ok(())
-    }
-
-    /// List a match's score submissions (history), newest first, via GSI1.
-    #[tracing::instrument(skip(self))]
-    pub async fn list_score_submissions(
-        &self,
-        match_id: &str,
-        cursor: Option<&str>,
-        limit: u32,
-    ) -> DaoResult<Page<ScoreSubmissionRecord>> {
-        self.query_page(
-            self.client
-                .query()
-                .table_name(self.table())
-                .index_name("GSI1")
-                .key_condition_expression("#pk = :pk")
-                .expression_attribute_names("#pk", ATTR_GSI1PK)
-                .expression_attribute_values(":pk", s(format!("MSUBMISSIONS#{match_id}")))
-                .scan_index_forward(false),
-            cursor,
-            limit,
-        )
-        .await
     }
 
     // ---- helpers ----------------------------------------------------------

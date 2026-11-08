@@ -51,13 +51,13 @@ use mapping::{
     match_score_from_record, match_score_to_record, match_series_from_record,
     match_series_occurrence_from_record, match_status_str, match_type_tag,
     matches_played_for_sport, new_live_event_to_dao, notification_actor_id,
-    notification_from_record, ranked_added_players_reason, ranked_lock_reason_for_update,
-    rating_ladder, rating_ladder_for, rating_placements_from_record, resolve_score_ids,
-    roster_preview_player, score_player_ids, score_side_ids, score_submission_from_record,
-    score_to_record, search_match_from_records, series_end_record_from_input, set_score_players,
-    switch_to_ranked_reason, team_from_records, team_list_item_from_record,
-    team_member_from_record, unrankable_sport_reason, unratable_players, user_profile_from_record,
-    winner_from_score,
+    notification_from_record, ranked_added_players_reason, ranked_guest_invites_reason,
+    ranked_lock_reason_for_update, rating_ladder, rating_ladder_for, rating_placements_from_record,
+    resolve_score_ids, roster_preview_player, score_player_ids, score_side_ids,
+    score_submission_from_record, score_to_record, search_match_from_records,
+    series_end_record_from_input, set_score_players, switch_to_ranked_reason, team_from_records,
+    team_list_item_from_record, team_member_from_record, unrankable_sport_reason,
+    unratable_players, user_profile_from_record, winner_from_score,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -3505,6 +3505,34 @@ impl Api {
             && let Some(reason) = unrankable_sport_reason(match_type_tag(&input.match_type))
         {
             return Ok(CreateMatchResponse::ValidationError(PlainText(reason)));
+        }
+
+        // A guest on a side makes a ranked match rate *nobody* — not them
+        // (there is no profile to keep a rating on) and not anyone else
+        // (Weng-Lin sums a side's beliefs, so rating around them would credit
+        // their share of the result to their team-mates). The pipeline
+        // refuses the whole match rather than rate part of it, which means
+        // the organiser picks ranked, everyone plays, the score is agreed,
+        // and nothing moves — with no response saying so, only a `warn` in
+        // the worker. `update_match` has refused this for a while; creation
+        // was the last way to reach a ranked match that can never be rated.
+        //
+        // Every external invited is judged, not only those given a side. An
+        // unassigned guest is harmless to the gate as it stands, but someone
+        // invited to a ranked match is meant to play in it, and the first
+        // thing that puts them on a side makes the match unrateable — by
+        // which point the result exists and this answer is far too late.
+        // Creation is the only moment the choice is still free.
+        if input.ranked == Some(true) {
+            let guests = unratable_players(input.invites.iter().flat_map(|invite| {
+                invite
+                    .invited_externals
+                    .iter()
+                    .map(|external| (None, Some(external.name.as_str())))
+            }));
+            if let Some(reason) = ranked_guest_invites_reason(&guests) {
+                return Ok(CreateMatchResponse::ValidationError(PlainText(reason)));
+            }
         }
 
         // The `starts_at` time must be consistent with whether a result is being

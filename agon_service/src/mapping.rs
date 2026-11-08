@@ -1534,6 +1534,27 @@ pub fn unratable_players<'a>(
 /// fine now: the match rates them latently, and nothing they or the organiser
 /// does about it changes the result.
 #[must_use]
+/// The refusal for *creating* a match ranked with guests invited to it, or
+/// `None` if everyone invited could be rated.
+///
+/// Separate from [`switch_to_ranked_reason`] because the way out is
+/// different, and the message is most of what this function is. On a switch
+/// the match already exists and the guests are already on it, so the advice
+/// is to remove them. At creation nothing has happened yet: the organiser is
+/// choosing between a ranked match made of accounts and a friendly, and
+/// telling them to "remove" someone they are in the middle of inviting would
+/// describe an edit they haven't made.
+pub fn ranked_guest_invites_reason(unratable: &UnratablePlayers) -> Option<String> {
+    if !unratable.without_account.is_empty() {
+        return Some(format!(
+            "a ranked match can't include guests without an Agon account: {}. \
+             Invite them to Agon, or create this match as a friendly",
+            unratable.without_account.join(", ")
+        ));
+    }
+    None
+}
+
 pub fn ranked_added_players_reason(unratable: &UnratablePlayers) -> Option<String> {
     if !unratable.without_account.is_empty() {
         return Some(format!(
@@ -2327,13 +2348,14 @@ mod tests {
     }
 
     /// Each refusal is silent when there's nobody to refuse, and otherwise
-    /// names who. Both remaining refusals are about accounts, so both say
-    /// so — there is no longer a second kind to report underneath.
+    /// names who. All three remaining refusals are about accounts, so all
+    /// three say so — there is no longer a second kind to report underneath.
     #[test]
     fn the_roster_refusals_name_who_and_what_to_do() {
         let nobody = UnratablePlayers::default();
         assert_eq!(ranked_added_players_reason(&nobody), None);
         assert_eq!(switch_to_ranked_reason(&nobody), None);
+        assert_eq!(ranked_guest_invites_reason(&nobody), None);
 
         let guest = UnratablePlayers {
             without_account: vec!["Ringer".to_string()],
@@ -2341,10 +2363,23 @@ mod tests {
         for reason in [
             ranked_added_players_reason(&guest).unwrap(),
             switch_to_ranked_reason(&guest).unwrap(),
+            ranked_guest_invites_reason(&guest).unwrap(),
         ] {
             assert!(reason.contains("Agon account"), "{reason}");
             assert!(reason.contains("Ringer"), "{reason}");
         }
+
+        // The refusals on an existing match tell you to take the guest off
+        // it. The creation one can't say that — nothing has been created, and
+        // the organiser is mid-invite — so it names the two choices actually
+        // still open instead.
+        assert!(
+            switch_to_ranked_reason(&guest).unwrap().contains("remove"),
+            "a switch is refused on a match the guests are already on"
+        );
+        let creating = ranked_guest_invites_reason(&guest).unwrap();
+        assert!(!creating.contains("remove"), "{creating}");
+        assert!(creating.contains("friendly"), "{creating}");
     }
 
     fn rated(matches_rated: u64) -> agon_core::dao::records::RatingRecord {

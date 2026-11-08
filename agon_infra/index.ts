@@ -97,16 +97,14 @@ const ctrl = new nginx.IngressController("nginx-ingress", {
 			enabled: true,
 		},
 	},
-	// Pull the chart via OCI from registry.k8s.io instead of this component's
-	// default GitHub Releases tarball URL. The official Helm repo's index.yaml
-	// just redirects back to that same GitHub Releases asset, so it doesn't
-	// help when GitHub's release-asset serving is down (as it was here).
+	// Use a vendored copy of the chart instead of fetching it over the network.
+	// Both the default GitHub Releases tarball URL and the registry.k8s.io OCI
+	// mirror (tagged "v4.15.1", which Helm's version matching always
+	// normalizes away, so it can never be requested) turned out unusable here.
+	// This tarball is byte-identical to the one above — verified against its
+	// published sha256 digest (05c538f2a3...) before committing it.
 	helmOptions: {
-		chart: "oci://registry.k8s.io/ingress-nginx/charts/ingress-nginx",
-		// This registry tags the chart as "v4.15.1" (with the "v"), not the
-		// bare semver "4.15.1" the chart itself reports — Pulumi's OCI pull
-		// matches the tag literally, so the "v" has to be included here.
-		version: "v4.15.1",
+		chart: "./charts/ingress-nginx-4.15.1.tgz",
 	},
 }, { provider: k8sProvider });
 

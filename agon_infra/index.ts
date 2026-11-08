@@ -97,15 +97,6 @@ const ctrl = new nginx.IngressController("nginx-ingress", {
 			enabled: true,
 		},
 	},
-	// Use a vendored copy of the chart instead of fetching it over the network.
-	// Both the default GitHub Releases tarball URL and the registry.k8s.io OCI
-	// mirror (tagged "v4.15.1", which Helm's version matching always
-	// normalizes away, so it can never be requested) turned out unusable here.
-	// This tarball is byte-identical to the one above — verified against its
-	// published sha256 digest (05c538f2a3...) before committing it.
-	helmOptions: {
-		chart: "./charts/ingress-nginx-4.15.1.tgz",
-	},
 }, { provider: k8sProvider });
 
 const certManagerNamespace = new k8s.core.v1.Namespace("cert-manager-namespace", {

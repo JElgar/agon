@@ -32,7 +32,7 @@ use crate::{
     MatchStatus, MatchType, PendingScore, Photo, RosterPreviewPlayer, Score, ScoreConfirmation,
     ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus,
     SearchMatch, SetsScore, SimpleScore, Tournament, TournamentEntry, TournamentEntryAudience,
-    TournamentFormat, TournamentSeeding, UserProfile, UserStats,
+    TournamentFormat, TournamentMatchSummary, TournamentSeeding, UserProfile, UserStats,
 };
 use crate::{LadderPlacement, LadderRating};
 use agon_core::dao::error::DaoError;
@@ -52,7 +52,8 @@ use agon_core::dao::records::{
     ScoreResponseRecord, ScoreSubmissionRecord, SeriesEndRecord, SeriesOccurrenceRecord,
     SeriesRecord, SeriesSideRecord, SideOpenJoinPolicyRecord, TeamMemberRecord, TeamRecord,
     TournamentEntryAudienceRecord, TournamentEntryRecord, TournamentFormatRecord, TournamentRecord,
-    TournamentSeedingRecord, TournamentTeamFormationRecord, UserRecord, UserStatsRecord,
+    TournamentRoundInfo, TournamentSeedingRecord, TournamentTeamFormationRecord, UserRecord,
+    UserStatsRecord,
 };
 use agon_core::rating::ladder_for_tag;
 use agon_core::rating::{PLACEMENT_MATCHES, display, published};
@@ -851,6 +852,26 @@ pub fn tournament_seeding_from_record(rec: TournamentSeedingRecord) -> Tournamen
     match rec {
         TournamentSeedingRecord::Random => TournamentSeeding::Random,
         TournamentSeedingRecord::Manual => TournamentSeeding::Manual,
+    }
+}
+
+/// `GET /tournaments/{id}/matches` row — the fields a bracket/fixtures list
+/// needs, deliberately lighter than `match_from_records` (no roster lookup).
+pub fn tournament_match_summary_from_record(rec: &MatchRecord) -> TournamentMatchSummary {
+    let round_info = rec
+        .tournament_round
+        .unwrap_or(TournamentRoundInfo { round: 0, slot: 0 });
+    TournamentMatchSummary {
+        id: rec.id.clone(),
+        round: round_info.round,
+        slot: round_info.slot,
+        starts_at: parse_ts(&rec.starts_at),
+        status: match_status_from_str(&rec.status),
+        sides: rec.sides.values().map(match_side_from_record).collect(),
+        confirmed_score: rec
+            .confirmed_score
+            .as_ref()
+            .map(confirmed_score_from_record),
     }
 }
 

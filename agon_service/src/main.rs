@@ -57,8 +57,8 @@ use mapping::{
     score_side_ids, score_submission_from_record, score_to_record, search_match_from_records,
     series_end_record_from_input, set_score_players, switch_to_ranked_reason, team_from_records,
     team_list_item_from_record, team_member_from_record, tournament_entry_from_record,
-    tournament_from_record, unrankable_sport_reason, unratable_players, user_profile_from_record,
-    winner_from_score,
+    tournament_from_record, tournament_match_summary_from_record, unrankable_sport_reason,
+    unratable_players, user_profile_from_record, winner_from_score,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -1320,6 +1320,31 @@ struct TournamentStandings {
     rows: Vec<TournamentStandingsRow>,
 }
 
+/// One match within a tournament, as listed by `GET /tournaments/{id}/matches`
+/// — just what a bracket/fixtures view needs (sides, score, round/slot),
+/// not the full roster `Match` carries (not needed for a list view; link to
+/// `GET /matches/{id}` for that).
+#[derive(Object)]
+struct TournamentMatchSummary {
+    id: String,
+    /// 0-based (knockout: 0 = the first round with matches, after byes are
+    /// resolved; league: 0 = matchday 1).
+    round: u32,
+    /// Bracket position within the round; always 0 for league.
+    slot: u32,
+    starts_at: chrono::DateTime<chrono::Utc>,
+    status: MatchStatus,
+    sides: Vec<MatchSide>,
+    confirmed_score: Option<ConfirmedScore>,
+}
+
+/// One page of `GET /tournaments/{id}/matches`. `next_cursor` absent => end.
+#[derive(Object)]
+struct TournamentMatchPage {
+    items: Vec<TournamentMatchSummary>,
+    next_cursor: Option<String>,
+}
+
 /// The organiser's one-stop update for a match: edit metadata, reconcile the
 /// actual line-up, and/or record the result — all in one validated, atomic call.
 /// All fields optional; only supplied fields take effect. The server validates
@@ -2011,6 +2036,15 @@ enum GetTournamentStandingsResponse {
     /// teamless one (not supported yet).
     #[oai(status = 400)]
     ValidationError(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum ListTournamentMatchesResponse {
+    #[oai(status = 200)]
+    Matches(Json<TournamentMatchPage>),
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
@@ -6271,6 +6305,51 @@ impl Api {
         rows.sort_by_key(|r| std::cmp::Reverse(r.points));
         Ok(GetTournamentStandingsResponse::Standings(Json(
             TournamentStandings { rows },
+        )))
+    }
+
+    /// List a tournament's generated matches (knockout bracket or league
+    /// fixtures), via their GSI1 `TMATCHES#<id>` projection — same source
+    /// `get_tournament_standings` sums over, just returned per-match instead
+    /// of aggregated. Each match's full detail (roster, live scoring, …) is
+    /// still at `GET /matches/{id}`; this is only what a bracket/fixtures
+    /// list view needs. Read-only, no authority check.
+    #[oai(path = "/tournaments/:tournament_id/matches", method = "get")]
+    async fn list_tournament_matches(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+        /// Opaque cursor from the previous page's `next_cursor`. Omit for the first page.
+        Query(cursor): Query<Option<String>>,
+        /// Maximum number of items to return (defaults to 20, capped at 50).
+        Query(limit): Query<Option<u32>>,
+    ) -> Result<ListTournamentMatchesResponse> {
+        info!("Listing matches of tournament {tournament_id}");
+        self.require_uid(dao, &jwt_data).await?;
+        if dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+            .is_none()
+        {
+            return Ok(ListTournamentMatchesResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            )));
+        }
+        let page = dao
+            .list_tournament_matches(&tournament_id, cursor.as_deref(), page_limit(limit))
+            .await
+            .map_err(dao_internal)?;
+        Ok(ListTournamentMatchesResponse::Matches(Json(
+            TournamentMatchPage {
+                items: page
+                    .items
+                    .iter()
+                    .map(tournament_match_summary_from_record)
+                    .collect(),
+                next_cursor: page.next_cursor,
+            },
         )))
     }
 

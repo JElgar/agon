@@ -1152,6 +1152,13 @@ struct MatchSeriesOccurrence {
     /// The occurrence's own, independently-fetchable match (`GET
     /// /matches/:id`).
     match_id: String,
+    /// The occurrence's match, batch-hydrated alongside the rest of the page
+    /// (see `list_match_series_occurrences`) so a client can render it (e.g.
+    /// the same card the feed uses) without an N+1 `GET /matches/:id` per
+    /// occurrence. `None` only if the match has since been deleted out from
+    /// under its occurrence record.
+    #[oai(rename = "match")]
+    match_data: Option<SearchMatch>,
 }
 
 /// One page of a series' occurrences (`GET /match-series/{series_id}/occurrences`).
@@ -4957,6 +4964,7 @@ impl Api {
     async fn list_match_series_occurrences(
         &self,
         Data(dao): Data<&dao::Dao>,
+        Data(assets): Data<&Assets>,
         AuthSchema(jwt_data): AuthSchema,
         Path(series_id): Path<String>,
         /// Opaque cursor from the previous page's `next_cursor`. Omit for the first page.
@@ -4965,7 +4973,7 @@ impl Api {
         Query(limit): Query<Option<u32>>,
     ) -> Result<ListMatchSeriesOccurrencesResponse> {
         info!("Listing occurrences of match series {series_id}");
-        self.require_uid(dao, &jwt_data).await?;
+        let uid = self.require_uid(dao, &jwt_data).await?;
         if dao
             .get_series(&series_id)
             .await
@@ -4988,11 +4996,63 @@ impl Api {
             }
             Err(e) => return Err(dao_internal(e)),
         };
-        let items = page
-            .items
-            .iter()
-            .map(match_series_occurrence_from_record)
+
+        // Batch-hydrate every occurrence's match in one shot, the same way a
+        // feed/search page does (see `batch_get_match_summaries`'s doc
+        // comment) — so a client renders the page's matches (e.g. via the
+        // same card the feed uses) without an N+1 `GET /matches/:id` per
+        // occurrence.
+        let match_ids: Vec<String> = page.items.iter().map(|o| o.match_id.clone()).collect();
+        let (summaries, liked) = tokio::try_join!(
+            dao.batch_get_match_summaries(&match_ids),
+            dao.batch_has_liked_matches(&match_ids, &uid),
+        )
+        .map_err(dao_internal)?;
+
+        let mut user_ids: Vec<String> = Vec::new();
+        for summary in summaries.values() {
+            for side in &summary.sides {
+                user_ids.extend(side.roster_preview.iter().filter_map(|p| p.user_id.clone()));
+            }
+        }
+        let team_ids: Vec<String> = summaries
+            .values()
+            .flat_map(|s| s.sides.iter().filter_map(|s| s.team_id.clone()))
             .collect();
+        let (users, team_metas) = tokio::try_join!(
+            async { dao.batch_get_users(&user_ids).await.map_err(dao_internal) },
+            async { self.batch_team_metas(dao, &team_ids).await },
+        )?;
+
+        let mut items: Vec<MatchSeriesOccurrence> = Vec::with_capacity(page.items.len());
+        for occurrence in &page.items {
+            let mut o = match_series_occurrence_from_record(occurrence);
+            o.match_data = summaries.get(&occurrence.match_id).map(|summary| {
+                let i_liked = liked.contains(&occurrence.match_id);
+                let mut m = search_match_from_records(
+                    &summary.match_,
+                    &summary.sides,
+                    &users,
+                    None,
+                    i_liked,
+                );
+                Self::hydrate_sides_from_cache(&mut m.sides, &team_metas);
+                sign_search_match_headers(assets, &mut m);
+                m
+            });
+            items.push(o);
+        }
+
+        // `confirmed_score`/`pending_score`'s scorer/batter names — same
+        // batched-across-the-page treatment `/matches` makes.
+        let mut score_refs: Vec<_> = items
+            .iter_mut()
+            .filter_map(|o| o.match_data.as_mut())
+            .map(|m| (m.id.as_str(), &mut m.confirmed_score, &mut m.pending_score))
+            .collect();
+        self.hydrate_confirmed_pending_score_players(dao, &mut score_refs)
+            .await?;
+
         Ok(ListMatchSeriesOccurrencesResponse::Occurrences(Json(
             MatchSeriesOccurrencePage {
                 items,

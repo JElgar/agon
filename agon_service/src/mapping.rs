@@ -782,11 +782,16 @@ pub fn match_series_from_record(rec: &SeriesRecord) -> MatchSeries {
     }
 }
 
+/// `match_data` is left `None` here — the caller (`list_match_series_occurrences`)
+/// fills it in from a page-wide batch match lookup, the same way a feed/
+/// search page hydrates its hits, rather than this per-record mapper doing
+/// its own lookup per occurrence.
 pub fn match_series_occurrence_from_record(rec: &SeriesOccurrenceRecord) -> MatchSeriesOccurrence {
     MatchSeriesOccurrence {
         index: rec.index,
         starts_at: parse_ts(&rec.starts_at),
         match_id: rec.match_id.clone(),
+        match_data: None,
     }
 }
 

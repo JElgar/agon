@@ -874,11 +874,18 @@ struct CreateMatchInput {
     /// ladders' whole input.
     ///
     /// What limits it is the score, not this field: nothing is rated until a
-    /// match admin sets one. The gap that leaves is real and known — nothing
-    /// stops an admin from picking `ranked` per match to their own advantage
-    /// (ranked wins, friendly losses), since only the score itself, never the
-    /// flag, is checked against anything else. Worth fixing if anyone is ever
-    /// seen doing it; not worth building ahead of that.
+    /// match admin sets one, and nothing requires anyone else to have agreed
+    /// to that score. The gap that leaves is real and known, and accepted for
+    /// now rather than closed: an admin can pick `ranked` per match to their
+    /// own advantage (ranked wins, friendly losses), and can go further —
+    /// setting a score, seeing where it lands a rating, then editing it,
+    /// since `ranked_lock_reason` locks this flag once a score exists but
+    /// never locks the score itself. Only the admin's own account is
+    /// checked against anything else; no second party is ever required to
+    /// have agreed to the number. Worth fixing if anyone is ever seen doing
+    /// it — by giving a non-admin participant some way to object to a ranked
+    /// match's result, or by locking the score itself once a ranked match
+    /// has one — not worth building ahead of that.
     ranked: Option<bool>,
 }
 

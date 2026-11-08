@@ -1243,6 +1243,11 @@ struct TournamentEntry {
     /// (direct add by the organiser; no open-entry/approval flow yet).
     status: String,
     seed: Option<u32>,
+    /// Which fixed squad (0-based) this entrant belongs to — only set on a
+    /// teamless tournament (`entry_audience: "players"`). `None` is
+    /// "unassigned", same as a player with no side in an ordinary match;
+    /// set it via `POST /tournaments/{id}/entries/{entrant_id}/squad`.
+    squad: Option<u32>,
     added_by_user_id: String,
     created_at: chrono::DateTime<chrono::Utc>,
 }
@@ -1262,6 +1267,14 @@ struct AddTournamentEntryInput {
     entrant_id: String,
     /// Required when the tournament's `seeding` is `"manual"`.
     seed: Option<u32>,
+}
+
+/// `POST /tournaments/{id}/entries/{entrant_id}/squad` input — assigns (or
+/// reassigns) which fixed squad a teamless entrant plays in, same shape as
+/// assigning an unassigned player to a side in an ordinary match.
+#[derive(Object)]
+struct AssignTournamentEntrySquadInput {
+    squad: u32,
 }
 
 /// One entrant's standing in a league tournament, computed on read from its
@@ -1910,6 +1923,23 @@ enum AddTournamentEntryResponse {
     /// This entrant already has an entry.
     #[oai(status = 409)]
     Conflict(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum AssignTournamentEntrySquadResponse {
+    #[oai(status = 200)]
+    Entry(Json<TournamentEntry>),
+
+    /// The tournament isn't teamless, or isn't `"open"`.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't the tournament's owner/admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
 }
 
 #[derive(ApiResponse)]
@@ -5268,22 +5298,57 @@ impl Api {
                 )));
             }
         };
-        // Teamless tournaments are designed (see `TournamentTeamFormationRecord`)
-        // but `start` doesn't generate them yet — refused up front rather than
-        // accepted and stuck forever in `"open"`.
-        if entry_audience == dao::records::TournamentEntryAudienceRecord::Players {
+        // A teamless tournament's squads are fixed once, manually, before
+        // `start` — the same shape as `MatchRecord::allow_unassigned`:
+        // entrants join with no squad, the organiser assigns one via `POST
+        // /tournaments/:id/entries/:entrant_id/squad`, and `start` requires
+        // every accepted entry to have one. `Auto` (balance by rating/
+        // games_played/wins) is designed but not built yet — refused up
+        // front rather than accepted and stuck forever in `"open"`.
+        let team_formation = match (entry_audience, input.team_formation.as_deref()) {
+            (dao::records::TournamentEntryAudienceRecord::Teams, None) => None,
+            (dao::records::TournamentEntryAudienceRecord::Teams, Some(_)) => {
+                return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                    "team_formation only applies when entry_audience is `players`".into(),
+                )));
+            }
+            (dao::records::TournamentEntryAudienceRecord::Players, Some("manual")) => {
+                Some(dao::records::TournamentTeamFormationRecord::Manual)
+            }
+            (dao::records::TournamentEntryAudienceRecord::Players, _) => {
+                return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                    "a teamless tournament needs team_formation: \"manual\" — \"auto\" isn't supported yet"
+                        .into(),
+                )));
+            }
+        };
+        if team_formation.is_some() && input.team_formation_auto_by.is_some() {
             return Ok(CreateTournamentResponse::ValidationError(PlainText(
-                "entry_audience `players` (teamless tournaments) isn't supported yet".into(),
+                "team_formation_auto_by only applies to team_formation: \"auto\", which isn't supported yet"
+                    .into(),
             )));
         }
-        if input.team_formation.is_some() || input.team_formation_auto_by.is_some() {
+        if entry_audience == dao::records::TournamentEntryAudienceRecord::Teams
+            && input.squad_size.is_some()
+        {
             return Ok(CreateTournamentResponse::ValidationError(PlainText(
-                "team_formation only applies to a teamless tournament".into(),
+                "squad_size only applies when entry_audience is `players`".into(),
             )));
         }
         if !matches!(input.seeding.as_str(), "random" | "manual") {
             return Ok(CreateTournamentResponse::ValidationError(PlainText(
                 format!("seeding `{}` must be one of random, manual", input.seeding),
+            )));
+        }
+        // A squad has no single seed of its own (its members might each
+        // have one, but that doesn't resolve to a squad order) — manual
+        // seeding only makes sense for `Teams`.
+        if entry_audience == dao::records::TournamentEntryAudienceRecord::Players
+            && input.seeding == "manual"
+        {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                "a teamless tournament only supports seeding: \"random\" — squads have no single seed"
+                    .into(),
             )));
         }
         if !matches!(
@@ -5350,8 +5415,8 @@ impl Api {
             format: input.format,
             status: "open".to_string(),
             entry_audience,
-            team_formation: None,
-            squad_size: None,
+            team_formation,
+            squad_size: input.squad_size,
             min_teams: input.min_teams,
             max_teams: input.max_teams,
             location: input.location.as_ref().map(location_to_record),
@@ -5517,6 +5582,9 @@ impl Api {
             entrant_id: input.entrant_id,
             status: "accepted".to_string(),
             seed: input.seed,
+            // Unassigned until the organiser calls the squad endpoint below
+            // — only meaningful on a teamless tournament.
+            squad: None,
             added_by_user_id: uid,
             created_at: now_iso(),
         };
@@ -5532,6 +5600,70 @@ impl Api {
             .map_err(dao_internal)?;
 
         Ok(AddTournamentEntryResponse::Entry(Json(
+            tournament_entry_from_record(&entry),
+        )))
+    }
+
+    /// Assign (or reassign) which fixed squad a teamless entrant plays in —
+    /// same shape as assigning an unassigned player to a side in an
+    /// ordinary match. Organiser-only, and only while the tournament is
+    /// still `"open"`; `start` requires every accepted entry to have one.
+    #[oai(
+        path = "/tournaments/:tournament_id/entries/:entrant_id/squad",
+        method = "post"
+    )]
+    async fn assign_tournament_entry_squad(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+        Path(entrant_id): Path<String>,
+        input: Json<AssignTournamentEntrySquadInput>,
+    ) -> Result<AssignTournamentEntrySquadResponse> {
+        info!(
+            "Assigning entry {entrant_id} in tournament {tournament_id} to squad {}",
+            input.squad
+        );
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let Some(tournament) = dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(AssignTournamentEntrySquadResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            )));
+        };
+        if !caller_is_tournament_admin(&tournament, &uid) {
+            return Ok(AssignTournamentEntrySquadResponse::Forbidden(PlainText(
+                "only the tournament's owner or an admin can assign squads".into(),
+            )));
+        }
+        if tournament.entry_audience != dao::records::TournamentEntryAudienceRecord::Players {
+            return Ok(AssignTournamentEntrySquadResponse::ValidationError(
+                PlainText("squads only apply to a teamless tournament".into()),
+            ));
+        }
+        if tournament.status != "open" {
+            return Ok(AssignTournamentEntrySquadResponse::ValidationError(
+                PlainText(format!("tournament is `{}`, not `open`", tournament.status)),
+            ));
+        }
+        let Some(mut entry) = dao
+            .get_tournament_entry(&tournament_id, &entrant_id)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(AssignTournamentEntrySquadResponse::NotFound(PlainText(
+                "entry not found".into(),
+            )));
+        };
+        dao.set_tournament_entry_squad(&tournament_id, &entrant_id, input.squad)
+            .await
+            .map_err(dao_internal)?;
+        entry.squad = Some(input.squad);
+        Ok(AssignTournamentEntrySquadResponse::Entry(Json(
             tournament_entry_from_record(&entry),
         )))
     }
@@ -5626,12 +5758,6 @@ impl Api {
                 format!("tournament is `{}`, not `open`", tournament.status),
             )));
         }
-        if tournament.entry_audience != dao::records::TournamentEntryAudienceRecord::Teams {
-            return Ok(StartTournamentResponse::ValidationError(PlainText(
-                "starting a teamless tournament isn't supported yet".into(),
-            )));
-        }
-
         let mut entries: Vec<dao::records::TournamentEntryRecord> = Vec::new();
         let mut cursor: Option<String> = None;
         loop {
@@ -5646,28 +5772,92 @@ impl Api {
             }
         }
 
-        if (entries.len() as u32) < tournament.min_teams {
-            return Ok(StartTournamentResponse::ValidationError(PlainText(
-                format!(
-                    "need at least {} accepted entries to start (have {})",
-                    tournament.min_teams,
-                    entries.len()
-                ),
-            )));
-        }
+        // Filled only for a teamless tournament: each fixed squad's display
+        // label/colour and member user ids, keyed by the synthetic entrant
+        // id generation assigns it (`"squad-<position>"`).
+        let mut squad_members: HashMap<String, Vec<String>> = HashMap::new();
+        let mut squad_labels: HashMap<String, (String, String)> = HashMap::new();
 
-        let ordered: Vec<String> = if tournament.seeding == "manual" {
-            if entries.iter().any(|e| e.seed.is_none()) {
-                return Ok(StartTournamentResponse::ValidationError(PlainText(
-                    "manual seeding requires every accepted entry to have a seed".into(),
-                )));
+        let ordered: Vec<String> = match tournament.entry_audience {
+            dao::records::TournamentEntryAudienceRecord::Teams => {
+                if (entries.len() as u32) < tournament.min_teams {
+                    return Ok(StartTournamentResponse::ValidationError(PlainText(
+                        format!(
+                            "need at least {} accepted entries to start (have {})",
+                            tournament.min_teams,
+                            entries.len()
+                        ),
+                    )));
+                }
+                if tournament.seeding == "manual" {
+                    if entries.iter().any(|e| e.seed.is_none()) {
+                        return Ok(StartTournamentResponse::ValidationError(PlainText(
+                            "manual seeding requires every accepted entry to have a seed".into(),
+                        )));
+                    }
+                    let mut sorted = entries;
+                    sorted.sort_by_key(|e| e.seed.unwrap());
+                    sorted.into_iter().map(|e| e.entrant_id).collect()
+                } else {
+                    let ids: Vec<String> = entries.into_iter().map(|e| e.entrant_id).collect();
+                    agon_core::tournament::random_seed_order(&ids)
+                }
             }
-            let mut sorted = entries;
-            sorted.sort_by_key(|e| e.seed.unwrap());
-            sorted.into_iter().map(|e| e.entrant_id).collect()
-        } else {
-            let ids: Vec<String> = entries.into_iter().map(|e| e.entrant_id).collect();
-            agon_core::tournament::random_seed_order(&ids)
+            // A teamless tournament's squads are fixed once, manually (see
+            // `AssignTournamentEntrySquadInput`), then run through the same
+            // generation as a team-entry league. Knockout isn't supported
+            // yet: a bracket's TBD slot gets filled by `agon_worker`
+            // writing the winning side's `team_id` only — there's no real
+            // team to auto-join, so a squad's roster would need to be
+            // copied into the next match too, which that handler doesn't
+            // do yet.
+            dao::records::TournamentEntryAudienceRecord::Players => {
+                if tournament.format != "league" {
+                    return Ok(StartTournamentResponse::ValidationError(PlainText(
+                        "starting a teamless knockout tournament isn't supported yet".into(),
+                    )));
+                }
+                if entries.iter().any(|e| e.squad.is_none()) {
+                    return Ok(StartTournamentResponse::ValidationError(PlainText(
+                        "every accepted entry needs a squad assignment before starting".into(),
+                    )));
+                }
+                let mut by_squad: std::collections::BTreeMap<u32, Vec<String>> = Default::default();
+                for e in entries {
+                    by_squad
+                        .entry(e.squad.unwrap())
+                        .or_default()
+                        .push(e.entrant_id);
+                }
+                if (by_squad.len() as u32) < tournament.min_teams {
+                    return Ok(StartTournamentResponse::ValidationError(PlainText(
+                        format!(
+                            "need at least {} squads to start (have {})",
+                            tournament.min_teams,
+                            by_squad.len()
+                        ),
+                    )));
+                }
+                const PALETTE: [&str; 6] = [
+                    "#2952D9", "#D92929", "#1FA37A", "#D9A429", "#7A29D9", "#29A3D9",
+                ];
+                let mut synthetic_ids: Vec<String> = Vec::new();
+                for (position, (_, members)) in by_squad.into_iter().enumerate() {
+                    let synthetic_id = format!("squad-{position}");
+                    squad_labels.insert(
+                        synthetic_id.clone(),
+                        (
+                            format!("Squad {}", position + 1),
+                            PALETTE[position % PALETTE.len()].to_string(),
+                        ),
+                    );
+                    squad_members.insert(synthetic_id.clone(), members);
+                    synthetic_ids.push(synthetic_id);
+                }
+                // `seeding` is forced to `"random"` for a teamless
+                // tournament at creation — a squad has no single seed.
+                agon_core::tournament::random_seed_order(&synthetic_ids)
+            }
         };
 
         use chrono::Datelike;
@@ -5725,6 +5915,65 @@ impl Api {
         let knockout_side_record = |side: &agon_core::tournament::KnockoutSide| match side {
             agon_core::tournament::KnockoutSide::Entrant(team_id) => team_side(team_id),
             agon_core::tournament::KnockoutSide::Tbd(_) => tbd_side(),
+        };
+
+        // A league match's two sides, plus the roster players to seed it
+        // with. For `Teams`, a side joins via its own real team (no player
+        // records needed up front — same as every other team-linked side).
+        // For a teamless tournament's fixed squad, there's no real team to
+        // auto-join from, so its members are added directly, same shape as
+        // an organiser adding a player to an ordinary match (`invitation:
+        // None` — already in, no accept step).
+        let make_league_side = |entrant_id: &str| -> (
+            dao::records::MatchSideRecord,
+            Vec<dao::records::MatchPlayerRecord>,
+        ) {
+            match tournament.entry_audience {
+                dao::records::TournamentEntryAudienceRecord::Teams => {
+                    (team_side(entrant_id), Vec::new())
+                }
+                dao::records::TournamentEntryAudienceRecord::Players => {
+                    let (label, colour) = squad_labels
+                        .get(entrant_id)
+                        .cloned()
+                        .unwrap_or_else(|| ("Squad".to_string(), "#2952D9".to_string()));
+                    let side = dao::records::MatchSideRecord {
+                        side_id: new_id(),
+                        // Not a real team — the synthetic squad id, reused
+                        // so `GET /tournaments/{id}/standings` (which keys
+                        // rows by `team_id`) has a stable identity for this
+                        // squad across every one of its matches, the same
+                        // role a real team's id plays for a `Teams` entry.
+                        team_id: Some(entrant_id.to_string()),
+                        name: Some(label),
+                        colour: Some(colour),
+                        max_players: None,
+                        team_join_enabled: false,
+                        open_join_enabled: false,
+                        open_join: None,
+                        max_open_spots: None,
+                        open_joined_count: 0,
+                        player_count: 0,
+                        roster_preview: Vec::new(),
+                    };
+                    let players = squad_members
+                        .get(entrant_id)
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|user_id| dao::records::MatchPlayerRecord {
+                            player_id: new_id(),
+                            user_id: Some(user_id),
+                            display_name: None,
+                            side_id: Some(side.side_id.clone()),
+                            is_member_of_team: None,
+                            invitation: None,
+                            joined_via: None,
+                        })
+                        .collect();
+                    (side, players)
+                }
+            }
         };
 
         let build_match =
@@ -5820,13 +6069,15 @@ impl Api {
                 let fixtures = agon_core::tournament::round_robin_fixtures(ordered.len());
                 for (round, matchday) in fixtures.iter().enumerate() {
                     for (slot, (a_idx, b_idx)) in matchday.iter().enumerate() {
-                        let side_a = team_side(&ordered[*a_idx]);
-                        let side_b = team_side(&ordered[*b_idx]);
+                        let (side_a, players_a) = make_league_side(&ordered[*a_idx]);
+                        let (side_b, players_b) = make_league_side(&ordered[*b_idx]);
                         let mut sides = std::collections::HashMap::new();
                         sides.insert(side_a.side_id.clone(), side_a);
                         sides.insert(side_b.side_id.clone(), side_b);
+                        let mut players = players_a;
+                        players.extend(players_b);
                         let match_record = build_match(new_id(), round as u32, slot as u32, sides);
-                        match dao.create_match(&match_record, &[]).await {
+                        match dao.create_match(&match_record, &players).await {
                             Ok(()) => {}
                             Err(dao::DaoError::Conflict(msg)) => {
                                 return Ok(StartTournamentResponse::ValidationError(PlainText(

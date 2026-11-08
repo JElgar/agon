@@ -803,6 +803,14 @@ pub struct TournamentEntryRecord {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u32>,
+    /// Which fixed squad (0-based) this entrant belongs to, for a teamless
+    /// tournament (`entry_audience: Players`, `team_formation: Manual`) —
+    /// same shape as `MatchRecord::allow_unassigned`: an entrant with no
+    /// `squad` yet is unassigned, same as a player with no side, and
+    /// `start` requires every accepted entry to have one. `None` for every
+    /// other tournament (`Teams`, or an `Auto` teamless one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub squad: Option<u32>,
     pub added_by_user_id: String,
     pub created_at: String,
 }

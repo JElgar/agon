@@ -214,6 +214,39 @@ impl Dao {
         }
     }
 
+    /// Assign (or reassign) an entrant's fixed squad, for a teamless
+    /// tournament under manual `team_formation`. No idempotency guard
+    /// needed — unlike a status transition, the organiser can change their
+    /// mind about a squad assignment freely, any number of times, while the
+    /// tournament is still `"open"` (enforced by the caller, not here).
+    #[tracing::instrument(skip(self))]
+    pub async fn set_tournament_entry_squad(
+        &self,
+        tournament_id: &str,
+        entrant_id: &str,
+        squad: u32,
+    ) -> DaoResult<()> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Tournament(tournament_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Entry(entrant_id.into()).to_string()))
+            .update_expression("SET squad = :squad")
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_values(":squad", AttributeValue::N(squad.to_string()))
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => {
+                Err(DaoError::NotFound(format!("entry {entrant_id}")))
+            }
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
     /// Withdraw/remove an entry outright (only while the tournament is
     /// still `"open"` — enforced by the caller, not here).
     #[tracing::instrument(skip(self))]

@@ -839,6 +839,7 @@ pub fn tournament_entry_from_record(rec: &TournamentEntryRecord) -> TournamentEn
         entrant_id: rec.entrant_id.clone(),
         status: rec.status.clone(),
         seed: rec.seed,
+        squad: rec.squad,
         added_by_user_id: rec.added_by_user_id.clone(),
         created_at: parse_ts(&rec.created_at),
     }

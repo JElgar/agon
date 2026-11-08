@@ -1479,6 +1479,62 @@ pub fn ranked_lock_reason_for_update(
     None
 }
 
+/// Why a **rated** ranked match refuses this edit, or `None` if the request
+/// changes nothing its ratings were computed from.
+///
+/// A Weng-Lin update is not invertible: what a match did to you depends on
+/// every opponent's sigma at that moment, so there is no delta to subtract
+/// and a correction can only be made by replaying the ladder forward in
+/// played order. `RepairRatings` is that replay and isn't built, so today an
+/// edit that moves what a rating was built on leaves the stored number
+/// quietly wrong with nothing in the system that notices.
+///
+/// Three inputs are therefore closed once a ranked match has a confirmed
+/// score — the moment the pipeline will have rated it:
+///
+/// - **the roster**, because who played and which side they played for is
+///   literally what `rate_match` was given,
+/// - **the start time**, because ratings are applied in played order and
+///   moving a match reorders somebody's ladder,
+/// - **the status**, because cancelling a match it has already rated would
+///   need its effect withdrawn, which is the same non-invertible problem.
+///
+/// The **score stays editable, deliberately.** A wrong result is the thing
+/// most worth being able to fix, it is the one correction the pipeline
+/// already detects (`RepairTrigger::Rerated`), and refusing it would leave
+/// a typo permanent — strictly worse than a replayable mistake. Cosmetic
+/// fields (name, description, location, photos, side names and colours) are
+/// not considered here at all: no rating was ever computed from them.
+///
+/// Gated on `confirmed_score` rather than on a pending submission, because
+/// that is exactly what the rating pipeline gates on. A score still awaiting
+/// confirmation has rated nobody, so a roster edit underneath it is applied
+/// *before* the rating exists and is correct by construction.
+///
+/// Before any score, nothing is refused: the match hasn't been rated, and
+/// organising one is mostly roster edits.
+#[must_use]
+pub fn rated_ranked_edit_reason(
+    stored: &MatchRecord,
+    edits_roster: bool,
+    moves_start_time: bool,
+    changes_status: bool,
+) -> Option<&'static str> {
+    if !stored.ranked || stored.confirmed_score.is_none() {
+        return None;
+    }
+    if edits_roster {
+        return Some("a ranked match's roster is fixed once it has a score");
+    }
+    if moves_start_time {
+        return Some("a ranked match can't be rescheduled once it has a score");
+    }
+    if changes_status {
+        return Some("a ranked match's status is fixed once it has a score");
+    }
+    None
+}
+
 /// The players a match ranked on some ladder can't have in it, sorted by why.
 /// Built by [`unratable_players`]; empty means all of them can play.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -2127,6 +2183,59 @@ mod tests {
             ranked_lock_reason(&m, lock_now()),
             Some("the match is no longer scheduled")
         );
+    }
+
+    /// A squash match with a confirmed score, i.e. one the pipeline has
+    /// rated.
+    fn rated_match() -> MatchRecord {
+        let mut m = scheduled_match("2026-06-01T18:00:00.000Z");
+        m.status = "completed".to_string();
+        m.confirmed_score = Some(ConfirmedScoreRecord {
+            score: ScoreRecord::Simple {
+                entries: HashMap::new(),
+            },
+            winner_side_id: None,
+        });
+        m
+    }
+
+    /// Each of the three rating inputs is refused on its own, and the score
+    /// is the one thing left open.
+    #[test]
+    fn a_rated_ranked_match_closes_its_rating_inputs() {
+        let m = rated_match();
+        assert_eq!(
+            rated_ranked_edit_reason(&m, true, false, false),
+            Some("a ranked match's roster is fixed once it has a score")
+        );
+        assert_eq!(
+            rated_ranked_edit_reason(&m, false, true, false),
+            Some("a ranked match can't be rescheduled once it has a score")
+        );
+        assert_eq!(
+            rated_ranked_edit_reason(&m, false, false, true),
+            Some("a ranked match's status is fixed once it has a score")
+        );
+        // Nothing the rating was built from: a score edit, or a rename.
+        assert_eq!(rated_ranked_edit_reason(&m, false, false, false), None);
+    }
+
+    /// Before a score there is no rating to protect, and setting a match up
+    /// is mostly roster edits — so the lock mustn't apply yet. Getting this
+    /// wrong would make a ranked match impossible to organise.
+    #[test]
+    fn an_unscored_ranked_match_refuses_nothing() {
+        let m = scheduled_match("2026-06-01T18:00:00.000Z");
+        assert_eq!(rated_ranked_edit_reason(&m, true, true, true), None);
+    }
+
+    /// A friendly's roster was never anybody's rating input, so none of this
+    /// applies however the match was scored.
+    #[test]
+    fn a_scored_friendly_refuses_nothing() {
+        let mut m = rated_match();
+        m.ranked = false;
+        assert_eq!(rated_ranked_edit_reason(&m, true, true, true), None);
     }
 
     /// **Regression.** The first version of this lock read the stored record

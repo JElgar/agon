@@ -40,6 +40,7 @@ pub mod rating;
 pub mod series_ops;
 pub mod stats;
 pub mod team;
+pub mod tournament_ops;
 pub mod user;
 pub mod waitlist;
 

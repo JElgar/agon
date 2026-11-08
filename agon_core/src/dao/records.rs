@@ -412,6 +412,14 @@ pub struct MatchRecord {
     /// part of a recurring match series.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub series_id: Option<String>,
+    /// `None` for an ordinary match; `Some(tournament_id)` for one generated
+    /// as part of a tournament.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tournament_id: Option<String>,
+    /// This match's round/matchday position within its tournament. Always
+    /// `Some` alongside `tournament_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tournament_round: Option<TournamentRoundInfo>,
     /// This match's sides, keyed by `side_id` — a DynamoDB map, not a list,
     /// so a single side's `player_count`/`roster_preview` can be updated in
     /// place by key (`Dao::refresh_side_roster_previews`) without needing to
@@ -660,6 +668,161 @@ pub enum SeriesEndRecord {
     OnDate { date: String },
     AfterN { count: u32 },
     Never,
+}
+
+// ===========================================================================
+// Tournaments
+// ===========================================================================
+
+/// Who enters a tournament. `Teams` is the ordinary case (every match is
+/// team-vs-team, same as any other match). `Players` means individuals enter
+/// directly — on a 1v1 sport this is just an ordinary singles ladder, no
+/// `team_formation` needed; on a team sport it means there are no
+/// pre-existing teams at all, and `TournamentRecord::team_formation` decides
+/// how a squad is assembled for each round (see that field's doc comment).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TournamentEntryAudienceRecord {
+    Teams,
+    Players,
+}
+
+/// How a teamless tournament (`entry_audience: Players` on a team sport)
+/// assembles each round's squads. `None` on `TournamentRecord` for every
+/// other tournament (`Teams`, or `Players` on a 1v1 sport) — this field only
+/// has meaning once there's no persistent team per entrant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TournamentTeamFormationRecord {
+    /// The organiser assembles each round's squads by hand.
+    Manual,
+    /// Squads are assembled automatically each round via a snake draft (seed
+    /// 1 to the strongest squad, seed 2 to the next, alternating direction
+    /// each pass) over `by`: `"wins"` (total match wins so far in this
+    /// tournament; the default — ties broken randomly), `"rating"` (current
+    /// rating-ladder value for the sport — useful early on, before anyone
+    /// has enough wins in the tournament for that signal to mean much), or
+    /// `"games_played"` (friendly/unranked fallback).
+    Auto { by: String },
+}
+
+/// One round/matchday's position within a tournament, on the
+/// [`MatchRecord`] it was generated for. `round` is 0-based (knockout: 0 =
+/// the first round that actually has matches, after byes are resolved;
+/// league: 0 = matchday 1). `slot` is the bracket position, meaningful for
+/// knockout only (always 0 for league).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TournamentRoundInfo {
+    pub round: u32,
+    pub slot: u32,
+}
+
+/// `TOURNAMENT#<id>` / `#META` — a tournament's template and lifecycle
+/// state. Teams (or, for a teamless tournament, individual players) enter;
+/// once the organiser starts it, every match is generated upfront according
+/// to `format`. Every generated match is an ordinary, independent
+/// [`MatchRecord`] — same roster/score/comments/live-scoring machinery as
+/// any other match — linked back only by `MatchRecord::tournament_id`, the
+/// same way a series occurrence links back by `series_id`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TournamentRecord {
+    pub id: String,
+    pub created_by_user_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// Sport tag, same meaning as `MatchRecord::match_type`.
+    pub match_type: String,
+    /// `"knockout"` | `"league"` — an open string, same spirit as
+    /// `SeriesRecord::frequency`, so a later format doesn't need a schema
+    /// migration, only new generation logic.
+    pub format: String,
+    /// Lifecycle: `"open"` | `"in_progress"` | `"completed"` | `"cancelled"`
+    /// — entries are only accepted while `"open"`; `start` flips it to
+    /// `"in_progress"` and locks the entry list.
+    pub status: String,
+    pub entry_audience: TournamentEntryAudienceRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_formation: Option<TournamentTeamFormationRecord>,
+    /// Squad roster size for a teamless tournament — replaces the roster
+    /// size a team-entry tournament otherwise gets implicitly from its
+    /// `TeamRecord`s. `None` unless `team_formation` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub squad_size: Option<u32>,
+    pub min_teams: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_teams: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<LocationRecord>,
+    /// How often a round/matchday recurs: "weekly" | "fortnightly" |
+    /// "monthly" | "yearly" — same meaning as `SeriesRecord::frequency`.
+    pub frequency: String,
+    /// The recurrence day: 0 = Sunday .. 6 = Saturday.
+    pub weekday: u8,
+    /// Round/matchday 0's `starts_at` (RFC-3339) — the anchor
+    /// `agon_core::series::occurrence_starts_at` advances from to compute
+    /// every later round's date, exactly as `SeriesRecord::first_occurrence_starts_at` does.
+    pub first_round_starts_at: String,
+    #[serde(default = "default_series_timezone")]
+    pub timezone: String,
+    /// League scoring rule, defaulting to 3/1/0; irrelevant for knockout.
+    #[serde(default = "default_points_win")]
+    pub points_win: u32,
+    #[serde(default)]
+    pub points_draw: u32,
+    #[serde(default)]
+    pub points_loss: u32,
+    /// `"random"` | `"manual"` — manual reads each entry's `seed`.
+    pub seeding: String,
+    /// Denormalized, same pattern as `TeamRecord::follower_count`. Maintained
+    /// via atomic `ADD` (`Dao::bump_tournament_entry_count`), never
+    /// recomputed from a scan.
+    #[serde(default)]
+    pub entry_count: u64,
+    /// Who holds `Owner`/`Admin` authority over this tournament, same type
+    /// and semantics as `MatchRecord::authority`. The creator gets `Owner`
+    /// at creation.
+    #[serde(default)]
+    pub authority: HashMap<String, MatchPlayerRole>,
+    pub created_at: String,
+}
+
+fn default_points_win() -> u32 {
+    3
+}
+
+/// `TOURNAMENT#<id>` / `ENTRY#<entrantId>` — one entrant's place in a
+/// tournament. `entrant_id` is a team id when `entry_audience: Teams`, or a
+/// user id when `Players`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TournamentEntryRecord {
+    pub tournament_id: String,
+    pub entrant_id: String,
+    /// `"requested"` (awaiting organiser approval, under an open join
+    /// policy) | `"accepted"`.
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u32>,
+    pub added_by_user_id: String,
+    pub created_at: String,
+}
+
+/// `TOURNAMENT#<id>` / `BRACKET#<matchId>` — knockout only. Written once, at
+/// bracket-generation time, for every non-final match: the whole mechanism
+/// that lets a confirmed score propagate the winner into the next round (see
+/// `agon_worker`'s tournament-progression stream handler). No separate
+/// "bracket shape" record exists because the shape is fully recoverable from
+/// these edges plus each match's own `tournament_round`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TournamentBracketEdgeRecord {
+    pub tournament_id: String,
+    pub match_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub winner_feeds_into_match_id: Option<String>,
+    /// `"A"` | `"B"` — which side of `winner_feeds_into_match_id` the winner
+    /// fills. `None` for the final (no match to feed into).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub winner_feeds_into_side: Option<String>,
 }
 
 /// Shared by `MatchRecord::allow_unassigned`, `JoinLinkScopeRecord::allow_unassigned`

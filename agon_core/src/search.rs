@@ -186,6 +186,18 @@ impl SearchClient {
         Ok(())
     }
 
+    /// Exact count of documents in an index (Meilisearch's own stats, not an
+    /// estimate) — e.g. for an admin-panel "total users" figure.
+    pub async fn count(&self, index: Index) -> SearchResult<u64> {
+        let stats = self
+            .client
+            .index(index.name())
+            .get_stats()
+            .await
+            .map_err(|e| SearchError(e.to_string()))?;
+        Ok(stats.number_of_documents as u64)
+    }
+
     /// Run a search against an index, returning ranked document ids and a
     /// next-page offset. The caller hydrates full entities from DynamoDB.
     pub async fn search(&self, index: Index, query: &SearchQuery) -> SearchResult<SearchHits> {

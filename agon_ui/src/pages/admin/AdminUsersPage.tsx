@@ -22,6 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 type AdminUser = components['schemas']['AdminUser']
 
@@ -62,6 +63,15 @@ export function AdminUsersPage() {
 
   const users = query.data?.items ?? []
 
+  const stats = useQuery({
+    queryKey: ['admin-stats'],
+    queryFn: async () => {
+      const { data, error } = await fetchClient.GET('/admin/stats')
+      if (error || !data) throw new Error('Failed to load stats')
+      return data
+    },
+  })
+
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-4">
       <div>
@@ -72,6 +82,19 @@ export function AdminUsersPage() {
           View, search and edit user accounts.
         </p>
       </div>
+
+      <Card className="w-fit">
+        <CardHeader className="pb-1">
+          <CardTitle className="text-sm font-medium text-muted-foreground">
+            Total users
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <span className="font-display text-3xl font-extrabold">
+            {stats.data ? stats.data.total_users.toLocaleString() : '—'}
+          </span>
+        </CardContent>
+      </Card>
 
       <div className="relative max-w-sm">
         <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />

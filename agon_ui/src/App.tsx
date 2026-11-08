@@ -42,6 +42,7 @@ import { PairDevicePage } from '@/pages/PairDevicePage'
 import { PairedDevicesPage } from '@/pages/PairedDevicesPage'
 import { TeamsPage } from '@/pages/TeamsPage'
 import { TeamPage } from '@/pages/TeamPage'
+import { AdminLayout } from '@/pages/admin/AdminLayout'
 import { AdminUsersPage } from '@/pages/admin/AdminUsersPage'
 import { useIsAdmin } from '@/hooks/useIsAdmin'
 import {
@@ -168,15 +169,17 @@ function AppShell({ onSignOut }: { onSignOut: () => void }) {
             path="/users/:userId/following"
             element={<FollowListPage mode="following" />}
           />
-          <Route path="/admin" element={<Navigate to="/admin/users" replace />} />
           <Route
-            path="/admin/users"
+            path="/admin"
             element={
               <AdminRoute>
-                <AdminUsersPage />
+                <AdminLayout />
               </AdminRoute>
             }
-          />
+          >
+            <Route index element={<Navigate to="/admin/users" replace />} />
+            <Route path="users" element={<AdminUsersPage />} />
+          </Route>
           <Route path="*" element={<HomeRedirect />} />
           </Routes>
           </main>

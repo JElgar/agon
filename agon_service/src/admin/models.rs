@@ -48,3 +48,12 @@ pub struct UpdateUserInput {
     /// Grant (`true`) or revoke (`false`) admin-panel access.
     pub is_admin: Option<bool>,
 }
+
+/// Usage aggregates shown at the top of the admin panel's resource pages.
+/// One field per resource the panel covers — grows as matches/series/teams
+/// get their own admin pages.
+#[derive(Object)]
+#[oai(rename = "AdminStats")]
+pub struct Stats {
+    pub total_users: u64,
+}

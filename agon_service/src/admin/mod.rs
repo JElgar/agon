@@ -87,6 +87,19 @@ enum UpdateUserResponse {
 
 #[OpenApi]
 impl AdminApi {
+    /// Admin panel: usage aggregates shown at the top of each resource page.
+    #[oai(path = "/admin/stats", method = "get")]
+    async fn get_stats(
+        &self,
+        Data(search): Data<&agon_core::search::SearchClient>,
+    ) -> Result<Json<models::Stats>> {
+        let total_users = search
+            .count(agon_core::search::Index::Users)
+            .await
+            .map_err(search_internal)?;
+        Ok(Json(models::Stats { total_users }))
+    }
+
     /// Admin panel: list/search every user, full account detail. Reuses the
     /// same `users` Meilisearch index `GET /users/search` queries — an empty
     /// `q` browses everyone. Matches/series/teams get their own `/admin/...`

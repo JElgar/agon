@@ -843,8 +843,9 @@ pub struct TournamentBracketEdgeRecord {
     pub match_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub winner_feeds_into_match_id: Option<String>,
-    /// `"A"` | `"B"` — which side of `winner_feeds_into_match_id` the winner
-    /// fills. `None` for the final (no match to feed into).
+    /// The real `side_id` (minted at bracket-generation time) of
+    /// `winner_feeds_into_match_id` that the winner fills. `None` for the
+    /// final (no match to feed into).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub winner_feeds_into_side: Option<String>,
 }

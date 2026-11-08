@@ -34,7 +34,7 @@ use tracing::{error, info};
 use agon_core::dao;
 // JWT verification (asymmetric; Supabase JWKS + static test key).
 mod admin;
-use admin::{AdminUser, AdminUserPage, UpdateAdminUserInput};
+use admin::models as admin_models;
 mod auth;
 use auth::{DeviceTokenSigner, JwtClaims, JwtVerifier, SCOPE_LIVE_SCORING};
 // Boundary mapping between API models and DAO records.
@@ -2511,7 +2511,7 @@ enum ListFollowsResponse {
 #[derive(ApiResponse)]
 enum ListAdminUsersResponse {
     #[oai(status = 200)]
-    Users(Json<AdminUserPage>),
+    Users(Json<admin_models::UserPage>),
 
     /// The `cursor` query parameter isn't a valid offset.
     #[oai(status = 400)]
@@ -2521,7 +2521,7 @@ enum ListAdminUsersResponse {
 #[derive(ApiResponse)]
 enum GetAdminUserResponse {
     #[oai(status = 200)]
-    User(Json<AdminUser>),
+    User(Json<admin_models::User>),
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
@@ -2530,7 +2530,7 @@ enum GetAdminUserResponse {
 #[derive(ApiResponse)]
 enum UpdateAdminUserResponse {
     #[oai(status = 200)]
-    User(Json<AdminUser>),
+    User(Json<admin_models::User>),
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
@@ -2943,10 +2943,12 @@ impl Api {
             .map(admin_user_from_record)
             .collect();
 
-        Ok(ListAdminUsersResponse::Users(Json(AdminUserPage {
-            items,
-            next_cursor: search_cursor(hits.next_offset),
-        })))
+        Ok(ListAdminUsersResponse::Users(Json(
+            admin_models::UserPage {
+                items,
+                next_cursor: search_cursor(hits.next_offset),
+            },
+        )))
     }
 
     /// Admin panel: fetch one user's full account detail by id.
@@ -2979,7 +2981,7 @@ impl Api {
         Data(dao): Data<&dao::Dao>,
         AuthSchema(jwt_data): AuthSchema,
         Path(user_id): Path<String>,
-        input: Json<UpdateAdminUserInput>,
+        input: Json<admin_models::UpdateUserInput>,
     ) -> Result<UpdateAdminUserResponse> {
         self.require_admin(dao, &jwt_data).await?;
         let input = input.0;
@@ -10294,8 +10296,8 @@ fn search_cursor(next_offset: Option<u32>) -> Option<String> {
 }
 
 /// Map a full `UserRecord` to its admin-panel representation.
-fn admin_user_from_record(record: &dao::records::UserRecord) -> AdminUser {
-    AdminUser {
+fn admin_user_from_record(record: &dao::records::UserRecord) -> admin_models::User {
+    admin_models::User {
         id: record.id.clone(),
         email: record.email.clone(),
         name: record.name.clone(),

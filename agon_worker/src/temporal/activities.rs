@@ -198,6 +198,8 @@ impl AgonActivities {
             total_player_count: 0,
             location: input.location,
             series_id: Some(input.series_id.clone()),
+            tournament_id: None,
+            tournament_round: None,
             header_photos: Vec::new(),
             sides,
             authority,

@@ -97,6 +97,15 @@ const ctrl = new nginx.IngressController("nginx-ingress", {
 			enabled: true,
 		},
 	},
+	// Pull the chart from the official Helm repo instead of this component's
+	// default GitHub Releases tarball URL, which intermittently 504s.
+	helmOptions: {
+		chart: "ingress-nginx",
+		version: "4.15.1",
+		repositoryOpts: {
+			repo: "https://kubernetes.github.io/ingress-nginx",
+		},
+	},
 }, { provider: k8sProvider });
 
 const certManagerNamespace = new k8s.core.v1.Namespace("cert-manager-namespace", {

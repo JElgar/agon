@@ -294,6 +294,94 @@ pub fn random_seed_order(entrants: &[String]) -> Vec<String> {
     order
 }
 
+// ===========================================================================
+// Rotating-sides player tournaments (Americano/Mexicano-style)
+// ===========================================================================
+
+/// One match a rotating round's auto-pairing plan says to create: two sides
+/// of player ids.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlannedRotatingMatch {
+    pub side_a: Vec<String>,
+    pub side_b: Vec<String>,
+}
+
+/// A rotating round's auto-formed shape: every match to create, plus
+/// whoever sits this round out (when the player count doesn't divide evenly
+/// into `side_size * 2`-player matches).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RotatingRoundPlan {
+    pub matches: Vec<PlannedRotatingMatch>,
+    pub byes: Vec<String>,
+}
+
+/// Auto-form one round of a rotating-sides tournament.
+///
+/// `ranked_entrants` is ordered strongest-first by current standing (for
+/// round 1, where nobody has a standing yet, the caller passes a
+/// [`random_seed_order`]'d list instead — any order is equally arbitrary).
+/// `games_played` is each entrant's total matches so far this tournament,
+/// consulted only to decide who sits out when the count doesn't divide
+/// evenly: whoever has played the *most* games already sits, so totals
+/// converge across rounds instead of the same players always drawing the
+/// bye — the dynamic equivalent of `round_robin_fixtures`' built-in even
+/// bye spread, just decided round-by-round instead of baked into a fixed
+/// schedule up front (rotating rounds can't be planned that far ahead,
+/// since who plays well enough to keep playing isn't known until each round
+/// is scored).
+///
+/// Players who do play are grouped, in rank order, into blocks of
+/// `side_size * 2` and each block is split into two balanced sides via
+/// [`snake_draft`] — e.g. for 2v2, the strongest and weakest of a block of
+/// four end up together, against the middle two. This is the standard
+/// "Mexicano" re-pairing: a fresh, rank-balanced grouping each round, not a
+/// fixed partner/opponent list like `round_robin_fixtures`.
+pub fn plan_rotating_round(
+    ranked_entrants: &[String],
+    side_size: usize,
+    games_played: &HashMap<String, u32>,
+) -> RotatingRoundPlan {
+    if side_size == 0 || ranked_entrants.is_empty() {
+        return RotatingRoundPlan::default();
+    }
+    let match_size = side_size * 2;
+    let total = ranked_entrants.len();
+    let playing_count = (total / match_size) * match_size;
+    let bye_count = total - playing_count;
+
+    let mut by_games_desc: Vec<&String> = ranked_entrants.iter().collect();
+    by_games_desc
+        .sort_by_key(|e| std::cmp::Reverse(games_played.get(e.as_str()).copied().unwrap_or(0)));
+    let byes: std::collections::HashSet<&String> =
+        by_games_desc.into_iter().take(bye_count).collect();
+
+    let playing: Vec<String> = ranked_entrants
+        .iter()
+        .filter(|e| !byes.contains(e))
+        .cloned()
+        .collect();
+
+    let matches = playing
+        .chunks(match_size)
+        .map(|group| {
+            let sides = snake_draft(group, 2);
+            PlannedRotatingMatch {
+                side_a: sides[0].clone(),
+                side_b: sides.get(1).cloned().unwrap_or_default(),
+            }
+        })
+        .collect();
+
+    RotatingRoundPlan {
+        matches,
+        byes: ranked_entrants
+            .iter()
+            .filter(|e| byes.contains(e))
+            .cloned()
+            .collect(),
+    }
+}
+
 /// Resolve placeholder match ids in a [`KnockoutBracketPlan`] (and its
 /// matches' `Tbd` sides) to the real ids `minted` maps them to — every
 /// placeholder in a plan returned by [`plan_knockout_bracket`] is a key in
@@ -528,6 +616,72 @@ mod tests {
     fn snake_draft_trivial_inputs() {
         assert_eq!(snake_draft(&[], 3), Vec::<Vec<String>>::new());
         assert_eq!(snake_draft(&ids(3), 0), Vec::<Vec<String>>::new());
+    }
+
+    #[test]
+    fn plan_rotating_round_even_count_has_no_byes() {
+        let entrants = ids(8);
+        let plan = plan_rotating_round(&entrants, 2, &HashMap::new());
+        assert_eq!(plan.matches.len(), 2);
+        assert!(plan.byes.is_empty());
+        let mut seen: Vec<String> = plan
+            .matches
+            .iter()
+            .flat_map(|m| m.side_a.iter().chain(m.side_b.iter()))
+            .cloned()
+            .collect();
+        seen.sort();
+        assert_eq!(seen, entrants);
+    }
+
+    #[test]
+    fn plan_rotating_round_balances_each_match_by_rank() {
+        // Block of 4, side_size 2: strongest+weakest vs the middle two.
+        let entrants = ids(4);
+        let plan = plan_rotating_round(&entrants, 2, &HashMap::new());
+        assert_eq!(plan.matches.len(), 1);
+        let m = &plan.matches[0];
+        assert_eq!(m.side_a, vec!["t0", "t3"]);
+        assert_eq!(m.side_b, vec!["t1", "t2"]);
+    }
+
+    #[test]
+    fn plan_rotating_round_remainder_sits_out() {
+        // 5 entrants, side_size 2 (match_size 4): one sits out.
+        let entrants = ids(5);
+        let plan = plan_rotating_round(&entrants, 2, &HashMap::new());
+        assert_eq!(plan.matches.len(), 1);
+        assert_eq!(plan.byes.len(), 1);
+        let mut playing: Vec<String> = plan
+            .matches
+            .iter()
+            .flat_map(|m| m.side_a.iter().chain(m.side_b.iter()))
+            .cloned()
+            .collect();
+        playing.extend(plan.byes.clone());
+        playing.sort();
+        assert_eq!(playing, entrants);
+    }
+
+    #[test]
+    fn plan_rotating_round_bye_goes_to_whoever_has_played_most() {
+        let entrants = ids(5);
+        let mut games_played = HashMap::new();
+        games_played.insert("t2".to_string(), 5);
+        let plan = plan_rotating_round(&entrants, 2, &games_played);
+        assert_eq!(plan.byes, vec!["t2".to_string()]);
+    }
+
+    #[test]
+    fn plan_rotating_round_trivial_inputs() {
+        assert_eq!(
+            plan_rotating_round(&[], 2, &HashMap::new()),
+            RotatingRoundPlan::default()
+        );
+        assert_eq!(
+            plan_rotating_round(&ids(4), 0, &HashMap::new()),
+            RotatingRoundPlan::default()
+        );
     }
 
     #[test]

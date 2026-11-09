@@ -702,6 +702,16 @@ pub enum TournamentEntryAudienceRecord {
 pub enum TournamentFormatRecord {
     Knockout,
     League,
+    /// Players enter directly with no fixed sides at all — every round's
+    /// sides are formed fresh (see `agon_core::tournament::plan_rotating_round`),
+    /// rather than once at `start` like a teamless league's fixed squads
+    /// (`TournamentTeamFormationRecord`). Forces `entry_audience: Players`.
+    /// A fixed `rounds` count is set at creation instead of running until a
+    /// winner; because each round's pairing depends on the previous round's
+    /// results, only round 0 is generated at `start` — later rounds come
+    /// from `Dao::set_tournament_current_round`, one at a time, via
+    /// `POST /tournaments/{id}/rounds/next`.
+    RotatingPlayers,
 }
 
 /// How entrants are ordered into the bracket/fixture list at `start`
@@ -773,11 +783,26 @@ pub struct TournamentRecord {
     pub entry_audience: TournamentEntryAudienceRecord,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub team_formation: Option<TournamentTeamFormationRecord>,
-    /// Squad roster size for a teamless tournament — replaces the roster
-    /// size a team-entry tournament otherwise gets implicitly from its
-    /// `TeamRecord`s. `None` unless `team_formation` is set.
+    /// Squad roster size for a teamless tournament (`None` unless
+    /// `team_formation` is set) — or, for `RotatingPlayers`, the fixed side
+    /// size every round's matches are built from (required there instead).
+    /// Either way it replaces the roster size a team-entry tournament
+    /// otherwise gets implicitly from its `TeamRecord`s.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub squad_size: Option<u32>,
+    /// Required for `RotatingPlayers` — the fixed number of rounds to
+    /// generate, one at a time as the tournament proceeds (see `format`'s
+    /// doc comment). `None` for every other format, which instead runs
+    /// until its bracket/fixture list (generated in full at `start`) is
+    /// exhausted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rounds: Option<u32>,
+    /// `RotatingPlayers` only: the furthest round generated so far (0-based).
+    /// `None` until `start`; `start` sets it to `Some(0)`, and
+    /// `Dao::set_tournament_current_round` advances it by one each time
+    /// `POST /tournaments/{id}/rounds/next` generates the next round.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_round: Option<u32>,
     pub min_teams: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_teams: Option<u32>,

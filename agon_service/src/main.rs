@@ -1222,6 +1222,11 @@ struct MatchSeriesOccurrencePage {
 enum TournamentFormat {
     Knockout,
     League,
+    /// Players enter directly with no fixed sides — every round's sides are
+    /// formed fresh, either auto-suggested from current standings or set by
+    /// hand, via `POST /tournaments/{id}/rounds/next`. See
+    /// `CreateTournamentInput::rounds`.
+    RotatingPlayers,
 }
 
 /// Who enters a tournament.
@@ -1264,7 +1269,17 @@ struct CreateTournamentInput {
     /// `"wins"` | `"rating"` | `"games_played"` — required when
     /// `team_formation` is `"auto"`.
     team_formation_auto_by: Option<String>,
+    /// For a teamless (`"players"`-on-a-team-sport) tournament, the fixed
+    /// squad size. For `format: "rotating_players"`, the fixed side size
+    /// every round's matches are built from — required there, and capped at
+    /// `agon_core::dao::match_ops::ROSTER_PREVIEW_CAP` (4) since standings
+    /// and round-pairing both read a match's roster off its cached
+    /// `roster_preview`, which goes empty past that cap.
     squad_size: Option<u32>,
+    /// Required for (and only accepted on) `format: "rotating_players"` —
+    /// the fixed number of rounds to generate, one at a time as the
+    /// tournament proceeds, instead of running until a winner.
+    rounds: Option<u32>,
     min_teams: u32,
     max_teams: Option<u32>,
     location: Option<Location>,
@@ -1306,6 +1321,10 @@ struct Tournament {
     team_formation: Option<String>,
     team_formation_auto_by: Option<String>,
     squad_size: Option<u32>,
+    rounds: Option<u32>,
+    /// `RotatingPlayers` only: the furthest round generated so far
+    /// (0-based). `None` until `start`.
+    current_round: Option<u32>,
     min_teams: u32,
     max_teams: Option<u32>,
     location: Option<Location>,
@@ -1365,9 +1384,31 @@ struct AssignTournamentEntrySquadInput {
     squad: u32,
 }
 
-/// One entrant's standing in a league tournament, computed on read from its
-/// generated matches (see `GET /tournaments/{id}/standings`'s doc comment) —
-/// never denormalized onto the tournament or entry records.
+/// One match of a rotating-sides tournament's next round, as the organiser
+/// assigns it by hand — a plain list of user ids per side, same shape as
+/// `AssignTournamentEntrySquadInput`'s "the organiser decides, the server
+/// just records it" posture.
+#[derive(Object)]
+struct RotatingRoundMatchInput {
+    side_a: Vec<String>,
+    side_b: Vec<String>,
+}
+
+/// `POST /tournaments/{id}/rounds/next` input. Supplying `matches` forms the
+/// round by hand (every accepted entrant who's playing this round must
+/// appear in exactly one side; leave an entrant out entirely to sit them out
+/// this round — same as an auto-formed round's byes). Omitting it auto-forms
+/// the round instead, via `agon_core::tournament::plan_rotating_round`.
+#[derive(Object)]
+struct AdvanceTournamentRoundInput {
+    matches: Option<Vec<RotatingRoundMatchInput>>,
+}
+
+/// One entrant's standing in a league or rotating-sides tournament, computed
+/// on read from its generated matches (see `GET /tournaments/{id}/standings`'s
+/// doc comment) — never denormalized onto the tournament or entry records.
+/// `entrant_id` is a team id for a league tournament's `Teams`/teamless
+/// entries, or a user id for `RotatingPlayers`.
 #[derive(Object)]
 struct TournamentStandingsRow {
     entrant_id: String,
@@ -2080,6 +2121,26 @@ enum StartTournamentResponse {
     #[oai(status = 200)]
     Tournament(Json<Tournament>),
 
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't the tournament's owner/admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum AdvanceTournamentRoundResponse {
+    #[oai(status = 200)]
+    Tournament(Json<Tournament>),
+
+    /// Not a rotating-sides tournament, not `in_progress`, the current
+    /// round isn't fully scored yet, the final round was already
+    /// generated, or `matches` doesn't cover every playing entrant exactly
+    /// once.
     #[oai(status = 400)]
     ValidationError(PlainText<String>),
 
@@ -5573,6 +5634,9 @@ impl Api {
         let format = match input.format {
             TournamentFormat::Knockout => dao::records::TournamentFormatRecord::Knockout,
             TournamentFormat::League => dao::records::TournamentFormatRecord::League,
+            TournamentFormat::RotatingPlayers => {
+                dao::records::TournamentFormatRecord::RotatingPlayers
+            }
         };
         // A supplied match_format must be for this tournament's own sport —
         // same check as `CreateMatchInput.format`.
@@ -5593,24 +5657,40 @@ impl Api {
                 dao::records::TournamentEntryAudienceRecord::Players
             }
         };
-        // A teamless tournament's squads are fixed once, manually, before
-        // `start` — the same shape as `MatchRecord::allow_unassigned`:
+        if format == dao::records::TournamentFormatRecord::RotatingPlayers
+            && entry_audience != dao::records::TournamentEntryAudienceRecord::Players
+        {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                "format: \"rotating_players\" requires entry_audience: \"players\"".into(),
+            )));
+        }
+        // A teamless *league* tournament's squads are fixed once, manually,
+        // before `start` — the same shape as `MatchRecord::allow_unassigned`:
         // entrants join with no squad, the organiser assigns one via `POST
         // /tournaments/:id/entries/:entrant_id/squad`, and `start` requires
         // every accepted entry to have one. `Auto` (balance by rating/
         // games_played/wins) is designed but not built yet — refused up
         // front rather than accepted and stuck forever in `"open"`.
-        let team_formation = match (entry_audience, input.team_formation.as_deref()) {
-            (dao::records::TournamentEntryAudienceRecord::Teams, None) => None,
-            (dao::records::TournamentEntryAudienceRecord::Teams, Some(_)) => {
+        // `RotatingPlayers` has no `team_formation` at all: its sides are
+        // formed fresh every round instead (see `format`'s own doc comment).
+        let team_formation = match (format, entry_audience, input.team_formation.as_deref()) {
+            (_, dao::records::TournamentEntryAudienceRecord::Teams, None) => None,
+            (_, dao::records::TournamentEntryAudienceRecord::Teams, Some(_)) => {
                 return Ok(CreateTournamentResponse::ValidationError(PlainText(
                     "team_formation only applies when entry_audience is `players`".into(),
                 )));
             }
-            (dao::records::TournamentEntryAudienceRecord::Players, Some("manual")) => {
+            (dao::records::TournamentFormatRecord::RotatingPlayers, _, None) => None,
+            (dao::records::TournamentFormatRecord::RotatingPlayers, _, Some(_)) => {
+                return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                    "team_formation doesn't apply to format: \"rotating_players\" — its sides are formed fresh every round"
+                        .into(),
+                )));
+            }
+            (_, dao::records::TournamentEntryAudienceRecord::Players, Some("manual")) => {
                 Some(dao::records::TournamentTeamFormationRecord::Manual)
             }
-            (dao::records::TournamentEntryAudienceRecord::Players, _) => {
+            (_, dao::records::TournamentEntryAudienceRecord::Players, _) => {
                 return Ok(CreateTournamentResponse::ValidationError(PlainText(
                     "a teamless tournament needs team_formation: \"manual\" — \"auto\" isn't supported yet"
                         .into(),
@@ -5630,9 +5710,39 @@ impl Api {
                 "squad_size only applies when entry_audience is `players`".into(),
             )));
         }
-        // A squad has no single seed of its own (its members might each
-        // have one, but that doesn't resolve to a squad order) — manual
-        // seeding only makes sense for `Teams`.
+        if format == dao::records::TournamentFormatRecord::RotatingPlayers {
+            match input.squad_size {
+                None => {
+                    return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                        "format: \"rotating_players\" needs squad_size (the fixed side size every round plays)"
+                            .into(),
+                    )));
+                }
+                Some(size) if size == 0 || size > dao::match_ops::ROSTER_PREVIEW_CAP as u32 => {
+                    return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                        format!(
+                            "squad_size must be between 1 and {} for format: \"rotating_players\"",
+                            dao::match_ops::ROSTER_PREVIEW_CAP
+                        ),
+                    )));
+                }
+                Some(_) => {}
+            }
+            match input.rounds {
+                Some(0) | None => {
+                    return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                        "format: \"rotating_players\" needs rounds (at least 1)".into(),
+                    )));
+                }
+                Some(_) => {}
+            }
+        } else if input.rounds.is_some() {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                "rounds only applies to format: \"rotating_players\"".into(),
+            )));
+        }
+        // A squad (or a rotating round's side) has no single seed of its
+        // own — manual seeding only makes sense for `Teams`.
         if entry_audience == dao::records::TournamentEntryAudienceRecord::Players
             && input.seeding == TournamentSeeding::Manual
         {
@@ -5711,6 +5821,8 @@ impl Api {
             entry_audience,
             team_formation,
             squad_size: input.squad_size,
+            rounds: input.rounds,
+            current_round: None,
             min_teams: input.min_teams,
             max_teams: input.max_teams,
             location: input.location.as_ref().map(location_to_record),
@@ -5936,9 +6048,11 @@ impl Api {
                 "only the tournament's owner or an admin can assign squads".into(),
             )));
         }
-        if tournament.entry_audience != dao::records::TournamentEntryAudienceRecord::Players {
+        if tournament.entry_audience != dao::records::TournamentEntryAudienceRecord::Players
+            || tournament.format == dao::records::TournamentFormatRecord::RotatingPlayers
+        {
             return Ok(AssignTournamentEntrySquadResponse::ValidationError(
-                PlainText("squads only apply to a teamless tournament".into()),
+                PlainText("squads only apply to a teamless league tournament".into()),
             ));
         }
         if tournament.status != "open" {
@@ -6095,6 +6209,26 @@ impl Api {
                     let ids: Vec<String> = entries.into_iter().map(|e| e.entrant_id).collect();
                     agon_core::tournament::random_seed_order(&ids)
                 }
+            }
+            // A rotating-sides tournament has no squads at all — its
+            // entrants are plain player ids, randomly ordered (any order is
+            // equally arbitrary before anyone has a standing); round 0's
+            // actual pairing happens below, in the `RotatingPlayers` arm of
+            // the `tournament.format` match.
+            dao::records::TournamentEntryAudienceRecord::Players
+                if tournament.format == dao::records::TournamentFormatRecord::RotatingPlayers =>
+            {
+                if (entries.len() as u32) < tournament.min_teams {
+                    return Ok(StartTournamentResponse::ValidationError(PlainText(
+                        format!(
+                            "need at least {} accepted entries to start (have {})",
+                            tournament.min_teams,
+                            entries.len()
+                        ),
+                    )));
+                }
+                let ids: Vec<String> = entries.into_iter().map(|e| e.entrant_id).collect();
+                agon_core::tournament::random_seed_order(&ids)
             }
             // A teamless tournament's squads are fixed once, manually (see
             // `AssignTournamentEntrySquadInput`), then run through the same
@@ -6350,6 +6484,39 @@ impl Api {
                     .map_err(dao_internal)?;
                 }
             }
+            dao::records::TournamentFormatRecord::RotatingPlayers => {
+                // Round 0 only — nobody has a standing yet, so `ordered`
+                // (already randomly shuffled above) stands in for a ranking,
+                // and nobody has played a game yet either. Later rounds are
+                // generated one at a time by `POST /tournaments/{id}/rounds/next`,
+                // once the round before them is fully scored.
+                let side_size = tournament.squad_size.unwrap_or(1) as usize;
+                let plan = agon_core::tournament::plan_rotating_round(
+                    &ordered,
+                    side_size,
+                    &HashMap::new(),
+                );
+                for (slot, m) in plan.matches.iter().enumerate() {
+                    let (side_a, players_a) = rotating_tournament_side("Side A", &m.side_a);
+                    let (side_b, players_b) = rotating_tournament_side("Side B", &m.side_b);
+                    let mut sides = std::collections::HashMap::new();
+                    sides.insert(side_a.side_id.clone(), side_a);
+                    sides.insert(side_b.side_id.clone(), side_b);
+                    let mut players = players_a;
+                    players.extend(players_b);
+                    let match_record = build_match(new_id(), 0, slot as u32, sides);
+                    match dao.create_match(&match_record, &players).await {
+                        Ok(()) => {}
+                        Err(dao::DaoError::Conflict(msg)) => {
+                            return Ok(StartTournamentResponse::ValidationError(PlainText(msg)));
+                        }
+                        Err(e) => return Err(dao_internal(e)),
+                    }
+                }
+                dao.set_tournament_current_round(&tournament_id, 0)
+                    .await
+                    .map_err(dao_internal)?;
+            }
             dao::records::TournamentFormatRecord::League => {
                 let fixtures = agon_core::tournament::round_robin_fixtures(ordered.len());
                 for (round, matchday) in fixtures.iter().enumerate() {
@@ -6389,14 +6556,254 @@ impl Api {
         )))
     }
 
-    /// League standings, computed on read from the tournament's generated
-    /// matches (via their GSI1 `TMATCHES#<id>` projection — see
-    /// `Dao::list_tournament_matches`) rather than denormalized: a
-    /// tournament has at most a few dozen matches, so summing on every read
-    /// is cheap and can never drift from the matches themselves. Every
-    /// confirmed match counts, win/draw/loss read straight off
-    /// `MatchRecord::confirmed_score::winner_side_id` (no side is
-    /// unaccounted for, since every tournament side is team-linked).
+    /// Generate a rotating-sides tournament's next round, once every match
+    /// in the current round has a confirmed score — pairing the next round
+    /// depends on standings the current round decides, so (unlike
+    /// knockout/league) the whole match list can't be generated upfront at
+    /// `start`; see `TournamentFormatRecord::RotatingPlayers`'s doc comment.
+    /// Supplying `matches` forms the round by hand; omitting it auto-forms
+    /// it via `agon_core::tournament::plan_rotating_round`, ranking entrants
+    /// by their league-style points so far (same `points_win`/`points_draw`/
+    /// `points_loss` rule `GET /tournaments/{id}/standings` uses) and
+    /// balancing games played across rounds.
+    #[oai(path = "/tournaments/:tournament_id/rounds/next", method = "post")]
+    async fn advance_tournament_round(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+        input: Json<AdvanceTournamentRoundInput>,
+    ) -> Result<AdvanceTournamentRoundResponse> {
+        info!("Advancing tournament {tournament_id} to its next round");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let input = input.0;
+
+        let Some(tournament) = dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(AdvanceTournamentRoundResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            )));
+        };
+        if !caller_is_tournament_admin(&tournament, &uid) {
+            return Ok(AdvanceTournamentRoundResponse::Forbidden(PlainText(
+                "only the tournament's owner or an admin can advance it".into(),
+            )));
+        }
+        if tournament.format != dao::records::TournamentFormatRecord::RotatingPlayers {
+            return Ok(AdvanceTournamentRoundResponse::ValidationError(PlainText(
+                "only a rotating-sides tournament generates rounds one at a time".into(),
+            )));
+        }
+        if tournament.status != "in_progress" {
+            return Ok(AdvanceTournamentRoundResponse::ValidationError(PlainText(
+                format!("tournament is `{}`, not `in_progress`", tournament.status),
+            )));
+        }
+        let Some(current_round) = tournament.current_round else {
+            return Ok(AdvanceTournamentRoundResponse::ValidationError(PlainText(
+                "tournament has no round generated yet".into(),
+            )));
+        };
+        let total_rounds = tournament.rounds.unwrap_or(0);
+        if current_round + 1 >= total_rounds {
+            return Ok(AdvanceTournamentRoundResponse::ValidationError(PlainText(
+                format!("the tournament's final round ({total_rounds}) has already been generated"),
+            )));
+        }
+
+        let mut all_matches: Vec<dao::records::MatchRecord> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = dao
+                .list_tournament_matches(&tournament_id, cursor.as_deref(), 50)
+                .await
+                .map_err(dao_internal)?;
+            all_matches.extend(page.items);
+            match page.next_cursor {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+        let current_round_matches: Vec<&dao::records::MatchRecord> = all_matches
+            .iter()
+            .filter(|m| m.tournament_round.map(|r| r.round) == Some(current_round))
+            .collect();
+        if current_round_matches
+            .iter()
+            .any(|m| m.confirmed_score.is_none())
+        {
+            return Ok(AdvanceTournamentRoundResponse::ValidationError(PlainText(
+                "every match in the current round needs a confirmed score before the next round can be formed"
+                    .into(),
+            )));
+        }
+
+        let mut accepted_entrants: Vec<String> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = dao
+                .list_tournament_entries(&tournament_id, cursor.as_deref(), 50)
+                .await
+                .map_err(dao_internal)?;
+            accepted_entrants.extend(
+                page.items
+                    .into_iter()
+                    .filter(|e| e.status == "accepted")
+                    .map(|e| e.entrant_id),
+            );
+            match page.next_cursor {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+
+        // Each entrant's games played and league-style points so far, same
+        // source and rule `GET /tournaments/{id}/standings` sums over.
+        // Defaults to 0 for anyone who's only ever drawn a bye.
+        let mut games_played: HashMap<String, u32> = HashMap::new();
+        let mut points: HashMap<String, u32> = HashMap::new();
+        for m in &all_matches {
+            let Some(confirmed) = &m.confirmed_score else {
+                continue;
+            };
+            for side in m.sides.values() {
+                for p in &side.roster_preview {
+                    let Some(user_id) = &p.user_id else { continue };
+                    *games_played.entry(user_id.clone()).or_insert(0) += 1;
+                    let delta = match &confirmed.winner_side_id {
+                        Some(w) if w == &side.side_id => tournament.points_win,
+                        Some(_) => tournament.points_loss,
+                        None => tournament.points_draw,
+                    };
+                    *points.entry(user_id.clone()).or_insert(0) += delta;
+                }
+            }
+        }
+
+        let side_size = tournament.squad_size.unwrap_or(1) as usize;
+        let planned_matches: Vec<agon_core::tournament::PlannedRotatingMatch> = match input.matches
+        {
+            Some(manual) => {
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+                for m in &manual {
+                    if side_size != 0
+                        && (m.side_a.len() != side_size || m.side_b.len() != side_size)
+                    {
+                        return Ok(AdvanceTournamentRoundResponse::ValidationError(PlainText(
+                            format!("every side must have exactly {side_size} player(s)"),
+                        )));
+                    }
+                    for user_id in m.side_a.iter().chain(m.side_b.iter()) {
+                        if !accepted_entrants.contains(user_id) {
+                            return Ok(AdvanceTournamentRoundResponse::ValidationError(PlainText(
+                                format!("{user_id} isn't an accepted entrant"),
+                            )));
+                        }
+                        if !seen.insert(user_id.clone()) {
+                            return Ok(AdvanceTournamentRoundResponse::ValidationError(PlainText(
+                                format!("{user_id} is assigned to more than one side this round"),
+                            )));
+                        }
+                    }
+                }
+                manual
+                    .into_iter()
+                    .map(|m| agon_core::tournament::PlannedRotatingMatch {
+                        side_a: m.side_a,
+                        side_b: m.side_b,
+                    })
+                    .collect()
+            }
+            None => {
+                let mut ranked = accepted_entrants.clone();
+                ranked.sort_by_key(|id| std::cmp::Reverse(points.get(id).copied().unwrap_or(0)));
+                agon_core::tournament::plan_rotating_round(&ranked, side_size, &games_played)
+                    .matches
+            }
+        };
+
+        let round = current_round + 1;
+        for (slot, m) in planned_matches.iter().enumerate() {
+            let (side_a, players_a) = rotating_tournament_side("Side A", &m.side_a);
+            let (side_b, players_b) = rotating_tournament_side("Side B", &m.side_b);
+            let mut sides = std::collections::HashMap::new();
+            sides.insert(side_a.side_id.clone(), side_a);
+            sides.insert(side_b.side_id.clone(), side_b);
+            let mut players = players_a;
+            players.extend(players_b);
+            let match_record = dao::records::MatchRecord {
+                id: new_id(),
+                created_by_user_id: uid.clone(),
+                name: tournament.name.clone(),
+                description: tournament.description.clone(),
+                match_type: tournament.match_type.clone(),
+                status: "scheduled".to_string(),
+                starts_at: mapping::parse_ts(&tournament.first_round_starts_at)
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                allow_unassigned: true,
+                total_player_count: 0,
+                location: tournament.location.clone(),
+                series_id: None,
+                tournament_id: Some(tournament_id.clone()),
+                tournament_round: Some(dao::records::TournamentRoundInfo {
+                    round,
+                    slot: slot as u32,
+                }),
+                header_photos: Vec::new(),
+                sides,
+                confirmed_score: None,
+                pending_score: None,
+                like_count: 0,
+                comment_count: 0,
+                live_seq: 0,
+                live_tip_seq: None,
+                format: None,
+                ranked: false,
+                authority: tournament.authority.clone(),
+                open_join: None,
+                open_joined_count: 0,
+                created_at: now_iso(),
+            };
+            match dao.create_match(&match_record, &players).await {
+                Ok(()) => {}
+                Err(dao::DaoError::Conflict(msg)) => {
+                    return Ok(AdvanceTournamentRoundResponse::ValidationError(PlainText(
+                        msg,
+                    )));
+                }
+                Err(e) => return Err(dao_internal(e)),
+            }
+        }
+        dao.set_tournament_current_round(&tournament_id, round)
+            .await
+            .map_err(dao_internal)?;
+
+        let tournament = dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+            .unwrap_or(tournament);
+        Ok(AdvanceTournamentRoundResponse::Tournament(Json(
+            tournament_from_record(&tournament),
+        )))
+    }
+
+    /// League or rotating-sides standings, computed on read from the
+    /// tournament's generated matches (via their GSI1 `TMATCHES#<id>`
+    /// projection — see `Dao::list_tournament_matches`) rather than
+    /// denormalized: a tournament has at most a few dozen matches, so
+    /// summing on every read is cheap and can never drift from the matches
+    /// themselves. Every confirmed match counts, win/draw/loss read
+    /// straight off `MatchRecord::confirmed_score::winner_side_id`. For a
+    /// league tournament a row is keyed by `team_id` (no side is
+    /// unaccounted for, since every league side is team-linked); for
+    /// `RotatingPlayers`, which has no team at all, a row is keyed by each
+    /// player's user id instead, read off the side's `roster_preview` (see
+    /// `squad_size`'s validation at creation for why that's always complete
+    /// here rather than capped-empty).
     #[oai(path = "/tournaments/:tournament_id/standings", method = "get")]
     async fn get_tournament_standings(
         &self,
@@ -6416,11 +6823,16 @@ impl Api {
                 "tournament not found".into(),
             )));
         };
-        if tournament.format != dao::records::TournamentFormatRecord::League {
+        if !matches!(
+            tournament.format,
+            dao::records::TournamentFormatRecord::League
+                | dao::records::TournamentFormatRecord::RotatingPlayers
+        ) {
             return Ok(GetTournamentStandingsResponse::ValidationError(PlainText(
-                "standings only apply to a league tournament".into(),
+                "standings don't apply to a knockout tournament".into(),
             )));
         }
+        let rotating = tournament.format == dao::records::TournamentFormatRecord::RotatingPlayers;
 
         let mut rows: HashMap<String, TournamentStandingsRow> = HashMap::new();
         let mut cursor: Option<String> = None;
@@ -6433,42 +6845,61 @@ impl Api {
                 let Some(confirmed) = &m.confirmed_score else {
                     continue;
                 };
-                let team_ids: Vec<(String, String)> = m
+                // `(side_id, one-or-more entrant ids this side's result
+                // counts for)` — one team id for a league side, or every
+                // player on a rotating side.
+                let entrants_by_side: Vec<(String, Vec<String>)> = m
                     .sides
                     .values()
-                    .filter_map(|s| s.team_id.as_ref().map(|t| (s.side_id.clone(), t.clone())))
+                    .map(|s| {
+                        let ids = if rotating {
+                            s.roster_preview
+                                .iter()
+                                .filter_map(|p| p.user_id.clone())
+                                .collect()
+                        } else {
+                            s.team_id.clone().into_iter().collect()
+                        };
+                        (s.side_id.clone(), ids)
+                    })
                     .collect();
-                for (_, team_id) in &team_ids {
-                    rows.entry(team_id.clone())
-                        .or_insert(TournamentStandingsRow {
-                            entrant_id: team_id.clone(),
-                            played: 0,
-                            won: 0,
-                            drawn: 0,
-                            lost: 0,
-                            points: 0,
-                        });
+                for (_, entrant_ids) in &entrants_by_side {
+                    for entrant_id in entrant_ids {
+                        rows.entry(entrant_id.clone())
+                            .or_insert(TournamentStandingsRow {
+                                entrant_id: entrant_id.clone(),
+                                played: 0,
+                                won: 0,
+                                drawn: 0,
+                                lost: 0,
+                                points: 0,
+                            });
+                    }
                 }
                 match &confirmed.winner_side_id {
                     Some(winner_side_id) => {
-                        for (side_id, team_id) in &team_ids {
-                            let row = rows.get_mut(team_id).unwrap();
-                            row.played += 1;
-                            if side_id == winner_side_id {
-                                row.won += 1;
-                                row.points += tournament.points_win;
-                            } else {
-                                row.lost += 1;
-                                row.points += tournament.points_loss;
+                        for (side_id, entrant_ids) in &entrants_by_side {
+                            for entrant_id in entrant_ids {
+                                let row = rows.get_mut(entrant_id).unwrap();
+                                row.played += 1;
+                                if side_id == winner_side_id {
+                                    row.won += 1;
+                                    row.points += tournament.points_win;
+                                } else {
+                                    row.lost += 1;
+                                    row.points += tournament.points_loss;
+                                }
                             }
                         }
                     }
                     None => {
-                        for (_, team_id) in &team_ids {
-                            let row = rows.get_mut(team_id).unwrap();
-                            row.played += 1;
-                            row.drawn += 1;
-                            row.points += tournament.points_draw;
+                        for (_, entrant_ids) in &entrants_by_side {
+                            for entrant_id in entrant_ids {
+                                let row = rows.get_mut(entrant_id).unwrap();
+                                row.played += 1;
+                                row.drawn += 1;
+                                row.points += tournament.points_draw;
+                            }
                         }
                     }
                 }
@@ -11156,6 +11587,49 @@ fn caller_is_tournament_admin(tournament: &dao::records::TournamentRecord, uid: 
         caller_tournament_authority_role(tournament, uid),
         Some(dao::records::MatchPlayerRole::Owner) | Some(dao::records::MatchPlayerRole::Admin)
     )
+}
+
+/// One rotating-sides round's side: no team at all, just a plain roster of
+/// player ids seeded directly (same shape as a teamless squad's members,
+/// minus the synthetic `team_id` — a rotating side has no stable identity
+/// across rounds to key anything on, unlike a fixed squad). Shared by
+/// `start_tournament` (round 0) and `advance_tournament_round` (every round
+/// after).
+fn rotating_tournament_side(
+    label: &str,
+    member_ids: &[String],
+) -> (
+    dao::records::MatchSideRecord,
+    Vec<dao::records::MatchPlayerRecord>,
+) {
+    let side_id = new_id();
+    let side = dao::records::MatchSideRecord {
+        side_id: side_id.clone(),
+        team_id: None,
+        name: Some(label.to_string()),
+        colour: None,
+        max_players: None,
+        team_join_enabled: false,
+        open_join_enabled: false,
+        open_join: None,
+        max_open_spots: None,
+        open_joined_count: 0,
+        player_count: 0,
+        roster_preview: Vec::new(),
+    };
+    let players = member_ids
+        .iter()
+        .map(|user_id| dao::records::MatchPlayerRecord {
+            player_id: new_id(),
+            user_id: Some(user_id.clone()),
+            display_name: None,
+            side_id: Some(side_id.clone()),
+            is_member_of_team: None,
+            invitation: None,
+            joined_via: None,
+        })
+        .collect();
+    (side, players)
 }
 
 /// Whether the caller owns the match — see `caller_match_authority_role`.

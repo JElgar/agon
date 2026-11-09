@@ -1,10 +1,12 @@
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ChevronLeft, Users } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
-import { CARD, FormSection } from '@/components/agon/logmatch/parts'
+import { Input } from '@/components/ui/input'
+import { CARD, FormSection, Segmented } from '@/components/agon/logmatch/parts'
 import { sideDisplayName } from '@/lib/members'
 import { sportLabel } from '@/lib/sports'
 import {
@@ -17,8 +19,10 @@ import {
 } from '@/lib/tournaments'
 
 type Tournament = components['schemas']['Tournament']
+type TournamentEntry = components['schemas']['TournamentEntry']
 type TournamentMatchSummary = components['schemas']['TournamentMatchSummary']
 type TournamentStandingsRow = components['schemas']['TournamentStandingsRow']
+type RotatingRoundMatchInput = { side_a: string[]; side_b: string[] }
 
 /**
  * Tournament hub: a scheduled tournament shows entries progress and a Start
@@ -61,7 +65,10 @@ export function TournamentPage() {
 
   const standingsQuery = useQuery({
     queryKey: ['tournament', tournamentId, 'standings'],
-    enabled: !!tournamentId && started && tournament?.format === 'league',
+    enabled:
+      !!tournamentId &&
+      started &&
+      (tournament?.format === 'league' || tournament?.format === 'rotating_players'),
     queryFn: async (): Promise<TournamentStandingsRow[]> => {
       const { data, error } = await fetchClient.GET('/tournaments/{tournament_id}/standings', {
         params: { path: { tournament_id: tournamentId! } },
@@ -71,6 +78,19 @@ export function TournamentPage() {
     },
   })
 
+  // Entrants for the manual-round-assignment form below — unlike
+  // `entriesQuery` above, this stays enabled once the tournament's started,
+  // since manual assignment needs the full accepted-entrant list on every
+  // round, not just before the tournament starts.
+  const [roundMode, setRoundMode] = useState<'auto' | 'manual'>('auto')
+  const rotatingEntriesQuery = useQuery({
+    queryKey: ['tournament', tournamentId, 'entries', 'all'],
+    enabled: !!tournamentId && tournament?.format === 'rotating_players' && roundMode === 'manual',
+    queryFn: () => listAllTournamentEntries(tournamentId!),
+  })
+
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['tournament', tournamentId] })
+
   const startMutation = useMutation({
     mutationFn: async () => {
       const { data, error } = await fetchClient.POST('/tournaments/{tournament_id}/start', {
@@ -79,9 +99,27 @@ export function TournamentPage() {
       if (error || !data) throw new Error('Could not start this tournament')
       return data
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tournament', tournamentId] })
+    onSuccess: invalidate,
+  })
+
+  // Omitting `matches` auto-forms the round (ranked by current standings);
+  // supplying it assigns sides by hand instead.
+  const nextRoundMutation = useMutation({
+    mutationFn: async (matches?: RotatingRoundMatchInput[]) => {
+      const { data, error } = await fetchClient.POST('/tournaments/{tournament_id}/rounds/next', {
+        params: { path: { tournament_id: tournamentId! } },
+        body: matches ? { matches } : {},
+      })
+      if (error || !data) {
+        throw new Error(
+          matches
+            ? "Couldn't generate that round — check every side has the right number of players."
+            : "Couldn't generate the next round — make sure every match in the current round has a confirmed score.",
+        )
+      }
+      return data
     },
+    onSuccess: invalidate,
   })
 
   if (!tournament) {
@@ -146,9 +184,52 @@ export function TournamentPage() {
         </FormSection>
       )}
 
-      {started && tournament.format === 'league' && (
+      {started && (tournament.format === 'league' || tournament.format === 'rotating_players') && (
         <FormSection title="Standings">
           <StandingsTable rows={standingsQuery.data ?? []} />
+        </FormSection>
+      )}
+
+      {started && tournament.format === 'rotating_players' && tournament.status === 'in_progress' && (
+        <FormSection title="Rounds">
+          {tournament.current_round != null && tournament.rounds != null && (
+            <p className="text-sm text-muted-foreground">
+              Round {tournament.current_round + 1} of {tournament.rounds}.
+            </p>
+          )}
+          {nextRoundMutation.isError && (
+            <p className="text-sm text-destructive">{nextRoundMutation.error.message}</p>
+          )}
+          {tournament.current_round != null &&
+            tournament.rounds != null &&
+            tournament.current_round + 1 < tournament.rounds && (
+              <>
+                <Segmented
+                  label="How to form the next round"
+                  options={[
+                    { value: 'auto' as const, label: 'Auto-form' },
+                    { value: 'manual' as const, label: 'Assign manually' },
+                  ]}
+                  value={roundMode}
+                  onChange={setRoundMode}
+                />
+                {roundMode === 'auto' ? (
+                  <Button
+                    disabled={nextRoundMutation.isPending}
+                    onClick={() => nextRoundMutation.mutate(undefined)}
+                  >
+                    {nextRoundMutation.isPending ? 'Generating…' : 'Generate next round'}
+                  </Button>
+                ) : (
+                  <ManualRoundForm
+                    entries={rotatingEntriesQuery.data ?? []}
+                    sideSize={tournament.squad_size ?? 1}
+                    isPending={nextRoundMutation.isPending}
+                    onSubmit={(matches) => nextRoundMutation.mutate(matches)}
+                  />
+                )}
+              </>
+            )}
         </FormSection>
       )}
 
@@ -158,7 +239,11 @@ export function TournamentPage() {
             {groupMatchesByRound(matches).map(([round, roundMatches]) => (
               <div key={round} className="flex flex-col gap-2">
                 <h3 className="px-1 text-xs font-bold uppercase text-muted-foreground">
-                  {tournament.format === 'knockout' ? roundLabel(round, matches.length) : `Matchday ${round + 1}`}
+                  {tournament.format === 'knockout'
+                    ? roundLabel(round, matches.length)
+                    : tournament.format === 'rotating_players'
+                      ? `Round ${round + 1}`
+                      : `Matchday ${round + 1}`}
                 </h3>
                 <div className={CARD}>
                   {roundMatches.map((match) => (
@@ -202,6 +287,102 @@ function TournamentMatchRow({ match }: { match: TournamentMatchSummary }) {
       </span>
       <span className={winnerId === sideB?.id ? 'font-bold' : undefined}>{nameB}</span>
     </Link>
+  )
+}
+
+/**
+ * Hand-assign the next rotating-sides round: each accepted entrant gets an
+ * optional match number plus side A/B; everyone left with no match number
+ * sits this round out (same as an auto-formed round's byes). Submits once
+ * every match number in use has exactly `sideSize` entrants on each side.
+ */
+function ManualRoundForm({
+  entries,
+  sideSize,
+  isPending,
+  onSubmit,
+}: {
+  entries: TournamentEntry[]
+  sideSize: number
+  isPending: boolean
+  onSubmit: (matches: RotatingRoundMatchInput[]) => void
+}) {
+  const [assignments, setAssignments] = useState<Record<string, { match: string; side: 'A' | 'B' }>>(
+    {},
+  )
+
+  const byMatch = new Map<string, { a: string[]; b: string[] }>()
+  for (const entry of entries) {
+    const a = assignments[entry.entrant_id]
+    if (!a || a.match.trim() === '') continue
+    const group = byMatch.get(a.match) ?? { a: [], b: [] }
+    group[a.side === 'A' ? 'a' : 'b'].push(entry.entrant_id)
+    byMatch.set(a.match, group)
+  }
+  const matchNumbers = Array.from(byMatch.keys()).sort((x, y) => Number(x) - Number(y))
+  const matches: RotatingRoundMatchInput[] = matchNumbers.map((n) => {
+    const { a, b } = byMatch.get(n)!
+    return { side_a: a, side_b: b }
+  })
+  const allValid =
+    matchNumbers.length > 0 &&
+    matchNumbers.every((n) => {
+      const { a, b } = byMatch.get(n)!
+      return a.length === sideSize && b.length === sideSize
+    })
+
+  const setAssignment = (entrantId: string, patch: Partial<{ match: string; side: 'A' | 'B' }>) =>
+    setAssignments((prev) => ({
+      ...prev,
+      [entrantId]: {
+        match: prev[entrantId]?.match ?? '',
+        side: prev[entrantId]?.side ?? 'A',
+        ...patch,
+      },
+    }))
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className={CARD}>
+        {entries.length === 0 && (
+          <p className="py-2 text-center text-sm text-muted-foreground">No entrants to assign.</p>
+        )}
+        {entries.map((entry) => {
+          const a = assignments[entry.entrant_id]
+          return (
+            <div key={entry.entrant_id} className="flex items-center gap-2 border-b py-2 last:border-b-0">
+              <span className="flex-1 truncate text-sm font-semibold">{entry.entrant_id}</span>
+              <Input
+                className="h-8 w-[4.5rem] text-center"
+                type="number"
+                min={1}
+                placeholder="Match"
+                value={a?.match ?? ''}
+                onChange={(e) => setAssignment(entry.entrant_id, { match: e.target.value })}
+              />
+              <Segmented
+                label={`${entry.entrant_id}'s side`}
+                className="w-24"
+                options={[
+                  { value: 'A' as const, label: 'A' },
+                  { value: 'B' as const, label: 'B' },
+                ]}
+                value={a?.side ?? 'A'}
+                onChange={(side) => setAssignment(entry.entrant_id, { side })}
+              />
+            </div>
+          )
+        })}
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Give entrants the same match number to pair them, split between side A and B. Leave an
+        entrant's match blank to sit them out this round. Every side needs exactly {sideSize}{' '}
+        player{sideSize === 1 ? '' : 's'}.
+      </p>
+      <Button disabled={!allValid || isPending} onClick={() => onSubmit(matches)}>
+        {isPending ? 'Submitting…' : 'Submit round'}
+      </Button>
+    </div>
   )
 }
 

@@ -104,6 +104,34 @@ impl Dao {
         }
     }
 
+    /// Set a `RotatingPlayers` tournament's `current_round` — `Some(0)` once
+    /// `start` generates the first round, then one higher each time
+    /// `POST /tournaments/{id}/rounds/next` generates the next one. Unlike
+    /// `set_tournament_status`, there's no single `from` value to guard on
+    /// across both call sites (absent at `start`, `Some(n)` thereafter), so
+    /// this is a plain unconditional set; the organiser-only auth check plus
+    /// the `in_progress`/current-round validation each caller already does
+    /// before calling this is what actually prevents a double-advance, and a
+    /// retried write (same round number) is harmless either way.
+    #[tracing::instrument(skip(self))]
+    pub async fn set_tournament_current_round(
+        &self,
+        tournament_id: &str,
+        round: u32,
+    ) -> DaoResult<()> {
+        self.client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Tournament(tournament_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .update_expression("SET current_round = :round")
+            .expression_attribute_values(":round", AttributeValue::N(round.to_string()))
+            .send()
+            .await
+            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        Ok(())
+    }
+
     /// Add an entry (a fresh request, an organiser's direct add, or an
     /// approved request's acceptance) and bump the tournament's
     /// `entry_count` atomically in one `TransactWriteItems`, so the counter

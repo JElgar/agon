@@ -841,6 +841,8 @@ pub fn tournament_from_record(rec: &TournamentRecord) -> Tournament {
         team_formation,
         team_formation_auto_by,
         squad_size: rec.squad_size,
+        rounds: rec.rounds,
+        current_round: rec.current_round,
         min_teams: rec.min_teams,
         max_teams: rec.max_teams,
         location: rec.location.as_ref().map(location_from_record),
@@ -861,6 +863,7 @@ pub fn tournament_format_from_record(rec: TournamentFormatRecord) -> TournamentF
     match rec {
         TournamentFormatRecord::Knockout => TournamentFormat::Knockout,
         TournamentFormatRecord::League => TournamentFormat::League,
+        TournamentFormatRecord::RotatingPlayers => TournamentFormat::RotatingPlayers,
     }
 }
 

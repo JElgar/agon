@@ -37,6 +37,11 @@ export interface TeamSideCardProps {
   currentUserId?: string
   maxPlayers: string
   onMaxPlayersChange: (value: string) => void
+  /** True once the match is set to ranked, on step 1. A ranked match can't
+   *  contain a guest (the server refuses one outright), so this hides the
+   *  "add as guest" option here rather than let one get tagged and refused
+   *  at submit. */
+  ranked: boolean
   /** A recurring series' side template only supports a team (no one-off
    *  sides) and carries no players or join settings — those are per-occurrence,
    *  set up once each generated match exists. Locks this side to "Existing
@@ -118,10 +123,21 @@ export function TeamSideCard(p: TeamSideCardProps) {
           </div>
         )}
 
+        {!p.seriesMode && p.ranked && (
+          <div className="flex items-start gap-2 rounded-xl bg-warning/25 px-3 py-2.5 text-[13px] leading-snug">
+            <CircleAlert className="mt-px size-4 shrink-0" />
+            <span>
+              Ranked matches only allow players with an Agon account. Switch to Friendly to add a
+              guest.
+            </span>
+          </div>
+        )}
+
         {!p.seriesMode && (
           <PlayerSearchInput
-            placeholder="Invite a player or add a guest"
+            placeholder={p.ranked ? 'Invite a player' : 'Invite a player or add a guest'}
             taken={p.taken}
+            allowGuests={!p.ranked}
             onAdd={(player) => p.onPlayersChange([...p.players, player])}
           />
         )}

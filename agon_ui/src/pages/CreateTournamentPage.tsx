@@ -34,13 +34,6 @@ const SEEDING_OPTIONS: { value: TournamentSeeding; label: string }[] = [
   { value: 'manual', label: 'Manual' },
 ]
 
-const FREQUENCY_OPTIONS = [
-  { value: 'weekly', label: 'Weekly' },
-  { value: 'fortnightly', label: 'Fortnightly' },
-  { value: 'monthly', label: 'Monthly' },
-  { value: 'yearly', label: 'Yearly' },
-] as const
-
 /**
  * `POST /tournaments` — knockout or league, team-entry or (league-only)
  * teamless-with-fixed-squads. A teamless tournament (`entry_audience:
@@ -48,6 +41,12 @@ const FREQUENCY_OPTIONS = [
  * assignment, matching what `start` actually supports today (see
  * `agon_service::start_tournament`'s doc comment) — knockout and auto squad
  * balancing aren't built yet.
+ *
+ * Scheduling is manual-only for now (2026-11-09): every generated match
+ * starts at the one time given here, and the organiser nudges each match's
+ * actual time on the existing edit-match page as the tournament is played
+ * — auto-filling matches into a recurring or one-day availability window is
+ * still being designed, so there's no cadence picker here yet.
  */
 export function CreateTournamentPage() {
   const navigate = useNavigate()
@@ -60,7 +59,6 @@ export function CreateTournamentPage() {
   const [minTeams, setMinTeams] = useState('4')
   const [maxTeams, setMaxTeams] = useState('')
   const [location, setLocation] = useState<LocationValue | null>(null)
-  const [frequency, setFrequency] = useState<(typeof FREQUENCY_OPTIONS)[number]['value']>('weekly')
   const [startsAt, setStartsAt] = useState('')
   const [seeding, setSeeding] = useState<TournamentSeeding>('random')
 
@@ -89,10 +87,8 @@ export function CreateTournamentPage() {
         min_teams: Number(minTeams),
         max_teams: maxTeams.trim() ? Number(maxTeams) : undefined,
         location: location?.text.trim() ? { ...location, text: location.text.trim() } : undefined,
-        frequency,
         first_round_starts_at: new Date(startsAt).toISOString(),
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        weekday: new Date(startsAt).getDay(),
         seeding: isTeamless ? 'random' : seeding,
       }
       const { data, error } = await fetchClient.POST('/tournaments', { body })
@@ -201,17 +197,13 @@ export function CreateTournamentPage() {
       )}
 
       <FormSection title="Schedule">
-        <div className="flex flex-col gap-3">
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="first-round-starts-at">First round starts</Label>
-            <DateTimePicker id="first-round-starts-at" value={startsAt} onChange={setStartsAt} />
-          </div>
-          <Segmented
-            label="Round cadence"
-            options={[...FREQUENCY_OPTIONS]}
-            value={frequency}
-            onChange={setFrequency}
-          />
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="first-round-starts-at">Starts around</Label>
+          <DateTimePicker id="first-round-starts-at" value={startsAt} onChange={setStartsAt} />
+          <p className="text-xs text-muted-foreground">
+            Every match starts here for now — adjust each one's actual time from its match page
+            as you go.
+          </p>
         </div>
       </FormSection>
 

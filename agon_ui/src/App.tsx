@@ -43,6 +43,7 @@ import { PairDevicePage } from '@/pages/PairDevicePage'
 import { PairedDevicesPage } from '@/pages/PairedDevicesPage'
 import { TeamsPage } from '@/pages/TeamsPage'
 import { TeamPage } from '@/pages/TeamPage'
+import { CreatePage } from '@/pages/CreatePage'
 import { CreateTournamentPage } from '@/pages/CreateTournamentPage'
 import { TournamentPage } from '@/pages/TournamentPage'
 import { TournamentEntriesPage } from '@/pages/TournamentEntriesPage'
@@ -128,6 +129,7 @@ function AppShell({ onSignOut }: { onSignOut: () => void }) {
           <Routes>
           <Route path="/" element={<HomeRedirect />} />
           <Route path="/feed" element={<FeedPage />} />
+          <Route path="/create" element={<CreatePage />} />
           <Route path="/matches/new" element={<LogMatchPage />} />
           <Route
             path="/matches/scheduled"

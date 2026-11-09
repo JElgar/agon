@@ -4487,10 +4487,23 @@ impl Api {
         // read-only on the match itself; `POST /matches/:match_id/leave` is
         // the one action left to them (see `caller_is_match_admin`'s doc
         // comment for exactly who qualifies as an admin here).
-        if !caller_is_match_admin(dao, &agg, &uid).await? {
-            return Ok(UpdateMatchResponse::Forbidden(PlainText(
-                "only a match admin can edit this match".into(),
-            )));
+        //
+        // A `SideAdmin` (authority over just one side, see
+        // `MatchRecord::side_authority`) gets a narrower exception: they may
+        // use this endpoint, but only to submit a score — never the rest of
+        // this input, which stays match-admin-only.
+        let caller_is_admin = caller_is_match_admin(dao, &agg, &uid).await?;
+        let caller_side_admin_side =
+            caller_side_admin_side_id(&agg.match_, &uid).map(str::to_string);
+        if !caller_is_admin {
+            match &caller_side_admin_side {
+                Some(_) if update_match_input_is_scoring_only(&input) => {}
+                _ => {
+                    return Ok(UpdateMatchResponse::Forbidden(PlainText(
+                        "only a match admin can edit this match".into(),
+                    )));
+                }
+            }
         }
 
         // A lowered cap can't drop below the side's current roster — reject
@@ -4981,19 +4994,35 @@ impl Api {
             if differs {
                 // The submission is attributed to the caller's own player/side
                 // (needed so their side can be pre-confirmed, same as at
-                // create time). A caller with no side of their own has
-                // already passed the match-admin gate above `update_match`,
-                // so their authority settles the result outright instead of
-                // going through per-side confirmation.
+                // create time). A `SideAdmin` with no player row of their own
+                // is attributed to the side their grant names instead (using
+                // their user id in place of a player id — they need not be on
+                // the roster at all). Only a caller with *no* side of their
+                // own this way — a full match `Owner`/`Admin`, per the gate
+                // above `update_match` — has their authority settle the
+                // result outright instead of going through per-side
+                // confirmation.
                 let caller_player = agg
                     .players
                     .iter()
                     .find(|p| p.user_id.as_deref() == Some(uid.as_str()));
-                let caller_side = caller_player.and_then(|p| {
-                    p.side_id
-                        .as_ref()
-                        .map(|sid| (p.player_id.clone(), sid.clone()))
-                });
+                let caller_side = caller_player
+                    .and_then(|p| {
+                        p.side_id
+                            .as_ref()
+                            .map(|sid| (p.player_id.clone(), sid.clone()))
+                    })
+                    .or_else(|| {
+                        // Only a `SideAdmin`'s own side stands in for a
+                        // player row here — a full match `Owner`/`Admin`
+                        // with no side of their own falls through to `None`
+                        // below so their score lands confirmed outright,
+                        // never waiting on a side they don't hold.
+                        (!caller_is_admin)
+                            .then(|| caller_side_admin_side.clone())
+                            .flatten()
+                            .map(|side_id| (uid.clone(), side_id))
+                    });
 
                 match caller_side {
                     Some((caller_player_id, caller_side_id)) => {
@@ -6351,6 +6380,7 @@ impl Api {
                     format: tournament.match_format.clone(),
                     ranked: false,
                     authority: tournament.authority.clone(),
+                    side_authority: std::collections::HashMap::new(),
                     open_join: None,
                     open_joined_count: 0,
                     created_at: now_iso(),
@@ -11279,6 +11309,31 @@ fn caller_side_admin_side_id<'a>(
                 .any(|u| u == uid)
                 .then_some(side_id.as_str())
         })
+}
+
+/// Whether an `UpdateMatchInput` touches only the fields a `SideAdmin` (who
+/// holds no match-wide authority) may use `update_match` for: submitting a
+/// score, and nothing else — not the roster, format, metadata, or any of
+/// the match-admin-only settings below. `status` is allowed only as
+/// `Completed`, the one transition finishing a score can legitimately drive
+/// (e.g. `LiveScoringPage`'s "Finish match"), never a `SideAdmin` cancelling
+/// or otherwise moving the match.
+fn update_match_input_is_scoring_only(input: &UpdateMatchInput) -> bool {
+    input.name.is_none()
+        && input.description.is_none()
+        && input.starts_at.is_none()
+        && input.location.is_none()
+        && matches!(input.status, None | Some(MatchStatus::Completed))
+        && input.added_players.is_none()
+        && input.side_assignments.is_none()
+        && input.removed_player_ids.is_none()
+        && input.side_names.is_none()
+        && input.side_colours.is_none()
+        && input.header_photo_asset_ids.is_none()
+        && input.format.is_none()
+        && input.allow_unassigned.is_none()
+        && input.side_join_settings.is_none()
+        && input.ranked.is_none()
 }
 
 /// Whether `uid` may manage one side's own settings specifically (its

@@ -835,6 +835,7 @@ pub fn tournament_from_record(rec: &TournamentRecord) -> Tournament {
         description: rec.description.clone(),
         match_type: match_type_from_tag(&rec.match_type),
         format: tournament_format_from_record(rec.format),
+        match_format: rec.match_format.as_ref().map(match_format_from_record),
         status: rec.status.clone(),
         entry_audience: tournament_entry_audience_from_record(rec.entry_audience),
         team_formation,

@@ -728,6 +728,30 @@ pub enum TournamentSeedingRecord {
     Manual,
 }
 
+/// How a **league** tournament's matches get created (`TournamentRecord::generation`).
+/// Knockout always generates its bracket automatically at `start` regardless
+/// of this field (James, 2026-11-09, "keep it as is" — a bracket's
+/// progression needs the auto-wiring, so there's no manual mode for it);
+/// this only changes what `start_tournament`'s League branch does.
+///
+/// `Manual` generates nothing at `start` and nothing later either — every
+/// match is added one at a time via `Dao::create_match` with
+/// `MatchRecord::tournament_id` set (`POST /matches` with `tournament_id`).
+/// `RoundRobin` generates `agon_core::tournament::round_robin_fixtures`,
+/// repeated `times` times (a single pass, `times: 1`, is the whole of what a
+/// league tournament supported before this field existed, hence the default
+/// below).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TournamentGenerationRecord {
+    Manual,
+    RoundRobin { times: u32 },
+}
+
+fn default_tournament_generation() -> TournamentGenerationRecord {
+    TournamentGenerationRecord::RoundRobin { times: 1 }
+}
+
 /// How a teamless tournament (`entry_audience: Players` on a team sport)
 /// assembles each round's squads. `None` on `TournamentRecord` for every
 /// other tournament (`Teams`, or `Players` on a 1v1 sport) — this field only
@@ -816,6 +840,11 @@ pub struct TournamentRecord {
     #[serde(default)]
     pub points_loss: u32,
     pub seeding: TournamentSeedingRecord,
+    /// Only meaningful for `format: League` — see
+    /// `TournamentGenerationRecord`'s doc comment. Ignored for `Knockout`,
+    /// which always auto-generates its bracket at `start`.
+    #[serde(default = "default_tournament_generation")]
+    pub generation: TournamentGenerationRecord,
     /// Denormalized, same pattern as `TeamRecord::follower_count`. Maintained
     /// via atomic `ADD` (`Dao::bump_tournament_entry_count`), never
     /// recomputed from a scan.

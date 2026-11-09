@@ -41,7 +41,7 @@ type SquadLabel = components['schemas']['SquadLabel']
 
 /** An entrant's display name + avatar image, regardless of whether the
  *  tournament's `entry_audience` makes `entrant_id` a user id or a team id. */
-interface EntrantDisplay {
+export interface EntrantDisplay {
   name: string
   imageUrl?: string
 }
@@ -49,8 +49,9 @@ interface EntrantDisplay {
 /** Looks up each entry's name/avatar (`GET /users/{id}` or `GET
  *  /teams/{id}`, whichever `entrant_id` actually is) so the entries list can
  *  show the same name+avatar treatment as a match's player list, instead of
- *  the raw id. One request per unique entrant, run in parallel. */
-function useEntrantDisplays(
+ *  the raw id. One request per unique entrant, run in parallel. Also used by
+ *  `TournamentPage`'s "Add match" picker, for the same reason. */
+export function useEntrantDisplays(
   entrantIds: string[],
   audience: Tournament['entry_audience'] | undefined,
 ): Map<string, EntrantDisplay> {

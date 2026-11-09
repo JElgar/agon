@@ -37,6 +37,14 @@ const SEEDING_OPTIONS: { value: TournamentSeeding; label: string }[] = [
   { value: 'manual', label: 'Manual' },
 ]
 
+// League-only — a knockout tournament always generates its bracket
+// automatically, so there's no choice to show for it (James, 2026-11-09).
+type GenerationMode = 'round_robin' | 'manual'
+const GENERATION_OPTIONS: { value: GenerationMode; label: string }[] = [
+  { value: 'round_robin', label: 'Round robin' },
+  { value: 'manual', label: 'Manual' },
+]
+
 /**
  * `POST /tournaments` — knockout or league, entered by teams or by
  * individual players (who get assigned into fixed squads before it
@@ -71,6 +79,10 @@ export function CreateTournamentPage() {
   const [location, setLocation] = useState<LocationValue | null>(null)
   const [startsAt, setStartsAt] = useState('')
   const [seeding, setSeeding] = useState<TournamentSeeding>('random')
+  const [generationMode, setGenerationMode] = useState<GenerationMode>('round_robin')
+  const [roundRobinTimes, setRoundRobinTimes] = useState('1')
+
+  const isLeague = format === 'league'
 
   // A teamless tournament only supports random seeding + manual squad
   // assignment — enforce that in the form rather than letting the user
@@ -82,7 +94,8 @@ export function CreateTournamentPage() {
     name.trim() !== '' &&
     !!startsAt &&
     Number(minTeams) >= 2 &&
-    (!isTeamless || squadSize.trim() !== '')
+    (!isTeamless || squadSize.trim() !== '') &&
+    (!isLeague || generationMode !== 'round_robin' || Number(roundRobinTimes) >= 1)
 
   const mutation = useMutation({
     mutationFn: async (): Promise<Tournament> => {
@@ -101,6 +114,11 @@ export function CreateTournamentPage() {
         first_round_starts_at: new Date(startsAt).toISOString(),
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         seeding: isTeamless ? 'random' : seeding,
+        generation: isLeague
+          ? ((generationMode === 'manual'
+              ? { type: 'Manual' }
+              : { type: 'RoundRobin', times: Number(roundRobinTimes) }) as unknown as CreateTournamentInput['generation'])
+          : undefined,
       }
       const { data, error } = await fetchClient.POST('/tournaments', { body })
       if (error || !data) throw new Error('Could not create tournament')
@@ -212,6 +230,34 @@ export function CreateTournamentPage() {
       {!isTeamless && (
         <FormSection title="Seeding">
           <Segmented label="Seeding" options={SEEDING_OPTIONS} value={seeding} onChange={setSeeding} />
+        </FormSection>
+      )}
+
+      {isLeague && (
+        <FormSection title="Fixtures">
+          <Segmented
+            label="Fixtures"
+            options={GENERATION_OPTIONS}
+            value={generationMode}
+            onChange={setGenerationMode}
+          />
+          {generationMode === 'round_robin' ? (
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="round-robin-times">Times each team plays each other</Label>
+              <Input
+                id="round-robin-times"
+                type="number"
+                min={1}
+                value={roundRobinTimes}
+                onChange={(e) => setRoundRobinTimes(e.target.value)}
+              />
+            </div>
+          ) : (
+            <p className="px-1 text-xs text-muted-foreground">
+              No matches are created automatically — add them one at a time from the tournament
+              page once it starts.
+            </p>
+          )}
         </FormSection>
       )}
 

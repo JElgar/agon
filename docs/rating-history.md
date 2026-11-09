@@ -24,8 +24,9 @@ create flow (#335, #336).
 
 Still open, all of them listed under "Follow-ups and risks" at the end:
 the `RepairRatings` replay, `ranked` on `SearchMatch` and on
-`POST /match-series`, and the match-detail delta question in
-"Visibility".
+`POST /match-series`, and the per-match movement field itself — whose
+visibility question is now settled under "Visibility" (it is withheld
+during placements, like everything else).
 
 ## What is already built
 
@@ -232,18 +233,27 @@ that rating is published.**
 - For someone else's profile, the same single condition applies: the
   ladder is published, or there is no history to read.
 
-### The open question: the match-detail delta during placements
+### Settled: the match-detail delta is withheld during placements
 
 A `display_delta` is not a position, so showing `+18` during
-placements looks harmless. It isn't quite: deltas accumulate from a
-known origin (1500), so a player who can see every delta can sum them
-back to the number being withheld.
+placements looks harmless. It isn't: deltas accumulate from a known
+origin (1500), so a player who can see every delta can sum them back
+to the number being withheld.
 
-Recommendation: **withhold the delta during placements too**, and show
-progress instead — "Counts towards your placements · 3 of 5". One rule,
-no arithmetic back door, and the match page still gives a player
-something that moved. Revisit only if placements progress turns out to
-be too weak a signal in practice.
+**Decided — nothing is shown during placements, the delta included.**
+The rule has no exception for a number that merely implies the rating
+rather than being it, because the arithmetic makes that distinction
+meaningless. Whenever a per-match movement field is added to `Match`,
+it is gated on `published(matches_rated)` for the viewer's own rating
+on that ladder, exactly as the history endpoint is, and absent and
+withheld look identical.
+
+What a match page may still say is placement **progress** — "Counts
+towards your placements · 3 of 5". That is not a rating value and does
+not imply one, and the same count is already on the owner's own profile
+(`LadderPlacement`, self-only). If that is judged too close to the line
+it should be dropped from the profile at the same time, because the two
+would otherwise disagree about where the line is.
 
 ## What this deliberately does not do
 

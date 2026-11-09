@@ -18,12 +18,13 @@ function sideLabel(match: Match, index: number, fallback: string): string {
 }
 
 /**
- * "Invite players" panel on the match detail page (match admins only). Collects
- * people to invite via the shared `PlayerSideEditor` — registered users or
- * typed-in guests — plus which side they're joining, then POSTs them to
- * `/matches/{id}/invitations`. The server creates each invitee's roster slot +
- * invitation, so on success we refresh the match (they appear as "invited") and
- * close the panel.
+ * "Invite players" panel on the match detail page — a match admin, or a
+ * side admin inviting only to their own side (`restrictedSideId`, from
+ * `mySideAdminSideId`). Collects people to invite via the shared
+ * `PlayerSideEditor` — registered users or typed-in guests — plus which
+ * side they're joining, then POSTs them to `/matches/{id}/invitations`. The
+ * server creates each invitee's roster slot + invitation, so on success we
+ * refresh the match (they appear as "invited") and close the panel.
  *
  * Users already on the match are excluded from search so they can't be
  * double-invited.
@@ -31,14 +32,18 @@ function sideLabel(match: Match, index: number, fallback: string): string {
 export function InvitePlayers({
   match,
   onDone,
+  restrictedSideId,
 }: {
   match: Match
   onDone: () => void
+  /** Set for a side admin: locks the side picker to this side, since the
+   * server rejects an invite naming any other side for them. */
+  restrictedSideId?: string
 }) {
   const queryClient = useQueryClient()
   const [players, setPlayers] = useState<TaggedPlayer[]>([])
   // Default to the first side; the invite endpoint takes one side per call.
-  const [sideId, setSideId] = useState<string>(match.sides[0]?.id ?? '')
+  const [sideId, setSideId] = useState<string>(restrictedSideId ?? match.sides[0]?.id ?? '')
   // Off by default: a plain invite holds no roster spot until accepted,
   // same as today. On, it counts toward the match/side cap immediately.
   const [reserveSpot, setReserveSpot] = useState(false)
@@ -97,18 +102,28 @@ export function InvitePlayers({
         <Label htmlFor="invite-side" className="text-xs text-muted-foreground">
           Which side?
         </Label>
-        <select
-          id="invite-side"
-          value={sideId}
-          onChange={(e) => setSideId(e.target.value)}
-          className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm"
-        >
-          {match.sides.map((side, i) => (
-            <option key={side.id} value={side.id}>
-              {sideLabel(match, i, `Side ${i + 1}`)}
-            </option>
-          ))}
-        </select>
+        {restrictedSideId ? (
+          <p className="mt-1 text-sm">
+            {sideLabel(
+              match,
+              match.sides.findIndex((s) => s.id === restrictedSideId),
+              'Your side',
+            )}
+          </p>
+        ) : (
+          <select
+            id="invite-side"
+            value={sideId}
+            onChange={(e) => setSideId(e.target.value)}
+            className="mt-1 h-9 w-full rounded-md border bg-background px-3 text-sm"
+          >
+            {match.sides.map((side, i) => (
+              <option key={side.id} value={side.id}>
+                {sideLabel(match, i, `Side ${i + 1}`)}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
 
       <div className="flex items-center justify-between rounded-lg border px-3 py-2">

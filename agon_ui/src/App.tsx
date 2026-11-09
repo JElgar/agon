@@ -43,6 +43,9 @@ import { PairDevicePage } from '@/pages/PairDevicePage'
 import { PairedDevicesPage } from '@/pages/PairedDevicesPage'
 import { TeamsPage } from '@/pages/TeamsPage'
 import { TeamPage } from '@/pages/TeamPage'
+import { CreateTournamentPage } from '@/pages/CreateTournamentPage'
+import { TournamentPage } from '@/pages/TournamentPage'
+import { TournamentEntriesPage } from '@/pages/TournamentEntriesPage'
 import {
   getPendingInvite,
   setPendingInvite,
@@ -138,6 +141,9 @@ function AppShell({ onSignOut }: { onSignOut: () => void }) {
           <Route path="/matches/:matchId/live" element={<LiveScoringPage />} />
           <Route path="/teams" element={<TeamsPage />} />
           <Route path="/teams/:teamId" element={<TeamPage />} />
+          <Route path="/tournaments/new" element={<CreateTournamentPage />} />
+          <Route path="/tournaments/:tournamentId" element={<TournamentPage />} />
+          <Route path="/tournaments/:tournamentId/entries" element={<TournamentEntriesPage />} />
           <Route path="/notifications" element={<NotificationsPage />} />
           <Route path="/invitations" element={<ComingSoon title="Invitations" />} />
           <Route path="/invite/:token" element={<AcceptInvitePage />} />

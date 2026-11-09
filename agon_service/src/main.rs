@@ -6079,18 +6079,13 @@ impl Api {
             }
             // A teamless tournament's squads are fixed once, manually (see
             // `AssignTournamentEntrySquadInput`), then run through the same
-            // generation as a team-entry league. Knockout isn't supported
-            // yet: a bracket's TBD slot gets filled by `agon_worker`
-            // writing the winning side's `team_id` only — there's no real
-            // team to auto-join, so a squad's roster would need to be
-            // copied into the next match too, which that handler doesn't
-            // do yet.
+            // generation as a team-entry tournament, knockout or league
+            // alike. A squad's roster carries forward through the bracket
+            // via `agon_worker::handlers::tournament`'s
+            // `fill_tournament_bracket_squad_side` path (there's no real
+            // team to auto-join from, so it copies the actual players
+            // across explicitly).
             dao::records::TournamentEntryAudienceRecord::Players => {
-                if tournament.format != dao::records::TournamentFormatRecord::League {
-                    return Ok(StartTournamentResponse::ValidationError(PlainText(
-                        "starting a teamless knockout tournament isn't supported yet".into(),
-                    )));
-                }
                 if entries.iter().any(|e| e.squad.is_none()) {
                     return Ok(StartTournamentResponse::ValidationError(PlainText(
                         "every accepted entry needs a squad assignment before starting".into(),
@@ -6178,19 +6173,15 @@ impl Api {
                 roster_preview: Vec::new(),
             }
         };
-        let knockout_side_record = |side: &agon_core::tournament::KnockoutSide| match side {
-            agon_core::tournament::KnockoutSide::Entrant(team_id) => team_side(team_id),
-            agon_core::tournament::KnockoutSide::Tbd(_) => tbd_side(),
-        };
-
-        // A league match's two sides, plus the roster players to seed it
-        // with. For `Teams`, a side joins via its own real team (no player
-        // records needed up front — same as every other team-linked side).
-        // For a teamless tournament's fixed squad, there's no real team to
-        // auto-join from, so its members are added directly, same shape as
-        // an organiser adding a player to an ordinary match (`invitation:
-        // None` — already in, no accept step).
-        let make_league_side = |entrant_id: &str| -> (
+        // A match's two sides, plus the roster players to seed it with —
+        // shared by both knockout and league generation below. For `Teams`,
+        // a side joins via its own real team (no player records needed up
+        // front — same as every other team-linked side). For a teamless
+        // tournament's fixed squad, there's no real team to auto-join from,
+        // so its members are added directly, same shape as an organiser
+        // adding a player to an ordinary match (`invitation: None` —
+        // already in, no accept step).
+        let make_entrant_side = |entrant_id: &str| -> (
             dao::records::MatchSideRecord,
             Vec<dao::records::MatchPlayerRecord>,
         ) {
@@ -6279,6 +6270,13 @@ impl Api {
                 }
             };
 
+        let knockout_side_record = |side: &agon_core::tournament::KnockoutSide| match side {
+            agon_core::tournament::KnockoutSide::Entrant(entrant_id) => {
+                make_entrant_side(entrant_id)
+            }
+            agon_core::tournament::KnockoutSide::Tbd(_) => (tbd_side(), Vec::new()),
+        };
+
         match tournament.format {
             dao::records::TournamentFormatRecord::Knockout => {
                 let plan = agon_core::tournament::plan_knockout_bracket(&ordered);
@@ -6292,8 +6290,8 @@ impl Api {
 
                 let mut side_ids_by_match: HashMap<String, (String, String)> = HashMap::new();
                 for m in &resolved.matches {
-                    let side_a = knockout_side_record(&m.side_a);
-                    let side_b = knockout_side_record(&m.side_b);
+                    let (side_a, players_a) = knockout_side_record(&m.side_a);
+                    let (side_b, players_b) = knockout_side_record(&m.side_b);
                     side_ids_by_match.insert(
                         m.id.clone(),
                         (side_a.side_id.clone(), side_b.side_id.clone()),
@@ -6301,8 +6299,10 @@ impl Api {
                     let mut sides = std::collections::HashMap::new();
                     sides.insert(side_a.side_id.clone(), side_a);
                     sides.insert(side_b.side_id.clone(), side_b);
+                    let mut players = players_a;
+                    players.extend(players_b);
                     let match_record = build_match(m.id.clone(), m.round, m.slot, sides);
-                    match dao.create_match(&match_record, &[]).await {
+                    match dao.create_match(&match_record, &players).await {
                         Ok(()) => {}
                         Err(dao::DaoError::Conflict(msg)) => {
                             return Ok(StartTournamentResponse::ValidationError(PlainText(msg)));
@@ -6335,8 +6335,8 @@ impl Api {
                 let fixtures = agon_core::tournament::round_robin_fixtures(ordered.len());
                 for (round, matchday) in fixtures.iter().enumerate() {
                     for (slot, (a_idx, b_idx)) in matchday.iter().enumerate() {
-                        let (side_a, players_a) = make_league_side(&ordered[*a_idx]);
-                        let (side_b, players_b) = make_league_side(&ordered[*b_idx]);
+                        let (side_a, players_a) = make_entrant_side(&ordered[*a_idx]);
+                        let (side_b, players_b) = make_entrant_side(&ordered[*b_idx]);
                         let mut sides = std::collections::HashMap::new();
                         sides.insert(side_a.side_id.clone(), side_a);
                         sides.insert(side_b.side_id.clone(), side_b);

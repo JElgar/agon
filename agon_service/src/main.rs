@@ -6333,6 +6333,7 @@ impl Api {
                     format: tournament.match_format.clone(),
                     ranked: false,
                     authority: tournament.authority.clone(),
+                    side_authority: std::collections::HashMap::new(),
                     open_join: None,
                     open_joined_count: 0,
                     created_at: now_iso(),

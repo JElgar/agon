@@ -73,6 +73,41 @@ impl Dao {
         }
     }
 
+    /// Fetch multiple tournaments in one batch read, keyed by tournament id.
+    /// An id with no tournament simply has no entry in the result — mirrors
+    /// `batch_get_team_metas`/`batch_get_users`. Used to hydrate
+    /// `MatchTournamentInfo` for a whole feed/search page in one round trip
+    /// instead of one `get_tournament` per match.
+    #[tracing::instrument(skip(self))]
+    pub async fn batch_get_tournaments(
+        &self,
+        tournament_ids: &[String],
+    ) -> DaoResult<std::collections::HashMap<String, TournamentRecord>> {
+        // De-dup — BatchGetItem rejects duplicate keys in one request.
+        let mut seen = std::collections::HashSet::new();
+        let keys: Vec<_> = tournament_ids
+            .iter()
+            .filter(|id| seen.insert((*id).clone()))
+            .map(|id| {
+                std::collections::HashMap::from([
+                    (
+                        ATTR_PK.to_string(),
+                        s(Pk::Tournament(id.clone()).to_string()),
+                    ),
+                    (ATTR_SK.to_string(), s(Sk::Meta.to_string())),
+                ])
+            })
+            .collect();
+
+        let items = self.batch_get_all(keys, None).await?;
+        let mut out = std::collections::HashMap::with_capacity(items.len());
+        for item in items {
+            let record: TournamentRecord = from_item(item)?;
+            out.insert(record.id.clone(), record);
+        }
+        Ok(out)
+    }
+
     /// Move a tournament from status `from` to `to`, guarded on it still
     /// reading `from` — same idempotency role as
     /// `Dao::update_series_status`. A retry/replay that finds the status

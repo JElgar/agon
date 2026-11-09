@@ -35,12 +35,11 @@ const SEEDING_OPTIONS: { value: TournamentSeeding; label: string }[] = [
 ]
 
 /**
- * `POST /tournaments` — knockout or league, team-entry or (league-only)
- * teamless-with-fixed-squads. A teamless tournament (`entry_audience:
- * "players"`) is locked to League + manual seeding + manual squad
- * assignment, matching what `start` actually supports today (see
- * `agon_service::start_tournament`'s doc comment) — knockout and auto squad
- * balancing aren't built yet.
+ * `POST /tournaments` — knockout or league, entered by teams or by
+ * individual players (who get assigned into fixed squads before it
+ * starts — see `TournamentEntriesPage`). A teamless tournament
+ * (`entry_audience: "players"`) still forces manual seeding (a squad has
+ * no single seed) — auto squad balancing isn't built yet.
  *
  * Scheduling is manual-only for now (2026-11-09): every generated match
  * starts at the one time given here, and the organiser nudges each match's
@@ -62,9 +61,9 @@ export function CreateTournamentPage() {
   const [startsAt, setStartsAt] = useState('')
   const [seeding, setSeeding] = useState<TournamentSeeding>('random')
 
-  // A teamless tournament only supports league + random seeding + manual
-  // squad assignment — enforce that in the form rather than letting the
-  // user pick an unsupported combination and find out from a 400.
+  // A teamless tournament only supports random seeding + manual squad
+  // assignment — enforce that in the form rather than letting the user
+  // pick an unsupported combination and find out from a 400.
   const isTeamless = entryAudience === 'players'
 
   const canSave =
@@ -80,7 +79,7 @@ export function CreateTournamentPage() {
         match_type: sport!,
         name: name.trim(),
         description: '',
-        format: isTeamless ? 'league' : format,
+        format,
         entry_audience: entryAudience,
         team_formation: isTeamless ? 'manual' : undefined,
         squad_size: isTeamless ? Number(squadSize) : undefined,
@@ -129,12 +128,7 @@ export function CreateTournamentPage() {
       </FormSection>
 
       <FormSection title="Format">
-        <Segmented
-          label="Format"
-          options={isTeamless ? [{ value: 'league', label: 'League' }] : FORMAT_OPTIONS}
-          value={isTeamless ? 'league' : format}
-          onChange={setFormat}
-        />
+        <Segmented label="Format" options={FORMAT_OPTIONS} value={format} onChange={setFormat} />
       </FormSection>
 
       <FormSection title="Who enters">
@@ -148,7 +142,7 @@ export function CreateTournamentPage() {
           <div className={CARD}>
             <p className="text-sm text-muted-foreground">
               No pre-existing teams — individuals join, and you assign them into fixed squads
-              before the tournament starts. League only for now.
+              before the tournament starts.
             </p>
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="squad-size">Squad size</Label>

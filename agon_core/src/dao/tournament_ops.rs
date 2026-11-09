@@ -375,12 +375,18 @@ impl Dao {
     /// name and turns on `team_join_enabled`, same shape as an ordinary
     /// team-linked side.
     #[tracing::instrument(skip(self))]
+    /// Returns `true` if this call actually performed the fill, `false` if
+    /// the side was already filled (redelivery/edit no-op) — callers that
+    /// need to do more work only on a genuine first fill (e.g. copying a
+    /// teamless squad's roster alongside, in
+    /// [`Self::fill_tournament_bracket_squad_side`]) use that to avoid
+    /// double-adding.
     pub async fn fill_tournament_bracket_side(
         &self,
         match_id: &str,
         side_id: &str,
         team_id: &str,
-    ) -> DaoResult<()> {
+    ) -> DaoResult<bool> {
         let result = self
             .client
             .update_item()
@@ -401,8 +407,52 @@ impl Dao {
             .send()
             .await;
         match result {
-            Ok(_) => Ok(()),
-            Err(e) if is_update_conditional_failure(&e) => Ok(()),
+            Ok(_) => Ok(true),
+            Err(e) if is_update_conditional_failure(&e) => Ok(false),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// The teamless-tournament counterpart to
+    /// [`Self::fill_tournament_bracket_side`]: `team_id` is a synthetic
+    /// squad id, not a real team, so there's no team to resolve a name/logo
+    /// or self-join from — `squad_name`/`squad_colour` are written directly
+    /// instead of being removed, and `team_join_enabled` is left `false`.
+    /// Returns `true` on a genuine first fill, same meaning as the other
+    /// method — the caller still has to copy the squad's actual player
+    /// roster across separately (via `add_match_player_tx`), since that
+    /// isn't part of this single-item update.
+    pub async fn fill_tournament_bracket_squad_side(
+        &self,
+        match_id: &str,
+        side_id: &str,
+        squad_id: &str,
+        squad_name: &str,
+        squad_colour: &str,
+    ) -> DaoResult<bool> {
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Match(match_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .update_expression(
+                "SET sides.#sid.team_id = :team, sides.#sid.#name = :name, sides.#sid.colour = :colour",
+            )
+            .condition_expression(
+                "attribute_exists(#pk) AND attribute_exists(sides.#sid) AND attribute_not_exists(sides.#sid.team_id)",
+            )
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_names("#sid", side_id)
+            .expression_attribute_names("#name", "name")
+            .expression_attribute_values(":team", s(squad_id))
+            .expression_attribute_values(":name", s(squad_name))
+            .expression_attribute_values(":colour", s(squad_colour))
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(true),
+            Err(e) if is_update_conditional_failure(&e) => Ok(false),
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
     }

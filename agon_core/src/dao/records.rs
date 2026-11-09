@@ -771,6 +771,11 @@ pub struct TournamentRecord {
     /// Sport tag, same meaning as `MatchRecord::match_type`.
     pub match_type: String,
     pub format: TournamentFormatRecord,
+    /// Sport-specific format/rules applied to every generated match, same
+    /// shape as `MatchRecord::format` — `None` means every match falls back
+    /// to its own per-sport default, same as an ordinary match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_format: Option<MatchFormatRecord>,
     /// Lifecycle: `"open"` | `"in_progress"` | `"completed"` | `"cancelled"`
     /// — entries are only accepted while `"open"`; `start` flips it to
     /// `"in_progress"` and locks the entry list.

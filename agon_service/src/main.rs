@@ -1257,6 +1257,10 @@ struct CreateTournamentInput {
     name: String,
     description: String,
     format: TournamentFormat,
+    /// Sport-specific format/rules applied to every generated match, same
+    /// shape as `CreateMatchInput.format`. Optional — omit for each match's
+    /// own per-sport default; must match `match_type`'s sport if supplied.
+    match_format: Option<MatchFormat>,
     /// Only `Teams` is supported by `start` today.
     entry_audience: TournamentEntryAudience,
     /// `"manual"` | `"auto"` — only meaningful (and only accepted) when
@@ -1310,6 +1314,7 @@ struct Tournament {
     description: String,
     match_type: MatchType,
     format: TournamentFormat,
+    match_format: Option<MatchFormat>,
     /// `"open"` | `"in_progress"` | `"completed"` | `"cancelled"`.
     status: String,
     entry_audience: TournamentEntryAudience,
@@ -5633,6 +5638,19 @@ impl Api {
                 dao::records::TournamentFormatRecord::RotatingPlayers
             }
         };
+        // A supplied match_format must be for this tournament's own sport —
+        // same check as `CreateMatchInput.format`.
+        if let Some(fmt) = &input.match_format {
+            let tag = match_format_sport_tag(fmt);
+            if tag != match_type_tag(&input.match_type) {
+                return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                    format!(
+                        "match_format is for `{tag}` but tournament is `{}`",
+                        match_type_tag(&input.match_type)
+                    ),
+                )));
+            }
+        }
         let entry_audience = match input.entry_audience {
             TournamentEntryAudience::Teams => dao::records::TournamentEntryAudienceRecord::Teams,
             TournamentEntryAudience::Players => {
@@ -5798,6 +5816,7 @@ impl Api {
             description: input.description,
             match_type: match_type_tag(&input.match_type).to_string(),
             format,
+            match_format: input.match_format.as_ref().map(match_format_to_record),
             status: "open".to_string(),
             entry_audience,
             team_formation,
@@ -6395,7 +6414,7 @@ impl Api {
                     comment_count: 0,
                     live_seq: 0,
                     live_tip_seq: None,
-                    format: None,
+                    format: tournament.match_format.clone(),
                     ranked: false,
                     authority: tournament.authority.clone(),
                     open_join: None,

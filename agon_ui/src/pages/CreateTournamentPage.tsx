@@ -11,6 +11,9 @@ import { DateTimePicker } from '@/components/ui/date-time-picker'
 import { SportPicker } from '@/components/agon/SportPicker'
 import { LocationField, type LocationValue } from '@/components/agon/LocationField'
 import { CARD, FormSection, Segmented } from '@/components/agon/logmatch/parts'
+import { FormatPresets } from '@/components/agon/logmatch/FormatPresets'
+import { formatDefaultHint } from '@/lib/logMatch'
+import type { MatchFormat } from '@/lib/matchFormat'
 import type { MatchType } from '@/lib/sports'
 
 type CreateTournamentInput = components['schemas']['CreateTournamentInput']
@@ -42,6 +45,9 @@ const SEEDING_OPTIONS: { value: TournamentSeeding; label: string }[] = [
  * (`entry_audience: "players"`) still forces manual seeding (a squad has
  * no single seed) — auto squad balancing isn't built yet.
  *
+ * `match_format` (optional) is applied as every generated match's
+ * default, same picker as `LogMatchPage`'s.
+ *
  * Scheduling is manual-only for now (2026-11-09): every generated match
  * starts at the one time given here, and the organiser nudges each match's
  * actual time on the existing edit-match page as the tournament is played
@@ -52,6 +58,11 @@ export function CreateTournamentPage() {
   const navigate = useNavigate()
 
   const [sport, setSport] = useState<MatchType | null>(null)
+  const [matchFormat, setMatchFormat] = useState<MatchFormat | null>(null)
+  const changeSport = (next: MatchType) => {
+    setSport(next)
+    setMatchFormat(null)
+  }
   const [name, setName] = useState('')
   const [format, setFormat] = useState<TournamentFormat>('knockout')
   const [entryAudience, setEntryAudience] = useState<TournamentEntryAudience>('teams')
@@ -88,6 +99,7 @@ export function CreateTournamentPage() {
         name: name.trim(),
         description: '',
         format,
+        match_format: matchFormat ?? undefined,
         entry_audience: effectiveEntryAudience,
         team_formation: isTeamless ? 'manual' : undefined,
         squad_size: isTeamless || isRotating ? Number(squadSize) : undefined,
@@ -124,8 +136,21 @@ export function CreateTournamentPage() {
       </div>
 
       <FormSection title="Sport">
-        <SportPicker value={sport} onChange={setSport} />
+        <SportPicker value={sport} onChange={changeSport} />
       </FormSection>
+
+      {sport && formatDefaultHint(sport) && (
+        <FormSection title="Match format" aside="Optional">
+          <div className={CARD}>
+            <FormatPresets sport={sport} value={matchFormat} onChange={setMatchFormat} />
+          </div>
+          {matchFormat === null && (
+            <p className="px-1 text-xs text-muted-foreground">
+              Applied as every match's default — {formatDefaultHint(sport)}
+            </p>
+          )}
+        </FormSection>
+      )}
 
       <FormSection title="Name" htmlFor="tournament-name">
         <Input

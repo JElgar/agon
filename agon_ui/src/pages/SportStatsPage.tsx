@@ -19,6 +19,7 @@ import { StatInfo } from '@/components/agon/StatInfo'
 import { RatingCard } from '@/components/agon/RatingCard'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
 import { useProfileView } from '@/hooks/useProfileView'
+import { useRatingHistory } from '@/hooks/useRatingHistory'
 import { placementFor, ratingFor } from '@/lib/rating'
 import { cn } from '@/lib/utils'
 import { sideDisplayName } from '@/lib/members'
@@ -73,6 +74,11 @@ export function SportStatsPage() {
 
   const profileId = profileQuery.data?.profile.id
   const matchType = sport as MatchType
+
+  // Keyed on the resolved profile id rather than the route's `userId`, which
+  // is absent on your own page — so your own chart and someone else's share
+  // one cache entry shape instead of two.
+  const historyQuery = useRatingHistory(profileId, matchType)
 
   const matchesQuery = useQuery({
     queryKey: ['profile-sport-matches', profileId, sport],
@@ -193,6 +199,7 @@ export function SportStatsPage() {
       rating={ratingFor(profile.ratings, matchType)}
       placement={placementFor(placements, matchType)}
       isOwnProfile={isOwnProfile}
+      history={historyQuery.data}
     />
   )
 

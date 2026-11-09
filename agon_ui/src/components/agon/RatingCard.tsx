@@ -9,6 +9,8 @@ import {
   type LadderRating,
 } from '@/lib/rating'
 import { PlacementsBar, RatingValue } from './RatingDisplay'
+import { RatingHistoryChart } from './RatingHistoryChart'
+import type { RatingHistoryPoint } from '@/hooks/useRatingHistory'
 
 export interface RatingCardProps {
   sport: MatchType
@@ -20,6 +22,10 @@ export interface RatingCardProps {
   /** Whether this page is the viewer's own profile. Drives what the empty
    *  state is allowed to say. */
   isOwnProfile: boolean
+  /** The rating's history on this ladder, oldest first, for the chart. Empty
+   *  or absent draws no chart — which is the normal case for an unpublished
+   *  rating, not a failure. */
+  history?: RatingHistoryPoint[]
 }
 
 /**
@@ -28,13 +34,15 @@ export interface RatingCardProps {
  * (claude.ai/artifact/MKvQ8bNeKnqHzxqZfMNFnc).
  *
  * The board draws this as "Rating over time": a line with a confidence band
- * around it. That chart isn't here, and can't be yet — no endpoint returns a
- * rating's history. The per-match contributions exist in the table
- * (`RATINGCONTRIB#` items) but nothing exposes them, so the series behind the
- * chart has no source. What's left is the part the API does answer: the
- * current number, its ±, and how many ranked games are behind it. Hence
- * "Rating" rather than "Rating over time" — the board's own title would be
- * promising a history this card hasn't got.
+ * around it. With `history` passed, that is what this is, and it takes the
+ * board's title. Without it the card is the current number, its ± and how
+ * many ranked games are behind it, under the plainer title "Rating" — the
+ * board's own would be promising a history the card isn't drawing.
+ *
+ * `history` is empty rather than absent in every case the API withholds a
+ * rating (in placements, never played ranked, no such user — all one empty
+ * page, deliberately), so the untitled case is the common one and not an
+ * error path.
  *
  * Returns nothing rather than an empty state when there's nothing it may say:
  * a sport with no ladder at all (`other`), or somebody else's sport with no
@@ -42,11 +50,21 @@ export interface RatingCardProps {
  * placements and friendlies, and saying either would be telling the viewer
  * something the API deliberately withholds.
  */
-export function RatingCard({ sport, rating, placement, isOwnProfile }: RatingCardProps) {
+export function RatingCard({
+  sport,
+  rating,
+  placement,
+  isOwnProfile,
+  history = [],
+}: RatingCardProps) {
   if (!canBeRanked(sport)) return null
   if (!rating && !placement && !isOwnProfile) return null
 
   const ladder = sportLabel(sport).toLowerCase()
+  // Two points is the least that can be a line. In practice a published
+  // rating has at least five behind it, so this only guards the window
+  // between a match being rated and the history read catching up.
+  const chart = rating && history.length >= 2 ? history : null
   // A ladder is in exactly one of `ratings` and `rating_placements`, never
   // both — so these two never disagree about which count to show.
   const ranked = rating?.matches_rated ?? placement?.played
@@ -56,7 +74,7 @@ export function RatingCard({ sport, rating, placement, isOwnProfile }: RatingCar
       <div className="flex items-center justify-between gap-2">
         <span className="flex items-center gap-1">
           <span className="text-[15px] font-bold">
-            {placement && !rating ? 'Still in placements' : 'Rating'}
+            {placement && !rating ? 'Still in placements' : chart ? 'Rating over time' : 'Rating'}
           </span>
           <HowRatingsWork />
         </span>
@@ -68,7 +86,10 @@ export function RatingCard({ sport, rating, placement, isOwnProfile }: RatingCar
       </div>
 
       {rating ? (
-        <RatingValue rating={rating} size="hero" className="self-start" />
+        <>
+          <RatingValue rating={rating} size="hero" className="self-start" />
+          {chart && <RatingHistoryChart points={chart} />}
+        </>
       ) : placement ? (
         <div className="flex flex-col gap-2.5">
           <span className="flex items-baseline gap-2">

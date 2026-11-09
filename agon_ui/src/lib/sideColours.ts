@@ -45,6 +45,15 @@ export function defaultSideColour(other?: string): string {
   return SIDE_COLOURS.find((c) => c.hex !== other)?.hex ?? SIDE_COLOURS[0].hex
 }
 
+/** A teamless tournament squad's default name/colour, by its 0-based squad
+ *  index — the same picker list an ad-hoc match side uses, cycled. The
+ *  server has no default of its own (a squad without a saved label can't
+ *  start or be added to a match), so the entries page saves this as soon as
+ *  an entrant lands in a squad nobody has labelled yet. */
+export function defaultSquadLabel(index: number): { name: string; colour: string } {
+  return { name: `Squad ${index + 1}`, colour: SIDE_COLOURS[index % SIDE_COLOURS.length].hex }
+}
+
 /** A small fixed palette to derive a team's crest color from, since the
  *  schema has no team-colour field at all. Judgment call: hash `team_id`
  *  (sum of char codes, mod palette length) to a deterministic entry, so the

@@ -32,7 +32,8 @@ use crate::{
     MatchStatus, MatchTournamentInfo, MatchType, PendingScore, Photo, RosterPreviewPlayer, Score,
     ScoreConfirmation, ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse,
     ScoreSubmissionStatus, SearchMatch, SetsScore, SimpleScore, SquadLabel, Tournament,
-    TournamentEntry, TournamentEntryAudience, TournamentFormat, TournamentMatchSummary,
+    TournamentEntry, TournamentEntryAudience, TournamentFormat, TournamentGenerationInput,
+    TournamentGenerationManualInput, TournamentGenerationRoundRobinInput, TournamentMatchSummary,
     TournamentSeeding, UserProfile, UserStats,
 };
 use crate::{LadderPlacement, LadderRating, RatingHistoryPoint};
@@ -52,9 +53,9 @@ use agon_core::dao::records::{
     OpenJoinScopeRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord,
     ScoreResponseRecord, ScoreSubmissionRecord, SeriesEndRecord, SeriesOccurrenceRecord,
     SeriesRecord, SeriesSideRecord, SideOpenJoinPolicyRecord, TeamMemberRecord, TeamRecord,
-    TournamentEntryAudienceRecord, TournamentEntryRecord, TournamentFormatRecord, TournamentRecord,
-    TournamentRoundInfo, TournamentSeedingRecord, TournamentTeamFormationRecord, UserRecord,
-    UserStatsRecord,
+    TournamentEntryAudienceRecord, TournamentEntryRecord, TournamentFormatRecord,
+    TournamentGenerationRecord, TournamentRecord, TournamentRoundInfo, TournamentSeedingRecord,
+    TournamentTeamFormationRecord, UserRecord, UserStatsRecord,
 };
 use agon_core::rating::ladder_for_tag;
 use agon_core::rating::{PLACEMENT_MATCHES, display, published};
@@ -853,6 +854,12 @@ pub fn tournament_from_record(rec: &TournamentRecord) -> Tournament {
         points_draw: rec.points_draw,
         points_loss: rec.points_loss,
         seeding: tournament_seeding_from_record(rec.seeding),
+        generation: match rec.format {
+            TournamentFormatRecord::Knockout => None,
+            TournamentFormatRecord::League => {
+                Some(tournament_generation_from_record(rec.generation))
+            }
+        },
         entry_count: rec.entry_count,
         squad_labels: rec
             .squad_labels
@@ -868,6 +875,19 @@ pub fn tournament_from_record(rec: &TournamentRecord) -> Tournament {
             })
             .collect(),
         created_at: parse_ts(&rec.created_at),
+    }
+}
+
+pub fn tournament_generation_from_record(
+    rec: TournamentGenerationRecord,
+) -> TournamentGenerationInput {
+    match rec {
+        TournamentGenerationRecord::Manual => {
+            TournamentGenerationInput::Manual(TournamentGenerationManualInput {})
+        }
+        TournamentGenerationRecord::RoundRobin { times } => {
+            TournamentGenerationInput::RoundRobin(TournamentGenerationRoundRobinInput { times })
+        }
     }
 }
 

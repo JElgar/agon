@@ -2854,6 +2854,51 @@ async fn scoring_a_match_completes_it_and_records_a_pending_submission() {
 }
 
 #[tokio::test]
+async fn non_playing_owner_can_finish_a_match_without_waiting_on_confirmation() {
+    let (owner_config, _owner) = new_user().await;
+    let (_invitee_config, invitee) = new_user().await;
+
+    // Owner creates the match but never plays in it (no `creator_side_client_id`) —
+    // same as a tournament organiser who authored the tournament but isn't an
+    // entrant themselves.
+    let created = matches_post(&owner_config, create_match_input(&invitee.profile.id))
+        .await
+        .expect("create match");
+    assert_eq!(created.viewer_role, Some(models::MatchPlayerRole::Owner));
+    let side_a = created.sides[0].id.clone();
+    let side_b = created.sides[1].id.clone();
+
+    // The owner has no side of their own, so there's no side to attribute a
+    // pending submission to, or to wait on for confirmation — their authority
+    // over the match settles the result directly.
+    let updated = matches_match_id_patch(
+        &owner_config,
+        &created.id,
+        models::UpdateMatchInput {
+            score: Some(Box::new(simple_score(&side_a, &side_b, 6, 3))),
+            winner_side_id: Some(side_a.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("owner patches a score despite not being on a side");
+    assert!(matches!(updated.status, models::MatchStatus::Completed));
+    assert!(
+        updated.confirmed_score.is_some(),
+        "an admin's score is confirmed immediately, with no side to await"
+    );
+    assert!(updated.pending_score.is_none());
+
+    let submissions = matches_match_id_score_submissions_get(&owner_config, &created.id)
+        .await
+        .expect("list submissions");
+    assert!(
+        submissions.is_empty(),
+        "no pending submission is created for a direct admin override"
+    );
+}
+
+#[tokio::test]
 async fn rejecting_a_score_and_resubmitting_requires_approval_again() {
     let (owner_config, owner) = new_user().await;
     let (opponent_config, opponent) = new_user().await;

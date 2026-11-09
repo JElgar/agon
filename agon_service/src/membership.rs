@@ -204,6 +204,12 @@ pub enum MatchPlayerRole {
     /// `allow_unassigned`/side settings, mint or revoke join-links, invite
     /// people.
     Admin,
+    /// Authority over just one side — not which side; see
+    /// `MatchSide.side_admin_user_ids` for that. Can configure that side's
+    /// own ringer settings and invite people to it, nothing match-wide.
+    /// Doesn't require being a player on that side, or anywhere on the
+    /// roster.
+    SideAdmin,
     /// An ordinary roster member. Can still invite named people (any
     /// participant may), just not the more structural admin actions.
     Player,

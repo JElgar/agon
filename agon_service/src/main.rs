@@ -485,6 +485,12 @@ struct MatchSide {
     /// How many of `player_count` arrived as a ringer through open joining
     /// — what `max_open_spots` is enforced against.
     open_joined_count: u32,
+    /// Users with `MatchPlayerRole::SideAdmin` over this side — full
+    /// authority over just its own ringer settings and inviting people to
+    /// it. Set via `PUT /matches/:match_id/sides/:side_id/admins`
+    /// (match-admin only); doesn't require being a player on this side, or
+    /// anywhere on the roster.
+    side_admin_user_ids: Vec<String>,
 }
 
 /// A player in a side's `roster_preview` — name/avatar only, not the full
@@ -1277,6 +1283,10 @@ struct CreateTournamentInput {
     name: String,
     description: String,
     format: TournamentFormat,
+    /// Sport-specific format/rules applied to every generated match, same
+    /// shape as `CreateMatchInput.format`. Optional — omit for each match's
+    /// own per-sport default; must match `match_type`'s sport if supplied.
+    match_format: Option<MatchFormat>,
     /// Only `Teams` is supported by `start` today.
     entry_audience: TournamentEntryAudience,
     /// `"manual"` | `"auto"` — only meaningful (and only accepted) when
@@ -1320,6 +1330,7 @@ struct Tournament {
     description: String,
     match_type: MatchType,
     format: TournamentFormat,
+    match_format: Option<MatchFormat>,
     /// `"open"` | `"in_progress"` | `"completed"` | `"cancelled"`.
     status: String,
     entry_audience: TournamentEntryAudience,
@@ -1338,7 +1349,28 @@ struct Tournament {
     points_loss: u32,
     seeding: TournamentSeeding,
     entry_count: u64,
+    /// A teamless tournament's squad name/colour, keyed by squad index
+    /// (as a string) — only ever set for entries that have a squad, via
+    /// `PUT /tournaments/{id}/squads/{squad}`. A squad with no entry here
+    /// falls back to a generated "Squad N" label and palette colour once
+    /// the tournament starts.
+    squad_labels: HashMap<String, SquadLabel>,
     created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// One squad's organiser-chosen name/colour — same two fields as an ad-hoc
+/// match side's.
+#[derive(Object, Clone)]
+struct SquadLabel {
+    name: String,
+    colour: String,
+}
+
+/// `PUT /tournaments/{id}/squads/{squad}` input.
+#[derive(Object)]
+struct SetSquadLabelInput {
+    name: String,
+    colour: String,
 }
 
 /// One entrant's place in a tournament (`entrant_id` is a team id when
@@ -2071,6 +2103,23 @@ enum AddTournamentEntryResponse {
 enum AssignTournamentEntrySquadResponse {
     #[oai(status = 200)]
     Entry(Json<TournamentEntry>),
+
+    /// The tournament isn't teamless, or isn't `"open"`.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't the tournament's owner/admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum SetSquadLabelResponse {
+    #[oai(status = 200)]
+    Tournament(Json<Tournament>),
 
     /// The tournament isn't teamless, or isn't `"open"`.
     #[oai(status = 400)]
@@ -2893,6 +2942,30 @@ enum ClearOpenJoinPolicyResponse {
 /// /matches/:match_id/sides/:side_id/open-join`.
 #[derive(ApiResponse)]
 enum SetSideOpenJoinResponse {
+    #[oai(status = 204)]
+    Ok,
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    /// The match doesn't exist, or the side isn't part of it.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// Whole-value replace of one side's `MatchPlayerRole::SideAdmin` grants —
+/// `PUT /matches/:match_id/sides/:side_id/admins`.
+#[derive(Object)]
+struct SetSideAdminsInput {
+    /// The users who should hold `SideAdmin` over this side afterward — an
+    /// empty list clears it. Replaces the side's current grants wholesale,
+    /// same convention as `SideOpenJoinInput`.
+    user_ids: Vec<String>,
+}
+
+#[derive(ApiResponse)]
+enum SetSideAdminsResponse {
     #[oai(status = 204)]
     Ok,
 
@@ -4354,6 +4427,9 @@ impl Api {
             // an invitee, who is asked when they accept. Prompts exist only
             // for a *switch*, which finds players already in place.
             authority: authority.clone(),
+            // No side-admin grants at creation — an organiser adds them
+            // afterwards, via `PUT /matches/:match_id/sides/:side_id/admins`.
+            side_authority: std::collections::HashMap::new(),
             // Not configurable at creation — an organiser opens a match to
             // the public afterwards, via the open-join settings endpoint.
             open_join: None,
@@ -4495,10 +4571,23 @@ impl Api {
         // read-only on the match itself; `POST /matches/:match_id/leave` is
         // the one action left to them (see `caller_is_match_admin`'s doc
         // comment for exactly who qualifies as an admin here).
-        if !caller_is_match_admin(dao, &agg, &uid).await? {
-            return Ok(UpdateMatchResponse::Forbidden(PlainText(
-                "only a match admin can edit this match".into(),
-            )));
+        //
+        // A `SideAdmin` (authority over just one side, see
+        // `MatchRecord::side_authority`) gets a narrower exception: they may
+        // use this endpoint, but only to submit a score — never the rest of
+        // this input, which stays match-admin-only.
+        let caller_is_admin = caller_is_match_admin(dao, &agg, &uid).await?;
+        let caller_side_admin_side =
+            caller_side_admin_side_id(&agg.match_, &uid).map(str::to_string);
+        if !caller_is_admin {
+            match &caller_side_admin_side {
+                Some(_) if update_match_input_is_scoring_only(&input) => {}
+                _ => {
+                    return Ok(UpdateMatchResponse::Forbidden(PlainText(
+                        "only a match admin can edit this match".into(),
+                    )));
+                }
+            }
         }
 
         // A lowered cap can't drop below the side's current roster — reject
@@ -4962,6 +5051,12 @@ impl Api {
         // This is what makes a resubmission after a dispute require fresh
         // approval instead of silently overriding the rejection.
         let mut pending_score: Option<dao::records::PendingScoreRecord> = None;
+        // Set when a match admin who isn't an assigned participant submits the
+        // score directly below — their authority over the match substitutes
+        // for the per-side confirmation dance, so it lands as confirmed right
+        // away instead of becoming a pending submission.
+        let mut confirmed_score_override: Option<dao::records::ConfirmedScoreRecord> = None;
+        let mut clear_pending_score = false;
 
         if let Some(score) = effective_score {
             // Validate every scored side exists on the match.
@@ -4983,60 +5078,84 @@ impl Api {
             if differs {
                 // The submission is attributed to the caller's own player/side
                 // (needed so their side can be pre-confirmed, same as at
-                // create time), so the caller must be an assigned participant.
+                // create time). A `SideAdmin` with no player row of their own
+                // is attributed to the side their grant names instead (using
+                // their user id in place of a player id — they need not be on
+                // the roster at all). Only a caller with *no* side of their
+                // own this way — a full match `Owner`/`Admin`, per the gate
+                // above `update_match` — has their authority settle the
+                // result outright instead of going through per-side
+                // confirmation.
                 let caller_player = agg
                     .players
                     .iter()
                     .find(|p| p.user_id.as_deref() == Some(uid.as_str()));
-                let (caller_player_id, caller_side_id) = match caller_player.and_then(|p| {
-                    p.side_id
-                        .as_ref()
-                        .map(|sid| (p.player_id.clone(), sid.clone()))
-                }) {
-                    Some(pair) => pair,
-                    None => {
-                        return Ok(UpdateMatchResponse::ValidationError(PlainText(
-                            "a score can only be submitted by a participant assigned \
-                             to a side"
-                                .into(),
-                        )));
+                let caller_side = caller_player
+                    .and_then(|p| {
+                        p.side_id
+                            .as_ref()
+                            .map(|sid| (p.player_id.clone(), sid.clone()))
+                    })
+                    .or_else(|| {
+                        // Only a `SideAdmin`'s own side stands in for a
+                        // player row here — a full match `Owner`/`Admin`
+                        // with no side of their own falls through to `None`
+                        // below so their score lands confirmed outright,
+                        // never waiting on a side they don't hold.
+                        (!caller_is_admin)
+                            .then(|| caller_side_admin_side.clone())
+                            .flatten()
+                            .map(|side_id| (uid.clone(), side_id))
+                    });
+
+                match caller_side {
+                    Some((caller_player_id, caller_side_id)) => {
+                        let submission_id = new_id();
+                        let submitted_at = now_iso();
+                        let confirmation = dao::records::ScoreConfirmationRecord {
+                            side_id: caller_side_id.clone(),
+                            confirmed_by_player_id: caller_player_id.clone(),
+                            confirmed_at: submitted_at.clone(),
+                        };
+                        let pending = dao::records::PendingScoreRecord {
+                            submission_id: submission_id.clone(),
+                            score: new_record.clone(),
+                            winner_side_id: effective_winner_side_id.clone(),
+                            confirmations: vec![confirmation],
+                        };
+                        let submission = dao::records::ScoreSubmissionRecord {
+                            submission_id,
+                            score: new_record,
+                            winner_side_id: effective_winner_side_id.clone(),
+                            status: String::from("pending"),
+                            submitted_by_player_id: caller_player_id.clone(),
+                            submitted_at: submitted_at.clone(),
+                            // Seed the submitter's side as confirmed, so once the other
+                            // side(s) confirm, the submission becomes fully confirmed.
+                            responses: vec![dao::records::ScoreResponseRecord {
+                                side_id: caller_side_id,
+                                responded_by_player_id: caller_player_id,
+                                response: String::from("confirm"),
+                                responded_at: submitted_at,
+                            }],
+                        };
+                        dao.put_score_submission(&match_id, &submission)
+                            .await
+                            .map_err(dao_internal)?;
+
+                        pending_score = Some(pending);
                     }
-                };
-
-                let submission_id = new_id();
-                let submitted_at = now_iso();
-                let confirmation = dao::records::ScoreConfirmationRecord {
-                    side_id: caller_side_id.clone(),
-                    confirmed_by_player_id: caller_player_id.clone(),
-                    confirmed_at: submitted_at.clone(),
-                };
-                let pending = dao::records::PendingScoreRecord {
-                    submission_id: submission_id.clone(),
-                    score: new_record.clone(),
-                    winner_side_id: effective_winner_side_id.clone(),
-                    confirmations: vec![confirmation],
-                };
-                let submission = dao::records::ScoreSubmissionRecord {
-                    submission_id,
-                    score: new_record,
-                    winner_side_id: effective_winner_side_id.clone(),
-                    status: String::from("pending"),
-                    submitted_by_player_id: caller_player_id.clone(),
-                    submitted_at: submitted_at.clone(),
-                    // Seed the submitter's side as confirmed, so once the other
-                    // side(s) confirm, the submission becomes fully confirmed.
-                    responses: vec![dao::records::ScoreResponseRecord {
-                        side_id: caller_side_id,
-                        responded_by_player_id: caller_player_id,
-                        response: String::from("confirm"),
-                        responded_at: submitted_at,
-                    }],
-                };
-                dao.put_score_submission(&match_id, &submission)
-                    .await
-                    .map_err(dao_internal)?;
-
-                pending_score = Some(pending);
+                    None => {
+                        confirmed_score_override = Some(dao::records::ConfirmedScoreRecord {
+                            score: new_record,
+                            winner_side_id: effective_winner_side_id.clone(),
+                        });
+                        // Supersede any still-open submission from an
+                        // earlier, undecided report now that an admin has
+                        // settled the result directly.
+                        clear_pending_score = true;
+                    }
+                }
 
                 // A not-yet-played match becomes Completed when first scored.
                 if status_override.is_none() && agg.match_.status != "completed" {
@@ -5082,8 +5201,12 @@ impl Api {
             input.description.as_deref(),
             status_override,
             resulting_starts_at.as_deref(),
-            None,
-            pending_score.map(Some),
+            confirmed_score_override,
+            if clear_pending_score {
+                Some(None)
+            } else {
+                pending_score.map(Some)
+            },
             header_photos,
             input.format.as_ref().map(match_format_to_record),
             input.location.as_ref().map(location_to_record),
@@ -5151,11 +5274,27 @@ impl Api {
                     if let Some(existing) = agg.players.iter().find(|p| p.player_id == a.player_id)
                     {
                         let old_side_id = existing.side_id.clone();
+                        let user_id = existing.user_id.clone();
                         let mut updated = existing.clone();
                         updated.side_id = a.side_id.clone();
                         dao.reassign_match_player_tx(&match_id, &updated, old_side_id.as_deref())
                             .await
                             .map_err(dao_internal)?;
+
+                        // Moving off a side revokes any `SideAdmin` grant for
+                        // the side they left, by default — see
+                        // `MatchRecord::side_authority`'s doc comment.
+                        if old_side_id != updated.side_id
+                            && let (Some(old_side_id), Some(user_id)) = (&old_side_id, &user_id)
+                            && let Some(admins) = agg.match_.side_authority.get(old_side_id)
+                            && admins.iter().any(|u| u == user_id)
+                        {
+                            let remaining: Vec<String> =
+                                admins.iter().filter(|u| *u != user_id).cloned().collect();
+                            dao.set_side_admins(&match_id, old_side_id, &remaining)
+                                .await
+                                .map_err(dao_internal)?;
+                        }
                     }
                 }
             }
@@ -5495,6 +5634,7 @@ impl Api {
                 uid.clone(),
                 dao::records::MatchPlayerRole::Owner,
             )]),
+            side_authority: std::collections::HashMap::new(),
             open_join: None,
             open_joined_count: 0,
             created_at: now,
@@ -5617,6 +5757,19 @@ impl Api {
             TournamentFormat::Knockout => dao::records::TournamentFormatRecord::Knockout,
             TournamentFormat::League => dao::records::TournamentFormatRecord::League,
         };
+        // A supplied match_format must be for this tournament's own sport —
+        // same check as `CreateMatchInput.format`.
+        if let Some(fmt) = &input.match_format {
+            let tag = match_format_sport_tag(fmt);
+            if tag != match_type_tag(&input.match_type) {
+                return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                    format!(
+                        "match_format is for `{tag}` but tournament is `{}`",
+                        match_type_tag(&input.match_type)
+                    ),
+                )));
+            }
+        }
         let entry_audience = match input.entry_audience {
             TournamentEntryAudience::Teams => dao::records::TournamentEntryAudienceRecord::Teams,
             TournamentEntryAudience::Players => {
@@ -5736,6 +5889,7 @@ impl Api {
             description: input.description,
             match_type: match_type_tag(&input.match_type).to_string(),
             format,
+            match_format: input.match_format.as_ref().map(match_format_to_record),
             status: "open".to_string(),
             entry_audience,
             team_formation,
@@ -5761,6 +5915,7 @@ impl Api {
                 uid,
                 dao::records::MatchPlayerRole::Owner,
             )]),
+            squad_labels: std::collections::HashMap::new(),
             created_at: now,
         };
 
@@ -5993,6 +6148,62 @@ impl Api {
         )))
     }
 
+    /// Set (or replace) a squad's name/colour, same idea as naming/colouring
+    /// an ad-hoc match side — purely organisational, no existence check on
+    /// the squad itself (a squad is just an index an entry's `squad` field
+    /// points at). Only while the tournament is still `"open"`; `start`
+    /// reads whatever's set here, falling back to a generated "Squad N" and
+    /// palette colour for any squad with no label.
+    #[oai(path = "/tournaments/:tournament_id/squads/:squad", method = "put")]
+    async fn set_tournament_squad_label(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+        Path(squad): Path<u32>,
+        input: Json<SetSquadLabelInput>,
+    ) -> Result<SetSquadLabelResponse> {
+        info!("Setting squad {squad} label in tournament {tournament_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let Some(mut tournament) = dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(SetSquadLabelResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            )));
+        };
+        if !caller_is_tournament_admin(&tournament, &uid) {
+            return Ok(SetSquadLabelResponse::Forbidden(PlainText(
+                "only the tournament's owner or an admin can name squads".into(),
+            )));
+        }
+        if tournament.entry_audience != dao::records::TournamentEntryAudienceRecord::Players {
+            return Ok(SetSquadLabelResponse::ValidationError(PlainText(
+                "squads only apply to a teamless tournament".into(),
+            )));
+        }
+        if tournament.status != "open" {
+            return Ok(SetSquadLabelResponse::ValidationError(PlainText(format!(
+                "tournament is `{}`, not `open`",
+                tournament.status
+            ))));
+        }
+        let label = dao::records::SquadLabelRecord {
+            name: input.name.clone(),
+            colour: input.colour.clone(),
+        };
+        dao.set_tournament_squad_label(&tournament_id, squad, &label)
+            .await
+            .map_err(dao_internal)?;
+        tournament.squad_labels.insert(squad.to_string(), label);
+        Ok(SetSquadLabelResponse::Tournament(Json(
+            mapping::tournament_from_record(&tournament),
+        )))
+    }
+
     /// Withdraw an entry (organiser-only in v1). Only while the tournament
     /// is still `"open"` — once `start` has generated matches, an entrant's
     /// place in the bracket/fixture list can't be pulled back out.
@@ -6155,19 +6366,35 @@ impl Api {
                         ),
                     )));
                 }
-                const PALETTE: [&str; 6] = [
-                    "#2952D9", "#D92929", "#1FA37A", "#D9A429", "#7A29D9", "#29A3D9",
+                // Same hexes, in the same order, as `SIDE_COLOURS` in
+                // `agon_ui/src/lib/sideColours.ts` (the picker a squad's
+                // own colour swatch defaults from on the entries page), so
+                // a squad nobody touched the swatch for still turns into a
+                // match side with the colour the organiser actually saw.
+                const PALETTE: [&str; 10] = [
+                    "#2952D9", "#DC2626", "#16A34A", "#EAB308", "#F97316", "#9333EA", "#EC4899",
+                    "#0F172A", "#E2E8F0", "#64748B",
                 ];
                 let mut synthetic_ids: Vec<String> = Vec::new();
-                for (position, (_, members)) in by_squad.into_iter().enumerate() {
+                for (position, (squad_num, members)) in by_squad.into_iter().enumerate() {
                     let synthetic_id = format!("squad-{position}");
-                    squad_labels.insert(
-                        synthetic_id.clone(),
-                        (
-                            format!("Squad {}", position + 1),
-                            PALETTE[position % PALETTE.len()].to_string(),
-                        ),
-                    );
+                    // An organiser-set name/colour (`PUT
+                    // /tournaments/{id}/squads/{squad}`, keyed by the
+                    // entry's actual `squad` index) wins over the generated
+                    // fallback; `position` is dense after compaction, so a
+                    // sparse squad numbering (e.g. 0 and 2 used, not 1)
+                    // still looks up the label the organiser actually set.
+                    let (name, colour) = tournament
+                        .squad_labels
+                        .get(&squad_num.to_string())
+                        .map(|l| (l.name.clone(), l.colour.clone()))
+                        .unwrap_or_else(|| {
+                            (
+                                format!("Squad {}", position + 1),
+                                PALETTE[position % PALETTE.len()].to_string(),
+                            )
+                        });
+                    squad_labels.insert(synthetic_id.clone(), (name, colour));
                     squad_members.insert(synthetic_id.clone(), members);
                     synthetic_ids.push(synthetic_id);
                 }
@@ -6309,9 +6536,10 @@ impl Api {
                     comment_count: 0,
                     live_seq: 0,
                     live_tip_seq: None,
-                    format: None,
+                    format: tournament.match_format.clone(),
                     ranked: false,
                     authority: tournament.authority.clone(),
+                    side_authority: std::collections::HashMap::new(),
                     open_join: None,
                     open_joined_count: 0,
                     created_at: now_iso(),
@@ -8368,11 +8596,17 @@ impl Api {
             }
         };
 
-        // Only a match admin may invite others.
+        // A match admin may invite anyone, to any side (or unassigned); a
+        // side admin may only invite to their own side.
         if !caller_is_match_admin(dao, &agg, &uid).await? {
-            return Ok(AddInvitationsResponse::Forbidden(PlainText(
-                "only a match admin can invite people to this match".into(),
-            )));
+            let own_side = caller_side_admin_side_id(&agg.match_, &uid);
+            if own_side.is_none() || input.side_id.as_deref() != own_side {
+                return Ok(AddInvitationsResponse::Forbidden(PlainText(
+                    "only a match admin, or a side admin inviting to their own side, can invite \
+                     people to this match"
+                        .into(),
+                )));
+            }
         }
 
         // If a side was named, it must be one of this match's sides.
@@ -9159,9 +9393,10 @@ impl Api {
                 )));
             }
         };
-        if !caller_is_match_admin(dao, &agg, &uid).await? {
+        if !caller_can_manage_side(dao, &agg, &side_id, &uid).await? {
             return Ok(SetSideOpenJoinResponse::Forbidden(PlainText(
-                "only a match admin can change a side's ringer settings".into(),
+                "only a match admin, or this side's own admin, can change its ringer settings"
+                    .into(),
             )));
         }
         if !agg.sides.iter().any(|s| s.side_id == side_id) {
@@ -9184,6 +9419,50 @@ impl Api {
             .await
             .map_err(dao_internal)?;
         Ok(SetSideOpenJoinResponse::Ok)
+    }
+
+    /// Replace the set of `MatchPlayerRole::SideAdmin` grants for one side.
+    ///
+    /// Match-admin only — granting the role itself isn't delegated to a
+    /// side admin, unlike the side's own ringer settings and invites (see
+    /// `caller_can_manage_side`). A granted user doesn't need to be on the
+    /// side, or on the roster at all — see `MatchRecord::side_authority`'s
+    /// doc comment.
+    #[oai(path = "/matches/:match_id/sides/:side_id/admins", method = "put")]
+    async fn set_side_admins(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        Path(side_id): Path<String>,
+        input: Json<SetSideAdminsInput>,
+    ) -> Result<SetSideAdminsResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let input = input.0;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(SetSideAdminsResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(SetSideAdminsResponse::Forbidden(PlainText(
+                "only a match admin can change a side's admins".into(),
+            )));
+        }
+        if !agg.sides.iter().any(|s| s.side_id == side_id) {
+            return Ok(SetSideAdminsResponse::NotFound(PlainText(
+                "side not found".into(),
+            )));
+        }
+
+        dao.set_side_admins(&match_id, &side_id, &input.user_ids)
+            .await
+            .map_err(dao_internal)?;
+        Ok(SetSideAdminsResponse::Ok)
     }
 
     /// Request to join a match through its open-join policy.
@@ -11161,9 +11440,76 @@ fn caller_match_authority_role(
     match_: &dao::records::MatchRecord,
     uid: &str,
 ) -> Option<dao::records::MatchPlayerRole> {
-    match_.authority.get(uid).copied().or_else(|| {
-        (match_.created_by_user_id == uid).then_some(dao::records::MatchPlayerRole::Owner)
-    })
+    match_
+        .authority
+        .get(uid)
+        .copied()
+        .or_else(|| {
+            (match_.created_by_user_id == uid).then_some(dao::records::MatchPlayerRole::Owner)
+        })
+        .or_else(|| {
+            caller_side_admin_side_id(match_, uid).map(|_| dao::records::MatchPlayerRole::SideAdmin)
+        })
+}
+
+/// Which side, if any, `uid` holds `MatchPlayerRole::SideAdmin` over — see
+/// `MatchRecord::side_authority`'s doc comment. Doesn't check match-wide
+/// `Owner`/`Admin` authority, which supersedes this for every side anyway
+/// (see `caller_can_manage_side`, the caller that matters for).
+fn caller_side_admin_side_id<'a>(
+    match_: &'a dao::records::MatchRecord,
+    uid: &str,
+) -> Option<&'a str> {
+    match_
+        .side_authority
+        .iter()
+        .find_map(|(side_id, user_ids)| {
+            user_ids
+                .iter()
+                .any(|u| u == uid)
+                .then_some(side_id.as_str())
+        })
+}
+
+/// Whether an `UpdateMatchInput` touches only the fields a `SideAdmin` (who
+/// holds no match-wide authority) may use `update_match` for: submitting a
+/// score, and nothing else — not the roster, format, metadata, or any of
+/// the match-admin-only settings below. `status` is allowed only as
+/// `Completed`, the one transition finishing a score can legitimately drive
+/// (e.g. `LiveScoringPage`'s "Finish match"), never a `SideAdmin` cancelling
+/// or otherwise moving the match.
+fn update_match_input_is_scoring_only(input: &UpdateMatchInput) -> bool {
+    input.name.is_none()
+        && input.description.is_none()
+        && input.starts_at.is_none()
+        && input.location.is_none()
+        && matches!(input.status, None | Some(MatchStatus::Completed))
+        && input.added_players.is_none()
+        && input.side_assignments.is_none()
+        && input.removed_player_ids.is_none()
+        && input.side_names.is_none()
+        && input.side_colours.is_none()
+        && input.header_photo_asset_ids.is_none()
+        && input.format.is_none()
+        && input.allow_unassigned.is_none()
+        && input.side_join_settings.is_none()
+        && input.ranked.is_none()
+}
+
+/// Whether `uid` may manage one side's own settings specifically (its
+/// ringer settings, inviting people to it): full match-admin authority
+/// (`caller_is_match_admin`, which covers every side), or a `side_authority`
+/// grant naming this exact `side_id`.
+async fn caller_can_manage_side(
+    dao: &dao::Dao,
+    agg: &dao::match_ops::MatchAggregate,
+    side_id: &str,
+    uid: &str,
+) -> Result<bool> {
+    if caller_is_match_admin(dao, agg, uid).await? {
+        return Ok(true);
+    }
+    Ok(caller_side_admin_side_id(&agg.match_, uid) == Some(side_id))
 }
 
 /// The caller's authority on a tournament — same lookup-with-creator-fallback
@@ -12065,6 +12411,7 @@ fn mock_match(id: String) -> Match {
                 open_join: None,
                 max_open_spots: None,
                 open_joined_count: 0,
+                side_admin_user_ids: Vec::new(),
             },
             MatchSide {
                 id: String::from("side_blue"),
@@ -12081,6 +12428,7 @@ fn mock_match(id: String) -> Match {
                 open_join: None,
                 max_open_spots: None,
                 open_joined_count: 0,
+                side_admin_user_ids: Vec::new(),
             },
         ],
         players: vec![

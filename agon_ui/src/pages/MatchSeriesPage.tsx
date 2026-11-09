@@ -5,6 +5,7 @@ import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Button } from '@/components/ui/button'
 import { sportIcon } from '@/lib/sports'
+import { RankedBadge } from '@/components/agon/RankedBadge'
 import { scheduledDateTime } from '@/lib/datetime'
 import { seriesCadenceLabel, seriesEndLabel, seriesGeneratingLabel, seriesStatusLabel } from '@/lib/matchSeries'
 
@@ -87,12 +88,19 @@ export function MatchSeriesPage() {
                   {seriesCadenceLabel(series.frequency, series.weekday)} · {seriesEndLabel(series.ends)}
                 </span>
               </div>
-              <span
-                className="ml-auto inline-flex h-6 shrink-0 items-center rounded-full bg-accent px-2.5 text-[11px] font-bold text-accent-foreground"
-                aria-label={`Series status: ${seriesStatusLabel(series.status)}`}
-              >
-                {series.status === 'generating' ? seriesGeneratingLabel(series) : seriesStatusLabel(series.status)}
-              </span>
+              {/* The ranked chip goes above the status chip rather than
+                  beside it: a series' own status is the thing that changes
+                  while you watch this page, so it keeps the position the eye
+                  is already on. */}
+              <div className="ml-auto flex shrink-0 flex-col items-end gap-1.5">
+                <span
+                  className="inline-flex h-6 shrink-0 items-center rounded-full bg-accent px-2.5 text-[11px] font-bold text-accent-foreground"
+                  aria-label={`Series status: ${seriesStatusLabel(series.status)}`}
+                >
+                  {series.status === 'generating' ? seriesGeneratingLabel(series) : seriesStatusLabel(series.status)}
+                </span>
+                {series.ranked && <RankedBadge />}
+              </div>
             </div>
           </div>
 

@@ -1196,6 +1196,30 @@ struct CreateMatchSeriesInput {
     /// The opposing sides' templates, copied onto every generated
     /// occurrence. At least two are required, same as a one-off match.
     sides: Vec<CreateMatchSeriesSideInput>,
+    /// Whether every occurrence counts towards the sport's rating ladder.
+    /// Friendly by default, same as `CreateMatchInput.ranked` and for the
+    /// same reason.
+    ///
+    /// This is the only moment a series' occurrences can be made ranked:
+    /// generation is unattended, so there is nobody to ask once it is
+    /// running, and an organiser who had to switch each generated occurrence
+    /// by hand would be running a ranked ladder on a reminder. Set here, the
+    /// choice is made once and every occurrence inherits it.
+    ///
+    /// Refused for a sport with no ladder (`other`), exactly as
+    /// `CreateMatchInput.ranked` is. Nothing else is checked, and nothing
+    /// else needs to be: a series' sides are team-linked with team self-join
+    /// and no invite list, so the only players who can ever reach an
+    /// occurrence are Agon accounts — which is the one thing a ranked match
+    /// requires of a player (see `mapping::unratable_players`). An organiser
+    /// adding someone by hand to a generated occurrence is still checked
+    /// there, by `ranked_added_players_reason`.
+    ///
+    /// There is no series equivalent of `UpdateMatchInput.ranked`, because
+    /// there is no `PATCH /match-series` at all. A series created friendly
+    /// stays friendly; the occurrences it has already generated can each be
+    /// switched individually, under the ordinary per-match ranked lock.
+    ranked: Option<bool>,
 }
 
 /// A side template as returned by the API — the same shape as
@@ -1241,6 +1265,15 @@ struct MatchSeries {
     weekday: u8,
     ends: CreateMatchSeriesEndInput,
     sides: Vec<MatchSeriesSide>,
+    /// Whether this series' occurrences are generated ranked — see
+    /// `CreateMatchSeriesInput.ranked`. A series-level answer, and not
+    /// necessarily any one occurrence's: each generated match carries its
+    /// own `Match.ranked`, which an organiser may since have flipped.
+    ranked: bool,
+    /// The ladder those occurrences count towards (e.g. `"tennis"`) —
+    /// derived from `match_type`, `Some` exactly when `ranked`, the same
+    /// relationship `Match.rating_ladder` has to `Match.ranked`.
+    rating_ladder: Option<String>,
     status: MatchSeriesStatus,
     /// How many occurrences have been created so far (including the first,
     /// created synchronously). For a bounded series (`ends: OnDate`/
@@ -5670,6 +5703,19 @@ impl Api {
             }
         }
 
+        // Ranked needs a ladder to rate into, the same check `create_match`
+        // makes and sharing its message. Nothing else is checked here: a
+        // series template has no invite list and no ad-hoc sides, so there is
+        // no guest for a ranked series to be unable to rate — see
+        // `CreateMatchSeriesInput::ranked`.
+        if input.ranked == Some(true)
+            && let Some(reason) = unrankable_sport_reason(match_type_tag(&input.match_type))
+        {
+            return Ok(CreateMatchSeriesResponse::ValidationError(PlainText(
+                reason,
+            )));
+        }
+
         if !matches!(
             input.frequency.as_str(),
             "weekly" | "fortnightly" | "monthly" | "yearly"
@@ -5783,6 +5829,11 @@ impl Api {
                     max_players: s.max_players,
                 })
                 .collect(),
+            // Friendly unless the organiser asked for ranked, matching
+            // `create_match`'s own default. Carried on the series so every
+            // occurrence `materialize_series` generates later inherits it —
+            // the record is the only thing that outlives this request.
+            ranked: input.ranked.unwrap_or(false),
             // The first occurrence is created synchronously right below, so
             // it already counts as generated.
             status: "generating".to_string(),
@@ -5875,11 +5926,11 @@ impl Api {
             live_seq: 0,
             live_tip_seq: None,
             format: None,
-            // A series occurrence is always friendly. `SeriesRecord` has no
-            // `ranked` of its own, so there is nowhere to say otherwise. An
-            // organiser can switch a single occurrence to ranked afterwards;
-            // a ranked *series* needs a design of its own first.
-            ranked: false,
+            // Inherited from the series, like every other template value
+            // here — read from the record rather than the input so this
+            // occurrence and the ones `materialize_series` generates later
+            // can't disagree about it.
+            ranked: series_record.ranked,
             authority: std::collections::HashMap::from([(
                 uid.clone(),
                 dao::records::MatchPlayerRole::Owner,

@@ -606,6 +606,9 @@ export function LogMatchPage() {
         seriesSideInput(SIDE_A, sideAIdentity, sideAName, sideAColour, linkedA!, sideAMaxPlayers),
         seriesSideInput(SIDE_B, sideBIdentity, sideBName, sideBColour, linkedB!, sideBMaxPlayers),
       ],
+      // Same guard as the one-off body below: only sent when the sport has a
+      // ladder, since `ranked` can outlive a sport change in the form.
+      ...(ranked && canBeRanked(sport!) ? { ranked: true } : {}),
     }
   }
 

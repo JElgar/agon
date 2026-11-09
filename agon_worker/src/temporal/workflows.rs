@@ -553,6 +553,7 @@ impl MaterializeSeries {
                     description: series.description.clone(),
                     location: series.location.clone(),
                     sides: series.sides.clone(),
+                    ranked: series.ranked,
                 },
                 activity_opts(),
             )

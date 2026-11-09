@@ -622,6 +622,21 @@ pub struct SeriesRecord {
     /// invite list in this version of the feature.
     #[serde(default)]
     pub sides: Vec<SeriesSideRecord>,
+    /// Whether every occurrence this series generates is ranked — the
+    /// template value each one's `MatchRecord::ranked` is created from.
+    ///
+    /// A series-level flag rather than a per-occurrence one because that is
+    /// the only place it can be set: generation runs unattended, so there is
+    /// nobody to ask at the moment an occurrence is created. The choice is
+    /// made once, when the series is, and every occurrence inherits it — an
+    /// organiser can still flip a single occurrence afterwards through
+    /// `PATCH /matches/:id`, under that endpoint's own ranked lock.
+    ///
+    /// Defaults to `false` when absent so a series created before this field
+    /// existed still deserializes, keeping the behaviour it was created with
+    /// (every occurrence friendly) rather than silently becoming ranked.
+    #[serde(default)]
+    pub ranked: bool,
     /// Lifecycle: "generating" | "active" | "paused" | "ended". "paused"
     /// stops further generation without touching already-created
     /// occurrences — meaningful for a `Never`-ending series, which

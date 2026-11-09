@@ -169,6 +169,10 @@ impl AgonActivities {
                     // has to be on or nobody can ever get onto a generated
                     // occurrence.
                     team_join_enabled: true,
+                    open_join_enabled: false,
+                    open_join: None,
+                    max_open_spots: None,
+                    open_joined_count: 0,
                     player_count: 0,
                     roster_preview: Vec::new(),
                 },
@@ -194,6 +198,8 @@ impl AgonActivities {
             total_player_count: 0,
             location: input.location,
             series_id: Some(input.series_id.clone()),
+            tournament_id: None,
+            tournament_round: None,
             header_photos: Vec::new(),
             sides,
             authority,
@@ -211,6 +217,8 @@ impl AgonActivities {
             // single occurrence to ranked afterwards, which asks everyone in
             // it. A ranked *series* needs its own consent design first.
             ranked: false,
+            open_join: None,
+            open_joined_count: 0,
             created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         };
 

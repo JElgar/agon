@@ -171,6 +171,20 @@ impl Dao {
             TYPE_MATCH,
             &match_,
         )?;
+        // A tournament match projects into GSI1 as `TMATCHES#<tournamentId>`
+        // / `<round>#<matchId>` — what `GET /tournaments/{id}/matches` and
+        // the standings computation query against, instead of a bespoke
+        // item collection. Zero-padded round so lexicographic GSI1SK order
+        // matches round order.
+        let meta_item = match (&match_.tournament_id, &match_.tournament_round) {
+            (Some(tid), Some(round)) => ItemBuilder::new(meta_item)
+                .gsi1(
+                    format!("TMATCHES#{tid}"),
+                    format!("{:010}#{}", round.round, match_.id),
+                )
+                .build(),
+            _ => meta_item,
+        };
 
         let put_meta = Put::builder()
             .table_name(self.table())
@@ -1390,6 +1404,10 @@ mod tests {
             player_count: 0,
             roster_preview: Vec::new(),
             team_join_enabled: false,
+            open_join_enabled: false,
+            open_join: None,
+            max_open_spots: None,
+            open_joined_count: 0,
         }
     }
 

@@ -874,6 +874,10 @@ mod tests {
                 team_join_enabled: false,
                 player_count: 1,
                 roster_preview: Vec::new(),
+                open_join_enabled: false,
+                open_join: None,
+                max_open_spots: None,
+                open_joined_count: 0,
             },
         )
     }
@@ -889,6 +893,8 @@ mod tests {
             match_type: "squash".into(),
             status: "completed".into(),
             series_id: None,
+            tournament_id: None,
+            tournament_round: None,
             starts_at: PLAYED_AT.into(),
             allow_unassigned: true,
             total_player_count: 2,
@@ -909,6 +915,8 @@ mod tests {
             format: None,
             ranked: true,
             authority: HashMap::new(),
+            open_join: None,
+            open_joined_count: 0,
             created_at: "2026-05-01T10:00:00.000Z".into(),
         }
     }
@@ -946,6 +954,7 @@ mod tests {
             kind: InvitationKindRecord::Token {
                 invite_token: "token".into(),
             },
+            reserve_spot: false,
         });
         player
     }
@@ -973,8 +982,11 @@ mod tests {
         }
     }
 
-    /// Profiles for `ids`, each opted in to squash.
-    fn opted_in(ids: &[&str]) -> HashMap<String, UserRecord> {
+    /// Profiles for `ids`. Nothing distinguishes them from each other, or
+    /// from any other account: with consent gone there is nothing on a
+    /// profile the gate reads. The store still has to hand one back per
+    /// participant, which is all this is for.
+    fn profiles(ids: &[&str]) -> HashMap<String, UserRecord> {
         ids.iter().map(|id| (id.to_string(), user(id))).collect()
     }
 
@@ -1496,7 +1508,7 @@ mod tests {
         ) -> Self {
             let store = FakeStore::default();
             store.put_match(record, players);
-            store.users.borrow_mut().extend(opted_in(users));
+            store.users.borrow_mut().extend(profiles(users));
             store
         }
 

@@ -16,14 +16,17 @@ import { sportIcon, sportLabel, type MatchType } from '@/lib/sports'
 import { formatWinRate, type BestFigure } from '@/lib/stats'
 import { formatOvers } from '@/lib/cricketScore'
 import { StatInfo } from '@/components/agon/StatInfo'
+import { RatingCard } from '@/components/agon/RatingCard'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
+import { useProfileView } from '@/hooks/useProfileView'
+import { useRatingHistory } from '@/hooks/useRatingHistory'
+import { placementFor, ratingFor } from '@/lib/rating'
 import { cn } from '@/lib/utils'
 import { sideDisplayName } from '@/lib/members'
 
 type BestBowlingFigures = components['schemas']['BestBowlingFigures']
 type CricketPlayerStats = components['schemas']['CricketPlayerStats']
 type FootballPlayerStats = components['schemas']['FootballPlayerStats']
-type UserProfile = components['schemas']['UserProfile']
 type SearchMatch = components['schemas']['SearchMatch']
 type MatchOutcome = components['schemas']['MatchOutcome']
 
@@ -34,7 +37,7 @@ const RECENT_LIMIT = 10
 const FETCH_LIMIT = 50
 /** Trailing months shown in the activity chart. */
 const CHART_MONTHS = 6
-/** Outcomes shown in the "recent form" row, most recent first. */
+/** Outcomes shown in the "recent form" row, most recent last (on the right). */
 const FORM_LIMIT = 5
 
 const MONTH_LABELS = [
@@ -67,24 +70,15 @@ export function SportStatsPage() {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<ResultFilter>('all')
 
-  const profileQuery = useQuery({
-    queryKey: ['profile', userId ?? 'me'],
-    queryFn: async (): Promise<UserProfile> => {
-      if (userId) {
-        const { data, error } = await fetchClient.GET('/users/{user_id}', {
-          params: { path: { user_id: userId } },
-        })
-        if (error || !data) throw new Error('Failed to load profile')
-        return data
-      }
-      const { data, error } = await fetchClient.GET('/users/me')
-      if (error || !data) throw new Error('Failed to load profile')
-      return data.profile
-    },
-  })
+  const profileQuery = useProfileView(userId)
 
-  const profileId = profileQuery.data?.id
+  const profileId = profileQuery.data?.profile.id
   const matchType = sport as MatchType
+
+  // Keyed on the resolved profile id rather than the route's `userId`, which
+  // is absent on your own page — so your own chart and someone else's share
+  // one cache entry shape instead of two.
+  const historyQuery = useRatingHistory(profileId, matchType)
 
   const matchesQuery = useQuery({
     queryKey: ['profile-sport-matches', profileId, sport],
@@ -115,7 +109,7 @@ export function SportStatsPage() {
     )
   }
 
-  const profile = profileQuery.data
+  const { profile, placements } = profileQuery.data
   const stats = profile.stats[matchType as keyof typeof profile.stats]
   // Cricket's and football's stats cards key off the sport itself, not off
   // which fields happen to be present — a future sport could easily add its
@@ -199,6 +193,16 @@ export function SportStatsPage() {
     </section>
   ) : null
 
+  const ratingEl = (
+    <RatingCard
+      sport={matchType}
+      rating={ratingFor(profile.ratings, matchType)}
+      placement={placementFor(placements, matchType)}
+      isOwnProfile={isOwnProfile}
+      history={historyQuery.data}
+    />
+  )
+
   const chartEl = (
     <section className="flex flex-col gap-3">
       <SectionHeading>Matches per month</SectionHeading>
@@ -277,6 +281,7 @@ export function SportStatsPage() {
               verified against the "Sport" board's mobile mock. */}
           <div className="flex flex-col gap-4 xl:hidden">
             <WinRateBanner stats={stats} recentOutcomes={recentByDate.map((m) => m.outcome)} />
+            {ratingEl}
             {breakdownEl}
             {personalBestsEl}
             {chartEl}
@@ -296,6 +301,7 @@ export function SportStatsPage() {
                 recentOutcomes={recentByDate.map((m) => m.outcome)}
                 extra={bannerExtra}
               />
+              {ratingEl}
               {cricketStats && breakdownEl}
               {recentMatchesEl}
             </div>
@@ -337,7 +343,10 @@ function WinRateBanner({
    *  hidden below `xl` regardless of what's passed. */
   extra?: React.ReactNode
 }) {
-  const form = recentOutcomes.filter((o): o is MatchOutcome => !!o).slice(0, FORM_LIMIT)
+  const form = recentOutcomes
+    .filter((o): o is MatchOutcome => !!o)
+    .slice(0, FORM_LIMIT)
+    .reverse()
 
   return (
     <Card className="flex flex-col gap-4 p-[18px] xl:gap-5 xl:p-6">

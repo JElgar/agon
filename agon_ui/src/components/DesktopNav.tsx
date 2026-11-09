@@ -80,10 +80,10 @@ export function DesktopNav({
 
       <Button
         className="h-[52px] gap-2 rounded-2xl bg-foreground text-base font-bold text-background hover:bg-foreground/90"
-        onClick={() => navigate('/matches/new')}
+        onClick={() => navigate('/create')}
       >
         <Plus className="size-[18px]" />
-        New match
+        Create
       </Button>
 
       <div className="mt-auto flex flex-col gap-2">

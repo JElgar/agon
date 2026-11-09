@@ -419,6 +419,14 @@ pub struct MatchRecord {
     /// part of a recurring match series.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub series_id: Option<String>,
+    /// `None` for an ordinary match; `Some(tournament_id)` for one generated
+    /// as part of a tournament.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tournament_id: Option<String>,
+    /// This match's round/matchday position within its tournament. Always
+    /// `Some` alongside `tournament_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tournament_round: Option<TournamentRoundInfo>,
     /// This match's sides, keyed by `side_id` — a DynamoDB map, not a list,
     /// so a single side's `player_count`/`roster_preview` can be updated in
     /// place by key (`Dao::refresh_side_roster_previews`) without needing to
@@ -516,6 +524,23 @@ pub struct MatchRecord {
     /// `created_by_user_id` as `Owner` for exactly that case.
     #[serde(default)]
     pub authority: std::collections::HashMap<String, MatchPlayerRole>,
+    /// This match's "open to the public" policy — `None` means invite/
+    /// link/team-only, as every match was before this field existed. See
+    /// [`OpenJoinScopeRecord`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_join: Option<OpenJoinScopeRecord>,
+    /// How many of `total_player_count` arrived through the open-join
+    /// policy (`JoinSourceRecord::Open`, including an approved
+    /// `MatchJoinRequestRecord`) — what
+    /// `OpenJoinPolicyRecord::max_open_spots` is enforced against, bumped
+    /// atomically alongside `total_player_count` in the same join
+    /// transaction (never recomputed from a scan, same convention as
+    /// `total_player_count` itself). Counts only open arrivals specifically
+    /// — an organiser adding an invited player afterwards must never
+    /// tighten this cap. `#[serde(default)]` for matches written before
+    /// open joining existed.
+    #[serde(default)]
+    pub open_joined_count: u32,
     pub created_at: String,
 }
 
@@ -652,6 +677,186 @@ pub enum SeriesEndRecord {
     Never,
 }
 
+// ===========================================================================
+// Tournaments
+// ===========================================================================
+
+/// Who enters a tournament. `Teams` is the ordinary case (every match is
+/// team-vs-team, same as any other match). `Players` means individuals enter
+/// directly — on a 1v1 sport this is just an ordinary singles ladder, no
+/// `team_formation` needed; on a team sport it means there are no
+/// pre-existing teams at all, and `TournamentRecord::team_formation` decides
+/// how a squad is assembled for each round (see that field's doc comment).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TournamentEntryAudienceRecord {
+    Teams,
+    Players,
+}
+
+/// A tournament's generation format — a small closed set with branching
+/// logic throughout (`TournamentRecord::format`), unlike the genuinely
+/// open-ended `SeriesRecord::frequency`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TournamentFormatRecord {
+    Knockout,
+    League,
+}
+
+/// How entrants are ordered into the bracket/fixture list at `start`
+/// (`TournamentRecord::seeding`). `Manual` reads each entry's `seed`;
+/// `Random` shuffles via `agon_core::tournament::random_seed_order`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TournamentSeedingRecord {
+    Random,
+    Manual,
+}
+
+/// How a teamless tournament (`entry_audience: Players` on a team sport)
+/// assembles each round's squads. `None` on `TournamentRecord` for every
+/// other tournament (`Teams`, or `Players` on a 1v1 sport) — this field only
+/// has meaning once there's no persistent team per entrant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TournamentTeamFormationRecord {
+    /// The organiser assembles each round's squads by hand.
+    Manual,
+    /// Squads are assembled automatically each round via a snake draft (seed
+    /// 1 to the strongest squad, seed 2 to the next, alternating direction
+    /// each pass) over `by`: `"wins"` (total match wins so far in this
+    /// tournament; the default — ties broken randomly), `"rating"` (current
+    /// rating-ladder value for the sport — useful early on, before anyone
+    /// has enough wins in the tournament for that signal to mean much), or
+    /// `"games_played"` (friendly/unranked fallback).
+    Auto { by: String },
+}
+
+/// One round/matchday's position within a tournament, on the
+/// [`MatchRecord`] it was generated for. `round` is 0-based (knockout: 0 =
+/// the first round that actually has matches, after byes are resolved;
+/// league: 0 = matchday 1). `slot` is the bracket position, meaningful for
+/// knockout only (always 0 for league).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TournamentRoundInfo {
+    pub round: u32,
+    pub slot: u32,
+}
+
+/// `TOURNAMENT#<id>` / `#META` — a tournament's template and lifecycle
+/// state. Teams (or, for a teamless tournament, individual players) enter;
+/// once the organiser starts it, every match is generated upfront according
+/// to `format`. Every generated match is an ordinary, independent
+/// [`MatchRecord`] — same roster/score/comments/live-scoring machinery as
+/// any other match — linked back only by `MatchRecord::tournament_id`, the
+/// same way a series occurrence links back by `series_id`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TournamentRecord {
+    pub id: String,
+    pub created_by_user_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// Sport tag, same meaning as `MatchRecord::match_type`.
+    pub match_type: String,
+    pub format: TournamentFormatRecord,
+    /// Lifecycle: `"open"` | `"in_progress"` | `"completed"` | `"cancelled"`
+    /// — entries are only accepted while `"open"`; `start` flips it to
+    /// `"in_progress"` and locks the entry list.
+    pub status: String,
+    pub entry_audience: TournamentEntryAudienceRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_formation: Option<TournamentTeamFormationRecord>,
+    /// Squad roster size for a teamless tournament — replaces the roster
+    /// size a team-entry tournament otherwise gets implicitly from its
+    /// `TeamRecord`s. `None` unless `team_formation` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub squad_size: Option<u32>,
+    pub min_teams: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_teams: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<LocationRecord>,
+    /// How often a round/matchday recurs: "weekly" | "fortnightly" |
+    /// "monthly" | "yearly" — same meaning as `SeriesRecord::frequency`.
+    pub frequency: String,
+    /// The recurrence day: 0 = Sunday .. 6 = Saturday.
+    pub weekday: u8,
+    /// Round/matchday 0's `starts_at` (RFC-3339) — the anchor
+    /// `agon_core::series::occurrence_starts_at` advances from to compute
+    /// every later round's date, exactly as `SeriesRecord::first_occurrence_starts_at` does.
+    pub first_round_starts_at: String,
+    #[serde(default = "default_series_timezone")]
+    pub timezone: String,
+    /// League scoring rule, defaulting to 3/1/0; irrelevant for knockout.
+    #[serde(default = "default_points_win")]
+    pub points_win: u32,
+    #[serde(default)]
+    pub points_draw: u32,
+    #[serde(default)]
+    pub points_loss: u32,
+    pub seeding: TournamentSeedingRecord,
+    /// Denormalized, same pattern as `TeamRecord::follower_count`. Maintained
+    /// via atomic `ADD` (`Dao::bump_tournament_entry_count`), never
+    /// recomputed from a scan.
+    #[serde(default)]
+    pub entry_count: u64,
+    /// Who holds `Owner`/`Admin` authority over this tournament, same type
+    /// and semantics as `MatchRecord::authority`. The creator gets `Owner`
+    /// at creation.
+    #[serde(default)]
+    pub authority: HashMap<String, MatchPlayerRole>,
+    pub created_at: String,
+}
+
+fn default_points_win() -> u32 {
+    3
+}
+
+/// `TOURNAMENT#<id>` / `ENTRY#<entrantId>` — one entrant's place in a
+/// tournament. `entrant_id` is a team id when `entry_audience: Teams`, or a
+/// user id when `Players`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TournamentEntryRecord {
+    pub tournament_id: String,
+    pub entrant_id: String,
+    /// `"requested"` (awaiting organiser approval, under an open join
+    /// policy) | `"accepted"`.
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u32>,
+    /// Which fixed squad (0-based) this entrant belongs to, for a teamless
+    /// tournament (`entry_audience: Players`, `team_formation: Manual`) —
+    /// same shape as `MatchRecord::allow_unassigned`: an entrant with no
+    /// `squad` yet is unassigned, same as a player with no side, and
+    /// `start` requires every accepted entry to have one. `None` for every
+    /// other tournament (`Teams`, or an `Auto` teamless one).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub squad: Option<u32>,
+    pub added_by_user_id: String,
+    pub created_at: String,
+}
+
+/// `TOURNAMENT#<id>` / `BRACKET#<matchId>` — knockout only. Written once, at
+/// bracket-generation time, for every non-final match: the whole mechanism
+/// that lets a confirmed score propagate the winner into the next round (see
+/// `agon_worker`'s tournament-progression stream handler). No separate
+/// "bracket shape" record exists because the shape is fully recoverable from
+/// these edges plus each match's own `tournament_round`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TournamentBracketEdgeRecord {
+    pub tournament_id: String,
+    pub match_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub winner_feeds_into_match_id: Option<String>,
+    /// The real `side_id` (minted at bracket-generation time) of
+    /// `winner_feeds_into_match_id` that the winner fills. `None` for the
+    /// final (no match to feed into).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub winner_feeds_into_side: Option<String>,
+}
+
 /// Shared by `MatchRecord::allow_unassigned`, `JoinLinkScopeRecord::allow_unassigned`
 /// and `crate::sports::cricket::CricketFormatRecord`'s extra-ball flags — not
 /// cricket- or match-specific, so it stays here rather than moving into any
@@ -690,6 +895,38 @@ pub struct MatchSideRecord {
     /// opt-in for team self-join. Meaningless without a `team_id`.
     #[serde(default)]
     pub team_join_enabled: bool,
+    /// Whether an individual ringer — someone with no team connection to
+    /// this side at all — may join it directly through the match's
+    /// open-join policy, when that policy is `OpenJoinScopeRecord::
+    /// MatchWide` (meaningless under `PerSide`, where `open_join` below
+    /// governs instead, and meaningless whenever `MatchRecord::open_join`
+    /// is `None`). Distinct from `team_join_enabled`: a side a team has
+    /// already claimed can still set this to take ringers on its remaining
+    /// slots, which is exactly why this lives per-side rather than as one
+    /// match-wide switch. `#[serde(default)]` for sides written before open
+    /// joining existed.
+    #[serde(default)]
+    pub open_join_enabled: bool,
+    /// This side's own open-join policy, when the match's own
+    /// `MatchRecord::open_join` is `OpenJoinScopeRecord::PerSide`
+    /// (meaningless under `MatchWide`, where `open_join_enabled` above
+    /// governs instead). `None` means this side is closed to ringers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_join: Option<SideOpenJoinPolicyRecord>,
+    /// Cap on how many ringers *this side* accepts, independent of (and
+    /// possibly tighter than) both the match-wide
+    /// `OpenJoinPolicyRecord::max_open_spots` (under `MatchWide` scope) and
+    /// this side's own `max_players`. `None` = uncapped — ringers simply
+    /// fill whatever raw capacity remains on the side. Compared against
+    /// `open_joined_count`, never `player_count`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_open_spots: Option<u32>,
+    /// How many of `player_count` arrived as a ringer on this side — what
+    /// `max_open_spots` is enforced against. See
+    /// `MatchRecord::open_joined_count`'s doc comment for why this counts
+    /// only ringer arrivals rather than every player.
+    #[serde(default)]
+    pub open_joined_count: u32,
     /// How many players currently take a spot on this side
     /// (`MatchPlayerRecord::occupies_slot`) — the number `max_players` caps.
     /// Pending and declined invitees placed on the side aren't counted,
@@ -855,6 +1092,152 @@ pub enum JoinSourceRecord {
     /// Moved in off the waitlist by a match admin
     /// (`Dao::move_in_from_waitlist_tx`) once a spot freed up.
     Waitlist,
+    /// Joined through the match's open-join policy
+    /// (`MatchRecord::open_join`) — either directly (the policy didn't
+    /// require approval) or by having a `MatchJoinRequestRecord` approved.
+    /// Either way they're a "ringer": nobody who already had a link,
+    /// invite or team connection to the side needs this variant.
+    Open,
+}
+
+/// Who may join a match through its open-join policy
+/// (`OpenJoinPolicyRecord::audience`). Free-standing rather than nested
+/// inside `OpenJoinPolicyRecord` so the tournaments-joining feature's "who
+/// may enter" setting can reuse this exact type instead of duplicating it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenJoinAudienceRecord {
+    /// Individuals may join directly onto an open side/unassigned.
+    Individuals,
+    /// A whole outside team may claim an unclaimed side (joining "as one" —
+    /// see the design doc). Not yet wired to a join path; stored so an
+    /// organiser's choice survives until team claiming ships.
+    Teams,
+    /// Both of the above.
+    Both,
+}
+
+/// One eligibility condition an open-join (or, eventually, tournament-entry)
+/// candidate must meet. Free-standing — not nested inside
+/// `OpenJoinPolicyRecord` — for the same reason as
+/// [`OpenJoinAudienceRecord`]: the tournaments-joining feature ANDs the same
+/// rule set rather than inventing its own. Every rule in a policy's `rules`
+/// must pass; an empty list means anyone in `audience` qualifies. Evaluated
+/// per-viewer at request time (join, or list/search), never baked into a
+/// search index — see the design doc's "Eligibility evaluation" section.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum EligibilityRuleRecord {
+    /// The candidate's ladder rating for this match's sport must be at
+    /// least `min`. Inert in practice until ranks are a user-facing
+    /// concept — nothing stops an organiser setting this today, but the
+    /// service should refuse to accept it until then (see the design
+    /// doc's phasing), since nobody can see the rating they'd need to meet.
+    MinRating { min: u32 },
+    /// The candidate must have played at least `min` matches in this sport.
+    MinMatchesPlayed { min: u32 },
+}
+
+/// A match's opt-in "open to the public" policy, carried by
+/// `OpenJoinScopeRecord::MatchWide` — absent entirely
+/// (`MatchRecord::open_join` is `None`) means invite/link/team-only, as every
+/// match behaved before this field existed. A match carrying this is
+/// surfaced by Discover search, subject to `rules` and remaining capacity.
+///
+/// `requires_approval` is deliberately orthogonal to `audience`/`rules`: it
+/// adds a human decision for someone who has *already* been determined
+/// eligible, it never relaxes who's eligible. So a declined candidate was
+/// always one who passed every rule — approval is about who the organiser
+/// actually wants, not a second eligibility gate.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpenJoinPolicyRecord {
+    pub audience: OpenJoinAudienceRecord,
+    /// AND'd — see [`EligibilityRuleRecord`]'s doc comment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<EligibilityRuleRecord>,
+    #[serde(default)]
+    pub requires_approval: bool,
+    /// Cap on how many open arrivals this match accepts in total,
+    /// independent of (and possibly tighter than) the match's own derived
+    /// capacity (`MatchAggregate::effective_max_players`). `None` =
+    /// uncapped — open joining simply fills whatever raw capacity remains,
+    /// which was the only behaviour before this field existed. Enforced
+    /// against `MatchRecord::open_joined_count`, never
+    /// `total_player_count` — see that field's doc comment for why. Only
+    /// meaningful under `OpenJoinScopeRecord::MatchWide`: a `PerSide` match
+    /// has no single policy to cap, since every side's own
+    /// `MatchSideRecord::max_open_spots` already caps that side.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_open_spots: Option<u32>,
+}
+
+/// `MatchRecord::open_join`'s two shapes: one policy governing the whole
+/// match (today's shape, unchanged — see `OpenJoinPolicyRecord`), or each
+/// side configuring its own policy independently via
+/// `MatchSideRecord::open_join`. Never both at once — an organiser picks one
+/// or the other for the whole match.
+///
+/// Under `PerSide`, there's no "join unassigned" option: an unassigned
+/// landing has no side to carry a policy, so a joiner always has to pick one
+/// of the open sides (same as a join link with `allow_unassigned: false`
+/// today).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OpenJoinScopeRecord {
+    MatchWide(OpenJoinPolicyRecord),
+    PerSide,
+}
+
+/// One side's own open-join policy, carried by `MatchSideRecord::open_join`
+/// — meaningful only when the match's own `MatchRecord::open_join` is
+/// `OpenJoinScopeRecord::PerSide`. Same fields as `OpenJoinPolicyRecord`
+/// minus `max_open_spots` (a side's own cap is `MatchSideRecord::
+/// max_open_spots` instead, which already exists independent of scope).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SideOpenJoinPolicyRecord {
+    pub audience: OpenJoinAudienceRecord,
+    /// AND'd — see [`EligibilityRuleRecord`]'s doc comment.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<EligibilityRuleRecord>,
+    #[serde(default)]
+    pub requires_approval: bool,
+}
+
+/// `MATCH#<matchId>` / `JOINREQ#<userId>` — a request to join a match through
+/// its open-join policy, when that policy requires approval
+/// (`OpenJoinPolicyRecord::requires_approval`). Keyed by `user_id`, the same
+/// convention as [`MatchWaitlistEntryRecord`]: at most one request per
+/// (match, user) is meaningful, which makes "already requested" a
+/// conditional-put guard on the key itself.
+///
+/// Unlike a waitlist entry, this is never deleted. Approving or declining it
+/// is a soft status update in place (mirrors `JoinLinkRecord::revoked_at`),
+/// so a decided request stays listable for "recently decided" — and so a
+/// declined candidate can't just retry: the conditional put that creates a
+/// request fails the moment one exists at that key, whatever its status.
+/// Eligibility (`EligibilityRuleRecord`) still gates who may *request* —
+/// approval only decides who the organiser actually wants among those who
+/// already qualify.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MatchJoinRequestRecord {
+    pub user_id: String,
+    /// The side requested, mirroring `JoinMatchInput::side_id` — `None` for
+    /// unassigned. For a `Teams`-audience request this is the side being
+    /// claimed (not yet wired to a join path — see
+    /// `OpenJoinAudienceRecord::Teams`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side_id: Option<String>,
+    pub requested_at: String,
+    /// "pending" | "approved" | "declined" — same plain-string convention as
+    /// `InvitationRecord::status`, rather than an enum carrying the decision
+    /// facts: `decided_at`/`decided_by_user_id` below are flat siblings, not
+    /// nested inside a variant, which keeps every DynamoDB update expression
+    /// against this item a plain top-level `SET`.
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_by_user_id: Option<String>,
 }
 
 /// `MATCH#<matchId>` / `SCORE#<sport>` — the match's live-scoring score

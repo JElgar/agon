@@ -29,6 +29,7 @@ import { BrowseMatchesPage } from '@/pages/BrowseMatchesPage'
 import { ProfilePage } from '@/pages/ProfilePage'
 import { LogMatchPage } from '@/pages/LogMatchPage'
 import { MatchDetailPage } from '@/pages/MatchDetailPage'
+import { EditMatchPage } from '@/pages/EditMatchPage'
 import { MatchSeriesPage } from '@/pages/MatchSeriesPage'
 import { LiveScoringSetupPage } from '@/pages/LiveScoringSetupPage'
 import { LiveScoringPage } from '@/pages/LiveScoringPage'
@@ -45,6 +46,10 @@ import { TeamPage } from '@/pages/TeamPage'
 import { AdminLayout } from '@/pages/admin/AdminLayout'
 import { AdminUsersPage } from '@/pages/admin/AdminUsersPage'
 import { useIsAdmin } from '@/hooks/useIsAdmin'
+import { CreatePage } from '@/pages/CreatePage'
+import { CreateTournamentPage } from '@/pages/CreateTournamentPage'
+import { TournamentPage } from '@/pages/TournamentPage'
+import { TournamentEntriesPage } from '@/pages/TournamentEntriesPage'
 import {
   getPendingInvite,
   setPendingInvite,
@@ -138,6 +143,7 @@ function AppShell({ onSignOut }: { onSignOut: () => void }) {
           <Routes>
           <Route path="/" element={<HomeRedirect />} />
           <Route path="/feed" element={<FeedPage />} />
+          <Route path="/create" element={<CreatePage />} />
           <Route path="/matches/new" element={<LogMatchPage />} />
           <Route
             path="/matches/scheduled"
@@ -145,11 +151,15 @@ function AppShell({ onSignOut }: { onSignOut: () => void }) {
           />
           <Route path="/matches/search" element={<BrowseMatchesPage />} />
           <Route path="/matches/:matchId" element={<MatchDetailPage />} />
+          <Route path="/matches/:matchId/edit" element={<EditMatchPage />} />
           <Route path="/match-series/:seriesId" element={<MatchSeriesPage />} />
           <Route path="/matches/:matchId/live/setup" element={<LiveScoringSetupPage />} />
           <Route path="/matches/:matchId/live" element={<LiveScoringPage />} />
           <Route path="/teams" element={<TeamsPage />} />
           <Route path="/teams/:teamId" element={<TeamPage />} />
+          <Route path="/tournaments/new" element={<CreateTournamentPage />} />
+          <Route path="/tournaments/:tournamentId" element={<TournamentPage />} />
+          <Route path="/tournaments/:tournamentId/entries" element={<TournamentEntriesPage />} />
           <Route path="/notifications" element={<NotificationsPage />} />
           <Route path="/invitations" element={<ComingSoon title="Invitations" />} />
           <Route path="/invite/:token" element={<AcceptInvitePage />} />

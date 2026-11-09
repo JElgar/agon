@@ -74,6 +74,14 @@ pub struct MatchDoc {
     /// series' matches" filter resolve without hydrating every match.
     #[serde(skip_serializing_if = "Option::is_none")]
     series_id: Option<String>,
+    /// Whether this match has an open-join policy set at all (`Match.
+    /// open_join.is_some()`) — the Discover "open to ringers" filter.
+    open: bool,
+    /// `open` and currently has room for another individual arrival — see
+    /// `agon_core::dao::open_join::open_has_space`'s doc comment on what
+    /// this approximates. Meaningless (always `false`) when `open` is
+    /// `false`.
+    open_has_space: bool,
 }
 
 /// Handle an index-relevant change event. Returns `Ok(())` for events that are
@@ -217,5 +225,7 @@ fn match_doc(agg: &MatchAggregate) -> MatchDoc {
         losing_participant_ids: losing_participant_ids.into_iter().collect(),
         drawing_participant_ids: drawing_participant_ids.into_iter().collect(),
         series_id: m.series_id.clone(),
+        open: m.open_join.is_some(),
+        open_has_space: agon_core::dao::open_join::open_has_space(agg),
     }
 }

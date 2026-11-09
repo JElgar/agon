@@ -424,6 +424,8 @@ mod tests {
             total_player_count: 0,
             location: None,
             series_id: None,
+            tournament_id: None,
+            tournament_round: None,
             sides: Default::default(),
             header_photos: Vec::new(),
             authority: Default::default(),
@@ -435,6 +437,8 @@ mod tests {
             live_tip_seq: None,
             format: None,
             ranked: false,
+            open_join: None,
+            open_joined_count: 0,
             created_at: "2026-07-01T10:00:00Z".into(),
         }
     }

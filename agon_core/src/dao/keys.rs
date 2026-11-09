@@ -89,6 +89,8 @@ pub enum Pk {
     DevicePairing(String),
     /// A recurring match series and its generation state. `SERIES#<sid>`
     Series(String),
+    /// A tournament and its entries/bracket edges. `TOURNAMENT#<tid>`
+    Tournament(String),
 }
 
 impl Pk {
@@ -111,6 +113,7 @@ impl Pk {
             Pk::Asset(_) => "ASSET",
             Pk::DevicePairing(_) => "DEVPAIR",
             Pk::Series(_) => "SERIES",
+            Pk::Tournament(_) => "TOURNAMENT",
         }
     }
 
@@ -134,7 +137,8 @@ impl fmt::Display for Pk {
             | Pk::JoinLink(v)
             | Pk::Asset(v)
             | Pk::DevicePairing(v)
-            | Pk::Series(v) => v,
+            | Pk::Series(v)
+            | Pk::Tournament(v) => v,
         };
         write!(f, "{}{}{}", self.prefix(), DELIMITER, value)
     }
@@ -162,6 +166,7 @@ impl FromStr for Pk {
             "ASSET" => Ok(Pk::Asset(value.into())),
             "DEVPAIR" => Ok(Pk::DevicePairing(value.into())),
             "SERIES" => Ok(Pk::Series(value.into())),
+            "TOURNAMENT" => Ok(Pk::Tournament(value.into())),
             other => Err(KeyError::UnknownPrefix(other.into())),
         }
     }
@@ -197,6 +202,16 @@ pub enum Sk {
     /// at most one entry per (match, user), so this doubles as the
     /// "already waitlisted" uniqueness guard.
     WaitlistEntry(String),
+    /// A pending (or decided) request to join a match through its open-join
+    /// policy, when that policy requires approval
+    /// (`OpenJoinPolicyRecord::requires_approval`) — see
+    /// `MatchJoinRequestRecord`'s doc comment. `JOINREQ#<userId>` — like
+    /// `WaitlistEntry`, at most one per (match, user), so this doubles as the
+    /// "already requested" uniqueness guard. Unlike a waitlist entry it is
+    /// never deleted on approval/decline, only soft-updated (same convention
+    /// as `JoinLinkRecord::revoked_at`), so a decided request still shows in
+    /// "recently decided".
+    JoinRequest(String),
     /// A claim on one series occurrence's generation slot, in the series'
     /// own partition. `OCCURRENCE#<startsAt>` — keyed on the occurrence's
     /// `starts_at` (not its 0-based index) so that two occurrences a date-math
@@ -298,6 +313,16 @@ pub enum Sk {
         played_at: String,
         match_id: String,
     },
+
+    /// A tournament entry, in the tournament's partition. `ENTRY#<entrantId>`
+    /// — `entrantId` is a team id (`TournamentEntryAudienceRecord::Teams`) or
+    /// a user id (`Players`), whichever the tournament's `entry_audience` is.
+    /// At most one entry per entrant, so this doubles as the "already
+    /// entered" uniqueness guard.
+    Entry(String),
+    /// A knockout bracket edge, in the tournament's partition.
+    /// `BRACKET#<matchId>` — see `TournamentBracketEdgeRecord`.
+    BracketEdge(String),
 }
 
 impl Sk {
@@ -318,6 +343,7 @@ impl Sk {
             Sk::Side(_) => "SIDE",
             Sk::Player(_) => "PLAYER",
             Sk::WaitlistEntry(_) => "WAITLIST",
+            Sk::JoinRequest(_) => "JOINREQ",
             Sk::Occurrence(_) => "OCCURRENCE",
             Sk::Score(_) => "LIVESCORE",
             Sk::Like(_) => "LIKE",
@@ -332,6 +358,8 @@ impl Sk {
             Sk::Feed { .. } => "FEED",
             Sk::RatingContribution(_) => "RATINGCONTRIB",
             Sk::Rating { .. } => "RATING",
+            Sk::Entry(_) => "ENTRY",
+            Sk::BracketEdge(_) => "BRACKET",
         }
     }
 
@@ -381,6 +409,11 @@ impl Sk {
         format!("{}{DELIMITER}", Sk::WaitlistEntry(String::new()).prefix())
     }
 
+    /// Lists a match's open-join requests, pending and decided alike: `JOINREQ#`.
+    pub fn join_request_prefix() -> String {
+        format!("{}{DELIMITER}", Sk::JoinRequest(String::new()).prefix())
+    }
+
     /// Lists a series' claimed occurrences, ordered by `starts_at`: `OCCURRENCE#`.
     pub fn occurrence_prefix() -> String {
         format!("{}{DELIMITER}", Sk::Occurrence(String::new()).prefix())
@@ -422,6 +455,16 @@ impl Sk {
             "{}{DELIMITER}",
             Sk::RatingContribution(String::new()).prefix()
         )
+    }
+
+    /// Lists a tournament's entries: `ENTRY#`.
+    pub fn entry_prefix() -> String {
+        format!("{}{DELIMITER}", Sk::Entry(String::new()).prefix())
+    }
+
+    /// Lists a tournament's bracket edges: `BRACKET#`.
+    pub fn bracket_edge_prefix() -> String {
+        format!("{}{DELIMITER}", Sk::BracketEdge(String::new()).prefix())
     }
 
     /// The stem every ladder's rating-history prefix extends: `RATING#`.
@@ -506,6 +549,7 @@ impl fmt::Display for Sk {
             | Sk::Side(v)
             | Sk::Player(v)
             | Sk::WaitlistEntry(v)
+            | Sk::JoinRequest(v)
             | Sk::Occurrence(v)
             | Sk::Score(v)
             | Sk::Like(v)
@@ -516,7 +560,9 @@ impl fmt::Display for Sk {
             | Sk::Device(v)
             | Sk::PairedDevice(v)
             | Sk::StatContribution(v)
-            | Sk::RatingContribution(v) => write!(f, "{}{}{}", self.prefix(), DELIMITER, v),
+            | Sk::RatingContribution(v)
+            | Sk::Entry(v)
+            | Sk::BracketEdge(v) => write!(f, "{}{}{}", self.prefix(), DELIMITER, v),
 
             // Zero-padded so lexicographic order matches numeric seq order.
             Sk::LiveEvent(seq) => write!(f, "LIVEEVT{DELIMITER}{seq:010}"),
@@ -590,6 +636,7 @@ impl FromStr for Sk {
             "SIDE" => Ok(Sk::Side(rest.into())),
             "PLAYER" => Ok(Sk::Player(rest.into())),
             "WAITLIST" => Ok(Sk::WaitlistEntry(rest.into())),
+            "JOINREQ" => Ok(Sk::JoinRequest(rest.into())),
             "OCCURRENCE" => Ok(Sk::Occurrence(rest.into())),
             "LIVESCORE" => Ok(Sk::Score(rest.into())),
             "LIKE" => Ok(Sk::Like(rest.into())),
@@ -612,6 +659,8 @@ impl FromStr for Sk {
                 })
             }
             "RATINGCONTRIB" => Ok(Sk::RatingContribution(rest.into())),
+            "ENTRY" => Ok(Sk::Entry(rest.into())),
+            "BRACKET" => Ok(Sk::BracketEdge(rest.into())),
             "RATING" => {
                 let (ladder, played_at, match_id) = three(rest)?;
                 Ok(Sk::Rating {
@@ -655,6 +704,7 @@ mod tests {
         pk_roundtrip(Pk::Asset("a1".into()), "ASSET#a1");
         pk_roundtrip(Pk::DevicePairing("ABC123".into()), "DEVPAIR#ABC123");
         pk_roundtrip(Pk::Series("sr1".into()), "SERIES#sr1");
+        pk_roundtrip(Pk::Tournament("tr1".into()), "TOURNAMENT#tr1");
     }
 
     #[test]
@@ -693,6 +743,7 @@ mod tests {
         sk_roundtrip(Sk::Side("side_red".into()), "SIDE#side_red");
         sk_roundtrip(Sk::Player("p1".into()), "PLAYER#p1");
         sk_roundtrip(Sk::WaitlistEntry("w1".into()), "WAITLIST#w1");
+        sk_roundtrip(Sk::JoinRequest("u4".into()), "JOINREQ#u4");
         sk_roundtrip(
             Sk::Occurrence("2026-06-01T10:00:00Z".into()),
             "OCCURRENCE#2026-06-01T10:00:00Z",
@@ -710,6 +761,8 @@ mod tests {
             "PAIREDDEV#device:abc123",
         );
         sk_roundtrip(Sk::StatContribution("u4".into()), "STATCONTRIB#u4");
+        sk_roundtrip(Sk::Entry("t1".into()), "ENTRY#t1");
+        sk_roundtrip(Sk::BracketEdge("m1".into()), "BRACKET#m1");
     }
 
     #[test]
@@ -893,6 +946,7 @@ mod tests {
         assert_eq!(Sk::side_prefix(), "SIDE#");
         assert_eq!(Sk::player_prefix(), "PLAYER#");
         assert_eq!(Sk::waitlist_prefix(), "WAITLIST#");
+        assert_eq!(Sk::join_request_prefix(), "JOINREQ#");
         assert_eq!(Sk::occurrence_prefix(), "OCCURRENCE#");
         assert_eq!(Sk::like_prefix(), "LIKE#");
         assert_eq!(Sk::live_event_prefix(), "LIVEEVT#");
@@ -900,6 +954,8 @@ mod tests {
         assert_eq!(Sk::feed_prefix(), "FEED#");
         assert_eq!(Sk::paired_device_prefix(), "PAIREDDEV#");
         assert_eq!(Sk::rating_contribution_prefix(), "RATINGCONTRIB#");
+        assert_eq!(Sk::entry_prefix(), "ENTRY#");
+        assert_eq!(Sk::bracket_edge_prefix(), "BRACKET#");
         assert_eq!(Sk::rating_prefix("squash"), "RATING#squash#");
         assert_eq!(
             Sk::rating_history_from("squash", "2026-06-01T10:00:00Z"),
@@ -935,6 +991,7 @@ mod tests {
             Sk::side_prefix(),
             Sk::player_prefix(),
             Sk::waitlist_prefix(),
+            Sk::join_request_prefix(),
             Sk::occurrence_prefix(),
             Sk::like_prefix(),
             Sk::live_event_prefix(),
@@ -943,6 +1000,8 @@ mod tests {
             Sk::paired_device_prefix(),
             Sk::rating_contribution_prefix(),
             Sk::rating_stem(),
+            Sk::entry_prefix(),
+            Sk::bracket_edge_prefix(),
             "SCORESUB#".to_string(),
         ];
         for (i, a) in prefixes.iter().enumerate() {

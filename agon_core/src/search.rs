@@ -55,6 +55,8 @@ impl Index {
                 "starts_at_ts",
                 "status",
                 "series_id",
+                "open",
+                "open_has_space",
             ],
             Index::Users | Index::Teams => &[],
         }

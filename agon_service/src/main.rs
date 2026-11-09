@@ -50,14 +50,17 @@ use mapping::{
     join_link_scope_to_record, live_event_from_record, location_to_record, match_format_sport_tag,
     match_format_to_record, match_from_records, match_player_role_from_record,
     match_score_from_record, match_score_to_record, match_series_from_record,
-    match_series_occurrence_from_record, match_status_str, match_type_tag, new_live_event_to_dao,
-    notification_actor_id, notification_from_record, ranked_added_players_reason,
-    ranked_lock_reason_for_update, rating_ladder, rating_ladder_for, rating_placements_from_record,
-    resolve_score_ids, roster_preview_player, score_player_ids, score_side_ids,
-    score_submission_from_record, score_to_record, search_match_from_records,
-    series_end_record_from_input, set_score_players, switch_to_ranked_reason, team_from_records,
-    team_list_item_from_record, team_member_from_record, unrankable_sport_reason,
-    unratable_players, user_profile_from_record, winner_from_score,
+    match_series_occurrence_from_record, match_status_str, match_type_tag,
+    matches_played_for_sport, new_live_event_to_dao, notification_actor_id,
+    notification_from_record, ranked_added_players_reason, ranked_guest_invites_reason,
+    ranked_lock_reason_for_update, rated_ranked_edit_reason, rating_history_point_from_record,
+    rating_ladder, rating_ladder_for, rating_placements_from_record, resolve_score_ids,
+    roster_preview_player, score_player_ids, score_side_ids, score_submission_from_record,
+    score_to_record, search_match_from_records, series_end_record_from_input, set_score_players,
+    switch_to_ranked_reason, team_from_records, team_list_item_from_record,
+    team_member_from_record, tournament_entry_from_record, tournament_from_record,
+    tournament_match_summary_from_record, unrankable_sport_reason, unratable_players,
+    user_profile_from_record, winner_from_score,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -76,9 +79,10 @@ mod membership;
 use membership::{
     AddInvitationsInput, CreateJoinLinkInput, Invitation, InvitationContext, InvitationDetail,
     InvitationKind, InvitationMatchContext, InvitationStatus, JoinLink, JoinLinkPreview,
-    JoinMatchInput, MatchPlayerRole, Member, RespondByTokenInput, RespondToInvitationInput,
-    SetMatchPlayerRoleInput, TokenInvitation, TransferMatchOwnershipInput, UserInvitation,
-    UserMember,
+    JoinMatchInput, JoinRequest, JoinRequestInput, MatchPlayerRole, Member, OpenJoinScope,
+    OpenJoinScopeInput, OpenJoinScopeKind, RespondByTokenInput, RespondToInvitationInput,
+    SetMatchPlayerRoleInput, SideOpenJoinInput, SideOpenJoinPolicy, TokenInvitation,
+    TransferMatchOwnershipInput, UserInvitation, UserMember,
 };
 
 mod team;
@@ -210,6 +214,53 @@ pub struct LadderPlacement {
     pub played: u32,
     /// How many are needed in all before the rating is published.
     pub required: u32,
+}
+
+/// One point on a rating-over-time chart: where a player's rating stood after
+/// one rated match, and the step that got it there.
+#[derive(Object)]
+pub struct RatingHistoryPoint {
+    /// The match this point is the effect of.
+    pub match_id: String,
+    /// When that match was **played** (its `starts_at`) — not when its rating
+    /// was applied. Played order is what the collection is sorted by, so a
+    /// result confirmed late is still plotted where it belongs.
+    pub played_at: chrono::DateTime<chrono::Utc>,
+    /// The rating after this match: the value to plot.
+    pub rating: i32,
+    /// The `±` half-width after this match, for the confidence band. It
+    /// narrows as a player settles, which is most of what a new player's
+    /// chart has to show.
+    pub confidence: i32,
+    /// `rating - confidence` after this match.
+    pub floor: i32,
+    /// The rating this match started from.
+    ///
+    /// **Not redundant with the previous point's `rating`, and that is the
+    /// reason it is here.** Ratings are applied in confirmation order but
+    /// plotted in played order, so a match confirmed after a later one was
+    /// already folded in starts from a rating no earlier *point* ever had.
+    /// Comparing the two is how a client tells where its line is genuinely
+    /// discontinuous, and draws it without implying a step that never
+    /// happened. See `RepairTrigger::OutOfOrder` in `agon_worker`.
+    pub rating_before: i32,
+    /// The movement as the player was shown it on the day — the "+18" on a
+    /// match card.
+    ///
+    /// Stored rather than recomputed from `rating_before` and `rating`,
+    /// deliberately. Every other number here goes through `rating::scale` on
+    /// read so that retuning the scale moves every chart at once; this one is
+    /// a record of what the player was actually told, and recomputing it
+    /// would rewrite history.
+    pub delta: i32,
+}
+
+/// A page of one player's rating history on one ladder, **oldest first**.
+#[derive(Object)]
+pub struct RatingHistoryPage {
+    pub items: Vec<RatingHistoryPoint>,
+    /// Pass back as `cursor` for the next page; `None` on the last one.
+    pub next_cursor: Option<String>,
 }
 
 /// The authenticated user's own view: their public `profile` plus private fields
@@ -418,6 +469,22 @@ struct MatchSide {
     /// See `CreateMatchSideInput.team_join_enabled` — not yet read by any
     /// join flow.
     team_join_enabled: bool,
+    /// Whether this side takes individual ringers under the match's own
+    /// `Match.open_join` policy, when that policy's `mode` is `match_wide`
+    /// (meaningless under `per_side`, where `open_join` below governs
+    /// instead, and meaningless whenever `Match.open_join` is `None`).
+    open_join_enabled: bool,
+    /// This side's own open-join policy, present only when `Match.open_join`
+    /// is set with `mode: per_side` and this side is open to ringers.
+    /// `None` under `match_wide` scope (where `open_join_enabled` above
+    /// governs instead) or when this side is closed.
+    open_join: Option<SideOpenJoinPolicy>,
+    /// Cap on how many ringers this side accepts, independent of the
+    /// match-wide `OpenJoinPolicy::max_open_spots`. `None` = uncapped.
+    max_open_spots: Option<u32>,
+    /// How many of `player_count` arrived as a ringer through open joining
+    /// — what `max_open_spots` is enforced against.
+    open_joined_count: u32,
 }
 
 /// A player in a side's `roster_preview` — name/avatar only, not the full
@@ -627,6 +694,10 @@ struct Match {
     /// every other `Match`-returning response, not because it doesn't
     /// apply, just because nothing reads it there.
     viewer_team_join_side_ids: Option<Vec<String>>,
+    /// This match's open-join scope and policy, set via `PUT
+    /// /matches/:match_id/open-join`. `None` means invite/link/team-only —
+    /// as every match was before open joining existed.
+    open_join: Option<OpenJoinScope>,
     /// The recurring series this match was generated from, if any
     /// (`GET /match-series/:id` fetches the series itself).
     series_id: Option<String>,
@@ -1145,6 +1216,194 @@ struct MatchSeriesOccurrencePage {
     next_cursor: Option<String>,
 }
 
+/// A tournament's generation format.
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+#[oai(rename_all = "snake_case")]
+enum TournamentFormat {
+    Knockout,
+    League,
+}
+
+/// Who enters a tournament.
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+#[oai(rename_all = "snake_case")]
+enum TournamentEntryAudience {
+    Teams,
+    Players,
+}
+
+/// How entrants are ordered into the bracket/fixture list at `start`.
+/// `Manual` reads each entry's `seed`; `Random` shuffles.
+#[derive(Enum, Debug, Clone, Copy, PartialEq, Eq)]
+#[oai(rename_all = "snake_case")]
+enum TournamentSeeding {
+    Random,
+    Manual,
+}
+
+/// `POST /tournaments` input. v1 only supports `entry_audience: "teams"` —
+/// a teamless tournament (`"players"` on a team sport, squads reassembled
+/// each round) is designed but not yet buildable (see `team_formation`'s doc
+/// comment on `TournamentTeamFormationRecord`); this input still accepts the
+/// fields so the schema doesn't need to change again once it is.
+#[derive(Object)]
+struct CreateTournamentInput {
+    match_type: MatchType,
+    name: String,
+    description: String,
+    format: TournamentFormat,
+    /// Only `Teams` is supported by `start` today.
+    entry_audience: TournamentEntryAudience,
+    /// `"manual"` | `"auto"` — only meaningful (and only accepted) when
+    /// `entry_audience` is `"players"` on a team sport.
+    team_formation: Option<String>,
+    /// `"wins"` | `"rating"` | `"games_played"` — required when
+    /// `team_formation` is `"auto"`.
+    team_formation_auto_by: Option<String>,
+    squad_size: Option<u32>,
+    min_teams: u32,
+    max_teams: Option<u32>,
+    location: Option<Location>,
+    /// "weekly" | "fortnightly" | "monthly" | "yearly". Unused for now —
+    /// every generated match starts at `first_round_starts_at` (see
+    /// `start_tournament`'s doc comment) — but still stored so a future
+    /// auto-cadence feature has somewhere to read it back from. Defaults to
+    /// `"weekly"` when omitted.
+    frequency: Option<String>,
+    /// 0 = Sunday .. 6 = Saturday. Defaults to `first_round_starts_at`'s own
+    /// weekday when omitted (and must match it when given, same as before).
+    weekday: Option<u8>,
+    /// Every generated match's `starts_at`, verbatim — see
+    /// `start_tournament`'s doc comment for why this isn't advanced
+    /// per-round yet.
+    first_round_starts_at: chrono::DateTime<chrono::Utc>,
+    timezone: String,
+    /// Defaults to 3/1/0 when omitted; irrelevant for knockout.
+    points_win: Option<u32>,
+    points_draw: Option<u32>,
+    points_loss: Option<u32>,
+    seeding: TournamentSeeding,
+}
+
+/// `TOURNAMENT#<id>` as the API sees it — see `TournamentRecord`'s doc
+/// comment for the full lifecycle.
+#[derive(Object)]
+struct Tournament {
+    id: String,
+    created_by_user_id: String,
+    name: String,
+    description: String,
+    match_type: MatchType,
+    format: TournamentFormat,
+    /// `"open"` | `"in_progress"` | `"completed"` | `"cancelled"`.
+    status: String,
+    entry_audience: TournamentEntryAudience,
+    team_formation: Option<String>,
+    team_formation_auto_by: Option<String>,
+    squad_size: Option<u32>,
+    min_teams: u32,
+    max_teams: Option<u32>,
+    location: Option<Location>,
+    frequency: String,
+    weekday: u8,
+    first_round_starts_at: chrono::DateTime<chrono::Utc>,
+    timezone: String,
+    points_win: u32,
+    points_draw: u32,
+    points_loss: u32,
+    seeding: TournamentSeeding,
+    entry_count: u64,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// One entrant's place in a tournament (`entrant_id` is a team id when
+/// `entry_audience` is `Teams`, a user id when `Players`).
+#[derive(Object)]
+struct TournamentEntry {
+    tournament_id: String,
+    entrant_id: String,
+    /// `"requested"` | `"accepted"` — v1 only ever writes `"accepted"`
+    /// (direct add by the organiser; no open-entry/approval flow yet).
+    status: String,
+    seed: Option<u32>,
+    /// Which fixed squad (0-based) this entrant belongs to — only set on a
+    /// teamless tournament (`entry_audience: "players"`). `None` is
+    /// "unassigned", same as a player with no side in an ordinary match;
+    /// set it via `POST /tournaments/{id}/entries/{entrant_id}/squad`.
+    squad: Option<u32>,
+    added_by_user_id: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// One page of `GET /tournaments/{id}/entries`. `next_cursor` absent => end.
+#[derive(Object)]
+struct TournamentEntryPage {
+    items: Vec<TournamentEntry>,
+    next_cursor: Option<String>,
+}
+
+/// `POST /tournaments/{id}/entries` input — the organiser directly adding an
+/// entrant (v1 has no request/approve flow).
+#[derive(Object)]
+struct AddTournamentEntryInput {
+    /// A team id when the tournament's `entry_audience` is `"teams"`.
+    entrant_id: String,
+    /// Required when the tournament's `seeding` is `"manual"`.
+    seed: Option<u32>,
+}
+
+/// `POST /tournaments/{id}/entries/{entrant_id}/squad` input — assigns (or
+/// reassigns) which fixed squad a teamless entrant plays in, same shape as
+/// assigning an unassigned player to a side in an ordinary match.
+#[derive(Object)]
+struct AssignTournamentEntrySquadInput {
+    squad: u32,
+}
+
+/// One entrant's standing in a league tournament, computed on read from its
+/// generated matches (see `GET /tournaments/{id}/standings`'s doc comment) —
+/// never denormalized onto the tournament or entry records.
+#[derive(Object)]
+struct TournamentStandingsRow {
+    entrant_id: String,
+    played: u32,
+    won: u32,
+    drawn: u32,
+    lost: u32,
+    points: u32,
+}
+
+/// `GET /tournaments/{id}/standings` — ordered by `points` descending.
+#[derive(Object)]
+struct TournamentStandings {
+    rows: Vec<TournamentStandingsRow>,
+}
+
+/// One match within a tournament, as listed by `GET /tournaments/{id}/matches`
+/// — just what a bracket/fixtures view needs (sides, score, round/slot),
+/// not the full roster `Match` carries (not needed for a list view; link to
+/// `GET /matches/{id}` for that).
+#[derive(Object)]
+struct TournamentMatchSummary {
+    id: String,
+    /// 0-based (knockout: 0 = the first round with matches, after byes are
+    /// resolved; league: 0 = matchday 1).
+    round: u32,
+    /// Bracket position within the round; always 0 for league.
+    slot: u32,
+    starts_at: chrono::DateTime<chrono::Utc>,
+    status: MatchStatus,
+    sides: Vec<MatchSide>,
+    confirmed_score: Option<ConfirmedScore>,
+}
+
+/// One page of `GET /tournaments/{id}/matches`. `next_cursor` absent => end.
+#[derive(Object)]
+struct TournamentMatchPage {
+    items: Vec<TournamentMatchSummary>,
+    next_cursor: Option<String>,
+}
+
 /// The organiser's one-stop update for a match: edit metadata, reconcile the
 /// actual line-up, and/or record the result — all in one validated, atomic call.
 /// All fields optional; only supplied fields take effect. The server validates
@@ -1168,9 +1427,12 @@ struct UpdateMatchInput {
     status: Option<MatchStatus>,
     /// Ad-hoc players who actually played but weren't invited (e.g. ringers).
     /// They take a spot without being asked anything, so on a match that is
-    /// (or this request makes) ranked, only users already opted in to its
-    /// ladder can be added this way: a player without an account, or one who
-    /// hasn't opted in, is refused (400), and should be invited instead.
+    /// (or this request makes) ranked, every one of them needs an Agon
+    /// account: one without is refused (400), and should be invited instead.
+    /// Nothing further is asked of them — playing a ranked match is the whole
+    /// of the agreement — but a guest has no profile to keep a rating on, and
+    /// the pipeline refuses to rate such a match at all rather than rate
+    /// around them (see `UnratablePlayers::without_account`).
     added_players: Option<Vec<AddMatchPlayerInput>>,
     /// Reassign existing players to sides (late changes to who played for whom).
     side_assignments: Option<Vec<SetPlayerSideInput>>,
@@ -1261,11 +1523,11 @@ struct UpdateMatchInput {
     /// unconstrained even for an already-played match; see
     /// `CreateMatchInput.ranked` for why, and for what limits it instead.
     ///
-    /// Switching **to** ranked also needs everyone it would rate, or could
-    /// move in, to have agreed to it: every player in a spot must have an
-    /// account and be opted in to the ladder, and so must everyone on the
-    /// waitlist. Otherwise it's refused (400) naming them. Pending invitees
-    /// don't count; they're asked when they accept.
+    /// Switching **to** ranked also needs everyone it would rate to be
+    /// rateable: every player in a spot must have an Agon account, or it's
+    /// refused (400) naming them. Pending invitees don't count — they hold no
+    /// spot until they accept — and the waitlist isn't read at all, because a
+    /// waitlist entry always names an account and so can never fail this.
     ranked: Option<bool>,
     // Note: no `match_type`. A match's sport is fixed at creation, and a
     // ranked match relies on that: a new sport would move its result to
@@ -1721,6 +1983,144 @@ enum ListMatchSeriesOccurrencesResponse {
 
     #[oai(status = 400)]
     ValidationError(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum CreateTournamentResponse {
+    #[oai(status = 200)]
+    Tournament(Json<Tournament>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum GetTournamentResponse {
+    #[oai(status = 200)]
+    Tournament(Json<Tournament>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum ListTournamentEntriesResponse {
+    #[oai(status = 200)]
+    Entries(Json<TournamentEntryPage>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum AddTournamentEntryResponse {
+    #[oai(status = 200)]
+    Entry(Json<TournamentEntry>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't the tournament's owner/admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    /// The tournament (or, for `"teams"`, the entrant team) doesn't exist.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+
+    /// This entrant already has an entry.
+    #[oai(status = 409)]
+    Conflict(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum AssignTournamentEntrySquadResponse {
+    #[oai(status = 200)]
+    Entry(Json<TournamentEntry>),
+
+    /// The tournament isn't teamless, or isn't `"open"`.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't the tournament's owner/admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum WithdrawTournamentEntryResponse {
+    /// The entry no longer exists.
+    #[oai(status = 204)]
+    Ok,
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't the tournament's owner/admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum StartTournamentResponse {
+    #[oai(status = 200)]
+    Tournament(Json<Tournament>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't the tournament's owner/admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum GetTournamentStandingsResponse {
+    #[oai(status = 200)]
+    Standings(Json<TournamentStandings>),
+
+    /// Standings aren't meaningful for a knockout tournament, or a
+    /// teamless one (not supported yet).
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum ListTournamentMatchesResponse {
+    #[oai(status = 200)]
+    Matches(Json<TournamentMatchPage>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum CancelTournamentResponse {
+    #[oai(status = 200)]
+    Tournament(Json<Tournament>),
+
+    /// The tournament is already `"completed"`/`"cancelled"`.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't the tournament's owner/admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
@@ -2426,6 +2826,113 @@ enum SetMatchPlayerRoleResponse {
     NotFound(PlainText<String>),
 }
 
+/// Set a match's open-join scope — `PUT /matches/:match_id/open-join`.
+#[derive(ApiResponse)]
+enum SetOpenJoinPolicyResponse {
+    #[oai(status = 200)]
+    Scope(Json<OpenJoinScope>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// Close a match back to invite/link/team-only — `DELETE
+/// /matches/:match_id/open-join`. Idempotent.
+#[derive(ApiResponse)]
+enum ClearOpenJoinPolicyResponse {
+    #[oai(status = 204)]
+    Ok,
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// Open or close one side to individual ringers — `PUT
+/// /matches/:match_id/sides/:side_id/open-join`.
+#[derive(ApiResponse)]
+enum SetSideOpenJoinResponse {
+    #[oai(status = 204)]
+    Ok,
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    /// The match doesn't exist, or the side isn't part of it.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// Request to join a match through its open-join policy — `POST
+/// /matches/:match_id/join-requests`. Used only when the policy requires
+/// approval; otherwise `POST /matches/:match_id/join` seats the caller
+/// directly. See `JoinRequestInput`'s doc comment.
+#[derive(ApiResponse)]
+enum CreateJoinRequestResponse {
+    #[oai(status = 201)]
+    Request(Json<JoinRequest>),
+
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+
+    /// The caller is already on the roster, or already has a request
+    /// (pending or decided) for this match.
+    #[oai(status = 409)]
+    Conflict(PlainText<String>),
+}
+
+/// List a match's join requests, oldest-requested first — admin-only, same
+/// as `GET /matches/:match_id/waitlist`.
+#[derive(ApiResponse)]
+enum ListJoinRequestsResponse {
+    #[oai(status = 200)]
+    Requests(Json<Vec<JoinRequest>>),
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+/// Approve or decline a pending join request — admin-only.
+#[derive(ApiResponse)]
+enum DecideJoinRequestResponse {
+    /// Approved: the requester is now seated and the match/side headcounts
+    /// already reflect it. Declined: the request is marked `Declined`;
+    /// nothing else changes.
+    #[oai(status = 204)]
+    Ok,
+
+    /// The caller isn't a match admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    /// The match doesn't exist, or there's no such request.
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+
+    /// The request is no longer pending (already decided), or (approving
+    /// only) a cap has been reached since the caller's own read.
+    #[oai(status = 409)]
+    Conflict(Json<RosterConflict>),
+}
+
 #[derive(ApiResponse)]
 enum LeaveMatchResponse {
     /// The caller is no longer on the roster.
@@ -2505,6 +3012,26 @@ enum ListFollowsResponse {
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
+}
+
+/// `GET /users/:user_id/ratings/:ladder/history`.
+///
+/// There is deliberately **no status for a withheld rating** — and none for
+/// an unknown user either. An empty page is the answer to "no published
+/// rating on this ladder" however that came about: never played it, still in
+/// placements, or no such user. A response that fired only while a rating was
+/// being withheld would be exactly the hint the withholding exists to
+/// prevent, in the same way `User::rating_placements` is kept off other
+/// people's profiles.
+#[derive(ApiResponse)]
+enum GetRatingHistoryResponse {
+    #[oai(status = 200)]
+    History(Json<RatingHistoryPage>),
+
+    /// `ladder` doesn't name a rating ladder. Ladders are sport tags, and
+    /// `other` deliberately has none (see `rating::ladder_for`).
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
 }
 
 #[OpenApi]
@@ -2747,6 +3274,91 @@ impl Api {
         Ok(GetUserProfileResponse::User(Json(
             user_profile_from_record(&record, is_followed),
         )))
+    }
+
+    /// A player's rating over time on one ladder, oldest first.
+    ///
+    /// Read from `USER#<uid>` / `RATING#<ladder>#<played_at>#<matchId>`, which
+    /// the rating pipeline has written since it shipped — one item per rated
+    /// match, carrying the before and after of both μ and σ. Nothing is
+    /// recomputed here except the display scale, and the collection is
+    /// time-ordered by its own key, so this handler is a read and a map.
+    ///
+    /// **Published ratings only, and that is the whole of the
+    /// authorization.** A rating in placements is withheld from everybody
+    /// including its owner — `UserProfile::ratings` has the argument — so the
+    /// test is `published(matches_rated)` on the stored rating and nothing at
+    /// all about who is asking. One condition, in one place, on the only
+    /// endpoint that serves this collection: the same reason
+    /// `published_ratings_from_record` does the filtering for profiles rather
+    /// than leaving it to each caller.
+    ///
+    /// Once published the **whole** path is returned, placement matches
+    /// included. The early points have a wide band narrowing as the player
+    /// settles, which is the honest shape of a new rating and the most
+    /// interesting thing on the chart — not something to trim off.
+    ///
+    /// Ascending only, with no `from` parameter: `Dao::list_rating_history`
+    /// walks forwards because a chart plots left to right and the planned
+    /// `RepairRatings` replay walks forwards too, and a client wanting the
+    /// recent end can reverse a page it already holds. `from` exists for that
+    /// replay and isn't a client concern.
+    #[oai(path = "/users/:user_id/ratings/:ladder/history", method = "get")]
+    async fn get_rating_history(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(user_id): Path<String>,
+        Path(ladder): Path<String>,
+        /// Opaque cursor from the previous page's `next_cursor`.
+        Query(cursor): Query<Option<String>>,
+        /// Maximum number of items to return (defaults to 20, capped at 50).
+        Query(limit): Query<Option<u32>>,
+    ) -> Result<GetRatingHistoryResponse> {
+        self.require_uid(dao, &jwt_data).await?;
+        info!("Getting {user_id} rating history on {ladder}");
+
+        if agon_core::rating::ladder_for_tag(&ladder).is_none() {
+            return Ok(GetRatingHistoryResponse::ValidationError(PlainText(
+                format!("`{ladder}` is not a rating ladder"),
+            )));
+        }
+
+        // The `ratings` projection rather than `Dao::get_user`: reading a
+        // rating should depend on nothing but that attribute's shape (see
+        // `Dao::get_ratings`), and nothing else on the profile is wanted here.
+        let published = dao
+            .get_rating(&user_id, &ladder)
+            .await
+            .map_err(dao_internal)?
+            .is_some_and(|rating| agon_core::rating::published(rating.matches_rated));
+
+        // Withheld and absent answer identically — see the response enum.
+        if !published {
+            return Ok(GetRatingHistoryResponse::History(Json(RatingHistoryPage {
+                items: Vec::new(),
+                next_cursor: None,
+            })));
+        }
+
+        let page = dao
+            .list_rating_history(
+                &user_id,
+                &ladder,
+                None,
+                cursor.as_deref(),
+                page_limit(limit),
+            )
+            .await
+            .map_err(dao_internal)?;
+        Ok(GetRatingHistoryResponse::History(Json(RatingHistoryPage {
+            items: page
+                .items
+                .iter()
+                .map(rating_history_point_from_record)
+                .collect(),
+            next_cursor: page.next_cursor,
+        })))
     }
 
     #[oai(path = "/users", method = "post")]
@@ -3073,6 +3685,14 @@ impl Api {
         /// Only matches in this lifecycle state (e.g. `scheduled`) — powers the
         /// "all scheduled matches" browse view.
         Query(status): Query<Option<MatchStatus>>,
+        /// Only matches with an open-join policy set — the Discover "open to
+        /// ringers" filter.
+        Query(open): Query<Option<bool>>,
+        /// Only matches that are `open` and currently have room for another
+        /// individual arrival — see `agon_core::dao::open_join::
+        /// open_has_space`'s doc comment on what this approximates. Ignored
+        /// (not applied) unless `open` is also `true`.
+        Query(open_has_space): Query<Option<bool>>,
         /// Only matches at or after this time (inclusive).
         Query(from): Query<Option<chrono::DateTime<chrono::Utc>>>,
         /// Only matches at or before this time (inclusive).
@@ -3164,6 +3784,12 @@ impl Api {
         }
         if let Some(to) = to {
             clauses.push(format!("starts_at_ts <= {}", to.timestamp()));
+        }
+        if let Some(open) = open {
+            clauses.push(format!("open = {open}"));
+            if open && open_has_space == Some(true) {
+                clauses.push("open_has_space = true".to_string());
+            }
         }
         let filter = (!clauses.is_empty()).then(|| clauses.join(" AND "));
 
@@ -3369,6 +3995,34 @@ impl Api {
             return Ok(CreateMatchResponse::ValidationError(PlainText(reason)));
         }
 
+        // A guest on a side makes a ranked match rate *nobody* — not them
+        // (there is no profile to keep a rating on) and not anyone else
+        // (Weng-Lin sums a side's beliefs, so rating around them would credit
+        // their share of the result to their team-mates). The pipeline
+        // refuses the whole match rather than rate part of it, which means
+        // the organiser picks ranked, everyone plays, the score is agreed,
+        // and nothing moves — with no response saying so, only a `warn` in
+        // the worker. `update_match` has refused this for a while; creation
+        // was the last way to reach a ranked match that can never be rated.
+        //
+        // Every external invited is judged, not only those given a side. An
+        // unassigned guest is harmless to the gate as it stands, but someone
+        // invited to a ranked match is meant to play in it, and the first
+        // thing that puts them on a side makes the match unrateable — by
+        // which point the result exists and this answer is far too late.
+        // Creation is the only moment the choice is still free.
+        if input.ranked == Some(true) {
+            let guests = unratable_players(input.invites.iter().flat_map(|invite| {
+                invite
+                    .invited_externals
+                    .iter()
+                    .map(|external| (None, Some(external.name.as_str())))
+            }));
+            if let Some(reason) = ranked_guest_invites_reason(&guests) {
+                return Ok(CreateMatchResponse::ValidationError(PlainText(reason)));
+            }
+        }
+
         // The `starts_at` time must be consistent with whether a result is being
         // recorded: a match created with a score is already played (Completed),
         // so it must have started in the past; one without a score is upcoming
@@ -3413,6 +4067,13 @@ impl Api {
                     colour: side.colour.clone(),
                     max_players: side.max_players,
                     team_join_enabled: side.team_join_enabled.unwrap_or(false),
+                    // Ringers aren't configurable at creation — an organiser
+                    // opens a side to them afterwards, via the open-join
+                    // settings endpoint.
+                    open_join_enabled: false,
+                    open_join: None,
+                    max_open_spots: None,
+                    open_joined_count: 0,
                     // `Dao::create_match` recomputes both from the players
                     // list it's given, in the same transaction — placeholders.
                     player_count: 0,
@@ -3632,6 +4293,8 @@ impl Api {
             total_player_count: 0,
             location: input.location.as_ref().map(location_to_record),
             series_id: None,
+            tournament_id: None,
+            tournament_round: None,
             header_photos,
             sides,
             confirmed_score: None,
@@ -3654,6 +4317,10 @@ impl Api {
             // an invitee, who is asked when they accept. Prompts exist only
             // for a *switch*, which finds players already in place.
             authority: authority.clone(),
+            // Not configurable at creation — an organiser opens a match to
+            // the public afterwards, via the open-join settings endpoint.
+            open_join: None,
+            open_joined_count: 0,
             created_at: now.clone(),
         };
 
@@ -3877,6 +4544,34 @@ impl Api {
         {
             return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
                 "a match can no longer be changed between ranked and friendly: {reason}"
+            ))));
+        }
+
+        // A rated ranked match's inputs are closed: only its score can still
+        // be corrected. See `rated_ranked_edit_reason` for why each of the
+        // three is in the list, and why the score deliberately isn't.
+        // Checked here, before anything below writes, because this handler's
+        // writes aren't one transaction — a refusal after the first of them
+        // would leave the roster half-edited.
+        if let Some(reason) = rated_ranked_edit_reason(
+            &agg.match_,
+            input.added_players.as_ref().is_some_and(|p| !p.is_empty())
+                || input
+                    .removed_player_ids
+                    .as_ref()
+                    .is_some_and(|p| !p.is_empty())
+                || input
+                    .side_assignments
+                    .as_ref()
+                    .is_some_and(|p| !p.is_empty()),
+            resulting_starts_at
+                .as_deref()
+                .is_some_and(|at| at != agg.match_.starts_at.as_str()),
+            resulting_status != agg.match_.status.as_str(),
+        ) {
+            return Ok(UpdateMatchResponse::ValidationError(PlainText(format!(
+                "{reason}: a rating can't be recomputed from a changed match, \
+                 so only the score can be corrected"
             ))));
         }
 
@@ -4703,6 +5398,10 @@ impl Api {
                     colour: side.colour.clone(),
                     max_players: side.max_players,
                     team_join_enabled: true,
+                    open_join_enabled: false,
+                    open_join: None,
+                    max_open_spots: None,
+                    open_joined_count: 0,
                     player_count: 0,
                     roster_preview: Vec::new(),
                 },
@@ -4728,6 +5427,8 @@ impl Api {
             total_player_count: 0,
             location: input.location.as_ref().map(location_to_record),
             series_id: Some(series_id.clone()),
+            tournament_id: None,
+            tournament_round: None,
             header_photos: Vec::new(),
             sides,
             confirmed_score: None,
@@ -4746,6 +5447,8 @@ impl Api {
                 uid.clone(),
                 dao::records::MatchPlayerRole::Owner,
             )]),
+            open_join: None,
+            open_joined_count: 0,
             created_at: now,
         };
 
@@ -4843,6 +5546,1014 @@ impl Api {
                 items,
                 next_cursor: page.next_cursor,
             },
+        )))
+    }
+
+    /// Create a tournament. Entries are added afterwards (`POST
+    /// /tournaments/:id/entries`, organiser-direct-add only in v1) and the
+    /// match list is generated once the organiser calls `start`. v1 only
+    /// supports `entry_audience: "teams"` — see `CreateTournamentInput`'s
+    /// doc comment.
+    #[oai(path = "/tournaments", method = "post")]
+    async fn create_tournament(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        input: Json<CreateTournamentInput>,
+    ) -> Result<CreateTournamentResponse> {
+        info!("Creating tournament {}", input.name);
+        let input = input.0;
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let format = match input.format {
+            TournamentFormat::Knockout => dao::records::TournamentFormatRecord::Knockout,
+            TournamentFormat::League => dao::records::TournamentFormatRecord::League,
+        };
+        let entry_audience = match input.entry_audience {
+            TournamentEntryAudience::Teams => dao::records::TournamentEntryAudienceRecord::Teams,
+            TournamentEntryAudience::Players => {
+                dao::records::TournamentEntryAudienceRecord::Players
+            }
+        };
+        // A teamless tournament's squads are fixed once, manually, before
+        // `start` — the same shape as `MatchRecord::allow_unassigned`:
+        // entrants join with no squad, the organiser assigns one via `POST
+        // /tournaments/:id/entries/:entrant_id/squad`, and `start` requires
+        // every accepted entry to have one. `Auto` (balance by rating/
+        // games_played/wins) is designed but not built yet — refused up
+        // front rather than accepted and stuck forever in `"open"`.
+        let team_formation = match (entry_audience, input.team_formation.as_deref()) {
+            (dao::records::TournamentEntryAudienceRecord::Teams, None) => None,
+            (dao::records::TournamentEntryAudienceRecord::Teams, Some(_)) => {
+                return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                    "team_formation only applies when entry_audience is `players`".into(),
+                )));
+            }
+            (dao::records::TournamentEntryAudienceRecord::Players, Some("manual")) => {
+                Some(dao::records::TournamentTeamFormationRecord::Manual)
+            }
+            (dao::records::TournamentEntryAudienceRecord::Players, _) => {
+                return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                    "a teamless tournament needs team_formation: \"manual\" — \"auto\" isn't supported yet"
+                        .into(),
+                )));
+            }
+        };
+        if team_formation.is_some() && input.team_formation_auto_by.is_some() {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                "team_formation_auto_by only applies to team_formation: \"auto\", which isn't supported yet"
+                    .into(),
+            )));
+        }
+        if entry_audience == dao::records::TournamentEntryAudienceRecord::Teams
+            && input.squad_size.is_some()
+        {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                "squad_size only applies when entry_audience is `players`".into(),
+            )));
+        }
+        // A squad has no single seed of its own (its members might each
+        // have one, but that doesn't resolve to a squad order) — manual
+        // seeding only makes sense for `Teams`.
+        if entry_audience == dao::records::TournamentEntryAudienceRecord::Players
+            && input.seeding == TournamentSeeding::Manual
+        {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                "a teamless tournament only supports seeding: \"random\" — squads have no single seed"
+                    .into(),
+            )));
+        }
+        if let Some(frequency) = &input.frequency
+            && !matches!(
+                frequency.as_str(),
+                "weekly" | "fortnightly" | "monthly" | "yearly"
+            )
+        {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                format!(
+                    "frequency `{frequency}` must be one of weekly, fortnightly, monthly, yearly"
+                ),
+            )));
+        }
+        if let Some(weekday) = input.weekday
+            && weekday > 6
+        {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                "weekday must be 0..=6 (0 = Sunday .. 6 = Saturday)".to_string(),
+            )));
+        }
+        let Ok(timezone) = input.timezone.parse::<chrono_tz::Tz>() else {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                format!(
+                    "timezone `{}` is not a recognised IANA timezone name",
+                    input.timezone
+                ),
+            )));
+        };
+        use chrono::Datelike;
+        let first_local = input.first_round_starts_at.with_timezone(&timezone);
+        let starts_at_weekday = first_local.weekday().num_days_from_sunday() as u8;
+        if let Some(weekday) = input.weekday
+            && starts_at_weekday != weekday
+        {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                format!(
+                    "first_round_starts_at falls on weekday {starts_at_weekday}, not the configured weekday {weekday}"
+                ),
+            )));
+        }
+        if input.first_round_starts_at <= chrono::Utc::now() {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                "first_round_starts_at must be in the future".to_string(),
+            )));
+        }
+        if input.min_teams < 2 {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                "min_teams must be at least 2".to_string(),
+            )));
+        }
+        if let Some(max) = input.max_teams
+            && max < input.min_teams
+        {
+            return Ok(CreateTournamentResponse::ValidationError(PlainText(
+                "max_teams can't be less than min_teams".to_string(),
+            )));
+        }
+        let now = now_iso();
+        let tournament_id = new_id();
+        let tournament = dao::records::TournamentRecord {
+            id: tournament_id,
+            created_by_user_id: uid.clone(),
+            name: input.name,
+            description: input.description,
+            match_type: match_type_tag(&input.match_type).to_string(),
+            format,
+            status: "open".to_string(),
+            entry_audience,
+            team_formation,
+            squad_size: input.squad_size,
+            min_teams: input.min_teams,
+            max_teams: input.max_teams,
+            location: input.location.as_ref().map(location_to_record),
+            frequency: input.frequency.unwrap_or_else(|| "weekly".to_string()),
+            weekday: input.weekday.unwrap_or(starts_at_weekday),
+            first_round_starts_at: input
+                .first_round_starts_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            timezone: input.timezone,
+            points_win: input.points_win.unwrap_or(3),
+            points_draw: input.points_draw.unwrap_or(0),
+            points_loss: input.points_loss.unwrap_or(0),
+            seeding: match input.seeding {
+                TournamentSeeding::Random => dao::records::TournamentSeedingRecord::Random,
+                TournamentSeeding::Manual => dao::records::TournamentSeedingRecord::Manual,
+            },
+            entry_count: 0,
+            authority: std::collections::HashMap::from([(
+                uid,
+                dao::records::MatchPlayerRole::Owner,
+            )]),
+            created_at: now,
+        };
+
+        match dao.create_tournament(&tournament).await {
+            Ok(()) => {}
+            Err(dao::DaoError::Conflict(msg)) => {
+                return Ok(CreateTournamentResponse::ValidationError(PlainText(msg)));
+            }
+            Err(e) => return Err(dao_internal(e)),
+        }
+
+        Ok(CreateTournamentResponse::Tournament(Json(
+            tournament_from_record(&tournament),
+        )))
+    }
+
+    /// Fetch a tournament by id. Read-only, no authority check — same
+    /// posture as `GET /match-series/:id`.
+    #[oai(path = "/tournaments/:tournament_id", method = "get")]
+    async fn get_tournament(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+    ) -> Result<GetTournamentResponse> {
+        info!("Getting tournament {tournament_id}");
+        self.require_uid(dao, &jwt_data).await?;
+        match dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+        {
+            Some(t) => Ok(GetTournamentResponse::Tournament(Json(
+                tournament_from_record(&t),
+            ))),
+            None => Ok(GetTournamentResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            ))),
+        }
+    }
+
+    /// List a tournament's entries, paginated. Read-only, no authority check.
+    #[oai(path = "/tournaments/:tournament_id/entries", method = "get")]
+    async fn list_tournament_entries(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+        /// Opaque cursor from the previous page's `next_cursor`. Omit for the first page.
+        Query(cursor): Query<Option<String>>,
+        /// Maximum number of items to return (defaults to 20, capped at 50).
+        Query(limit): Query<Option<u32>>,
+    ) -> Result<ListTournamentEntriesResponse> {
+        info!("Listing entries of tournament {tournament_id}");
+        self.require_uid(dao, &jwt_data).await?;
+        if dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+            .is_none()
+        {
+            return Ok(ListTournamentEntriesResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            )));
+        }
+        let page = dao
+            .list_tournament_entries(&tournament_id, cursor.as_deref(), page_limit(limit))
+            .await
+            .map_err(dao_internal)?;
+        Ok(ListTournamentEntriesResponse::Entries(Json(
+            TournamentEntryPage {
+                items: page
+                    .items
+                    .iter()
+                    .map(tournament_entry_from_record)
+                    .collect(),
+                next_cursor: page.next_cursor,
+            },
+        )))
+    }
+
+    /// The organiser directly adds an entrant (v1 has no request/approve
+    /// flow — see `AddTournamentEntryInput`'s doc comment). Only while the
+    /// tournament is still `"open"`.
+    #[oai(path = "/tournaments/:tournament_id/entries", method = "post")]
+    async fn add_tournament_entry(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+        input: Json<AddTournamentEntryInput>,
+    ) -> Result<AddTournamentEntryResponse> {
+        info!(
+            "Adding entry {} to tournament {tournament_id}",
+            input.entrant_id
+        );
+        let input = input.0;
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let Some(tournament) = dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(AddTournamentEntryResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            )));
+        };
+        if !caller_is_tournament_admin(&tournament, &uid) {
+            return Ok(AddTournamentEntryResponse::Forbidden(PlainText(
+                "only the tournament's owner or an admin can add entries".into(),
+            )));
+        }
+        if tournament.status != "open" {
+            return Ok(AddTournamentEntryResponse::ValidationError(PlainText(
+                format!("tournament is `{}`, not `open`", tournament.status),
+            )));
+        }
+        if tournament.seeding == dao::records::TournamentSeedingRecord::Manual
+            && input.seed.is_none()
+        {
+            return Ok(AddTournamentEntryResponse::ValidationError(PlainText(
+                "this tournament uses manual seeding — seed is required".into(),
+            )));
+        }
+        if let Some(max) = tournament.max_teams
+            && tournament.entry_count >= max as u64
+        {
+            return Ok(AddTournamentEntryResponse::ValidationError(PlainText(
+                format!("tournament is already full ({max} entries)"),
+            )));
+        }
+        if tournament.entry_audience == dao::records::TournamentEntryAudienceRecord::Teams
+            && dao
+                .get_team(&input.entrant_id)
+                .await
+                .map_err(dao_internal)?
+                .is_none()
+        {
+            return Ok(AddTournamentEntryResponse::NotFound(PlainText(
+                "team not found".into(),
+            )));
+        }
+
+        let entry = dao::records::TournamentEntryRecord {
+            tournament_id: tournament_id.clone(),
+            entrant_id: input.entrant_id,
+            status: "accepted".to_string(),
+            seed: input.seed,
+            // Unassigned until the organiser calls the squad endpoint below
+            // — only meaningful on a teamless tournament.
+            squad: None,
+            added_by_user_id: uid,
+            created_at: now_iso(),
+        };
+        match dao.create_tournament_entry(&entry).await {
+            Ok(()) => {}
+            Err(dao::DaoError::Conflict(msg)) => {
+                return Ok(AddTournamentEntryResponse::Conflict(PlainText(msg)));
+            }
+            Err(e) => return Err(dao_internal(e)),
+        }
+
+        Ok(AddTournamentEntryResponse::Entry(Json(
+            tournament_entry_from_record(&entry),
+        )))
+    }
+
+    /// Assign (or reassign) which fixed squad a teamless entrant plays in —
+    /// same shape as assigning an unassigned player to a side in an
+    /// ordinary match. Organiser-only, and only while the tournament is
+    /// still `"open"`; `start` requires every accepted entry to have one.
+    #[oai(
+        path = "/tournaments/:tournament_id/entries/:entrant_id/squad",
+        method = "post"
+    )]
+    async fn assign_tournament_entry_squad(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+        Path(entrant_id): Path<String>,
+        input: Json<AssignTournamentEntrySquadInput>,
+    ) -> Result<AssignTournamentEntrySquadResponse> {
+        info!(
+            "Assigning entry {entrant_id} in tournament {tournament_id} to squad {}",
+            input.squad
+        );
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let Some(tournament) = dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(AssignTournamentEntrySquadResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            )));
+        };
+        if !caller_is_tournament_admin(&tournament, &uid) {
+            return Ok(AssignTournamentEntrySquadResponse::Forbidden(PlainText(
+                "only the tournament's owner or an admin can assign squads".into(),
+            )));
+        }
+        if tournament.entry_audience != dao::records::TournamentEntryAudienceRecord::Players {
+            return Ok(AssignTournamentEntrySquadResponse::ValidationError(
+                PlainText("squads only apply to a teamless tournament".into()),
+            ));
+        }
+        if tournament.status != "open" {
+            return Ok(AssignTournamentEntrySquadResponse::ValidationError(
+                PlainText(format!("tournament is `{}`, not `open`", tournament.status)),
+            ));
+        }
+        let Some(mut entry) = dao
+            .get_tournament_entry(&tournament_id, &entrant_id)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(AssignTournamentEntrySquadResponse::NotFound(PlainText(
+                "entry not found".into(),
+            )));
+        };
+        dao.set_tournament_entry_squad(&tournament_id, &entrant_id, input.squad)
+            .await
+            .map_err(dao_internal)?;
+        entry.squad = Some(input.squad);
+        Ok(AssignTournamentEntrySquadResponse::Entry(Json(
+            tournament_entry_from_record(&entry),
+        )))
+    }
+
+    /// Withdraw an entry (organiser-only in v1). Only while the tournament
+    /// is still `"open"` — once `start` has generated matches, an entrant's
+    /// place in the bracket/fixture list can't be pulled back out.
+    #[oai(
+        path = "/tournaments/:tournament_id/entries/:entrant_id",
+        method = "delete"
+    )]
+    async fn withdraw_tournament_entry(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+        Path(entrant_id): Path<String>,
+    ) -> Result<WithdrawTournamentEntryResponse> {
+        info!("Withdrawing entry {entrant_id} from tournament {tournament_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let Some(tournament) = dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(WithdrawTournamentEntryResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            )));
+        };
+        if !caller_is_tournament_admin(&tournament, &uid) {
+            return Ok(WithdrawTournamentEntryResponse::Forbidden(PlainText(
+                "only the tournament's owner or an admin can withdraw entries".into(),
+            )));
+        }
+        if tournament.status != "open" {
+            return Ok(WithdrawTournamentEntryResponse::ValidationError(PlainText(
+                format!("tournament is `{}`, not `open`", tournament.status),
+            )));
+        }
+        if dao
+            .get_tournament_entry(&tournament_id, &entrant_id)
+            .await
+            .map_err(dao_internal)?
+            .is_none()
+        {
+            return Ok(WithdrawTournamentEntryResponse::NotFound(PlainText(
+                "entry not found".into(),
+            )));
+        }
+        dao.delete_tournament_entry(&tournament_id, &entrant_id)
+            .await
+            .map_err(dao_internal)?;
+        Ok(WithdrawTournamentEntryResponse::Ok)
+    }
+
+    /// Generate every match upfront from the accepted entry list (knockout
+    /// bracket or league fixture list — see `agon_core::tournament`) and
+    /// flip the tournament to `"in_progress"`. Synchronous: real tournament
+    /// sizes are small (tens of matches at most), so this doesn't need the
+    /// rolling-window async machinery `agon_worker`'s `materialize_series`
+    /// uses for an open-ended series.
+    #[oai(path = "/tournaments/:tournament_id/start", method = "post")]
+    async fn start_tournament(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+    ) -> Result<StartTournamentResponse> {
+        info!("Starting tournament {tournament_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let Some(tournament) = dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(StartTournamentResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            )));
+        };
+        if !caller_is_tournament_admin(&tournament, &uid) {
+            return Ok(StartTournamentResponse::Forbidden(PlainText(
+                "only the tournament's owner or an admin can start it".into(),
+            )));
+        }
+        if tournament.status != "open" {
+            return Ok(StartTournamentResponse::ValidationError(PlainText(
+                format!("tournament is `{}`, not `open`", tournament.status),
+            )));
+        }
+        let mut entries: Vec<dao::records::TournamentEntryRecord> = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = dao
+                .list_tournament_entries(&tournament_id, cursor.as_deref(), 50)
+                .await
+                .map_err(dao_internal)?;
+            entries.extend(page.items.into_iter().filter(|e| e.status == "accepted"));
+            match page.next_cursor {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+
+        // Filled only for a teamless tournament: each fixed squad's display
+        // label/colour and member user ids, keyed by the synthetic entrant
+        // id generation assigns it (`"squad-<position>"`).
+        let mut squad_members: HashMap<String, Vec<String>> = HashMap::new();
+        let mut squad_labels: HashMap<String, (String, String)> = HashMap::new();
+
+        let ordered: Vec<String> = match tournament.entry_audience {
+            dao::records::TournamentEntryAudienceRecord::Teams => {
+                if (entries.len() as u32) < tournament.min_teams {
+                    return Ok(StartTournamentResponse::ValidationError(PlainText(
+                        format!(
+                            "need at least {} accepted entries to start (have {})",
+                            tournament.min_teams,
+                            entries.len()
+                        ),
+                    )));
+                }
+                if tournament.seeding == dao::records::TournamentSeedingRecord::Manual {
+                    if entries.iter().any(|e| e.seed.is_none()) {
+                        return Ok(StartTournamentResponse::ValidationError(PlainText(
+                            "manual seeding requires every accepted entry to have a seed".into(),
+                        )));
+                    }
+                    let mut sorted = entries;
+                    sorted.sort_by_key(|e| e.seed.unwrap());
+                    sorted.into_iter().map(|e| e.entrant_id).collect()
+                } else {
+                    let ids: Vec<String> = entries.into_iter().map(|e| e.entrant_id).collect();
+                    agon_core::tournament::random_seed_order(&ids)
+                }
+            }
+            // A teamless tournament's squads are fixed once, manually (see
+            // `AssignTournamentEntrySquadInput`), then run through the same
+            // generation as a team-entry league. Knockout isn't supported
+            // yet: a bracket's TBD slot gets filled by `agon_worker`
+            // writing the winning side's `team_id` only — there's no real
+            // team to auto-join, so a squad's roster would need to be
+            // copied into the next match too, which that handler doesn't
+            // do yet.
+            dao::records::TournamentEntryAudienceRecord::Players => {
+                if tournament.format != dao::records::TournamentFormatRecord::League {
+                    return Ok(StartTournamentResponse::ValidationError(PlainText(
+                        "starting a teamless knockout tournament isn't supported yet".into(),
+                    )));
+                }
+                if entries.iter().any(|e| e.squad.is_none()) {
+                    return Ok(StartTournamentResponse::ValidationError(PlainText(
+                        "every accepted entry needs a squad assignment before starting".into(),
+                    )));
+                }
+                let mut by_squad: std::collections::BTreeMap<u32, Vec<String>> = Default::default();
+                for e in entries {
+                    by_squad
+                        .entry(e.squad.unwrap())
+                        .or_default()
+                        .push(e.entrant_id);
+                }
+                if (by_squad.len() as u32) < tournament.min_teams {
+                    return Ok(StartTournamentResponse::ValidationError(PlainText(
+                        format!(
+                            "need at least {} squads to start (have {})",
+                            tournament.min_teams,
+                            by_squad.len()
+                        ),
+                    )));
+                }
+                const PALETTE: [&str; 6] = [
+                    "#2952D9", "#D92929", "#1FA37A", "#D9A429", "#7A29D9", "#29A3D9",
+                ];
+                let mut synthetic_ids: Vec<String> = Vec::new();
+                for (position, (_, members)) in by_squad.into_iter().enumerate() {
+                    let synthetic_id = format!("squad-{position}");
+                    squad_labels.insert(
+                        synthetic_id.clone(),
+                        (
+                            format!("Squad {}", position + 1),
+                            PALETTE[position % PALETTE.len()].to_string(),
+                        ),
+                    );
+                    squad_members.insert(synthetic_id.clone(), members);
+                    synthetic_ids.push(synthetic_id);
+                }
+                // `seeding` is forced to `"random"` for a teamless
+                // tournament at creation — a squad has no single seed.
+                agon_core::tournament::random_seed_order(&synthetic_ids)
+            }
+        };
+
+        let first_round_starts_at = mapping::parse_ts(&tournament.first_round_starts_at);
+
+        // Every generated match starts at the same time for now — picking a
+        // real per-round/per-matchday cadence (recurring weekly slots, or
+        // auto-filling a day's available window) is still being designed
+        // (2026-11-09, "how do you create a tournament" thread); until then
+        // the organiser nudges each match's actual time on the existing
+        // edit-match page as the tournament is played.
+        let round_starts_at = |_round: u32| -> String {
+            first_round_starts_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        };
+
+        let team_side = |team_id: &str| -> dao::records::MatchSideRecord {
+            dao::records::MatchSideRecord {
+                side_id: new_id(),
+                team_id: Some(team_id.to_string()),
+                name: None,
+                colour: None,
+                max_players: None,
+                team_join_enabled: true,
+                open_join_enabled: false,
+                open_join: None,
+                max_open_spots: None,
+                open_joined_count: 0,
+                player_count: 0,
+                roster_preview: Vec::new(),
+            }
+        };
+        let tbd_side = || -> dao::records::MatchSideRecord {
+            dao::records::MatchSideRecord {
+                side_id: new_id(),
+                team_id: None,
+                name: Some("TBD".to_string()),
+                colour: None,
+                max_players: None,
+                team_join_enabled: false,
+                open_join_enabled: false,
+                open_join: None,
+                max_open_spots: None,
+                open_joined_count: 0,
+                player_count: 0,
+                roster_preview: Vec::new(),
+            }
+        };
+        let knockout_side_record = |side: &agon_core::tournament::KnockoutSide| match side {
+            agon_core::tournament::KnockoutSide::Entrant(team_id) => team_side(team_id),
+            agon_core::tournament::KnockoutSide::Tbd(_) => tbd_side(),
+        };
+
+        // A league match's two sides, plus the roster players to seed it
+        // with. For `Teams`, a side joins via its own real team (no player
+        // records needed up front — same as every other team-linked side).
+        // For a teamless tournament's fixed squad, there's no real team to
+        // auto-join from, so its members are added directly, same shape as
+        // an organiser adding a player to an ordinary match (`invitation:
+        // None` — already in, no accept step).
+        let make_league_side = |entrant_id: &str| -> (
+            dao::records::MatchSideRecord,
+            Vec<dao::records::MatchPlayerRecord>,
+        ) {
+            match tournament.entry_audience {
+                dao::records::TournamentEntryAudienceRecord::Teams => {
+                    (team_side(entrant_id), Vec::new())
+                }
+                dao::records::TournamentEntryAudienceRecord::Players => {
+                    let (label, colour) = squad_labels
+                        .get(entrant_id)
+                        .cloned()
+                        .unwrap_or_else(|| ("Squad".to_string(), "#2952D9".to_string()));
+                    let side = dao::records::MatchSideRecord {
+                        side_id: new_id(),
+                        // Not a real team — the synthetic squad id, reused
+                        // so `GET /tournaments/{id}/standings` (which keys
+                        // rows by `team_id`) has a stable identity for this
+                        // squad across every one of its matches, the same
+                        // role a real team's id plays for a `Teams` entry.
+                        team_id: Some(entrant_id.to_string()),
+                        name: Some(label),
+                        colour: Some(colour),
+                        max_players: None,
+                        team_join_enabled: false,
+                        open_join_enabled: false,
+                        open_join: None,
+                        max_open_spots: None,
+                        open_joined_count: 0,
+                        player_count: 0,
+                        roster_preview: Vec::new(),
+                    };
+                    let players = squad_members
+                        .get(entrant_id)
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|user_id| dao::records::MatchPlayerRecord {
+                            player_id: new_id(),
+                            user_id: Some(user_id),
+                            display_name: None,
+                            side_id: Some(side.side_id.clone()),
+                            is_member_of_team: None,
+                            invitation: None,
+                            joined_via: None,
+                        })
+                        .collect();
+                    (side, players)
+                }
+            }
+        };
+
+        let build_match =
+            |match_id: String,
+             round: u32,
+             slot: u32,
+             sides: std::collections::HashMap<String, dao::records::MatchSideRecord>|
+             -> dao::records::MatchRecord {
+                dao::records::MatchRecord {
+                    id: match_id,
+                    created_by_user_id: uid.clone(),
+                    name: tournament.name.clone(),
+                    description: tournament.description.clone(),
+                    match_type: tournament.match_type.clone(),
+                    status: "scheduled".to_string(),
+                    starts_at: round_starts_at(round),
+                    allow_unassigned: true,
+                    total_player_count: 0,
+                    location: tournament.location.clone(),
+                    series_id: None,
+                    tournament_id: Some(tournament_id.clone()),
+                    tournament_round: Some(dao::records::TournamentRoundInfo { round, slot }),
+                    header_photos: Vec::new(),
+                    sides,
+                    confirmed_score: None,
+                    pending_score: None,
+                    like_count: 0,
+                    comment_count: 0,
+                    live_seq: 0,
+                    live_tip_seq: None,
+                    format: None,
+                    ranked: false,
+                    authority: tournament.authority.clone(),
+                    open_join: None,
+                    open_joined_count: 0,
+                    created_at: now_iso(),
+                }
+            };
+
+        match tournament.format {
+            dao::records::TournamentFormatRecord::Knockout => {
+                let plan = agon_core::tournament::plan_knockout_bracket(&ordered);
+                let minted: HashMap<String, String> = plan
+                    .matches
+                    .iter()
+                    .map(|m| (m.id.clone(), new_id()))
+                    .collect();
+                let resolved =
+                    agon_core::tournament::knockout_placeholder_to_real_id(&plan, &minted);
+
+                let mut side_ids_by_match: HashMap<String, (String, String)> = HashMap::new();
+                for m in &resolved.matches {
+                    let side_a = knockout_side_record(&m.side_a);
+                    let side_b = knockout_side_record(&m.side_b);
+                    side_ids_by_match.insert(
+                        m.id.clone(),
+                        (side_a.side_id.clone(), side_b.side_id.clone()),
+                    );
+                    let mut sides = std::collections::HashMap::new();
+                    sides.insert(side_a.side_id.clone(), side_a);
+                    sides.insert(side_b.side_id.clone(), side_b);
+                    let match_record = build_match(m.id.clone(), m.round, m.slot, sides);
+                    match dao.create_match(&match_record, &[]).await {
+                        Ok(()) => {}
+                        Err(dao::DaoError::Conflict(msg)) => {
+                            return Ok(StartTournamentResponse::ValidationError(PlainText(msg)));
+                        }
+                        Err(e) => return Err(dao_internal(e)),
+                    }
+                }
+                for (from, into, side_char) in &resolved.edges {
+                    let (side_id_a, side_id_b) = side_ids_by_match
+                        .get(into)
+                        .expect("every edge target was just created above");
+                    let target_side_id = if *side_char == 'A' {
+                        side_id_a.clone()
+                    } else {
+                        side_id_b.clone()
+                    };
+                    dao.create_tournament_bracket_edge(
+                        &dao::records::TournamentBracketEdgeRecord {
+                            tournament_id: tournament_id.clone(),
+                            match_id: from.clone(),
+                            winner_feeds_into_match_id: Some(into.clone()),
+                            winner_feeds_into_side: Some(target_side_id),
+                        },
+                    )
+                    .await
+                    .map_err(dao_internal)?;
+                }
+            }
+            dao::records::TournamentFormatRecord::League => {
+                let fixtures = agon_core::tournament::round_robin_fixtures(ordered.len());
+                for (round, matchday) in fixtures.iter().enumerate() {
+                    for (slot, (a_idx, b_idx)) in matchday.iter().enumerate() {
+                        let (side_a, players_a) = make_league_side(&ordered[*a_idx]);
+                        let (side_b, players_b) = make_league_side(&ordered[*b_idx]);
+                        let mut sides = std::collections::HashMap::new();
+                        sides.insert(side_a.side_id.clone(), side_a);
+                        sides.insert(side_b.side_id.clone(), side_b);
+                        let mut players = players_a;
+                        players.extend(players_b);
+                        let match_record = build_match(new_id(), round as u32, slot as u32, sides);
+                        match dao.create_match(&match_record, &players).await {
+                            Ok(()) => {}
+                            Err(dao::DaoError::Conflict(msg)) => {
+                                return Ok(StartTournamentResponse::ValidationError(PlainText(
+                                    msg,
+                                )));
+                            }
+                            Err(e) => return Err(dao_internal(e)),
+                        }
+                    }
+                }
+            }
+        }
+
+        dao.set_tournament_status(&tournament_id, "open", "in_progress")
+            .await
+            .map_err(dao_internal)?;
+        let tournament = dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+            .unwrap_or(tournament);
+        Ok(StartTournamentResponse::Tournament(Json(
+            tournament_from_record(&tournament),
+        )))
+    }
+
+    /// League standings, computed on read from the tournament's generated
+    /// matches (via their GSI1 `TMATCHES#<id>` projection — see
+    /// `Dao::list_tournament_matches`) rather than denormalized: a
+    /// tournament has at most a few dozen matches, so summing on every read
+    /// is cheap and can never drift from the matches themselves. Every
+    /// confirmed match counts, win/draw/loss read straight off
+    /// `MatchRecord::confirmed_score::winner_side_id` (no side is
+    /// unaccounted for, since every tournament side is team-linked).
+    #[oai(path = "/tournaments/:tournament_id/standings", method = "get")]
+    async fn get_tournament_standings(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+    ) -> Result<GetTournamentStandingsResponse> {
+        info!("Getting standings for tournament {tournament_id}");
+        self.require_uid(dao, &jwt_data).await?;
+
+        let Some(tournament) = dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(GetTournamentStandingsResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            )));
+        };
+        if tournament.format != dao::records::TournamentFormatRecord::League {
+            return Ok(GetTournamentStandingsResponse::ValidationError(PlainText(
+                "standings only apply to a league tournament".into(),
+            )));
+        }
+
+        let mut rows: HashMap<String, TournamentStandingsRow> = HashMap::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = dao
+                .list_tournament_matches(&tournament_id, cursor.as_deref(), 50)
+                .await
+                .map_err(dao_internal)?;
+            for m in &page.items {
+                let Some(confirmed) = &m.confirmed_score else {
+                    continue;
+                };
+                let team_ids: Vec<(String, String)> = m
+                    .sides
+                    .values()
+                    .filter_map(|s| s.team_id.as_ref().map(|t| (s.side_id.clone(), t.clone())))
+                    .collect();
+                for (_, team_id) in &team_ids {
+                    rows.entry(team_id.clone())
+                        .or_insert(TournamentStandingsRow {
+                            entrant_id: team_id.clone(),
+                            played: 0,
+                            won: 0,
+                            drawn: 0,
+                            lost: 0,
+                            points: 0,
+                        });
+                }
+                match &confirmed.winner_side_id {
+                    Some(winner_side_id) => {
+                        for (side_id, team_id) in &team_ids {
+                            let row = rows.get_mut(team_id).unwrap();
+                            row.played += 1;
+                            if side_id == winner_side_id {
+                                row.won += 1;
+                                row.points += tournament.points_win;
+                            } else {
+                                row.lost += 1;
+                                row.points += tournament.points_loss;
+                            }
+                        }
+                    }
+                    None => {
+                        for (_, team_id) in &team_ids {
+                            let row = rows.get_mut(team_id).unwrap();
+                            row.played += 1;
+                            row.drawn += 1;
+                            row.points += tournament.points_draw;
+                        }
+                    }
+                }
+            }
+            match page.next_cursor {
+                Some(c) => cursor = Some(c),
+                None => break,
+            }
+        }
+
+        let mut rows: Vec<TournamentStandingsRow> = rows.into_values().collect();
+        rows.sort_by_key(|r| std::cmp::Reverse(r.points));
+        Ok(GetTournamentStandingsResponse::Standings(Json(
+            TournamentStandings { rows },
+        )))
+    }
+
+    /// List a tournament's generated matches (knockout bracket or league
+    /// fixtures), via their GSI1 `TMATCHES#<id>` projection — same source
+    /// `get_tournament_standings` sums over, just returned per-match instead
+    /// of aggregated. Each match's full detail (roster, live scoring, …) is
+    /// still at `GET /matches/{id}`; this is only what a bracket/fixtures
+    /// list view needs. Read-only, no authority check.
+    #[oai(path = "/tournaments/:tournament_id/matches", method = "get")]
+    async fn list_tournament_matches(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+        /// Opaque cursor from the previous page's `next_cursor`. Omit for the first page.
+        Query(cursor): Query<Option<String>>,
+        /// Maximum number of items to return (defaults to 20, capped at 50).
+        Query(limit): Query<Option<u32>>,
+    ) -> Result<ListTournamentMatchesResponse> {
+        info!("Listing matches of tournament {tournament_id}");
+        self.require_uid(dao, &jwt_data).await?;
+        if dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+            .is_none()
+        {
+            return Ok(ListTournamentMatchesResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            )));
+        }
+        let page = dao
+            .list_tournament_matches(&tournament_id, cursor.as_deref(), page_limit(limit))
+            .await
+            .map_err(dao_internal)?;
+        Ok(ListTournamentMatchesResponse::Matches(Json(
+            TournamentMatchPage {
+                items: page
+                    .items
+                    .iter()
+                    .map(tournament_match_summary_from_record)
+                    .collect(),
+                next_cursor: page.next_cursor,
+            },
+        )))
+    }
+
+    /// Cancel a tournament (organiser-only). Doesn't touch any already-generated
+    /// matches — same posture as cancelling a series' remaining occurrences
+    /// without retracting the ones already created.
+    #[oai(path = "/tournaments/:tournament_id/cancel", method = "post")]
+    async fn cancel_tournament(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+    ) -> Result<CancelTournamentResponse> {
+        info!("Cancelling tournament {tournament_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let Some(tournament) = dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(CancelTournamentResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            )));
+        };
+        if !caller_is_tournament_admin(&tournament, &uid) {
+            return Ok(CancelTournamentResponse::Forbidden(PlainText(
+                "only the tournament's owner or an admin can cancel it".into(),
+            )));
+        }
+        if !matches!(tournament.status.as_str(), "open" | "in_progress") {
+            return Ok(CancelTournamentResponse::ValidationError(PlainText(
+                format!("tournament is already `{}`", tournament.status),
+            )));
+        }
+        dao.set_tournament_status(&tournament_id, &tournament.status, "cancelled")
+            .await
+            .map_err(dao_internal)?;
+        let tournament = dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+            .unwrap_or(tournament);
+        Ok(CancelTournamentResponse::Tournament(Json(
+            tournament_from_record(&tournament),
         )))
     }
 
@@ -5361,8 +7072,8 @@ impl Api {
             })));
         }
 
-        let new_tip = match dao.delete_live_event(&match_id, seq).await {
-            Ok(new_tip) => new_tip,
+        let deleted = match dao.delete_live_event(&match_id, seq).await {
+            Ok(deleted) => deleted,
             Err(dao::DaoError::NotFound(_)) => {
                 return Ok(DeleteLiveEventResponse::NotFound(Json(ErrorMessage {
                     message: "live event not found".into(),
@@ -5378,6 +7089,36 @@ impl Api {
             Err(e) => return Err(dao_internal(e)),
         };
 
+        // Undoing a match's only recorded event leaves its live log empty —
+        // the same state it was in before the first event ever auto-promoted
+        // it to `in_progress` (see `append_live_events`), so reverse that
+        // promotion rather than leaving the match stuck "live" with nothing
+        // in its log. Skipped once a score has actually been confirmed
+        // (finishing a live-scored match, or a later manual score edit),
+        // since that's a real result to preserve, not a promotion to undo.
+        if deleted.log_now_empty
+            && agg.match_.status == "in_progress"
+            && agg.match_.confirmed_score.is_none()
+        {
+            dao.update_match_meta(
+                &match_id,
+                None,
+                None,
+                Some("scheduled"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &[],
+                &[],
+            )
+            .await
+            .map_err(dao_internal)?;
+        }
+
         match self
             .derive_live_snapshot(
                 dao,
@@ -5387,7 +7128,7 @@ impl Api {
                 // The DAO's freshly-bumped counter, not `agg.match_.live_seq`
                 // (fetched before the delete — now stale, since the delete
                 // itself advances the counter).
-                new_tip,
+                deleted.new_tip,
             )
             .await?
         {
@@ -6969,20 +8710,24 @@ impl Api {
             }
             None => {
                 let eligible = caller_team_join_sides(dao, &agg, &uid).await?;
-                if eligible.is_empty() {
+                if !eligible.is_empty() {
+                    let scope = JoinScope {
+                        allowed_side_ids: Some(eligible),
+                        allow_unassigned: agg.match_.allow_unassigned,
+                    };
+                    (scope, dao::records::JoinSourceRecord::SelfServe)
+                } else if let Some(scope) = open_join_individual_scope(&agg) {
+                    (scope, dao::records::JoinSourceRecord::Open)
+                } else {
                     return Ok(JoinMatchResponse::ValidationError(PlainText(
                         "you're not eligible to join this match directly — ask for a join link \
                          or invite instead"
                             .into(),
                     )));
                 }
-                let scope = JoinScope {
-                    allowed_side_ids: Some(eligible),
-                    allow_unassigned: agg.match_.allow_unassigned,
-                };
-                (scope, dao::records::JoinSourceRecord::SelfServe)
             }
         };
+        let is_open_join = matches!(joined_via, dao::records::JoinSourceRecord::Open);
 
         let target_side_id = match resolve_join_target(&scope, input.side_id.as_deref(), &agg.sides)
         {
@@ -6990,11 +8735,41 @@ impl Api {
             Err(msg) => return Ok(JoinMatchResponse::ValidationError(PlainText(msg))),
         };
 
-        // Capacity, checked here for a precise error; `Dao::join_match_tx`
-        // re-checks atomically as the last-moment race guard (its own doc
-        // comment covers why the split).
+        if is_open_join {
+            // `open_join_individual_scope` only ever offers a target
+            // (side or unassigned) that has an effective policy, so this
+            // is safe. Checked against the *resolved* target rather than
+            // up front, since under `PerSide` each candidate side can carry
+            // different rules/approval.
+            let policy = open_join_effective_policy(&agg, target_side_id.as_deref())
+                .expect("a resolved open-join target always has an effective policy");
+            if policy.requires_approval {
+                return Ok(JoinMatchResponse::ValidationError(PlainText(
+                    "this match asks you to request to join first — see \
+                     POST /matches/:match_id/join-requests"
+                        .into(),
+                )));
+            }
+            if let Some(reason) =
+                caller_meets_eligibility_rules(dao, policy.rules, &agg, &uid).await?
+            {
+                return Ok(JoinMatchResponse::ValidationError(PlainText(reason)));
+            }
+        }
+
+        // Capacity, checked here for a precise error; `Dao::join_match_tx`/
+        // `Dao::join_open_match_tx` re-checks atomically as the last-moment
+        // race guard (its own doc comment covers why the split). An open
+        // join additionally respects the open/ringer-specific caps, via
+        // `open_full_reason`.
         let effective_max = agg.effective_max_players();
-        if let Some((kind, message)) = full_reason(&agg, target_side_id.as_deref()) {
+        let full = if is_open_join {
+            let max_open_spots = agg.match_.open_join.as_ref().map(open_join_max_open_spots);
+            open_full_reason(&agg, target_side_id.as_deref(), max_open_spots.flatten())
+        } else {
+            full_reason(&agg, target_side_id.as_deref())
+        };
+        if let Some((kind, message)) = full {
             return Ok(JoinMatchResponse::Conflict(Json(RosterConflict {
                 kind,
                 message: message.into(),
@@ -7015,8 +8790,26 @@ impl Api {
             joined_via: Some(joined_via),
         };
 
-        if let Err(e) = dao
-            .join_match_tx(
+        let join_result = if is_open_join {
+            let max_open_spots = agg
+                .match_
+                .open_join
+                .as_ref()
+                .and_then(open_join_max_open_spots);
+            let side_max_open_spots = target_side.and_then(|s| s.max_open_spots);
+            dao.join_open_match_tx(
+                &match_id,
+                &player,
+                target_side.and_then(|s| s.max_players),
+                effective_max,
+                side_max_open_spots,
+                max_open_spots,
+                &agg.match_.starts_at,
+                &now_iso(),
+            )
+            .await
+        } else {
+            dao.join_match_tx(
                 &match_id,
                 &player,
                 target_side.and_then(|s| s.max_players),
@@ -7025,7 +8818,8 @@ impl Api {
                 &now_iso(),
             )
             .await
-        {
+        };
+        if let Err(e) = join_result {
             return match e {
                 // The atomic guard caught a race the pre-check above missed —
                 // capacity changed underneath it (the player put's own
@@ -7037,7 +8831,15 @@ impl Api {
                     let fresh = dao.get_match(&match_id).await.map_err(dao_internal)?;
                     let (kind, message) = fresh
                         .as_ref()
-                        .and_then(|agg| full_reason(agg, target_side_id.as_deref()))
+                        .and_then(|agg| match (is_open_join, agg.match_.open_join.as_ref()) {
+                            (true, Some(scope)) => open_full_reason(
+                                agg,
+                                target_side_id.as_deref(),
+                                open_join_max_open_spots(scope),
+                            ),
+                            (true, None) => None,
+                            (false, _) => full_reason(agg, target_side_id.as_deref()),
+                        })
                         .unwrap_or((RosterConflictKind::MatchFull, "this match is full"));
                     Ok(JoinMatchResponse::Conflict(Json(RosterConflict {
                         kind,
@@ -7188,6 +8990,439 @@ impl Api {
             .await
             .map_err(dao_internal)?;
         Ok(SetMatchPlayerRoleResponse::Ok)
+    }
+
+    /// Set a match's open-join ("ringers") scope.
+    ///
+    /// Match-admin only. Replaces any existing scope wholesale — see
+    /// `OpenJoinScopeInput`'s doc comment for what each mode means.
+    ///
+    /// Under `match_wide`, opening a match this way doesn't by itself make
+    /// any side joinable: `PUT /matches/:match_id/sides/:side_id/open-join`
+    /// still has to enable ringers on at least one side (or the match has to
+    /// allow unassigned) for `audience: individuals`/`both` to have any
+    /// effect. Under `per_side`, the same endpoint sets each side's own
+    /// policy directly instead.
+    #[oai(path = "/matches/:match_id/open-join", method = "put")]
+    async fn set_open_join_policy(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        input: Json<OpenJoinScopeInput>,
+    ) -> Result<SetOpenJoinPolicyResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let input = input.0;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(SetOpenJoinPolicyResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(SetOpenJoinPolicyResponse::Forbidden(PlainText(
+                "only a match admin can set the open-join scope".into(),
+            )));
+        }
+
+        let record = match (input.mode, input.policy) {
+            (OpenJoinScopeKind::MatchWide, Some(policy)) => {
+                dao::records::OpenJoinScopeRecord::MatchWide(mapping::open_join_policy_to_record(
+                    &policy,
+                ))
+            }
+            (OpenJoinScopeKind::MatchWide, None) => {
+                return Ok(SetOpenJoinPolicyResponse::ValidationError(PlainText(
+                    "mode: match_wide needs a policy".into(),
+                )));
+            }
+            (OpenJoinScopeKind::PerSide, _) => dao::records::OpenJoinScopeRecord::PerSide,
+        };
+        dao.set_match_open_join_policy(&match_id, Some(&record))
+            .await
+            .map_err(dao_internal)?;
+        Ok(SetOpenJoinPolicyResponse::Scope(Json(
+            mapping::open_join_scope_from_record(&record),
+        )))
+    }
+
+    /// Close a match back to invite/link/team-only.
+    ///
+    /// Match-admin only. Idempotent — clearing an already-closed match is a
+    /// no-op success. Doesn't touch any side's ringer settings or disturb
+    /// anyone already seated via the open-join path; it only stops new
+    /// open/ringer arrivals.
+    #[oai(path = "/matches/:match_id/open-join", method = "delete")]
+    async fn clear_open_join_policy(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+    ) -> Result<ClearOpenJoinPolicyResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(ClearOpenJoinPolicyResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(ClearOpenJoinPolicyResponse::Forbidden(PlainText(
+                "only a match admin can clear the open-join policy".into(),
+            )));
+        }
+
+        dao.set_match_open_join_policy(&match_id, None)
+            .await
+            .map_err(dao_internal)?;
+        Ok(ClearOpenJoinPolicyResponse::Ok)
+    }
+
+    /// Open or close one side to individual ringers.
+    ///
+    /// Match-admin only. See `SideOpenJoinInput`'s doc comment — settable
+    /// independently of the match's own open-join scope, but which of
+    /// `enabled`/`side_policy` applies depends on that scope (`match_wide`
+    /// or `per_side`).
+    #[oai(path = "/matches/:match_id/sides/:side_id/open-join", method = "put")]
+    async fn set_side_open_join(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        Path(side_id): Path<String>,
+        input: Json<SideOpenJoinInput>,
+    ) -> Result<SetSideOpenJoinResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let input = input.0;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(SetSideOpenJoinResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(SetSideOpenJoinResponse::Forbidden(PlainText(
+                "only a match admin can change a side's ringer settings".into(),
+            )));
+        }
+        if !agg.sides.iter().any(|s| s.side_id == side_id) {
+            return Ok(SetSideOpenJoinResponse::NotFound(PlainText(
+                "side not found".into(),
+            )));
+        }
+
+        let per_side_policy = input
+            .side_policy
+            .as_ref()
+            .map(mapping::side_open_join_policy_to_record);
+        let setting = match agg.match_.open_join.as_ref() {
+            Some(dao::records::OpenJoinScopeRecord::PerSide) => {
+                dao::open_join::SideOpenJoinSetting::Policy(per_side_policy.as_ref())
+            }
+            _ => dao::open_join::SideOpenJoinSetting::Enabled(input.enabled),
+        };
+        dao.set_side_open_join_settings(&match_id, &side_id, setting, input.max_open_spots)
+            .await
+            .map_err(dao_internal)?;
+        Ok(SetSideOpenJoinResponse::Ok)
+    }
+
+    /// Request to join a match through its open-join policy.
+    ///
+    /// Only for a match whose policy has `requires_approval: true` —
+    /// otherwise `POST /matches/:match_id/join` seats the caller directly,
+    /// same eligibility rules either way. An admin later approves or
+    /// declines via `POST .../join-requests/:user_id/approve|decline`.
+    #[oai(path = "/matches/:match_id/join-requests", method = "post")]
+    async fn create_join_request(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        input: Json<JoinRequestInput>,
+    ) -> Result<CreateJoinRequestResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+        let input = input.0;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(CreateJoinRequestResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if caller_is_participant(&agg.players, &uid) {
+            return Ok(CreateJoinRequestResponse::Conflict(PlainText(
+                "you're already on this match's roster".into(),
+            )));
+        }
+        let Some(scope) = open_join_individual_scope(&agg) else {
+            return Ok(CreateJoinRequestResponse::ValidationError(PlainText(
+                "this match isn't open for individuals to join".into(),
+            )));
+        };
+        let side_id = match resolve_join_target(&scope, input.side_id.as_deref(), &agg.sides) {
+            Ok(t) => t,
+            Err(msg) => return Ok(CreateJoinRequestResponse::ValidationError(PlainText(msg))),
+        };
+        // Checked against the *resolved* target, not up front — under
+        // `PerSide` each candidate side can carry different rules/approval.
+        let policy = open_join_effective_policy(&agg, side_id.as_deref())
+            .expect("a resolved open-join target always has an effective policy");
+        if !policy.requires_approval {
+            return Ok(CreateJoinRequestResponse::ValidationError(PlainText(
+                "this match doesn't need a request — join it directly instead".into(),
+            )));
+        }
+        if let Some(reason) = caller_meets_eligibility_rules(dao, policy.rules, &agg, &uid).await? {
+            return Ok(CreateJoinRequestResponse::ValidationError(PlainText(
+                reason,
+            )));
+        }
+
+        let request = dao::records::MatchJoinRequestRecord {
+            user_id: uid.clone(),
+            side_id,
+            requested_at: now_iso(),
+            status: "pending".into(),
+            decided_at: None,
+            decided_by_user_id: None,
+        };
+        if let Err(e) = dao.create_join_request_tx(&match_id, &request).await {
+            return match e {
+                dao::DaoError::Conflict(msg) => {
+                    Ok(CreateJoinRequestResponse::Conflict(PlainText(msg)))
+                }
+                other => Err(dao_internal(other)),
+            };
+        }
+
+        let users = dao
+            .batch_get_users(std::slice::from_ref(&uid))
+            .await
+            .map_err(dao_internal)?;
+        Ok(CreateJoinRequestResponse::Request(Json(
+            mapping::join_request_response(&request, &users),
+        )))
+    }
+
+    /// List a match's join requests, oldest-requested first.
+    ///
+    /// Match-admin only.
+    #[oai(path = "/matches/:match_id/join-requests", method = "get")]
+    async fn list_join_requests(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+    ) -> Result<ListJoinRequestsResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(ListJoinRequestsResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(ListJoinRequestsResponse::Forbidden(PlainText(
+                "only a match admin can see this match's join requests".into(),
+            )));
+        }
+
+        let requests = dao
+            .list_join_requests(&match_id)
+            .await
+            .map_err(dao_internal)?;
+        let user_ids: Vec<String> = requests.iter().map(|r| r.user_id.clone()).collect();
+        let users = dao.batch_get_users(&user_ids).await.map_err(dao_internal)?;
+        let out = requests
+            .iter()
+            .map(|r| mapping::join_request_response(r, &users))
+            .collect();
+        Ok(ListJoinRequestsResponse::Requests(Json(out)))
+    }
+
+    /// Approve a pending join request.
+    ///
+    /// Match-admin only. Seats the requester atomically with marking the
+    /// request `Approved` — see `Dao::approve_join_request_tx`'s doc
+    /// comment. `Conflict` if a cap has been reached since the caller's own
+    /// read, or the request is no longer pending.
+    #[oai(
+        path = "/matches/:match_id/join-requests/:user_id/approve",
+        method = "post"
+    )]
+    async fn approve_join_request(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        Path(user_id): Path<String>,
+    ) -> Result<DecideJoinRequestResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(DecideJoinRequestResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(DecideJoinRequestResponse::Forbidden(PlainText(
+                "only a match admin can decide a join request".into(),
+            )));
+        }
+        let Some(request) = dao
+            .get_join_request(&match_id, &user_id)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(DecideJoinRequestResponse::NotFound(PlainText(
+                "no such join request".into(),
+            )));
+        };
+        if request.status != "pending" {
+            return Ok(DecideJoinRequestResponse::Conflict(Json(
+                RosterConflict::already_on_roster("this request is no longer pending"),
+            )));
+        }
+
+        let max_open_spots = agg
+            .match_
+            .open_join
+            .as_ref()
+            .and_then(open_join_max_open_spots);
+        if let Some((kind, message)) =
+            open_full_reason(&agg, request.side_id.as_deref(), max_open_spots)
+        {
+            return Ok(DecideJoinRequestResponse::Conflict(Json(RosterConflict {
+                kind,
+                message: message.into(),
+            })));
+        }
+        // Nothing is gated on rating consent any more (see
+        // `move_in_from_waitlist`'s own comment on this), and a join
+        // request always names a real account
+        // (`MatchJoinRequestRecord`'s doc comment), so the one rule that
+        // survives elsewhere — no guests in a ranked match — cannot fire
+        // here either.
+
+        let target_side = request
+            .side_id
+            .as_ref()
+            .and_then(|sid| agg.sides.iter().find(|s| &s.side_id == sid));
+        let player = dao::records::MatchPlayerRecord {
+            player_id: new_id(),
+            user_id: Some(request.user_id.clone()),
+            display_name: None,
+            side_id: request.side_id.clone(),
+            is_member_of_team: None,
+            invitation: None,
+            joined_via: Some(dao::records::JoinSourceRecord::Open),
+        };
+        let now = now_iso();
+        if let Err(e) = dao
+            .approve_join_request_tx(
+                &match_id,
+                &user_id,
+                &uid,
+                &now,
+                &player,
+                target_side.and_then(|s| s.max_players),
+                agg.effective_max_players(),
+                target_side.and_then(|s| s.max_open_spots),
+                max_open_spots,
+                &agg.match_.starts_at,
+                &now,
+            )
+            .await
+        {
+            return match e {
+                dao::DaoError::Conflict(_) => {
+                    let fresh = dao.get_match(&match_id).await.map_err(dao_internal)?;
+                    let (kind, message) = fresh
+                        .as_ref()
+                        .and_then(|agg| match agg.match_.open_join.as_ref() {
+                            Some(scope) => open_full_reason(
+                                agg,
+                                request.side_id.as_deref(),
+                                open_join_max_open_spots(scope),
+                            ),
+                            None => None,
+                        })
+                        .unwrap_or((RosterConflictKind::MatchFull, "this match is full"));
+                    Ok(DecideJoinRequestResponse::Conflict(Json(RosterConflict {
+                        kind,
+                        message: message.into(),
+                    })))
+                }
+                other => Err(dao_internal(other)),
+            };
+        }
+
+        dao.refresh_side_roster_previews(&match_id)
+            .await
+            .map_err(dao_internal)?;
+        Ok(DecideJoinRequestResponse::Ok)
+    }
+
+    /// Decline a pending join request.
+    ///
+    /// Match-admin only. A soft status update — same convention as
+    /// revoking a join link.
+    #[oai(
+        path = "/matches/:match_id/join-requests/:user_id/decline",
+        method = "post"
+    )]
+    async fn decline_join_request(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(match_id): Path<String>,
+        Path(user_id): Path<String>,
+    ) -> Result<DecideJoinRequestResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let agg = match dao.get_match(&match_id).await.map_err(dao_internal)? {
+            Some(a) => a,
+            None => {
+                return Ok(DecideJoinRequestResponse::NotFound(PlainText(
+                    "match not found".into(),
+                )));
+            }
+        };
+        if !caller_is_match_admin(dao, &agg, &uid).await? {
+            return Ok(DecideJoinRequestResponse::Forbidden(PlainText(
+                "only a match admin can decide a join request".into(),
+            )));
+        }
+
+        match dao
+            .decline_join_request(&match_id, &user_id, &uid, &now_iso())
+            .await
+        {
+            Ok(()) => Ok(DecideJoinRequestResponse::Ok),
+            Err(dao::DaoError::Conflict(msg)) => Ok(DecideJoinRequestResponse::Conflict(Json(
+                RosterConflict::already_on_roster(msg),
+            ))),
+            Err(other) => Err(dao_internal(other)),
+        }
     }
 
     /// Leave a match.
@@ -8882,6 +11117,28 @@ fn caller_match_authority_role(
     })
 }
 
+/// The caller's authority on a tournament — same lookup-with-creator-fallback
+/// shape as `caller_match_authority_role`, over `TournamentRecord::authority`.
+fn caller_tournament_authority_role(
+    tournament: &dao::records::TournamentRecord,
+    uid: &str,
+) -> Option<dao::records::MatchPlayerRole> {
+    tournament.authority.get(uid).copied().or_else(|| {
+        (tournament.created_by_user_id == uid).then_some(dao::records::MatchPlayerRole::Owner)
+    })
+}
+
+/// Whether the caller may manage the tournament (add/withdraw entries,
+/// start, cancel): `Owner`/`Admin` authority, no team-admin extension — a
+/// narrower rule than `caller_is_match_admin`'s, since a tournament has no
+/// sides of its own to delegate through.
+fn caller_is_tournament_admin(tournament: &dao::records::TournamentRecord, uid: &str) -> bool {
+    matches!(
+        caller_tournament_authority_role(tournament, uid),
+        Some(dao::records::MatchPlayerRole::Owner) | Some(dao::records::MatchPlayerRole::Admin)
+    )
+}
+
 /// Whether the caller owns the match — see `caller_match_authority_role`.
 fn caller_is_match_owner(agg: &dao::match_ops::MatchAggregate, uid: &str) -> bool {
     caller_match_authority_role(&agg.match_, uid) == Some(dao::records::MatchPlayerRole::Owner)
@@ -9051,6 +11308,183 @@ fn full_reason(
         return Some((RosterConflictKind::SideFull, "that side is full"));
     }
     None
+}
+
+/// The open-join analogue of `full_reason`: everything `full_reason` checks,
+/// plus the open-specific caps (`max_open_spots`, only meaningful under
+/// `OpenJoinScopeRecord::MatchWide` — `None` under `PerSide`, which has no
+/// match-wide cap — and the target side's own `max_open_spots`) that only
+/// apply to an arrival via the open-join path. Checked in the same order as
+/// `take_open_slot_update` guards them, so the two never disagree about
+/// what's full.
+fn open_full_reason(
+    agg: &dao::match_ops::MatchAggregate,
+    target_side_id: Option<&str>,
+    max_open_spots: Option<u32>,
+) -> Option<(RosterConflictKind, &'static str)> {
+    if let Some(reason) = full_reason(agg, target_side_id) {
+        return Some(reason);
+    }
+    if let Some(max) = max_open_spots
+        && agg.match_.open_joined_count >= max
+    {
+        return Some((RosterConflictKind::MatchFull, "this match is full"));
+    }
+    let target_side = target_side_id.and_then(|sid| agg.sides.iter().find(|s| s.side_id == sid));
+    if let Some(side) = target_side
+        && let Some(max) = side.max_open_spots
+        && side.open_joined_count >= max
+    {
+        return Some((RosterConflictKind::SideFull, "that side is full"));
+    }
+    None
+}
+
+/// `OpenJoinScopeRecord::MatchWide`'s cap, or `None` under `PerSide` (which
+/// has no match-wide cap to enforce — see `open_full_reason`).
+fn open_join_max_open_spots(scope: &dao::records::OpenJoinScopeRecord) -> Option<u32> {
+    match scope {
+        dao::records::OpenJoinScopeRecord::MatchWide(policy) => policy.max_open_spots,
+        dao::records::OpenJoinScopeRecord::PerSide => None,
+    }
+}
+
+/// The eligibility rules and approval requirement that apply to a given
+/// open-join target (`target_side_id: None` means unassigned, only ever
+/// reachable under `MatchWide`) — the match-wide policy under `MatchWide`,
+/// or that specific side's own policy under `PerSide`. `None` if the match
+/// has no open-join scope, or (under `PerSide`) the target side has none set.
+struct OpenJoinEffectivePolicy<'a> {
+    rules: &'a [dao::records::EligibilityRuleRecord],
+    requires_approval: bool,
+}
+
+fn open_join_effective_policy<'a>(
+    agg: &'a dao::match_ops::MatchAggregate,
+    target_side_id: Option<&str>,
+) -> Option<OpenJoinEffectivePolicy<'a>> {
+    match agg.match_.open_join.as_ref()? {
+        dao::records::OpenJoinScopeRecord::MatchWide(policy) => Some(OpenJoinEffectivePolicy {
+            rules: &policy.rules,
+            requires_approval: policy.requires_approval,
+        }),
+        dao::records::OpenJoinScopeRecord::PerSide => {
+            let side =
+                target_side_id.and_then(|sid| agg.sides.iter().find(|s| s.side_id == sid))?;
+            let policy = side.open_join.as_ref()?;
+            Some(OpenJoinEffectivePolicy {
+                rules: &policy.rules,
+                requires_approval: policy.requires_approval,
+            })
+        }
+    }
+}
+
+/// Which side(s) (if any) an individual may join directly through a match's
+/// open-join scope, and whether landing unassigned is an option:
+/// - `MatchWide`: a side with `open_join_enabled` set, or unassigned if the
+///   match allows it — `None` if the policy's audience is `Teams`-only.
+/// - `PerSide`: every side carrying its own policy whose audience isn't
+///   `Teams`-only. Never offers unassigned — there's no single policy to
+///   apply to a landing with no side (see `OpenJoinScopeRecord::PerSide`'s
+///   doc comment).
+///
+/// `None` if the match has no open-join scope, or there are no candidate
+/// sides and no unassigned option either way. Mirrors `JoinScope`/
+/// `caller_team_join_sides`, but doesn't check eligibility rules — the
+/// caller (`join_match`, `create_join_request`) does that separately via
+/// `open_join_effective_policy`/`caller_meets_eligibility_rules`, once the
+/// actual target side is known, since under `PerSide` each candidate side
+/// may carry different rules.
+fn open_join_individual_scope(agg: &dao::match_ops::MatchAggregate) -> Option<JoinScope> {
+    match agg.match_.open_join.as_ref()? {
+        dao::records::OpenJoinScopeRecord::MatchWide(policy) => {
+            if matches!(policy.audience, dao::records::OpenJoinAudienceRecord::Teams) {
+                return None;
+            }
+            let open_side_ids: Vec<String> = agg
+                .sides
+                .iter()
+                .filter(|s| s.open_join_enabled)
+                .map(|s| s.side_id.clone())
+                .collect();
+            if open_side_ids.is_empty() && !agg.match_.allow_unassigned {
+                return None;
+            }
+            Some(JoinScope {
+                allowed_side_ids: if open_side_ids.is_empty() {
+                    Some(Vec::new())
+                } else {
+                    Some(open_side_ids)
+                },
+                allow_unassigned: agg.match_.allow_unassigned,
+            })
+        }
+        dao::records::OpenJoinScopeRecord::PerSide => {
+            let open_side_ids: Vec<String> = agg
+                .sides
+                .iter()
+                .filter(|s| {
+                    s.open_join.as_ref().is_some_and(|p| {
+                        !matches!(p.audience, dao::records::OpenJoinAudienceRecord::Teams)
+                    })
+                })
+                .map(|s| s.side_id.clone())
+                .collect();
+            if open_side_ids.is_empty() {
+                return None;
+            }
+            Some(JoinScope {
+                allowed_side_ids: Some(open_side_ids),
+                allow_unassigned: false,
+            })
+        }
+    }
+}
+
+/// Checks `rules` against `uid` for an open-join candidate, returning
+/// `Some(message)` for the first rule they fail (a user-facing validation
+/// message) or `None` if they meet every rule. Evaluated fresh on each
+/// attempt — eligibility is never stored or baked into a query (see
+/// `open_join.rs`'s module doc comment).
+async fn caller_meets_eligibility_rules(
+    dao: &dao::Dao,
+    rules: &[dao::records::EligibilityRuleRecord],
+    agg: &dao::match_ops::MatchAggregate,
+    uid: &str,
+) -> Result<Option<String>> {
+    for rule in rules {
+        match rule {
+            dao::records::EligibilityRuleRecord::MinRating { min } => {
+                let Some(ladder) = rating_ladder(&agg.match_) else {
+                    continue;
+                };
+                let rating = dao
+                    .get_rating(uid, &ladder)
+                    .await
+                    .map_err(dao_internal)?
+                    .map(|r| agon_core::rating::display_rating(r.mu).round() as i64)
+                    .unwrap_or(agon_core::rating::RATING_ORIGIN as i64);
+                if rating < *min as i64 {
+                    return Ok(Some(format!(
+                        "this match needs a rating of at least {min} to join directly"
+                    )));
+                }
+            }
+            dao::records::EligibilityRuleRecord::MinMatchesPlayed { min } => {
+                let Some(user) = dao.get_user(uid).await.map_err(dao_internal)? else {
+                    return Ok(Some("you're not eligible to join this match".into()));
+                };
+                let played = matches_played_for_sport(&user.stats, &agg.match_.match_type);
+                if played < *min as u64 {
+                    return Ok(Some(format!(
+                        "this match needs at least {min} matches played in this sport to join directly"
+                    )));
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// A waitlist entry's 1-based place in the queue: how many entries waiting
@@ -9578,6 +12012,10 @@ fn mock_match(id: String) -> Match {
                 player_count: 2,
                 max_players: None,
                 team_join_enabled: false,
+                open_join_enabled: false,
+                open_join: None,
+                max_open_spots: None,
+                open_joined_count: 0,
             },
             MatchSide {
                 id: String::from("side_blue"),
@@ -9590,6 +12028,10 @@ fn mock_match(id: String) -> Match {
                 player_count: 1,
                 max_players: None,
                 team_join_enabled: false,
+                open_join_enabled: false,
+                open_join: None,
+                max_open_spots: None,
+                open_joined_count: 0,
             },
         ],
         players: vec![
@@ -9649,6 +12091,7 @@ fn mock_match(id: String) -> Match {
         allow_unassigned: true,
         viewer_role: Some(MatchPlayerRole::Owner),
         viewer_team_join_side_ids: None,
+        open_join: None,
         series_id: None,
         ranked: true,
         rating_ladder: Some(String::from("football")),

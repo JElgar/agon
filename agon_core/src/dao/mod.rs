@@ -34,11 +34,13 @@ pub mod live_score_ops;
 pub mod match_ops;
 pub mod match_social;
 pub mod notification;
+pub mod open_join;
 pub mod paired_device;
 pub mod rating;
 pub mod series_ops;
 pub mod stats;
 pub mod team;
+pub mod tournament_ops;
 pub mod user;
 pub mod waitlist;
 

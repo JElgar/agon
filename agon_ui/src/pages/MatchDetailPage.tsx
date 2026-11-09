@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { CalendarPlus, ChevronLeft, Link2, MailOpen, MoreHorizontal, Navigation, Pencil, Radio, Repeat, Share, UserPlus } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
@@ -12,6 +12,7 @@ import { addMatchToCalendar } from '@/lib/calendar'
 import { Button } from '@/components/ui/button'
 import { WaitlistSection } from '@/components/agon/WaitlistSection'
 import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
+import { RankedBadge } from '@/components/agon/RankedBadge'
 import { ScoreConfirmationBar } from '@/components/agon/ScoreConfirmationBar'
 import { useLiveEvents } from '@/hooks/useLiveScore'
 import { useMatchScore } from '@/hooks/useMatchScore'
@@ -42,12 +43,16 @@ import {
   withInvitationStatus,
 } from '@/lib/members'
 import { respondToInvitation } from '@/lib/invitations'
-import { MatchDetailsEditor } from '@/components/agon/MatchDetailsEditor'
+import { useMatchQuery } from '@/hooks/useMatch'
 import { MatchFormatCard } from '@/components/agon/MatchFormatCard'
 import { MatchJoinSettingsEditor } from '@/components/agon/MatchJoinSettingsEditor'
+import { MatchOpenJoinEditor } from '@/components/agon/MatchOpenJoinEditor'
+import { JoinRequestsCard } from '@/components/agon/JoinRequestsCard'
 import { MatchJoinLinksDialog } from '@/components/agon/MatchJoinLinksDialog'
 import { TeamJoinBanner } from '@/components/agon/TeamJoinBanner'
 import { JoinLinkBanner } from '@/components/agon/JoinLinkBanner'
+import { OpenJoinAction } from '@/components/agon/OpenJoinAction'
+import { openJoinEligible } from '@/lib/openJoin'
 import { MatchResultEditor } from '@/components/agon/MatchResultEditor'
 import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
@@ -157,17 +162,7 @@ export function MatchDetailPage() {
   const navigate = useNavigate()
   const currentUserId = useCurrentUserId()
 
-  const query = useQuery({
-    queryKey: ['match', matchId],
-    enabled: !!matchId,
-    queryFn: async (): Promise<Match> => {
-      const { data, error } = await fetchClient.GET('/matches/{match_id}', {
-        params: { path: { match_id: matchId! } },
-      })
-      if (error || !data) throw new Error('Failed to load match')
-      return data
-    },
-  })
+  const query = useMatchQuery(matchId)
 
   if (query.isLoading) {
     return (
@@ -208,7 +203,6 @@ function MatchDetail({
   currentUserId?: string
   onBack: () => void
 }) {
-  const [editingDetails, setEditingDetails] = useState(false)
   const [editingResult, setEditingResult] = useState(false)
   const [editingRoster, setEditingRoster] = useState(false)
   const [inviting, setInviting] = useState(false)
@@ -381,7 +375,7 @@ function MatchDetail({
           </DropdownMenuItem>
         )}
         {canEdit && !cancelled && (
-          <DropdownMenuItem onSelect={() => setEditingDetails(true)}>
+          <DropdownMenuItem onSelect={() => navigate(`/matches/${match.id}/edit`)}>
             <Pencil className="size-4" /> Edit match details
           </DropdownMenuItem>
         )}
@@ -452,9 +446,8 @@ function MatchDetail({
           canEdit={canEdit}
           onBack={onBack}
           onShare={() => shareMatch(match)}
-          onEdit={() => setEditingDetails(true)}
+          onEdit={() => navigate(`/matches/${match.id}/edit`)}
         />
-        {editingDetails && <MatchDetailsEditor match={match} onDone={() => setEditingDetails(false)} />}
       </div>
     )
   }
@@ -476,6 +469,12 @@ function MatchDetail({
           {metaTeamSide ? `${metaTeamSide.team_name} · ` : ''}
           {scheduledDateTime(match.starts_at)}
         </span>
+        {/* The board also puts a "Rating change" card further down, one row
+            per player with the points they gained or lost. That isn't here:
+            no endpoint returns a match's rating contributions, so there's
+            nothing to put in the rows. This chip is the part the `Match`
+            payload can answer — whether the result counts at all. */}
+        {match.ranked && <RankedBadge />}
       </div>
       <h1 className="font-display text-[30px] leading-tight font-extrabold tracking-[-0.4px]">{match.name}</h1>
       {match.series_id && (
@@ -534,7 +533,7 @@ function MatchDetail({
         )
       )}
       {!cancelled && <TeamJoinBanner match={match} />}
-      {!cancelled && <JoinLinkBanner match={match} />}
+      {!cancelled && matchView !== 'finished' && <JoinLinkBanner match={match} />}
       {editingResult && <MatchResultEditor match={match} onDone={() => setEditingResult(false)} />}
     </>
   )
@@ -594,6 +593,8 @@ function MatchDetail({
   const adminFooter = (
     <>
       {canEdit && !cancelled && <MatchJoinSettingsEditor match={match} canManage={canEdit} />}
+      {canEdit && !cancelled && <MatchOpenJoinEditor match={match} canManage={canEdit} />}
+      {canEdit && !cancelled && <JoinRequestsCard match={match} canManage={canEdit} />}
       {canEdit && !cancelled && <CancelMatch match={match} />}
       {iAmParticipant && !cancelled && <LeaveMatch match={match} isOwner={iAmOwner} />}
     </>
@@ -694,6 +695,8 @@ function MatchDetail({
       >
         <Pencil className="size-5" /> Add result
       </button>
+    ) : !cancelled && matchView !== 'finished' && openJoinEligible(match, currentUserId) ? (
+      <OpenJoinAction match={match} />
     ) : !isLiveSport ? (
       <KudosButton liked={match.social.i_liked} onToggle={() => toggleLike.mutate(!match.social.i_liked)} />
     ) : canEdit && !cancelled && !isCricket && matchTab === 'timeline' && match.status === 'in_progress' ? (
@@ -759,7 +762,6 @@ function MatchDetail({
             <MatchHeaderCarousel photos={match.header_photos} hero />
           </div>
         )}
-        {editingDetails && <MatchDetailsEditor match={match} onDone={() => setEditingDetails(false)} />}
         {titleBlock}
 
         <div className="grid grid-cols-[minmax(0,1fr)_380px] items-start gap-6">
@@ -839,7 +841,6 @@ function MatchDetail({
         </div>
       )}
 
-      {editingDetails && <MatchDetailsEditor match={match} onDone={() => setEditingDetails(false)} />}
 
       {matchTab === 'summary' ? (
         <>

@@ -13,8 +13,9 @@ use crate::live_score::{LiveEvent, LiveEventInput, NewLiveEventInput};
 use crate::match_format::MatchFormat;
 use crate::membership::{
     ExternalMember, Invitation, InvitationContext, InvitationKind, InvitationMatchContext,
-    InvitationStatus, InvitationTeamContext, JoinLink, JoinLinkScope, MatchPlayerRole, Member,
-    TokenInvitation, UserInvitation, UserMember,
+    InvitationStatus, InvitationTeamContext, JoinLink, JoinLinkScope, JoinRequest,
+    JoinRequestStatus, MatchPlayerRole, Member, OpenJoinAudience, OpenJoinPolicy, OpenJoinScope,
+    OpenJoinScopeKind, SideOpenJoinPolicy, TokenInvitation, UserInvitation, UserMember,
 };
 use crate::notification::{
     CommentNotification, FollowNotification, InvitationAcceptedNotification, LikeNotification,
@@ -30,9 +31,10 @@ use crate::{
     MatchSeries, MatchSeriesOccurrence, MatchSeriesSide, MatchSeriesStatus, MatchSide, MatchSocial,
     MatchStatus, MatchType, PendingScore, Photo, RosterPreviewPlayer, Score, ScoreConfirmation,
     ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus,
-    SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
+    SearchMatch, SetsScore, SimpleScore, Tournament, TournamentEntry, TournamentEntryAudience,
+    TournamentFormat, TournamentMatchSummary, TournamentSeeding, UserProfile, UserStats,
 };
-use crate::{LadderPlacement, LadderRating};
+use crate::{LadderPlacement, LadderRating, RatingHistoryPoint};
 use agon_core::dao::error::DaoError;
 use agon_core::sports::SportRecord;
 
@@ -40,14 +42,18 @@ use crate::sports::Sport;
 use agon_core::dao::live_score_ops::NewLiveEvent;
 use agon_core::dao::records::{
     BestFigureRecord, CommentRecord, ConfirmedScoreRecord, DevicePlatform as DevicePlatformRecord,
-    EmbeddedInvitationRecord, GenericSportStatsRecord, InvitationContextRecord,
-    InvitationKindRecord, InvitationRecord, JoinLinkRecord, JoinLinkScopeRecord,
-    LiveEventPayloadRecord, LiveEventRecord, LocationRecord, MatchFormatRecord, MatchLikeRecord,
-    MatchPlayerRecord, MatchPlayerRole as MatchPlayerRoleRecord, MatchRecord, MatchScoreRecord,
-    MatchSideRecord, NotificationKindRecord, NotificationRecord, PendingScoreRecord,
-    ScoreConfirmationRecord, ScoreRecord, ScoreResponseRecord, ScoreSubmissionRecord,
-    SeriesEndRecord, SeriesOccurrenceRecord, SeriesRecord, SeriesSideRecord, TeamMemberRecord,
-    TeamRecord, UserRecord, UserStatsRecord,
+    EligibilityRuleRecord, EmbeddedInvitationRecord, GenericSportStatsRecord,
+    InvitationContextRecord, InvitationKindRecord, InvitationRecord, JoinLinkRecord,
+    JoinLinkScopeRecord, LiveEventPayloadRecord, LiveEventRecord, LocationRecord,
+    MatchFormatRecord, MatchJoinRequestRecord, MatchLikeRecord, MatchPlayerRecord,
+    MatchPlayerRole as MatchPlayerRoleRecord, MatchRecord, MatchScoreRecord, MatchSideRecord,
+    NotificationKindRecord, NotificationRecord, OpenJoinAudienceRecord, OpenJoinPolicyRecord,
+    OpenJoinScopeRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord,
+    ScoreResponseRecord, ScoreSubmissionRecord, SeriesEndRecord, SeriesOccurrenceRecord,
+    SeriesRecord, SeriesSideRecord, SideOpenJoinPolicyRecord, TeamMemberRecord, TeamRecord,
+    TournamentEntryAudienceRecord, TournamentEntryRecord, TournamentFormatRecord, TournamentRecord,
+    TournamentRoundInfo, TournamentSeedingRecord, TournamentTeamFormationRecord, UserRecord,
+    UserStatsRecord,
 };
 use agon_core::rating::ladder_for_tag;
 use agon_core::rating::{PLACEMENT_MATCHES, display, published};
@@ -363,6 +369,167 @@ macro_rules! define_sport_dispatch {
 }
 agon_core::for_each_sport!(define_sport_dispatch);
 
+/// How many matches `stats` records played in `sport_tag` (`match_type_tag`'s
+/// output) — the figure an `EligibilityRuleRecord::MinMatchesPlayed` rule
+/// judges a candidate against. `0` for a sport with no stored entry at all
+/// (nothing played, same as every sparse per-sport counter) and for `"other"`
+/// (no dedicated stats record for it — see `UserStatsRecord::other`, which
+/// *is* a `GenericSportStatsRecord`, but open-join eligibility on an
+/// uncategorized sport has nothing meaningful to compare, so it's always
+/// unmet rather than silently falling back to a wrong count).
+pub fn matches_played_for_sport(stats: &UserStatsRecord, sport_tag: &str) -> u64 {
+    match sport_tag {
+        "cricket" => stats
+            .cricket
+            .as_ref()
+            .map_or(0, |s| s.common.matches_played),
+        "football" => stats
+            .football
+            .as_ref()
+            .map_or(0, |s| s.common.matches_played),
+        "tennis" => stats.tennis.as_ref().map_or(0, |s| s.matches_played),
+        "badminton" => stats.badminton.as_ref().map_or(0, |s| s.matches_played),
+        "squash" => stats.squash.as_ref().map_or(0, |s| s.matches_played),
+        "table_tennis" => stats.table_tennis.as_ref().map_or(0, |s| s.matches_played),
+        "netball" => stats
+            .netball
+            .as_ref()
+            .map_or(0, |s| s.common.matches_played),
+        _ => 0,
+    }
+}
+
+pub fn open_join_audience_from_record(rec: OpenJoinAudienceRecord) -> OpenJoinAudience {
+    match rec {
+        OpenJoinAudienceRecord::Individuals => OpenJoinAudience::Individuals,
+        OpenJoinAudienceRecord::Teams => OpenJoinAudience::Teams,
+        OpenJoinAudienceRecord::Both => OpenJoinAudience::Both,
+    }
+}
+
+pub fn open_join_audience_to_record(audience: OpenJoinAudience) -> OpenJoinAudienceRecord {
+    match audience {
+        OpenJoinAudience::Individuals => OpenJoinAudienceRecord::Individuals,
+        OpenJoinAudience::Teams => OpenJoinAudienceRecord::Teams,
+        OpenJoinAudience::Both => OpenJoinAudienceRecord::Both,
+    }
+}
+
+/// Build the API `OpenJoinPolicy` from the stored record, flattening
+/// `rules` back into `min_matches_played` — the inverse of
+/// `open_join_policy_to_record`. A stored `MinRating` rule (not settable
+/// through this API today, only ever written directly) is silently dropped
+/// rather than surfaced, same as any other field this read side doesn't
+/// have a slot for.
+pub fn open_join_policy_from_record(rec: &OpenJoinPolicyRecord) -> OpenJoinPolicy {
+    let min_matches_played = rec.rules.iter().find_map(|r| match r {
+        EligibilityRuleRecord::MinMatchesPlayed { min } => Some(*min),
+        _ => None,
+    });
+    OpenJoinPolicy {
+        audience: open_join_audience_from_record(rec.audience),
+        min_matches_played,
+        requires_approval: rec.requires_approval,
+        max_open_spots: rec.max_open_spots,
+    }
+}
+
+/// Build the stored record from the API input — the inverse of
+/// `open_join_policy_from_record`.
+pub fn open_join_policy_to_record(
+    input: &crate::membership::OpenJoinPolicyInput,
+) -> OpenJoinPolicyRecord {
+    OpenJoinPolicyRecord {
+        audience: open_join_audience_to_record(input.audience),
+        rules: open_join_rules_to_record(input),
+        requires_approval: input.requires_approval,
+        max_open_spots: input.max_open_spots,
+    }
+}
+
+/// Flatten an `OpenJoinPolicyInput`'s named eligibility fields into
+/// `EligibilityRuleRecord`s — shared by `open_join_policy_to_record` (match-
+/// wide) and `side_open_join_policy_to_record` (per-side), which differ only
+/// in what they do with `max_open_spots`.
+fn open_join_rules_to_record(
+    input: &crate::membership::OpenJoinPolicyInput,
+) -> Vec<EligibilityRuleRecord> {
+    let mut rules = Vec::new();
+    if let Some(min) = input.min_matches_played {
+        rules.push(EligibilityRuleRecord::MinMatchesPlayed { min });
+    }
+    rules
+}
+
+/// Build the API `OpenJoinScope` from the stored record — the inverse of
+/// how `set_open_join_policy` builds an `OpenJoinScopeRecord` from
+/// `OpenJoinScopeInput`.
+pub fn open_join_scope_from_record(rec: &OpenJoinScopeRecord) -> OpenJoinScope {
+    match rec {
+        OpenJoinScopeRecord::MatchWide(policy) => OpenJoinScope {
+            mode: OpenJoinScopeKind::MatchWide,
+            policy: Some(open_join_policy_from_record(policy)),
+        },
+        OpenJoinScopeRecord::PerSide => OpenJoinScope {
+            mode: OpenJoinScopeKind::PerSide,
+            policy: None,
+        },
+    }
+}
+
+/// Build a side's own stored policy from the API input — the `per_side`-
+/// scope analogue of `open_join_policy_to_record`. The match-wide
+/// `max_open_spots` field has no side-level meaning here (a side caps
+/// itself via `MatchSideRecord::max_open_spots` instead), so it's dropped
+/// rather than surfaced on `OpenJoinPolicyInput`'s reused shape.
+pub fn side_open_join_policy_to_record(
+    input: &crate::membership::OpenJoinPolicyInput,
+) -> SideOpenJoinPolicyRecord {
+    SideOpenJoinPolicyRecord {
+        audience: open_join_audience_to_record(input.audience),
+        rules: open_join_rules_to_record(input),
+        requires_approval: input.requires_approval,
+    }
+}
+
+/// Build the API `SideOpenJoinPolicy` from a side's stored policy — the
+/// inverse of `side_open_join_policy_to_record`.
+pub fn side_open_join_policy_from_record(rec: &SideOpenJoinPolicyRecord) -> SideOpenJoinPolicy {
+    let min_matches_played = rec.rules.iter().find_map(|r| match r {
+        EligibilityRuleRecord::MinMatchesPlayed { min } => Some(*min),
+        _ => None,
+    });
+    SideOpenJoinPolicy {
+        audience: open_join_audience_from_record(rec.audience),
+        min_matches_played,
+        requires_approval: rec.requires_approval,
+    }
+}
+
+/// Build the API `JoinRequest` for one request, hydrating name/avatar from
+/// an already fetched `users` batch — same pattern as
+/// `waitlist_entry_response`.
+pub fn join_request_response(
+    rec: &MatchJoinRequestRecord,
+    users: &std::collections::HashMap<String, UserRecord>,
+) -> JoinRequest {
+    let record = users.get(&rec.user_id);
+    let status = match rec.status.as_str() {
+        "approved" => JoinRequestStatus::Approved,
+        "declined" => JoinRequestStatus::Declined,
+        _ => JoinRequestStatus::Pending,
+    };
+    JoinRequest {
+        user_id: rec.user_id.clone(),
+        name: record.map(|u| u.name.clone()).unwrap_or_default(),
+        avatar_url: record.and_then(|u| u.profile_image_url.clone()),
+        side_id: rec.side_id.clone(),
+        requested_at: parse_ts(&rec.requested_at),
+        status,
+        decided_at: rec.decided_at.as_deref().map(parse_ts),
+    }
+}
+
 /// The largest `max_players` at which a side with no team and no custom
 /// name is identified by its players' names ("Sam" or "Sam & Alex"). Past
 /// this a roster-derived name stops reading as an identity, so a bigger
@@ -466,6 +633,30 @@ pub fn published_ratings_from_record(user: &UserRecord) -> Vec<LadderRating> {
 /// A ladder with no rating stored is simply absent. There is no act that
 /// starts placements early any more: the counter and the rating are written
 /// by the same match, so nought played and no rating are the same state.
+/// One stored rating movement as a chart point.
+///
+/// `rating`, `confidence`, `floor` and `rating_before` are all *displayed*
+/// numbers, computed through `rating::scale` here like every other rating the
+/// API returns, so retuning the scale moves every chart at once rather than
+/// needing a backfill. `delta` is the deliberate exception: it is read
+/// straight off the record because it is a log of what the player was told on
+/// the day, and recomputing it would quietly rewrite that.
+#[must_use]
+pub fn rating_history_point_from_record(
+    rec: &agon_core::dao::records::RatingHistoryRecord,
+) -> RatingHistoryPoint {
+    let after = display(rec.movement.mu_after, rec.movement.sigma_after);
+    RatingHistoryPoint {
+        match_id: rec.match_id.clone(),
+        played_at: parse_ts(&rec.played_at),
+        rating: after.rating,
+        confidence: after.confidence,
+        floor: after.floor,
+        rating_before: display(rec.movement.mu_before, rec.movement.sigma_before).rating,
+        delta: rec.movement.display_delta,
+    }
+}
+
 pub fn rating_placements_from_record(user: &UserRecord) -> Vec<LadderPlacement> {
     let mut placements: Vec<LadderPlacement> = user
         .ratings
@@ -623,6 +814,100 @@ pub fn match_series_occurrence_from_record(rec: &SeriesOccurrenceRecord) -> Matc
         index: rec.index,
         starts_at: parse_ts(&rec.starts_at),
         match_id: rec.match_id.clone(),
+    }
+}
+
+/// Collapses `TournamentRecord::team_formation` (`None` for every
+/// tournament except a teamless one) into the two plain strings the API
+/// exposes, same spirit as `format`/`seeding`'s own open-string fields.
+pub fn tournament_from_record(rec: &TournamentRecord) -> Tournament {
+    let (team_formation, team_formation_auto_by) = match &rec.team_formation {
+        None => (None, None),
+        Some(TournamentTeamFormationRecord::Manual) => (Some("manual".to_string()), None),
+        Some(TournamentTeamFormationRecord::Auto { by }) => {
+            (Some("auto".to_string()), Some(by.clone()))
+        }
+    };
+    Tournament {
+        id: rec.id.clone(),
+        created_by_user_id: rec.created_by_user_id.clone(),
+        name: rec.name.clone(),
+        description: rec.description.clone(),
+        match_type: match_type_from_tag(&rec.match_type),
+        format: tournament_format_from_record(rec.format),
+        status: rec.status.clone(),
+        entry_audience: tournament_entry_audience_from_record(rec.entry_audience),
+        team_formation,
+        team_formation_auto_by,
+        squad_size: rec.squad_size,
+        min_teams: rec.min_teams,
+        max_teams: rec.max_teams,
+        location: rec.location.as_ref().map(location_from_record),
+        frequency: rec.frequency.clone(),
+        weekday: rec.weekday,
+        first_round_starts_at: parse_ts(&rec.first_round_starts_at),
+        timezone: rec.timezone.clone(),
+        points_win: rec.points_win,
+        points_draw: rec.points_draw,
+        points_loss: rec.points_loss,
+        seeding: tournament_seeding_from_record(rec.seeding),
+        entry_count: rec.entry_count,
+        created_at: parse_ts(&rec.created_at),
+    }
+}
+
+pub fn tournament_format_from_record(rec: TournamentFormatRecord) -> TournamentFormat {
+    match rec {
+        TournamentFormatRecord::Knockout => TournamentFormat::Knockout,
+        TournamentFormatRecord::League => TournamentFormat::League,
+    }
+}
+
+pub fn tournament_entry_audience_from_record(
+    rec: TournamentEntryAudienceRecord,
+) -> TournamentEntryAudience {
+    match rec {
+        TournamentEntryAudienceRecord::Teams => TournamentEntryAudience::Teams,
+        TournamentEntryAudienceRecord::Players => TournamentEntryAudience::Players,
+    }
+}
+
+pub fn tournament_seeding_from_record(rec: TournamentSeedingRecord) -> TournamentSeeding {
+    match rec {
+        TournamentSeedingRecord::Random => TournamentSeeding::Random,
+        TournamentSeedingRecord::Manual => TournamentSeeding::Manual,
+    }
+}
+
+/// `GET /tournaments/{id}/matches` row — the fields a bracket/fixtures list
+/// needs, deliberately lighter than `match_from_records` (no roster lookup).
+pub fn tournament_match_summary_from_record(rec: &MatchRecord) -> TournamentMatchSummary {
+    let round_info = rec
+        .tournament_round
+        .unwrap_or(TournamentRoundInfo { round: 0, slot: 0 });
+    TournamentMatchSummary {
+        id: rec.id.clone(),
+        round: round_info.round,
+        slot: round_info.slot,
+        starts_at: parse_ts(&rec.starts_at),
+        status: match_status_from_str(&rec.status),
+        sides: rec.sides.values().map(match_side_from_record).collect(),
+        confirmed_score: rec
+            .confirmed_score
+            .as_ref()
+            .map(confirmed_score_from_record),
+    }
+}
+
+pub fn tournament_entry_from_record(rec: &TournamentEntryRecord) -> TournamentEntry {
+    TournamentEntry {
+        tournament_id: rec.tournament_id.clone(),
+        entrant_id: rec.entrant_id.clone(),
+        status: rec.status.clone(),
+        seed: rec.seed,
+        squad: rec.squad,
+        added_by_user_id: rec.added_by_user_id.clone(),
+        created_at: parse_ts(&rec.created_at),
     }
 }
 
@@ -1014,6 +1299,13 @@ pub fn match_side_from_record(rec: &MatchSideRecord) -> MatchSide {
         colour: rec.colour.clone(),
         max_players: rec.max_players,
         team_join_enabled: rec.team_join_enabled,
+        open_join_enabled: rec.open_join_enabled,
+        open_join: rec
+            .open_join
+            .as_ref()
+            .map(side_open_join_policy_from_record),
+        max_open_spots: rec.max_open_spots,
+        open_joined_count: rec.open_joined_count,
         // Live-overwritten for `Match` (`Api::hydrate_sides`); left as
         // the denormalized cache value for a feed's `FeedMatch`/a search
         // hit's `SearchMatch`, same as `roster_preview` below.
@@ -1207,6 +1499,7 @@ pub fn match_from_records(
         // function has no viewer to resolve it against.
         viewer_role: None,
         viewer_team_join_side_ids: None,
+        open_join: rec.open_join.as_ref().map(open_join_scope_from_record),
         series_id: rec.series_id.clone(),
     }
 }
@@ -1307,6 +1600,62 @@ pub fn ranked_lock_reason_for_update(
     None
 }
 
+/// Why a **rated** ranked match refuses this edit, or `None` if the request
+/// changes nothing its ratings were computed from.
+///
+/// A Weng-Lin update is not invertible: what a match did to you depends on
+/// every opponent's sigma at that moment, so there is no delta to subtract
+/// and a correction can only be made by replaying the ladder forward in
+/// played order. `RepairRatings` is that replay and isn't built, so today an
+/// edit that moves what a rating was built on leaves the stored number
+/// quietly wrong with nothing in the system that notices.
+///
+/// Three inputs are therefore closed once a ranked match has a confirmed
+/// score — the moment the pipeline will have rated it:
+///
+/// - **the roster**, because who played and which side they played for is
+///   literally what `rate_match` was given,
+/// - **the start time**, because ratings are applied in played order and
+///   moving a match reorders somebody's ladder,
+/// - **the status**, because cancelling a match it has already rated would
+///   need its effect withdrawn, which is the same non-invertible problem.
+///
+/// The **score stays editable, deliberately.** A wrong result is the thing
+/// most worth being able to fix, it is the one correction the pipeline
+/// already detects (`RepairTrigger::Rerated`), and refusing it would leave
+/// a typo permanent — strictly worse than a replayable mistake. Cosmetic
+/// fields (name, description, location, photos, side names and colours) are
+/// not considered here at all: no rating was ever computed from them.
+///
+/// Gated on `confirmed_score` rather than on a pending submission, because
+/// that is exactly what the rating pipeline gates on. A score still awaiting
+/// confirmation has rated nobody, so a roster edit underneath it is applied
+/// *before* the rating exists and is correct by construction.
+///
+/// Before any score, nothing is refused: the match hasn't been rated, and
+/// organising one is mostly roster edits.
+#[must_use]
+pub fn rated_ranked_edit_reason(
+    stored: &MatchRecord,
+    edits_roster: bool,
+    moves_start_time: bool,
+    changes_status: bool,
+) -> Option<&'static str> {
+    if !stored.ranked || stored.confirmed_score.is_none() {
+        return None;
+    }
+    if edits_roster {
+        return Some("a ranked match's roster is fixed once it has a score");
+    }
+    if moves_start_time {
+        return Some("a ranked match can't be rescheduled once it has a score");
+    }
+    if changes_status {
+        return Some("a ranked match's status is fixed once it has a score");
+    }
+    None
+}
+
 /// The players a match ranked on some ladder can't have in it, sorted by why.
 /// Built by [`unratable_players`]; empty means all of them can play.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -1320,8 +1669,10 @@ pub struct UnratablePlayers {
     ///
     /// Once the only reason a player could be unratable. Not being opted in
     /// used to be the other, and is not a reason for anything now: every
-    /// account is rated from the first match it completes, published only
-    /// once it opts in (`agon_core::rating::placement`).
+    /// account is rated from the first match it completes, and the number is
+    /// published once its placement matches are behind it
+    /// (`agon_core::rating::placement`) — which nobody can opt into or out
+    /// of, so it is not a reason to keep anyone out of a match.
     pub without_account: Vec<String>,
 }
 
@@ -1362,6 +1713,27 @@ pub fn unratable_players<'a>(
 /// fine now: the match rates them latently, and nothing they or the organiser
 /// does about it changes the result.
 #[must_use]
+/// The refusal for *creating* a match ranked with guests invited to it, or
+/// `None` if everyone invited could be rated.
+///
+/// Separate from [`switch_to_ranked_reason`] because the way out is
+/// different, and the message is most of what this function is. On a switch
+/// the match already exists and the guests are already on it, so the advice
+/// is to remove them. At creation nothing has happened yet: the organiser is
+/// choosing between a ranked match made of accounts and a friendly, and
+/// telling them to "remove" someone they are in the middle of inviting would
+/// describe an edit they haven't made.
+pub fn ranked_guest_invites_reason(unratable: &UnratablePlayers) -> Option<String> {
+    if !unratable.without_account.is_empty() {
+        return Some(format!(
+            "a ranked match can't include guests without an Agon account: {}. \
+             Invite them to Agon, or create this match as a friendly",
+            unratable.without_account.join(", ")
+        ));
+    }
+    None
+}
+
 pub fn ranked_added_players_reason(unratable: &UnratablePlayers) -> Option<String> {
     if !unratable.without_account.is_empty() {
         return Some(format!(
@@ -1857,6 +2229,8 @@ mod tests {
             total_player_count: 0,
             location: None,
             series_id: None,
+            tournament_id: None,
+            tournament_round: None,
             sides: HashMap::new(),
             header_photos: Vec::new(),
             authority: HashMap::new(),
@@ -1868,6 +2242,8 @@ mod tests {
             live_tip_seq: None,
             format: None,
             ranked: true,
+            open_join: None,
+            open_joined_count: 0,
             created_at: "2026-01-01T00:00:00.000Z".to_string(),
         }
     }
@@ -1932,6 +2308,92 @@ mod tests {
             ranked_lock_reason(&m, lock_now()),
             Some("the match is no longer scheduled")
         );
+    }
+
+    /// A point reports the rating *after* its match, the band after it, and
+    /// the delta exactly as stored — not recomputed from the two ends, which
+    /// is what keeps a retuned scale from rewriting what a card once said.
+    #[test]
+    fn a_history_point_reports_the_rating_after_its_match() {
+        let rec = agon_core::dao::records::RatingHistoryRecord {
+            ladder: "squash".to_string(),
+            match_id: "m1".to_string(),
+            played_at: "2026-06-01T18:00:00.000Z".to_string(),
+            movement: agon_core::dao::records::RatingMovementRecord {
+                mu_before: 25.0,
+                sigma_before: 8.333,
+                mu_after: 26.0,
+                sigma_after: 7.5,
+                // Deliberately not what the mu change implies, so the test
+                // can tell a stored delta from a recomputed one.
+                display_delta: 7,
+            },
+            applied_at: "2026-06-02T09:00:00.000Z".to_string(),
+        };
+
+        let point = rating_history_point_from_record(&rec);
+        assert_eq!(point.match_id, "m1");
+        assert_eq!(point.delta, 7, "the stored delta, not mu_after - mu_before");
+        assert_eq!(point.rating, display(26.0, 7.5).rating);
+        assert_eq!(point.confidence, display(26.0, 7.5).confidence);
+        assert_eq!(point.rating_before, 1500, "mu 25 is the scale's origin");
+        assert!(
+            point.confidence < display(25.0, 8.333).confidence,
+            "the band narrows as sigma falls, which is what the chart shows"
+        );
+    }
+
+    /// A squash match with a confirmed score, i.e. one the pipeline has
+    /// rated.
+    fn rated_match() -> MatchRecord {
+        let mut m = scheduled_match("2026-06-01T18:00:00.000Z");
+        m.status = "completed".to_string();
+        m.confirmed_score = Some(ConfirmedScoreRecord {
+            score: ScoreRecord::Simple {
+                entries: HashMap::new(),
+            },
+            winner_side_id: None,
+        });
+        m
+    }
+
+    /// Each of the three rating inputs is refused on its own, and the score
+    /// is the one thing left open.
+    #[test]
+    fn a_rated_ranked_match_closes_its_rating_inputs() {
+        let m = rated_match();
+        assert_eq!(
+            rated_ranked_edit_reason(&m, true, false, false),
+            Some("a ranked match's roster is fixed once it has a score")
+        );
+        assert_eq!(
+            rated_ranked_edit_reason(&m, false, true, false),
+            Some("a ranked match can't be rescheduled once it has a score")
+        );
+        assert_eq!(
+            rated_ranked_edit_reason(&m, false, false, true),
+            Some("a ranked match's status is fixed once it has a score")
+        );
+        // Nothing the rating was built from: a score edit, or a rename.
+        assert_eq!(rated_ranked_edit_reason(&m, false, false, false), None);
+    }
+
+    /// Before a score there is no rating to protect, and setting a match up
+    /// is mostly roster edits — so the lock mustn't apply yet. Getting this
+    /// wrong would make a ranked match impossible to organise.
+    #[test]
+    fn an_unscored_ranked_match_refuses_nothing() {
+        let m = scheduled_match("2026-06-01T18:00:00.000Z");
+        assert_eq!(rated_ranked_edit_reason(&m, true, true, true), None);
+    }
+
+    /// A friendly's roster was never anybody's rating input, so none of this
+    /// applies however the match was scored.
+    #[test]
+    fn a_scored_friendly_refuses_nothing() {
+        let mut m = rated_match();
+        m.ranked = false;
+        assert_eq!(rated_ranked_edit_reason(&m, true, true, true), None);
     }
 
     /// **Regression.** The first version of this lock read the stored record
@@ -2154,13 +2616,14 @@ mod tests {
     }
 
     /// Each refusal is silent when there's nobody to refuse, and otherwise
-    /// names who. Both remaining refusals are about accounts, so both say
-    /// so — there is no longer a second kind to report underneath.
+    /// names who. All three remaining refusals are about accounts, so all
+    /// three say so — there is no longer a second kind to report underneath.
     #[test]
     fn the_roster_refusals_name_who_and_what_to_do() {
         let nobody = UnratablePlayers::default();
         assert_eq!(ranked_added_players_reason(&nobody), None);
         assert_eq!(switch_to_ranked_reason(&nobody), None);
+        assert_eq!(ranked_guest_invites_reason(&nobody), None);
 
         let guest = UnratablePlayers {
             without_account: vec!["Ringer".to_string()],
@@ -2168,10 +2631,23 @@ mod tests {
         for reason in [
             ranked_added_players_reason(&guest).unwrap(),
             switch_to_ranked_reason(&guest).unwrap(),
+            ranked_guest_invites_reason(&guest).unwrap(),
         ] {
             assert!(reason.contains("Agon account"), "{reason}");
             assert!(reason.contains("Ringer"), "{reason}");
         }
+
+        // The refusals on an existing match tell you to take the guest off
+        // it. The creation one can't say that — nothing has been created, and
+        // the organiser is mid-invite — so it names the two choices actually
+        // still open instead.
+        assert!(
+            switch_to_ranked_reason(&guest).unwrap().contains("remove"),
+            "a switch is refused on a match the guests are already on"
+        );
+        let creating = ranked_guest_invites_reason(&guest).unwrap();
+        assert!(!creating.contains("remove"), "{creating}");
+        assert!(creating.contains("friendly"), "{creating}");
     }
 
     fn rated(matches_rated: u64) -> agon_core::dao::records::RatingRecord {

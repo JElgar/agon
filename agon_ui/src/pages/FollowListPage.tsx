@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
+import { useInfiniteQuery } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ChevronLeft } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
@@ -7,6 +7,7 @@ import { UserCard } from '@/components/agon/UserCard'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
+import { useProfileView } from '@/hooks/useProfileView'
 
 type UserPage = components['schemas']['UserPage']
 
@@ -28,18 +29,8 @@ export function FollowListPage({ mode }: { mode: FollowListMode }) {
   const currentUserId = useCurrentUserId()
 
   // The subject's name, for the heading. Cheap and usually already cached from
-  // the profile page the viewer came from.
-  const nameQuery = useQuery({
-    queryKey: ['profile', userId ?? 'me'],
-    enabled: !!userId,
-    queryFn: async () => {
-      const { data, error } = await fetchClient.GET('/users/{user_id}', {
-        params: { path: { user_id: userId! } },
-      })
-      if (error || !data) throw new Error('Failed to load profile')
-      return data
-    },
-  })
+  // the profile page the viewer came from — same hook, same cache entry.
+  const nameQuery = useProfileView(userId)
 
   const list = useInfiniteQuery({
     queryKey: ['follow-list', mode, userId],
@@ -77,7 +68,7 @@ export function FollowListPage({ mode }: { mode: FollowListMode }) {
           {title}
           {nameQuery.data && (
             <span className="ml-2 font-sans text-sm font-normal text-muted-foreground">
-              {nameQuery.data.name}
+              {nameQuery.data.profile.name}
             </span>
           )}
         </h1>

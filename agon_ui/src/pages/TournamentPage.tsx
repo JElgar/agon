@@ -26,6 +26,12 @@ type Tournament = components['schemas']['Tournament']
 type TournamentMatchSummary = components['schemas']['TournamentMatchSummary']
 type TournamentStandingsRow = components['schemas']['TournamentStandingsRow']
 type CreateMatchInput = components['schemas']['CreateMatchInput']
+// openapi-typescript emits `Tournament['generation']` as
+// `Omit<TournamentGenerationInput, "type"> & unknown` (a codegen quirk on
+// this optional discriminated-union field — see `CreateMatchSeriesInput['ends']`
+// for the same shape), which drops `type` from the visible fields. Read
+// through the actual union type instead of that mangled one.
+type TournamentGenerationInput = components['schemas']['TournamentGenerationInput']
 
 /**
  * Tournament hub: a scheduled tournament shows entries progress and a Start
@@ -197,7 +203,9 @@ export function TournamentPage() {
         </FormSection>
       )}
 
-      {started && tournament.format === 'league' && tournament.generation?.type === 'Manual' && (
+      {started &&
+        tournament.format === 'league' &&
+        (tournament.generation as TournamentGenerationInput | undefined)?.type === 'Manual' && (
         <AddTournamentMatchSection tournament={tournament} entries={entriesQuery.data ?? []} />
       )}
     </div>

@@ -878,7 +878,9 @@ pub fn tournament_from_record(rec: &TournamentRecord) -> Tournament {
     }
 }
 
-pub fn tournament_generation_from_record(rec: TournamentGenerationRecord) -> TournamentGenerationInput {
+pub fn tournament_generation_from_record(
+    rec: TournamentGenerationRecord,
+) -> TournamentGenerationInput {
     match rec {
         TournamentGenerationRecord::Manual => {
             TournamentGenerationInput::Manual(TournamentGenerationManualInput {})

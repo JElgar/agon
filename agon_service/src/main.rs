@@ -4167,7 +4167,10 @@ impl Api {
         // the team name alone can't tell the sides apart and a name is the
         // only way to distinguish them.
         for side in &input.sides {
-            if side.team_id.is_none() || side.name.is_none() || squad_side_client_ids.contains_key(&side.client_id) {
+            if side.team_id.is_none()
+                || side.name.is_none()
+                || squad_side_client_ids.contains_key(&side.client_id)
+            {
                 continue;
             }
             let team_shared = input
@@ -6053,9 +6056,10 @@ impl Api {
             (dao::records::TournamentFormatRecord::League, None) => {
                 dao::records::TournamentGenerationRecord::RoundRobin { times: 1 }
             }
-            (dao::records::TournamentFormatRecord::League, Some(TournamentGenerationInput::Manual(_))) => {
-                dao::records::TournamentGenerationRecord::Manual
-            }
+            (
+                dao::records::TournamentFormatRecord::League,
+                Some(TournamentGenerationInput::Manual(_)),
+            ) => dao::records::TournamentGenerationRecord::Manual,
             (
                 dao::records::TournamentFormatRecord::League,
                 Some(TournamentGenerationInput::RoundRobin(r)),

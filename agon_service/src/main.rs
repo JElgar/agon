@@ -6271,8 +6271,14 @@ impl Api {
                         ),
                     )));
                 }
-                const PALETTE: [&str; 6] = [
-                    "#2952D9", "#D92929", "#1FA37A", "#D9A429", "#7A29D9", "#29A3D9",
+                // Same hexes, in the same order, as `SIDE_COLOURS` in
+                // `agon_ui/src/lib/sideColours.ts` (the picker a squad's
+                // own colour swatch defaults from on the entries page), so
+                // a squad nobody touched the swatch for still turns into a
+                // match side with the colour the organiser actually saw.
+                const PALETTE: [&str; 10] = [
+                    "#2952D9", "#DC2626", "#16A34A", "#EAB308", "#F97316", "#9333EA", "#EC4899",
+                    "#0F172A", "#E2E8F0", "#64748B",
                 ];
                 let mut synthetic_ids: Vec<String> = Vec::new();
                 for (position, (squad_num, members)) in by_squad.into_iter().enumerate() {

@@ -8,6 +8,7 @@ import { UpcomingMatchCard } from '@/components/agon/UpcomingMatchCard'
 import { Button } from '@/components/ui/button'
 import { useNavigate } from 'react-router-dom'
 import { useCurrentUserId } from '@/hooks/useCurrentUserId'
+import { currentUserQuery } from '@/hooks/useCurrentUser'
 import { useIsDesktop } from '@/hooks/use-mobile'
 import { dayLabel } from '@/lib/datetime'
 import {
@@ -18,7 +19,6 @@ import {
 type FeedPageData = components['schemas']['FeedPage']
 type FeedMatch = components['schemas']['FeedMatch']
 type Match = components['schemas']['Match']
-type UserProfile = components['schemas']['UserProfile']
 /** A server feed item (`FeedMatch`) or a viewer's own just-created `Match`,
  *  shown in the pending overlay until the async fan-out lands it in
  *  `GET /feed` (see `usePendingMatches`). `MatchCard` renders either. */
@@ -42,14 +42,14 @@ export function FeedPage() {
   // JS breakpoint check, not CSS alone.
   const isDesktop = useIsDesktop()
 
-  // Same query key/fetcher as `useCurrentUserId` (called above), so this
-  // shares its cache entry and network request instead of fetching twice.
+  // Same cache entry and network request as `useCurrentUserId` (called
+  // above) rather than a second fetch — `select` takes the half this page
+  // wants. No `staleTime`, unlike that hook: the banner's season stats move
+  // every time the viewer logs a match, so this reader wants them refetched
+  // on mount.
   const profileQuery = useQuery({
-    queryKey: ['users-me'],
-    queryFn: async (): Promise<UserProfile | null> => {
-      const { data } = await fetchClient.GET('/users/me')
-      return data?.profile ?? null
-    },
+    ...currentUserQuery,
+    select: (user) => user?.profile ?? null,
   })
 
   const query = useInfiniteQuery({

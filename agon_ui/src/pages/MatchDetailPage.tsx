@@ -12,6 +12,7 @@ import { addMatchToCalendar } from '@/lib/calendar'
 import { Button } from '@/components/ui/button'
 import { WaitlistSection } from '@/components/agon/WaitlistSection'
 import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
+import { RankedBadge } from '@/components/agon/RankedBadge'
 import { ScoreConfirmationBar } from '@/components/agon/ScoreConfirmationBar'
 import { useLiveEvents } from '@/hooks/useLiveScore'
 import { useMatchScore } from '@/hooks/useMatchScore'
@@ -468,6 +469,12 @@ function MatchDetail({
           {metaTeamSide ? `${metaTeamSide.team_name} · ` : ''}
           {scheduledDateTime(match.starts_at)}
         </span>
+        {/* The board also puts a "Rating change" card further down, one row
+            per player with the points they gained or lost. That isn't here:
+            no endpoint returns a match's rating contributions, so there's
+            nothing to put in the rows. This chip is the part the `Match`
+            payload can answer — whether the result counts at all. */}
+        {match.ranked && <RankedBadge />}
       </div>
       <h1 className="font-display text-[30px] leading-tight font-extrabold tracking-[-0.4px]">{match.name}</h1>
       {match.series_id && (

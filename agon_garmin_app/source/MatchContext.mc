@@ -32,6 +32,11 @@ class MatchContext {
     //! Each entry is a Dictionary{"id" => String, "name" => String}.
     var side0Players as Array;
     var side1Players as Array;
+    //! The match's configured `num_halves` (`match.format`, `sport ==
+    //! "Football"`) — 2 whenever no format was set, or it's some other
+    //! sport. Only consulted by `agonMenuDelegate.buildMainMenu` to skip
+    //! offering a half-time break for a 1-half match.
+    var numHalves as Number;
     //! The viewer's own internal user id (`GET /users/me`, resolved once
     //! by `MatchPickerView` before a match is even picked) — `null` until
     //! `setMyUserId` is called. Kept here, not just passed into
@@ -49,6 +54,7 @@ class MatchContext {
         side0Players = [];
         side1Players = [];
         myUserId = null;
+        numHalves = 2;
     }
 
     //! Set once, by `MatchMenuDelegate.onMatchDetails`, right before the
@@ -76,6 +82,17 @@ class MatchContext {
             }
             if (sidesArray.size() > 1) {
                 populateSide(sidesArray[1] as Dictionary, false);
+            }
+        }
+
+        var format = match.get("format");
+        if (format != null) {
+            var formatDict = format as Dictionary;
+            if ((formatDict.get("sport") as String).equals("Football")) {
+                var halves = formatDict.get("num_halves");
+                if (halves != null) {
+                    numHalves = halves as Number;
+                }
             }
         }
 

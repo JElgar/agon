@@ -1,21 +1,19 @@
 import { useQuery } from '@tanstack/react-query'
-import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
+import { currentUserQuery } from './useCurrentUser'
 
 type UserProfile = components['schemas']['UserProfile']
 
 /**
- * The signed-in user's full profile (name, image, per-sport stats). Shares
- * the `['users-me']` cache entry with `useCurrentUserId` — react-query keys
- * on the query key, not the `select`, so both hooks read the same fetch.
+ * The signed-in user's public profile (name, image, per-sport stats, published
+ * ratings). Shares the `['users-me']` cache entry with `useCurrentUserId` and
+ * every other reader of `currentUserQuery` — react-query keys on the query
+ * key, not the `select`, so they all read the same fetch.
  */
 export function useCurrentUserProfile(): UserProfile | undefined {
   const { data } = useQuery({
-    queryKey: ['users-me'],
-    queryFn: async (): Promise<UserProfile | null> => {
-      const { data } = await fetchClient.GET('/users/me')
-      return data?.profile ?? null
-    },
+    ...currentUserQuery,
+    select: (user) => user?.profile ?? null,
     staleTime: 5 * 60 * 1000,
   })
   return data ?? undefined

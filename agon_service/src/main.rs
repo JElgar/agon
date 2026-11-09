@@ -3471,6 +3471,40 @@ impl Api {
     /// recomputed here except the display scale, and the collection is
     /// time-ordered by its own key, so this handler is a read and a map.
     ///
+    /// ## Why this is its own endpoint
+    ///
+    /// The obvious alternative — nesting the points under each entry of
+    /// `UserProfile::ratings` — looks simpler and isn't. The profile item
+    /// carries no history, so it would have to come from a query, and
+    /// `UserProfile` is returned in *lists*: a 20-result user search would
+    /// run a rating-history query per user per ladder, as would the
+    /// follower and following lists, and every match response embeds
+    /// `known_participants`, so each one would carry every participant's
+    /// full history on every read. The sort key is ladder-scoped, so that
+    /// is a query per ladder; avoiding the fan-out would mean reading a
+    /// user's entire `RATING#` collection across every sport on every
+    /// profile load, which is worse.
+    ///
+    /// It would also cost the two things that keep the placements rule
+    /// honest. `user_profile_from_record` would have to become `async` and
+    /// take a DAO handle (or all eight of its call sites would have to fan
+    /// out and pass history in), so the pure mapper is gone either way —
+    /// and the rule would move from one chokepoint into a nested field of a
+    /// DTO built in eight places, which is exactly the failure mode
+    /// `published_ratings_from_record`'s doc comment warns about, on the one
+    /// rule whose whole purpose is never to leak.
+    ///
+    /// Served separately, the profile endpoints stay point reads, nothing
+    /// about `UserProfile` changes, and only the screen that draws a chart
+    /// pays a round trip. The payload is bounded by one ladder, and the
+    /// client knows how many points to expect before asking, because
+    /// `LadderRating.matches_rated` is on the profile it already holds.
+    ///
+    /// A match's own `+18` deliberately does **not** come from here. See
+    /// [`Match::viewer_rating_delta`]: fetching a whole ladder's timeline to
+    /// render one match's movement is the wrong shape, and that number is
+    /// one point read on an exact key in the match's own partition.
+    ///
     /// **Published ratings only, and that is the whole of the
     /// authorization.** A rating in placements is withheld from everybody
     /// including its owner — `UserProfile::ratings` has the argument — so the

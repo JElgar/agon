@@ -6103,9 +6103,7 @@ impl Api {
         dao.set_tournament_squad_label(&tournament_id, squad, &label)
             .await
             .map_err(dao_internal)?;
-        tournament
-            .squad_labels
-            .insert(squad.to_string(), label);
+        tournament.squad_labels.insert(squad.to_string(), label);
         Ok(SetSquadLabelResponse::Tournament(Json(
             mapping::tournament_from_record(&tournament),
         )))

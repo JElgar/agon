@@ -117,8 +117,8 @@ impl Dao {
         squad: u32,
         label: &SquadLabelRecord,
     ) -> DaoResult<()> {
-        let label_av = serde_dynamo::to_attribute_value(label)
-            .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        let label_av =
+            serde_dynamo::to_attribute_value(label).map_err(|e| DaoError::Dynamo(e.to_string()))?;
         let result = self
             .client
             .update_item()

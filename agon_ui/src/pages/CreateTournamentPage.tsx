@@ -36,12 +36,11 @@ const SEEDING_OPTIONS: { value: TournamentSeeding; label: string }[] = [
 ]
 
 /**
- * `POST /tournaments` — knockout or league, team-entry or (league-only)
- * teamless-with-fixed-squads. A teamless tournament (`entry_audience:
- * "players"`) is locked to League + manual seeding + manual squad
- * assignment, matching what `start` actually supports today (see
- * `agon_service::start_tournament`'s doc comment) — knockout and auto squad
- * balancing aren't built yet.
+ * `POST /tournaments` — knockout or league, entered by teams or by
+ * individual players (who get assigned into fixed squads before it
+ * starts — see `TournamentEntriesPage`). A teamless tournament
+ * (`entry_audience: "players"`) still forces manual seeding (a squad has
+ * no single seed) — auto squad balancing isn't built yet.
  *
  * Scheduling is manual-only for now (2026-11-09): every generated match
  * starts at the one time given here, and the organiser nudges each match's
@@ -65,10 +64,10 @@ export function CreateTournamentPage() {
   const [seeding, setSeeding] = useState<TournamentSeeding>('random')
 
   // `rotating_players` has no fixed sides at all — every round's sides are
-  // formed fresh, so (unlike a teamless league's one-off fixed squads) it
-  // needs its own `squad_size` (the fixed *side* size) and `rounds` (how
-  // many rounds to generate, one at a time, instead of running to a
-  // winner). Both formats force `entry_audience: "players"` and
+  // formed fresh, so (unlike a teamless squad, fixed for either league or
+  // knockout) it needs its own `squad_size` (the fixed *side* size) and
+  // `rounds` (how many rounds to generate, one at a time, instead of
+  // running to a winner). Both still force `entry_audience: "players"` and
   // `seeding: "random"` since neither has a single per-entrant seed.
   const isRotating = format === 'rotating_players'
   const isTeamless = !isRotating && entryAudience === 'players'
@@ -88,7 +87,7 @@ export function CreateTournamentPage() {
         match_type: sport!,
         name: name.trim(),
         description: '',
-        format: isTeamless ? 'league' : format,
+        format,
         entry_audience: effectiveEntryAudience,
         team_formation: isTeamless ? 'manual' : undefined,
         squad_size: isTeamless || isRotating ? Number(squadSize) : undefined,
@@ -138,12 +137,7 @@ export function CreateTournamentPage() {
       </FormSection>
 
       <FormSection title="Format">
-        <Segmented
-          label="Format"
-          options={isTeamless ? [{ value: 'league', label: 'League' }] : FORMAT_OPTIONS}
-          value={isTeamless ? 'league' : format}
-          onChange={setFormat}
-        />
+        <Segmented label="Format" options={FORMAT_OPTIONS} value={format} onChange={setFormat} />
       </FormSection>
 
       {!isRotating && (
@@ -158,7 +152,7 @@ export function CreateTournamentPage() {
             <div className={CARD}>
               <p className="text-sm text-muted-foreground">
                 No pre-existing teams — individuals join, and you assign them into fixed squads
-                before the tournament starts. League only for now.
+                before the tournament starts.
               </p>
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="squad-size">Squad size</Label>

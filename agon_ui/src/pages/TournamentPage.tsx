@@ -61,7 +61,10 @@ export function TournamentPage() {
 
   const standingsQuery = useQuery({
     queryKey: ['tournament', tournamentId, 'standings'],
-    enabled: !!tournamentId && started && tournament?.format === 'league',
+    enabled:
+      !!tournamentId &&
+      started &&
+      (tournament?.format === 'league' || tournament?.format === 'rotating_players'),
     queryFn: async (): Promise<TournamentStandingsRow[]> => {
       const { data, error } = await fetchClient.GET('/tournaments/{tournament_id}/standings', {
         params: { path: { tournament_id: tournamentId! } },
@@ -71,6 +74,8 @@ export function TournamentPage() {
     },
   })
 
+  const invalidate = () => queryClient.invalidateQueries({ queryKey: ['tournament', tournamentId] })
+
   const startMutation = useMutation({
     mutationFn: async () => {
       const { data, error } = await fetchClient.POST('/tournaments/{tournament_id}/start', {
@@ -79,9 +84,22 @@ export function TournamentPage() {
       if (error || !data) throw new Error('Could not start this tournament')
       return data
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tournament', tournamentId] })
+    onSuccess: invalidate,
+  })
+
+  // Auto-forms the next round (ranked by current standings) — manual
+  // per-round side assignment isn't built into this page yet; an organiser
+  // who wants to hand-pick a round can still do it via the API directly.
+  const nextRoundMutation = useMutation({
+    mutationFn: async () => {
+      const { data, error } = await fetchClient.POST('/tournaments/{tournament_id}/rounds/next', {
+        params: { path: { tournament_id: tournamentId! } },
+        body: {},
+      })
+      if (error || !data) throw new Error("Couldn't generate the next round — make sure every match in the current round has a confirmed score.")
+      return data
     },
+    onSuccess: invalidate,
   })
 
   if (!tournament) {
@@ -146,9 +164,32 @@ export function TournamentPage() {
         </FormSection>
       )}
 
-      {started && tournament.format === 'league' && (
+      {started && (tournament.format === 'league' || tournament.format === 'rotating_players') && (
         <FormSection title="Standings">
           <StandingsTable rows={standingsQuery.data ?? []} />
+        </FormSection>
+      )}
+
+      {started && tournament.format === 'rotating_players' && tournament.status === 'in_progress' && (
+        <FormSection title="Rounds">
+          {tournament.current_round != null && tournament.rounds != null && (
+            <p className="text-sm text-muted-foreground">
+              Round {tournament.current_round + 1} of {tournament.rounds}.
+            </p>
+          )}
+          {nextRoundMutation.isError && (
+            <p className="text-sm text-destructive">{nextRoundMutation.error.message}</p>
+          )}
+          {tournament.current_round != null &&
+            tournament.rounds != null &&
+            tournament.current_round + 1 < tournament.rounds && (
+              <Button
+                disabled={nextRoundMutation.isPending}
+                onClick={() => nextRoundMutation.mutate()}
+              >
+                {nextRoundMutation.isPending ? 'Generating…' : 'Generate next round'}
+              </Button>
+            )}
         </FormSection>
       )}
 
@@ -158,7 +199,11 @@ export function TournamentPage() {
             {groupMatchesByRound(matches).map(([round, roundMatches]) => (
               <div key={round} className="flex flex-col gap-2">
                 <h3 className="px-1 text-xs font-bold uppercase text-muted-foreground">
-                  {tournament.format === 'knockout' ? roundLabel(round, matches.length) : `Matchday ${round + 1}`}
+                  {tournament.format === 'knockout'
+                    ? roundLabel(round, matches.length)
+                    : tournament.format === 'rotating_players'
+                      ? `Round ${round + 1}`
+                      : `Matchday ${round + 1}`}
                 </h3>
                 <div className={CARD}>
                   {roundMatches.map((match) => (

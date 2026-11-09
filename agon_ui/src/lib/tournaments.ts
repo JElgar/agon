@@ -6,7 +6,14 @@ export type TournamentEntry = components['schemas']['TournamentEntry']
 export type TournamentMatchSummary = components['schemas']['TournamentMatchSummary']
 
 export function tournamentFormatLabel(format: Tournament['format']): string {
-  return format === 'knockout' ? 'Knockout' : 'League'
+  switch (format) {
+    case 'knockout':
+      return 'Knockout'
+    case 'rotating_players':
+      return 'Rotating sides'
+    default:
+      return 'League'
+  }
 }
 
 export function tournamentStatusLabel(status: string): string {

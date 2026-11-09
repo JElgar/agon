@@ -22,6 +22,7 @@ type TournamentSeeding = components['schemas']['TournamentSeeding']
 const FORMAT_OPTIONS: { value: TournamentFormat; label: string }[] = [
   { value: 'knockout', label: 'Knockout' },
   { value: 'league', label: 'League' },
+  { value: 'rotating_players', label: 'Rotating sides' },
 ]
 
 const ENTRY_AUDIENCE_OPTIONS: { value: TournamentEntryAudience; label: string }[] = [
@@ -56,23 +57,30 @@ export function CreateTournamentPage() {
   const [format, setFormat] = useState<TournamentFormat>('knockout')
   const [entryAudience, setEntryAudience] = useState<TournamentEntryAudience>('teams')
   const [squadSize, setSquadSize] = useState('')
+  const [rounds, setRounds] = useState('')
   const [minTeams, setMinTeams] = useState('4')
   const [maxTeams, setMaxTeams] = useState('')
   const [location, setLocation] = useState<LocationValue | null>(null)
   const [startsAt, setStartsAt] = useState('')
   const [seeding, setSeeding] = useState<TournamentSeeding>('random')
 
-  // A teamless tournament only supports league + random seeding + manual
-  // squad assignment — enforce that in the form rather than letting the
-  // user pick an unsupported combination and find out from a 400.
-  const isTeamless = entryAudience === 'players'
+  // `rotating_players` has no fixed sides at all — every round's sides are
+  // formed fresh, so (unlike a teamless league's one-off fixed squads) it
+  // needs its own `squad_size` (the fixed *side* size) and `rounds` (how
+  // many rounds to generate, one at a time, instead of running to a
+  // winner). Both formats force `entry_audience: "players"` and
+  // `seeding: "random"` since neither has a single per-entrant seed.
+  const isRotating = format === 'rotating_players'
+  const isTeamless = !isRotating && entryAudience === 'players'
+  const effectiveEntryAudience: TournamentEntryAudience = isRotating ? 'players' : entryAudience
 
   const canSave =
     !!sport &&
     name.trim() !== '' &&
     !!startsAt &&
     Number(minTeams) >= 2 &&
-    (!isTeamless || squadSize.trim() !== '')
+    (!isTeamless || squadSize.trim() !== '') &&
+    (!isRotating || (squadSize.trim() !== '' && Number(rounds) >= 1))
 
   const mutation = useMutation({
     mutationFn: async (): Promise<Tournament> => {
@@ -81,15 +89,16 @@ export function CreateTournamentPage() {
         name: name.trim(),
         description: '',
         format: isTeamless ? 'league' : format,
-        entry_audience: entryAudience,
+        entry_audience: effectiveEntryAudience,
         team_formation: isTeamless ? 'manual' : undefined,
-        squad_size: isTeamless ? Number(squadSize) : undefined,
+        squad_size: isTeamless || isRotating ? Number(squadSize) : undefined,
+        rounds: isRotating ? Number(rounds) : undefined,
         min_teams: Number(minTeams),
         max_teams: maxTeams.trim() ? Number(maxTeams) : undefined,
         location: location?.text.trim() ? { ...location, text: location.text.trim() } : undefined,
         first_round_starts_at: new Date(startsAt).toISOString(),
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        seeding: isTeamless ? 'random' : seeding,
+        seeding: isTeamless || isRotating ? 'random' : seeding,
       }
       const { data, error } = await fetchClient.POST('/tournaments', { body })
       if (error || !data) throw new Error('Could not create tournament')
@@ -137,35 +146,74 @@ export function CreateTournamentPage() {
         />
       </FormSection>
 
-      <FormSection title="Who enters">
-        <Segmented
-          label="Who enters"
-          options={ENTRY_AUDIENCE_OPTIONS}
-          value={entryAudience}
-          onChange={setEntryAudience}
-        />
-        {isTeamless && (
+      {!isRotating && (
+        <FormSection title="Who enters">
+          <Segmented
+            label="Who enters"
+            options={ENTRY_AUDIENCE_OPTIONS}
+            value={entryAudience}
+            onChange={setEntryAudience}
+          />
+          {isTeamless && (
+            <div className={CARD}>
+              <p className="text-sm text-muted-foreground">
+                No pre-existing teams — individuals join, and you assign them into fixed squads
+                before the tournament starts. League only for now.
+              </p>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="squad-size">Squad size</Label>
+                <Input
+                  id="squad-size"
+                  type="number"
+                  min={1}
+                  value={squadSize}
+                  onChange={(e) => setSquadSize(e.target.value)}
+                  placeholder="e.g. 5"
+                />
+              </div>
+            </div>
+          )}
+        </FormSection>
+      )}
+
+      {isRotating && (
+        <FormSection title="Sides">
           <div className={CARD}>
             <p className="text-sm text-muted-foreground">
-              No pre-existing teams — individuals join, and you assign them into fixed squads
-              before the tournament starts. League only for now.
+              No fixed sides — players join individually, and a fresh set of sides is formed
+              every round from the current standings (or by hand, round by round, once the
+              tournament's under way).
             </p>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="squad-size">Squad size</Label>
-              <Input
-                id="squad-size"
-                type="number"
-                min={1}
-                value={squadSize}
-                onChange={(e) => setSquadSize(e.target.value)}
-                placeholder="e.g. 5"
-              />
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="squad-size">Side size</Label>
+                <Input
+                  id="squad-size"
+                  type="number"
+                  min={1}
+                  max={4}
+                  value={squadSize}
+                  onChange={(e) => setSquadSize(e.target.value)}
+                  placeholder="e.g. 2"
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="rounds">Rounds</Label>
+                <Input
+                  id="rounds"
+                  type="number"
+                  min={1}
+                  value={rounds}
+                  onChange={(e) => setRounds(e.target.value)}
+                  placeholder="e.g. 5"
+                />
+              </div>
             </div>
           </div>
-        )}
-      </FormSection>
+        </FormSection>
+      )}
 
-      <FormSection title={isTeamless ? 'Squads' : 'Teams'}>
+      <FormSection title={isTeamless ? 'Squads' : isRotating ? 'Players' : 'Teams'}>
         <div className="grid grid-cols-2 gap-3">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="min-teams">Minimum</Label>
@@ -190,7 +238,7 @@ export function CreateTournamentPage() {
         </div>
       </FormSection>
 
-      {!isTeamless && (
+      {!isTeamless && !isRotating && (
         <FormSection title="Seeding">
           <Segmented label="Seeding" options={SEEDING_OPTIONS} value={seeding} onChange={setSeeding} />
         </FormSection>

@@ -156,7 +156,7 @@ export function TournamentEntriesPage() {
                 <EntryRow
                   key={entry.entrant_id}
                   entry={entry}
-                  teamless={tournament.entry_audience === 'players'}
+                  teamless={tournament.entry_audience === 'players' && tournament.format === 'league'}
                   onRemove={() => removeEntryMutation.mutate(entry.entrant_id)}
                   onAssignSquad={(squad) =>
                     assignSquadMutation.mutate({ entrantId: entry.entrant_id, squad })

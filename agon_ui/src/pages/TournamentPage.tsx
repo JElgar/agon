@@ -177,7 +177,7 @@ export function TournamentPage() {
 
       {started && tournament.format === 'league' && (
         <FormSection title="Standings">
-          <StandingsTable rows={standingsQuery.data ?? []} />
+          <StandingsTable rows={standingsQuery.data ?? []} names={entrantNames(matches)} />
         </FormSection>
       )}
 
@@ -393,7 +393,22 @@ function TournamentMatchRow({ match }: { match: TournamentMatchSummary }) {
   )
 }
 
-function StandingsTable({ rows }: { rows: TournamentStandingsRow[] }) {
+/** A standings row's `entrant_id` is the `team_id` its match sides carry —
+ *  a real team's id, or a teamless tournament's synthetic `"squad-<n>"` —
+ *  so its display name comes off those sides (a squad's organiser-set name
+ *  is the side's own `name`), the same way `TournamentMatchRow` names them. */
+function entrantNames(matches: TournamentMatchSummary[]): Map<string, string> {
+  const names = new Map<string, string>()
+  for (const match of matches) {
+    for (const side of match.sides) {
+      const name = sideDisplayName(side)
+      if (side.team_id && name && !names.has(side.team_id)) names.set(side.team_id, name)
+    }
+  }
+  return names
+}
+
+function StandingsTable({ rows, names }: { rows: TournamentStandingsRow[]; names: Map<string, string> }) {
   if (rows.length === 0) {
     return (
       <div className={CARD}>
@@ -420,7 +435,7 @@ function StandingsTable({ rows }: { rows: TournamentStandingsRow[] }) {
             .sort((a, b) => b.points - a.points)
             .map((row) => (
               <tr key={row.entrant_id} className="border-t">
-                <td className="truncate py-1.5 font-semibold">{row.entrant_id}</td>
+                <td className="truncate py-1.5 font-semibold">{names.get(row.entrant_id) ?? row.entrant_id}</td>
                 <td className="text-center">{row.played}</td>
                 <td className="text-center">{row.won}</td>
                 <td className="text-center">{row.drawn}</td>

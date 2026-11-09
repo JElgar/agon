@@ -157,7 +157,13 @@ async fn match_card(
     target_url: &str,
 ) -> Option<PreviewCard> {
     let agg = dao.get_match(match_id).await.ok()??;
-    let raw = mapping::match_from_records(&agg.match_, &agg.sides, &agg.players, false);
+    let raw = mapping::match_from_records(
+        &agg.match_,
+        &agg.sides,
+        &agg.players,
+        false,
+        &std::collections::HashMap::new(),
+    );
     let mut m = Api.hydrate_match(dao, raw).await.ok()?;
     sign_match_headers(assets, &mut m);
     Some(PreviewCard {
@@ -180,7 +186,13 @@ async fn invite_card(
     match &rec.context {
         InvitationContextRecord::Match { match_id, .. } => {
             let agg = dao.get_match(match_id).await.ok()??;
-            let raw = mapping::match_from_records(&agg.match_, &agg.sides, &agg.players, false);
+            let raw = mapping::match_from_records(
+                &agg.match_,
+                &agg.sides,
+                &agg.players,
+                false,
+                &std::collections::HashMap::new(),
+            );
             let mut m = Api.hydrate_match(dao, raw).await.ok()?;
             sign_match_headers(assets, &mut m);
 
@@ -270,7 +282,13 @@ async fn join_card(
         return None;
     };
     let agg = dao.get_match(match_id).await.ok()??;
-    let raw = mapping::match_from_records(&agg.match_, &agg.sides, &agg.players, false);
+    let raw = mapping::match_from_records(
+        &agg.match_,
+        &agg.sides,
+        &agg.players,
+        false,
+        &std::collections::HashMap::new(),
+    );
     let mut m = Api.hydrate_match(dao, raw).await.ok()?;
     sign_match_headers(assets, &mut m);
 

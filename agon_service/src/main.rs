@@ -1259,12 +1259,18 @@ struct CreateTournamentInput {
     min_teams: u32,
     max_teams: Option<u32>,
     location: Option<Location>,
-    /// "weekly" | "fortnightly" | "monthly" | "yearly".
-    frequency: String,
-    /// 0 = Sunday .. 6 = Saturday.
-    weekday: u8,
-    /// Round/matchday 0's start — same weekday-match and future-dated
-    /// validation as `CreateMatchSeriesInput::starts_at`.
+    /// "weekly" | "fortnightly" | "monthly" | "yearly". Unused for now —
+    /// every generated match starts at `first_round_starts_at` (see
+    /// `start_tournament`'s doc comment) — but still stored so a future
+    /// auto-cadence feature has somewhere to read it back from. Defaults to
+    /// `"weekly"` when omitted.
+    frequency: Option<String>,
+    /// 0 = Sunday .. 6 = Saturday. Defaults to `first_round_starts_at`'s own
+    /// weekday when omitted (and must match it when given, same as before).
+    weekday: Option<u8>,
+    /// Every generated match's `starts_at`, verbatim — see
+    /// `start_tournament`'s doc comment for why this isn't advanced
+    /// per-round yet.
     first_round_starts_at: chrono::DateTime<chrono::Utc>,
     timezone: String,
     /// Defaults to 3/1/0 when omitted; irrelevant for knockout.
@@ -5612,18 +5618,21 @@ impl Api {
                     .into(),
             )));
         }
-        if !matches!(
-            input.frequency.as_str(),
-            "weekly" | "fortnightly" | "monthly" | "yearly"
-        ) {
+        if let Some(frequency) = &input.frequency
+            && !matches!(
+                frequency.as_str(),
+                "weekly" | "fortnightly" | "monthly" | "yearly"
+            )
+        {
             return Ok(CreateTournamentResponse::ValidationError(PlainText(
                 format!(
-                    "frequency `{}` must be one of weekly, fortnightly, monthly, yearly",
-                    input.frequency
+                    "frequency `{frequency}` must be one of weekly, fortnightly, monthly, yearly"
                 ),
             )));
         }
-        if input.weekday > 6 {
+        if let Some(weekday) = input.weekday
+            && weekday > 6
+        {
             return Ok(CreateTournamentResponse::ValidationError(PlainText(
                 "weekday must be 0..=6 (0 = Sunday .. 6 = Saturday)".to_string(),
             )));
@@ -5639,11 +5648,12 @@ impl Api {
         use chrono::Datelike;
         let first_local = input.first_round_starts_at.with_timezone(&timezone);
         let starts_at_weekday = first_local.weekday().num_days_from_sunday() as u8;
-        if starts_at_weekday != input.weekday {
+        if let Some(weekday) = input.weekday
+            && starts_at_weekday != weekday
+        {
             return Ok(CreateTournamentResponse::ValidationError(PlainText(
                 format!(
-                    "first_round_starts_at falls on weekday {starts_at_weekday}, not the configured weekday {}",
-                    input.weekday
+                    "first_round_starts_at falls on weekday {starts_at_weekday}, not the configured weekday {weekday}"
                 ),
             )));
         }
@@ -5664,7 +5674,6 @@ impl Api {
                 "max_teams can't be less than min_teams".to_string(),
             )));
         }
-
         let now = now_iso();
         let tournament_id = new_id();
         let tournament = dao::records::TournamentRecord {
@@ -5681,8 +5690,8 @@ impl Api {
             min_teams: input.min_teams,
             max_teams: input.max_teams,
             location: input.location.as_ref().map(location_to_record),
-            frequency: input.frequency,
-            weekday: input.weekday,
+            frequency: input.frequency.unwrap_or_else(|| "weekly".to_string()),
+            weekday: input.weekday.unwrap_or(starts_at_weekday),
             first_round_starts_at: input
                 .first_round_starts_at
                 .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
@@ -6120,24 +6129,16 @@ impl Api {
             }
         };
 
-        use chrono::Datelike;
-        let timezone: chrono_tz::Tz = tournament.timezone.parse().unwrap_or(chrono_tz::UTC);
         let first_round_starts_at = mapping::parse_ts(&tournament.first_round_starts_at);
-        let weekday = first_round_starts_at
-            .with_timezone(&timezone)
-            .date_naive()
-            .weekday();
 
-        let round_starts_at = |round: u32| -> String {
-            agon_core::series::occurrence_starts_at(
-                first_round_starts_at,
-                timezone,
-                &tournament.frequency,
-                weekday,
-                round,
-            )
-            .unwrap_or(first_round_starts_at)
-            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        // Every generated match starts at the same time for now — picking a
+        // real per-round/per-matchday cadence (recurring weekly slots, or
+        // auto-filling a day's available window) is still being designed
+        // (2026-11-09, "how do you create a tournament" thread); until then
+        // the organiser nudges each match's actual time on the existing
+        // edit-match page as the tournament is played.
+        let round_starts_at = |_round: u32| -> String {
+            first_round_starts_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
         };
 
         let team_side = |team_id: &str| -> dao::records::MatchSideRecord {

@@ -2,7 +2,6 @@ import { useInfiniteQuery } from '@tanstack/react-query'
 import { Plus, Users } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
-import { Link } from 'react-router-dom'
 import { CreateTeamDialog } from '@/components/agon/CreateTeamDialog'
 import { TeamCard } from '@/components/agon/TeamCard'
 import { Card } from '@/components/ui/card'
@@ -39,20 +38,12 @@ export function TeamsPage() {
     <div className="mx-auto flex max-w-xl flex-col gap-3 md:max-w-3xl md:gap-5 lg:max-w-5xl">
       <div className="flex items-center justify-between gap-2">
         <h1 className="font-display text-2xl font-extrabold md:text-3xl">Teams</h1>
-        <div className="flex items-center gap-2">
-          <Button shape="pill" variant="outline" className="gap-1.5" asChild>
-            <Link to="/tournaments/new">
-              <Plus className="size-4" />
-              Create tournament
-            </Link>
+        <CreateTeamDialog>
+          <Button shape="pill" className="gap-1.5">
+            <Plus className="size-4" />
+            Create team
           </Button>
-          <CreateTeamDialog>
-            <Button shape="pill" className="gap-1.5">
-              <Plus className="size-4" />
-              Create team
-            </Button>
-          </CreateTeamDialog>
-        </div>
+        </CreateTeamDialog>
       </div>
 
       <ListBody list={list} items={items} />

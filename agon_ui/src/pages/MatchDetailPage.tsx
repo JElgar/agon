@@ -37,6 +37,7 @@ import {
   memberAvatarUrl,
   memberName,
   myPendingInvitation,
+  mySideAdminSideId,
   mySideId,
   orderSidesForViewer,
   sideDisplayName,
@@ -56,6 +57,7 @@ import { openJoinEligible } from '@/lib/openJoin'
 import { MatchResultEditor } from '@/components/agon/MatchResultEditor'
 import { MatchRosterEditor } from '@/components/agon/MatchRosterEditor'
 import { InvitePlayers } from '@/components/agon/InvitePlayers'
+import { SideAdminsEditor } from '@/components/agon/SideAdminsEditor'
 import { MatchComments } from '@/components/agon/MatchComments'
 import { useToggleLike } from '@/hooks/useToggleLike'
 import { InvitationResponseDialog } from '@/components/agon/InvitationResponseDialog'
@@ -219,6 +221,10 @@ function MatchDetail({
   // ordinary player is read-only on the match itself; `LeaveMatch` below is
   // the one action left to them.
   const canEdit = canManageMatch(match, currentUserId)
+  // Narrower than `canEdit`: configure ringer settings/invite for just this
+  // one side, if the viewer holds `side_admin` on it — see
+  // `mySideAdminSideId`'s doc comment.
+  const sideAdminSideId = canEdit ? undefined : mySideAdminSideId(match, currentUserId)
   const iAmOwner = isMatchOwner(match, currentUserId)
   const iAmParticipant = isParticipant(match, currentUserId)
   const cancelled = match.status === 'cancelled'
@@ -409,27 +415,36 @@ function MatchDetail({
   )
 
   // Roster admin under every redesigned Players tab.
+  const canInvite = canEdit || sideAdminSideId != null
   const playersFooter = (
     <>
-      {canEdit && !cancelled && (
+      {canInvite && !cancelled && (
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" className="gap-1.5 rounded-full" onClick={() => setEditingRoster(true)}>
-            <Pencil className="size-4" /> Edit roster
-          </Button>
+          {canEdit && (
+            <Button variant="outline" className="gap-1.5 rounded-full" onClick={() => setEditingRoster(true)}>
+              <Pencil className="size-4" /> Edit roster
+            </Button>
+          )}
           {!inviting && (
             <Button variant="outline" className="gap-1.5 rounded-full" onClick={() => setInviting(true)}>
               <UserPlus className="size-4" /> Invite players
             </Button>
           )}
-          <MatchJoinLinksDialog match={match}>
-            <Button variant="outline" className="gap-1.5 rounded-full">
-              <Link2 className="size-4" /> Join links
-            </Button>
-          </MatchJoinLinksDialog>
+          {canEdit && (
+            <MatchJoinLinksDialog match={match}>
+              <Button variant="outline" className="gap-1.5 rounded-full">
+                <Link2 className="size-4" /> Join links
+              </Button>
+            </MatchJoinLinksDialog>
+          )}
         </div>
       )}
-      {canEdit && !cancelled && inviting && (
-        <InvitePlayers match={match} onDone={() => setInviting(false)} />
+      {canInvite && !cancelled && inviting && (
+        <InvitePlayers
+          match={match}
+          onDone={() => setInviting(false)}
+          restrictedSideId={canEdit ? undefined : sideAdminSideId}
+        />
       )}
       {!cancelled && (
         <WaitlistSection match={match} currentUserId={currentUserId} canManage={canEdit} />
@@ -593,7 +608,24 @@ function MatchDetail({
   const adminFooter = (
     <>
       {canEdit && !cancelled && <MatchJoinSettingsEditor match={match} canManage={canEdit} />}
-      {canEdit && !cancelled && <MatchOpenJoinEditor match={match} canManage={canEdit} />}
+      {(canEdit || sideAdminSideId != null) && !cancelled && (
+        <MatchOpenJoinEditor match={match} canManage={canEdit} restrictedSideId={sideAdminSideId} />
+      )}
+      {canEdit && !cancelled && (
+        <div className="rounded-xl border bg-card p-4">
+          <p className="mb-2 text-sm font-medium">Side admins</p>
+          <div className="flex flex-col divide-y">
+            {match.sides.map((side, i) => (
+              <div key={side.id}>
+                <p className="pt-2 text-xs text-muted-foreground first:pt-0">
+                  {sideDisplayName(side) ?? `Side ${i + 1}`}
+                </p>
+                <SideAdminsEditor match={match} side={side} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {canEdit && !cancelled && <JoinRequestsCard match={match} canManage={canEdit} />}
       {canEdit && !cancelled && <CancelMatch match={match} />}
       {iAmParticipant && !cancelled && <LeaveMatch match={match} isOwner={iAmOwner} />}

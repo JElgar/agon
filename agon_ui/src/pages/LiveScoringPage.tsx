@@ -179,7 +179,7 @@ function FootballLiveScoringPage({ match }: { match: Match }) {
   const phase = state ? phaseFromState(state) : 'not_started'
   const minute = state ? currentMinute(state, now) : null
   const isDraw = !!state && goalsFor(aId) === goalsFor(bId)
-  const progressionCtx = { isDraw, extraTime: format.extra_time }
+  const progressionCtx = { isDraw, extraTime: format.extra_time, numHalves: format.num_halves }
 
   const handleHalfFt = () => {
     const period = nextPeriodForPhase(phase, progressionCtx)

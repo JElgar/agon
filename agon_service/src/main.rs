@@ -6333,6 +6333,12 @@ impl Api {
                     format: tournament.match_format.clone(),
                     ranked: false,
                     authority: tournament.authority.clone(),
+                    // Empty, unlike `authority`: a per-side admin grant is
+                    // made against a side of a match that exists, and these
+                    // matches are being generated. The tournament's own
+                    // admins carry match-wide authority above, which is
+                    // strictly more than a side grant would give them.
+                    side_authority: std::collections::HashMap::new(),
                     open_join: None,
                     open_joined_count: 0,
                     created_at: now_iso(),

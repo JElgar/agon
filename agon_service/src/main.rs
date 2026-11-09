@@ -33,6 +33,7 @@ use tracing::{error, info};
 // `dao` so existing `dao::…` paths in handlers keep working.
 use agon_core::dao;
 // JWT verification (asymmetric; Supabase JWKS + static test key).
+mod admin;
 mod auth;
 use auth::{DeviceTokenSigner, JwtClaims, JwtVerifier, SCOPE_LIVE_SCORING};
 // Boundary mapping between API models and DAO records.
@@ -284,6 +285,10 @@ struct User {
     /// A ladder appears in exactly one of this and `UserProfile::ratings`,
     /// never both.
     rating_placements: Vec<LadderPlacement>,
+    /// Whether this account can use the admin panel (`agon_service::admin`).
+    /// Private, same as `email` — nobody else's admin status is any of a
+    /// caller's business.
+    is_admin: bool,
 }
 
 #[derive(Object)]
@@ -3049,11 +3054,7 @@ impl Api {
     /// new endpoint is closed to devices unless someone deliberately opens
     /// it, not the other way around.
     async fn require_uid(&self, dao: &dao::Dao, jwt: &JwtClaims) -> Result<String> {
-        check_scope(jwt, None)?;
-        dao.get_user_id_by_sub(&jwt.sub)
-            .await
-            .map_err(dao_internal)?
-            .ok_or_else(|| Error::from_string("user not found", StatusCode::UNAUTHORIZED))
+        require_uid(dao, jwt).await
     }
 
     /// Same as `require_uid`, but also accepts a token whose `device_scope`
@@ -3115,6 +3116,7 @@ impl Api {
         let profile = user_profile_from_record(&record, false);
         Ok(GetUserResponse::User(Json(User {
             rating_placements: rating_placements_from_record(&record),
+            is_admin: record.is_admin,
             email: record.email,
             profile,
         })))
@@ -3169,6 +3171,7 @@ impl Api {
         let profile = user_profile_from_record(&record, false);
         Ok(UpdateUserResponse::User(Json(User {
             rating_placements: rating_placements_from_record(&record),
+            is_admin: record.is_admin,
             email: record.email,
             profile,
         })))
@@ -3402,6 +3405,7 @@ impl Api {
             // rating pipeline writes `ratings`.
             ratings: HashMap::new(),
             created_at: now_iso(),
+            is_admin: false,
         };
         match dao.create_user(&jwt_data.sub, &record).await {
             Ok(()) => {}
@@ -3415,6 +3419,7 @@ impl Api {
         let profile = user_profile_from_record(&record, false);
         Ok(CreateUserResponse::User(Json(User {
             rating_placements: rating_placements_from_record(&record),
+            is_admin: record.is_admin,
             email: record.email,
             profile,
         })))
@@ -11927,6 +11932,7 @@ fn mock_user() -> User {
         email: String::from("jamesnelgar@gmail.com"),
         profile: mock_user_profile(String::from("123"), String::from("James Elgar")),
         rating_placements: Vec::new(),
+        is_admin: false,
     }
 }
 
@@ -12124,6 +12130,18 @@ fn check_scope(jwt: &JwtClaims, allowed_scope: Option<&str>) -> Result<()> {
             StatusCode::FORBIDDEN,
         )),
     }
+}
+
+/// Free-function core of `Api::require_uid`, pulled out so an `OpenApi`
+/// type other than `Api` (e.g. `admin::AdminApi`) can resolve a caller's
+/// internal user id without needing an `Api` instance to call a method on —
+/// `Api` is a unit struct, so this never actually depended on `self`.
+async fn require_uid(dao: &dao::Dao, jwt: &JwtClaims) -> Result<String> {
+    check_scope(jwt, None)?;
+    dao.get_user_id_by_sub(&jwt.sub)
+        .await
+        .map_err(dao_internal)?
+        .ok_or_else(|| Error::from_string("user not found", StatusCode::UNAUTHORIZED))
 }
 
 #[cfg(test)]
@@ -12660,6 +12678,39 @@ impl RequestMetrics {
     }
 }
 
+/// Gatekeeps every `/admin/...` route in one place, so `AdminApi`'s handlers
+/// don't each call `admin::require_admin` themselves. Verifies the bearer
+/// token and checks `is_admin` here, before the request ever reaches
+/// poem-openapi's routing; anything outside `/admin` passes straight
+/// through. Must sit inside (run after) the `.data(dao)`/`.data(verifier)`
+/// layers in the `Route` chain below, since it reads both from request data.
+async fn admin_auth_middleware<E: Endpoint>(next: E, req: Request) -> Result<Response> {
+    if !req.uri().path().starts_with("/admin") {
+        return next.call(req).await.map(IntoResponse::into_response);
+    }
+
+    let token = req
+        .headers()
+        .get(poem::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(|| Error::from_string("missing bearer token", StatusCode::UNAUTHORIZED))?;
+
+    let verifier = req
+        .data::<auth::JwtVerifier>()
+        .expect("JwtVerifier missing from request data");
+    let claims = verifier.verify(token).await.map_err(|err| {
+        Error::from_string(format!("Invalid JWT: {}", err.0), StatusCode::UNAUTHORIZED)
+    })?;
+
+    let dao = req
+        .data::<dao::Dao>()
+        .expect("Dao missing from request data");
+    admin::require_admin(dao, &claims).await?;
+
+    next.call(req).await.map(IntoResponse::into_response)
+}
+
 async fn log_middleware<E: Endpoint>(next: E, mut req: Request) -> Result<Response> {
     use opentelemetry::KeyValue;
     use std::time::Instant;
@@ -12762,7 +12813,7 @@ async fn main() {
     //     this service's own `/ping`.
     // See OpenAPI 3's Server Object: server URLs may be relative to the
     // document's own serving location.
-    let api_service = OpenApiService::new(Api, "Agon API", "1.0").server(".");
+    let api_service = OpenApiService::new((Api, admin::AdminApi), "Agon API", "1.0").server(".");
 
     match args.command {
         Commands::RunServer { url: _ } => {
@@ -12833,6 +12884,7 @@ async fn main() {
                 .nest("/docs", ui)
                 .nest("/share", share::routes())
                 .with(cors)
+                .around(admin_auth_middleware)
                 .data(dao)
                 .data(search)
                 .data(verifier)

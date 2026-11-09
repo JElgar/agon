@@ -290,6 +290,13 @@ pub struct UserRecord {
     #[serde(default)]
     pub ratings: HashMap<String, RatingRecord>,
     pub created_at: String,
+    /// Grants access to the admin panel (`agon_service::admin`). Not
+    /// self-service — set by hand against the table today, since there's no
+    /// UI for granting it yet (an admin could promote themselves to begin
+    /// with). `#[serde(default)]` so every profile written before this field
+    /// existed deserializes as `false`.
+    #[serde(default)]
+    pub is_admin: bool,
 }
 
 /// `USER#<followeeId>` / `FOLLOWER#<followerId>` — a directed user→user follow
@@ -2160,6 +2167,7 @@ mod tests {
                 },
             )]),
             created_at: "2026-01-01T00:00:00Z".into(),
+            is_admin: false,
         };
         let av: AttributeValue = serde_dynamo::to_attribute_value(&rec).unwrap();
         let back: UserRecord = serde_dynamo::from_attribute_value(av).unwrap();

@@ -43,6 +43,9 @@ import { PairDevicePage } from '@/pages/PairDevicePage'
 import { PairedDevicesPage } from '@/pages/PairedDevicesPage'
 import { TeamsPage } from '@/pages/TeamsPage'
 import { TeamPage } from '@/pages/TeamPage'
+import { AdminLayout } from '@/pages/admin/AdminLayout'
+import { AdminUsersPage } from '@/pages/admin/AdminUsersPage'
+import { useIsAdmin } from '@/hooks/useIsAdmin'
 import { CreatePage } from '@/pages/CreatePage'
 import { CreateTournamentPage } from '@/pages/CreateTournamentPage'
 import { TournamentPage } from '@/pages/TournamentPage'
@@ -60,6 +63,17 @@ function CenteredMessage({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen flex items-center justify-center">{children}</div>
   )
+}
+
+/** Gates an `/admin/...` route on `useIsAdmin`. Purely a UX nicety — the
+ *  server enforces the real check on every `/admin/...` request regardless
+ *  of what renders here. */
+function AdminRoute({ children }: { children: React.ReactNode }) {
+  const isAdmin = useIsAdmin()
+  if (!isAdmin) {
+    return <Navigate to="/feed" replace />
+  }
+  return <>{children}</>
 }
 
 /** Placeholder for a page not yet built in the rewrite. */
@@ -165,6 +179,17 @@ function AppShell({ onSignOut }: { onSignOut: () => void }) {
             path="/users/:userId/following"
             element={<FollowListPage mode="following" />}
           />
+          <Route
+            path="/admin"
+            element={
+              <AdminRoute>
+                <AdminLayout />
+              </AdminRoute>
+            }
+          >
+            <Route index element={<Navigate to="/admin/users" replace />} />
+            <Route path="users" element={<AdminUsersPage />} />
+          </Route>
           <Route path="*" element={<HomeRedirect />} />
           </Routes>
           </main>

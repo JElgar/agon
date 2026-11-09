@@ -1,11 +1,12 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom'
-import { Bell, Home, LogOut, Plus, Search, User } from 'lucide-react'
+import { Bell, Home, LogOut, Plus, Search, Shield, User } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Avatar } from '@/components/agon/Avatar'
 import { Logo } from '@/components/agon/Logo'
 import { ThemeToggle } from '@/components/ThemeToggle'
 import { Button } from '@/components/ui/button'
 import { useCurrentUserProfile } from '@/hooks/useCurrentUserProfile'
+import { useIsAdmin } from '@/hooks/useIsAdmin'
 import { totalMatches } from '@/lib/stats'
 
 const NAV_ITEMS = [
@@ -36,9 +37,14 @@ export function DesktopNav({
   const location = useLocation()
   const navigate = useNavigate()
   const profile = useCurrentUserProfile()
+  const isAdmin = useIsAdmin()
 
   const isActive = (to: string) =>
     location.pathname === to || (to !== '/' && location.pathname.startsWith(to))
+
+  const navItems = isAdmin
+    ? [...NAV_ITEMS, { to: '/admin', label: 'Admin', icon: Shield }]
+    : NAV_ITEMS
 
   return (
     <aside
@@ -48,7 +54,7 @@ export function DesktopNav({
       <Logo className="pl-3.5 text-3xl" />
 
       <nav className="flex flex-col gap-1">
-        {NAV_ITEMS.map((item) => {
+        {navItems.map((item) => {
           const active = isActive(item.to)
           const showBadge = item.to === '/notifications' && !!unread && unread > 0
           return (

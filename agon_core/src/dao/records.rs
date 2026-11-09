@@ -826,7 +826,24 @@ pub struct TournamentRecord {
     /// at creation.
     #[serde(default)]
     pub authority: HashMap<String, MatchPlayerRole>,
+    /// A teamless tournament's squad name/colour, keyed by squad index
+    /// (0-based, as a string — DynamoDB/JSON map keys are always strings) —
+    /// set via `PUT /tournaments/{id}/squads/{squad}` while entries are
+    /// being organised, same idea as a match side's name/colour. A squad
+    /// with no entry here yet falls back to a generated "Squad N" label and
+    /// a palette colour at `start` (`start_tournament`'s `squad_labels`
+    /// local, not this field).
+    #[serde(default)]
+    pub squad_labels: HashMap<String, SquadLabelRecord>,
     pub created_at: String,
+}
+
+/// One squad's organiser-chosen identity (`TournamentRecord::squad_labels`),
+/// same two fields as an ad-hoc match side's name/colour.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SquadLabelRecord {
+    pub name: String,
+    pub colour: String,
 }
 
 fn default_points_win() -> u32 {

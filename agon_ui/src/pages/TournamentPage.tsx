@@ -83,6 +83,18 @@ export function TournamentPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['tournament', tournamentId] })
     },
+    onError: (err) => {
+      // A teamless tournament's own start failures are always about its
+      // entrants (squad assignment, or too few squads) — rather than just
+      // blocking on the error, send the organiser straight to the entries
+      // page (now a drag-and-drop squad board) with the reason, so they can
+      // fix it on the spot instead of bouncing back and forth.
+      if (tournament?.entry_audience === 'players') {
+        navigate(`/tournaments/${tournamentId}/entries`, {
+          state: { startBlockedReason: err.message },
+        })
+      }
+    },
   })
 
   if (!tournament) {

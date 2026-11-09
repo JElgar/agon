@@ -31,8 +31,9 @@ use crate::{
     MatchSeries, MatchSeriesOccurrence, MatchSeriesSide, MatchSeriesStatus, MatchSide, MatchSocial,
     MatchStatus, MatchType, PendingScore, Photo, RosterPreviewPlayer, Score, ScoreConfirmation,
     ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus,
-    SearchMatch, SetsScore, SimpleScore, Tournament, TournamentEntry, TournamentEntryAudience,
-    TournamentFormat, TournamentMatchSummary, TournamentSeeding, UserProfile, UserStats,
+    SearchMatch, SetsScore, SimpleScore, SquadLabel, Tournament, TournamentEntry,
+    TournamentEntryAudience, TournamentFormat, TournamentMatchSummary, TournamentSeeding,
+    UserProfile, UserStats,
 };
 use crate::{LadderPlacement, LadderRating, RatingHistoryPoint};
 use agon_core::dao::error::DaoError;
@@ -853,6 +854,19 @@ pub fn tournament_from_record(rec: &TournamentRecord) -> Tournament {
         points_loss: rec.points_loss,
         seeding: tournament_seeding_from_record(rec.seeding),
         entry_count: rec.entry_count,
+        squad_labels: rec
+            .squad_labels
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    SquadLabel {
+                        name: v.name.clone(),
+                        colour: v.colour.clone(),
+                    },
+                )
+            })
+            .collect(),
         created_at: parse_ts(&rec.created_at),
     }
 }

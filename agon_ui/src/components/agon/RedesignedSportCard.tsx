@@ -1,6 +1,7 @@
 import { Check, Clock, MapPin } from 'lucide-react'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
+import { RankedBadge } from './RankedBadge'
 import { directionsUrl } from '@/lib/location'
 import { PlaceChip } from './MatchLocation'
 import { Avatar } from './Avatar'
@@ -168,6 +169,7 @@ function CardHeader({
   subtitle,
   locationText,
   live,
+  ranked,
   onOpen,
 }: {
   badge: React.ReactNode
@@ -175,6 +177,10 @@ function CardHeader({
   subtitle: string
   locationText?: string
   live?: React.ReactNode
+  /** Whether to mark the match ranked. Here rather than in each sport's
+   *  body because every redesigned sport shares this header, and a chip
+   *  added per sport is a chip missing from the next sport added. */
+  ranked?: boolean
   onOpen?: () => void
 }) {
   return (
@@ -190,7 +196,15 @@ function CardHeader({
           </p>
         )}
       </div>
-      {live && <div className="shrink-0">{live}</div>}
+      {(live || ranked) && (
+        /* Stacked, because a match can be both: the live/scheduled pill is
+           about right now and goes on top, the ranked chip is a standing
+           fact about the match and sits under it. */
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
+          {live}
+          {ranked && <RankedBadge />}
+        </div>
+      )}
     </button>
   )
 }
@@ -595,6 +609,7 @@ export function FootballFeedCardBody({
             <ScheduledPill startsAt={startsAt} />
           ) : undefined
         }
+        ranked={match.ranked}
         onOpen={onOpen}
       />
 
@@ -866,6 +881,7 @@ export function CricketFeedCardBody({
             <ScheduledPill startsAt={startsAt} />
           ) : undefined
         }
+        ranked={match.ranked}
         onOpen={onOpen}
       />
 
@@ -1016,6 +1032,7 @@ export function NetballFeedCardBody({
             <ScheduledPill startsAt={startsAt} />
           ) : undefined
         }
+        ranked={match.ranked}
         onOpen={onOpen}
       />
 
@@ -1304,6 +1321,7 @@ export function TennisFeedCardBody({
             <ScheduledPill startsAt={startsAt} />
           ) : undefined
         }
+        ranked={match.ranked}
         onOpen={onOpen}
       />
 
@@ -1471,6 +1489,7 @@ export function SquashFeedCardBody({
         subtitle={subtitle}
         locationText={isScheduled ? undefined : match.location?.text}
         live={isScheduled ? <ScheduledPill startsAt={startsAt} /> : undefined}
+        ranked={match.ranked}
         onOpen={onOpen}
       />
 

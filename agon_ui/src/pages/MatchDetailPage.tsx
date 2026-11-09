@@ -26,6 +26,7 @@ import { Button } from '@/components/ui/button'
 import { WaitlistSection } from '@/components/agon/WaitlistSection'
 import { MatchHeaderCarousel } from '@/components/agon/MatchHeaderCarousel'
 import { RankedBadge } from '@/components/agon/RankedBadge'
+import { EloBadge } from '@/components/agon/StatusBadge'
 import { ScoreConfirmationBar } from '@/components/agon/ScoreConfirmationBar'
 import { useLiveEvents } from '@/hooks/useLiveScore'
 import { useMatchScore } from '@/hooks/useMatchScore'
@@ -497,12 +498,20 @@ function MatchDetail({
           {metaTeamSide ? `${metaTeamSide.team_name} · ` : ''}
           {scheduledDateTime(match.starts_at)}
         </span>
-        {/* The board also puts a "Rating change" card further down, one row
-            per player with the points they gained or lost. That isn't here:
-            no endpoint returns a match's rating contributions, so there's
-            nothing to put in the rows. This chip is the part the `Match`
-            payload can answer — whether the result counts at all. */}
+        {/* The board puts a "Rating change" card further down with one row
+            per player. That still isn't here, and deliberately: only the
+            viewer's own movement is served, because a participant still in
+            placements would otherwise have theirs read off somebody else's
+            screen. What the payload can answer is this pair — whether the
+            result counts, and what it did to you.
+
+            The delta is absent, not zero, whenever there is nothing to show:
+            a friendly, a match you didn't play, one not rated yet, or your
+            own rating on this ladder still being in placements. */}
         {match.ranked && <RankedBadge />}
+        {typeof match.viewer_rating_delta === 'number' && (
+          <EloBadge delta={match.viewer_rating_delta} />
+        )}
       </div>
       <h1 className="font-display text-[30px] leading-tight font-extrabold tracking-[-0.4px]">{match.name}</h1>
       {match.series_id && (

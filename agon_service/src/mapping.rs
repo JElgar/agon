@@ -1566,6 +1566,13 @@ pub fn match_from_records(
         format: rec.format.as_ref().map(match_format_from_record),
         ranked: rec.ranked,
         rating_ladder: rating_ladder(rec),
+        // Needs a read of its own (the caller's `RATINGCONTRIB#` item on
+        // this match, and their current rating to check it is published at
+        // all), so `get_match` fills it in; every other caller of this
+        // mapper leaves it `None`. A match that was just created or just
+        // edited has no rating movement to report yet anyway — the pipeline
+        // runs off the stream.
+        viewer_rating_delta: None,
         // Set by the caller right after this call, from the same aggregate
         // this function already consumed (see `caller_match_role`'s call
         // sites in `main.rs`) — a placeholder here, since this pure mapping
@@ -1905,6 +1912,8 @@ pub fn feed_match_from_records(
         format: rec.format.as_ref().map(match_format_from_record),
         total_player_count: rec.total_player_count as u32,
         tournament: match_tournament_info_from_record(rec, tournaments),
+        ranked: rec.ranked,
+        rating_ladder: rating_ladder(rec),
     }
 }
 
@@ -1958,6 +1967,8 @@ pub fn search_match_from_records(
         },
         format: rec.format.as_ref().map(match_format_from_record),
         tournament: match_tournament_info_from_record(rec, tournaments),
+        ranked: rec.ranked,
+        rating_ladder: rating_ladder(rec),
     }
 }
 
@@ -2420,6 +2431,83 @@ mod tests {
             point.confidence < display(25.0, 8.333).confidence,
             "the band narrows as sigma falls, which is what the chart shows"
         );
+    }
+
+    /// Every shape a match is served in agrees about whether it is ranked.
+    ///
+    /// The three mappers are separate functions over the same record, so
+    /// nothing but a test stops one of them being updated and the others
+    /// not — which is exactly how the feed and search ended up unable to
+    /// mark a ranked match while the detail page could.
+    #[test]
+    fn ranked_is_carried_into_every_match_shape() {
+        let ranked = scheduled_match("2026-06-01T18:00:00.000Z");
+        let users = HashMap::new();
+        let tournaments = HashMap::new();
+
+        let detail = match_from_records(&ranked, &[], &[], false, &tournaments);
+        let feed = feed_match_from_records(
+            &ranked,
+            &[],
+            &users,
+            Vec::new(),
+            0,
+            None,
+            false,
+            false,
+            Vec::new(),
+            false,
+            &tournaments,
+        );
+        let hit = search_match_from_records(&ranked, &[], &users, None, false, &tournaments);
+
+        assert!(detail.ranked && feed.ranked && hit.ranked);
+        let ladder = Some("squash".to_string());
+        assert_eq!(detail.rating_ladder, ladder);
+        assert_eq!(feed.rating_ladder, ladder);
+        assert_eq!(hit.rating_ladder, ladder);
+    }
+
+    /// A friendly carries no ladder in any shape — `rating_ladder` is `Some`
+    /// exactly when `ranked`, which is what lets a client treat the two as
+    /// one fact rather than checking both.
+    #[test]
+    fn a_friendly_has_no_ladder_in_any_shape() {
+        let mut friendly = scheduled_match("2026-06-01T18:00:00.000Z");
+        friendly.ranked = false;
+        let users = HashMap::new();
+        let tournaments = HashMap::new();
+
+        let detail = match_from_records(&friendly, &[], &[], false, &tournaments);
+        let feed = feed_match_from_records(
+            &friendly,
+            &[],
+            &users,
+            Vec::new(),
+            0,
+            None,
+            false,
+            false,
+            Vec::new(),
+            false,
+            &tournaments,
+        );
+        let hit = search_match_from_records(&friendly, &[], &users, None, false, &tournaments);
+
+        assert!(!detail.ranked && !feed.ranked && !hit.ranked);
+        assert_eq!(detail.rating_ladder, None);
+        assert_eq!(feed.rating_ladder, None);
+        assert_eq!(hit.rating_ladder, None);
+    }
+
+    /// The detail mapper never invents a movement: it has no viewer and no
+    /// reads, so `get_match` is the only thing that can fill this in, and a
+    /// mapper that quietly defaulted it to `Some(0)` would read as "this
+    /// match moved you nothing" on every other caller.
+    #[test]
+    fn the_mapper_leaves_the_viewers_delta_unset() {
+        let m = match_from_records(&rated_match(), &[], &[], false, &HashMap::new());
+        assert_eq!(m.viewer_rating_delta, None);
     }
 
     /// A squash match with a confirmed score, i.e. one the pipeline has

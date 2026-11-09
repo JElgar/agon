@@ -74,14 +74,20 @@ pub async fn handle(dao: &Dao, ev: &ChangeEvent) -> WorkerResult<()> {
         // there's no team membership to self-join from, so the squad's
         // actual roster (whoever played this match for the winning side)
         // has to be copied across explicitly.
-        let squad_name = winner_side
-            .name
-            .clone()
-            .unwrap_or_else(|| "Squad".to_string());
-        let squad_colour = winner_side
-            .colour
-            .clone()
-            .unwrap_or_else(|| "#2952D9".to_string());
+        // A squad side always carries its squad's name/colour — both
+        // `start_tournament` and a manually added match copy them from
+        // `TournamentRecord::squad_label` — so there's nothing to fall back
+        // to here; a side without them is a bug upstream, not a default.
+        let (Some(squad_name), Some(squad_colour)) =
+            (winner_side.name.clone(), winner_side.colour.clone())
+        else {
+            tracing::error!(
+                match_id = %into_match_id,
+                squad_id = %winner_team_id,
+                "squad side has no name/colour; not filling the next bracket slot"
+            );
+            return Ok(());
+        };
         let filled = dao
             .fill_tournament_bracket_squad_side(
                 into_match_id,

@@ -18,8 +18,8 @@ use super::item::{ATTR_GSI1PK, ATTR_PK, ATTR_SK, ItemBuilder, from_item, s, to_i
 use super::keys::{Pk, Sk};
 use super::page::Page;
 use super::records::{
-    MatchRecord, TournamentBracketEdgeRecord, TournamentEntryAudienceRecord, TournamentEntryRecord,
-    TournamentRecord,
+    MatchRecord, SquadLabelRecord, TournamentBracketEdgeRecord, TournamentEntryAudienceRecord,
+    TournamentEntryRecord, TournamentRecord,
 };
 
 pub const TYPE_TOURNAMENT: &str = "tournament";
@@ -81,6 +81,41 @@ impl Dao {
         }
     }
 
+    /// Fetch multiple tournaments in one batch read, keyed by tournament id.
+    /// An id with no tournament simply has no entry in the result — mirrors
+    /// `batch_get_team_metas`/`batch_get_users`. Used to hydrate
+    /// `MatchTournamentInfo` for a whole feed/search page in one round trip
+    /// instead of one `get_tournament` per match.
+    #[tracing::instrument(skip(self))]
+    pub async fn batch_get_tournaments(
+        &self,
+        tournament_ids: &[String],
+    ) -> DaoResult<std::collections::HashMap<String, TournamentRecord>> {
+        // De-dup — BatchGetItem rejects duplicate keys in one request.
+        let mut seen = std::collections::HashSet::new();
+        let keys: Vec<_> = tournament_ids
+            .iter()
+            .filter(|id| seen.insert((*id).clone()))
+            .map(|id| {
+                std::collections::HashMap::from([
+                    (
+                        ATTR_PK.to_string(),
+                        s(Pk::Tournament(id.clone()).to_string()),
+                    ),
+                    (ATTR_SK.to_string(), s(Sk::Meta.to_string())),
+                ])
+            })
+            .collect();
+
+        let items = self.batch_get_all(keys, None).await?;
+        let mut out = std::collections::HashMap::with_capacity(items.len());
+        for item in items {
+            let record: TournamentRecord = from_item(item)?;
+            out.insert(record.id.clone(), record);
+        }
+        Ok(out)
+    }
+
     /// Move a tournament from status `from` to `to`, guarded on it still
     /// reading `from` — same idempotency role as
     /// `Dao::update_series_status`. A retry/replay that finds the status
@@ -109,6 +144,42 @@ impl Dao {
         match result {
             Ok(_) => Ok(()),
             Err(e) if is_update_conditional_failure(&e) => Ok(()),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// Set (or replace) one squad's name/colour on the tournament meta item
+    /// (`TournamentRecord::squad_labels`), keyed by squad index. No
+    /// existence check on the squad itself — a squad is just an index an
+    /// entry's `squad` field points at, so there's nothing else to validate
+    /// against before the tournament starts.
+    #[tracing::instrument(skip(self))]
+    pub async fn set_tournament_squad_label(
+        &self,
+        tournament_id: &str,
+        squad: u32,
+        label: &SquadLabelRecord,
+    ) -> DaoResult<()> {
+        let label_av =
+            serde_dynamo::to_attribute_value(label).map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Tournament(tournament_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .update_expression("SET squad_labels.#squad = :label")
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_names("#squad", squad.to_string())
+            .expression_attribute_values(":label", label_av)
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => {
+                Err(DaoError::NotFound(format!("tournament {tournament_id}")))
+            }
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
     }

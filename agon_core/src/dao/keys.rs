@@ -89,6 +89,8 @@ pub enum Pk {
     DevicePairing(String),
     /// A recurring match series and its generation state. `SERIES#<sid>`
     Series(String),
+    /// A tournament and its entries/bracket edges. `TOURNAMENT#<tid>`
+    Tournament(String),
 }
 
 impl Pk {
@@ -111,6 +113,7 @@ impl Pk {
             Pk::Asset(_) => "ASSET",
             Pk::DevicePairing(_) => "DEVPAIR",
             Pk::Series(_) => "SERIES",
+            Pk::Tournament(_) => "TOURNAMENT",
         }
     }
 
@@ -134,7 +137,8 @@ impl fmt::Display for Pk {
             | Pk::JoinLink(v)
             | Pk::Asset(v)
             | Pk::DevicePairing(v)
-            | Pk::Series(v) => v,
+            | Pk::Series(v)
+            | Pk::Tournament(v) => v,
         };
         write!(f, "{}{}{}", self.prefix(), DELIMITER, value)
     }
@@ -162,6 +166,7 @@ impl FromStr for Pk {
             "ASSET" => Ok(Pk::Asset(value.into())),
             "DEVPAIR" => Ok(Pk::DevicePairing(value.into())),
             "SERIES" => Ok(Pk::Series(value.into())),
+            "TOURNAMENT" => Ok(Pk::Tournament(value.into())),
             other => Err(KeyError::UnknownPrefix(other.into())),
         }
     }
@@ -308,6 +313,16 @@ pub enum Sk {
         played_at: String,
         match_id: String,
     },
+
+    /// A tournament entry, in the tournament's partition. `ENTRY#<entrantId>`
+    /// — `entrantId` is a team id (`TournamentEntryAudienceRecord::Teams`) or
+    /// a user id (`Players`), whichever the tournament's `entry_audience` is.
+    /// At most one entry per entrant, so this doubles as the "already
+    /// entered" uniqueness guard.
+    Entry(String),
+    /// A knockout bracket edge, in the tournament's partition.
+    /// `BRACKET#<matchId>` — see `TournamentBracketEdgeRecord`.
+    BracketEdge(String),
 }
 
 impl Sk {
@@ -343,6 +358,8 @@ impl Sk {
             Sk::Feed { .. } => "FEED",
             Sk::RatingContribution(_) => "RATINGCONTRIB",
             Sk::Rating { .. } => "RATING",
+            Sk::Entry(_) => "ENTRY",
+            Sk::BracketEdge(_) => "BRACKET",
         }
     }
 
@@ -440,6 +457,16 @@ impl Sk {
         )
     }
 
+    /// Lists a tournament's entries: `ENTRY#`.
+    pub fn entry_prefix() -> String {
+        format!("{}{DELIMITER}", Sk::Entry(String::new()).prefix())
+    }
+
+    /// Lists a tournament's bracket edges: `BRACKET#`.
+    pub fn bracket_edge_prefix() -> String {
+        format!("{}{DELIMITER}", Sk::BracketEdge(String::new()).prefix())
+    }
+
     /// The stem every ladder's rating-history prefix extends: `RATING#`.
     ///
     /// Private on purpose — no caller wants it, because a query over *all*
@@ -533,7 +560,9 @@ impl fmt::Display for Sk {
             | Sk::Device(v)
             | Sk::PairedDevice(v)
             | Sk::StatContribution(v)
-            | Sk::RatingContribution(v) => write!(f, "{}{}{}", self.prefix(), DELIMITER, v),
+            | Sk::RatingContribution(v)
+            | Sk::Entry(v)
+            | Sk::BracketEdge(v) => write!(f, "{}{}{}", self.prefix(), DELIMITER, v),
 
             // Zero-padded so lexicographic order matches numeric seq order.
             Sk::LiveEvent(seq) => write!(f, "LIVEEVT{DELIMITER}{seq:010}"),
@@ -630,6 +659,8 @@ impl FromStr for Sk {
                 })
             }
             "RATINGCONTRIB" => Ok(Sk::RatingContribution(rest.into())),
+            "ENTRY" => Ok(Sk::Entry(rest.into())),
+            "BRACKET" => Ok(Sk::BracketEdge(rest.into())),
             "RATING" => {
                 let (ladder, played_at, match_id) = three(rest)?;
                 Ok(Sk::Rating {
@@ -673,6 +704,7 @@ mod tests {
         pk_roundtrip(Pk::Asset("a1".into()), "ASSET#a1");
         pk_roundtrip(Pk::DevicePairing("ABC123".into()), "DEVPAIR#ABC123");
         pk_roundtrip(Pk::Series("sr1".into()), "SERIES#sr1");
+        pk_roundtrip(Pk::Tournament("tr1".into()), "TOURNAMENT#tr1");
     }
 
     #[test]
@@ -729,6 +761,8 @@ mod tests {
             "PAIREDDEV#device:abc123",
         );
         sk_roundtrip(Sk::StatContribution("u4".into()), "STATCONTRIB#u4");
+        sk_roundtrip(Sk::Entry("t1".into()), "ENTRY#t1");
+        sk_roundtrip(Sk::BracketEdge("m1".into()), "BRACKET#m1");
     }
 
     #[test]
@@ -920,6 +954,8 @@ mod tests {
         assert_eq!(Sk::feed_prefix(), "FEED#");
         assert_eq!(Sk::paired_device_prefix(), "PAIREDDEV#");
         assert_eq!(Sk::rating_contribution_prefix(), "RATINGCONTRIB#");
+        assert_eq!(Sk::entry_prefix(), "ENTRY#");
+        assert_eq!(Sk::bracket_edge_prefix(), "BRACKET#");
         assert_eq!(Sk::rating_prefix("squash"), "RATING#squash#");
         assert_eq!(
             Sk::rating_history_from("squash", "2026-06-01T10:00:00Z"),
@@ -964,6 +1000,8 @@ mod tests {
             Sk::paired_device_prefix(),
             Sk::rating_contribution_prefix(),
             Sk::rating_stem(),
+            Sk::entry_prefix(),
+            Sk::bracket_edge_prefix(),
             "SCORESUB#".to_string(),
         ];
         for (i, a) in prefixes.iter().enumerate() {

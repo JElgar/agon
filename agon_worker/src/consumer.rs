@@ -424,6 +424,8 @@ mod tests {
             total_player_count: 0,
             location: None,
             series_id: None,
+            tournament_id: None,
+            tournament_round: None,
             sides: Default::default(),
             header_photos: Vec::new(),
             authority: Default::default(),

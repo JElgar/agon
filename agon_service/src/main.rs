@@ -1324,7 +1324,28 @@ struct Tournament {
     points_loss: u32,
     seeding: TournamentSeeding,
     entry_count: u64,
+    /// A teamless tournament's squad name/colour, keyed by squad index
+    /// (as a string) — only ever set for entries that have a squad, via
+    /// `PUT /tournaments/{id}/squads/{squad}`. A squad with no entry here
+    /// falls back to a generated "Squad N" label and palette colour once
+    /// the tournament starts.
+    squad_labels: HashMap<String, SquadLabel>,
     created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// One squad's organiser-chosen name/colour — same two fields as an ad-hoc
+/// match side's.
+#[derive(Object, Clone)]
+struct SquadLabel {
+    name: String,
+    colour: String,
+}
+
+/// `PUT /tournaments/{id}/squads/{squad}` input.
+#[derive(Object)]
+struct SetSquadLabelInput {
+    name: String,
+    colour: String,
 }
 
 /// One entrant's place in a tournament (`entrant_id` is a team id when
@@ -2051,6 +2072,23 @@ enum AddTournamentEntryResponse {
 enum AssignTournamentEntrySquadResponse {
     #[oai(status = 200)]
     Entry(Json<TournamentEntry>),
+
+    /// The tournament isn't teamless, or isn't `"open"`.
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+
+    /// The caller isn't the tournament's owner/admin.
+    #[oai(status = 403)]
+    Forbidden(PlainText<String>),
+
+    #[oai(status = 404)]
+    NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum SetSquadLabelResponse {
+    #[oai(status = 200)]
+    Tournament(Json<Tournament>),
 
     /// The tournament isn't teamless, or isn't `"open"`.
     #[oai(status = 400)]
@@ -5782,6 +5820,7 @@ impl Api {
                 uid,
                 dao::records::MatchPlayerRole::Owner,
             )]),
+            squad_labels: std::collections::HashMap::new(),
             created_at: now,
         };
 
@@ -6014,6 +6053,64 @@ impl Api {
         )))
     }
 
+    /// Set (or replace) a squad's name/colour, same idea as naming/colouring
+    /// an ad-hoc match side — purely organisational, no existence check on
+    /// the squad itself (a squad is just an index an entry's `squad` field
+    /// points at). Only while the tournament is still `"open"`; `start`
+    /// reads whatever's set here, falling back to a generated "Squad N" and
+    /// palette colour for any squad with no label.
+    #[oai(path = "/tournaments/:tournament_id/squads/:squad", method = "put")]
+    async fn set_tournament_squad_label(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(tournament_id): Path<String>,
+        Path(squad): Path<u32>,
+        input: Json<SetSquadLabelInput>,
+    ) -> Result<SetSquadLabelResponse> {
+        info!("Setting squad {squad} label in tournament {tournament_id}");
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let Some(mut tournament) = dao
+            .get_tournament(&tournament_id)
+            .await
+            .map_err(dao_internal)?
+        else {
+            return Ok(SetSquadLabelResponse::NotFound(PlainText(
+                "tournament not found".into(),
+            )));
+        };
+        if !caller_is_tournament_admin(&tournament, &uid) {
+            return Ok(SetSquadLabelResponse::Forbidden(PlainText(
+                "only the tournament's owner or an admin can name squads".into(),
+            )));
+        }
+        if tournament.entry_audience != dao::records::TournamentEntryAudienceRecord::Players {
+            return Ok(SetSquadLabelResponse::ValidationError(PlainText(
+                "squads only apply to a teamless tournament".into(),
+            )));
+        }
+        if tournament.status != "open" {
+            return Ok(SetSquadLabelResponse::ValidationError(PlainText(format!(
+                "tournament is `{}`, not `open`",
+                tournament.status
+            ))));
+        }
+        let label = dao::records::SquadLabelRecord {
+            name: input.name.clone(),
+            colour: input.colour.clone(),
+        };
+        dao.set_tournament_squad_label(&tournament_id, squad, &label)
+            .await
+            .map_err(dao_internal)?;
+        tournament
+            .squad_labels
+            .insert(squad.to_string(), label);
+        Ok(SetSquadLabelResponse::Tournament(Json(
+            mapping::tournament_from_record(&tournament),
+        )))
+    }
+
     /// Withdraw an entry (organiser-only in v1). Only while the tournament
     /// is still `"open"` — once `start` has generated matches, an entrant's
     /// place in the bracket/fixture list can't be pulled back out.
@@ -6180,15 +6277,25 @@ impl Api {
                     "#2952D9", "#D92929", "#1FA37A", "#D9A429", "#7A29D9", "#29A3D9",
                 ];
                 let mut synthetic_ids: Vec<String> = Vec::new();
-                for (position, (_, members)) in by_squad.into_iter().enumerate() {
+                for (position, (squad_num, members)) in by_squad.into_iter().enumerate() {
                     let synthetic_id = format!("squad-{position}");
-                    squad_labels.insert(
-                        synthetic_id.clone(),
-                        (
-                            format!("Squad {}", position + 1),
-                            PALETTE[position % PALETTE.len()].to_string(),
-                        ),
-                    );
+                    // An organiser-set name/colour (`PUT
+                    // /tournaments/{id}/squads/{squad}`, keyed by the
+                    // entry's actual `squad` index) wins over the generated
+                    // fallback; `position` is dense after compaction, so a
+                    // sparse squad numbering (e.g. 0 and 2 used, not 1)
+                    // still looks up the label the organiser actually set.
+                    let (name, colour) = tournament
+                        .squad_labels
+                        .get(&squad_num.to_string())
+                        .map(|l| (l.name.clone(), l.colour.clone()))
+                        .unwrap_or_else(|| {
+                            (
+                                format!("Squad {}", position + 1),
+                                PALETTE[position % PALETTE.len()].to_string(),
+                            )
+                        });
+                    squad_labels.insert(synthetic_id.clone(), (name, colour));
                     squad_members.insert(synthetic_id.clone(), members);
                     synthetic_ids.push(synthetic_id);
                 }

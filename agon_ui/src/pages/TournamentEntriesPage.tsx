@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
@@ -28,14 +28,16 @@ import {
 } from '@/components/ui/combobox'
 import { Avatar } from '@/components/agon/Avatar'
 import { TeamPicker } from '@/components/agon/TeamPicker'
-import { CARD, FormSection } from '@/components/agon/logmatch/parts'
+import { CARD, ColourSwatches, FormSection } from '@/components/agon/logmatch/parts'
 import { tournamentEntryAudienceLabel } from '@/lib/tournaments'
+import { SIDE_COLOURS, colourFromName, nameFromColour } from '@/lib/sideColours'
 
 type Tournament = components['schemas']['Tournament']
 type TournamentEntry = components['schemas']['TournamentEntry']
 type TeamListItem = components['schemas']['TeamListItem']
 type Team = components['schemas']['Team']
 type UserProfile = components['schemas']['UserProfile']
+type SquadLabel = components['schemas']['SquadLabel']
 
 /** An entrant's display name + avatar image, regardless of whether the
  *  tournament's `entry_audience` makes `entrant_id` a user id or a team id. */
@@ -172,6 +174,17 @@ export function TournamentEntriesPage() {
     onSuccess: invalidate,
   })
 
+  const setSquadLabelMutation = useMutation({
+    mutationFn: async ({ squad, name, colour }: { squad: number; name: string; colour: string }) => {
+      const { error } = await fetchClient.PUT('/tournaments/{tournament_id}/squads/{squad}', {
+        params: { path: { tournament_id: tournamentId!, squad } },
+        body: { name, colour },
+      })
+      if (error) throw new Error('Could not update that squad')
+    },
+    onSuccess: invalidate,
+  })
+
   const tournament = tournamentQuery.data
   const entries = entriesQuery.data ?? []
   const entrantDisplays = useEntrantDisplays(
@@ -225,10 +238,14 @@ export function TournamentEntriesPage() {
             <SquadBoard
               entries={entries}
               entrantDisplays={entrantDisplays}
+              squadLabels={tournament.squad_labels}
               onAssignSquad={(entrantId, squad) =>
                 assignSquadMutation.mutate({ entrantId, squad })
               }
               onRemove={(entrantId) => removeEntryMutation.mutate(entrantId)}
+              onSetSquadLabel={(squad, name, colour) =>
+                setSquadLabelMutation.mutate({ squad, name, colour })
+              }
             />
           ) : (
             <FormSection title={`Entries (${entries.length})`}>
@@ -354,13 +371,17 @@ const measuring = { droppable: { strategy: MeasuringStrategy.BeforeDragging } }
 function SquadBoard({
   entries,
   entrantDisplays,
+  squadLabels,
   onAssignSquad,
   onRemove,
+  onSetSquadLabel,
 }: {
   entries: TournamentEntry[]
   entrantDisplays: Map<string, EntrantDisplay>
+  squadLabels: Record<string, SquadLabel>
   onAssignSquad: (entrantId: string, squad: number) => void
   onRemove: (entrantId: string) => void
+  onSetSquadLabel: (squad: number, name: string, colour: string) => void
 }) {
   const highestSquad = entries.reduce((max, e) => (e.squad != null ? Math.max(max, e.squad) : max), -1)
   const [extraColumns, setExtraColumns] = useState(0)
@@ -415,7 +436,13 @@ function SquadBoard({
             <SquadColumn
               key={i}
               id={`squad-${i}`}
-              title={`Squad ${i + 1}`}
+              header={
+                <SquadHeader
+                  index={i}
+                  label={squadLabels[String(i)]}
+                  onSave={(name, colour) => onSetSquadLabel(i, name, colour)}
+                />
+              }
               entries={columns.get(`squad-${i}`) ?? []}
               entrantDisplays={entrantDisplays}
               onRemove={onRemove}
@@ -423,7 +450,11 @@ function SquadBoard({
           ))}
           <SquadColumn
             id={UNASSIGNED}
-            title="Unassigned"
+            header={
+              <p className="mb-2 truncate text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                Unassigned
+              </p>
+            }
             entries={columns.get(UNASSIGNED) ?? []}
             entrantDisplays={entrantDisplays}
             onRemove={onRemove}
@@ -449,13 +480,13 @@ function SquadBoard({
 
 function SquadColumn({
   id,
-  title,
+  header,
   entries,
   entrantDisplays,
   onRemove,
 }: {
   id: string
-  title: string
+  header: ReactNode
   entries: TournamentEntry[]
   entrantDisplays: Map<string, EntrantDisplay>
   onRemove: (entrantId: string) => void
@@ -470,9 +501,7 @@ function SquadColumn({
         isOver && 'border-primary bg-primary/5',
       )}
     >
-      <p className="mb-2 truncate text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-        {title}
-      </p>
+      {header}
       <div className="flex min-h-11 flex-col gap-1.5">
         {entries.length === 0 && (
           <p className="px-1 py-1 text-xs text-muted-foreground">
@@ -488,6 +517,68 @@ function SquadColumn({
           />
         ))}
       </div>
+    </div>
+  )
+}
+
+/** A squad column's editable name + colour, same auto-linking as a match
+ *  side's (`TeamSideCard`'s `ColourSwatches` usage): typing a colour word
+ *  into the name picks that colour, picking a colour names the squad after
+ *  it, and each field stops auto-filling once the user has touched it
+ *  directly. Saves on name blur (if changed) and immediately on a colour
+ *  pick — there's no separate "Save" step on this page, every other edit
+ *  here applies right away too. */
+function SquadHeader({
+  index,
+  label,
+  onSave,
+}: {
+  index: number
+  label: SquadLabel | undefined
+  onSave: (name: string, colour: string) => void
+}) {
+  const defaultColour = SIDE_COLOURS[index % SIDE_COLOURS.length].hex
+  const [name, setName] = useState(label?.name ?? `Squad ${index + 1}`)
+  const [colour, setColour] = useState(label?.colour ?? defaultColour)
+  const [nameTouched, setNameTouched] = useState(false)
+  const [colourTouched, setColourTouched] = useState(false)
+
+  // Pick up a save made elsewhere (another tab, or this one after a
+  // mutation's invalidate refetches the tournament) without clobbering
+  // whatever the user is mid-typing.
+  useEffect(() => {
+    if (label && !nameTouched) setName(label.name)
+    if (label && !colourTouched) setColour(label.colour)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [label?.name, label?.colour])
+
+  const handleNameChange = (v: string) => {
+    setName(v)
+    setNameTouched(true)
+    if (!colourTouched) {
+      const inferred = colourFromName(v)
+      if (inferred) setColour(inferred)
+    }
+  }
+  const handleColourChange = (hex: string) => {
+    setColour(hex)
+    setColourTouched(true)
+    if (!nameTouched) setName(nameFromColour(hex) ?? name)
+    onSave(nameTouched ? name : (nameFromColour(hex) ?? name), hex)
+  }
+
+  return (
+    <div className="mb-2 flex flex-col gap-1.5">
+      <Input
+        className="h-8 text-sm font-semibold"
+        value={name}
+        onChange={(e) => handleNameChange(e.target.value)}
+        onBlur={() => {
+          if (name.trim()) onSave(name.trim(), colour)
+        }}
+        aria-label={`Squad ${index + 1} name`}
+      />
+      <ColourSwatches label={`Squad ${index + 1} colour`} value={colour} onChange={handleColourChange} />
     </div>
   )
 }

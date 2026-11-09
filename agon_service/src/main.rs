@@ -52,13 +52,14 @@ use mapping::{
     match_series_occurrence_from_record, match_status_str, match_type_tag,
     matches_played_for_sport, new_live_event_to_dao, notification_actor_id,
     notification_from_record, ranked_added_players_reason, ranked_guest_invites_reason,
-    ranked_lock_reason_for_update, rated_ranked_edit_reason, rating_ladder, rating_ladder_for,
-    rating_placements_from_record, resolve_score_ids, roster_preview_player, score_player_ids,
-    score_side_ids, score_submission_from_record, score_to_record, search_match_from_records,
-    series_end_record_from_input, set_score_players, switch_to_ranked_reason, team_from_records,
-    team_list_item_from_record, team_member_from_record, tournament_entry_from_record,
-    tournament_from_record, tournament_match_summary_from_record, unrankable_sport_reason,
-    unratable_players, user_profile_from_record, winner_from_score,
+    ranked_lock_reason_for_update, rated_ranked_edit_reason, rating_history_point_from_record,
+    rating_ladder, rating_ladder_for, rating_placements_from_record, resolve_score_ids,
+    roster_preview_player, score_player_ids, score_side_ids, score_submission_from_record,
+    score_to_record, search_match_from_records, series_end_record_from_input, set_score_players,
+    switch_to_ranked_reason, team_from_records, team_list_item_from_record,
+    team_member_from_record, tournament_entry_from_record, tournament_from_record,
+    tournament_match_summary_from_record, unrankable_sport_reason, unratable_players,
+    user_profile_from_record, winner_from_score,
 };
 
 // Object-storage integration: S3 presigned uploads + CloudFront serving URLs.
@@ -212,6 +213,53 @@ pub struct LadderPlacement {
     pub played: u32,
     /// How many are needed in all before the rating is published.
     pub required: u32,
+}
+
+/// One point on a rating-over-time chart: where a player's rating stood after
+/// one rated match, and the step that got it there.
+#[derive(Object)]
+pub struct RatingHistoryPoint {
+    /// The match this point is the effect of.
+    pub match_id: String,
+    /// When that match was **played** (its `starts_at`) — not when its rating
+    /// was applied. Played order is what the collection is sorted by, so a
+    /// result confirmed late is still plotted where it belongs.
+    pub played_at: chrono::DateTime<chrono::Utc>,
+    /// The rating after this match: the value to plot.
+    pub rating: i32,
+    /// The `±` half-width after this match, for the confidence band. It
+    /// narrows as a player settles, which is most of what a new player's
+    /// chart has to show.
+    pub confidence: i32,
+    /// `rating - confidence` after this match.
+    pub floor: i32,
+    /// The rating this match started from.
+    ///
+    /// **Not redundant with the previous point's `rating`, and that is the
+    /// reason it is here.** Ratings are applied in confirmation order but
+    /// plotted in played order, so a match confirmed after a later one was
+    /// already folded in starts from a rating no earlier *point* ever had.
+    /// Comparing the two is how a client tells where its line is genuinely
+    /// discontinuous, and draws it without implying a step that never
+    /// happened. See `RepairTrigger::OutOfOrder` in `agon_worker`.
+    pub rating_before: i32,
+    /// The movement as the player was shown it on the day — the "+18" on a
+    /// match card.
+    ///
+    /// Stored rather than recomputed from `rating_before` and `rating`,
+    /// deliberately. Every other number here goes through `rating::scale` on
+    /// read so that retuning the scale moves every chart at once; this one is
+    /// a record of what the player was actually told, and recomputing it
+    /// would rewrite history.
+    pub delta: i32,
+}
+
+/// A page of one player's rating history on one ladder, **oldest first**.
+#[derive(Object)]
+pub struct RatingHistoryPage {
+    pub items: Vec<RatingHistoryPoint>,
+    /// Pass back as `cursor` for the next page; `None` on the last one.
+    pub next_cursor: Option<String>,
 }
 
 /// The authenticated user's own view: their public `profile` plus private fields
@@ -2955,6 +3003,26 @@ enum ListFollowsResponse {
     NotFound(PlainText<String>),
 }
 
+/// `GET /users/:user_id/ratings/:ladder/history`.
+///
+/// There is deliberately **no status for a withheld rating** — and none for
+/// an unknown user either. An empty page is the answer to "no published
+/// rating on this ladder" however that came about: never played it, still in
+/// placements, or no such user. A response that fired only while a rating was
+/// being withheld would be exactly the hint the withholding exists to
+/// prevent, in the same way `User::rating_placements` is kept off other
+/// people's profiles.
+#[derive(ApiResponse)]
+enum GetRatingHistoryResponse {
+    #[oai(status = 200)]
+    History(Json<RatingHistoryPage>),
+
+    /// `ladder` doesn't name a rating ladder. Ladders are sport tags, and
+    /// `other` deliberately has none (see `rating::ladder_for`).
+    #[oai(status = 400)]
+    ValidationError(PlainText<String>),
+}
+
 #[OpenApi]
 impl Api {
     #[oai(path = "/ping", method = "get")]
@@ -3197,6 +3265,91 @@ impl Api {
         Ok(GetUserProfileResponse::User(Json(
             user_profile_from_record(&record, is_followed),
         )))
+    }
+
+    /// A player's rating over time on one ladder, oldest first.
+    ///
+    /// Read from `USER#<uid>` / `RATING#<ladder>#<played_at>#<matchId>`, which
+    /// the rating pipeline has written since it shipped — one item per rated
+    /// match, carrying the before and after of both μ and σ. Nothing is
+    /// recomputed here except the display scale, and the collection is
+    /// time-ordered by its own key, so this handler is a read and a map.
+    ///
+    /// **Published ratings only, and that is the whole of the
+    /// authorization.** A rating in placements is withheld from everybody
+    /// including its owner — `UserProfile::ratings` has the argument — so the
+    /// test is `published(matches_rated)` on the stored rating and nothing at
+    /// all about who is asking. One condition, in one place, on the only
+    /// endpoint that serves this collection: the same reason
+    /// `published_ratings_from_record` does the filtering for profiles rather
+    /// than leaving it to each caller.
+    ///
+    /// Once published the **whole** path is returned, placement matches
+    /// included. The early points have a wide band narrowing as the player
+    /// settles, which is the honest shape of a new rating and the most
+    /// interesting thing on the chart — not something to trim off.
+    ///
+    /// Ascending only, with no `from` parameter: `Dao::list_rating_history`
+    /// walks forwards because a chart plots left to right and the planned
+    /// `RepairRatings` replay walks forwards too, and a client wanting the
+    /// recent end can reverse a page it already holds. `from` exists for that
+    /// replay and isn't a client concern.
+    #[oai(path = "/users/:user_id/ratings/:ladder/history", method = "get")]
+    async fn get_rating_history(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+        Path(user_id): Path<String>,
+        Path(ladder): Path<String>,
+        /// Opaque cursor from the previous page's `next_cursor`.
+        Query(cursor): Query<Option<String>>,
+        /// Maximum number of items to return (defaults to 20, capped at 50).
+        Query(limit): Query<Option<u32>>,
+    ) -> Result<GetRatingHistoryResponse> {
+        self.require_uid(dao, &jwt_data).await?;
+        info!("Getting {user_id} rating history on {ladder}");
+
+        if agon_core::rating::ladder_for_tag(&ladder).is_none() {
+            return Ok(GetRatingHistoryResponse::ValidationError(PlainText(
+                format!("`{ladder}` is not a rating ladder"),
+            )));
+        }
+
+        // The `ratings` projection rather than `Dao::get_user`: reading a
+        // rating should depend on nothing but that attribute's shape (see
+        // `Dao::get_ratings`), and nothing else on the profile is wanted here.
+        let published = dao
+            .get_rating(&user_id, &ladder)
+            .await
+            .map_err(dao_internal)?
+            .is_some_and(|rating| agon_core::rating::published(rating.matches_rated));
+
+        // Withheld and absent answer identically — see the response enum.
+        if !published {
+            return Ok(GetRatingHistoryResponse::History(Json(RatingHistoryPage {
+                items: Vec::new(),
+                next_cursor: None,
+            })));
+        }
+
+        let page = dao
+            .list_rating_history(
+                &user_id,
+                &ladder,
+                None,
+                cursor.as_deref(),
+                page_limit(limit),
+            )
+            .await
+            .map_err(dao_internal)?;
+        Ok(GetRatingHistoryResponse::History(Json(RatingHistoryPage {
+            items: page
+                .items
+                .iter()
+                .map(rating_history_point_from_record)
+                .collect(),
+            next_cursor: page.next_cursor,
+        })))
     }
 
     #[oai(path = "/users", method = "post")]

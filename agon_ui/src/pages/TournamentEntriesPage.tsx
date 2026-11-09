@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useParams } from 'react-router-dom'
 import { ChevronLeft, X } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
@@ -21,7 +21,55 @@ import { tournamentEntryAudienceLabel } from '@/lib/tournaments'
 type Tournament = components['schemas']['Tournament']
 type TournamentEntry = components['schemas']['TournamentEntry']
 type TeamListItem = components['schemas']['TeamListItem']
+type Team = components['schemas']['Team']
 type UserProfile = components['schemas']['UserProfile']
+
+/** An entrant's display name + avatar image, regardless of whether the
+ *  tournament's `entry_audience` makes `entrant_id` a user id or a team id. */
+interface EntrantDisplay {
+  name: string
+  imageUrl?: string
+}
+
+/** Looks up each entry's name/avatar (`GET /users/{id}` or `GET
+ *  /teams/{id}`, whichever `entrant_id` actually is) so the entries list can
+ *  show the same name+avatar treatment as a match's player list, instead of
+ *  the raw id. One request per unique entrant, run in parallel. */
+function useEntrantDisplays(
+  entrantIds: string[],
+  audience: Tournament['entry_audience'] | undefined,
+): Map<string, EntrantDisplay> {
+  const unique = [...new Set(entrantIds)]
+  const results = useQueries({
+    queries: unique.map((id) => ({
+      queryKey: ['entrant-display', audience, id],
+      enabled: audience != null,
+      queryFn: async (): Promise<EntrantDisplay> => {
+        if (audience === 'teams') {
+          const { data, error } = await fetchClient.GET('/teams/{team_id}', {
+            params: { path: { team_id: id } },
+          })
+          if (error || !data) throw new Error('Failed to load team')
+          const team = data as Team
+          return { name: team.name, imageUrl: team.logo?.image_url }
+        }
+        const { data, error } = await fetchClient.GET('/users/{user_id}', {
+          params: { path: { user_id: id } },
+        })
+        if (error || !data) throw new Error('Failed to load user')
+        const user = data as UserProfile
+        return { name: user.name, imageUrl: user.profile_image?.image_url }
+      },
+    })),
+  })
+
+  const map = new Map<string, EntrantDisplay>()
+  unique.forEach((id, i) => {
+    const data = results[i]?.data
+    if (data) map.set(id, data)
+  })
+  return map
+}
 
 const SEARCH_DEBOUNCE_MS = 300
 
@@ -108,6 +156,10 @@ export function TournamentEntriesPage() {
 
   const tournament = tournamentQuery.data
   const entries = entriesQuery.data ?? []
+  const entrantDisplays = useEntrantDisplays(
+    entries.map((e) => e.entrant_id),
+    tournament?.entry_audience,
+  )
 
   return (
     <div className="mx-auto flex w-full max-w-xl flex-col gap-4 md:max-w-2xl">
@@ -146,6 +198,13 @@ export function TournamentEntriesPage() {
           </FormSection>
 
           <FormSection title={`Entries (${entries.length})`}>
+            {tournament.entry_audience === 'players' && (
+              <p className="px-1 text-xs text-muted-foreground">
+                Players need a squad number before the tournament can start — type one into
+                the box next to a player and tap Assign. Squad-mates play as one team, so give
+                everyone on the same squad the same number.
+              </p>
+            )}
             <div className={CARD}>
               {entries.length === 0 && (
                 <p className="py-2 text-center text-sm text-muted-foreground">
@@ -156,6 +215,7 @@ export function TournamentEntriesPage() {
                 <EntryRow
                   key={entry.entrant_id}
                   entry={entry}
+                  display={entrantDisplays.get(entry.entrant_id)}
                   teamless={tournament.entry_audience === 'players'}
                   onRemove={() => removeEntryMutation.mutate(entry.entrant_id)}
                   onAssignSquad={(squad) =>
@@ -222,11 +282,13 @@ function AddTeamEntryRow({
 
 function EntryRow({
   entry,
+  display,
   teamless,
   onRemove,
   onAssignSquad,
 }: {
   entry: TournamentEntry
+  display: EntrantDisplay | undefined
   teamless: boolean
   onRemove: () => void
   onAssignSquad: (squad: number) => void
@@ -234,10 +296,12 @@ function EntryRow({
   const [squadInput, setSquadInput] = useState(
     entry.squad != null ? String(entry.squad + 1) : '',
   )
+  const name = display?.name ?? entry.entrant_id
 
   return (
     <div className="flex items-center gap-2.5 border-b py-2.5 last:border-b-0">
-      <span className="flex-1 truncate text-sm font-semibold">{entry.entrant_id}</span>
+      <Avatar name={name} imageUrl={display?.imageUrl} size="md" />
+      <span className="flex-1 truncate text-sm font-semibold">{name}</span>
       {teamless && (
         <div className="flex items-center gap-1.5">
           {entry.squad == null ? (
@@ -250,10 +314,11 @@ function EntryRow({
             </span>
           )}
           <Input
-            className="h-8 w-14 text-center"
+            className="h-8 w-16 text-center"
             type="number"
             min={1}
-            placeholder="#"
+            placeholder="Squad #"
+            aria-label="Squad number"
             value={squadInput}
             onChange={(e) => setSquadInput(e.target.value)}
           />
@@ -270,7 +335,7 @@ function EntryRow({
       <button
         type="button"
         onClick={onRemove}
-        aria-label={`Remove ${entry.entrant_id}`}
+        aria-label={`Remove ${name}`}
         className="flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
       >
         <X className="size-4" />
@@ -317,6 +382,10 @@ function UserSearchRow({
       filter={null}
       inputValue={term}
       onInputValueChange={setTerm}
+      // Keep the box blank after a pick: without this the combobox fills the
+      // input with a stringified `UserProfile` (see PlayerSearchInput.tsx's
+      // same fix).
+      itemToStringLabel={() => ''}
       onValueChange={(user) => {
         if (!user) return
         onAdd(user as UserProfile)

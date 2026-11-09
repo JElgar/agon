@@ -76,7 +76,8 @@ export function TournamentPage() {
       const { data, error } = await fetchClient.POST('/tournaments/{tournament_id}/start', {
         params: { path: { tournament_id: tournamentId! } },
       })
-      if (error || !data) throw new Error('Could not start this tournament')
+      if (error || !data)
+        throw new Error(typeof error === 'string' ? error : 'Could not start this tournament')
       return data
     },
     onSuccess: () => {

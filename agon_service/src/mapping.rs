@@ -1230,9 +1230,20 @@ pub fn match_player_from_record(
     match_record: &MatchRecord,
 ) -> MatchPlayer {
     let authority_role = rec.user_id.as_deref().and_then(|uid| {
-        match_record.authority.get(uid).copied().or_else(|| {
-            (match_record.created_by_user_id == uid).then_some(MatchPlayerRoleRecord::Owner)
-        })
+        match_record
+            .authority
+            .get(uid)
+            .copied()
+            .or_else(|| {
+                (match_record.created_by_user_id == uid).then_some(MatchPlayerRoleRecord::Owner)
+            })
+            .or_else(|| {
+                match_record
+                    .side_authority
+                    .values()
+                    .any(|user_ids| user_ids.iter().any(|u| u == uid))
+                    .then_some(MatchPlayerRoleRecord::SideAdmin)
+            })
     });
     MatchPlayer {
         member: member_from_parts(
@@ -1255,6 +1266,7 @@ pub fn match_player_role_from_record(rec: MatchPlayerRoleRecord) -> MatchPlayerR
     match rec {
         MatchPlayerRoleRecord::Owner => MatchPlayerRole::Owner,
         MatchPlayerRoleRecord::Admin => MatchPlayerRole::Admin,
+        MatchPlayerRoleRecord::SideAdmin => MatchPlayerRole::SideAdmin,
         MatchPlayerRoleRecord::Player => MatchPlayerRole::Player,
     }
 }
@@ -1307,6 +1319,10 @@ pub fn match_side_from_record(rec: &MatchSideRecord) -> MatchSide {
             .map(side_open_join_policy_from_record),
         max_open_spots: rec.max_open_spots,
         open_joined_count: rec.open_joined_count,
+        // Filled in afterward from `MatchRecord::side_authority` (this
+        // function only has the side record, not its parent match) — see
+        // `match_from_records`.
+        side_admin_user_ids: Vec::new(),
         // Live-overwritten for `Match` (`Api::hydrate_sides`); left as
         // the denormalized cache value for a feed's `FeedMatch`/a search
         // hit's `SearchMatch`, same as `roster_preview` below.
@@ -1476,7 +1492,18 @@ pub fn match_from_records(
                 asset_id: Some(p.asset_id.clone()),
             })
             .collect(),
-        sides: sides.iter().map(match_side_from_record).collect(),
+        sides: sides
+            .iter()
+            .map(|s| {
+                let mut side = match_side_from_record(s);
+                side.side_admin_user_ids = rec
+                    .side_authority
+                    .get(&side.id)
+                    .cloned()
+                    .unwrap_or_default();
+                side
+            })
+            .collect(),
         players: players
             .iter()
             .map(|p| match_player_from_record(p, rec))
@@ -2235,6 +2262,7 @@ mod tests {
             sides: HashMap::new(),
             header_photos: Vec::new(),
             authority: HashMap::new(),
+            side_authority: HashMap::new(),
             confirmed_score: None,
             pending_score: None,
             like_count: 0,

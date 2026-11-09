@@ -265,6 +265,22 @@ export function isMatchOwner(
 }
 
 /**
+ * The side, if any, the viewer holds `side_admin` authority over
+ * (`MatchSide.side_admin_user_ids`) — doesn't require them to be a player on
+ * it, or anywhere on the roster. A side admin may manage that one side's own
+ * ringer settings and invite people to it (`caller_can_manage_side`
+ * server-side), but — unlike `canManageMatch` — not the match's other
+ * settings, and not who holds the role itself.
+ */
+export function mySideAdminSideId(
+  match: Match,
+  currentUserId: string | undefined,
+): string | undefined {
+  if (!currentUserId) return undefined
+  return match.sides.find((s) => s.side_admin_user_ids.includes(currentUserId))?.id
+}
+
+/**
  * The side the viewer themselves plays on, if they're a participant — so
  * match views can put the viewer's own side on the left regardless of the
  * order the server happens to store `sides` in (see `orderSidesForViewer`).

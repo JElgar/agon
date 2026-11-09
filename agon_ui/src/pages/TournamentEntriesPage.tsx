@@ -1,9 +1,22 @@
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate, useParams } from 'react-router-dom'
-import { ChevronLeft, X } from 'lucide-react'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import {
+  DndContext,
+  DragOverlay,
+  MeasuringStrategy,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  PointerSensor,
+  type DragEndEvent,
+  type DragStartEvent,
+} from '@dnd-kit/core'
+import { ChevronLeft, GripVertical, Plus, X } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
+import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import {
@@ -83,7 +96,12 @@ const SEARCH_DEBOUNCE_MS = 300
 export function TournamentEntriesPage() {
   const { tournamentId } = useParams<{ tournamentId: string }>()
   const navigate = useNavigate()
+  const location = useLocation()
   const queryClient = useQueryClient()
+  // Set when `TournamentPage` redirected here because starting the
+  // tournament was blocked on unassigned entrants — see its `startMutation`.
+  const startBlockedReason = (location.state as { startBlockedReason?: string } | null)
+    ?.startBlockedReason
 
   const tournamentQuery = useQuery({
     queryKey: ['tournament', tournamentId],
@@ -176,6 +194,12 @@ export function TournamentEntriesPage() {
         <h1 className="font-display text-xl font-extrabold md:text-2xl">Entries</h1>
       </div>
 
+      {startBlockedReason && (
+        <p className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+          Couldn't start the tournament yet: {startBlockedReason}
+        </p>
+      )}
+
       {tournament && (
         <>
           <FormSection
@@ -197,34 +221,34 @@ export function TournamentEntriesPage() {
             )}
           </FormSection>
 
-          <FormSection title={`Entries (${entries.length})`}>
-            {tournament.entry_audience === 'players' && (
-              <p className="px-1 text-xs text-muted-foreground">
-                Players need a squad number before the tournament can start — type one into
-                the box next to a player and tap Assign. Squad-mates play as one team, so give
-                everyone on the same squad the same number.
-              </p>
-            )}
-            <div className={CARD}>
-              {entries.length === 0 && (
-                <p className="py-2 text-center text-sm text-muted-foreground">
-                  No entries yet.
-                </p>
-              )}
-              {entries.map((entry) => (
-                <EntryRow
-                  key={entry.entrant_id}
-                  entry={entry}
-                  display={entrantDisplays.get(entry.entrant_id)}
-                  teamless={tournament.entry_audience === 'players'}
-                  onRemove={() => removeEntryMutation.mutate(entry.entrant_id)}
-                  onAssignSquad={(squad) =>
-                    assignSquadMutation.mutate({ entrantId: entry.entrant_id, squad })
-                  }
-                />
-              ))}
-            </div>
-          </FormSection>
+          {tournament.entry_audience === 'players' ? (
+            <SquadBoard
+              entries={entries}
+              entrantDisplays={entrantDisplays}
+              onAssignSquad={(entrantId, squad) =>
+                assignSquadMutation.mutate({ entrantId, squad })
+              }
+              onRemove={(entrantId) => removeEntryMutation.mutate(entrantId)}
+            />
+          ) : (
+            <FormSection title={`Entries (${entries.length})`}>
+              <div className={CARD}>
+                {entries.length === 0 && (
+                  <p className="py-2 text-center text-sm text-muted-foreground">
+                    No entries yet.
+                  </p>
+                )}
+                {entries.map((entry) => (
+                  <EntryRow
+                    key={entry.entrant_id}
+                    entry={entry}
+                    display={entrantDisplays.get(entry.entrant_id)}
+                    onRemove={() => removeEntryMutation.mutate(entry.entrant_id)}
+                  />
+                ))}
+              </div>
+            </FormSection>
+          )}
         </>
       )}
 
@@ -283,55 +307,18 @@ function AddTeamEntryRow({
 function EntryRow({
   entry,
   display,
-  teamless,
   onRemove,
-  onAssignSquad,
 }: {
   entry: TournamentEntry
   display: EntrantDisplay | undefined
-  teamless: boolean
   onRemove: () => void
-  onAssignSquad: (squad: number) => void
 }) {
-  const [squadInput, setSquadInput] = useState(
-    entry.squad != null ? String(entry.squad + 1) : '',
-  )
   const name = display?.name ?? entry.entrant_id
 
   return (
     <div className="flex items-center gap-2.5 border-b py-2.5 last:border-b-0">
       <Avatar name={name} imageUrl={display?.imageUrl} size="md" />
       <span className="flex-1 truncate text-sm font-semibold">{name}</span>
-      {teamless && (
-        <div className="flex items-center gap-1.5">
-          {entry.squad == null ? (
-            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-bold text-amber-800 dark:bg-amber-900 dark:text-amber-200">
-              Unassigned
-            </span>
-          ) : (
-            <span className="rounded-full bg-accent px-2 py-0.5 text-xs font-bold text-accent-foreground">
-              Squad {entry.squad + 1}
-            </span>
-          )}
-          <Input
-            className="h-8 w-16 text-center"
-            type="number"
-            min={1}
-            placeholder="Squad #"
-            aria-label="Squad number"
-            value={squadInput}
-            onChange={(e) => setSquadInput(e.target.value)}
-          />
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={!squadInput.trim()}
-            onClick={() => onAssignSquad(Number(squadInput) - 1)}
-          >
-            Assign
-          </Button>
-        </div>
-      )}
       <button
         type="button"
         onClick={onRemove}
@@ -343,6 +330,232 @@ function EntryRow({
     </div>
   )
 }
+
+/** Drop-zone id for entrants not yet put in a squad (`squad` unset). Distinct
+ *  from any real squad column id (`"squad-<n>"`). */
+const UNASSIGNED = '__unassigned__'
+
+/** The board's columns never move or resize mid-drag, so one drop-zone
+ *  measurement at drag start is enough — see `MatchRosterEditor`'s identical
+ *  comment, which this mirrors. */
+const measuring = { droppable: { strategy: MeasuringStrategy.BeforeDragging } }
+
+/**
+ * Drag-and-drop squad assignment for a teamless tournament, same interaction
+ * as `MatchRosterEditor`'s side board: drag an entrant between squad columns
+ * or out of "Unassigned", instead of typing a squad number into a box.
+ * Squad moves apply immediately (one `POST .../squad` per drop, same as
+ * before) — there's no batched Save because, unlike the match roster editor,
+ * a squad move has no "undo by re-dragging before saving" case worth
+ * building for; the server has no unassign endpoint, so dropping back onto
+ * "Unassigned" is a no-op. "Add squad" just adds an empty local column —
+ * squads only start existing on the server once an entrant lands in one.
+ */
+function SquadBoard({
+  entries,
+  entrantDisplays,
+  onAssignSquad,
+  onRemove,
+}: {
+  entries: TournamentEntry[]
+  entrantDisplays: Map<string, EntrantDisplay>
+  onAssignSquad: (entrantId: string, squad: number) => void
+  onRemove: (entrantId: string) => void
+}) {
+  const highestSquad = entries.reduce((max, e) => (e.squad != null ? Math.max(max, e.squad) : max), -1)
+  const [extraColumns, setExtraColumns] = useState(0)
+  const squadCount = Math.max(highestSquad + 1, 1) + extraColumns
+
+  const [activeId, setActiveId] = useState<string | null>(null)
+
+  const entriesById = useMemo(() => new Map(entries.map((e) => [e.entrant_id, e])), [entries])
+
+  const columns = useMemo(() => {
+    const cols = new Map<string, TournamentEntry[]>()
+    for (let i = 0; i < squadCount; i++) cols.set(`squad-${i}`, [])
+    cols.set(UNASSIGNED, [])
+    for (const entry of entries) {
+      const key = entry.squad != null && cols.has(`squad-${entry.squad}`) ? `squad-${entry.squad}` : UNASSIGNED
+      cols.get(key)!.push(entry)
+    }
+    return cols
+  }, [entries, squadCount])
+
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }))
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    setActiveId(null)
+    const { active, over } = event
+    if (!over) return
+    const targetId = String(over.id)
+    if (targetId === UNASSIGNED) return // no unassign endpoint — drop is a no-op
+    const squad = Number(targetId.replace('squad-', ''))
+    const entrantId = String(active.id)
+    const entry = entriesById.get(entrantId)
+    if (entry?.squad === squad) return
+    onAssignSquad(entrantId, squad)
+  }
+
+  const activeEntry = activeId ? entriesById.get(activeId) : undefined
+
+  return (
+    <FormSection title="Squads">
+      <p className="px-1 text-xs text-muted-foreground">
+        Every player needs a squad before the tournament can start — squad-mates play as one
+        team. Drag a player into a squad, or add another squad if you need more.
+      </p>
+      <DndContext
+        sensors={sensors}
+        measuring={measuring}
+        onDragStart={(event: DragStartEvent) => setActiveId(String(event.active.id))}
+        onDragEnd={handleDragEnd}
+      >
+        <div className="flex flex-col gap-3">
+          {Array.from({ length: squadCount }, (_, i) => (
+            <SquadColumn
+              key={i}
+              id={`squad-${i}`}
+              title={`Squad ${i + 1}`}
+              entries={columns.get(`squad-${i}`) ?? []}
+              entrantDisplays={entrantDisplays}
+              onRemove={onRemove}
+            />
+          ))}
+          <SquadColumn
+            id={UNASSIGNED}
+            title="Unassigned"
+            entries={columns.get(UNASSIGNED) ?? []}
+            entrantDisplays={entrantDisplays}
+            onRemove={onRemove}
+          />
+        </div>
+        <DragOverlay>
+          {activeEntry && (
+            <EntrantChip
+              entry={activeEntry}
+              display={entrantDisplays.get(activeEntry.entrant_id)}
+              overlay
+            />
+          )}
+        </DragOverlay>
+      </DndContext>
+      <Button size="sm" variant="outline" onClick={() => setExtraColumns((n) => n + 1)}>
+        <Plus className="size-4" />
+        Add squad
+      </Button>
+    </FormSection>
+  )
+}
+
+function SquadColumn({
+  id,
+  title,
+  entries,
+  entrantDisplays,
+  onRemove,
+}: {
+  id: string
+  title: string
+  entries: TournamentEntry[]
+  entrantDisplays: Map<string, EntrantDisplay>
+  onRemove: (entrantId: string) => void
+}) {
+  const { setNodeRef, isOver } = useDroppable({ id })
+
+  return (
+    <div
+      ref={setNodeRef}
+      className={cn(
+        'rounded-lg border bg-muted/40 p-2.5 transition-colors',
+        isOver && 'border-primary bg-primary/5',
+      )}
+    >
+      <p className="mb-2 truncate text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+        {title}
+      </p>
+      <div className="flex min-h-11 flex-col gap-1.5">
+        {entries.length === 0 && (
+          <p className="px-1 py-1 text-xs text-muted-foreground">
+            {id === UNASSIGNED ? 'Everyone has a squad.' : 'Drag a player here.'}
+          </p>
+        )}
+        {entries.map((entry) => (
+          <DraggableEntrant
+            key={entry.entrant_id}
+            entry={entry}
+            display={entrantDisplays.get(entry.entrant_id)}
+            onRemove={onRemove}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function DraggableEntrant({
+  entry,
+  display,
+  onRemove,
+}: {
+  entry: TournamentEntry
+  display: EntrantDisplay | undefined
+  onRemove: (entrantId: string) => void
+}) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: entry.entrant_id })
+
+  return (
+    <div
+      ref={setNodeRef}
+      {...attributes}
+      {...listeners}
+      className={cn('touch-none', isDragging && 'opacity-30')}
+    >
+      <EntrantChip entry={entry} display={display} onRemove={onRemove} />
+    </div>
+  )
+}
+
+/** Memoized for the same reason as `MatchRosterEditor`'s `PlayerChip`: every
+ *  draggable/droppable consumer re-renders on each drag-move frame. */
+const EntrantChip = memo(function EntrantChip({
+  entry,
+  display,
+  onRemove,
+  overlay = false,
+}: {
+  entry: TournamentEntry
+  display: EntrantDisplay | undefined
+  onRemove?: (entrantId: string) => void
+  overlay?: boolean
+}) {
+  const name = display?.name ?? entry.entrant_id
+  return (
+    <div
+      className={cn(
+        'flex items-center gap-2 rounded-md bg-card px-2 py-1.5',
+        overlay && 'border shadow-lg',
+      )}
+    >
+      <GripVertical className="size-3.5 shrink-0 text-muted-foreground" />
+      <Avatar name={name} imageUrl={display?.imageUrl} size="md" />
+      <span className="flex-1 truncate text-sm">{name}</span>
+      {onRemove && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation()
+            onRemove(entry.entrant_id)
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          aria-label={`Remove ${name}`}
+          className="text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <X className="size-4" />
+        </button>
+      )}
+    </div>
+  )
+})
 
 /** Debounced `/users/search`, adding one real Agon account (no guest option
  *  — a tournament entrant must be a real user id). */

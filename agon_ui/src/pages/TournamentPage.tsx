@@ -334,7 +334,11 @@ function ManualRoundForm({
   const setAssignment = (entrantId: string, patch: Partial<{ match: string; side: 'A' | 'B' }>) =>
     setAssignments((prev) => ({
       ...prev,
-      [entrantId]: { match: '', side: 'A', ...prev[entrantId], ...patch },
+      [entrantId]: {
+        match: prev[entrantId]?.match ?? '',
+        side: prev[entrantId]?.side ?? 'A',
+        ...patch,
+      },
     }))
 
   return (

@@ -349,7 +349,7 @@ function ManualRoundForm({
             <div key={entry.entrant_id} className="flex items-center gap-2 border-b py-2 last:border-b-0">
               <span className="flex-1 truncate text-sm font-semibold">{entry.entrant_id}</span>
               <Input
-                className="h-8 w-16 text-center"
+                className="h-8 w-[4.5rem] text-center"
                 type="number"
                 min={1}
                 placeholder="Match"

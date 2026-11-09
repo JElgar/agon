@@ -805,6 +805,8 @@ pub fn match_series_from_record(rec: &SeriesRecord) -> MatchSeries {
             .iter()
             .map(match_series_side_from_record)
             .collect(),
+        ranked: rec.ranked,
+        rating_ladder: rating_ladder_for(&rec.match_type, rec.ranked),
         status: match_series_status_from_str(&rec.status),
         occurrences_generated: rec.occurrences_generated,
         created_at: parse_ts(&rec.created_at),
@@ -2528,6 +2530,49 @@ mod tests {
     fn the_mapper_leaves_the_viewers_delta_unset() {
         let m = match_from_records(&rated_match(), &[], &[], false, &HashMap::new());
         assert_eq!(m.viewer_rating_delta, None);
+    }
+
+    /// A series says whether its occurrences are ranked, and names the
+    /// ladder they count towards — the same `Some` exactly when `ranked`
+    /// relationship a match has, so a client can read a series' answer the
+    /// way it already reads a match's.
+    ///
+    /// Worth a test of its own because the series mapper is a fourth copy of
+    /// that derivation, and a series is the one shape where the flag has to
+    /// survive asynchronously: it is what `materialize_series` reads months
+    /// later to decide an occurrence it generates then.
+    #[test]
+    fn a_series_carries_ranked_and_its_ladder() {
+        let mut series = squash_series();
+        assert!(!match_series_from_record(&series).ranked);
+        assert_eq!(match_series_from_record(&series).rating_ladder, None);
+
+        series.ranked = true;
+        let mapped = match_series_from_record(&series);
+        assert!(mapped.ranked);
+        assert_eq!(mapped.rating_ladder, Some("squash".to_string()));
+    }
+
+    /// A weekly squash series, friendly.
+    fn squash_series() -> SeriesRecord {
+        SeriesRecord {
+            id: "series-1".to_string(),
+            created_by_user_id: "u1".to_string(),
+            match_type: "squash".to_string(),
+            name: "Tuesday squash".to_string(),
+            description: String::new(),
+            location: None,
+            frequency: "weekly".to_string(),
+            weekday: 2,
+            first_occurrence_starts_at: "2026-06-02T18:00:00.000Z".to_string(),
+            timezone: "Europe/London".to_string(),
+            ends: SeriesEndRecord::Never,
+            sides: Vec::new(),
+            ranked: false,
+            status: "active".to_string(),
+            occurrences_generated: 1,
+            created_at: "2026-06-01T10:00:00.000Z".to_string(),
+        }
     }
 
     /// A squash match with a confirmed score, i.e. one the pipeline has

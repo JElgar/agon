@@ -90,6 +90,9 @@ pub struct GenerateSeriesOccurrence {
     pub description: String,
     pub location: Option<agon_core::dao::records::LocationRecord>,
     pub sides: Vec<agon_core::dao::records::SeriesSideRecord>,
+    /// `SeriesRecord::ranked` — the whole series' answer, inherited
+    /// unchanged by every occurrence generated from it.
+    pub ranked: bool,
 }
 
 #[activities]
@@ -211,13 +214,15 @@ impl AgonActivities {
             live_seq: 0,
             live_tip_seq: None,
             format: None,
-            // A series occurrence is always friendly. `SeriesRecord` has no
-            // `ranked` of its own, and generation puts *other* people's
-            // players into spots without asking them — which is the one thing
-            // a rating needs (see `rating_consent`). An organiser can switch a
-            // single occurrence to ranked afterwards, which asks everyone in
-            // it. A ranked *series* needs its own consent design first.
-            ranked: false,
+            // Inherited from the series, decided once when it was created
+            // (`CreateMatchSeriesInput::ranked`). Nothing is re-checked here
+            // and there is nothing to re-check: generation puts nobody into a
+            // spot — every occurrence is created with an empty roster and
+            // team self-join, so the only players who ever reach one are Agon
+            // accounts, which is all a ranked match asks of a player. A guest
+            // can only arrive later, by an organiser adding them by hand, and
+            // `POST /matches/:id/players` refuses that on a ranked match.
+            ranked: input.ranked,
             open_join: None,
             open_joined_count: 0,
             created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),

@@ -50,6 +50,7 @@ import { CreatePage } from '@/pages/CreatePage'
 import { CreateTournamentPage } from '@/pages/CreateTournamentPage'
 import { TournamentPage } from '@/pages/TournamentPage'
 import { TournamentEntriesPage } from '@/pages/TournamentEntriesPage'
+import { MyTournamentsPage } from '@/pages/MyTournamentsPage'
 import {
   getPendingInvite,
   setPendingInvite,
@@ -157,6 +158,7 @@ function AppShell({ onSignOut }: { onSignOut: () => void }) {
           <Route path="/matches/:matchId/live" element={<LiveScoringPage />} />
           <Route path="/teams" element={<TeamsPage />} />
           <Route path="/teams/:teamId" element={<TeamPage />} />
+          <Route path="/tournaments/mine" element={<MyTournamentsPage />} />
           <Route path="/tournaments/new" element={<CreateTournamentPage />} />
           <Route path="/tournaments/:tournamentId" element={<TournamentPage />} />
           <Route path="/tournaments/:tournamentId/entries" element={<TournamentEntriesPage />} />

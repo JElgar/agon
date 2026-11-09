@@ -1465,6 +1465,12 @@ struct TournamentEntryPage {
     next_cursor: Option<String>,
 }
 
+/// `GET /tournaments/mine`'s response — see that handler's doc comment.
+#[derive(Object)]
+struct TournamentList {
+    items: Vec<Tournament>,
+}
+
 /// `POST /tournaments/{id}/entries` input — the organiser directly adding an
 /// entrant (v1 has no request/approve flow).
 #[derive(Object)]
@@ -2150,6 +2156,12 @@ enum GetTournamentResponse {
 
     #[oai(status = 404)]
     NotFound(PlainText<String>),
+}
+
+#[derive(ApiResponse)]
+enum ListMyTournamentsResponse {
+    #[oai(status = 200)]
+    Tournaments(Json<TournamentList>),
 }
 
 #[derive(ApiResponse)]
@@ -6215,6 +6227,64 @@ impl Api {
         )))
     }
 
+    /// Tournaments this caller is tied to: created by them, entered
+    /// directly (a `Players`-audience tournament, including a teamless
+    /// one), or entered via a team they belong to (a `Teams`-audience
+    /// tournament) — the only listing of "my tournaments"; otherwise a
+    /// tournament is reachable only by direct link, since it isn't fed into
+    /// search or the feed. Newest first, no pagination — a personal list,
+    /// not expected to run into the hundreds the way `GET /matches` is.
+    #[oai(path = "/tournaments/mine", method = "get")]
+    async fn list_my_tournaments(
+        &self,
+        Data(dao): Data<&dao::Dao>,
+        AuthSchema(jwt_data): AuthSchema,
+    ) -> Result<ListMyTournamentsResponse> {
+        let uid = self.require_uid(dao, &jwt_data).await?;
+
+        let mut ids = dao
+            .list_user_tournament_ids(&uid)
+            .await
+            .map_err(dao_internal)?;
+
+        let mut team_cursor = None;
+        loop {
+            let teams = dao
+                .list_user_teams(&uid, team_cursor.as_deref(), 50)
+                .await
+                .map_err(dao_internal)?;
+            for team in &teams.items {
+                ids.extend(
+                    dao.list_team_tournament_ids(&team.team_id)
+                        .await
+                        .map_err(dao_internal)?,
+                );
+            }
+            team_cursor = teams.next_cursor;
+            if team_cursor.is_none() {
+                break;
+            }
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        let mut tournaments = Vec::new();
+        for id in ids {
+            if !seen.insert(id.clone()) {
+                continue;
+            }
+            if let Some(t) = dao.get_tournament(&id).await.map_err(dao_internal)? {
+                tournaments.push(t);
+            }
+        }
+        tournaments.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+        Ok(ListMyTournamentsResponse::Tournaments(Json(
+            TournamentList {
+                items: tournaments.iter().map(tournament_from_record).collect(),
+            },
+        )))
+    }
+
     /// Fetch a tournament by id. Read-only, no authority check — same
     /// posture as `GET /match-series/:id`.
     #[oai(path = "/tournaments/:tournament_id", method = "get")]
@@ -6354,7 +6424,10 @@ impl Api {
             added_by_user_id: uid,
             created_at: now_iso(),
         };
-        match dao.create_tournament_entry(&entry).await {
+        match dao
+            .create_tournament_entry(&entry, tournament.entry_audience)
+            .await
+        {
             Ok(()) => {}
             Err(dao::DaoError::Conflict(msg)) => {
                 return Ok(AddTournamentEntryResponse::Conflict(PlainText(msg)));

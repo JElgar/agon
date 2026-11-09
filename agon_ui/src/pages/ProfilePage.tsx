@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { Info, LogOut, Search, Settings, Share2, Users, Watch } from 'lucide-react'
+import { Info, LogOut, Search, Settings, Share2, Trophy, Users, Watch } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { Avatar } from '@/components/agon/Avatar'
@@ -117,6 +117,11 @@ function SettingsSheet() {
           <Button variant="ghost" className="justify-start gap-2" asChild>
             <Link to="/teams">
               <Users className="size-4" /> Teams
+            </Link>
+          </Button>
+          <Button variant="ghost" className="justify-start gap-2" asChild>
+            <Link to="/tournaments/mine">
+              <Trophy className="size-4" /> Tournaments
             </Link>
           </Button>
         </div>

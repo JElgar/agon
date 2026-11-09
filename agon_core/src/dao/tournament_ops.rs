@@ -14,12 +14,12 @@ use aws_sdk_dynamodb::types::{AttributeValue, Delete, Put, TransactWriteItem, Up
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::is_update_conditional_failure;
-use super::item::{ATTR_GSI1PK, ATTR_PK, ATTR_SK, from_item, s, to_item};
+use super::item::{ATTR_GSI1PK, ATTR_PK, ATTR_SK, ItemBuilder, from_item, s, to_item};
 use super::keys::{Pk, Sk};
 use super::page::Page;
 use super::records::{
-    MatchRecord, SquadLabelRecord, TournamentBracketEdgeRecord, TournamentEntryRecord,
-    TournamentRecord,
+    MatchRecord, SquadLabelRecord, TournamentBracketEdgeRecord, TournamentEntryAudienceRecord,
+    TournamentEntryRecord, TournamentRecord,
 };
 
 pub const TYPE_TOURNAMENT: &str = "tournament";
@@ -28,14 +28,22 @@ pub const TYPE_TOURNAMENT_BRACKET_EDGE: &str = "tournament_bracket_edge";
 
 impl Dao {
     /// Create a tournament meta item. `Conflict` if the id already exists.
+    /// Projected into GSI1 (`UTOURNAMENTS#<createdByUserId>`) so the creator
+    /// can list it back via `Dao::list_user_tournament_ids`, alongside any
+    /// tournament they're a direct entrant in rather than the organiser of.
     #[tracing::instrument(skip(self, tournament), fields(tournament_id = %tournament.id))]
     pub async fn create_tournament(&self, tournament: &TournamentRecord) -> DaoResult<()> {
-        let item = to_item(
+        let item = ItemBuilder::new(to_item(
             &Pk::Tournament(tournament.id.clone()),
             &Sk::Meta,
             TYPE_TOURNAMENT,
             tournament,
-        )?;
+        )?)
+        .gsi1(
+            format!("UTOURNAMENTS#{}", tournament.created_by_user_id),
+            format!("{}#{}", tournament.created_at, tournament.id),
+        )
+        .build();
         let result = self
             .client
             .put_item()
@@ -183,14 +191,36 @@ impl Dao {
     /// the two writes). `Conflict` if this entrant already has an entry —
     /// at most one entry per entrant, the same "doubles as the uniqueness
     /// guard" convention as `Sk::WaitlistEntry`.
+    /// `audience` decides the entry's GSI1 projection: on a `Players`
+    /// tournament `entrant_id` is itself a user id, so it's projected into
+    /// the same `UTOURNAMENTS#<userId>` namespace `create_tournament` uses
+    /// for "created by me" — on a `Teams` tournament `entrant_id` is a team
+    /// id instead, so it's projected into `TEAMTOURNAMENTS#<teamId>` and
+    /// resolved back to the user via their team memberships (see
+    /// `Dao::list_team_tournament_ids`).
     #[tracing::instrument(skip(self, entry), fields(tournament_id = %entry.tournament_id, entrant_id = %entry.entrant_id))]
-    pub async fn create_tournament_entry(&self, entry: &TournamentEntryRecord) -> DaoResult<()> {
-        let item = to_item(
+    pub async fn create_tournament_entry(
+        &self,
+        entry: &TournamentEntryRecord,
+        audience: TournamentEntryAudienceRecord,
+    ) -> DaoResult<()> {
+        let gsi1_pk = match audience {
+            TournamentEntryAudienceRecord::Players => format!("UTOURNAMENTS#{}", entry.entrant_id),
+            TournamentEntryAudienceRecord::Teams => {
+                format!("TEAMTOURNAMENTS#{}", entry.entrant_id)
+            }
+        };
+        let item = ItemBuilder::new(to_item(
             &Pk::Tournament(entry.tournament_id.clone()),
             &Sk::Entry(entry.entrant_id.clone()),
             TYPE_TOURNAMENT_ENTRY,
             entry,
-        )?;
+        )?)
+        .gsi1(
+            gsi1_pk,
+            format!("{}#{}", entry.created_at, entry.tournament_id),
+        )
+        .build();
         let put = Put::builder()
             .table_name(self.table())
             .set_item(Some(item))
@@ -552,6 +582,76 @@ impl Dao {
             limit,
         )
         .await
+    }
+
+    /// Tournament ids this user is directly tied to — created by them, or
+    /// (on a `Players`-audience tournament) entered by them directly — via
+    /// GSI1 (`UTOURNAMENTS#<userId>`), newest first. Walks every page itself
+    /// rather than returning one, since the caller (`GET /tournaments/mine`)
+    /// merges this with `list_team_tournament_ids` before paging the result.
+    /// Does not include a tournament entered only by a team this user
+    /// belongs to — see `list_team_tournament_ids` for that.
+    #[tracing::instrument(skip(self))]
+    pub async fn list_user_tournament_ids(&self, user_id: &str) -> DaoResult<Vec<String>> {
+        self.list_tournament_ref_ids(format!("UTOURNAMENTS#{user_id}"))
+            .await
+    }
+
+    /// Tournament ids a team has an entry in, via GSI1
+    /// (`TEAMTOURNAMENTS#<teamId>`), newest first — the `Teams`-audience
+    /// counterpart to `list_user_tournament_ids`.
+    #[tracing::instrument(skip(self))]
+    pub async fn list_team_tournament_ids(&self, team_id: &str) -> DaoResult<Vec<String>> {
+        self.list_tournament_ref_ids(format!("TEAMTOURNAMENTS#{team_id}"))
+            .await
+    }
+
+    /// Walk every page of a GSI1 partition that holds a mix of tournament
+    /// meta items (`id`) and tournament entry items (`tournament_id`),
+    /// resolving each to its tournament id via `TournamentRef`.
+    async fn list_tournament_ref_ids(&self, gsi1_pk: String) -> DaoResult<Vec<String>> {
+        let mut ids = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let page: Page<TournamentRef> = self
+                .query_page(
+                    self.client
+                        .query()
+                        .table_name(self.table())
+                        .index_name("GSI1")
+                        .key_condition_expression("#pk = :pk")
+                        .expression_attribute_names("#pk", ATTR_GSI1PK)
+                        .expression_attribute_values(":pk", s(gsi1_pk.clone()))
+                        .scan_index_forward(false),
+                    cursor.as_deref(),
+                    50,
+                )
+                .await?;
+            ids.extend(page.items.into_iter().filter_map(TournamentRef::into_id));
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(ids)
+    }
+}
+
+/// Minimal shape read off a GSI1 row that's either a tournament meta item
+/// (`id`) or a tournament entry item (`tournament_id`) — just enough for
+/// `Dao::list_tournament_ref_ids` to resolve back to a tournament id,
+/// without needing to know which of the two it actually is.
+#[derive(serde::Deserialize)]
+struct TournamentRef {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    tournament_id: Option<String>,
+}
+
+impl TournamentRef {
+    fn into_id(self) -> Option<String> {
+        self.id.or(self.tournament_id)
     }
 }
 

@@ -52,6 +52,7 @@ import { type SetsScore } from '@/lib/score'
 import { teamCrestColor } from '@/lib/sideColours'
 import { FootballScorersBySide } from './FootballScorersBySide'
 import { NetballScorersBySide } from './NetballScorersBySide'
+import { NestedTeamLink } from './TeamLink'
 
 type Match = components['schemas']['Match']
 type FeedMatch = components['schemas']['FeedMatch']
@@ -474,10 +475,12 @@ function SideMarkerOrCrest({
 }) {
   if (side?.team_id) {
     return (
-      <TeamCrestBadge
-        side={side}
-        cornerTag={selfPlay ? { leading, colour: side.colour } : undefined}
-      />
+      <NestedTeamLink teamId={side.team_id}>
+        <TeamCrestBadge
+          side={side}
+          cornerTag={selfPlay ? { leading, colour: side.colour } : undefined}
+        />
+      </NestedTeamLink>
     )
   }
   return <SideMarker leading={leading} colour={side?.colour} />
@@ -501,10 +504,20 @@ function SelfPlayNote({ teamName, nameA, nameB }: { teamName: string; nameA: str
  *  `sideTeamHint(side)` has something to say (a custom side name, or the
  *  self-play case's "Firsts"/"Riverside FC" pair) — the design canvas's
  *  two-line name pattern. */
-function SideNameWithHint({ name, hint }: { name: string; hint: string | undefined }) {
+function SideNameWithHint({
+  name,
+  hint,
+  teamId,
+}: {
+  name: string
+  hint: string | undefined
+  teamId?: string
+}) {
   return (
     <span className="truncate">
-      {name}
+      <NestedTeamLink teamId={teamId} className="hover:underline">
+        {name}
+      </NestedTeamLink>
       {hint && <span className="block truncate text-[11px] font-medium text-muted-foreground">{hint}</span>}
     </span>
   )
@@ -615,7 +628,7 @@ export function FootballFeedCardBody({
                 isScheduled || aLeading ? 'font-bold' : 'font-medium text-muted-foreground',
               )}
             >
-              <SideNameWithHint name={nameA} hint={sideTeamHint(sideA)} />
+              <SideNameWithHint name={nameA} hint={sideTeamHint(sideA)} teamId={sideA?.team_id} />
               {!isLive && !isScheduled && aWon && <WinnerCheck />}
             </span>
             {isScheduled ? (
@@ -639,7 +652,7 @@ export function FootballFeedCardBody({
                 isScheduled || bLeading ? 'font-bold' : 'font-medium text-muted-foreground',
               )}
             >
-              <SideNameWithHint name={nameB} hint={sideTeamHint(sideB)} />
+              <SideNameWithHint name={nameB} hint={sideTeamHint(sideB)} teamId={sideB?.team_id} />
               {!isLive && !isScheduled && bWon && <WinnerCheck />}
             </span>
             {isScheduled ? (
@@ -827,7 +840,7 @@ export function CricketFeedCardBody({
             isScheduled || headline ? 'font-bold' : 'font-medium text-muted-foreground',
           )}
         >
-          <SideNameWithHint name={name} hint={sideTeamHint(side)} />
+          <SideNameWithHint name={name} hint={sideTeamHint(side)} teamId={side?.team_id} />
           {!isLive && !isScheduled && winner && <WinnerCheck />}
           {batting && <span className="size-2 shrink-0 rounded-[3px] bg-destructive" aria-label="Batting" />}
         </span>
@@ -1036,7 +1049,7 @@ export function NetballFeedCardBody({
                 isScheduled || aLeading ? 'font-bold' : 'font-medium text-muted-foreground',
               )}
             >
-              <SideNameWithHint name={nameA} hint={sideTeamHint(sideA)} />
+              <SideNameWithHint name={nameA} hint={sideTeamHint(sideA)} teamId={sideA?.team_id} />
               {!isLive && !isScheduled && aWon && <WinnerCheck />}
             </span>
             {isScheduled ? (
@@ -1060,7 +1073,7 @@ export function NetballFeedCardBody({
                 isScheduled || bLeading ? 'font-bold' : 'font-medium text-muted-foreground',
               )}
             >
-              <SideNameWithHint name={nameB} hint={sideTeamHint(sideB)} />
+              <SideNameWithHint name={nameB} hint={sideTeamHint(sideB)} teamId={sideB?.team_id} />
               {!isLive && !isScheduled && bWon && <WinnerCheck />}
             </span>
             {isScheduled ? (

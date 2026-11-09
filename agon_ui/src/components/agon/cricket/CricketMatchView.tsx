@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp } from 'lucide-react'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { memberAvatarUrl, type ScorePlayers } from '@/lib/members'
+import { TeamLink } from '@/components/agon/TeamLink'
 import type { CricketFormat } from '@/lib/matchFormat'
 import {
   cricketStateDescription,
@@ -213,13 +214,16 @@ export function CricketHeroCard({
       {order.map((sideId, i) => {
         const list = inningsOf(sideId)
         const name = sideNameFor(match, sideId)
+        const teamId = match.sides.find((s) => s.id === sideId)?.team_id
         const isBatting = open?.batting_side_id === sideId
         const last = list.at(-1)
         if (isBatting && open) {
           return (
             <div key={sideId} className="flex items-center gap-2.5">
               <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <span className="truncate text-lg font-bold">{name}</span>
+                <TeamLink teamId={teamId} className="truncate text-lg font-bold hover:underline">
+                  {name}
+                </TeamLink>
                 <span className="text-[13px] text-muted-foreground">
                   Batting · {formatOvers(open.overs)}
                   {format.overs_per_innings ? ` of ${format.overs_per_innings}` : ''} overs
@@ -237,7 +241,12 @@ export function CricketHeroCard({
               key={sideId}
               className={cn('flex items-center gap-2.5', (open || i > 0) && 'border-t border-hairline pt-3')}
             >
-              <span className="min-w-0 flex-1 truncate text-base font-medium text-muted-foreground">{name}</span>
+              <TeamLink
+                teamId={teamId}
+                className="min-w-0 flex-1 truncate text-base font-medium text-muted-foreground hover:underline"
+              >
+                {name}
+              </TeamLink>
               <span className="shrink-0 text-sm text-muted-foreground">
                 {last ? `${scoreText(list)} · ${formatOvers(last.overs)} ov` : 'Yet to bat'}
               </span>
@@ -248,9 +257,12 @@ export function CricketHeroCard({
         return (
           <div key={sideId} className={cn('flex items-center gap-2.5', i > 0 && 'border-t border-hairline pt-3')}>
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <span className={cn('truncate', lost ? 'text-base font-medium text-muted-foreground' : 'text-lg font-bold')}>
+              <TeamLink
+                teamId={teamId}
+                className={cn('truncate hover:underline', lost ? 'text-base font-medium text-muted-foreground' : 'text-lg font-bold')}
+              >
                 {name}
-              </span>
+              </TeamLink>
               <span className="text-[13px] text-muted-foreground">
                 {last ? inningsSummary(match, last, format) : 'Did not bat'}
               </span>

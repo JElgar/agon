@@ -245,7 +245,7 @@ function AddTournamentMatchSection({
   const [sideB, setSideB] = useState('')
 
   const options = isTeamless
-    ? squads.map((s) => ({ value: String(s), label: `Squad ${s + 1}` }))
+    ? squads.map((s) => ({ value: String(s), label: tournament.squad_labels[String(s)]?.name ?? `Squad ${s + 1}` }))
     : accepted.map((e) => ({ value: e.entrant_id, label: entrantDisplays.get(e.entrant_id)?.name ?? e.entrant_id }))
 
   const canSave = name.trim() !== '' && !!startsAt && !!sideA && !!sideB && sideA !== sideB

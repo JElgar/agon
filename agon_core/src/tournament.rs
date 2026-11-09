@@ -282,28 +282,6 @@ pub fn snake_draft(entrants: &[String], squad_count: usize) -> Vec<Vec<String>> 
     squads
 }
 
-/// A teamless tournament squad's display label/colour palette, keyed by its
-/// 0-based position — used both by `start_tournament`'s squad-from-entrants
-/// generation and by a manually-added match's `tournament_squad` side,
-/// which has no persisted "squad" entity of its own to carry a label/colour.
-/// Same hexes, in the same order, as `SIDE_COLOURS` in
-/// `agon_ui/src/lib/sideColours.ts` (the picker a squad's own colour swatch
-/// defaults from on the entries page), so a squad nobody touched the swatch
-/// for still turns into a match side with the colour the organiser actually
-/// saw.
-const SQUAD_PALETTE: [&str; 10] = [
-    "#2952D9", "#DC2626", "#16A34A", "#EAB308", "#F97316", "#9333EA", "#EC4899", "#0F172A",
-    "#E2E8F0", "#64748B",
-];
-
-/// See [`SQUAD_PALETTE`].
-pub fn squad_label_colour(position: u32) -> (String, String) {
-    (
-        format!("Squad {}", position + 1),
-        SQUAD_PALETTE[position as usize % SQUAD_PALETTE.len()].to_string(),
-    )
-}
-
 /// A random seeding order for `entrants` — used when a tournament's
 /// `seeding` is `"random"` rather than `"manual"` (caller-supplied `seed`
 /// order, sorted by the caller instead). Pure, one-shot: there's no stored

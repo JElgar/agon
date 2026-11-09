@@ -30,7 +30,7 @@ import { Avatar } from '@/components/agon/Avatar'
 import { TeamPicker } from '@/components/agon/TeamPicker'
 import { CARD, ColourSwatches, FormSection } from '@/components/agon/logmatch/parts'
 import { tournamentEntryAudienceLabel } from '@/lib/tournaments'
-import { SIDE_COLOURS, colourFromName, nameFromColour } from '@/lib/sideColours'
+import { colourFromName, defaultSquadLabel, nameFromColour } from '@/lib/sideColours'
 
 type Tournament = components['schemas']['Tournament']
 type TournamentEntry = components['schemas']['TournamentEntry']
@@ -171,6 +171,16 @@ export function TournamentEntriesPage() {
         },
       )
       if (error) throw new Error('Could not assign that squad')
+      // The server has no default squad label, so the first entrant to land
+      // in an unlabelled squad saves the default the header was already
+      // showing — see `defaultSquadLabel`.
+      if (!tournamentQuery.data?.squad_labels[String(squad)]) {
+        const { error: labelError } = await fetchClient.PUT('/tournaments/{tournament_id}/squads/{squad}', {
+          params: { path: { tournament_id: tournamentId!, squad } },
+          body: defaultSquadLabel(squad),
+        })
+        if (labelError) throw new Error('Could not name that squad')
+      }
     },
     onSuccess: invalidate,
   })
@@ -538,9 +548,9 @@ function SquadHeader({
   label: SquadLabel | undefined
   onSave: (name: string, colour: string) => void
 }) {
-  const defaultColour = SIDE_COLOURS[index % SIDE_COLOURS.length].hex
-  const [name, setName] = useState(label?.name ?? `Squad ${index + 1}`)
-  const [colour, setColour] = useState(label?.colour ?? defaultColour)
+  const fallback = defaultSquadLabel(index)
+  const [name, setName] = useState(label?.name ?? fallback.name)
+  const [colour, setColour] = useState(label?.colour ?? fallback.colour)
   const [nameTouched, setNameTouched] = useState(false)
   const [colourTouched, setColourTouched] = useState(false)
 

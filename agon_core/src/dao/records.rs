@@ -858,13 +858,26 @@ pub struct TournamentRecord {
     /// A teamless tournament's squad name/colour, keyed by squad index
     /// (0-based, as a string — DynamoDB/JSON map keys are always strings) —
     /// set via `PUT /tournaments/{id}/squads/{squad}` while entries are
-    /// being organised, same idea as a match side's name/colour. A squad
-    /// with no entry here yet falls back to a generated "Squad N" label and
-    /// a palette colour at `start` (`start_tournament`'s `squad_labels`
-    /// local, not this field).
+    /// being organised, same idea as a match side's name/colour. There's
+    /// no server-side default: like an ad-hoc match side's colour, it
+    /// always comes from the client — the entries page saves a squad's
+    /// default (from `SIDE_COLOURS` in `agon_ui/src/lib/sideColours.ts`) as
+    /// soon as an entrant lands in it. Read via [`TournamentRecord::squad_label`].
     #[serde(default)]
     pub squad_labels: HashMap<String, SquadLabelRecord>,
     pub created_at: String,
+}
+
+impl TournamentRecord {
+    /// One squad's stored name/colour (see `squad_labels`), by its squad
+    /// index — the one lookup every path that turns a squad into a match
+    /// side goes through (`start_tournament` and a manually added
+    /// tournament match alike), so they can't disagree on its identity.
+    /// `None` means the organiser hasn't saved one yet; callers reject that
+    /// rather than invent a label.
+    pub fn squad_label(&self, squad: u32) -> Option<&SquadLabelRecord> {
+        self.squad_labels.get(&squad.to_string())
+    }
 }
 
 /// One squad's organiser-chosen identity (`TournamentRecord::squad_labels`),

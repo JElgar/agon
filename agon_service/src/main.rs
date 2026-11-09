@@ -4162,7 +4162,13 @@ impl Api {
                                 "no accepted entrants are assigned to squad {squad}"
                             ))));
                         }
-                        let (label, colour) = agon_core::tournament::squad_label_colour(squad);
+                        let Some(label) = tournament.squad_label(squad) else {
+                            return Ok(CreateMatchResponse::ValidationError(PlainText(format!(
+                                "squad {} has no name/colour yet — set it on the tournament's entries page",
+                                squad + 1
+                            ))));
+                        };
+                        let (label, colour) = (label.name.clone(), label.colour.clone());
                         squad_side_client_ids.insert(side.client_id.clone(), squad);
                         resolved_sides.push(CreateMatchSideInput {
                             client_id: side.client_id,
@@ -6610,20 +6616,22 @@ impl Api {
                 let mut synthetic_ids: Vec<String> = Vec::new();
                 for (position, (squad_num, members)) in by_squad.into_iter().enumerate() {
                     let synthetic_id = format!("squad-{position}");
-                    // An organiser-set name/colour (`PUT
-                    // /tournaments/{id}/squads/{squad}`, keyed by the
-                    // entry's actual `squad` index) wins over the generated
-                    // fallback; `position` is dense after compaction, so a
-                    // sparse squad numbering (e.g. 0 and 2 used, not 1)
-                    // still looks up the label the organiser actually set.
-                    let (name, colour) = tournament
-                        .squad_labels
-                        .get(&squad_num.to_string())
-                        .map(|l| (l.name.clone(), l.colour.clone()))
-                        .unwrap_or_else(|| {
-                            agon_core::tournament::squad_label_colour(position as u32)
-                        });
-                    squad_labels.insert(synthetic_id.clone(), (name, colour));
+                    // Looked up by the entry's actual `squad` index, not
+                    // `position` (dense after compaction), so a sparse
+                    // squad numbering (e.g. 0 and 2 used, not 1) still finds
+                    // the label the organiser actually set.
+                    let Some(label) = tournament.squad_label(squad_num) else {
+                        return Ok(StartTournamentResponse::ValidationError(PlainText(
+                            format!(
+                                "squad {} has no name/colour yet — set it on the entries page",
+                                squad_num + 1
+                            ),
+                        )));
+                    };
+                    squad_labels.insert(
+                        synthetic_id.clone(),
+                        (label.name.clone(), label.colour.clone()),
+                    );
                     squad_members.insert(synthetic_id.clone(), members);
                     synthetic_ids.push(synthetic_id);
                 }
@@ -6694,10 +6702,12 @@ impl Api {
                     (team_side(entrant_id), Vec::new())
                 }
                 dao::records::TournamentEntryAudienceRecord::Players => {
+                    // Every synthetic squad id was labelled above, before
+                    // generation ran.
                     let (label, colour) = squad_labels
                         .get(entrant_id)
                         .cloned()
-                        .unwrap_or_else(|| ("Squad".to_string(), "#2952D9".to_string()));
+                        .expect("every squad entrant is labelled before generation");
                     let side = dao::records::MatchSideRecord {
                         side_id: new_id(),
                         // Not a real team — the synthetic squad id, reused

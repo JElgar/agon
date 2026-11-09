@@ -14,6 +14,7 @@ pub mod notify;
 pub mod push;
 pub mod rating;
 pub mod stats;
+pub mod tournament;
 
 use agon_core::dao::Dao;
 
@@ -50,6 +51,7 @@ pub async fn route(
     notify::handle(dao, ev, now).await?;
     push::handle(dao, push, ui_base_url, ev).await?;
     stats::handle(dao, ev).await?;
+    tournament::handle(dao, ev).await?;
     rating::handle(dao, ev, now).await?;
     Ok(())
 }

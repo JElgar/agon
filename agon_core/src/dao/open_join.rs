@@ -591,6 +591,8 @@ mod tests {
             match_type: "football".into(),
             status: "scheduled".into(),
             series_id: None,
+            tournament_id: None,
+            tournament_round: None,
             starts_at: "2026-06-01T10:00:00.000Z".into(),
             allow_unassigned,
             total_player_count: 2,

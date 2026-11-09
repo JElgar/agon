@@ -31,9 +31,10 @@ use crate::{
     MatchSeries, MatchSeriesOccurrence, MatchSeriesSide, MatchSeriesStatus, MatchSide, MatchSocial,
     MatchStatus, MatchType, PendingScore, Photo, RosterPreviewPlayer, Score, ScoreConfirmation,
     ScoreResponseKind, ScoreSubmission, ScoreSubmissionResponse, ScoreSubmissionStatus,
-    SearchMatch, SetsScore, SimpleScore, UserProfile, UserStats,
+    SearchMatch, SetsScore, SimpleScore, Tournament, TournamentEntry, TournamentEntryAudience,
+    TournamentFormat, TournamentMatchSummary, TournamentSeeding, UserProfile, UserStats,
 };
-use crate::{LadderPlacement, LadderRating};
+use crate::{LadderPlacement, LadderRating, RatingHistoryPoint};
 use agon_core::dao::error::DaoError;
 use agon_core::sports::SportRecord;
 
@@ -50,7 +51,9 @@ use agon_core::dao::records::{
     OpenJoinScopeRecord, PendingScoreRecord, ScoreConfirmationRecord, ScoreRecord,
     ScoreResponseRecord, ScoreSubmissionRecord, SeriesEndRecord, SeriesOccurrenceRecord,
     SeriesRecord, SeriesSideRecord, SideOpenJoinPolicyRecord, TeamMemberRecord, TeamRecord,
-    UserRecord, UserStatsRecord,
+    TournamentEntryAudienceRecord, TournamentEntryRecord, TournamentFormatRecord, TournamentRecord,
+    TournamentRoundInfo, TournamentSeedingRecord, TournamentTeamFormationRecord, UserRecord,
+    UserStatsRecord,
 };
 use agon_core::rating::ladder_for_tag;
 use agon_core::rating::{PLACEMENT_MATCHES, display, published};
@@ -630,6 +633,30 @@ pub fn published_ratings_from_record(user: &UserRecord) -> Vec<LadderRating> {
 /// A ladder with no rating stored is simply absent. There is no act that
 /// starts placements early any more: the counter and the rating are written
 /// by the same match, so nought played and no rating are the same state.
+/// One stored rating movement as a chart point.
+///
+/// `rating`, `confidence`, `floor` and `rating_before` are all *displayed*
+/// numbers, computed through `rating::scale` here like every other rating the
+/// API returns, so retuning the scale moves every chart at once rather than
+/// needing a backfill. `delta` is the deliberate exception: it is read
+/// straight off the record because it is a log of what the player was told on
+/// the day, and recomputing it would quietly rewrite that.
+#[must_use]
+pub fn rating_history_point_from_record(
+    rec: &agon_core::dao::records::RatingHistoryRecord,
+) -> RatingHistoryPoint {
+    let after = display(rec.movement.mu_after, rec.movement.sigma_after);
+    RatingHistoryPoint {
+        match_id: rec.match_id.clone(),
+        played_at: parse_ts(&rec.played_at),
+        rating: after.rating,
+        confidence: after.confidence,
+        floor: after.floor,
+        rating_before: display(rec.movement.mu_before, rec.movement.sigma_before).rating,
+        delta: rec.movement.display_delta,
+    }
+}
+
 pub fn rating_placements_from_record(user: &UserRecord) -> Vec<LadderPlacement> {
     let mut placements: Vec<LadderPlacement> = user
         .ratings
@@ -787,6 +814,100 @@ pub fn match_series_occurrence_from_record(rec: &SeriesOccurrenceRecord) -> Matc
         index: rec.index,
         starts_at: parse_ts(&rec.starts_at),
         match_id: rec.match_id.clone(),
+    }
+}
+
+/// Collapses `TournamentRecord::team_formation` (`None` for every
+/// tournament except a teamless one) into the two plain strings the API
+/// exposes, same spirit as `format`/`seeding`'s own open-string fields.
+pub fn tournament_from_record(rec: &TournamentRecord) -> Tournament {
+    let (team_formation, team_formation_auto_by) = match &rec.team_formation {
+        None => (None, None),
+        Some(TournamentTeamFormationRecord::Manual) => (Some("manual".to_string()), None),
+        Some(TournamentTeamFormationRecord::Auto { by }) => {
+            (Some("auto".to_string()), Some(by.clone()))
+        }
+    };
+    Tournament {
+        id: rec.id.clone(),
+        created_by_user_id: rec.created_by_user_id.clone(),
+        name: rec.name.clone(),
+        description: rec.description.clone(),
+        match_type: match_type_from_tag(&rec.match_type),
+        format: tournament_format_from_record(rec.format),
+        status: rec.status.clone(),
+        entry_audience: tournament_entry_audience_from_record(rec.entry_audience),
+        team_formation,
+        team_formation_auto_by,
+        squad_size: rec.squad_size,
+        min_teams: rec.min_teams,
+        max_teams: rec.max_teams,
+        location: rec.location.as_ref().map(location_from_record),
+        frequency: rec.frequency.clone(),
+        weekday: rec.weekday,
+        first_round_starts_at: parse_ts(&rec.first_round_starts_at),
+        timezone: rec.timezone.clone(),
+        points_win: rec.points_win,
+        points_draw: rec.points_draw,
+        points_loss: rec.points_loss,
+        seeding: tournament_seeding_from_record(rec.seeding),
+        entry_count: rec.entry_count,
+        created_at: parse_ts(&rec.created_at),
+    }
+}
+
+pub fn tournament_format_from_record(rec: TournamentFormatRecord) -> TournamentFormat {
+    match rec {
+        TournamentFormatRecord::Knockout => TournamentFormat::Knockout,
+        TournamentFormatRecord::League => TournamentFormat::League,
+    }
+}
+
+pub fn tournament_entry_audience_from_record(
+    rec: TournamentEntryAudienceRecord,
+) -> TournamentEntryAudience {
+    match rec {
+        TournamentEntryAudienceRecord::Teams => TournamentEntryAudience::Teams,
+        TournamentEntryAudienceRecord::Players => TournamentEntryAudience::Players,
+    }
+}
+
+pub fn tournament_seeding_from_record(rec: TournamentSeedingRecord) -> TournamentSeeding {
+    match rec {
+        TournamentSeedingRecord::Random => TournamentSeeding::Random,
+        TournamentSeedingRecord::Manual => TournamentSeeding::Manual,
+    }
+}
+
+/// `GET /tournaments/{id}/matches` row — the fields a bracket/fixtures list
+/// needs, deliberately lighter than `match_from_records` (no roster lookup).
+pub fn tournament_match_summary_from_record(rec: &MatchRecord) -> TournamentMatchSummary {
+    let round_info = rec
+        .tournament_round
+        .unwrap_or(TournamentRoundInfo { round: 0, slot: 0 });
+    TournamentMatchSummary {
+        id: rec.id.clone(),
+        round: round_info.round,
+        slot: round_info.slot,
+        starts_at: parse_ts(&rec.starts_at),
+        status: match_status_from_str(&rec.status),
+        sides: rec.sides.values().map(match_side_from_record).collect(),
+        confirmed_score: rec
+            .confirmed_score
+            .as_ref()
+            .map(confirmed_score_from_record),
+    }
+}
+
+pub fn tournament_entry_from_record(rec: &TournamentEntryRecord) -> TournamentEntry {
+    TournamentEntry {
+        tournament_id: rec.tournament_id.clone(),
+        entrant_id: rec.entrant_id.clone(),
+        status: rec.status.clone(),
+        seed: rec.seed,
+        squad: rec.squad,
+        added_by_user_id: rec.added_by_user_id.clone(),
+        created_at: parse_ts(&rec.created_at),
     }
 }
 
@@ -2108,6 +2229,8 @@ mod tests {
             total_player_count: 0,
             location: None,
             series_id: None,
+            tournament_id: None,
+            tournament_round: None,
             sides: HashMap::new(),
             header_photos: Vec::new(),
             authority: HashMap::new(),
@@ -2184,6 +2307,39 @@ mod tests {
         assert_eq!(
             ranked_lock_reason(&m, lock_now()),
             Some("the match is no longer scheduled")
+        );
+    }
+
+    /// A point reports the rating *after* its match, the band after it, and
+    /// the delta exactly as stored — not recomputed from the two ends, which
+    /// is what keeps a retuned scale from rewriting what a card once said.
+    #[test]
+    fn a_history_point_reports_the_rating_after_its_match() {
+        let rec = agon_core::dao::records::RatingHistoryRecord {
+            ladder: "squash".to_string(),
+            match_id: "m1".to_string(),
+            played_at: "2026-06-01T18:00:00.000Z".to_string(),
+            movement: agon_core::dao::records::RatingMovementRecord {
+                mu_before: 25.0,
+                sigma_before: 8.333,
+                mu_after: 26.0,
+                sigma_after: 7.5,
+                // Deliberately not what the mu change implies, so the test
+                // can tell a stored delta from a recomputed one.
+                display_delta: 7,
+            },
+            applied_at: "2026-06-02T09:00:00.000Z".to_string(),
+        };
+
+        let point = rating_history_point_from_record(&rec);
+        assert_eq!(point.match_id, "m1");
+        assert_eq!(point.delta, 7, "the stored delta, not mu_after - mu_before");
+        assert_eq!(point.rating, display(26.0, 7.5).rating);
+        assert_eq!(point.confidence, display(26.0, 7.5).confidence);
+        assert_eq!(point.rating_before, 1500, "mu 25 is the scale's origin");
+        assert!(
+            point.confidence < display(25.0, 8.333).confidence,
+            "the band narrows as sigma falls, which is what the chart shows"
         );
     }
 

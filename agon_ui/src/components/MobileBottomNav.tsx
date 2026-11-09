@@ -36,8 +36,8 @@ export function MobileBottomNav() {
 
         <button
           type="button"
-          onClick={() => navigate('/matches/new')}
-          aria-label="Log a match"
+          onClick={() => navigate('/create')}
+          aria-label="Create"
           className="-mt-6 flex size-14 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg ring-4 ring-background transition-transform active:scale-95"
         >
           <Plus className="size-6" />

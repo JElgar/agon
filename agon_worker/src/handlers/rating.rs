@@ -893,6 +893,8 @@ mod tests {
             match_type: "squash".into(),
             status: "completed".into(),
             series_id: None,
+            tournament_id: None,
+            tournament_round: None,
             starts_at: PLAYED_AT.into(),
             allow_unassigned: true,
             total_player_count: 2,

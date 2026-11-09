@@ -6,6 +6,7 @@ import { ChevronLeft, Clock } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { isSetsSport, sportIcon, type MatchType } from '@/lib/sports'
+import { canBeRanked, placementFor, ratingFor } from '@/lib/rating'
 import { colourFromName, defaultSideColour, nameFromColour } from '@/lib/sideColours'
 import { suggestMatchName } from '@/lib/matchName'
 import { cricketFormatLabel, type MatchFormat } from '@/lib/matchFormat'
@@ -21,6 +22,7 @@ import { FootballScoreFields } from '@/components/agon/FootballScoreFields'
 import { CricketScoreFields } from '@/components/agon/CricketScoreFields'
 import { NetballScoreFields } from '@/components/agon/NetballScoreFields'
 import { CARD, FormSection, Segmented, Stepper, ToggleRow } from '@/components/agon/logmatch/parts'
+import { HowItCounts } from '@/components/agon/logmatch/HowItCounts'
 import { FormatPresets } from '@/components/agon/logmatch/FormatPresets'
 import { RacketPlayers, type RacketFormat } from '@/components/agon/logmatch/RacketPlayers'
 import { TeamSideCard, type SideKind } from '@/components/agon/logmatch/TeamSideCard'
@@ -31,10 +33,10 @@ import { ROSTER_IDENTITY_MAX_PLAYERS, rosterIdentityName } from '@/lib/members'
 import { shortDate, toDateTimeLocal } from '@/lib/datetime'
 import { countOccurrencesThrough, occurrenceDate } from '@/lib/seriesOccurrences'
 import { addPendingMatch } from '@/hooks/usePendingMatches'
+import { currentUserQuery } from '@/hooks/useCurrentUser'
 
 type CreateMatchInput = components['schemas']['CreateMatchInput']
 type CreateMatchSeriesInput = components['schemas']['CreateMatchSeriesInput']
-type UserProfile = components['schemas']['UserProfile']
 type MatchSide = components['schemas']['MatchSide']
 type MatchPlayer = components['schemas']['MatchPlayer']
 type Score = components['schemas']['Score']
@@ -185,6 +187,8 @@ export function LogMatchPage() {
   const [sideATeamJoinEnabled, setSideATeamJoinEnabled] = useState(true)
   const [sideBTeamJoinEnabled, setSideBTeamJoinEnabled] = useState(true)
   const [allowUnassigned, setAllowUnassigned] = useState(true)
+  // Friendly by default, like `CreateMatchInput.ranked` itself.
+  const [ranked, setRanked] = useState(false)
   const [headerAssetIds, setHeaderAssetIds] = useState<string[]>([])
 
   const [repeatEnabled, setRepeatEnabled] = useState(false)
@@ -273,20 +277,17 @@ export function LogMatchPage() {
     setStartsAt(next === 'scheduled' ? defaultScheduledAt() : defaultCompletedAt())
   }
 
-  const me = useQuery({
-    queryKey: ['users-me'],
-    queryFn: async (): Promise<UserProfile | null> => {
-      const { data } = await fetchClient.GET('/users/me')
-      return data?.profile ?? null
-    },
-  })
-  const currentUserId = me.data?.id
+  // The whole `/users/me` response, not just the profile: the "how it counts"
+  // section below needs `rating_placements` as well as the id. Shares its
+  // cache entry with every other reader of `currentUserQuery`.
+  const me = useQuery(currentUserQuery)
+  const currentUserId = me.data?.profile.id
 
   // Seed the current user onto side A once; removing yourself sticks.
   const [seededSelf, setSeededSelf] = useState(false)
   useEffect(() => {
     if (seededSelf || !me.data) return
-    const self = me.data
+    const self = me.data.profile
     setSideA((prev) =>
       prev.some((p) => p.kind === 'user' && p.id === self.id)
         ? prev
@@ -304,7 +305,24 @@ export function LogMatchPage() {
     return null
   }, [startsAt, mode])
 
-  const step1Error = !sport ? 'Pick a sport' : !name.trim() ? 'Give the match a name' : timeError
+  // Guests tagged onto a side, who the server won't let a ranked match
+  // contain (`mapping::ranked_guest_invites_reason`). The same set
+  // `buildInvites` sends as `invited_externals`, which is what that refusal
+  // reads — this flow only ever puts a player on a side, so there is no
+  // invited-but-unassigned guest for the two to disagree about.
+  const rankedGuests = ranked ? [...sideA, ...sideB].filter((p) => p.kind === 'external') : []
+
+  // Blocks the step rather than failing at submit. `HowItCounts` renders the
+  // explanation and names them; this is only the gate, which is why the
+  // message is the short form — step 0 shows its errors inline by the field
+  // they belong to, and this string is what the final step summarises.
+  const step1Error = !sport
+    ? 'Pick a sport'
+    : !name.trim()
+      ? 'Give the match a name'
+      : rankedGuests.length > 0
+        ? "A ranked match can't include guests without an Agon account"
+        : timeError
 
   const maxError = (label: string, max: string, count: number): string | null => {
     if (!max.trim()) return null
@@ -604,6 +622,10 @@ export function LogMatchPage() {
     if (format) body.format = format
     if (location?.text.trim()) body.location = { ...location, text: location.text.trim() }
     body.allow_unassigned = allowUnassigned
+    // Only sent when the sport has a ladder — `ranked: true` on a ladderless
+    // one is a 400, and this flag can outlive a sport change in the form
+    // (the section that sets it stops being rendered, the state stays).
+    if (ranked && canBeRanked(sport)) body.ranked = true
     const scored = buildScore()
     if (scored) {
       body.score = scored.score
@@ -860,6 +882,19 @@ export function LogMatchPage() {
                 seriesMode={repeatEnabled}
               />
             </>
+          )}
+          {sport && canBeRanked(sport) && (
+            <HowItCounts
+              sport={sport}
+              ranked={ranked}
+              onChange={setRanked}
+              seriesMode={repeatEnabled}
+              rating={ratingFor(me.data?.profile.ratings, sport)}
+              placement={placementFor(me.data?.rating_placements, sport)}
+              guests={[...sideA, ...sideB]
+                .filter((p) => p.kind === 'external')
+                .map((p) => p.name)}
+            />
           )}
         </>
       )}

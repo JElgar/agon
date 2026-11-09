@@ -191,6 +191,16 @@ export function LogMatchPage() {
   const [ranked, setRanked] = useState(false)
   const [headerAssetIds, setHeaderAssetIds] = useState<string[]>([])
 
+  // Switching to ranked after a guest was already tagged (e.g. the organiser
+  // goes back to step 1 and changes their mind) would otherwise leave a
+  // guest sitting on a side that can no longer add one — drop them rather
+  // than let the match reach step 3 only to be refused at submit.
+  useEffect(() => {
+    if (!ranked) return
+    setSideA((prev) => prev.filter((p) => p.kind !== 'external'))
+    setSideB((prev) => prev.filter((p) => p.kind !== 'external'))
+  }, [ranked])
+
   const [repeatEnabled, setRepeatEnabled] = useState(false)
   const [frequency, setFrequency] = useState<SeriesFrequency>('weekly')
   const [endMode, setEndMode] = useState<SeriesEndMode>('after')
@@ -807,6 +817,17 @@ export function LogMatchPage() {
               className="h-12 rounded-[14px] border bg-card px-3.5 text-[15px] font-semibold outline-none placeholder:font-normal placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring"
             />
           </FormSection>
+
+          {sport && canBeRanked(sport) && (
+            <HowItCounts
+              sport={sport}
+              ranked={ranked}
+              onChange={setRanked}
+              seriesMode={repeatEnabled}
+              rating={ratingFor(me.data?.profile.ratings, sport)}
+              placement={placementFor(me.data?.rating_placements, sport)}
+            />
+          )}
         </>
       )}
 
@@ -822,6 +843,7 @@ export function LogMatchPage() {
               onSideAChange={setSideA}
               onSideBChange={setSideB}
               currentUserId={currentUserId}
+              ranked={ranked}
             />
           ) : (
             <>
@@ -852,6 +874,7 @@ export function LogMatchPage() {
                 maxPlayers={sideAMaxPlayers}
                 onMaxPlayersChange={setSideAMaxPlayers}
                 seriesMode={repeatEnabled}
+                ranked={ranked}
               />
               <TeamSideCard
                 title="Opposition"
@@ -880,21 +903,9 @@ export function LogMatchPage() {
                 maxPlayers={sideBMaxPlayers}
                 onMaxPlayersChange={setSideBMaxPlayers}
                 seriesMode={repeatEnabled}
+                ranked={ranked}
               />
             </>
-          )}
-          {sport && canBeRanked(sport) && (
-            <HowItCounts
-              sport={sport}
-              ranked={ranked}
-              onChange={setRanked}
-              seriesMode={repeatEnabled}
-              rating={ratingFor(me.data?.profile.ratings, sport)}
-              placement={placementFor(me.data?.rating_placements, sport)}
-              guests={[...sideA, ...sideB]
-                .filter((p) => p.kind === 'external')
-                .map((p) => p.name)}
-            />
           )}
         </>
       )}

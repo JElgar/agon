@@ -18,7 +18,8 @@ use super::item::{ATTR_GSI1PK, ATTR_PK, ATTR_SK, from_item, s, to_item};
 use super::keys::{Pk, Sk};
 use super::page::Page;
 use super::records::{
-    MatchRecord, TournamentBracketEdgeRecord, TournamentEntryRecord, TournamentRecord,
+    MatchRecord, SquadLabelRecord, TournamentBracketEdgeRecord, TournamentEntryRecord,
+    TournamentRecord,
 };
 
 pub const TYPE_TOURNAMENT: &str = "tournament";
@@ -100,6 +101,42 @@ impl Dao {
         match result {
             Ok(_) => Ok(()),
             Err(e) if is_update_conditional_failure(&e) => Ok(()),
+            Err(e) => Err(DaoError::Dynamo(e.to_string())),
+        }
+    }
+
+    /// Set (or replace) one squad's name/colour on the tournament meta item
+    /// (`TournamentRecord::squad_labels`), keyed by squad index. No
+    /// existence check on the squad itself — a squad is just an index an
+    /// entry's `squad` field points at, so there's nothing else to validate
+    /// against before the tournament starts.
+    #[tracing::instrument(skip(self))]
+    pub async fn set_tournament_squad_label(
+        &self,
+        tournament_id: &str,
+        squad: u32,
+        label: &SquadLabelRecord,
+    ) -> DaoResult<()> {
+        let label_av =
+            serde_dynamo::to_attribute_value(label).map_err(|e| DaoError::Dynamo(e.to_string()))?;
+        let result = self
+            .client
+            .update_item()
+            .table_name(self.table())
+            .key(ATTR_PK, s(Pk::Tournament(tournament_id.into()).to_string()))
+            .key(ATTR_SK, s(Sk::Meta.to_string()))
+            .update_expression("SET squad_labels.#squad = :label")
+            .condition_expression("attribute_exists(#pk)")
+            .expression_attribute_names("#pk", ATTR_PK)
+            .expression_attribute_names("#squad", squad.to_string())
+            .expression_attribute_values(":label", label_av)
+            .send()
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) if is_update_conditional_failure(&e) => {
+                Err(DaoError::NotFound(format!("tournament {tournament_id}")))
+            }
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
     }

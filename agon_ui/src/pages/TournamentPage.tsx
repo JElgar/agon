@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQueries, useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ChevronLeft, Plus } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
@@ -14,6 +14,12 @@ import { MatchTabBar } from '@/components/agon/football/FootballMatchView'
 import { sideDisplayName } from '@/lib/members'
 import { sportLabel } from '@/lib/sports'
 import { defaultSquadLabel, resolveSideColour, teamCrestColor } from '@/lib/sideColours'
+import {
+  footballEventSourceFromScore,
+  goalContributions,
+  sortGoalContributions,
+  type GoalContributionEntry,
+} from '@/lib/liveScore'
 import {
   groupMatchesByRound,
   listAllTournamentEntries,
@@ -31,6 +37,7 @@ type TournamentStandingsRow = components['schemas']['TournamentStandingsRow']
 type CreateMatchInput = components['schemas']['CreateMatchInput']
 type Team = components['schemas']['Team']
 type TeamMember = components['schemas']['TeamMember']
+type Match = components['schemas']['Match']
 // openapi-typescript emits `Tournament['generation']` as
 // `Omit<TournamentGenerationInput, "type"> & unknown` (a codegen quirk on
 // this optional discriminated-union field — see `CreateMatchSeriesInput['ends']`
@@ -38,7 +45,7 @@ type TeamMember = components['schemas']['TeamMember']
 // through the actual union type instead of that mangled one.
 type TournamentGenerationInput = components['schemas']['TournamentGenerationInput']
 
-type TournamentTab = 'joined' | 'squads' | 'matches' | 'table'
+type TournamentTab = 'joined' | 'squads' | 'matches' | 'table' | 'stats'
 
 /**
  * Tournament hub, laid out the same way as a match's detail page
@@ -140,11 +147,18 @@ export function TournamentPage() {
   const canStart = !started && entryCount >= tournament.min_teams
   const isTeamless = tournament.entry_audience === 'players'
 
+  // Goal/assist leaders, aggregated across the tournament's matches — only
+  // meaningful for football today (the one sport with a per-match
+  // "Goals & assists" breakdown to aggregate — see `TournamentStatsTab`'s
+  // doc comment for cricket/netball).
+  const supportsStats = tournament.match_type === 'football'
+
   const tabs: { id: TournamentTab; label: string }[] = [
     { id: 'joined', label: 'Joined' },
     { id: 'squads', label: isTeamless ? 'Squads' : 'Teams' },
     { id: 'matches', label: 'Matches' },
     { id: 'table', label: tournament.format === 'knockout' ? 'Bracket' : 'Table' },
+    ...(supportsStats ? [{ id: 'stats' as const, label: 'Stats' }] : []),
   ]
 
   return (
@@ -194,6 +208,8 @@ export function TournamentPage() {
           started={started}
         />
       )}
+
+      {tab === 'stats' && <StatsTab matches={matches} started={started} />}
     </div>
   )
 }
@@ -560,6 +576,124 @@ function TableTab({
         )}
       </div>
     </div>
+  )
+}
+
+/**
+ * Goal/assist leaders aggregated across every one of the tournament's
+ * matches — the tournament-wide equivalent of a single match's own "Goals &
+ * assists" card (`GoalsAssistsCard`). Fetches each match's full detail (the
+ * summary list doesn't carry events) and reuses that same card's
+ * `goalContributions` helper per match, then merges the per-match entries
+ * (keyed by a match-scoped player id, so they can't be summed directly) onto
+ * a cross-match identity: the player's Agon user id when they have one, else
+ * their display name — same identity `memberName`/`memberAvatarUrl` already
+ * treat as "this person" everywhere else a player is shown outside one
+ * match's own roster.
+ *
+ * Football only for now — the one sport with a ready-made per-match
+ * contributions helper to reuse. Cricket's and netball's equivalents
+ * (batting/bowling averages, top-scorer tallies) are computed from each
+ * match's innings/quarter detail rather than one flat event list, so
+ * aggregating them cleanly across a whole tournament is a bigger job — left
+ * for a follow-up.
+ */
+function StatsTab({ matches, started }: { matches: TournamentMatchSummary[]; started: boolean }) {
+  const matchQueries = useQueries({
+    queries: matches.map((m) => ({
+      queryKey: ['match', m.id],
+      queryFn: async (): Promise<Match> => {
+        const { data, error } = await fetchClient.GET('/matches/{match_id}', {
+          params: { path: { match_id: m.id } },
+        })
+        if (error || !data) throw new Error('Failed to load match')
+        return data
+      },
+    })),
+  })
+
+  if (!started) {
+    return (
+      <div className={CARD}>
+        <p className="py-2 text-center text-sm text-muted-foreground">
+          Player stats will appear here once the tournament starts.
+        </p>
+      </div>
+    )
+  }
+
+  const loadedMatches = matchQueries.map((q) => q.data).filter((m): m is Match => !!m)
+  if (matchQueries.some((q) => q.isLoading)) {
+    return <div className="h-40 animate-pulse rounded-2xl border bg-card" aria-hidden />
+  }
+
+  const byIdentity = new Map<string, GoalContributionEntry>()
+  for (const match of loadedMatches) {
+    const detail = footballEventSourceFromScore(match.confirmed_score?.score ?? match.pending_score?.score)
+    if (!detail) continue
+    for (const entry of goalContributions(detail.goals, match, detail.players)) {
+      const identity = entry.userId ?? entry.name
+      const existing = byIdentity.get(identity)
+      if (existing) {
+        existing.goals += entry.goals
+        existing.assists += entry.assists
+      } else {
+        byIdentity.set(identity, { ...entry })
+      }
+    }
+  }
+
+  const rows = sortGoalContributions([...byIdentity.values()], 'goals')
+
+  if (rows.length === 0) {
+    return (
+      <div className={CARD}>
+        <p className="py-2 text-center text-sm text-muted-foreground">
+          No goals or assists recorded yet.
+        </p>
+      </div>
+    )
+  }
+
+  const max = Math.max(...rows.map((r) => r.goals + r.assists)) + 1
+
+  return (
+    <section className="flex flex-col overflow-hidden rounded-[20px] border bg-card">
+      <div className="flex items-center justify-between border-b px-4 py-3">
+        <span className="font-display text-base font-bold">Goals &amp; assists</span>
+        <div className="flex gap-3 text-xs text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <span className="size-2 rounded-full bg-primary" />
+            Goals
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span className="size-2 rounded-full bg-accent-foreground/60" />
+            Assists
+          </span>
+        </div>
+      </div>
+      {rows.map((r, i) => (
+        <div key={r.key} className="flex items-center gap-3 px-4 py-2.5">
+          <span className="w-4 shrink-0 text-xs font-bold text-muted-foreground">{i + 1}</span>
+          <Avatar name={r.name} imageUrl={r.avatarUrl} size="md" />
+          {r.userId ? (
+            <Link to={`/users/${r.userId}`} className="min-w-0 flex-1 truncate text-sm font-semibold hover:underline">
+              {r.name}
+            </Link>
+          ) : (
+            <span className="min-w-0 flex-1 truncate text-sm font-semibold">{r.name}</span>
+          )}
+          <span aria-label={`${r.goals} goals, ${r.assists} assists`} className="flex h-2 w-20 gap-0.5">
+            {r.goals > 0 && <span className="rounded bg-primary" style={{ width: `${(r.goals / max) * 100}%` }} />}
+            {r.assists > 0 && (
+              <span className="rounded bg-accent-foreground/60" style={{ width: `${(r.assists / max) * 100}%` }} />
+            )}
+          </span>
+          <span className="w-5 text-right font-display text-sm font-extrabold">{r.goals}</span>
+          <span className="w-5 text-right font-display text-sm font-extrabold text-muted-foreground">{r.assists}</span>
+        </div>
+      ))}
+    </section>
   )
 }
 

@@ -112,6 +112,30 @@ macro_rules! define_sport_records {
 }
 crate::for_each_sport!(define_sport_records);
 
+macro_rules! define_stats_common {
+    (
+        modeled: [$( $variant:ident { tag: $tag:literal, key: $key:ident } ),+ $(,)?],
+        generic: [$( $gvariant:ident { tag: $gtag:literal, key: $gkey:ident, label: $glabel:literal } ),* $(,)?] $(,)?
+    ) => {
+        impl UserStatsRecord {
+            /// The played/won/drawn/lost counters for one sport, by stored tag
+            /// (`MatchRecord::match_type`). `None` for a sport never played
+            /// and for an unknown tag. Every modeled sport's stats record
+            /// flattens a `common: GenericSportStatsRecord` in, which is what
+            /// makes this generatable from the registry.
+            pub fn common(&self, tag: &str) -> Option<&GenericSportStatsRecord> {
+                match tag {
+                    $( $tag => self.$key.as_ref().map(|s| &s.common), )+
+                    $( $gtag => self.$gkey.as_ref(), )*
+                    "other" => self.other.as_ref(),
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+crate::for_each_sport!(define_stats_common);
+
 /// The agreed, settled score of a match.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ConfirmedScoreRecord {

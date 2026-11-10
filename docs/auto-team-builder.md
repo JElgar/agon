@@ -209,8 +209,10 @@ where they are.
 }
 ```
 
-The `certainty` buckets come from `σ` (thresholds in `team_builder`), not
-from game counts, so one rule drives both the dots and the solver.
+The `certainty` dots are coarse and come from the signal: 3 for rated
+(10+ ranked games); 1 for a new account, a guest, or a win-rate-only
+player with under 5 games; 2 for everyone else. The solver itself uses
+the continuous `σ`, not the dots.
 
 #### Apply request
 

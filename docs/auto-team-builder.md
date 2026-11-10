@@ -1,339 +1,318 @@
-# Auto team builder — scope
+# Auto team builder
 
-Status: proposal (2026-11-10). Nothing here is built yet.
+Status: design agreed, backend scoped (2026-11-10). Nothing is built yet.
+UI design canvas: https://claude.ai/artifact/AsppPerX1Afqbj2YDjBbpT
 
-## The ask
+## What it is
 
-When there's a pool of players and no fixed teams, let an organiser hit one
-button and have the players split into sides. Two flavours:
+An organiser has a pool of players and no fixed teams. They hit
+**Auto-assign**, pick **Random** or **Auto Balanced**, preview the split,
+re-roll or pin players as they like, then apply it. It's available on two
+surfaces:
 
-- **Random**: shuffle and deal. Quick, fair, no judgement involved.
-- **Balanced**: use rating and/or win rate so the sides come out as even as
-  we can make them.
+1. **Teamless tournaments** (`entry_audience: Players`, `team_formation:
+   Manual`). It fills in each entry's `squad` before `start`. Today every
+   entrant is assigned by hand via
+   `POST /tournaments/:id/entries/:entrant_id/squad`.
+2. **Matches with a shared pool**: intra-squad matches (both sides the same
+   team), or any match with unassigned players. It fills in `side_id` on
+   the existing sides. Today that's `PATCH /matches/:id` →
+   `side_assignments`, one player at a time.
 
-Two places this applies today:
+This is a one-off assistant, **not** the per-round re-draft that
+`TournamentTeamFormationRecord::Auto { by }` describes. After it runs, the
+tournament is an ordinary `Manual` one. A future `Auto` mode can call the
+same core module once per round.
 
-1. **Teamless tournaments** (`entry_audience: Players` on a team sport,
-   `team_formation: Manual`). Entrants join with `squad: None`, and the
-   organiser currently assigns every one by hand via
-   `POST /tournaments/:id/entries/:entrant_id/squad` before `start` will run.
-2. **A single match with a shared pool**: an intra-squad match where both
-   sides are the same team, or any match with `allow_unassigned` and a pile
-   of unassigned players. Today the organiser drags them across one at a time
-   (`PATCH /matches/:id` → `side_assignments`).
+## Product decisions (from the design review)
 
-## What already exists (and what doesn't)
+| # | Decision |
+|---|---|
+| 1 | Two methods only: **Random** and **Auto Balanced**. No "balance by" option. |
+| 2 | Rating is trusted progressively: weight goes 0 → 100% over the first **10 ranked games**, with win rate covering the rest. |
+| 3 | The preview shows each player's rating and/or win rate, **organiser only**. Players never see that squads were auto-built. |
+| 4 | A rating still in placement (< 5 ranked) shows as **"Still in placements"**, with no count and no number. It still feeds the estimate. |
+| 5 | `squad_count` defaults to `ceil(pool / squad_size)` and can be changed. |
+| 6 | Re-roll and pins work for both methods. |
+| 7 | Organiser override per player: **Newer / As expected / Stronger**, relative to *this group's* average, for this draw only. |
+| 8 | No "drift band" visual. Just say how many players have little history and that they're spread out. |
 
-| Piece | Where | State |
-|---|---|---|
-| Snake draft over a seeded list | `agon_core::tournament::snake_draft` | Built and tested. Not called by anything. |
-| Shuffle | `agon_core::tournament::random_seed_order` | Built, used for random seeding. |
-| `TournamentTeamFormationRecord::Auto { by }` | `dao/records.rs` | Record exists. Its meaning is a **re-draft every round** (by `wins` / `rating` / `games_played`). `POST /tournaments` rejects it ("isn't supported yet"). |
-| Per-entry squad assignment | `Dao::set_tournament_entry_squad` | Built, one entry per call. |
-| Squad labels | `TournamentRecord::squad_labels` | Built. Always supplied by the client (`defaultSquadLabel`), and `start` rejects a squad with no label. |
-| Side reassignment | `Dao::reassign_match_player_tx` | Built, one player per transaction. |
-| Ratings | `USER#<uid>/#PROFILE` → `ratings.<ladder>` (`μ`, `σ`, `matches_rated`) | Built. Weng-Lin, per-sport ladders, team strength = sum of player `μ`. |
-| Win/loss record | `UserStatsRecord` per sport (`matches_played`, `wins`, `draws`, `losses`) | Built. Counts friendlies as well as ranked. |
+## Backend architecture
 
-So most of the parts are already there. What's missing is the balancing
-algorithm itself, one endpoint per surface, and bulk writes.
+```
+agon_core::team_builder          (new, pure: no DAO, no clock, no ids)
+  ├── strength.rs   profile + sport → Estimate { mu, sigma, signal }
+  └── solver.rs     players + sides + method + seed → Assignment
 
-### Don't mix this up with `Auto` formation
+agon_core::dao                   (two new bulk writes)
+  ├── match_ops.rs       reassign_match_players_tx
+  └── tournament_ops.rs  set_tournament_entry_squads
 
-`Auto { by }` means "build new squads every round from the tournament so
-far". That's a bigger feature: it needs the worker to run a draft between
-rounds, it changes rosters partway through a bracket, and `wins` has nothing
-to go on in round 0. **What's proposed here is a one-off assistant**: it fills
-in `squad` on the entries (or `side_id` on players) and stops there. After it
-runs, the tournament is an ordinary `Manual` one and the organiser can tweak
-any assignment before `start`. Once the algorithm below exists, a future
-`Auto` mode can call it once per round, so this is a step toward that
-feature without being blocked on it.
+agon_service                     (four endpoints)
+  ├── POST /tournaments/:id/squads/auto-assign   preview, no writes
+  ├── PUT  /tournaments/:id/squads/assignments   apply (bulk)
+  ├── POST /matches/:id/sides/auto-assign        preview, no writes
+  └── PUT  /matches/:id/sides/assignments        apply (bulk)
+```
 
-## Proposal
+No new item types, no worker changes, and no new infrastructure. The
+result is ordinary `squad` / `side_id` values, so standings, bracket fill,
+rating, stats and the stream handlers don't change.
 
-### 1. A pure module: `agon_core::team_builder`
+### 1. `team_builder::strength`: turn a player into an estimate
 
-This follows the same rule as `rating::engine` and `tournament`: no DAO, no
-clock, no ids. Players and strengths go in, assignments come out.
+Input: the player's `UserRecord` (already holds `ratings.<ladder>` and
+per-sport `stats` inline, fetched in one `Dao::batch_get_users`), the
+match's sport tag, and the pool's group mean.
 
 ```rust
-pub struct PoolPlayer {
-    pub id: String,              // entrant id (tournament) or player_id (match)
-    pub strength: Strength,      // see "Strength signal" below
-    pub locked_to: Option<usize>,// pinned to a side by the organiser
+pub enum Signal { Rated, Blended, Placement, WinRate, New, Guest }
+
+pub struct Estimate {
+    pub mu: f64,          // what the solver balances on
+    pub sigma: f64,       // what the solver spreads out
+    pub signal: Signal,
+    pub breakdown: Breakdown, // rating weight, raw/shrunk win rate, games: for the strength sheet
 }
+```
 
-pub struct Strength { pub mu: f64, pub sigma: f64 }
+The rules, in order:
 
-pub enum Method { Random, Balanced }
+1. **Rating part.** Look up `ladder_for_tag(sport)` in `ratings`. That gives
+   `μ_r`, `σ_r`, and `r = matches_rated`. Sport `other` has no ladder, so
+   `r = 0`.
+2. **Win-rate part.** Shrink toward 50% with
+   `p = (wins + ½·draws + 3) / (played + 6)`, then map it onto the μ scale as
+   `μ_w = μ_group + C_WR · logit(p)`. `σ_w` narrows with `played` but has
+   a floor (`WR_SIGMA_FLOOR`) set wider than a settled rating, because win
+   rate in a team sport is diluted by teammates.
+3. **Blend.** `w = min(r, 10) / 10`. Then `μ = w·μ_r + (1−w)·μ_w` and
+   `σ² = w·σ_r² + (1−w)·σ_w²`.
+4. **No history** (`r = 0` and `played = 0`, or a guest with no `user_id`):
+   `μ = μ_group`, `σ = INITIAL_SIGMA`.
+5. **Organiser level** (if set): `Newer` puts `μ` at the group's 25th
+   percentile and `Stronger` at its 75th. `σ` is left as is, so the player
+   still counts as uncertain and still gets spread.
 
-pub struct BuildInput<'a> {
-    pub players: &'a [PoolPlayer],
-    pub side_count: usize,
-    pub side_caps: &'a [Option<u32>], // MatchSideRecord::max_players, or squad_size
-    pub method: Method,
-    pub seed: u64,                     // caller supplies randomness, so tests are deterministic
-}
+`μ_group` is the mean `μ` of the pool's players who have any history. If
+nobody has any, it's `INITIAL_MU`. So there's a small two-pass step:
+resolve the known players first, then the unknowns.
 
-pub struct BuildOutput {
+**Prerequisite:** win/draw/loss per sport is currently only exposed as
+`matches_played_for_sport` in `agon_service::mapping`. Add a
+`agon_core::sports::win_record(stats, tag) -> WinRecord { played, wins,
+draws, losses }`, generated through `for_each_sport!` so a new sport can't
+be missed. Then point the existing helper at it.
+
+**Tunable constants** (`RATING_TRUST_MATCHES = 10`, `WR_PRIOR_GAMES = 3`,
+`C_WR`, `WR_SIGMA_FLOOR`) live in one place. v1 ships with hand-picked
+values. Calibrating them against real outcomes is a follow-up (see Later).
+
+### 2. `team_builder::solver`: split the pool
+
+```rust
+pub struct PoolPlayer { pub id: String, pub est: Estimate, pub pinned_to: Option<usize> }
+pub enum Method { Random, AutoBalanced }
+
+pub fn build(players: &[PoolPlayer], caps: &[Option<u32>], method: Method, seed: u64)
+    -> Result<Assignment, BuildError>;
+
+pub struct Assignment {
     pub sides: Vec<Vec<String>>,
-    pub balance: Balance,              // predicted win probabilities / spread
+    pub balance: Balance,   // per-side Σμ, unsure count; overall verdict; 2-side win prob
 }
 ```
 
-Invariants the tests pin down:
+- **Random:** place the pinned players, shuffle the rest with the seed,
+  then deal round-robin into the sides that have room.
+- **Auto Balanced:**
+  1. Start from `snake_draft` (already in `agon_core::tournament`) over the
+     unpinned players, sorted by `μ`.
+  2. Hill-climb with pairwise swaps between sides (never touching pinned
+     players) until a full pass finds no improvement.
+  3. For 2 sides and n ≤ 16, solve exactly instead (≤ 12,870 splits).
+     That's the common five-a-side / intra-squad case.
+  4. The objective is lexicographic: first minimise the gap in `Σμ` (for 2
+     sides, `|P(A beats B) − ½|` under the Weng-Lin model the engine already
+     uses, `BETA` from `rating::engine`). Then, among splits within ε of the
+     best, minimise the spread of `Σσ²`, which spreads out the unknowns.
+  5. Re-roll: pick among the near-optimal splits using the seed, so each
+     re-roll gives a different split that's just as fair.
+- **Invariants** (all unit-tested): every player is placed exactly once,
+  pins are respected, side sizes differ by at most 1 (except where pins
+  force it), caps are never exceeded (`BuildError::OverCapacity` instead),
+  and the same input + seed gives the same output.
+- **RNG:** use `rand_chacha::ChaCha8Rng::seed_from_u64` (already in the
+  lockfile) rather than `StdRng`, whose output isn't guaranteed stable
+  across `rand` versions.
 
-- Every player appears exactly once.
-- Locked players stay where they were pinned.
-- Side sizes differ by at most one, and no cap is exceeded. If the caps
-  can't hold everyone, return an error rather than leaving players out.
-- The same input with the same `seed` always gives the same output.
+### 3. Preview / apply split
 
-**Random**: shuffle with the seed, then deal round-robin into the sides with
-room, after placing the locked players. Hitting "re-roll" just sends a new
-seed.
+The preview computes and returns a proposal and **writes nothing**. Apply
+is a separate bulk-assignment call that receives the **exact split from the
+preview**, so it never re-runs the solver.
 
-**Balanced**:
+Why apply isn't "the same seed, but `apply: true`":
 
-1. Seed with `snake_draft` over players sorted by `μ`, desc (that's the
-   existing function, and it's already a decent starting point).
-2. Hill-climb with pairwise swaps between sides, skipping locked players.
-   Accept any swap that lowers the objective, and stop when a full pass
-   finds nothing. With realistic pools (≤ ~40 players) this runs in
-   milliseconds.
-3. For 2 sides and n ≤ 16, solve it exactly instead (C(16,8) = 12,870
-   splits, which is trivial). That's the most common case (five-a-side,
-   intra-squad), and an exact answer makes the tests easy to write.
-4. Re-roll for balanced: gather every split within ε of the best objective
-   and pick one using the seed. The organiser gets a fresh but equally fair
-   split instead of the same one every time.
+- What gets written is exactly what the organiser saw, even if a deploy
+  changed the algorithm in between.
+- Staleness is explicit rather than silent. The preview returns a
+  `roster_version` (a hash of the pool's ids and current
+  squads/sides), and apply sends it back. If anyone joined, left or was
+  moved in the meantime, apply returns **409**, and the UI re-previews.
+- The bulk endpoints are generic. A future drag-and-drop "save all" on
+  the entries page can use them too.
 
-**Objective**: use the Weng-Lin model the rating engine already uses.
-Team strength is `Σμ` and team variance is `Σσ² + n·β²`. For 2 sides,
-minimise `|P(A beats B) − 0.5|`. You can take that from skillratings'
-Weng-Lin expected-score helper, or compute the same closed form inline with
-`BETA` from `rating::engine`. For k sides, minimise the spread
-(max − min) of `Σμ`, and break ties on the variance of `Σμ`.
+#### Preview request
 
-Using the engine's own model buys us one thing: "balanced" means exactly
-what the rating system would call a 50/50 game. Nobody's rating moves
-because the teams were lopsided. If the split were balanced on some other
-measure, the rating engine could still treat the game as uneven.
-
-Uneven side sizes (an odd pool) are handled for free. `Σμ` already counts
-the extra player, so the optimiser compensates by putting stronger players
-on the short side.
-
-### 2. Strength signal: rating, win rate, or both
-
-The organiser's pick is **Balance by: Rating | Win rate | Auto** (the
-default). Every option comes down to a `Strength { mu, sigma }` per player,
-so the algorithm only needs to understand one thing.
-
-| Player has… | `rating` | `win_rate` | `auto` (default) |
-|---|---|---|---|
-| A rating on this sport's ladder | stored `μ, σ` | win rate → `μ` | stored `μ, σ` |
-| No rating, but stats on this sport | prior `INITIAL_MU, INITIAL_SIGMA` | win rate → `μ` | win rate → `μ`, wide `σ` |
-| Nothing (new user, ad-hoc guest with no `user_id`) | prior | prior | prior |
-
-- **Win rate → μ**: shrink it toward 50% first,
-  `p = (wins + ½·draws + k) / (played + 2k)` with `k ≈ 3`. Without that, a
-  player who is 1-for-1 looks unbeatable. Then map it onto the μ scale as
-  `μ = INITIAL_MU + c·logit(p)`. Set `σ` from `played`, so a long record
-  counts for more than a short one.
-- Win rate counts friendlies and every opponent the same. It's noisier
-  than the rating, so `auto` only uses it for players without a rating.
-  That fills the gap for the many players who haven't played a ranked game
-  in this sport yet.
-- Look the ladder up with `rating::ladder_for_tag(match_type)`. Sport
-  `other` has no ladder, so it falls back to win rate, then the prior.
-- **Use μ, not the displayed rating**: the balancer reads the raw stored
-  `μ`. That includes players still in placement
-  (`matches_rated < PLACEMENT_MATCHES`). Their number isn't shown yet,
-  but it's still the best guess we have.
-
-**Superseded by the uncertainty model below**, which replaces the
-hard rating/win-rate switch in `auto`.
-
-### 2a. Handling uncertainty (decided 2026-11-10)
-
-Every player comes out as an estimate plus a measure of how sure we are
-(`μ ± σ`). Each step below deals with one source of thin evidence.
-
-1. **Blend by ranked games.** With `r = matches_rated` on this ladder,
-   the weight on rating is `w = min(r, 10) / 10`. Then
-   `μ = w·μ_rating + (1−w)·μ_winrate` and
-   `σ² = w·σ_rating² + (1−w)·σ_winrate²`. Win rate dominates early,
-   and from 10 ranked games on the estimate is rating only. The cut-over
-   is the `RATING_TRUST_MATCHES = 10` constant.
-2. **Shrink win rate.** Use
-   `p = (wins + ½·draws + 3) / (played + 6)`: six phantom games at 50%.
-   Then map onto the μ scale as `μ = μ_group + c·logit(p)`, where `c` is
-   damped for team sports (teammates win games too). `σ_winrate` starts at
-   `INITIAL_SIGMA` and narrows with `played`, but never below a floor
-   that's wider than a settled rating.
-3. **No history → this group's average.** A new account or a guest gets
-   the mean `μ` of the *known* players in this pool, with
-   `σ = INITIAL_SIGMA`. A stranger at Thursday 5s is likely near
-   Thursday 5s level, not near the global default.
-4. **Balance on expected strength, then spread the risk.** Uncertainty
-   doesn't move a side's *expected* strength, but it does make the outcome
-   less predictable. The objective is lexicographic:
-   1. Minimise the `Σμ` gap (for 2 sides, `|P(win) − 0.5|`).
-   2. Among near-ties (within ε), minimise the spread of `Σσ²`
-      across sides.
-
-   That way no side ends up holding all the unknowns. If the new player
-   turns out to be brilliant, the damage is contained.
-5. **Show it honestly.** Each player gets three certainty dots, the balance
-   card shows a shaded band for how far sides could drift, and two-side
-   matches show a range ("51%, could be 44–58%").
-6. **Organiser nudge.** For any player, but mainly guests and new
-   accounts, the organiser can pick Newer / As estimated / Stronger. That
-   shifts `μ` by about ±100 display points (`±100/SCALE` in μ) for this
-   draw only, and never touches a stored rating.
-
-Placement ratings (<5 ranked) still feed the estimate but are shown as
-"Placing 4/5", even to organisers.
-
-### 3. Don't leak hidden ratings
-
-Ratings in placement are deliberately hidden (`rating::published`). The
-balancer may use them, but its response must not show them:
-
-- Return per-side **balance** only: predicted win % for two sides, or a
-  "spread" bar for more.
-- Don't return per-player strength, and don't return per-side `Σμ` in
-  rating units. Display ratings for published players already appear on
-  their profiles, so the UI can show those next to names if we want.
-- Say *which signal* was used per side ("8 rated, 2 by win rate, 1 new")
-  so the organiser knows how much to trust the split. Don't say which
-  player was which.
-
-### 4. API
-
-Both endpoints share one input shape. Each returns a proposal and can apply
-it in the same call.
-
-```
-POST /tournaments/:tournament_id/squads/auto-assign
-POST /matches/:match_id/sides/auto-assign
-
+```jsonc
+POST /tournaments/:id/squads/auto-assign      // and /matches/:id/sides/auto-assign
 {
-  "method": "random" | "balanced",
-  "scope": "unassigned" | "everyone",            // fill gaps vs reshuffle all
-  "squad_count": 4,                              // tournament only; else derived from squad_size
-  "locked": ["<id>", ...],                       // keep these where they are
-  "seed": 12345,                                 // optional; server picks one if absent and echoes it
-  "apply": false                                 // false = preview, true = write
+  "method": "random" | "auto_balanced",
+  "scope": "unassigned" | "everyone",   // default "unassigned"
+  "squad_count": 4,                     // tournament only; default ceil(pool / squad_size)
+  "pinned": { "<entrant_or_player_id>": 2 },  // squad index or side_id
+  "levels": { "<id>": "newer" | "stronger" }, // absent = as expected
+  "seed": 12345                          // optional; server picks one and echoes it
 }
-→ { "seed", "sides": [{ "squad" | "side_id", "member_ids": [...] }], "balance": {...}, "signals": {...} }
 ```
 
-- **Preview, then apply**: the UI calls with `apply: false` to show the
-  split, re-rolls by changing `seed`, then calls again with the same seed
-  and `apply: true`. The algorithm is deterministic, so the applied split
-  is the one that was previewed, as long as the roster hasn't changed in
-  between. If it has, the result is recomputed and returned; it isn't
-  silently different.
-- **`scope: unassigned`** (the default) only places people with no
-  squad/side and treats everyone already placed as locked. That's what you
-  want when stragglers join after the first split.
-- **Permissions**: tournament `Owner`/`Admin` (`TournamentRecord::authority`),
-  or match `Owner`/`Admin` (`caller_match_authority_role`). The same people
-  who can already assign by hand.
-- **When it's allowed**: tournament `status == "open"`, and the match is
-  `scheduled` with no score. Assigning to a ranked match is fine. The
-  ranked lock is about the `ranked` flag and score, not the roster.
-- **Labels**: the server still invents no squad labels (per 9b01d49).
-  After applying, the entries page saves `defaultSquadLabel(i)` for any
-  newly used squad, the same way it already does when the first entrant
-  lands in one. The other option is to accept an optional `labels` array in
-  the request. Recommend the client-side path, since it's what the page
-  already does.
+With `scope: unassigned`, anyone already placed is treated as pinned
+where they are.
 
-### 5. Writes
+#### Preview response (organiser only)
 
-The writes today are one item at a time. A 20-person auto-assign shouldn't
-be 20 separate transactions that can partly fail.
+```jsonc
+{
+  "seed": 12345,
+  "roster_version": "b64…",
+  "verdict": "even" | "close" | "uneven",
+  "spread": 6,                  // display points between squad averages (k sides)
+  "win_probability": 0.51,      // 2 sides only, side order as listed
+  "unsure_count": 5,
+  "sides": [{
+    "squad": 0,                 // or "side_id"
+    "average": 1550,            // display scale, rounded to 10
+    "unsure_count": 2,
+    "players": [{
+      "id": "…", "user_id": "…",
+      "signal": "rated" | "blended" | "placement" | "win_rate" | "new" | "guest",
+      "certainty": 1 | 2 | 3,
+      "estimate": 1585,         // display scale; null when signal = placement
+      "ranked_games": 7,        // null when signal = placement
+      "win_rate": { "raw": 0.66, "adjusted": 0.61, "played": 12 },  // null if no games
+      "rating_weight": 0.4,     // the strength sheet's bar
+      "level": "newer" | "stronger" | null,
+      "pinned": true
+    }]
+  }]
+}
+```
 
-- **Matches**: add `Dao::reassign_match_players_tx(match_id, &[(updated, old_side)])`.
-  It does one `TransactWriteItems` with a `Put` per player plus **one**
-  merged `headcount_delta_update` for all the side deltas. 99 players fit
-  in one transaction, which covers every real roster (same caveat as
-  `remove_match_players`). Then call `refresh_side_roster_previews` once.
-- **Tournaments**: add `Dao::set_tournament_entry_squads(tournament_id, &[(entrant_id, squad)])`.
-  It does conditional `Update`s (`attribute_exists`, entry `accepted`) in
-  transactions of up to 100, chunked. If a chunk fails partway, the
-  tournament is still `open` and every entry is still editable by hand, so
-  the endpoint can simply be run again (with `scope: everyone` and the
-  same seed it produces the same result).
-- **No new item types**: the result is ordinary `squad`/`side_id` values,
-  so standings, bracket fill (`fill_tournament_bracket_squad_side`),
-  rating, stats and the worker don't change.
+The `certainty` buckets come from `σ` (thresholds in `team_builder`), not
+from game counts, so one rule drives both the dots and the solver.
 
-### 6. UI
+#### Apply request
 
-- **Tournament entries page**: an "Auto-assign" button next to the squad
-  columns. It opens a sheet with Random / Balanced, a squad count, and
-  "only unassigned" vs "reshuffle everyone". The preview shows the squads
-  with a balance meter and a **Re-roll** button, then **Apply**. A pin icon
-  on an entrant locks them before re-rolling.
-- **Match edit page / unassigned tray**: the same sheet, minus the squad
-  count (the sides already exist). The obvious place is next to the
-  unassigned list on an intra-squad match.
+```jsonc
+PUT /tournaments/:id/squads/assignments       // and /matches/:id/sides/assignments
+{ "roster_version": "b64…",
+  "assignments": [{ "id": "<entrant_or_player_id>", "squad": 2 }] }   // or "side_id"
+→ 200 updated summary | 409 roster changed | 422 invalid (unknown id, over cap, …)
+```
 
-## Out of scope for v1 (worth noting)
+### 4. Guarding hidden ratings
 
-- **Per-round re-draft** (`Auto { by }` formation): see above. It can be
-  built on this later.
-- **Keep-together / keep-apart** (mates who want to play together, rivals
-  to split up): easy to add as constraints in the swap step later, since
-  it's just "reject a swap that breaks a pair".
-- **Positions** (goalkeepers, bowlers): we have no per-player position
-  data, so there's nothing to balance on. If it's added later, it becomes
-  a per-side quota constraint in the same swap loop.
-- **Learning from results**: checking whether "balanced" splits actually
-  produced close games. The rating history already holds the data (the
-  contributions keep `before` ratings), so this could be an analysis job
-  later.
-- **Generating sides that don't exist**: the match endpoint fills existing
-  sides. Creating sides on the fly (e.g. "split these 15 into three") is a
-  small extension, but it touches side creation, names and colours.
+The placement rule (`rating::published`) is enforced in **one** mapping
+function: when the signal is `placement`, `estimate` and `ranked_games`
+come back as `null`, and only the win-rate part is shown. The solver still
+uses the hidden `μ`.
 
-## Rough plan
+There's one residual leak: a side's `average` includes that hidden `μ`, so
+an organiser could in principle subtract out an approximate value.
+Mitigations: round averages to 10, keep the response organiser-only, and
+compute the average after the level override. I'm treating that as
+acceptable. If not, exclude placement players from the displayed average
+(it's only cosmetic, and the solver is unaffected).
 
-1. `agon_core::team_builder`: random + balanced + tests (exactness against
-   brute force for small n, invariants, determinism by seed, "balanced beats
-   random" on fixtures). **~1 day.**
-2. Strength resolution (rating → win-rate fallback → prior) as a small
-   function over `UserProfileRecord`, with a batch profile read for the
-   pool. **~½ day.**
-3. Bulk DAO writes (`reassign_match_players_tx`, `set_tournament_entry_squads`).
-   **~½ day.**
-4. Two endpoints, regenerate the schema, integration tests in `agon_tests`.
-   **~1 day.**
-5. UI sheet on the tournament entries page, then the match edit page.
-   **~1–1½ days.**
+### 5. Bulk writes (DAO)
 
-Shipping order: tournament first (it's the real pain today, where every
-entrant is assigned by hand before `start`), then matches.
+- **`Dao::reassign_match_players_tx(match_id, &[(updated, old_side)])`**:
+  one `TransactWriteItems` with a `Put` per player plus **one** merged
+  `headcount_delta_update`. It also drops `side_authority` grants for
+  anyone moved off a side (in the same transaction, replicating the
+  `SideAdmin`-revoke logic that `PATCH /matches/:id` runs per player
+  today; extract that into a shared helper so the two paths can't
+  drift). Up to 99 players fits one transaction, the same limit as
+  `remove_match_players`. Call `refresh_side_roster_previews` once
+  afterwards.
+- **`Dao::set_tournament_entry_squads(tournament_id, &[(entrant_id, squad)])`**:
+  conditional `Update`s (`attribute_exists`, `status = accepted`),
+  chunked at 100 per transaction. A failed later chunk leaves a partly
+  applied but still `open` tournament. Every entry stays editable, and
+  re-applying the same assignment is idempotent, so the endpoint simply
+  retries the remaining chunks. Fine for v1.
 
-## Decisions (2026-11-10)
+### 6. Service rules (shared by both surfaces)
 
-1. Win rate carries the estimate while rating is unreliable. Rating
-   weight ramps linearly up to 10 ranked games (see 2a).
-2. The preview shows each player's rating and/or win rate, organiser
-   only. Placement ratings show as "Placing n/5". This amends §3: per-player
-   signals are returned to organisers, but a placement `μ` never is.
-3. `squad_count` defaults to `entry_count / squad_size` and can be
-   changed with a stepper, with "Reset to default".
-4. Auto-balancing is organiser-only detail. Players see ordinary squads.
-5. No "balance by" option: the choice is just Random or Balanced, and
-   Balanced always uses the blended model in 2a. The `rating`/`win_rate`
-   variants in §2's table are internal only, not exposed in the API or UI.
+- **Auth:** tournament `Owner`/`Admin` (`caller_tournament_authority_role`)
+  or match `Owner`/`Admin` (`caller_match_authority_role`). Anyone else
+  gets 403, the same people who can assign by hand today.
+- **When:**
+  - Tournaments: `status == "open"`, `entry_audience == Players`, and a team
+    sport. Otherwise 409.
+  - Matches: `status == "scheduled"` and no confirmed or pending score.
+    Ranked is fine, since the ranked lock concerns the flag and score, not
+    the roster.
+- **Pool:**
+  - Tournaments: entries with `status == "accepted"`.
+  - Matches: players whose `occupies_slot()` is true. Pending, non-reserving
+    invitees are left out. Players with no `user_id` are guests.
+- **Caps:**
+  - Tournaments: `ceil(pool / squad_count)` per squad.
+  - Matches: each side's `max_players`.
+  - Over capacity returns 422 with a message the sheet can show.
+- **Labels:** unchanged. The server still invents no squad labels (per
+  9b01d49). After apply, the entries page saves `defaultSquadLabel(i)` for
+  any new squad, as it already does.
+- **Telemetry:** a span per call with method, pool size, sides and solver
+  time, plus a counter `team_builder_runs{method, surface, applied}`.
 
-UI design canvas (screens: entries entry point, options sheet, preview,
-strength breakdown, match two-side fill):
-https://claude.ai/artifact/AsppPerX1Afqbj2YDjBbpT
+## Work breakdown
+
+| # | Piece | Est. |
+|---|---|---|
+| 1 | `sports::win_record` + repoint `matches_played_for_sport` | ¼ d |
+| 2 | `team_builder::strength` + unit tests (ramp, shrink, group mean, levels, placement → hidden) | 1 d |
+| 3 | `team_builder::solver` + unit tests (invariants, determinism, exact vs brute force, unknowns spread, pins, caps, "balanced beats random" on fixtures) | 1½ d |
+| 4 | DAO bulk writes, shared side-admin revoke helper, `roster_version` hash | 1 d |
+| 5 | Four endpoints, request/response types, mapping (incl. placement guard), validation, telemetry, `make generate-schema` | 1½ d |
+| 6 | `agon_tests` integration: preview/apply on both surfaces, 403, 409 stale `roster_version`, 409 wrong status, 422 over cap, placement fields null | 1 d |
+| | **Total backend** | **~6 days** |
+
+Pieces 1–3 are pure and can land on their own in a first PR with no API
+change. Then 4–6. Ship tournaments before matches if we want to split it
+further: the match side adds the side-admin and roster-preview details.
+
+The frontend (entries page sheet, preview, strength sheet, match tray)
+comes after that, on the generated client. Roughly another 3–4 days.
+
+## Open items
+
+- **Match board win-% range** ("could be 44–58%"): the drift band was
+  dropped from tournaments. Should the range go from the match board too?
+  (Leaning yes, for consistency.)
+- **Initial constants** (`C_WR`, `WR_SIGMA_FLOOR`, certainty thresholds):
+  I'll propose values in the first PR with a fixture table showing what
+  they produce, for a gut check.
+
+## Later (not v1)
+
+- Per-round re-draft (`Auto { by }` formation) on top of `solver`.
+- Keep-together / keep-apart pairs: a "reject this swap" constraint in the
+  hill-climb.
+- Positions (GK, bowlers): needs position data first. It would then be a
+  per-side quota constraint.
+- Calibration: replay rated history to check that "even" splits produced
+  close games, and tune the constants.
+- Creating new match sides on the fly ("split these 15 into three").

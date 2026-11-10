@@ -222,7 +222,6 @@ POST /matches/:match_id/sides/auto-assign
 
 {
   "method": "random" | "balanced",
-  "balance_by": "auto" | "rating" | "win_rate",   // balanced only
   "scope": "unassigned" | "everyone",            // fill gaps vs reshuffle all
   "squad_count": 4,                              // tournament only; else derived from squad_size
   "locked": ["<id>", ...],                       // keep these where they are
@@ -331,6 +330,9 @@ entrant is assigned by hand before `start`), then matches.
 3. `squad_count` defaults to `entry_count / squad_size` and can be
    changed with a stepper, with "Reset to default".
 4. Auto-balancing is organiser-only detail. Players see ordinary squads.
+5. No "balance by" option: the choice is just Random or Balanced, and
+   Balanced always uses the blended model in 2a. The `rating`/`win_rate`
+   variants in §2's table are internal only, not exposed in the API or UI.
 
 UI design canvas (screens: entries entry point, options sheet, preview,
 strength breakdown, match two-side fill):

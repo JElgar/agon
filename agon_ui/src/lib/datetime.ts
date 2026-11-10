@@ -96,6 +96,20 @@ export function minutesUntil(iso: string): number {
   return Math.round((new Date(iso).getTime() - Date.now()) / 60000)
 }
 
+/** How far into the past a start time can be before the server rejects it
+ *  outright (`agon_service`'s `MAX_SCHEDULED_START_IN_PAST`) — matches,
+ *  tournaments and manually-added tournament matches all share this limit. */
+export const MAX_START_HOURS_IN_PAST = 24
+
+/** Whether a datetime-local value (`"YYYY-MM-DDTHH:mm"`) is further in the
+ *  past than the server will accept for a match/tournament that isn't being
+ *  created with a result yet. */
+export function isTooFarInPast(value: string): boolean {
+  const ts = new Date(value).getTime()
+  if (Number.isNaN(ts)) return false
+  return ts <= Date.now() - MAX_START_HOURS_IN_PAST * 60 * 60 * 1000
+}
+
 /** How soon a scheduled match's kickoff counts as "starting soon" for the
  *  amber countdown tile on the "Agon redesign" canvas (`Tiles.dc.html`'s
  *  "Scheduled variant B") — inside an hour of kickoff. */

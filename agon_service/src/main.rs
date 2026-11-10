@@ -1016,9 +1016,10 @@ struct CreateMatchInput {
     name: String,
     description: String,
     match_type: MatchType,
-    /// When the match starts / started. Must be in the future when no `score` is
-    /// supplied (an upcoming, Scheduled match) and in the past when a `score` is
-    /// supplied (an already-played, Completed match).
+    /// When the match starts / started. When no `score` is supplied (an
+    /// upcoming, Scheduled match) this can be at most 24 hours in the past;
+    /// when a `score` is supplied (an already-played, Completed match) it
+    /// must be in the past.
     starts_at: chrono::DateTime<chrono::Utc>,
     location: Option<Location>,
     /// The opposing sides. At least two are required.
@@ -2468,6 +2469,13 @@ enum UnregisterDeviceResponse {
 /// limits how long the device's own QR/code stays displayable, which the
 /// device enforces itself by giving up and generating a fresh one.
 const DEVICE_PAIRING_CODE_TTL: chrono::Duration = chrono::Duration::minutes(10);
+
+/// How far into the past a match/tournament's start time is allowed to be
+/// when it isn't being created with a result (i.e. it's still "Scheduled",
+/// not "Completed") — covers someone logging a game shortly after it
+/// actually started instead of waiting for the no-score/has-score split to
+/// force it into the future. Older than this and it's rejected outright.
+const MAX_SCHEDULED_START_IN_PAST: chrono::Duration = chrono::Duration::hours(24);
 
 #[derive(ApiResponse)]
 enum ConfirmDevicePairingResponse {
@@ -4373,9 +4381,9 @@ impl Api {
                     "a completed match's time must be in the past".to_string(),
                 )));
             }
-        } else if input.starts_at <= now_ts {
+        } else if input.starts_at <= now_ts - MAX_SCHEDULED_START_IN_PAST {
             return Ok(CreateMatchResponse::ValidationError(PlainText(
-                "a scheduled match's time must be in the future".to_string(),
+                "a scheduled match's time can't be more than 24 hours in the past".to_string(),
             )));
         }
 
@@ -6113,9 +6121,9 @@ impl Api {
                 ),
             )));
         }
-        if input.first_round_starts_at <= chrono::Utc::now() {
+        if input.first_round_starts_at <= chrono::Utc::now() - MAX_SCHEDULED_START_IN_PAST {
             return Ok(CreateTournamentResponse::ValidationError(PlainText(
-                "first_round_starts_at must be in the future".to_string(),
+                "first_round_starts_at can't be more than 24 hours in the past".to_string(),
             )));
         }
         if input.min_teams < 2 {

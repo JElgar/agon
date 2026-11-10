@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { DateTimePicker } from '@/components/ui/date-time-picker'
 import { CARD, FormSection } from '@/components/agon/logmatch/parts'
+import { MAX_START_HOURS_IN_PAST, isTooFarInPast } from '@/lib/datetime'
 import { sideDisplayName } from '@/lib/members'
 import { sportLabel } from '@/lib/sports'
 import {
@@ -248,7 +249,13 @@ function AddTournamentMatchSection({
     ? squads.map((s) => ({ value: String(s), label: tournament.squad_labels[String(s)]?.name ?? `Squad ${s + 1}` }))
     : accepted.map((e) => ({ value: e.entrant_id, label: entrantDisplays.get(e.entrant_id)?.name ?? e.entrant_id }))
 
-  const canSave = name.trim() !== '' && !!startsAt && !!sideA && !!sideB && sideA !== sideB
+  const timeError = !startsAt
+    ? null
+    : isTooFarInPast(startsAt)
+      ? `A match can't start more than ${MAX_START_HOURS_IN_PAST} hours in the past`
+      : null
+
+  const canSave = name.trim() !== '' && !!startsAt && !timeError && !!sideA && !!sideB && sideA !== sideB
 
   const addMatchMutation = useMutation({
     mutationFn: async () => {
@@ -344,6 +351,7 @@ function AddTournamentMatchSection({
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="add-match-starts-at">Starts</Label>
             <DateTimePicker id="add-match-starts-at" value={startsAt} onChange={setStartsAt} />
+            {timeError && <p className="text-xs text-destructive">{timeError}</p>}
           </div>
           {addMatchMutation.isError && (
             <p className="text-sm text-destructive">{addMatchMutation.error.message}</p>

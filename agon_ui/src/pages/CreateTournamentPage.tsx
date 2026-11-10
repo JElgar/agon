@@ -13,6 +13,7 @@ import { LocationField, type LocationValue } from '@/components/agon/LocationFie
 import { CARD, FormSection, Segmented } from '@/components/agon/logmatch/parts'
 import { FormatPresets } from '@/components/agon/logmatch/FormatPresets'
 import { formatDefaultHint } from '@/lib/logMatch'
+import { MAX_START_HOURS_IN_PAST, isTooFarInPast } from '@/lib/datetime'
 import type { MatchFormat } from '@/lib/matchFormat'
 import type { MatchType } from '@/lib/sports'
 
@@ -89,10 +90,17 @@ export function CreateTournamentPage() {
   // pick an unsupported combination and find out from a 400.
   const isTeamless = entryAudience === 'players'
 
+  const timeError = !startsAt
+    ? null
+    : isTooFarInPast(startsAt)
+      ? `A tournament can't start more than ${MAX_START_HOURS_IN_PAST} hours in the past`
+      : null
+
   const canSave =
     !!sport &&
     name.trim() !== '' &&
     !!startsAt &&
+    !timeError &&
     Number(minTeams) >= 2 &&
     (!isTeamless || squadSize.trim() !== '') &&
     (!isLeague || generationMode !== 'round_robin' || Number(roundRobinTimes) >= 1)
@@ -265,10 +273,14 @@ export function CreateTournamentPage() {
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="first-round-starts-at">Starts around</Label>
           <DateTimePicker id="first-round-starts-at" value={startsAt} onChange={setStartsAt} />
-          <p className="text-xs text-muted-foreground">
-            Every match starts here for now — adjust each one's actual time from its match page
-            as you go.
-          </p>
+          {timeError ? (
+            <p className="text-xs text-destructive">{timeError}</p>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Every match starts here for now — adjust each one's actual time from its match page
+              as you go.
+            </p>
+          )}
         </div>
       </FormSection>
 

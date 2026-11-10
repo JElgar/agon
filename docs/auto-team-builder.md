@@ -153,6 +153,50 @@ so the algorithm only needs to understand one thing.
   (`matches_rated < PLACEMENT_MATCHES`). Their number isn't shown yet,
   but it's still the best guess we have.
 
+**Superseded by the uncertainty model below**, which replaces the
+hard rating/win-rate switch in `auto`.
+
+### 2a. Handling uncertainty (decided 2026-11-10)
+
+Every player comes out as an estimate plus a measure of how sure we are
+(`μ ± σ`). Each step below deals with one source of thin evidence.
+
+1. **Blend by ranked games.** With `r = matches_rated` on this ladder,
+   the weight on rating is `w = min(r, 10) / 10`. Then
+   `μ = w·μ_rating + (1−w)·μ_winrate` and
+   `σ² = w·σ_rating² + (1−w)·σ_winrate²`. Win rate dominates early,
+   and from 10 ranked games on the estimate is rating only. The cut-over
+   is the `RATING_TRUST_MATCHES = 10` constant.
+2. **Shrink win rate.** Use
+   `p = (wins + ½·draws + 3) / (played + 6)`: six phantom games at 50%.
+   Then map onto the μ scale as `μ = μ_group + c·logit(p)`, where `c` is
+   damped for team sports (teammates win games too). `σ_winrate` starts at
+   `INITIAL_SIGMA` and narrows with `played`, but never below a floor
+   that's wider than a settled rating.
+3. **No history → this group's average.** A new account or a guest gets
+   the mean `μ` of the *known* players in this pool, with
+   `σ = INITIAL_SIGMA`. A stranger at Thursday 5s is likely near
+   Thursday 5s level, not near the global default.
+4. **Balance on expected strength, then spread the risk.** Uncertainty
+   doesn't move a side's *expected* strength, but it does make the outcome
+   less predictable. The objective is lexicographic:
+   1. Minimise the `Σμ` gap (for 2 sides, `|P(win) − 0.5|`).
+   2. Among near-ties (within ε), minimise the spread of `Σσ²`
+      across sides.
+
+   That way no side ends up holding all the unknowns. If the new player
+   turns out to be brilliant, the damage is contained.
+5. **Show it honestly.** Each player gets three certainty dots, the balance
+   card shows a shaded band for how far sides could drift, and two-side
+   matches show a range ("51%, could be 44–58%").
+6. **Organiser nudge.** For any player, but mainly guests and new
+   accounts, the organiser can pick Newer / As estimated / Stronger. That
+   shifts `μ` by about ±100 display points (`±100/SCALE` in μ) for this
+   draw only, and never touches a stored rating.
+
+Placement ratings (<5 ranked) still feed the estimate but are shown as
+"Placing 4/5", even to organisers.
+
 ### 3. Don't leak hidden ratings
 
 Ratings in placement are deliberately hidden (`rating::published`). The
@@ -277,15 +321,17 @@ be 20 separate transactions that can partly fail.
 Shipping order: tournament first (it's the real pain today, where every
 entrant is assigned by hand before `start`), then matches.
 
-## Open questions
+## Decisions (2026-11-10)
 
-1. Should `auto` blend win rate in for *rated* players who are still in
-   placement, or trust `μ` once there's at least one rated match?
-   (Proposal: trust `μ`; its `σ` already says how unsure it is.)
-2. Should the preview show published display ratings beside names, or keep
-   it to the balance meter only?
-3. For a teamless tournament, should `squad_count` default to
-   `entry_count / squad_size` (as `snake_draft`'s doc assumes), or should
-   the organiser always pick it?
-4. Should players be able to see that their squads were auto-balanced
-   (e.g. a badge on the tournament), or is that organiser-only detail?
+1. Win rate carries the estimate while rating is unreliable. Rating
+   weight ramps linearly up to 10 ranked games (see 2a).
+2. The preview shows each player's rating and/or win rate, organiser
+   only. Placement ratings show as "Placing n/5". This amends §3: per-player
+   signals are returned to organisers, but a placement `μ` never is.
+3. `squad_count` defaults to `entry_count / squad_size` and can be
+   changed with a stepper, with "Reset to default".
+4. Auto-balancing is organiser-only detail. Players see ordinary squads.
+
+UI design canvas (screens: entries entry point, options sheet, preview,
+strength breakdown, match two-side fill):
+https://claude.ai/artifact/AsppPerX1Afqbj2YDjBbpT

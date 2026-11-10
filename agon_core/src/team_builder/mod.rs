@@ -28,5 +28,16 @@
 pub mod solver;
 pub mod strength;
 
-pub use solver::{Balance, BuildError, Method, PoolSlot, Verdict, balance, build};
-pub use strength::{Estimate, History, Level, RatingInput, Signal, WinRateInfo, estimate_pool};
+pub use solver::{Balance, BuildError, Method, PoolSlot, Verdict, WinProbability, balance, build};
+pub use strength::{
+    Estimate, History, Level, RatingInput, Signal, WinRateInfo, WinRecord, estimate_pool,
+};
+
+/// A fresh seed for a preview that didn't send one. The one impure helper
+/// in this module, kept beside it so callers don't each pick their own
+/// randomness. Kept below 2³¹ so it round-trips through JSON and every
+/// generated client's `int32` without overflow.
+#[must_use]
+pub fn new_seed() -> u32 {
+    rand::random::<u32>() >> 1
+}

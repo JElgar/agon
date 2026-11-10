@@ -962,6 +962,54 @@ impl Dao {
         self.send_transact_items(items).await
     }
 
+    /// Move many existing players between sides (or to/from unassigned) in
+    /// one transaction — the apply step of auto-assign. Same per-player
+    /// rules as [`Self::reassign_match_player_tx`] (only players who occupy
+    /// a slot move a side's `player_count`; `total_player_count` never
+    /// changes), with every side delta merged into **one** `Update` of the
+    /// match item. Capped at 99 players (one transaction plus the counter
+    /// update), the same limit `remove_match_players` carries; a caller with
+    /// more gets `Conflict` rather than a partial apply. A no-op for an empty
+    /// `moves`. The caller refreshes roster previews and side-admin grants.
+    #[tracing::instrument(skip(self, moves), fields(count = moves.len()))]
+    pub async fn reassign_match_players_tx(
+        &self,
+        match_id: &str,
+        moves: &[(MatchPlayerRecord, Option<String>)],
+    ) -> DaoResult<()> {
+        if moves.is_empty() {
+            return Ok(());
+        }
+        if moves.len() > 99 {
+            return Err(DaoError::Conflict(format!(
+                "{} players is more than one transaction can move",
+                moves.len()
+            )));
+        }
+        let mut items = Vec::with_capacity(moves.len() + 1);
+        let mut side_deltas = Vec::new();
+        for (updated, old_side_id) in moves {
+            let put = Put::builder()
+                .table_name(self.table())
+                .set_item(Some(self.match_player_item(match_id, updated)?))
+                .build()
+                .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+            items.push(TransactWriteItem::builder().put(put).build());
+            if updated.occupies_slot() {
+                if let Some(old) = old_side_id {
+                    side_deltas.push((old.clone(), -1));
+                }
+                if let Some(new) = &updated.side_id {
+                    side_deltas.push((new.clone(), 1));
+                }
+            }
+        }
+        if let Some(update) = headcount_delta_update(self.table(), match_id, 0, &side_deltas)? {
+            items.push(TransactWriteItem::builder().update(update).build());
+        }
+        self.send_transact_items(items).await
+    }
+
     /// Remove players from a match's roster entirely (not just unassign their
     /// side — see `reassign_match_player_tx` for that), atomically
     /// decrementing `total_player_count`/each affected side's `player_count`

@@ -109,6 +109,10 @@ mod share;
 // comment for why this can't be a typed `#[oai(...)]` endpoint.
 mod qr;
 
+// Auto team builder: preview/apply a split of a pool into squads or sides.
+// Its own `OpenApi` type, like `admin::AdminApi`.
+mod team_builder;
+
 #[derive(SecurityScheme)]
 #[oai(
     ty = "bearer",
@@ -13558,7 +13562,12 @@ async fn main() {
     //     this service's own `/ping`.
     // See OpenAPI 3's Server Object: server URLs may be relative to the
     // document's own serving location.
-    let api_service = OpenApiService::new((Api, admin::AdminApi), "Agon API", "1.0").server(".");
+    let api_service = OpenApiService::new(
+        (Api, admin::AdminApi, team_builder::TeamBuilderApi),
+        "Agon API",
+        "1.0",
+    )
+    .server(".");
 
     match args.command {
         Commands::RunServer { url: _ } => {

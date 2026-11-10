@@ -312,6 +312,41 @@ impl Dao {
         }
     }
 
+    /// Set many entries' squads at once — the apply step of auto-assign.
+    /// Conditional `Update`s (entry exists and is `accepted`), up to 100 per
+    /// `TransactWriteItems`, chunked beyond that. Each chunk is atomic; a
+    /// failed later chunk leaves earlier ones applied, which is safe to
+    /// retry: setting a squad is idempotent, and the tournament is still
+    /// `"open"` and editable entry by entry. `Conflict` if any entry in a
+    /// chunk is missing or no longer accepted.
+    #[tracing::instrument(skip(self, assignments), fields(count = assignments.len()))]
+    pub async fn set_tournament_entry_squads(
+        &self,
+        tournament_id: &str,
+        assignments: &[(String, u32)],
+    ) -> DaoResult<()> {
+        for chunk in assignments.chunks(100) {
+            let mut items = Vec::with_capacity(chunk.len());
+            for (entrant_id, squad) in chunk {
+                let update = Update::builder()
+                    .table_name(self.table())
+                    .key(ATTR_PK, s(Pk::Tournament(tournament_id.into()).to_string()))
+                    .key(ATTR_SK, s(Sk::Entry(entrant_id.clone()).to_string()))
+                    .update_expression("SET squad = :squad")
+                    .condition_expression("attribute_exists(#pk) AND #status = :accepted")
+                    .expression_attribute_names("#pk", ATTR_PK)
+                    .expression_attribute_names("#status", "status")
+                    .expression_attribute_values(":squad", AttributeValue::N(squad.to_string()))
+                    .expression_attribute_values(":accepted", s("accepted".to_string()))
+                    .build()
+                    .map_err(|e| DaoError::Dynamo(e.to_string()))?;
+                items.push(TransactWriteItem::builder().update(update).build());
+            }
+            self.send_transact_items(items).await?;
+        }
+        Ok(())
+    }
+
     /// Assign (or reassign) an entrant's fixed squad, for a teamless
     /// tournament under manual `team_formation`. No idempotency guard
     /// needed — unlike a status transition, the organiser can change their

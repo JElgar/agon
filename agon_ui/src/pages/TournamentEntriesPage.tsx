@@ -13,7 +13,7 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from '@dnd-kit/core'
-import { ChevronLeft, GripVertical, Plus, X } from 'lucide-react'
+import { ChevronLeft, GripVertical, Plus, Shuffle, X } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
@@ -27,6 +27,7 @@ import {
   ComboboxList,
 } from '@/components/ui/combobox'
 import { Avatar } from '@/components/agon/Avatar'
+import { AutoAssignSheet } from '@/components/agon/AutoAssignSheet'
 import { TeamPicker } from '@/components/agon/TeamPicker'
 import { CARD, ColourSwatches, FormSection } from '@/components/agon/logmatch/parts'
 import { tournamentEntryAudienceLabel } from '@/lib/tournaments'
@@ -247,6 +248,7 @@ export function TournamentEntriesPage() {
 
           {tournament.entry_audience === 'players' ? (
             <SquadBoard
+              tournament={tournament}
               entries={entries}
               entrantDisplays={entrantDisplays}
               squadLabels={tournament.squad_labels}
@@ -380,6 +382,7 @@ const measuring = { droppable: { strategy: MeasuringStrategy.BeforeDragging } }
  * squads only start existing on the server once an entrant lands in one.
  */
 function SquadBoard({
+  tournament,
   entries,
   entrantDisplays,
   squadLabels,
@@ -387,6 +390,7 @@ function SquadBoard({
   onRemove,
   onSetSquadLabel,
 }: {
+  tournament: Tournament
   entries: TournamentEntry[]
   entrantDisplays: Map<string, EntrantDisplay>
   squadLabels: Record<string, SquadLabel>
@@ -430,8 +434,34 @@ function SquadBoard({
 
   const activeEntry = activeId ? entriesById.get(activeId) : undefined
 
+  const [autoAssignOpen, setAutoAssignOpen] = useState(false)
+  const accepted = entries.filter((e) => e.status === 'accepted')
+  const canAutoAssign = tournament.status === 'open' && accepted.length >= 2
+
   return (
     <FormSection title="Squads">
+      {canAutoAssign && (
+        <>
+          <Button className="h-11" onClick={() => setAutoAssignOpen(true)}>
+            <Shuffle className="size-4" />
+            Auto-assign
+          </Button>
+          <AutoAssignSheet
+            open={autoAssignOpen}
+            onOpenChange={setAutoAssignOpen}
+            displays={entrantDisplays}
+            target={{
+              kind: 'tournament',
+              tournamentId: tournament.id,
+              poolSize: accepted.length,
+              unassignedCount: accepted.filter((e) => e.squad == null).length,
+              squadSize: tournament.squad_size ?? 2,
+              squadLabels,
+              subtitle: tournament.name,
+            }}
+          />
+        </>
+      )}
       <p className="px-1 text-xs text-muted-foreground">
         Every player needs a squad before the tournament can start — squad-mates play as one
         team. Drag a player into a squad, or add another squad if you need more.

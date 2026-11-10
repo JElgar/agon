@@ -12,7 +12,7 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from '@dnd-kit/core'
-import { GripVertical, X } from 'lucide-react'
+import { GripVertical, Shuffle, X } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
@@ -20,6 +20,8 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Avatar } from './Avatar'
 import { memberAvatarUrl, memberName, playerId, sideDisplayName } from '@/lib/members'
+import { resolveSideColour } from '@/lib/sideColours'
+import { AutoAssignSheet, type PoolDisplay } from './AutoAssignSheet'
 
 /** "Alice", "Alice and Bob", or "Alice, Bob and Charlie" — for the removal
  *  confirmation's "you're removing …" sentence. */
@@ -177,11 +179,57 @@ export function MatchRosterEditor({
 
   const activePlayer = activeId ? playersById.get(activeId) : undefined
 
+  // Auto-assign works on the saved roster, so it's offered only while there
+  // are no unsaved drags/removals to lose.
+  const [autoAssignOpen, setAutoAssignOpen] = useState(false)
+  const canAutoAssign = match.status === 'scheduled' && match.sides.length >= 2 && match.players.length >= 2
+  const displays = useMemo(
+    () =>
+      new Map<string, PoolDisplay>(
+        match.players.map((p) => [playerId(p), { name: memberName(p.member), imageUrl: memberAvatarUrl(p.member) }]),
+      ),
+    [match.players],
+  )
+
   return (
     <div className="flex flex-col gap-3 rounded-xl border bg-card p-4">
       <p className="text-xs text-muted-foreground">
         Drag a player to move them to another side, or remove them from the match.
       </p>
+
+      {canAutoAssign && (
+        <>
+          <Button
+            variant="outline"
+            size="sm"
+            className="self-start"
+            disabled={dirty}
+            title={dirty ? 'Save or cancel your changes first' : undefined}
+            onClick={() => setAutoAssignOpen(true)}
+          >
+            <Shuffle className="size-4" />
+            Auto-assign sides
+          </Button>
+          <AutoAssignSheet
+            open={autoAssignOpen}
+            onOpenChange={setAutoAssignOpen}
+            displays={displays}
+            onApplied={onDone}
+            target={{
+              kind: 'match',
+              matchId: match.id,
+              poolSize: match.players.length,
+              unassignedCount: match.players.filter((p) => !p.side_id).length,
+              sides: match.sides.map((side) => ({
+                id: side.id,
+                name: sideDisplayName(side) ?? 'Side',
+                colour: resolveSideColour(side),
+              })),
+              subtitle: match.name,
+            }}
+          />
+        </>
+      )}
 
       <DndContext
         sensors={sensors}

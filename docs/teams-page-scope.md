@@ -129,6 +129,36 @@ Lifetime stats can't answer "Marcus's goals *for Hackney Wick*". Proposal:
 - **Season** needs a definition. Calendar year? A per-team season start date?
   Open question, see below.
 
+## Leagues
+
+Leagues already exist: tournaments with `format: league`,
+`entry_audience: teams`, `GET /tournaments/{id}/standings` (P/W/D/L/points)
+and `GET /tournaments/{id}/matches` (matchday per match). Generated matches
+also carry `Match.tournament`. So this isn't a choice between building
+leagues with teams or later. Build the team page first and treat a league as
+a **filter on it**:
+
+- **Competitions card** on the Overview: each tournament the team is entered
+  in, with its current position or round.
+- **Team-in-a-league view**: the standings with our row highlighted, position
+  by matchday, remaining fixtures, and our top players in that league only.
+- **Leaderboard scope** gains "this league" alongside "all for this team" and
+  "career".
+- **"Season" = a league.** This answers the open question below without
+  inventing a season concept.
+
+Gaps:
+
+- **No team → tournaments lookup.** Entries live at
+  `TOURNAMENT#<id>` / `ENTRY#<team>`. Add a reverse `TEAM#<team>` /
+  `TOURNAMENT#<id>` edge item, written in the same transaction as the entry.
+  Or, for a first cut, derive it from the `tournament` field on the team's
+  matches.
+- **Per-league player stats.** Use the same aggregation as A, keyed
+  additionally by tournament id when the match has one.
+- **Position by matchday.** Replay standings over the confirmed matches in
+  round order, client-side. That's fine at league sizes.
+
 ## Suggested phasing
 
 1. **Discoverability.** Ships independently, no backend. Put Teams on mobile:

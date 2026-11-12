@@ -168,6 +168,25 @@ kept in separate counters (external vs in-house), so the leaderboard filter
 is a choice of counter, not a re-query. Partnerships need pairwise counts. Compute them client-side over the in-house match list
 first. Store them only if they prove popular.
 
+## Friendlies: two kinds
+
+Matches outside any league or cup come in two kinds. Each gets its own box in
+the team's Competitions list, after any leagues and cups. There are at most 3
+boxes, and a friendly box only appears if the team has played that kind of
+game.
+
+- **Friendlies (vs other teams).** Results matter. The page shows the win
+  rate (W–D–L), the match history, and a leaderboard (the Leaderboard's
+  Counting dropdown gains a "Friendlies" option).
+- **Squad games (in-house).** Both sides are this team, so the sides mean
+  nothing: no Bibs vs Non-bibs. Keep it simple:
+  - games, goals, and goals per game
+  - top contributors (most goals, most assists, most games)
+  - match history with scores and scorers; each row opens the match
+
+Both come from the team's matches that have no `tournament`, split by whether
+the other side is this team. A first cut needs no new backend.
+
 ## Leagues
 
 Leagues already exist: tournaments with `format: league`,

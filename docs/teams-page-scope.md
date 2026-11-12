@@ -284,6 +284,20 @@ Not in v1. Parked here so they aren't lost.
   model says which side is at home today. It would need a home side on
   matches, or a home ground on teams to compare against the match location.
 
+- **More top-player categories.** v1 uses the same fixed three tiles
+  everywhere, chosen by sport:
+  - Football: Top scorer, Most assists, Ever-present.
+  - Cricket: Most runs, Most wickets, Ever-present.
+
+  Later, the third slot could rotate, or be picked from:
+  - Best win rate (5+ apps)
+  - In form (most G+A in the last 5)
+  - Hat-tricks
+
+  All three come from existing StatContribution data (`played`, `won` and
+  the per-match counters). Clean sheets would need positions or a keeper
+  flag first. Decided 12 Nov.
+
 ## Running the prototype
 
 ```bash

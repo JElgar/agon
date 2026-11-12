@@ -116,8 +116,17 @@ Lifetime stats can't answer "Marcus's goals *for Hackney Wick*". Proposal:
 
 - `Team.member_count` and `TeamListItem.member_count` / `my_role`. These fix
   the "18+" count and the list row the redesign wanted.
-- `Team.sports`, either derived from `TEAMSTATS#*` or set explicitly. This
-  drives the pills and the switcher.
+- **`Team.sports: Vec<MatchType>`**, set explicitly. Teams have no sport
+  today: create takes logo, name and invitees, and edit takes logo and name.
+  - Chosen in **Create a team** ("Sports you play"; the first one picked is
+    the default).
+  - Edited in a new **Team settings** page, which replaces the Edit dialog.
+    Settings covers profile, sports, joining (invite link and a team-wide
+    "members can join matches" default), members & roles, and the danger
+    zone (transfer, delete).
+  - It drives the header pills, the sport switcher, and New match's sport
+    step. With one sport, that step is skipped.
+  - Backfill existing teams from the sports in their match history.
 - **Movement arrows** need the previous ranking: snapshot rank on each
   reconcile, or diff against the leaderboard as of the previous match.
   This is a nice-to-have. Cut it first.

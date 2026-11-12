@@ -42,9 +42,11 @@ role or member count, because `TeamListItem` doesn't carry them.
 
 ## What the prototype proposes
 
-The page gets a header, then an always-visible **form strip**, then tabs:
-**Overview · Leaderboard · Matches**. Teams that play more than one
-sport also get a **sport switcher**, which scopes every section. A cricket
+The page gets a header, then a **form strip**, then one scrolling overview with
+**no tabs** (decided 12 Nov). The leaderboard opens from "See all ›" on its
+card, and the full match list from "See all N matches ›" on the record
+card. Teams that play more than one sport also get a **sport switcher**,
+which scopes every section. A cricket
 record and a football record don't add up into anything meaningful.
 
 1. **Header.** Adds sport pills and "since" (the team's created date). The
@@ -75,7 +77,15 @@ record and a football record don't add up into anything meaningful.
    - **Period toggle.** *This season* or *All time*.
    - **Guardrails.** Rate metrics only rank players with 5+ appearances.
      The Rating board leaves out players still in placements and says so.
-5. **Matches.** Today's list, unchanged in substance.
+5. **Matches page** (from "See all matches" on the record card). It has a
+   back arrow, the sport pills, and a SHOWING filter: All matches, League,
+   Cup, Friendlies, Squad games. Below the filter, the record card follows
+   the filter. Squad games switch it to Games / Goals / Goals per game,
+   since they have no W/D/L. Then Upcoming (with an RSVP state) and Results
+   grouped by month. Each row has a type tag and opens the standard match
+   page. The overview's record card is labelled "RECORD · League · Cup ·
+   Friendlies": every match against another team, with squad games left
+   out.
 6. **Squad is not a tab.** It's its own page, opened from the member count in
    the header (anyone) or Team settings → Members & roles. It has search,
    groups Owner / Admins / Members / Invited, and today's role and remove
@@ -151,7 +161,7 @@ team; *in-house* if every side is this team.
 | Team record, form, streaks, win rate | ✓ | ✗ (the team would get a W **and** an L, so win rate drifts to 50%) |
 | Goals/runs for and against, clean sheets, biggest win | ✓ | ✗ (every goal counts both for and against) |
 | Player leaderboard | ✓ | ✓, on by default, with a filter: All · vs other teams · In-house |
-| Squad games page: totals, top contributors, match history (no sides) | n/a | ✓ |
+| Squad games page: totals, next game, leaderboard preview, match history | n/a | ✓ |
 
 A team with no external games lists Squad games first in its Competitions
 list. There is no side-name tally and no partnerships (both removed 12 Nov).
@@ -181,8 +191,14 @@ game.
 - **Squad games (in-house).** Both sides are this team, so the sides mean
   nothing: no Bibs vs Non-bibs. Keep it simple:
   - games, goals, and goals per game
-  - top contributors (most goals, most assists, most games)
-  - match history with scores and scorers; each row opens the match
+  - the next squad game, with "I'm in"
+  - a leaderboard preview (G / A, top 3), the same as Friendlies
+  - match history: a date tile, "Lights vs Darks", the player count and the
+    score; each row opens the match
+
+Both pages have a SHOWING dropdown (this year, past years, All time). It
+defaults to the current year, so the stats reset each January without
+deleting anything.
 
 Both come from the team's matches that have no `tournament`, split by whether
 the other side is this team. A first cut needs no new backend.

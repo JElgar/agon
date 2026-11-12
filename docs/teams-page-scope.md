@@ -240,6 +240,19 @@ Gaps:
    the feed: no "Your teams" row and no "need N more" nudges. Fixture
    call-ups live on the team page's *Next up* card. Show role and member
    count in the list once C lands.
+
+   The nav becomes **Feed · Teams · ＋ · Matches · Profile**. There's no
+   Leagues tab: a league is reached from its team's Competitions card.
+   Matches is today's Browse matches page, so the ＋ stays centred. The
+   Teams tab is today's `TeamsPage`, grown into:
+   - pending invitations, with Join / Decline
+   - your teams as cards: role, last-5 form, and the next game with your
+     RSVP
+   - teams you follow
+   - Create and find-a-team in the header
+
+   New match from a team keeps "Already played" alongside "Upcoming"
+   (decided 12 Nov).
 2. **Leaderboard on lifetime stats.** No new backend. Fetch each member's
    `GET /users/{id}` (squad-sized, so N requests is acceptable for a first
    cut) and rank by career stats. That's the "Career" toggle. It validates

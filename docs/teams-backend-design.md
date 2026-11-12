@@ -65,12 +65,18 @@ kind(match, tournament) =
 
 - The kind is **match-level**. It's the same for every team in the match,
   so it can live on the match and in the search doc.
+- **The setup sets it explicitly (decided 12 Nov).** The New match flow's
+  Opposition choice writes `kind`:
+  - Another team or One-off → `friendly`
+  - In-house → `squad`
+  - Tournament generation → `league` or `cup`
+
+  The rules above are only the fallback, for matches written before the
+  field existed and for the backfill. A team against an ad-hoc side counts
+  as a friendly.
 - Store it as `MatchRecord.kind`. Recompute it in the same write paths that
   set sides or the tournament (create, edit sides, tournament generation).
   The worker re-derives it defensively, so a stale value self-heals.
-- **Decision needed:** a team against an *ad-hoc* side (no team) counts as a
-  friendly in this proposal. The alternative is to leave it out of the team
-  record.
 
 ## B. Team-scoped stats aggregation (the hard part)
 
@@ -158,10 +164,10 @@ cricket runs, `Simple`/`Sets` points), plus optional extras: football
 the `SportRecord` trait and its three modelled sports and two generic score
 shapes.
 
-**Max-type figures are not sums.** "Biggest win" and cricket "highest total"
-have the same one-way-ratchet problem as personal bests: a downward
-re-score can't lower the max without rescanning every match. Either leave
-them out of v1 or accept the ratchet, as `update_best_figures` does.
+**Max-type figures are left out of v1 (decided 12 Nov).** "Biggest win" or
+cricket "highest total" can only ratchet up. If a 7–0 is later corrected to
+3–0, the stored "biggest win" stays 7–0, because finding the next-biggest
+means rereading every match. No designed screen shows one, so v1 has none.
 
 ### Where it runs
 
@@ -340,13 +346,52 @@ and it's how we add a new bucket later.
    and top performers.
 5. Cached league position. Polish and drop the client approximations.
 
-## Open questions
+## Ranked games
 
-- A team vs an ad-hoc side (no team): friendly, or left out of the team
-  record?
-- Year boundary: tournament timezone → match location → UTC. Is that order
-  OK?
-- Should "biggest win" and "highest total" (max-type figures) ship in v1
-  with the ratchet caveat, or wait?
-- Privacy: the leaderboard and record are public today, like the rest of the
-  team page. Is that OK, or should some of it be members-only?
+Ranked is a **separate axis** from competition kind, and it already exists.
+
+- `MatchRecord.ranked: bool` is chosen in the match setup's "How it counts"
+  control, which today reads **Friendly | Ranked**.
+- A ranked match moves each player's **per-sport rating** (Weng-Lin) once
+  the score is agreed.
+- **Teams are not rated**, by product decision (see the header of
+  `agon_core/src/dao/rating.rs`).
+- A ranked match **can't include players without an account**, and its
+  ranked flag locks once a score is in or the match starts.
+- League and cup matches are generated **unranked**. So are series
+  occurrences.
+
+How it fits the team pages:
+
+| Question | Answer |
+|---|---|
+| Do team stats care about ranked? | **No.** Team records and leaderboards count ranked and unranked alike. Kind decides *where* a match counts; ranked decides whether it *also* moves ratings. No change to B. |
+| Can a team match be ranked? | Yes, for anything created through New match (friendlies, squad games): the organiser chooses. League and cup generated matches are unranked today. |
+| Should leagues be ranked? | A product call. To allow it, add `ranked` to `TournamentRecord` and copy it onto generated matches. It's small, but leagues with account-less squad members couldn't use it. |
+| Where do ratings show? | Ratings are per player and per sport, already on profiles. The team leaderboard dropped its Rating view. A "Rating" column or tab from members' published ratings needs no new backend. |
+| Squad games ranked? | They work well: balanced in-house sides are good rating data. |
+
+**Naming clashes to fix before this ships:**
+
+1. **"Friendly" means two things.** The live "How it counts" control uses
+   it for *unranked*. The team pages use it for *a non-league game against
+   another team*. In New match you could pick Opposition "Another team",
+   then How it counts "Friendly", and get a ranked-looking choice with a
+   misleading name. Recommendation: rename the toggle to **Casual |
+   Ranked**, and keep "Friendly" for the team meaning, which is what it
+   means in football.
+2. **"Guest" means two things.** In the ranked rules it means a player with
+   *no Agon account* (blocked from ranked, and with no stats at all). The
+   leaderboard tag means a *non-member with an account* (a ringer). Players
+   without an account never reach the leaderboard. Recommendation: either
+   label the leaderboard tag **Ringer**, or rename the no-account case to
+   "player without an account" in the ranked copy.
+
+## Decided (12 Nov)
+
+- A team against an ad-hoc side is a friendly, set explicitly in match
+  setup (see A).
+- Year boundary: tournament timezone → match location → UTC.
+- No max-type figures in v1.
+- Stats stay public for now. Later there will be a public team page and a
+  members-only page.

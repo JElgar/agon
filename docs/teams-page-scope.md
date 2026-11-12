@@ -63,7 +63,6 @@ record and a football record don't add up into anything meaningful.
      button.
    - **Last 10.** A mirrored bar chart of scored vs conceded, with result dots.
    - **Records.** Biggest win, longest win streak.
-   - **Rivals.** Most-played opponents, with head-to-head W–D–L.
 4. **Leaderboard**
    - **Metric chips.** Football: Rating, Goals, Assists, G+A, Apps, Win%,
      G/match. Cricket: Rating, Runs, Wickets, Avg, Economy (lower is better),
@@ -120,9 +119,6 @@ Lifetime stats can't answer "Marcus's goals *for Hackney Wick*". Proposal:
   the "18+" count and the list row the redesign wanted.
 - `Team.sports`, either derived from `TEAMSTATS#*` or set explicitly. This
   drives the pills and the switcher.
-- **Rivals.** Group the team's matches by the opposing `team_id`. Do it
-  client-side over recent matches first, or store per-opponent counters if
-  it proves popular.
 - **Movement arrows** need the previous ranking: snapshot rank on each
   reconcile, or diff against the leaderboard as of the previous match.
   This is a nice-to-have. Cut it first.
@@ -142,7 +138,6 @@ team; *in-house* if every side is this team.
 |---|---|---|
 | Team record, form, streaks, win rate | ✓ | ✗ (the team would get a W **and** an L, so win rate drifts to 50%) |
 | Goals/runs for and against, clean sheets, biggest win | ✓ | ✗ (every goal counts both for and against) |
-| Rivals / head-to-head | ✓ | ✗ |
 | Player leaderboard | ✓ | ✓, on by default, with a filter: All · vs other teams · In-house |
 | Squad-game extras: side-name tally, best partnerships, you vs the squad | n/a | ✓ |
 
@@ -205,7 +200,7 @@ Gaps:
 3. **Team-scoped stats (A + B).** Worker aggregation, two endpoints,
    backfill. Switch the leaderboard's default to "For this team" and replace
    `lib/teamStats.ts`.
-4. **Overview polish.** Next fixture, Last-10 chart, records, rivals,
+4. **Overview polish.** Next fixture, Last-10 chart, records,
    badges.
 
 ## Open questions
@@ -222,6 +217,22 @@ Gaps:
   supports many, with a switcher.
 - **Badges.** Which ones, and are they computed (from bests or counters) or
   awarded by admins?
+
+## Ideas backlog
+
+Not in v1. Parked here so they aren't lost.
+
+- **Rivals.** The most-played opponent teams, with head-to-head W–D–L.
+  Removed from the overview on 12 Nov.
+  - *Definition:* a rival is another team we've met at least twice. The
+    opponent side must have a `team_id` that isn't ours. Ad-hoc opponents
+    have no stable identity and are excluded, and so are in-house games.
+    Rank by meetings, with the most recent breaking ties. Show the top 3.
+  - *Build:* group `GET /matches?team_id=` results by the opponent's
+    `team_id`, client-side first. Later, add per-opponent counter items in
+    the stats reconciler for full history.
+  - *Extras:* a "Nemesis" (most losses against) and a "Favourite opponent"
+    (most wins against).
 
 ## Running the prototype
 

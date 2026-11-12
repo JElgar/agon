@@ -75,7 +75,6 @@ record and a football record don't add up into anything meaningful.
    - **Period toggle.** *This season* or *All time*.
    - **Guardrails.** Rate metrics only rank players with 5+ appearances.
      The Rating board leaves out players still in placements and says so.
-   - **Badges.** Hat-trick, Ever-present, 5-for, and so on.
 5. **Matches / Squad.** These are today's lists, unchanged in substance.
 
 ## What it needs from the backend
@@ -201,8 +200,7 @@ Gaps:
 3. **Team-scoped stats (A + B).** Worker aggregation, two endpoints,
    backfill. Switch the leaderboard's default to "For this team" and replace
    `lib/teamStats.ts`.
-4. **Overview polish.** Next fixture, Last-10 chart, records,
-   badges.
+4. **Overview polish.** Next fixture, Last-10 chart, records.
 
 ## Open questions
 
@@ -216,8 +214,6 @@ Gaps:
   Today everything on the team page is public.
 - **One sport per team, or many?** Clubs often play several. The prototype
   supports many, with a switcher.
-- **Badges.** Which ones, and are they computed (from bests or counters) or
-  awarded by admins?
 
 ## Ideas backlog
 
@@ -234,6 +230,19 @@ Not in v1. Parked here so they aren't lost.
     the stats reconciler for full history.
   - *Extras:* a "Nemesis" (most losses against) and a "Favourite opponent"
     (most wins against).
+- **Season Wrapped.** A recap in the style of Spotify Wrapped when a league
+  season ends. Badges were removed from the leaderboard on 12 Nov and
+  belong here instead.
+  - *What:* a swipeable recap for each player: their goals and assists, best
+    game, win %, who they played with most, and the team's finish.
+  - *Badges:* awarded at the end of the season and kept on the player's
+    profile, tagged with the season they're from (e.g. "Top scorer · ELSL
+    S4"). Examples: Top scorer, Playmaker, Ever-present, Hat-trick, Clean
+    sheets.
+  - *Build:* triggered when the tournament status becomes `completed`.
+    Badges are computed from that season's team-scoped stats and bests,
+    not handed out by admins. It depends on the per-league player stats
+    from A.
 
 ## Running the prototype
 

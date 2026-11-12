@@ -243,7 +243,13 @@ Gaps:
 
    The nav becomes **Feed · Teams · ＋ · Matches · Profile**. There's no
    Leagues tab: a league is reached from its team's Competitions card.
-   Matches is today's Browse matches page, so the ＋ stays centred. The
+   Matches **is** today's Browse matches page (`/matches/search`), not a new
+   design. It's only retitled "Matches", loses its back arrow, and opens on
+   Scheduled › My games. The ＋ stays centred.
+   - The feed's **Coming up** strip stays. It sorts invites you haven't
+     answered first, then games you could join, then games you're going to.
+     Its "Browse all matches" link becomes "See all ›" into the Matches tab.
+   - Your match history stays on Profile. The
    Teams tab is today's `TeamsPage`, grown into:
    - pending invitations, with Join / Decline
    - your teams as cards: role, last-5 form, and the next game with your

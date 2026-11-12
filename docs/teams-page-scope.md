@@ -43,7 +43,7 @@ role or member count, because `TeamListItem` doesn't carry them.
 ## What the prototype proposes
 
 The page gets a header, then an always-visible **form strip**, then tabs:
-**Overview · Leaderboard · Matches · Squad**. Teams that play more than one
+**Overview · Leaderboard · Matches**. Teams that play more than one
 sport also get a **sport switcher**, which scopes every section. A cricket
 record and a football record don't add up into anything meaningful.
 
@@ -75,7 +75,11 @@ record and a football record don't add up into anything meaningful.
    - **Period toggle.** *This season* or *All time*.
    - **Guardrails.** Rate metrics only rank players with 5+ appearances.
      The Rating board leaves out players still in placements and says so.
-5. **Matches / Squad.** These are today's lists, unchanged in substance.
+5. **Matches.** Today's list, unchanged in substance.
+6. **Squad is not a tab.** It's its own page, opened from the member count in
+   the header (anyone) or Team settings → Members & roles. It has search,
+   groups Owner / Admins / Members / Invited, and today's role and remove
+   actions for admins.
 
 ## What it needs from the backend
 

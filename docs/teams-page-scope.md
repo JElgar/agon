@@ -151,10 +151,11 @@ team; *in-house* if every side is this team.
 | Team record, form, streaks, win rate | ✓ | ✗ (the team would get a W **and** an L, so win rate drifts to 50%) |
 | Goals/runs for and against, clean sheets, biggest win | ✓ | ✗ (every goal counts both for and against) |
 | Player leaderboard | ✓ | ✓, on by default, with a filter: All · vs other teams · In-house |
-| Squad-game extras: side-name tally, best partnerships | n/a | ✓ |
+| Squad games page: totals, top contributors, match history (no sides) | n/a | ✓ |
 
-A team with no external games leads its overview with "Squad games", not
-an empty record.
+A team with no external games lists Squad games first in its Competitions
+list. There is no side-name tally and no partnerships (both removed 12 Nov).
+In-house games are just squad games, and the sides don't matter.
 
 **Bug today.** `teamSide()` in `agon_ui/src/lib/teamStats.ts` uses
 `sides.find(side => side.team_id === teamId)`, which returns whichever side
@@ -165,8 +166,7 @@ side has this team's id.
 **Backend.** In the aggregation (A/B), the team-record contribution is
 skipped for an in-house match. Per-player team stats are still applied but
 kept in separate counters (external vs in-house), so the leaderboard filter
-is a choice of counter, not a re-query. Partnerships need pairwise counts. Compute them client-side over the in-house match list
-first. Store them only if they prove popular.
+is a choice of counter, not a re-query.
 
 ## Friendlies: two kinds
 

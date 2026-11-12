@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { lazy, Suspense, useEffect } from 'react'
 import {
   BrowserRouter,
   Routes,
@@ -57,6 +57,24 @@ import {
 } from '@/lib/pendingInvite'
 import { getHasProfileCache, setHasProfileCache } from '@/lib/profileGateCache'
 import { useOnlineStatus } from '@/hooks/useOnlineStatus'
+
+/** Dev-only design prototypes (fixture data, no API/auth) — see
+ *  `pages/design/`. Lazy so they never land in a production bundle. */
+const TeamPageDesign = import.meta.env.DEV
+  ? lazy(() => import('@/pages/design/TeamPageDesign').then((m) => ({ default: m.TeamPageDesign })))
+  : null
+
+function DesignGate({ children }: { children: React.ReactNode }) {
+  const location = useLocation()
+  if (TeamPageDesign && location.pathname === '/design/team') {
+    return (
+      <Suspense fallback={null}>
+        <TeamPageDesign />
+      </Suspense>
+    )
+  }
+  return <>{children}</>
+}
 
 /** Full-screen centered content, used for the loading / error / auth gates. */
 function CenteredMessage({ children }: { children: React.ReactNode }) {
@@ -373,9 +391,11 @@ function App() {
     <ThemeProvider defaultTheme="system" storageKey="agon-ui-theme">
       <BrowserRouter>
         <OfflineBanner />
-        <AuthProvider>
-          <AuthenticatedApp />
-        </AuthProvider>
+        <DesignGate>
+          <AuthProvider>
+            <AuthenticatedApp />
+          </AuthProvider>
+        </DesignGate>
       </BrowserRouter>
     </ThemeProvider>
   )

@@ -234,7 +234,11 @@ Not in v1. Parked here so they aren't lost.
   season ends. Badges were removed from the leaderboard on 12 Nov and
   belong here instead.
   - *What:* a swipeable recap for each player: their goals and assists, best
-    game, win %, who they played with most, and the team's finish.
+    game, win %, who they played with most, and the team's finish. It also
+    includes a "Your nemesis" slide: the teammate who beat you most in
+    in-house games ("Amira beat you 7 times"), with your best partner
+    alongside. The live "You vs the squad" card stays on the in-house view
+    all season; Wrapped is its end-of-season moment.
   - *Badges:* awarded at the end of the season and kept on the player's
     profile, tagged with the season they're from (e.g. "Top scorer · ELSL
     S4"). Examples: Top scorer, Playmaker, Ever-present, Hat-trick, Clean

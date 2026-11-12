@@ -138,7 +138,7 @@ team; *in-house* if every side is this team.
 | Team record, form, streaks, win rate | ✓ | ✗ (the team would get a W **and** an L, so win rate drifts to 50%) |
 | Goals/runs for and against, clean sheets, biggest win | ✓ | ✗ (every goal counts both for and against) |
 | Player leaderboard | ✓ | ✓, on by default, with a filter: All · vs other teams · In-house |
-| Squad-game extras: side-name tally, best partnerships, you vs the squad | n/a | ✓ |
+| Squad-game extras: side-name tally, best partnerships | n/a | ✓ |
 
 A team with no external games leads its overview with "Squad games", not
 an empty record.
@@ -152,8 +152,7 @@ side has this team's id.
 **Backend.** In the aggregation (A/B), the team-record contribution is
 skipped for an in-house match. Per-player team stats are still applied but
 kept in separate counters (external vs in-house), so the leaderboard filter
-is a choice of counter, not a re-query. Partnerships and "you vs the squad"
-need pairwise counts. Compute them client-side over the in-house match list
+is a choice of counter, not a re-query. Partnerships need pairwise counts. Compute them client-side over the in-house match list
 first. Store them only if they prove popular.
 
 ## Leagues
@@ -237,8 +236,8 @@ Not in v1. Parked here so they aren't lost.
     game, win %, who they played with most, and the team's finish. It also
     includes a "Your nemesis" slide: the teammate who beat you most in
     in-house games ("Amira beat you 7 times"), with your best partner
-    alongside. The live "You vs the squad" card stays on the in-house view
-    all season; Wrapped is its end-of-season moment.
+    alongside. This is the only place head-to-heads between teammates
+    appear. The in-house view has no "You vs the squad" card.
   - *Badges:* awarded at the end of the season and kept on the player's
     profile, tagged with the season they're from (e.g. "Top scorer · ELSL
     S4"). Examples: Top scorer, Playmaker, Ever-present, Hat-trick, Clean

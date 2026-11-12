@@ -181,8 +181,9 @@ is a choice of counter, not a re-query.
 ## Friendlies: two kinds
 
 Matches outside any league or cup come in two kinds. Each gets its own box in
-the team's Competitions list, after any leagues and cups. There are at most 3
-boxes, and a friendly box only appears if the team has played that kind of
+the team's Competitions list, after any leagues and cups. There are at most 4
+boxes (raised from 3 on 12 Nov, so a team with a league, a cup and both kinds
+of friendly shows everything), and a friendly box only appears if the team has played that kind of
 game.
 
 - **Friendlies (vs other teams).** Results matter. The page shows the win
@@ -268,14 +269,24 @@ Gaps:
    `lib/teamStats.ts`.
 4. **Overview polish.** Next fixture, Last-10 chart, records.
 
+## Decided: ringers on the leaderboard
+
+Yes (12 Nov). Team-scoped player stats are summed from everyone who played
+on a side carrying this team's id, whether or not they're a member:
+
+- No membership lookup when a stat is written.
+- No "were they a member *at the time*?" question.
+- A ringer who later joins keeps their history.
+
+The "Career" scope still lists only current members, because it reads
+members' lifetime stats. A "Guest" tag on non-member rows is a cheap later
+addition: the client already has the squad list.
+
 ## Open questions
 
 - **What is a "season"?** Calendar year, rolling 12 months, or
   owner-defined? This affects storage: per-season items are keyed
   `PLAYERSTATS#<season>#<sport>#<user>`.
-- **Ringers.** A non-member who played for the team's side: do they appear
-  on the team leaderboard? The prototype assumes yes, if they played on the
-  side, perhaps with a "guest" tag. The alternative is members only.
 - **Privacy.** Should non-members see the leaderboard, or only the record?
   Today everything on the team page is public.
 - **One sport per team, or many?** Clubs often play several. The prototype

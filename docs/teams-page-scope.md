@@ -189,10 +189,11 @@ Gaps:
 
 ## Suggested phasing
 
-1. **Discoverability.** Ships independently, no backend. Put Teams on mobile:
-   either a 4th bottom-nav stop, or a "Your teams" row of crests at the top
-   of Profile and on the Feed. Show role and member count in the list once
-   C lands.
+1. **Discoverability.** Ships independently, no backend. **Decided:** Teams
+   gets its own tab in the mobile bottom nav. Nothing team-related goes in
+   the feed: no "Your teams" row and no "need N more" nudges. Fixture
+   call-ups live on the team page's *Next up* card. Show role and member
+   count in the list once C lands.
 2. **Leaderboard on lifetime stats.** No new backend. Fetch each member's
    `GET /users/{id}` (squad-sized, so N requests is acceptable for a first
    cut) and rank by career stats. That's the "Career" toggle. It validates

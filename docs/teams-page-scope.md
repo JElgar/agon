@@ -260,6 +260,11 @@ Not in v1. Parked here so they aren't lost.
     not handed out by admins. It depends on the per-league player stats
     from A.
 
+- **Home vs away.** Tag fixtures as Home or Away and split the team record
+  by venue. Removed from the league fixtures on 12 Nov. Nothing in the data
+  model says which side is at home today. It would need a home side on
+  matches, or a home ground on teams to compare against the match location.
+
 ## Running the prototype
 
 ```bash

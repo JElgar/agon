@@ -279,8 +279,9 @@ on a side carrying this team's id, whether or not they're a member:
 - A ringer who later joins keeps their history.
 
 The "Career" scope still lists only current members, because it reads
-members' lifetime stats. A "Guest" tag on non-member rows is a cheap later
-addition: the client already has the squad list.
+members' lifetime stats. Non-members get a **Guest** tag next to their name
+on every leaderboard (decided 12 Nov). The client already loads the squad
+list, so this needs no backend work.
 
 ## Open questions
 

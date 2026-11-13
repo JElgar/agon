@@ -220,6 +220,21 @@ what we should build.
 | `GET /users/me/followed-teams` | Teams you follow, with a one-line status | Wraps the existing `Dao::list_followed_teams` |
 | `GET /users/me/invitations` | Already exists. Check it carries team invites with crest data for the Teams tab | — |
 
+**Overview layout for squad-games teams (13 Nov).** `GET /teams/:id/summary`
+also returns `layout: "standard" | "squad"`:
+
+- `standard` when the team has played **3 or more league, cup or friendly
+  matches in the last 12 months**. This is the standard overview (1): Record
+  card, Form, Last 10.
+- `squad` otherwise (1c): Top performers, Leaderboard and Next up first, then
+  Competitions with "All N matches". There's no Record card, Form or Last 10.
+
+The 12-month count comes from the `ext@Y` buckets for this year and last.
+For an exact rolling window, use a Meilisearch count with `team_ids`,
+`kind != squad` and `starts_at_ts >= now - 365d`. Either way it's computed
+on read, so it needs no storage. Doing it server-side keeps the threshold in
+one place.
+
 **Career** on the leaderboard needs no new backend. It reads members'
 `USER#<id>.stats` (members only, as decided).
 
@@ -353,7 +368,8 @@ and it's how we add a new bucket later.
 Ranked is a **separate axis** from competition kind, and it already exists.
 
 - `MatchRecord.ranked: bool` is chosen in the match setup's "How it counts"
-  control, which today reads **Friendly | Ranked**.
+  control. Today it reads **Friendly | Ranked**; it's being renamed to
+  **Casual | ★ Ranked** (see below).
 - A ranked match moves each player's **per-sport rating** (Weng-Lin) once
   the score is agreed.
 - **Teams are not rated**, by product decision (see the header of
@@ -385,6 +401,38 @@ How it fits the team pages:
 (`RankedBadge`) wherever it's listed: team Matches (1b), Friendlies (3b),
 Squad games (3c), the Matches tab (4c), Coming up and Next up. Casual is the
 unmarked default, matching `RankedBadge`'s own rule.
+
+### Backend impact of the ranked visual and the renames
+
+- **Ranked pill: no backend change.** `ranked: bool` is already on every
+  shape the new lists read: `Match`, `FeedMatch` (`agon_service/src/main.rs`
+  ~1749) and `SearchMatch` (~1807). So Meilisearch-backed lists (team Matches,
+  Friendlies, Squad games, Browse) and feed-backed ones (Coming up) can all
+  draw it. Leave the new team endpoints in C carrying `ranked` on each match
+  they return, for example `next_match` in the summary.
+- **Casual rename: the API is unchanged.** The field stays `ranked: bool`,
+  with no "friendly" in any API name. Only user-facing copy moves:
+  - `agon_service/src/main.rs:4931`: "a match can no longer be changed
+    between ranked and friendly" → "between ranked and casual".
+  - `agon_service/src/mapping.rs:1831`: "…or create this match as a
+    friendly" → "…as a casual match". Update the test that asserts the old
+    wording (`mapping.rs` ~2837).
+  - UI: `HowItCounts.tsx` (label "Friendly or ranked", the options,
+    "Repeating matches are friendly", and the guest refusal "make this match
+    friendly"), plus `MatchDetailPage.tsx` ~509. Audit `RatingCard`,
+    `ProfilePage`, `TeamSideCard` and `RacketPlayers` for the same word.
+  - Code comments and test names that say "friendly" for unranked (rating
+    handler, mapping) can be renamed when we're next in those files. Add
+    a glossary line to `CLAUDE.md` so "friendly" isn't reintroduced to mean
+    unranked: *friendly = non-league game vs another team; casual =
+    unranked*.
+- **Ringer tag: no backend change** beyond `is_member` on leaderboard rows
+  (C). "Guest" keeps its ranked-rules meaning, an `external` roster player
+  with no account (`ranked_guest_invites_reason`, `GuestRefusal`). Those
+  players have no user id, so they never appear in team-player stats.
+- **Not needed now:** a `ranked` search filter (no screen filters by it),
+  and `TournamentRecord.ranked` (only if leagues become rankable; see the
+  table above).
 
 ## Decided (12 Nov)
 

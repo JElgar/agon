@@ -115,7 +115,7 @@ year `Y`, in tournament `T`:
 |---|---|
 | Team record, `K` ≠ squad | `ext`, `ext@Y`, `K`, `K@Y`, and `t:T` if there's a tournament |
 | Team record, `K` = squad | `squad`, `squad@Y` (games and total goals only, with no W/D/L, per the in-house rule) |
-| Team-player row | `all`, `K`, `K@Y`, `t:T` if there's a tournament, and `ext` when `K` ≠ squad. `ext` backs the overview's Top performers, which counts League · Cup · Friendlies only (decided 13 Nov) |
+| Team-player row | `all`, `K`, `K@Y`, and `t:T` if there's a tournament. Top performers and the overview leaderboard use `all`, so squad games are included (decided 13 Nov) |
 
 Squad games **are** included in player rows (in-house rule: leaderboard
 includes them) and in `all`.

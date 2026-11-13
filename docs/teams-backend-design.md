@@ -30,7 +30,7 @@ The worker and DynamoDB already handle the per-user version of this load.
 | C | Read APIs (summary, leaderboard, competitions, teams tab) | Medium (N+1 care) | None |
 | A | Match `kind` classification | Easy, but foundational | None |
 | E | Team settings: sports, join default, resend invite | Easy | Low: backfill `sports` |
-| H | Frontend-only items (nav, Matches tab, feed sort, guest tag) | Easy | None |
+| H | Frontend-only items (nav, Matches tab, feed sort, ringer tag, ranked badge, Casual rename) | Easy | None |
 
 ## What already exists (reuse, don't rebuild)
 
@@ -122,7 +122,7 @@ includes them) and in `all`.
 
 **Which players count:** everyone who occupied a slot on a side whose
 `team_id = t`, member or not. That puts **ringers on the leaderboard**, as
-decided. The read side flags non-members as guests (see C). In a squad game
+decided. The read side flags non-members as ringers (see C). In a squad game
 both sides are team `t`, so each player is counted once, on their own side.
 That falls out naturally.
 
@@ -213,7 +213,7 @@ what we should build.
 | Endpoint | Returns | Source |
 |---|---|---|
 | `GET /teams/:id/summary?sport=` | Record per bucket (`ext`, `league`, `cup`, `friendly`, `squad`, each all-time and per year on request); `form` (last 5 ext results); `streak`; `last10` (GF/GA); `next_match` | `TSTAT#` query (one partition, prefix); form/last10/next from Meilisearch `team_ids` + `kind != squad`, sorted by time |
-| `GET /teams/:id/leaderboard?sport=&scope=all\|friendly\|squad\|t:<id>&year=&rank=contrib\|win` | Player rows with `is_member` (drives the **Guest** tag) and `is_me` | Query `TPSTAT#<sport>#<bucket>#`, then sort in the service. Bounded by roster plus guests, so reading the whole slice is fine. Hydrate names and avatars with `BatchGetItem` on profiles, and membership from `list_team_members`. Win rate: ≥5 apps |
+| `GET /teams/:id/leaderboard?sport=&scope=all\|friendly\|squad\|t:<id>&year=&rank=contrib\|win` | Player rows with `is_member` (drives the **Ringer** tag) and `is_me` | Query `TPSTAT#<sport>#<bucket>#`, then sort in the service. Bounded by roster plus ringers, so reading the whole slice is fine. Hydrate names and avatars with `BatchGetItem` on profiles, and membership from `list_team_members`. Win rate: ≥5 apps |
 | `GET /teams/:id/competitions` | Up to **4** boxes. Leagues and cups first (live first, with cached position), then Friendlies and Squad games if played. Includes a total count | Team → tournament edges (D) plus `TSTAT` for the friendly and squad summaries |
 | `GET /matches` (extended) | New filters: `kind`, `tournament_id` | Search (F) |
 | `GET /users/me/teams` (enriched) | Each team gets `role`, `form` (last 5), and `next_match` with your RSVP state | Two parallel search queries per team on the page (≤20). Or cache `form` on the `TSTAT#…#ext` row in the worker later if it shows up in latency |
@@ -289,7 +289,9 @@ and it's how we add a new bucket later.
   open it on Scheduled › My games.
 - Feed **Coming up**: sort unanswered invites first, then joinable games,
   then games you're going to. Change "Browse all matches" to "See all ›".
-- Guest tag from `is_member`.
+- Ringer tag from `is_member`.
+- ★ Ranked pill (the existing `RankedBadge`) on every ranked match row and card in the team pages, Matches tab and Coming up. It's driven by the existing `ranked` field, and casual games stay unmarked.
+- "How it counts" toggle reads **Casual | ★ Ranked** (was Friendly | Ranked).
 - New match from a team: read `?team=` in `LogMatchPage` and limit sports
   to `Team.sports`.
 - Delete the client-side 50-match approximation in `lib/teamStats.ts`. That
@@ -371,21 +373,18 @@ How it fits the team pages:
 | Where do ratings show? | Ratings are per player and per sport, already on profiles. The team leaderboard dropped its Rating view. A "Rating" column or tab from members' published ratings needs no new backend. |
 | Squad games ranked? | They work well: balanced in-house sides are good rating data. |
 
-**Naming clashes to fix before this ships:**
+**Naming clashes (fixed 13 Nov):**
 
-1. **"Friendly" means two things.** The live "How it counts" control uses
-   it for *unranked*. The team pages use it for *a non-league game against
-   another team*. In New match you could pick Opposition "Another team",
-   then How it counts "Friendly", and get a ranked-looking choice with a
-   misleading name. Recommendation: rename the toggle to **Casual |
-   Ranked**, and keep "Friendly" for the team meaning, which is what it
-   means in football.
-2. **"Guest" means two things.** In the ranked rules it means a player with
-   *no Agon account* (blocked from ranked, and with no stats at all). The
-   leaderboard tag means a *non-member with an account* (a ringer). Players
-   without an account never reach the leaderboard. Recommendation: either
-   label the leaderboard tag **Ringer**, or rename the no-account case to
-   "player without an account" in the ranked copy.
+1. **"Friendly"** now only means a non-league game against another team.
+   The "How it counts" toggle reads **Casual | ★ Ranked**.
+2. **"Guest"** stays the ranked rules' word for a player without an Agon
+   account. On the leaderboard, a non-member with an account gets a
+   **Ringer** tag.
+
+**Visual (13 Nov):** every ranked match carries the live app's ★ Ranked pill
+(`RankedBadge`) wherever it's listed: team Matches (1b), Friendlies (3b),
+Squad games (3c), the Matches tab (4c), Coming up and Next up. Casual is the
+unmarked default, matching `RankedBadge`'s own rule.
 
 ## Decided (12 Nov)
 

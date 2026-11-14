@@ -12,6 +12,23 @@ services:
     volumes:
       - meili_data:/meili_data
 
+  # Match + per-player stats store (shadow writes only for now; nothing reads it
+  # on a request path). Security plugin off: local only, never exposed.
+  # Needs vm.max_map_count >= 262144 on the Docker host (Linux):
+  #   sudo sysctl -w vm.max_map_count=262144
+  opensearch:
+    image: opensearchproject/opensearch:2.18.0
+    restart: always
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms512m -Xmx512m
+    ports:
+      - 9200:9200
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+
   # ── Local Supabase Auth (Postgres + GoTrue + Kong) ─────────────────────────
   #
   # Real Supabase, self-hosted, minus everything agon_ui/agon_service never
@@ -278,5 +295,6 @@ services:
 
 volumes:
   meili_data:
+  opensearch_data:
   supabase_db_data:
   temporal_db_data:

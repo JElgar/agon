@@ -22,6 +22,7 @@ aws-sdk-dynamodb = "1"
 tokio = { version = "1", features = ["time"] }
 serde_dynamo = { version = "4", features = ["aws-sdk-dynamodb+1"] }
 meilisearch-sdk = { version = "0.33", default-features = false, features = ["reqwest", "tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # Weng-Lin / OpenSkill ratings, the engine behind `rating`. MIT/Apache-2.0
 # and unencumbered — TrueSkill, the algorithm it approximates, is patented
 # until 2029 and licensed only for Xbox Live and non-commercial use, which

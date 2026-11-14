@@ -72,7 +72,7 @@ async fn index_and_aggregate_round_trip() {
         return;
     };
     let prefix = format!("itest_{}_", rand::random::<u32>());
-    let os = OpenSearchClient::new(url, None, prefix.clone());
+    let os = OpenSearchClient::new(&url, None, prefix.clone()).unwrap();
 
     for def in all_indices() {
         assert!(os.ensure_index(&def).await.unwrap(), "fresh index created");

@@ -100,7 +100,7 @@ async fn sync_follows_dynamodb_through_index_roster_change_and_removal() {
         return;
     };
     let prefix = format!("itest_{}_", rand::random::<u32>());
-    let os = OpenSearchClient::new(url, None, prefix.clone());
+    let os = OpenSearchClient::new(&url, None, prefix.clone()).unwrap();
     for def in all_indices() {
         os.ensure_index(&def).await.unwrap();
     }

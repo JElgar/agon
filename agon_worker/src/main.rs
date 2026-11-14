@@ -100,7 +100,11 @@ async fn main() {
     // OpenSearch shadow write: opt-in via OPENSEARCH_URL. Unlike Meilisearch, a
     // failure here is not fatal, since nothing reads OpenSearch yet; the worker
     // runs without it and the backfill can catch up later.
-    if let Some(os) = agon_core::opensearch::OpenSearchClient::from_env() {
+    let opensearch = agon_core::opensearch::OpenSearchClient::from_env().unwrap_or_else(|e| {
+        tracing::error!(error = %e, "invalid OpenSearch settings; shadow write disabled");
+        None
+    });
+    if let Some(os) = opensearch {
         let mut ready = true;
         for def in agon_core::opensearch::all_indices() {
             if let Err(e) = os.ensure_index(&def).await {

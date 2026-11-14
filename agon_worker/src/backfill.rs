@@ -100,9 +100,16 @@ struct Counts {
 
 /// Run the backfill. Returns the process exit code.
 pub async fn run(args: BackfillArgs) -> i32 {
-    let Some(os) = OpenSearchClient::from_env() else {
-        tracing::error!("OPENSEARCH_URL is not set; nothing to backfill into");
-        return 2;
+    let os = match OpenSearchClient::from_env() {
+        Ok(Some(os)) => os,
+        Ok(None) => {
+            tracing::error!("OPENSEARCH_URL is not set; nothing to backfill into");
+            return 2;
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "invalid OpenSearch settings");
+            return 2;
+        }
     };
     let Ok(table) = std::env::var("AGON_TABLE_NAME") else {
         tracing::error!("AGON_TABLE_NAME is not set");

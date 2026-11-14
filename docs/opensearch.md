@@ -22,6 +22,17 @@ when every side is the same team, `friendly` when at least one side has a team,
 otherwise `pickup`), until match setup stores it. `year` is the start time's year
 in the tournament's timezone, or UTC.
 
+## Client and typing
+
+`agon_core::opensearch::OpenSearchClient` wraps the official
+[`opensearch`](https://crates.io/crates/opensearch) crate. That crate is
+untyped for bodies (JSON in, JSON out), so the typing lives in our module, and
+callers never build query JSON themselves:
+- **Documents** are typed structs in `docs.rs`.
+- **Index shapes** are defined once, in `schema.rs`.
+- **Read queries**, when they arrive, will be typed functions returning typed
+  rows in the same module.
+
 ## How it stays in sync
 
 `agon_worker` runs `handlers/opensearch.rs` on every match `#META` write and

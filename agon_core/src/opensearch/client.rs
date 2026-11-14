@@ -1,13 +1,28 @@
-//! A small OpenSearch HTTP client: just the calls the worker and the backfill
-//! need (create index, point alias, bulk write, delete by query, search).
+//! Our OpenSearch client: the official `opensearch` crate underneath, wrapped
+//! in just the calls the worker and the backfill need (create index, point
+//! alias, bulk write, id lookup, search).
 //!
-//! Plain `reqwest` + JSON rather than the `opensearch` crate: the surface we use
-//! is tiny and stable, and this keeps the dependency tree unchanged (`reqwest`
-//! is already in the workspace).
+//! **Where the typing lives.** The official crate is untyped for request and
+//! response bodies (`serde_json::Value` in and out). Rather than let JSON leak
+//! into callers, this module is the boundary: documents are typed structs
+//! (`docs.rs`), index shapes are defined once (`schema.rs`), and the read
+//! queries, when they arrive, will be typed functions returning typed rows in
+//! this module. Callers never build query JSON themselves.
 
 use std::time::Duration;
 
-use reqwest::{Method, StatusCode};
+use opensearch::auth::Credentials;
+use opensearch::cluster::ClusterHealthParts;
+use opensearch::http::Url;
+use opensearch::http::request::JsonBody;
+use opensearch::http::response::Response;
+use opensearch::http::transport::{SingleNodeConnectionPool, TransportBuilder};
+use opensearch::indices::{
+    IndicesCreateParts, IndicesDeleteParts, IndicesExistsParts, IndicesGetAliasParts,
+    IndicesRefreshParts,
+};
+use opensearch::params::Refresh;
+use opensearch::{BulkParts, OpenSearch, SearchParts};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -15,8 +30,10 @@ use super::schema::IndexDef;
 
 #[derive(Debug, thiserror::Error)]
 pub enum OpenSearchError {
-    #[error("opensearch request failed: {0}")]
-    Http(#[from] reqwest::Error),
+    #[error("opensearch client error: {0}")]
+    Client(#[from] opensearch::Error),
+    #[error("opensearch: invalid OPENSEARCH_URL `{url}`: {reason}")]
+    Config { url: String, reason: String },
     #[error("opensearch returned {status}: {body}")]
     Status { status: u16, body: String },
     #[error("opensearch bulk request had {failed} failed item(s), first: {first}")]
@@ -53,40 +70,47 @@ impl BulkOp {
 /// prefix (empty by default; set it if two environments share a cluster).
 #[derive(Clone)]
 pub struct OpenSearchClient {
-    http: reqwest::Client,
-    base_url: String,
-    auth: Option<(String, String)>,
+    client: OpenSearch,
     prefix: String,
 }
 
 impl OpenSearchClient {
     pub fn new(
-        base_url: impl Into<String>,
+        base_url: &str,
         auth: Option<(String, String)>,
         prefix: impl Into<String>,
-    ) -> Self {
-        let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .expect("reqwest client builds with static config");
-        Self {
-            http,
-            base_url: base_url.into().trim_end_matches('/').to_string(),
-            auth,
-            prefix: prefix.into(),
+    ) -> OpenSearchResult<Self> {
+        let config_err = |reason: String| OpenSearchError::Config {
+            url: base_url.to_string(),
+            reason,
+        };
+        let url = Url::parse(base_url).map_err(|e| config_err(e.to_string()))?;
+        let mut builder = TransportBuilder::new(SingleNodeConnectionPool::new(url))
+            .timeout(Duration::from_secs(30));
+        if let Some((user, pass)) = auth {
+            builder = builder.auth(Credentials::Basic(user, pass));
         }
+        let transport = builder.build().map_err(|e| config_err(e.to_string()))?;
+        Ok(Self {
+            client: OpenSearch::new(transport),
+            prefix: prefix.into(),
+        })
     }
 
-    /// Build from the environment, or `None` when `OPENSEARCH_URL` is unset
-    /// (OpenSearch is opt-in, like push notifications and telemetry).
+    /// Build from the environment. `Ok(None)` when `OPENSEARCH_URL` is unset
+    /// (OpenSearch is opt-in, like push notifications and telemetry); `Err` when
+    /// it's set but invalid.
     ///
     /// - `OPENSEARCH_URL`: e.g. `http://opensearch:9200`
     /// - `OPENSEARCH_USERNAME` / `OPENSEARCH_PASSWORD`: optional basic auth
     /// - `OPENSEARCH_INDEX_PREFIX`: optional, prepended to every index name
-    pub fn from_env() -> Option<Self> {
-        let url = std::env::var("OPENSEARCH_URL")
+    pub fn from_env() -> OpenSearchResult<Option<Self>> {
+        let Some(url) = std::env::var("OPENSEARCH_URL")
             .ok()
-            .filter(|u| !u.is_empty())?;
+            .filter(|u| !u.is_empty())
+        else {
+            return Ok(None);
+        };
         let auth = match (
             std::env::var("OPENSEARCH_USERNAME"),
             std::env::var("OPENSEARCH_PASSWORD"),
@@ -95,7 +119,7 @@ impl OpenSearchClient {
             _ => None,
         };
         let prefix = std::env::var("OPENSEARCH_INDEX_PREFIX").unwrap_or_default();
-        Some(Self::new(url, auth, prefix))
+        Self::new(&url, auth, prefix).map(Some)
     }
 
     pub fn prefix(&self) -> &str {
@@ -107,20 +131,10 @@ impl OpenSearchClient {
         def.physical(&self.prefix)
     }
 
-    fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
-        let req = self.http.request(
-            method,
-            format!("{}/{}", self.base_url, path.trim_start_matches('/')),
-        );
-        match &self.auth {
-            Some((u, p)) => req.basic_auth(u, Some(p)),
-            None => req,
-        }
-    }
-
-    async fn send(&self, req: reqwest::RequestBuilder) -> OpenSearchResult<(StatusCode, Value)> {
-        let resp = req.send().await?;
-        let status = resp.status();
+    /// Read a response as (status, JSON body). An empty body (e.g. a HEAD)
+    /// becomes `Null`; a non-JSON body becomes a JSON string.
+    async fn read(resp: Response) -> OpenSearchResult<(u16, Value)> {
+        let status = resp.status_code().as_u16();
         let text = resp.text().await?;
         let body = if text.is_empty() {
             Value::Null
@@ -130,12 +144,12 @@ impl OpenSearchClient {
         Ok((status, body))
     }
 
-    fn check(status: StatusCode, body: &Value) -> OpenSearchResult<()> {
-        if status.is_success() {
+    fn check(status: u16, body: &Value) -> OpenSearchResult<()> {
+        if (200..300).contains(&status) {
             Ok(())
         } else {
             Err(OpenSearchError::Status {
-                status: status.as_u16(),
+                status,
                 body: body.to_string(),
             })
         }
@@ -143,20 +157,30 @@ impl OpenSearchClient {
 
     /// Cluster health, for start-up logging and readiness checks.
     pub async fn health(&self) -> OpenSearchResult<Value> {
-        let (status, body) = self
-            .send(self.request(Method::GET, "_cluster/health"))
+        let resp = self
+            .client
+            .cluster()
+            .health(ClusterHealthParts::None)
+            .send()
             .await?;
+        let (status, body) = Self::read(resp).await?;
         Self::check(status, &body)?;
         Ok(body)
     }
 
     pub async fn index_exists(&self, index: &str) -> OpenSearchResult<bool> {
-        let (status, body) = self.send(self.request(Method::HEAD, index)).await?;
+        let resp = self
+            .client
+            .indices()
+            .exists(IndicesExistsParts::Index(&[index]))
+            .send()
+            .await?;
+        let (status, body) = Self::read(resp).await?;
         match status {
-            StatusCode::OK => Ok(true),
-            StatusCode::NOT_FOUND => Ok(false),
+            200 => Ok(true),
+            404 => Ok(false),
             _ => Err(OpenSearchError::Status {
-                status: status.as_u16(),
+                status,
                 body: body.to_string(),
             }),
         }
@@ -165,10 +189,14 @@ impl OpenSearchClient {
     /// The physical indices the alias currently points at (empty if the alias
     /// doesn't exist yet).
     pub async fn alias_targets(&self, alias: &str) -> OpenSearchResult<Vec<String>> {
-        let (status, body) = self
-            .send(self.request(Method::GET, &format!("_alias/{alias}")))
+        let resp = self
+            .client
+            .indices()
+            .get_alias(IndicesGetAliasParts::Name(&[alias]))
+            .send()
             .await?;
-        if status == StatusCode::NOT_FOUND {
+        let (status, body) = Self::read(resp).await?;
+        if status == 404 {
             return Ok(Vec::new());
         }
         Self::check(status, &body)?;
@@ -189,11 +217,16 @@ impl OpenSearchClient {
         let created = if self.index_exists(&index).await? {
             false
         } else {
-            let (status, body) = self
-                .send(self.request(Method::PUT, &index).json(&(def.body)()))
+            let resp = self
+                .client
+                .indices()
+                .create(IndicesCreateParts::Index(&index))
+                .body((def.body)())
+                .send()
                 .await?;
+            let (status, body) = Self::read(resp).await?;
             // Another process may have created it between the check and the put.
-            let already = status == StatusCode::BAD_REQUEST
+            let already = status == 400
                 && body
                     .to_string()
                     .contains("resource_already_exists_exception");
@@ -221,12 +254,14 @@ impl OpenSearchClient {
             }
         }
         actions.push(json!({ "add": { "index": index, "alias": alias } }));
-        let (status, body) = self
-            .send(
-                self.request(Method::POST, "_aliases")
-                    .json(&json!({ "actions": actions })),
-            )
+        let resp = self
+            .client
+            .indices()
+            .update_aliases()
+            .body(json!({ "actions": actions }))
+            .send()
             .await?;
+        let (status, body) = Self::read(resp).await?;
         Self::check(status, &body)
     }
 
@@ -244,37 +279,23 @@ impl OpenSearchClient {
         if ops.is_empty() {
             return Ok(());
         }
-        let mut ndjson = String::new();
+        let mut lines: Vec<JsonBody<Value>> = Vec::with_capacity(ops.len() * 2);
         for op in ops {
             match op {
                 BulkOp::Index { index, id, doc } => {
-                    ndjson
-                        .push_str(&json!({ "index": { "_index": index, "_id": id } }).to_string());
-                    ndjson.push('\n');
-                    ndjson.push_str(&doc.to_string());
-                    ndjson.push('\n');
+                    lines.push(json!({ "index": { "_index": index, "_id": id } }).into());
+                    lines.push(doc.clone().into());
                 }
                 BulkOp::Delete { index, id } => {
-                    ndjson
-                        .push_str(&json!({ "delete": { "_index": index, "_id": id } }).to_string());
-                    ndjson.push('\n');
+                    lines.push(json!({ "delete": { "_index": index, "_id": id } }).into());
                 }
             }
         }
-        let (status, body) = self
-            .send(
-                self.request(
-                    Method::POST,
-                    if wait_for_refresh {
-                        "_bulk?refresh=wait_for"
-                    } else {
-                        "_bulk"
-                    },
-                )
-                .header("Content-Type", "application/x-ndjson")
-                .body(ndjson),
-            )
-            .await?;
+        let mut req = self.client.bulk(BulkParts::None).body(lines);
+        if wait_for_refresh {
+            req = req.refresh(Refresh::WaitFor);
+        }
+        let (status, body) = Self::read(req.send().await?).await?;
         Self::check(status, &body)?;
         if body["errors"].as_bool() == Some(true) {
             let failures: Vec<&Value> = body["items"]
@@ -308,13 +329,14 @@ impl OpenSearchClient {
         query: Value,
         max: usize,
     ) -> OpenSearchResult<Vec<String>> {
-        let (status, body) = self
-            .send(
-                self.request(Method::POST, &format!("{index}/_search"))
-                    .json(&json!({ "query": query, "size": max, "_source": false })),
-            )
+        let resp = self
+            .client
+            .search(SearchParts::Index(&[index]))
+            .body(json!({ "query": query, "size": max, "_source": false }))
+            .send()
             .await?;
-        if status == StatusCode::NOT_FOUND {
+        let (status, body) = Self::read(resp).await?;
+        if status == 404 {
             return Ok(Vec::new());
         }
         Self::check(status, &body)?;
@@ -327,31 +349,43 @@ impl OpenSearchClient {
     }
 
     /// Run a raw `_search` against an index or alias. Used by the backfill's
-    /// verification and by tests; no request path reads OpenSearch yet.
+    /// verification and by tests; no request path reads OpenSearch yet. Typed
+    /// read queries will wrap this in this module.
     pub async fn search(&self, index: &str, body: Value) -> OpenSearchResult<Value> {
-        let (status, resp) = self
-            .send(
-                self.request(Method::POST, &format!("{index}/_search"))
-                    .json(&body),
-            )
+        let resp = self
+            .client
+            .search(SearchParts::Index(&[index]))
+            .body(body)
+            .send()
             .await?;
-        Self::check(status, &resp)?;
-        Ok(resp)
+        let (status, body) = Self::read(resp).await?;
+        Self::check(status, &body)?;
+        Ok(body)
     }
 
     /// Make recent writes visible to search (tests and the backfill's final
     /// verification only; normal operation relies on the 1s refresh interval).
     pub async fn refresh(&self, index: &str) -> OpenSearchResult<()> {
-        let (status, body) = self
-            .send(self.request(Method::POST, &format!("{index}/_refresh")))
+        let resp = self
+            .client
+            .indices()
+            .refresh(IndicesRefreshParts::Index(&[index]))
+            .send()
             .await?;
+        let (status, body) = Self::read(resp).await?;
         Self::check(status, &body)
     }
 
     /// Delete an index (backfill clean-up of superseded versions).
     pub async fn delete_index(&self, index: &str) -> OpenSearchResult<()> {
-        let (status, body) = self.send(self.request(Method::DELETE, index)).await?;
-        if status == StatusCode::NOT_FOUND {
+        let resp = self
+            .client
+            .indices()
+            .delete(IndicesDeleteParts::Index(&[index]))
+            .send()
+            .await?;
+        let (status, body) = Self::read(resp).await?;
+        if status == 404 {
             return Ok(());
         }
         Self::check(status, &body)

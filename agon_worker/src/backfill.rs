@@ -22,7 +22,9 @@
 //! Needs `AGON_TABLE_NAME`, AWS credentials and `OPENSEARCH_URL` (plus the
 //! optional `OPENSEARCH_USERNAME`, `OPENSEARCH_PASSWORD` and
 //! `OPENSEARCH_INDEX_PREFIX`). It does not need the SQS, Meilisearch or Temporal
-//! settings the worker needs.
+//! settings the worker needs. Set `AWS_ENDPOINT_URL` to read DynamoDB Local
+//! instead (`make backfill-opensearch-local`). It logs the table and endpoint
+//! it reads (`reading dynamodb`) before it starts.
 
 use std::time::Duration;
 
@@ -106,6 +108,12 @@ pub async fn run(args: BackfillArgs) -> i32 {
         tracing::error!("AGON_TABLE_NAME is not set");
         return 2;
     };
+    // Say which DynamoDB this reads, so a run against a real table is never a
+    // surprise. The SDK takes the endpoint from these same variables.
+    let endpoint = std::env::var("AWS_ENDPOINT_URL_DYNAMODB")
+        .or_else(|_| std::env::var("AWS_ENDPOINT_URL"))
+        .unwrap_or_else(|_| "AWS (no endpoint override)".into());
+    tracing::info!(table = %table, endpoint = %endpoint, "reading dynamodb");
     match os.health().await {
         Ok(h) => {
             tracing::info!(status = %h["status"], cluster = %h["cluster_name"], "opensearch reachable")

@@ -14,11 +14,14 @@ services:
 
   # Match + per-player stats store (shadow writes only for now; nothing reads it
   # on a request path). Security plugin off: local only, never exposed.
-  # Needs vm.max_map_count >= 262144 on the Docker host (Linux):
+  # Needs vm.max_map_count >= 262144 on the Docker host (Linux). Many distros
+  # already ship higher; only raise it if `sysctl vm.max_map_count` is lower:
   #   sudo sysctl -w vm.max_map_count=262144
+  # unless-stopped: it holds ~900 MiB, so a `docker compose stop` should stick
+  # across reboots.
   opensearch:
     image: opensearchproject/opensearch:2.18.0
-    restart: always
+    restart: unless-stopped
     environment:
       discovery.type: single-node
       DISABLE_SECURITY_PLUGIN: "true"

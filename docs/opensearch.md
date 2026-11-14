@@ -44,7 +44,23 @@ The shadow write is on when `OPENSEARCH_URL` is set. Optional settings:
 
 **Local:** `docker compose up -d opensearch`, then set
 `OPENSEARCH_URL=http://localhost:9200` (already in `.env.example`). On Linux, the
-host needs `sudo sysctl -w vm.max_map_count=262144`.
+host needs `vm.max_map_count` of at least 262144. Many distros already ship
+more, so check `sysctl vm.max_map_count` first and only then run
+`sudo sysctl -w vm.max_map_count=262144`. The container uses about 900 MiB.
+
+**Fully local, with DynamoDB Local:**
+
+```bash
+docker compose up -d dynamodb-local dynamodb-local-init opensearch
+make test-opensearch-local       # both integration tests below
+make backfill-opensearch-local   # backfill from DynamoDB Local's `agon` table
+```
+
+Both targets set `AWS_ENDPOINT_URL=http://localhost:8002` with dummy
+credentials, so they can't reach a real table whatever `.env` says. DynamoDB
+Local is in-memory and starts empty, so the backfill only has something to
+index once you've created matches locally, for example by running
+`agon_service` and `agon_worker` against the local stack (`local/README.md`).
 
 **Cluster (`agon_infra`):** a single-node Deployment, a 10Gi PVC and the
 `opensearch` Service.
@@ -90,7 +106,12 @@ It needs only `AGON_TABLE_NAME`, AWS credentials and the `OPENSEARCH_*`
 variables, not the worker's SQS, Meilisearch or Temporal settings.
 - **In the cluster:** run it as a one-off pod from the worker image, with the
   same `aws-credentials` secret and `OPENSEARCH_URL`.
-- **Locally:** `cargo run -p agon_worker -- backfill-opensearch`.
+- **Locally:** `make backfill-opensearch-local` reads DynamoDB Local. Plain
+  `cargo run -p agon_worker -- backfill-opensearch` reads whatever DynamoDB the
+  `AWS_*` settings point at.
+
+It logs `reading dynamodb` with the table and endpoint before it does
+anything, so check that line when you're not sure which table you're on.
 
 The aliases only move if every match succeeded. Failed matches are logged with
 their ids; fix the cause and re-run.
@@ -112,12 +133,19 @@ There's one small race to know about. If a match changes at the exact moment
 the backfill rewrites it, the backfill's copy can be a moment stale. The next
 change to that match, or a re-run, corrects it.
 
-## Integration test
+## Integration tests
 
 ```bash
-OPENSEARCH_URL=http://localhost:9200 cargo test -p agon_core --test opensearch_roundtrip -- --nocapture
+make test-opensearch-local
 ```
 
-It creates prefixed indices, writes a friendly and a squad game, runs a
-leaderboard aggregation and a nested team-record aggregation, and cleans up.
-Without `OPENSEARCH_URL` it's skipped.
+- `opensearch_roundtrip` needs only OpenSearch. It creates prefixed indices,
+  writes a friendly and a squad game, runs a leaderboard aggregation and a
+  nested team-record aggregation, and cleans up.
+- `opensearch_dynamodb_sync` also needs DynamoDB Local. It writes a confirmed
+  match through the DAO and runs `sync_match` three times: once to index it,
+  again after a player leaves (their row must go), and again after the match
+  is deleted (all of its documents must go).
+
+Each is skipped without `OPENSEARCH_URL`. The sync test is also skipped
+without `AWS_ENDPOINT_URL`, so it never writes to a real table.

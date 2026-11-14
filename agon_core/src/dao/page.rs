@@ -60,7 +60,7 @@ impl Dao {
 }
 
 /// Encode a `LastEvaluatedKey` map into an opaque cursor string.
-fn encode_cursor(key: HashMap<String, AttributeValue>) -> DaoResult<String> {
+pub(super) fn encode_cursor(key: HashMap<String, AttributeValue>) -> DaoResult<String> {
     // serde_dynamo round-trips the key map through serde_json::Value.
     let value: serde_json::Value = serde_dynamo::from_item(key)?;
     let json =
@@ -69,7 +69,7 @@ fn encode_cursor(key: HashMap<String, AttributeValue>) -> DaoResult<String> {
 }
 
 /// Decode an opaque cursor string back into an `ExclusiveStartKey` map.
-fn decode_cursor(cursor: &str) -> DaoResult<HashMap<String, AttributeValue>> {
+pub(super) fn decode_cursor(cursor: &str) -> DaoResult<HashMap<String, AttributeValue>> {
     let bytes = BASE64_URL_SAFE
         .decode(cursor)
         .map_err(|_| DaoError::Malformed("invalid cursor".into()))?;

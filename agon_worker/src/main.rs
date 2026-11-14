@@ -7,8 +7,12 @@
 //! The inline slice always runs. Multi-step orchestration (feed fan-out, the
 //! accept-invitation saga) lives in the `temporal` module and runs a Temporal
 //! worker alongside the consumer loop in this same binary.
+//!
+//! `agon_worker backfill-opensearch [...]` runs the OpenSearch backfill instead
+//! of the worker and exits (see `backfill`).
 
 mod asset_consumer;
+mod backfill;
 mod config;
 mod consumer;
 mod error;
@@ -29,6 +33,20 @@ async fn main() {
     // Held for the process lifetime; dropping it on the way out of `main`
     // flushes the OTLP batch exporters. See agon_core::telemetry.
     let _telemetry = agon_core::telemetry::init("agon-worker");
+
+    // One-off jobs share the binary (and its image) but not the worker's config.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("backfill-opensearch") {
+        let code = match backfill::BackfillArgs::parse(&args[1..]) {
+            Ok(a) => backfill::run(a).await,
+            Err(e) => {
+                tracing::error!(error = %e, "invalid backfill arguments");
+                2
+            }
+        };
+        drop(_telemetry);
+        std::process::exit(code);
+    }
 
     let config = match Config::from_env() {
         Ok(c) => c,
@@ -77,7 +95,27 @@ async fn main() {
         std::sync::Arc::new(config.clone()),
     );
 
-    let consumer = Consumer::new(sqs, dao.clone(), search.clone(), push, config);
+    let mut consumer = Consumer::new(sqs, dao.clone(), search.clone(), push, config);
+
+    // OpenSearch shadow write: opt-in via OPENSEARCH_URL. Unlike Meilisearch, a
+    // failure here is not fatal, since nothing reads OpenSearch yet; the worker
+    // runs without it and the backfill can catch up later.
+    if let Some(os) = agon_core::opensearch::OpenSearchClient::from_env() {
+        let mut ready = true;
+        for def in agon_core::opensearch::all_indices() {
+            if let Err(e) = os.ensure_index(&def).await {
+                tracing::error!(index = %os.write_index(&def), error = %e, "opensearch index setup failed; shadow write disabled");
+                ready = false;
+                break;
+            }
+        }
+        if ready {
+            tracing::info!("opensearch shadow write enabled");
+            consumer = consumer.with_opensearch(os);
+        }
+    } else {
+        tracing::info!("OPENSEARCH_URL unset; opensearch shadow write disabled");
+    }
 
     // Attach a client so multi-step stream events start workflows. A connection
     // failure here is fatal — Temporal is a required dependency of the worker.

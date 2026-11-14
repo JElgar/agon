@@ -116,6 +116,23 @@ run-worker:
 run-stream-bridge:
 	cargo run --manifest-path local/dynamodb-stream-bridge/Cargo.toml --release
 
+# OpenSearch shadow write against the local stack only: DynamoDB Local
+# (always, so these can never read or write a real table) and the compose
+# OpenSearch. Needs `docker compose up -d dynamodb-local dynamodb-local-init
+# opensearch`. See docs/opensearch.md.
+OPENSEARCH_LOCAL_ENV = AWS_ENDPOINT_URL=http://localhost:8002 AWS_REGION=eu-west-1 \
+	AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=localsecret \
+	OPENSEARCH_URL=http://localhost:9200
+
+# Integration tests: documents and queries (opensearch_roundtrip), then the
+# DynamoDB -> OpenSearch sync path (opensearch_dynamodb_sync).
+test-opensearch-local:
+	$(OPENSEARCH_LOCAL_ENV) cargo test -p agon_core --test opensearch_roundtrip --test opensearch_dynamodb_sync
+
+# Backfill the local OpenSearch from DynamoDB Local's `agon` table.
+backfill-opensearch-local:
+	$(OPENSEARCH_LOCAL_ENV) AGON_TABLE_NAME=agon cargo run -p agon_worker -- backfill-opensearch
+
 # Full browser UI end-to-end tests (Playwright) — see agon_ui/e2e/README.md
 # for what's covered and how the test account works. Reads E2E_TEST_EMAIL /
 # E2E_TEST_PASSWORD / E2E_BASE_URL from the environment (or .env); use

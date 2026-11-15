@@ -881,6 +881,24 @@ export const agonTestJwtPrivateKey = config.requireSecret("agonTestJwtPrivateKey
 //   pulumi config set --secret agonDeviceJwtPrivateKey "$(cat device_ec_pkcs8.pem)"
 export const agonDeviceJwtPrivateKey = config.requireSecret("agonDeviceJwtPrivateKey");
 
+// "Connect YouTube" (agon_service/src/youtube.rs) — a Google OAuth2 client
+// (Web application type) plus the AES-256-GCM key that encrypts stored
+// refresh tokens at rest. `requireSecret`/`require` (not the `get*`
+// variants), same reasoning as the device-pairing keypair above: the
+// *service* still treats an unset env var as "feature unavailable" rather
+// than an error (`GoogleOAuthConfig::from_env`/`TokenCipher::from_env`), but
+// once a stack means to offer this, a half-configured deployment should
+// fail `pulumi up`, not silently ship broken. The redirect URI isn't its
+// own config value — it's always `${agonUiUrl}/settings/youtube` (the
+// `agon_ui` page that exchanges Google's redirect, see youtube.rs's module
+// doc comment), so there's nothing to keep in sync by hand.
+//   pulumi config set googleOauthClientId <client id>
+//   pulumi config set --secret googleOauthClientSecret <client secret>
+//   pulumi config set --secret agonYoutubeTokenKey "$(openssl rand -base64 32)"
+export const googleOauthClientId = config.require("googleOauthClientId");
+export const googleOauthClientSecret = config.requireSecret("googleOauthClientSecret");
+export const agonYoutubeTokenKey = config.requireSecret("agonYoutubeTokenKey");
+
 // ── UI e2e test account ──────────────────────────────────────────────────────
 // The fixed Supabase user the UI e2e suite (agon_ui/e2e) logs in as through the
 // real login form — a real Supabase account, not a locally-trusted key, so it
@@ -1845,6 +1863,25 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 							{
 								name: "AGON_DEVICE_JWKS",
 								value: config.get("agonDeviceJwks"),
+							},
+							// "Connect YouTube" — see the googleOauthClientId/
+							// googleOauthClientSecret/agonYoutubeTokenKey config
+							// declarations above.
+							{
+								name: "GOOGLE_OAUTH_CLIENT_ID",
+								value: googleOauthClientId,
+							},
+							{
+								name: "GOOGLE_OAUTH_CLIENT_SECRET",
+								value: googleOauthClientSecret,
+							},
+							{
+								name: "GOOGLE_OAUTH_REDIRECT_URI",
+								value: `${agonUiUrl}/settings/youtube`,
+							},
+							{
+								name: "AGON_YOUTUBE_TOKEN_KEY",
+								value: agonYoutubeTokenKey,
 							},
 							{
 								name: "MEILI_URL",

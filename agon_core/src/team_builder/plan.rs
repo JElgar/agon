@@ -9,6 +9,18 @@ use super::scale::display_rating;
 use super::solver::{self, Method, PoolSlot, Verdict, WinProbability};
 use super::strength::{self, History, Level, RatingInput, Signal, WinRateInfo, WinRecord};
 
+/// For a defaulted field: missing, `null` and (from JavaScript)
+/// `undefined` all mean "use the default". Plain `#[serde(default)]` only
+/// covers a missing key, and a JS caller building an object literal
+/// naturally writes `record: undefined` for a player with no record.
+fn default_if_absent<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Option::unwrap_or_default)
+}
+
 /// Who the split may move.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -40,11 +52,11 @@ pub struct PlanPlayer {
     #[cfg_attr(feature = "wasm", tsify(optional))]
     pub rating: Option<DisplayedRating>,
     /// Their played/won/drawn/lost in this sport.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "default_if_absent")]
     #[cfg_attr(feature = "wasm", tsify(optional))]
     pub record: WinRecord,
     /// No account behind this roster entry.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "default_if_absent")]
     #[cfg_attr(feature = "wasm", tsify(optional))]
     pub guest: bool,
     #[serde(default)]
@@ -68,7 +80,7 @@ pub struct PlanInput {
     /// One entry per side, in the caller's side order: a cap, or `null`.
     pub caps: Vec<Option<usize>>,
     pub method: Method,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "default_if_absent")]
     #[cfg_attr(feature = "wasm", tsify(optional))]
     pub scope: Scope,
     pub seed: u64,
@@ -278,6 +290,25 @@ mod tests {
         assert!(text.contains("\"verdict\""));
         assert!(text.contains("\"signal\":\"guest\""));
         assert!(text.contains("\"level\":\"stronger\""));
+    }
+
+    #[test]
+    fn null_means_default_for_defaulted_fields() {
+        let json = r#"{
+            "players": [
+                {"id": "p1", "record": null, "guest": null, "rating": null},
+                {"id": "p2", "record": {"played": 3, "wins": 2, "draws": 0, "losses": 1}}
+            ],
+            "caps": [null, null],
+            "method": "random",
+            "scope": null,
+            "seed": 1
+        }"#;
+        let input: PlanInput = serde_json::from_str(json).unwrap();
+        assert_eq!(input.players[0].record, WinRecord::default());
+        assert!(!input.players[0].guest);
+        assert_eq!(input.scope, Scope::Unassigned);
+        assert!(plan(&input).is_ok());
     }
 
     #[test]

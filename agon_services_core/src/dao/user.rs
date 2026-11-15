@@ -7,7 +7,7 @@ use aws_sdk_dynamodb::types::{AttributeValue, Put, TransactWriteItem};
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::is_update_conditional_failure;
-use super::item::{ATTR_PK, ATTR_SK, from_item, s, to_item};
+use super::item::{ATTR_PK, ATTR_SK, ItemBuilder, from_item, s, to_item};
 use super::keys::{Pk, Sk};
 use super::records::{AuthGuardRecord, EmailGuardRecord, UserRecord};
 
@@ -26,7 +26,18 @@ impl Dao {
     /// we return `Conflict`. `user.id` is the internal id (not the `sub`).
     #[tracing::instrument(skip(self, user), fields(user_id = %user.id))]
     pub async fn create_user(&self, sub: &str, user: &UserRecord) -> DaoResult<()> {
-        let profile_item = to_item(&Pk::User(user.id.clone()), &Sk::Profile, TYPE_USER, user)?;
+        let profile_item = ItemBuilder::new(to_item(
+            &Pk::User(user.id.clone()),
+            &Sk::Profile,
+            TYPE_USER,
+            user,
+        )?)
+        .entity(
+            super::entity_index::EntityKind::User,
+            &user.created_at,
+            &user.id,
+        )
+        .build();
 
         // The guard items only need to exist; each stores the owning user id so
         // the guard can be traced back (and released/rewritten on email or auth

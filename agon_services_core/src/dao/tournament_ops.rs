@@ -14,7 +14,7 @@ use aws_sdk_dynamodb::types::{AttributeValue, Delete, Put, TransactWriteItem, Up
 use super::client::Dao;
 use super::error::{DaoError, DaoResult};
 use super::is_update_conditional_failure;
-use super::item::{ATTR_GSI1PK, ATTR_PK, ATTR_SK, from_item, s, to_item};
+use super::item::{ATTR_GSI1PK, ATTR_PK, ATTR_SK, ItemBuilder, from_item, s, to_item};
 use super::keys::{Pk, Sk};
 use super::page::Page;
 use super::records::{
@@ -30,12 +30,18 @@ impl Dao {
     /// Create a tournament meta item. `Conflict` if the id already exists.
     #[tracing::instrument(skip(self, tournament), fields(tournament_id = %tournament.id))]
     pub async fn create_tournament(&self, tournament: &TournamentRecord) -> DaoResult<()> {
-        let item = to_item(
+        let item = ItemBuilder::new(to_item(
             &Pk::Tournament(tournament.id.clone()),
             &Sk::Meta,
             TYPE_TOURNAMENT,
             tournament,
-        )?;
+        )?)
+        .entity(
+            super::entity_index::EntityKind::Tournament,
+            &tournament.created_at,
+            &tournament.id,
+        )
+        .build();
         let result = self
             .client
             .put_item()

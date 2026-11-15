@@ -42,13 +42,19 @@ async fn ensure_table_exists(client: &aws_sdk_dynamodb::Client, table: &str) {
         Projection, ProjectionType, ScalarAttributeType,
     };
 
-    if client
-        .describe_table()
-        .table_name(table)
-        .send()
-        .await
-        .is_ok()
-    {
+    if let Ok(existing) = client.describe_table().table_name(table).send().await {
+        // A table created before the entity index (GSI4) existed: add it.
+        let has_gsi4 = existing
+            .table()
+            .map(|t| {
+                t.global_secondary_indexes()
+                    .iter()
+                    .any(|g| g.index_name() == Some("GSI4"))
+            })
+            .unwrap_or(false);
+        if !has_gsi4 {
+            add_entity_index(client, table).await;
+        }
         return;
     }
 
@@ -91,11 +97,14 @@ async fn ensure_table_exists(client: &aws_sdk_dynamodb::Client, table: &str) {
         .attribute_definitions(attr("GSI2SK"))
         .attribute_definitions(attr("GSI3PK"))
         .attribute_definitions(attr("GSI3SK"))
+        .attribute_definitions(attr("GSI4PK"))
+        .attribute_definitions(attr("GSI4SK"))
         .key_schema(key("PK", KeyType::Hash))
         .key_schema(key("SK", KeyType::Range))
         .global_secondary_indexes(gsi("GSI1", "GSI1PK", "GSI1SK"))
         .global_secondary_indexes(gsi("GSI2", "GSI2PK", "GSI2SK"))
         .global_secondary_indexes(gsi("GSI3", "GSI3PK", "GSI3SK"))
+        .global_secondary_indexes(entity_index())
         .billing_mode(BillingMode::PayPerRequest)
         .send()
         .await;
@@ -113,5 +122,67 @@ async fn ensure_table_exists(client: &aws_sdk_dynamodb::Client, table: &str) {
         if !is_already_exists {
             panic!("create table for local test run: {err:?}");
         }
+    }
+}
+
+/// GSI4, the keys-only entity index (see `dao::entity_index`).
+fn entity_index() -> aws_sdk_dynamodb::types::GlobalSecondaryIndex {
+    use aws_sdk_dynamodb::types::{
+        GlobalSecondaryIndex, KeySchemaElement, KeyType, Projection, ProjectionType,
+    };
+    let key = |name: &str, kind: KeyType| {
+        KeySchemaElement::builder()
+            .attribute_name(name)
+            .key_type(kind)
+            .build()
+            .unwrap()
+    };
+    GlobalSecondaryIndex::builder()
+        .index_name("GSI4")
+        .key_schema(key("GSI4PK", KeyType::Hash))
+        .key_schema(key("GSI4SK", KeyType::Range))
+        .projection(
+            Projection::builder()
+                .projection_type(ProjectionType::KeysOnly)
+                .build(),
+        )
+        .build()
+        .unwrap()
+}
+
+async fn add_entity_index(client: &aws_sdk_dynamodb::Client, table: &str) {
+    use aws_sdk_dynamodb::types::{
+        AttributeDefinition, CreateGlobalSecondaryIndexAction, GlobalSecondaryIndexUpdate,
+        ScalarAttributeType,
+    };
+    let attr = |name: &str| {
+        AttributeDefinition::builder()
+            .attribute_name(name)
+            .attribute_type(ScalarAttributeType::S)
+            .build()
+            .unwrap()
+    };
+    let gsi = entity_index();
+    let create = CreateGlobalSecondaryIndexAction::builder()
+        .index_name("GSI4")
+        .set_key_schema(Some(gsi.key_schema().to_vec()))
+        .set_projection(gsi.projection().cloned())
+        .build()
+        .unwrap();
+    let result = client
+        .update_table()
+        .table_name(table)
+        .attribute_definitions(attr("GSI4PK"))
+        .attribute_definitions(attr("GSI4SK"))
+        .global_secondary_index_updates(
+            GlobalSecondaryIndexUpdate::builder().create(create).build(),
+        )
+        .send()
+        .await;
+    // Another test binary may have added it first.
+    if let Err(err) = result
+        && !format!("{err:?}").contains("already exists")
+    {
+        panic!("add GSI4 for local test run: {err:?}");
     }
 }

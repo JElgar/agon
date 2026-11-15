@@ -7,6 +7,9 @@
 //! The inline slice always runs. Multi-step orchestration (feed fan-out, the
 //! accept-invitation saga) lives in the `temporal` module and runs a Temporal
 //! worker alongside the consumer loop in this same binary.
+//!
+//! `agon_worker migrate-entity-index [...]` runs the one-off entity-index
+//! migration instead of the worker and exits (see `migrate_entity_index`).
 
 mod asset_consumer;
 mod config;
@@ -14,6 +17,7 @@ mod consumer;
 mod error;
 mod event;
 mod handlers;
+mod migrate_entity_index;
 mod temporal;
 
 use agon_services_core::dao::Dao;
@@ -29,6 +33,20 @@ async fn main() {
     // Held for the process lifetime; dropping it on the way out of `main`
     // flushes the OTLP batch exporters. See agon_services_core::telemetry.
     let _telemetry = agon_services_core::telemetry::init("agon-worker");
+
+    // One-off jobs share the binary (and its image) but not the worker's config.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("migrate-entity-index") {
+        let code = match migrate_entity_index::MigrateArgs::parse(&args[1..]) {
+            Ok(a) => migrate_entity_index::run(a).await,
+            Err(e) => {
+                tracing::error!(error = %e, "invalid migrate-entity-index arguments");
+                2
+            }
+        };
+        drop(_telemetry);
+        std::process::exit(code);
+    }
 
     let config = match Config::from_env() {
         Ok(c) => c,

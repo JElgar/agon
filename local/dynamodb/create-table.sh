@@ -1,7 +1,7 @@
 #!/bin/sh
 # Creates the `agon` table against DynamoDB Local, mirroring the real table's
 # schema in agon_infra/index.ts (`dynamoTable`) — single table, PK/SK keys,
-# three overloaded GSIs, TTL on `ttl`, streaming enabled (NEW_AND_OLD_IMAGES,
+# three overloaded GSIs plus the keys-only entity index (GSI4), TTL on `ttl`, streaming enabled (NEW_AND_OLD_IMAGES,
 # same as real). Runs as a one-shot compose service (see docker-compose.yml's
 # `dynamodb-local-init`); idempotent, so safe to re-run against an
 # already-bootstrapped instance.
@@ -33,6 +33,8 @@ aws dynamodb create-table \
     AttributeName=GSI2SK,AttributeType=S \
     AttributeName=GSI3PK,AttributeType=S \
     AttributeName=GSI3SK,AttributeType=S \
+    AttributeName=GSI4PK,AttributeType=S \
+    AttributeName=GSI4SK,AttributeType=S \
   --key-schema \
     AttributeName=PK,KeyType=HASH \
     AttributeName=SK,KeyType=RANGE \
@@ -40,8 +42,21 @@ aws dynamodb create-table \
     'IndexName=GSI1,KeySchema=[{AttributeName=GSI1PK,KeyType=HASH},{AttributeName=GSI1SK,KeyType=RANGE}],Projection={ProjectionType=ALL}' \
     'IndexName=GSI2,KeySchema=[{AttributeName=GSI2PK,KeyType=HASH},{AttributeName=GSI2SK,KeyType=RANGE}],Projection={ProjectionType=ALL}' \
     'IndexName=GSI3,KeySchema=[{AttributeName=GSI3PK,KeyType=HASH},{AttributeName=GSI3SK,KeyType=RANGE}],Projection={ProjectionType=ALL}' \
+    'IndexName=GSI4,KeySchema=[{AttributeName=GSI4PK,KeyType=HASH},{AttributeName=GSI4SK,KeyType=RANGE}],Projection={ProjectionType=KEYS_ONLY}' \
   --stream-specification StreamEnabled=true,StreamViewType=NEW_AND_OLD_IMAGES \
   >/dev/null 2>&1 && echo "Created table 'agon'" || echo "Table 'agon' already exists"
+
+# A table created before GSI4 existed won't have it: add it. A no-op error
+# (index already exists) on every other run.
+aws dynamodb update-table \
+  --endpoint-url "$ENDPOINT" \
+  --table-name agon \
+  --attribute-definitions \
+    AttributeName=GSI4PK,AttributeType=S \
+    AttributeName=GSI4SK,AttributeType=S \
+  --global-secondary-index-updates \
+    '[{"Create":{"IndexName":"GSI4","KeySchema":[{"AttributeName":"GSI4PK","KeyType":"HASH"},{"AttributeName":"GSI4SK","KeyType":"RANGE"}],"Projection":{"ProjectionType":"KEYS_ONLY"}}}]' \
+  >/dev/null 2>&1 && echo "Added GSI4 to existing table 'agon'" || true
 
 # TTL isn't part of CreateTable (real AWS or Local) — a separate call, same as
 # Pulumi's `ttl: {...}` on the table resource issues under the hood.

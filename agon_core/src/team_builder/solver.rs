@@ -54,6 +54,7 @@ const CANDIDATE_CAP: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 pub enum Method {
     Random,
     AutoBalanced,
@@ -101,6 +102,7 @@ impl std::error::Error for BuildError {}
 /// How even a split came out, in the units the UI shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 pub enum Verdict {
     Even,
     Close,
@@ -124,6 +126,7 @@ pub struct Balance {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 pub struct WinProbability {
     pub expected: f64,
     pub low: f64,

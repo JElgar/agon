@@ -12,6 +12,7 @@ use super::strength::{self, History, Level, RatingInput, Signal, WinRateInfo, Wi
 /// Who the split may move.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 pub enum Scope {
     /// Only players with no side yet; everyone placed stays put.
     #[default]
@@ -22,6 +23,7 @@ pub enum Scope {
 
 /// A rating as the public API shows it (`LadderRating`): display scale.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 pub struct DisplayedRating {
     pub rating: f64,
     pub confidence: f64,
@@ -29,40 +31,51 @@ pub struct DisplayedRating {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 pub struct PlanPlayer {
     /// Whatever the caller keys players by (entrant id, player id).
     pub id: String,
     /// The player's published rating on this sport's ladder, if any.
     #[serde(default)]
+    #[cfg_attr(feature = "wasm", tsify(optional))]
     pub rating: Option<DisplayedRating>,
     /// Their played/won/drawn/lost in this sport.
     #[serde(default)]
+    #[cfg_attr(feature = "wasm", tsify(optional))]
     pub record: WinRecord,
     /// No account behind this roster entry.
     #[serde(default)]
+    #[cfg_attr(feature = "wasm", tsify(optional))]
     pub guest: bool,
     #[serde(default)]
+    #[cfg_attr(feature = "wasm", tsify(optional))]
     pub level: Option<Level>,
     /// Side index they're on now, if any.
     #[serde(default)]
+    #[cfg_attr(feature = "wasm", tsify(optional))]
     pub current_side: Option<usize>,
     /// Side index the organiser pinned them to, if any.
     #[serde(default)]
+    #[cfg_attr(feature = "wasm", tsify(optional))]
     pub pinned_side: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(from_wasm_abi))]
 pub struct PlanInput {
     pub players: Vec<PlanPlayer>,
     /// One entry per side, in the caller's side order: a cap, or `null`.
     pub caps: Vec<Option<usize>>,
     pub method: Method,
     #[serde(default)]
+    #[cfg_attr(feature = "wasm", tsify(optional))]
     pub scope: Scope,
     pub seed: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 pub struct PlannedPlayer {
     pub id: String,
     pub signal: Signal,
@@ -82,6 +95,7 @@ pub struct PlannedPlayer {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 pub struct PlannedSide {
     /// Average estimated strength, display scale, rounded to 10.
     pub average: Option<i32>,
@@ -90,6 +104,8 @@ pub struct PlannedSide {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", tsify(into_wasm_abi))]
 pub struct PlanOutput {
     pub seed: u64,
     pub method: Method,

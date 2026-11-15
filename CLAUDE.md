@@ -8,7 +8,7 @@ Agon is a Rust-based team management API service built with the Poem web framewo
 
 - **agon_services_core**: Shared library — the DAO (DynamoDB single-table access), search client, telemetry, and record types. Used by both binaries.
 - **agon_core**: Logic shared by every target, not just the backend: sport scoring (folding live events into a score) and the auto team builder (`team_builder`). Dependency-light (no AWS SDK, no web framework) so it also builds for `wasm32-unknown-unknown` and can be bound into mobile via UniFFI. `agon_service` maps its OpenAPI wire types onto this crate's plain types to use it.
-- **agon_core_wasm**: Thin wasm-bindgen shim over `agon_core` for the browser (JSON in, JSON out). `npm run build:wasm` in `agon_ui` builds it into `agon_ui/src/wasm/agon_core` (gitignored); needs the `wasm32-unknown-unknown` target and `wasm-bindgen-cli` at the version `agon_core_wasm` pins.
+- **agon_core_wasm**: Thin wasm-bindgen shim over `agon_core` for the browser. Its TypeScript types are generated from `agon_core`'s structs (the `wasm` feature derives them with `tsify`), never hand-written. `npm run build:wasm` in `agon_ui` builds it into `agon_ui/src/wasm/agon_core` (gitignored); needs the `wasm32-unknown-unknown` target and `wasm-bindgen-cli` at the version `agon_core_wasm` pins.
 - **agon_service**: Main API service using Poem framework with OpenAPI documentation
 - **agon_worker**: Async worker that consumes the DynamoDB stream (indexing to search, feed fan-out)
 - **agon_tests**: Integration tests that use the generated OpenAPI client

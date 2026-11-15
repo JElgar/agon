@@ -25,8 +25,17 @@ rand_chacha = { version = "0.9", default-features = false }
 # async web framework, which has no business in a client-side build.
 poem-openapi = { version = "5", features = ["chrono"], optional = true }
 
+# Optional: the `wasm` feature (enabled only by agon_core_wasm) derives a
+# TypeScript type for every team-builder type that crosses into the browser,
+# and passes them as real JS objects (via serde-wasm-bindgen) rather than
+# JSON strings, so agon_ui's types are generated from these structs instead
+# of hand-copied. Same pattern as `openapi`: off for every other build.
+tsify-next = { version = "0.5", default-features = false, features = ["js"], optional = true }
+wasm-bindgen = { version = "=0.2.100", optional = true }
+
 [features]
 openapi = ["poem-openapi"]
+wasm = ["dep:tsify-next", "dep:wasm-bindgen"]
 
 [dev-dependencies]
 serde_json = "1"

@@ -51,10 +51,10 @@ agon_core::team_builder          (shared crate, pure: no I/O, no clock)
   └── scale.rs      the rating engine's constants + display ↔ native mapping
 
 agon_core_wasm                   (thin wasm-bindgen shim)
-  └── autoAssign(json) -> json   PlanInput in, PlanOutput out
+  └── autoAssign(PlanInput): PlanOutput   typed both sides, no JSON strings
 
 agon_ui
-  ├── lib/agonCore.ts            loads the wasm once; TS mirrors of the serde shapes
+  ├── lib/agonCore.ts            loads the wasm once; re-exports the generated types
   └── components/agon/AutoAssignSheet.tsx
 ```
 
@@ -84,6 +84,13 @@ anyone joined, left or moved since the preview, it writes nothing and asks
 for a fresh preview. The tournament path is one request per entrant, so a
 failure partway through leaves some entrants moved. That's visible on the
 board and safe to re-run.
+
+**Shared types.** The TypeScript types are generated from the Rust
+structs, not copied by hand. `agon_core`'s optional `wasm` feature (enabled
+only by `agon_core_wasm`, the same pattern as its `openapi` feature) derives
+a TS type for every type that crosses the boundary, via `tsify`, into the
+wasm package's `.d.ts`. Values cross as plain JS objects through
+`serde-wasm-bindgen`. Optional Rust fields are `T | undefined` in TS.
 
 **Constants.** `scale.rs` mirrors the rating engine's constants, because
 the engine (`agon_services_core::rating`, built on `skillratings`) isn't

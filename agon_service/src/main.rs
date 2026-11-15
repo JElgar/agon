@@ -108,6 +108,7 @@ mod share;
 // Plain (non-OpenAPI) device-pairing QR code image — see its own doc
 // comment for why this can't be a typed `#[oai(...)]` endpoint.
 mod qr;
+mod youtube;
 
 #[derive(SecurityScheme)]
 #[oai(
@@ -13572,7 +13573,12 @@ async fn main() {
     //     this service's own `/ping`.
     // See OpenAPI 3's Server Object: server URLs may be relative to the
     // document's own serving location.
-    let api_service = OpenApiService::new((Api, admin::AdminApi), "Agon API", "1.0").server(".");
+    let api_service = OpenApiService::new(
+        (Api, admin::AdminApi, youtube::YoutubeApi),
+        "Agon API",
+        "1.0",
+    )
+    .server(".");
 
     match args.command {
         Commands::RunServer { url: _ } => {
@@ -13630,6 +13636,13 @@ async fn main() {
             // than failing to start. See `DeviceTokenSigner`.
             let device_signer = auth::DeviceTokenSigner::from_env();
 
+            // "Connect YouTube" (see youtube.rs) — both `None` when
+            // unconfigured, in which case those endpoints report 503
+            // rather than failing to start, same convention as
+            // `device_signer` above.
+            let youtube_oauth = youtube::GoogleOAuthConfig::from_env();
+            let youtube_token_cipher = youtube::TokenCipher::from_env();
+
             let app = Route::new()
                 // A specific, named route always outranks a nested "/"
                 // catch-all in poem's router regardless of registration
@@ -13648,6 +13661,8 @@ async fn main() {
                 .data(search)
                 .data(verifier)
                 .data(device_signer)
+                .data(youtube_oauth)
+                .data(youtube_token_cipher)
                 .data(assets)
                 .data(ui_base_url)
                 .around(log_middleware)

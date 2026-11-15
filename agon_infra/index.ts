@@ -6,6 +6,7 @@ import * as nginx from "@pulumi/kubernetes-ingress-nginx";
 import * as aws from "@pulumi/aws";
 import * as gcp from "@pulumi/gcp";
 import * as tls from "@pulumi/tls";
+import * as random from "@pulumi/random";
 
 const config = new pulumi.Config();
 const subdomainPrefix = pulumi.getStack();
@@ -880,6 +881,30 @@ export const agonTestJwtPrivateKey = config.requireSecret("agonTestJwtPrivateKey
 //   pulumi config set agonDeviceJwks '{"keys":[...]}'
 //   pulumi config set --secret agonDeviceJwtPrivateKey "$(cat device_ec_pkcs8.pem)"
 export const agonDeviceJwtPrivateKey = config.requireSecret("agonDeviceJwtPrivateKey");
+
+// "Connect YouTube" (agon_service/src/youtube.rs) — a Google OAuth2 client
+// (Web application type) plus the AES-256-GCM key that encrypts stored
+// refresh tokens at rest. The OAuth client secret uses `requireSecret`/
+// `require` (not the `get*` variants), same reasoning as the device-pairing
+// keypair above: the *service* still treats an unset env var as "feature
+// unavailable" rather than an error (`GoogleOAuthConfig::from_env`), but
+// once a stack means to offer this, a half-configured deployment should
+// fail `pulumi up`, not silently ship broken. The redirect URI isn't its
+// own config value — it's always `${agonUiUrl}/settings/youtube` (the
+// `agon_ui` page that exchanges Google's redirect, see youtube.rs's module
+// doc comment), so there's nothing to keep in sync by hand.
+//   pulumi config set googleOauthClientId <client id>
+//   pulumi config set --secret googleOauthClientSecret <client secret>
+//
+// The encryption key, unlike the OAuth client, has no reason to exist
+// outside Pulumi state — nothing external needs a copy, same reasoning as
+// `assetSigningKey` below. Generated in-stack instead of by hand.
+const youtubeTokenKey = new random.RandomBytes("agon-youtube-token-key", {
+	length: 32,
+});
+export const googleOauthClientId = config.require("googleOauthClientId");
+export const googleOauthClientSecret = config.requireSecret("googleOauthClientSecret");
+export const agonYoutubeTokenKey = youtubeTokenKey.base64;
 
 // ── UI e2e test account ──────────────────────────────────────────────────────
 // The fixed Supabase user the UI e2e suite (agon_ui/e2e) logs in as through the
@@ -1845,6 +1870,25 @@ new k8s.apps.v1.Deployment("agon-deployment", {
 							{
 								name: "AGON_DEVICE_JWKS",
 								value: config.get("agonDeviceJwks"),
+							},
+							// "Connect YouTube" — see the googleOauthClientId/
+							// googleOauthClientSecret/agonYoutubeTokenKey config
+							// declarations above.
+							{
+								name: "GOOGLE_OAUTH_CLIENT_ID",
+								value: googleOauthClientId,
+							},
+							{
+								name: "GOOGLE_OAUTH_CLIENT_SECRET",
+								value: googleOauthClientSecret,
+							},
+							{
+								name: "GOOGLE_OAUTH_REDIRECT_URI",
+								value: `${agonUiUrl}/settings/youtube`,
+							},
+							{
+								name: "AGON_YOUTUBE_TOKEN_KEY",
+								value: agonYoutubeTokenKey,
 							},
 							{
 								name: "MEILI_URL",

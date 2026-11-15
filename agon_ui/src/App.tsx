@@ -41,6 +41,7 @@ import { AcceptInvitePage } from '@/pages/AcceptInvitePage'
 import { JoinMatchPage } from '@/pages/JoinMatchPage'
 import { PairDevicePage } from '@/pages/PairDevicePage'
 import { PairedDevicesPage } from '@/pages/PairedDevicesPage'
+import { YoutubeConnectionPage } from '@/pages/YoutubeConnectionPage'
 import { TeamsPage } from '@/pages/TeamsPage'
 import { TeamPage } from '@/pages/TeamPage'
 import { AdminLayout } from '@/pages/admin/AdminLayout'
@@ -168,6 +169,7 @@ function AppShell({ onSignOut }: { onSignOut: () => void }) {
           <Route path="/search" element={<UserSearchPage />} />
           <Route path="/profile" element={<ProfilePage />} />
           <Route path="/devices" element={<PairedDevicesPage />} />
+          <Route path="/settings/youtube" element={<YoutubeConnectionPage />} />
           <Route path="/profile/stats/:sport" element={<SportStatsPage />} />
           <Route path="/users/:userId" element={<ProfilePage />} />
           <Route path="/users/:userId/stats/:sport" element={<SportStatsPage />} />

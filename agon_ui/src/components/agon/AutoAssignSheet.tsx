@@ -98,7 +98,7 @@ function usePoolProfiles(userIds: string[]) {
 
 /** A member's history in this sport, from their public profile. */
 function historyFor(profile: UserProfile | undefined, sport: string) {
-  if (!profile) return { rating: null, record: undefined }
+  if (!profile) return { rating: undefined, record: undefined }
   const ladder = profile.ratings.find((r) => r.ladder === sport)
   const stats = (profile.stats as Record<string, unknown>)[sport] as
     | { matches_played?: number; wins?: number; draws?: number; losses?: number }
@@ -107,7 +107,7 @@ function historyFor(profile: UserProfile | undefined, sport: string) {
   return {
     rating: ladder
       ? { rating: ladder.rating, confidence: ladder.confidence, matches_rated: ladder.matches_rated }
-      : null,
+      : undefined,
     record: stats
       ? {
           played: stats.matches_played ?? 0,
@@ -190,15 +190,15 @@ export function AutoAssignSheet({
             rating: h.rating,
             record: h.record,
             guest: !m.userId,
-            level: args.levels.get(m.id) ?? null,
-            current_side: m.currentSide,
-            pinned_side: args.pins.get(m.id) ?? null,
+            level: args.levels.get(m.id),
+            current_side: m.currentSide ?? undefined,
+            pinned_side: args.pins.get(m.id),
           }
         }),
         caps:
           target.kind === 'tournament'
-            ? Array.from({ length: sideCount }, () => null)
-            : target.sides.map((s) => s.maxPlayers ?? null),
+            ? Array.from({ length: sideCount }, () => undefined)
+            : target.sides.map((s) => s.maxPlayers),
         method,
         scope,
         seed: args.seed,

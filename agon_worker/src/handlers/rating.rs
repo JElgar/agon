@@ -67,15 +67,15 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use agon_core::dao::Dao;
-use agon_core::dao::error::DaoResult;
-use agon_core::dao::keys::{Pk, Sk};
-use agon_core::dao::match_ops::MatchAggregate;
-use agon_core::dao::records::{
+use agon_services_core::dao::Dao;
+use agon_services_core::dao::error::DaoResult;
+use agon_services_core::dao::keys::{Pk, Sk};
+use agon_services_core::dao::match_ops::MatchAggregate;
+use agon_services_core::dao::records::{
     MatchPlayerRecord, MatchRecord, RatingContributionRecord, RatingMovementRecord, RatingRecord,
     UserRecord,
 };
-use agon_core::rating::{
+use agon_services_core::rating::{
     Ladder, MatchParticipant, PlayerRating, RatingTable, RatingUpdate, ladder_for_tag, rate_match,
 };
 
@@ -849,12 +849,12 @@ impl RatingStore for Dao {
 mod tests {
     use std::cell::{Cell, RefCell};
 
-    use agon_core::dao::error::DaoError;
-    use agon_core::dao::records::{
+    use agon_services_core::dao::error::DaoError;
+    use agon_services_core::dao::records::{
         ConfirmedScoreRecord, EmbeddedInvitationRecord, InvitationKindRecord, MatchSideRecord,
         RatingHistoryRecord, ScoreRecord, UserStatsRecord,
     };
-    use agon_core::rating::{INITIAL_MU, INITIAL_SIGMA};
+    use agon_services_core::rating::{INITIAL_MU, INITIAL_SIGMA};
 
     use super::*;
 

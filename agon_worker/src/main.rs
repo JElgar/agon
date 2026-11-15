@@ -16,19 +16,19 @@ mod event;
 mod handlers;
 mod temporal;
 
-use agon_core::dao::Dao;
+use agon_services_core::dao::Dao;
 use aws_sdk_sqs::Client as SqsClient;
 
 use crate::config::Config;
 use crate::consumer::Consumer;
-use agon_core::push::PushClient;
-use agon_core::search::SearchClient;
+use agon_services_core::push::PushClient;
+use agon_services_core::search::SearchClient;
 
 #[tokio::main]
 async fn main() {
     // Held for the process lifetime; dropping it on the way out of `main`
-    // flushes the OTLP batch exporters. See agon_core::telemetry.
-    let _telemetry = agon_core::telemetry::init("agon-worker");
+    // flushes the OTLP batch exporters. See agon_services_core::telemetry.
+    let _telemetry = agon_services_core::telemetry::init("agon-worker");
 
     let config = match Config::from_env() {
         Ok(c) => c,

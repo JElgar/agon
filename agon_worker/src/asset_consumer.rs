@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use agon_core::dao::Dao;
+use agon_services_core::dao::Dao;
 use aws_sdk_sqs::Client as SqsClient;
 use aws_sdk_sqs::types::Message;
 use futures::future::join_all;

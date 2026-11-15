@@ -16,12 +16,12 @@ pub mod rating;
 pub mod stats;
 pub mod tournament;
 
-use agon_core::dao::Dao;
+use agon_services_core::dao::Dao;
 
 use crate::error::WorkerResult;
 use crate::event::ChangeEvent;
-use agon_core::push::PushClient;
-use agon_core::search::SearchClient;
+use agon_services_core::push::PushClient;
+use agon_services_core::search::SearchClient;
 
 /// Run every inline handler applicable to one event. `now` is the processing
 /// timestamp (RFC3339), used where an event carries no timestamp of its own.

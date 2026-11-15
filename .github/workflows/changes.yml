@@ -8,7 +8,7 @@ on:
         description: 'agon_worker (or a shared agon_core/workspace-manifest) changed'
         value: ${{ jobs.changes.outputs.worker }}
       ui:
-        description: 'agon_ui changed'
+        description: 'agon_ui (or the agon_core it runs as wasm) changed'
         value: ${{ jobs.changes.outputs.ui }}
 
 jobs:
@@ -42,3 +42,5 @@ jobs:
               - 'agon_worker/**'
             ui:
               - 'agon_ui/**'
+              - 'agon_core/**'
+              - 'agon_core_wasm/**'

@@ -1,43 +1,25 @@
-//! Auto team builder — the pure core behind "Auto-assign".
+//! Auto team builder — split a pool of players into squads or sides,
+//! at random or balanced.
 //!
-//! An organiser has a pool of players and some sides (a teamless
-//! tournament's squads, or an intra-squad match's sides) and wants the pool
-//! split between them, either at random or balanced. This module is the
-//! whole of the decision; the DAO reads the pool and writes the result, and
-//! the service decides who may ask.
+//! Lives in this shared crate so the browser runs exactly the code the
+//! tests cover: `agon_core_wasm` exposes [`plan::plan`] to `agon_ui`, which
+//! previews and re-rolls locally and applies the result through the
+//! ordinary roster/squad endpoints. Pure: no I/O, no clock, and the only
+//! randomness is the caller's seed — same input and seed, same split.
 //!
-//! Same rule as `rating::engine` and `tournament`: no DynamoDB, no clock, no
-//! ids minted, and the only randomness is a caller-supplied seed. Same input
-//! and seed, same output — which is what makes "re-roll" a new seed and
-//! keeps every test deterministic.
-//!
-//! Two files, one job each:
-//!
-//! - [`strength`] turns each player's history (rating on the sport's ladder,
-//!   win/draw/loss record, or nothing at all) into an [`strength::Estimate`]:
-//!   a best guess `μ` on the rating engine's native scale, plus `σ`, how
-//!   unsure that guess is. It is the only place the "rating counts more with
-//!   every ranked game" policy lives.
+//! - [`strength`] turns each player's history (published rating, win/draw/
+//!   loss record, or nothing) into an estimate `μ` and an uncertainty `σ`.
+//!   Rating counts more with every ranked game, fully from 10.
 //! - [`solver`] splits players between sides. Random shuffles and deals.
-//!   Auto Balanced evens out expected strength (`Σμ`) first and then spreads
-//!   the uncertain players (`Σσ²`), so no side ends up holding every unknown.
+//!   Auto Balanced evens out `Σμ` first, then spreads the uncertain players.
+//! - [`plan`] is the one-call entry point: estimate, split, measure, label.
+//! - [`scale`] mirrors the rating engine's constants and display mapping.
 //!
-//! See `docs/auto-team-builder.md` for the product decisions behind the
-//! numbers.
+//! See `docs/auto-team-builder.md` for the product decisions.
 
+pub mod plan;
+pub mod scale;
 pub mod solver;
 pub mod strength;
 
-pub use solver::{Balance, BuildError, Method, PoolSlot, Verdict, WinProbability, balance, build};
-pub use strength::{
-    Estimate, History, Level, RatingInput, Signal, WinRateInfo, WinRecord, estimate_pool,
-};
-
-/// A fresh seed for a preview that didn't send one. The one impure helper
-/// in this module, kept beside it so callers don't each pick their own
-/// randomness. Kept below 2³¹ so it round-trips through JSON and every
-/// generated client's `int32` without overflow.
-#[must_use]
-pub fn new_seed() -> u32 {
-    rand::random::<u32>() >> 1
-}
+pub use plan::{PlanInput, PlanOutput, plan};

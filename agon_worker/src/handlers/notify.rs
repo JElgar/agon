@@ -14,9 +14,9 @@
 //! overwritten in place when a side responds, so "score confirmed" is detected
 //! as a `pending → confirmed` MODIFY transition (fired once, on the transition).
 
-use agon_core::dao::Dao;
-use agon_core::dao::keys::{Pk, Sk};
-use agon_core::dao::records::{
+use agon_services_core::dao::Dao;
+use agon_services_core::dao::keys::{Pk, Sk};
+use agon_services_core::dao::records::{
     InvitationContextRecord, InvitationRecord, MatchRecord, NotificationKindRecord,
     NotificationRecord, ScoreSubmissionRecord,
 };
@@ -655,7 +655,7 @@ async fn notify_score_confirmed(
 /// `exclude` (typically the actor, who shouldn't be notified about their own
 /// action).
 fn participant_user_ids(
-    agg: &agon_core::dao::match_ops::MatchAggregate,
+    agg: &agon_services_core::dao::match_ops::MatchAggregate,
     exclude: &str,
 ) -> Vec<String> {
     let mut seen = std::collections::BTreeSet::new();

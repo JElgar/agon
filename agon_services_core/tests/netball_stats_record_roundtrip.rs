@@ -12,10 +12,10 @@ mod common;
 
 use std::collections::HashMap;
 
-use agon_core::dao::item::to_item;
-use agon_core::dao::keys::{Pk, Sk};
-use agon_core::dao::stats::{MatchContribution, MatchOutcome};
-use agon_core::dao::user::TYPE_USER;
+use agon_services_core::dao::item::to_item;
+use agon_services_core::dao::keys::{Pk, Sk};
+use agon_services_core::dao::stats::{MatchContribution, MatchOutcome};
+use agon_services_core::dao::user::TYPE_USER;
 use common::{TestEnv, local_env};
 
 fn unique(prefix: &str) -> String {

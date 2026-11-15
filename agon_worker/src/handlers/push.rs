@@ -14,13 +14,13 @@
 //! here, before the send loop: it only changes whether a push goes out, never
 //! whether the in-app `NotificationRecord` (the bell entry) gets created.
 
-use agon_core::dao::Dao;
-use agon_core::dao::error::DaoError;
-use agon_core::dao::keys::{Pk, Sk};
-use agon_core::dao::records::{
+use agon_services_core::dao::Dao;
+use agon_services_core::dao::error::DaoError;
+use agon_services_core::dao::keys::{Pk, Sk};
+use agon_services_core::dao::records::{
     InvitationContextRecord, NotificationKindRecord, NotificationRecord,
 };
-use agon_core::push::{PushClient, PushOutcome};
+use agon_services_core::push::{PushClient, PushOutcome};
 
 use crate::error::WorkerResult;
 use crate::event::{ChangeEvent, ChangeKind};

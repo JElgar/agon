@@ -9,7 +9,7 @@
 
 pub mod models;
 
-use agon_core::dao;
+use agon_services_core::dao;
 use poem::http::StatusCode;
 use poem::web::Data;
 use poem::{Error, Result};
@@ -91,10 +91,10 @@ impl AdminApi {
     #[oai(path = "/admin/stats", method = "get")]
     async fn get_stats(
         &self,
-        Data(search): Data<&agon_core::search::SearchClient>,
+        Data(search): Data<&agon_services_core::search::SearchClient>,
     ) -> Result<Json<models::Stats>> {
         let total_users = search
-            .count(agon_core::search::Index::Users)
+            .count(agon_services_core::search::Index::Users)
             .await
             .map_err(search_internal)?;
         Ok(Json(models::Stats { total_users }))
@@ -108,7 +108,7 @@ impl AdminApi {
     async fn list_users(
         &self,
         Data(dao): Data<&dao::Dao>,
-        Data(search): Data<&agon_core::search::SearchClient>,
+        Data(search): Data<&agon_services_core::search::SearchClient>,
         /// Free-text search over name/email. Omit or empty to list everyone.
         #[oai(name = "q")]
         Query(query): Query<Option<String>>,
@@ -124,14 +124,14 @@ impl AdminApi {
                 )));
             }
         };
-        let q = agon_core::search::SearchQuery {
+        let q = agon_services_core::search::SearchQuery {
             q: query.unwrap_or_default(),
             offset,
             limit: page_limit(limit),
             ..Default::default()
         };
         let hits = search
-            .search(agon_core::search::Index::Users, &q)
+            .search(agon_services_core::search::Index::Users, &q)
             .await
             .map_err(search_internal)?;
 

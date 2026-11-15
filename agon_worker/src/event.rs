@@ -27,7 +27,7 @@
 //! no extra read — and otherwise ignores them and re-reads current state (so
 //! indexing always reflects the latest committed state).
 
-use agon_core::dao::keys::{KeyError, Pk, Sk};
+use agon_services_core::dao::keys::{KeyError, Pk, Sk};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
@@ -142,7 +142,7 @@ fn deserialize_image<T: DeserializeOwned>(image: Option<&Image>) -> Option<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agon_core::dao::records::{
+    use agon_services_core::dao::records::{
         InvitationContextRecord, InvitationKindRecord, InvitationRecord,
     };
 
@@ -281,7 +281,7 @@ mod tests {
 
         let event = ChangeEvent::from_envelope(&envelope).unwrap();
         assert_eq!(event.kind, ChangeKind::Insert);
-        let user: agon_core::dao::records::UserRecord = event
+        let user: agon_services_core::dao::records::UserRecord = event
             .new_record()
             .expect("new image parses into UserRecord");
         assert_eq!(user.id, "u1");

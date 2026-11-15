@@ -152,7 +152,7 @@ DynamoDB Local has a real interop bug where it renders an empty Map
 attribute in a stream record as bare `{}` instead of the tagged `{"M": {}}`
 real DynamoDB uses, which the generated client's strict typed deserializer
 rejects outright — failing the *entire* batch, not just that one attribute
-(`agon_core`'s records commonly carry an empty map early on, e.g. a fresh
+(`agon_services_core`'s records commonly carry an empty map early on, e.g. a fresh
 user's `stats: {}`, so this hits nearly every record). The fix: a raw HTTP
 call for `GetRecords` specifically, parsed as untyped JSON and patched
 (`patch_image`/`patch_empty_maps`) before forwarding. DynamoDB Local doesn't

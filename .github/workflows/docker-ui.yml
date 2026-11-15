@@ -31,6 +31,12 @@ jobs:
           name: agon-ui-openapi-types
           path: agon_ui/src/types
 
+      # agon_core's wasm build (`npm run build:wasm`), from build-ui.yml too.
+      - uses: actions/download-artifact@v4
+        with:
+          name: agon-ui-wasm
+          path: agon_ui/src/wasm
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 

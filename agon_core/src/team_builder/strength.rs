@@ -23,11 +23,15 @@
 //! Stronger moves `μ` to this pool's lower or upper quartile, keeping `σ`,
 //! so an overridden unknown is still spread out like any other unknown.
 //!
-//! A rating still in placement (`rating::published` false) feeds the
-//! estimate like any other, but is tagged [`Signal::Placement`] so the API
-//! layer can withhold the number. Nothing here decides what is shown.
+//! A rating still in placement feeds the estimate like any other, but is
+//! tagged [`Signal::Placement`] so a caller that can see one (the backend)
+//! knows to withhold the number. A browser caller never sees placement
+//! ratings at all — the API doesn't publish them — so for it those players
+//! simply arrive as win-rate-only. Nothing here decides what is shown.
 
-use crate::rating::{BETA, INITIAL_MU, INITIAL_SIGMA, PLACEMENT_MATCHES};
+use serde::{Deserialize, Serialize};
+
+use super::scale::{BETA, INITIAL_MU, INITIAL_SIGMA, PLACEMENT_MATCHES};
 
 /// Ranked games after which the rating alone carries the estimate.
 pub const RATING_TRUST_MATCHES: u64 = 10;
@@ -54,15 +58,31 @@ pub const WR_SIGMA_FLOOR: f64 = 5.5;
 pub const LITTLE_HISTORY_GAMES: u64 = 5;
 
 /// A player's rating on the relevant ladder, as stored on their profile.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct RatingInput {
     pub mu: f64,
     pub sigma: f64,
     pub matches_rated: u64,
 }
 
+impl RatingInput {
+    /// Back from the displayed numbers the public API serves
+    /// (`LadderRating.rating` / `.confidence` / `.matches_rated`) to the
+    /// engine's native `μ`/`σ` — the inverse of the backend's
+    /// `rating::scale::display`. Exact up to the API's rounding to whole
+    /// points, which is well inside anything the solver can tell apart.
+    #[must_use]
+    pub fn from_display(rating: f64, confidence: f64, matches_rated: u64) -> Self {
+        Self {
+            mu: super::scale::mu_from_display(rating),
+            sigma: super::scale::sigma_from_display(confidence),
+            matches_rated,
+        }
+    }
+}
+
 /// Lifetime record in the sport — `GenericSportStatsRecord`'s counters.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WinRecord {
     pub played: u64,
     pub wins: u64,
@@ -85,14 +105,16 @@ pub struct History {
 }
 
 /// Organiser override, relative to this pool. "As expected" is no override.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Level {
     Newer,
     Stronger,
 }
 
 /// Where an estimate mostly came from — what the UI labels the player with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Signal {
     /// `RATING_TRUST_MATCHES`+ ranked games: rating only.
     Rated,
@@ -110,7 +132,7 @@ pub enum Signal {
 }
 
 /// The win rate behind an estimate, for the "how was this estimated" sheet.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct WinRateInfo {
     /// `(wins + ½·draws) / played`.
     pub raw: f64,

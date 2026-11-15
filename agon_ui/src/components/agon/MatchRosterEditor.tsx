@@ -21,7 +21,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Avatar } from './Avatar'
 import { memberAvatarUrl, memberName, playerId, sideDisplayName } from '@/lib/members'
 import { resolveSideColour } from '@/lib/sideColours'
-import { AutoAssignSheet, type PoolDisplay } from './AutoAssignSheet'
+import { AutoAssignSheet } from './AutoAssignSheet'
 
 /** "Alice", "Alice and Bob", or "Alice, Bob and Charlie" — for the removal
  *  confirmation's "you're removing …" sentence. */
@@ -180,16 +180,15 @@ export function MatchRosterEditor({
   const activePlayer = activeId ? playersById.get(activeId) : undefined
 
   // Auto-assign works on the saved roster, so it's offered only while there
-  // are no unsaved drags/removals to lose.
+  // are no unsaved drags/removals to lose. Pending or declined invitees hold
+  // no spot, so they aren't in the pool.
   const [autoAssignOpen, setAutoAssignOpen] = useState(false)
-  const canAutoAssign = match.status === 'scheduled' && match.sides.length >= 2 && match.players.length >= 2
-  const displays = useMemo(
-    () =>
-      new Map<string, PoolDisplay>(
-        match.players.map((p) => [playerId(p), { name: memberName(p.member), imageUrl: memberAvatarUrl(p.member) }]),
-      ),
-    [match.players],
-  )
+  const pool = match.players.filter((p) => !p.member.invitation || p.member.invitation.status === 'accepted')
+  const canAutoAssign = match.status === 'scheduled' && match.sides.length >= 2 && pool.length >= 2
+  const sideIndex = (sideId: string | undefined | null) => {
+    const i = match.sides.findIndex((s) => s.id === sideId)
+    return i >= 0 ? i : null
+  }
 
   return (
     <div className="flex flex-col gap-3 rounded-xl border bg-card p-4">
@@ -213,19 +212,44 @@ export function MatchRosterEditor({
           <AutoAssignSheet
             open={autoAssignOpen}
             onOpenChange={setAutoAssignOpen}
-            displays={displays}
-            onApplied={onDone}
             target={{
               kind: 'match',
               matchId: match.id,
-              poolSize: match.players.length,
-              unassignedCount: match.players.filter((p) => !p.side_id).length,
+              sport: match.match_type,
               sides: match.sides.map((side) => ({
                 id: side.id,
                 name: sideDisplayName(side) ?? 'Side',
                 colour: resolveSideColour(side),
+                maxPlayers: side.max_players ?? undefined,
               })),
               subtitle: match.name,
+              members: pool.map((p) => ({
+                id: playerId(p),
+                userId: 'user_id' in p.member ? p.member.user_id : undefined,
+                name: memberName(p.member),
+                imageUrl: memberAvatarUrl(p.member),
+                currentSide: sideIndex(p.side_id),
+              })),
+              loadRoster: async () => {
+                const { data, error } = await fetchClient.GET('/matches/{match_id}', {
+                  params: { path: { match_id: match.id } },
+                })
+                if (error || !data) throw new Error('Could not re-check the roster')
+                const sides = data.sides.map((s) => s.id)
+                return new Map(
+                  data.players
+                    .filter((p) => !p.member.invitation || p.member.invitation.status === 'accepted')
+                    .map((p) => {
+                      const i = sides.indexOf(p.side_id ?? '')
+                      return [playerId(p), i >= 0 ? i : null] as const
+                    }),
+                )
+              },
+              onApplied: () => {
+                queryClient.invalidateQueries({ queryKey: ['match', match.id] })
+                queryClient.invalidateQueries({ queryKey: ['feed'] })
+                onDone()
+              },
             }}
           />
         </>

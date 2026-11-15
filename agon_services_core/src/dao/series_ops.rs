@@ -10,7 +10,7 @@
 //! Idempotency note: generation used to derive each occurrence's match id
 //! from `(series_id, index)` via a hash, so a retried activity would land on
 //! the same id and hit `Conflict` instead of duplicating. That's gone —
-//! occurrence match ids are now ordinary random ids (`agon_core::id::new_id`),
+//! occurrence match ids are now ordinary random ids (`agon_services_core::id::new_id`),
 //! and idempotency instead comes from [`Dao::claim_series_occurrence`]: a
 //! conditional-put "claim" item, keyed on the occurrence's `starts_at` rather
 //! than its index (so two occurrences a date-math bug computed onto the same

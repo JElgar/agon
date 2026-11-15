@@ -2,7 +2,7 @@
 //! (request/accept/withdraw), the entry-count counter, status transitions,
 //! and bracket edges. Generating a tournament's matches from an accepted
 //! entry list is not part of this module — the pure shape (which matches,
-//! which fixtures, which squads) lives in `agon_core::tournament`; actually
+//! which fixtures, which squads) lives in `agon_services_core::tournament`; actually
 //! writing them is `agon_service`'s `start` handler, via the ordinary
 //! `Dao::create_match` every other match creation path uses, same split as
 //! `dao::series_ops`/`agon_worker`'s `materialize_series`.
@@ -310,41 +310,6 @@ impl Dao {
             Err(e) if is_update_conditional_failure(&e) => Ok(()),
             Err(e) => Err(DaoError::Dynamo(e.to_string())),
         }
-    }
-
-    /// Set many entries' squads at once — the apply step of auto-assign.
-    /// Conditional `Update`s (entry exists and is `accepted`), up to 100 per
-    /// `TransactWriteItems`, chunked beyond that. Each chunk is atomic; a
-    /// failed later chunk leaves earlier ones applied, which is safe to
-    /// retry: setting a squad is idempotent, and the tournament is still
-    /// `"open"` and editable entry by entry. `Conflict` if any entry in a
-    /// chunk is missing or no longer accepted.
-    #[tracing::instrument(skip(self, assignments), fields(count = assignments.len()))]
-    pub async fn set_tournament_entry_squads(
-        &self,
-        tournament_id: &str,
-        assignments: &[(String, u32)],
-    ) -> DaoResult<()> {
-        for chunk in assignments.chunks(100) {
-            let mut items = Vec::with_capacity(chunk.len());
-            for (entrant_id, squad) in chunk {
-                let update = Update::builder()
-                    .table_name(self.table())
-                    .key(ATTR_PK, s(Pk::Tournament(tournament_id.into()).to_string()))
-                    .key(ATTR_SK, s(Sk::Entry(entrant_id.clone()).to_string()))
-                    .update_expression("SET squad = :squad")
-                    .condition_expression("attribute_exists(#pk) AND #status = :accepted")
-                    .expression_attribute_names("#pk", ATTR_PK)
-                    .expression_attribute_names("#status", "status")
-                    .expression_attribute_values(":squad", AttributeValue::N(squad.to_string()))
-                    .expression_attribute_values(":accepted", s("accepted".to_string()))
-                    .build()
-                    .map_err(|e| DaoError::Dynamo(e.to_string()))?;
-                items.push(TransactWriteItem::builder().update(update).build());
-            }
-            self.send_transact_items(items).await?;
-        }
-        Ok(())
     }
 
     /// Assign (or reassign) an entrant's fixed squad, for a teamless

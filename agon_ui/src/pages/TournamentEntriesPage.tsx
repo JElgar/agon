@@ -90,6 +90,22 @@ export function useEntrantDisplays(
 
 const SEARCH_DEBOUNCE_MS = 300
 
+/** Every accepted entrant's current squad, read fresh from the API — what
+ *  auto-assign checks against right before applying a previewed split. */
+async function loadAcceptedSquads(tournamentId: string): Promise<Map<string, number | null>> {
+  const squads = new Map<string, number | null>()
+  let cursor: string | undefined
+  do {
+    const { data, error } = await fetchClient.GET('/tournaments/{tournament_id}/entries', {
+      params: { path: { tournament_id: tournamentId }, query: { cursor, limit: 50 } },
+    })
+    if (error || !data) throw new Error('Could not re-check the entries')
+    for (const e of data.items) if (e.status === 'accepted') squads.set(e.entrant_id, e.squad ?? null)
+    cursor = data.next_cursor
+  } while (cursor)
+  return squads
+}
+
 /**
  * Manage a tournament's entries (`GET`/`POST`/`DELETE
  * /tournaments/{id}/entries`) — a team picker when `entry_audience` is
@@ -249,6 +265,7 @@ export function TournamentEntriesPage() {
           {tournament.entry_audience === 'players' ? (
             <SquadBoard
               tournament={tournament}
+              onChanged={invalidate}
               entries={entries}
               entrantDisplays={entrantDisplays}
               squadLabels={tournament.squad_labels}
@@ -383,6 +400,7 @@ const measuring = { droppable: { strategy: MeasuringStrategy.BeforeDragging } }
  */
 function SquadBoard({
   tournament,
+  onChanged,
   entries,
   entrantDisplays,
   squadLabels,
@@ -391,6 +409,7 @@ function SquadBoard({
   onSetSquadLabel,
 }: {
   tournament: Tournament
+  onChanged: () => void
   entries: TournamentEntry[]
   entrantDisplays: Map<string, EntrantDisplay>
   squadLabels: Record<string, SquadLabel>
@@ -449,15 +468,22 @@ function SquadBoard({
           <AutoAssignSheet
             open={autoAssignOpen}
             onOpenChange={setAutoAssignOpen}
-            displays={entrantDisplays}
             target={{
               kind: 'tournament',
               tournamentId: tournament.id,
-              poolSize: accepted.length,
-              unassignedCount: accepted.filter((e) => e.squad == null).length,
+              sport: tournament.match_type,
               squadSize: tournament.squad_size ?? 2,
               squadLabels,
               subtitle: tournament.name,
+              members: accepted.map((e) => ({
+                id: e.entrant_id,
+                userId: e.entrant_id,
+                name: entrantDisplays.get(e.entrant_id)?.name ?? 'Player',
+                imageUrl: entrantDisplays.get(e.entrant_id)?.imageUrl,
+                currentSide: e.squad ?? null,
+              })),
+              loadRoster: () => loadAcceptedSquads(tournament.id),
+              onApplied: onChanged,
             }}
           />
         </>

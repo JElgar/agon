@@ -68,7 +68,7 @@ fn attr_s(item: &Item, attr: &str) -> String {
     }
 }
 
-/// `T`'s type name with the module path stripped (`agon_core::dao::records::
+/// `T`'s type name with the module path stripped (`agon_services_core::dao::records::
 /// MatchRecord` -> `MatchRecord`) — plenty to identify the record shape in a
 /// log line without the noise.
 fn short_type_name<T>() -> &'static str {

@@ -19,7 +19,7 @@
 
 use poem_openapi::{Object, Union};
 
-/// Builds `LiveEventInput` from the sport registry (`agon_core::for_each_sport!`).
+/// Builds `LiveEventInput` from the sport registry (`agon_services_core::for_each_sport!`).
 macro_rules! define_live_event_input {
     (
         modeled: [$( $variant:ident { tag: $tag:literal, key: $key:ident } ),+ $(,)?],
@@ -31,11 +31,11 @@ macro_rules! define_live_event_input {
         #[derive(Union)]
         #[oai(one_of, discriminator_name = "sport")]
         pub enum LiveEventInput {
-            $( $variant(<agon_core::sports::$key::$variant as crate::sports::Sport>::LiveEvent), )+
+            $( $variant(<agon_services_core::sports::$key::$variant as crate::sports::Sport>::LiveEvent), )+
         }
     };
 }
-agon_core::for_each_sport!(define_live_event_input);
+agon_services_core::for_each_sport!(define_live_event_input);
 
 /// One event to append, before the server has assigned it a `seq`.
 #[derive(Object)]
@@ -88,7 +88,7 @@ pub struct LiveScoreSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sports::football::{FootballCardColor, FootballCardEvent, FootballLiveEvent};
+    use agon_core::football::{CardColor, CardEvent};
     use poem_openapi::types::{ParseFromJSON, ToJSON};
 
     /// The outer (`sport`) and inner (`kind`) unions must serialize as one
@@ -97,10 +97,10 @@ mod tests {
     /// another `Union`'s variant.
     #[test]
     fn nested_union_serializes_flat_and_round_trips() {
-        let event = LiveEventInput::Football(FootballLiveEvent::Card(FootballCardEvent {
+        let event = LiveEventInput::Football(agon_core::football::LiveEvent::Card(CardEvent {
             side_id: "side_a".into(),
             player_id: "p1".into(),
-            color: FootballCardColor::Yellow,
+            color: CardColor::Yellow,
             minute: Some(58),
             occurred_at: None,
         }));
@@ -118,7 +118,7 @@ mod tests {
             Err(_) => panic!("failed to parse back"),
         };
         match parsed {
-            LiveEventInput::Football(FootballLiveEvent::Card(c)) => {
+            LiveEventInput::Football(agon_core::football::LiveEvent::Card(c)) => {
                 assert_eq!(c.player_id, "p1");
                 assert_eq!(c.minute, Some(58));
             }

@@ -1,53 +1,68 @@
 import { useMemo, useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries } from '@tanstack/react-query'
 import { ChevronLeft, Info, Minus, Pin, Plus, RotateCw, Shuffle } from 'lucide-react'
 import { fetchClient } from '@/lib/api-client'
 import type { components } from '@/types/api'
 import { cn } from '@/lib/utils'
 import { defaultSquadLabel } from '@/lib/sideColours'
+import {
+  autoAssign,
+  newSeed,
+  type AutoAssignMethod,
+  type AutoAssignScope,
+  type PlanInput,
+  type PlanOutput,
+  type PlannedPlayer,
+  type PlannedSide,
+  type PlayerLevel,
+} from '@/lib/agonCore'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from '@/components/ui/sheet'
 import { Avatar } from './Avatar'
 
-type Preview = components['schemas']['AutoAssignPreview']
-type PreviewSide = components['schemas']['AutoAssignSide']
-type PreviewPlayer = components['schemas']['AutoAssignPlayer']
-type Method = components['schemas']['AutoAssignMethod']
-type Scope = components['schemas']['AutoAssignScope']
-type Level = components['schemas']['PlayerLevel']
+type UserProfile = components['schemas']['UserProfile']
 type SquadLabel = components['schemas']['SquadLabel']
 
+/** One person in the pool, however the surface keys them. */
+export interface PoolMember {
+  /** Entrant id (tournament) or player id (match) — what apply writes. */
+  id: string
+  /** Their account, if they have one; a guest has none. */
+  userId?: string
+  name: string
+  imageUrl?: string
+  /** Side index they're on now, if any. */
+  currentSide: number | null
+}
+
 /** Where the split lands: a teamless tournament's squads, or a match's
- *  existing sides. */
+ *  existing sides. `loadRoster` re-reads who is where straight from the
+ *  API just before applying, so a split previewed against a stale roster
+ *  is caught rather than written. */
 export type AutoAssignTarget =
   | {
       kind: 'tournament'
       tournamentId: string
-      poolSize: number
-      unassignedCount: number
+      /** The sport tag (`match_type`), which is also its rating ladder. */
+      sport: string
       squadSize: number
       squadLabels: Record<string, SquadLabel>
+      members: PoolMember[]
       subtitle?: string
+      loadRoster: () => Promise<Map<string, number | null>>
+      onApplied: () => void
     }
   | {
       kind: 'match'
       matchId: string
-      poolSize: number
-      unassignedCount: number
-      sides: { id: string; name: string; colour?: string }[]
+      sport: string
+      sides: { id: string; name: string; colour?: string; maxPlayers?: number }[]
+      members: PoolMember[]
       subtitle?: string
+      loadRoster: () => Promise<Map<string, number | null>>
+      onApplied: () => void
     }
-
-export interface PoolDisplay {
-  name: string
-  imageUrl?: string
-}
-
-/** A seed that survives JSON and every generated client's int32. */
-function newSeed() {
-  return Math.floor(Math.random() * 2 ** 31)
-}
 
 function pct(x: number) {
   return Math.round(x * 100)
@@ -55,44 +70,107 @@ function pct(x: number) {
 
 const CERTAINTY_TEXT = ['', 'Little history', 'Some history', 'Solid'] as const
 
+/** Profiles for every pool member with an account — the public rating and
+ *  win/loss record the split is estimated from. Shares its cache key with
+ *  nothing else on purpose: it's the full profile, fetched once per sheet. */
+function usePoolProfiles(userIds: string[]) {
+  const unique = [...new Set(userIds)]
+  const results = useQueries({
+    queries: unique.map((id) => ({
+      queryKey: ['auto-assign-profile', id],
+      staleTime: 60_000,
+      queryFn: async (): Promise<UserProfile> => {
+        const { data, error } = await fetchClient.GET('/users/{user_id}', {
+          params: { path: { user_id: id } },
+        })
+        if (error || !data) throw new Error('Could not load a player')
+        return data as UserProfile
+      },
+    })),
+  })
+  const profiles = new Map<string, UserProfile>()
+  unique.forEach((id, i) => {
+    const data = results[i]?.data
+    if (data) profiles.set(id, data)
+  })
+  return { profiles, loading: results.some((r) => r.isLoading) }
+}
+
+/** A member's history in this sport, from their public profile. */
+function historyFor(profile: UserProfile | undefined, sport: string) {
+  if (!profile) return { rating: null, record: undefined }
+  const ladder = profile.ratings.find((r) => r.ladder === sport)
+  const stats = (profile.stats as Record<string, unknown>)[sport] as
+    | { matches_played?: number; wins?: number; draws?: number; losses?: number }
+    | null
+    | undefined
+  return {
+    rating: ladder
+      ? { rating: ladder.rating, confidence: ladder.confidence, matches_rated: ladder.matches_rated }
+      : null,
+    record: stats
+      ? {
+          played: stats.matches_played ?? 0,
+          wins: stats.wins ?? 0,
+          draws: stats.draws ?? 0,
+          losses: stats.losses ?? 0,
+        }
+      : undefined,
+  }
+}
+
 /**
  * Auto-assign: pick Random or Auto Balanced, preview the split, re-roll or
- * pin as you like, then apply. Organiser-only — players never see that a
- * split was auto-built or anyone's strength estimate. Preview writes
- * nothing; apply sends back exactly the previewed assignment plus its
- * `roster_version`, and a 409 (someone joined or moved meanwhile) simply
- * re-previews.
+ * pin as you like, then apply. The split itself runs in the browser —
+ * `agon_core::team_builder` compiled to wasm (see `lib/agonCore.ts`) — from
+ * each player's public rating and record, so previews and re-rolls are
+ * instant. Apply writes through the ordinary endpoints (per-entrant squad
+ * assignment, or one match `PATCH`), after re-reading the roster to make
+ * sure nobody joined or moved since the preview. Organiser-only: players
+ * never see that a split was auto-built.
  */
 export function AutoAssignSheet({
   open,
   onOpenChange,
   target,
-  displays,
-  onApplied,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   target: AutoAssignTarget
-  displays: Map<string, PoolDisplay>
-  onApplied?: () => void
 }) {
-  const queryClient = useQueryClient()
+  const members = target.members
+  const poolSize = members.length
+  const unassignedCount = members.filter((m) => m.currentSide == null).length
+  const inUse = Math.max(0, ...members.map((m) => (m.currentSide ?? -1) + 1))
   const defaultSquadCount =
-    target.kind === 'tournament' ? Math.max(2, Math.ceil(target.poolSize / Math.max(1, target.squadSize))) : 0
+    target.kind === 'tournament' ? Math.max(2, Math.ceil(poolSize / Math.max(1, target.squadSize))) : 0
 
   const [step, setStep] = useState<'options' | 'preview'>('options')
-  const [method, setMethod] = useState<Method>('auto_balanced')
-  const [scope, setScope] = useState<Scope>(
-    target.unassignedCount > 0 && target.unassignedCount < target.poolSize ? 'unassigned' : 'everyone',
+  const [method, setMethod] = useState<AutoAssignMethod>('auto_balanced')
+  const [scope, setScope] = useState<AutoAssignScope>(
+    unassignedCount > 0 && unassignedCount < poolSize ? 'unassigned' : 'everyone',
   )
   const [squadCount, setSquadCount] = useState(defaultSquadCount)
-  // Explicit organiser pins (id -> squad index or side id) and level overrides.
-  const [pins, setPins] = useState<Map<string, number | string>>(new Map())
-  const [levels, setLevels] = useState<Map<string, Level>>(new Map())
-  const [preview, setPreview] = useState<Preview | null>(null)
+  // Explicit organiser pins (member id -> side index) and level overrides.
+  const [pins, setPins] = useState<Map<string, number>>(new Map())
+  const [levels, setLevels] = useState<Map<string, PlayerLevel>>(new Map())
+  const [preview, setPreview] = useState<PlanOutput | null>(null)
+  const [snapshot, setSnapshot] = useState<Map<string, number | null> | null>(null)
   const [detailId, setDetailId] = useState<string | null>(null)
   const [howOpen, setHowOpen] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+
+  const { profiles, loading: profilesLoading } = usePoolProfiles(
+    members.flatMap((m) => (m.userId ? [m.userId] : [])),
+  )
+  const byId = useMemo(() => new Map(members.map((m) => [m.id, m])), [members])
+
+  // Tournament squads are just indices; with "only unassigned", every
+  // squad already in use has to stay in play.
+  const sideCount =
+    target.kind === 'tournament'
+      ? Math.max(squadCount, scope === 'unassigned' ? inUse : 0)
+      : target.sides.length
 
   const reset = () => {
     setStep('options')
@@ -103,43 +181,38 @@ export function AutoAssignSheet({
   }
 
   const previewMutation = useMutation({
-    mutationFn: async (args: { seed: number; pins: Map<string, number | string>; levels: Map<string, Level> }) => {
-      const levelList = [...args.levels].map(([id, level]) => ({ id, level }))
-      if (target.kind === 'tournament') {
-        const { data, error } = await fetchClient.POST('/tournaments/{tournament_id}/squads/auto-assign', {
-          params: { path: { tournament_id: target.tournamentId } },
-          body: {
-            method,
-            scope,
-            squad_count: squadCount,
-            pins: [...args.pins].map(([id, squad]) => ({ id, squad: Number(squad) })),
-            levels: levelList,
-            seed: args.seed,
-          },
-        })
-        if (error || !data) throw new Error(typeof error === 'string' ? error : 'Could not preview squads')
-        return data
+    mutationFn: async (args: { seed: number; pins: Map<string, number>; levels: Map<string, PlayerLevel> }) => {
+      const input: PlanInput = {
+        players: members.map((m) => {
+          const h = historyFor(m.userId ? profiles.get(m.userId) : undefined, target.sport)
+          return {
+            id: m.id,
+            rating: h.rating,
+            record: h.record,
+            guest: !m.userId,
+            level: args.levels.get(m.id) ?? null,
+            current_side: m.currentSide,
+            pinned_side: args.pins.get(m.id) ?? null,
+          }
+        }),
+        caps:
+          target.kind === 'tournament'
+            ? Array.from({ length: sideCount }, () => null)
+            : target.sides.map((s) => s.maxPlayers ?? null),
+        method,
+        scope,
+        seed: args.seed,
       }
-      const { data, error } = await fetchClient.POST('/matches/{match_id}/sides/auto-assign', {
-        params: { path: { match_id: target.matchId } },
-        body: {
-          method,
-          scope,
-          pins: [...args.pins].map(([id, side_id]) => ({ id, side_id: String(side_id) })),
-          levels: levelList,
-          seed: args.seed,
-        },
-      })
-      if (error || !data) throw new Error(typeof error === 'string' ? error : 'Could not preview sides')
-      return data
+      return autoAssign(input)
     },
     onSuccess: (data) => {
       setPreview(data)
+      setSnapshot(new Map(members.map((m) => [m.id, m.currentSide])))
       setStep('preview')
     },
   })
 
-  const runPreview = (opts?: { seed?: number; pins?: Map<string, number | string>; levels?: Map<string, Level> }) =>
+  const runPreview = (opts?: { seed?: number; pins?: Map<string, number>; levels?: Map<string, PlayerLevel> }) =>
     previewMutation.mutate({
       seed: opts?.seed ?? preview?.seed ?? newSeed(),
       pins: opts?.pins ?? pins,
@@ -147,83 +220,94 @@ export function AutoAssignSheet({
     })
 
   const applyMutation = useMutation({
-    mutationFn: async (p: Preview): Promise<'applied' | 'stale'> => {
+    mutationFn: async (p: PlanOutput): Promise<'applied' | 'stale'> => {
+      // Nobody joined, left or moved since the preview?
+      const fresh = await target.loadRoster()
+      const same =
+        snapshot != null &&
+        fresh.size === snapshot.size &&
+        [...snapshot].every(([id, side]) => fresh.has(id) && fresh.get(id) === side)
+      if (!same) return 'stale'
+
+      const moves = p.sides.flatMap((side, index) =>
+        side.players.filter((pl) => byId.get(pl.id)?.currentSide !== index).map((pl) => ({ id: pl.id, index })),
+      )
+
       if (target.kind === 'tournament') {
-        const assignments = p.sides.flatMap((s) => s.players.map((pl) => ({ id: pl.id, squad: s.squad ?? 0 })))
-        const { error, response } = await fetchClient.PUT('/tournaments/{tournament_id}/squads/assignments', {
-          params: { path: { tournament_id: target.tournamentId } },
-          body: { roster_version: p.roster_version, assignments },
-        })
-        if (response.status === 409) return 'stale'
-        if (error) throw new Error('Could not apply these squads')
+        await Promise.all(
+          moves.map(async ({ id, index }) => {
+            const { error } = await fetchClient.POST('/tournaments/{tournament_id}/entries/{entrant_id}/squad', {
+              params: { path: { tournament_id: target.tournamentId, entrant_id: id } },
+              body: { squad: index },
+            })
+            if (error) throw new Error('Could not assign every squad. Check the board and try again.')
+          }),
+        )
         // The server has no default squad label: save the one the preview
         // showed for any squad nobody has named yet.
-        for (const side of p.sides) {
-          const squad = side.squad ?? 0
-          if (!target.squadLabels[String(squad)] && side.players.length > 0) {
-            const { error: labelError } = await fetchClient.PUT('/tournaments/{tournament_id}/squads/{squad}', {
-              params: { path: { tournament_id: target.tournamentId, squad } },
-              body: defaultSquadLabel(squad),
+        for (const [index, side] of p.sides.entries()) {
+          if (!target.squadLabels[String(index)] && side.players.length > 0) {
+            const { error } = await fetchClient.PUT('/tournaments/{tournament_id}/squads/{squad}', {
+              params: { path: { tournament_id: target.tournamentId, squad: index } },
+              body: defaultSquadLabel(index),
             })
-            if (labelError) throw new Error('Could not name a squad')
+            if (error) throw new Error('Could not name a squad')
           }
         }
         return 'applied'
       }
-      const assignments = p.sides.flatMap((s) => s.players.map((pl) => ({ id: pl.id, side_id: s.side_id ?? '' })))
-      const { error, response } = await fetchClient.PUT('/matches/{match_id}/sides/assignments', {
-        params: { path: { match_id: target.matchId } },
-        body: { roster_version: p.roster_version, assignments },
-      })
-      if (response.status === 409) return 'stale'
-      if (error) throw new Error('Could not apply these sides')
+
+      if (moves.length > 0) {
+        const { error } = await fetchClient.PATCH('/matches/{match_id}', {
+          params: { path: { match_id: target.matchId } },
+          body: {
+            side_assignments: moves.map(({ id, index }) => ({ player_id: id, side_id: target.sides[index].id })),
+          },
+        })
+        if (error) throw new Error('Could not apply these sides')
+      }
       return 'applied'
     },
     onSuccess: (result) => {
       if (result === 'stale') {
-        setNotice('Someone joined or moved since this preview, so here’s a fresh one.')
-        runPreview({ seed: newSeed() })
+        setNotice('Someone joined or moved since this preview. Preview again to include them.')
+        setPreview(null)
+        setStep('options')
+        target.onApplied()
         return
-      }
-      if (target.kind === 'tournament') {
-        queryClient.invalidateQueries({ queryKey: ['tournament', target.tournamentId] })
-      } else {
-        queryClient.invalidateQueries({ queryKey: ['match', target.matchId] })
-        queryClient.invalidateQueries({ queryKey: ['feed'] })
       }
       onOpenChange(false)
       reset()
-      onApplied?.()
+      target.onApplied()
     },
   })
 
-  const sideMeta = (side: PreviewSide, index: number) => {
+  const sideMeta = (index: number) => {
     if (target.kind === 'tournament') {
-      const squad = side.squad ?? index
-      const label = target.squadLabels[String(squad)] ?? defaultSquadLabel(squad)
+      const label = target.squadLabels[String(index)] ?? defaultSquadLabel(index)
       return { name: label.name, colour: label.colour }
     }
-    const s = target.sides.find((x) => x.id === side.side_id)
+    const s = target.sides[index]
     return { name: s?.name ?? 'Side', colour: s?.colour }
   }
 
   const balanced = preview?.method === 'auto_balanced'
-  const togglePin = (player: PreviewPlayer, side: PreviewSide) => {
+  const togglePin = (player: PlannedPlayer, index: number) => {
     const next = new Map(pins)
     if (next.has(player.id)) next.delete(player.id)
-    else next.set(player.id, target.kind === 'tournament' ? (side.squad ?? 0) : (side.side_id ?? ''))
+    else next.set(player.id, index)
     setPins(next)
     setPreview((prev) =>
       prev && {
         ...prev,
         sides: prev.sides.map((s) => ({
           ...s,
-          players: s.players.map((p) => (p.id === player.id ? { ...p, pinned: next.has(p.id) } : p)),
+          players: s.players.map((pl) => (pl.id === player.id ? { ...pl, pinned: next.has(pl.id) } : pl)),
         })),
       },
     )
   }
-  const setLevel = (id: string, level: Level | null) => {
+  const setLevel = (id: string, level: PlayerLevel | null) => {
     const next = new Map(levels)
     if (level) next.set(id, level)
     else next.delete(id)
@@ -233,15 +317,16 @@ export function AutoAssignSheet({
 
   const detail = useMemo(() => {
     if (!preview || !detailId) return null
-    for (const [i, side] of preview.sides.entries()) {
+    for (const [index, side] of preview.sides.entries()) {
       const player = side.players.find((p) => p.id === detailId)
-      if (player) return { player, sideName: sideMeta(side, i).name }
+      if (player) return { player, sideName: sideMeta(index).name }
     }
     return null
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preview, detailId])
 
   const unit = target.kind === 'tournament' ? 'squad' : 'side'
+  const detailMember = detail ? byId.get(detail.player.id) : undefined
 
   return (
     <>
@@ -259,6 +344,8 @@ export function AutoAssignSheet({
           {step === 'options' ? (
             <OptionsStep
               target={target}
+              poolSize={poolSize}
+              unassignedCount={unassignedCount}
               method={method}
               onMethod={setMethod}
               scope={scope}
@@ -266,10 +353,14 @@ export function AutoAssignSheet({
               squadCount={squadCount}
               defaultSquadCount={defaultSquadCount}
               onSquadCount={setSquadCount}
-              busy={previewMutation.isPending}
+              busy={previewMutation.isPending || profilesLoading}
+              notice={notice}
               error={previewMutation.isError ? previewMutation.error.message : null}
               onCancel={() => onOpenChange(false)}
-              onPreview={() => runPreview({ seed: newSeed() })}
+              onPreview={() => {
+                setNotice(null)
+                runPreview({ seed: newSeed() })
+              }}
             />
           ) : (
             preview && (
@@ -291,19 +382,8 @@ export function AutoAssignSheet({
                 </SheetHeader>
                 <SheetDescription className="sr-only">Preview of the {unit} split before applying it</SheetDescription>
 
-                {notice && (
-                  <p className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
-                    {notice}
-                  </p>
-                )}
-
                 {balanced && (
-                  <BalanceCard
-                    preview={preview}
-                    sideMeta={sideMeta}
-                    unit={unit}
-                    onHow={() => setHowOpen(true)}
-                  />
+                  <BalanceCard preview={preview} sideMeta={sideMeta} unit={unit} onHow={() => setHowOpen(true)} />
                 )}
 
                 <p className="px-1 text-xs text-muted-foreground">
@@ -311,43 +391,19 @@ export function AutoAssignSheet({
                   where they are when you re-roll.
                 </p>
 
-                {preview.sides.map((side, i) => {
-                  const meta = sideMeta(side, i)
-                  return (
-                    <div key={side.side_id ?? side.squad ?? i} className="rounded-[20px] border bg-card px-3 py-1.5">
-                      <div className="flex items-center gap-2 py-2">
-                        <span
-                          className="size-3 shrink-0 rounded-full border border-black/10"
-                          style={{ background: meta.colour }}
-                          aria-hidden
-                        />
-                        <span className="flex-1 truncate text-[15px] font-bold">{meta.name}</span>
-                        {balanced && side.average != null && (
-                          <span className="text-xs text-muted-foreground">
-                            avg ≈ <strong className="text-foreground">{side.average}</strong>
-                          </span>
-                        )}
-                        {balanced && side.unsure_count > 0 && (
-                          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-200">
-                            {side.unsure_count} unsure
-                          </span>
-                        )}
-                      </div>
-                      {side.players.map((p) => (
-                        <PlayerRow
-                          key={p.id}
-                          player={p}
-                          display={displays.get(p.id)}
-                          balanced={balanced}
-                          showPlaced={scope === 'unassigned'}
-                          pinnedByScope={p.pinned && !pins.has(p.id)}
-                          onOpen={() => setDetailId(p.id)}
-                          onPin={() => togglePin(p, side)}
-                        />
-                      ))}
-                    </div>
-                  )
-                })}
+                {preview.sides.map((side, index) => (
+                  <SideCard
+                    key={index}
+                    side={side}
+                    meta={sideMeta(index)}
+                    balanced={balanced}
+                    showPlaced={scope === 'unassigned'}
+                    members={byId}
+                    pins={pins}
+                    onOpen={setDetailId}
+                    onPin={(p) => togglePin(p, index)}
+                  />
+                ))}
 
                 {(previewMutation.isError || applyMutation.isError) && (
                   <p className="text-sm text-destructive">
@@ -360,12 +416,9 @@ export function AutoAssignSheet({
                     variant="outline"
                     className="h-12"
                     disabled={previewMutation.isPending || applyMutation.isPending}
-                    onClick={() => {
-                      setNotice(null)
-                      runPreview({ seed: newSeed() })
-                    }}
+                    onClick={() => runPreview({ seed: newSeed() })}
                   >
-                    <RotateCw className={cn('size-4', previewMutation.isPending && 'animate-spin')} />
+                    <RotateCw className="size-4" />
                     Re-roll
                   </Button>
                   <Button
@@ -388,8 +441,8 @@ export function AutoAssignSheet({
 
       <StrengthDialog
         detail={detail}
-        name={detail ? (displays.get(detail.player.id)?.name ?? 'Player') : ''}
-        imageUrl={detail ? displays.get(detail.player.id)?.imageUrl : undefined}
+        name={detailMember?.name ?? 'Player'}
+        imageUrl={detailMember?.imageUrl}
         onClose={() => setDetailId(null)}
         onLevel={(level) => detail && setLevel(detail.player.id, level)}
         busy={previewMutation.isPending}
@@ -401,6 +454,8 @@ export function AutoAssignSheet({
 
 function OptionsStep({
   target,
+  poolSize,
+  unassignedCount,
   method,
   onMethod,
   scope,
@@ -409,34 +464,38 @@ function OptionsStep({
   defaultSquadCount,
   onSquadCount,
   busy,
+  notice,
   error,
   onCancel,
   onPreview,
 }: {
   target: AutoAssignTarget
-  method: Method
-  onMethod: (m: Method) => void
-  scope: Scope
-  onScope: (s: Scope) => void
+  poolSize: number
+  unassignedCount: number
+  method: AutoAssignMethod
+  onMethod: (m: AutoAssignMethod) => void
+  scope: AutoAssignScope
+  onScope: (s: AutoAssignScope) => void
   squadCount: number
   defaultSquadCount: number
   onSquadCount: (n: number) => void
   busy: boolean
+  notice: string | null
   error: string | null
   onCancel: () => void
   onPreview: () => void
 }) {
   const unit = target.kind === 'tournament' ? 'squads' : 'sides'
-  const lo = Math.floor(target.poolSize / Math.max(1, squadCount))
-  const hi = Math.ceil(target.poolSize / Math.max(1, squadCount))
-  const methods: { id: Method; label: string; desc: string }[] = [
+  const lo = Math.floor(poolSize / Math.max(1, squadCount))
+  const hi = Math.ceil(poolSize / Math.max(1, squadCount))
+  const methods: { id: AutoAssignMethod; label: string; desc: string }[] = [
     { id: 'random', label: 'Random', desc: 'Shuffle and deal. Re-roll as often as you like.' },
     { id: 'auto_balanced', label: 'Auto Balanced', desc: 'Agon evens out squads from rating and win rate.' },
   ]
-  const scopes: { id: Scope; label: string; desc: string }[] = [
+  const scopes: { id: AutoAssignScope; label: string; desc: string }[] = [
     {
       id: 'unassigned',
-      label: `Only unassigned (${target.unassignedCount})`,
+      label: `Only unassigned (${unassignedCount})`,
       desc: `Anyone already in a ${unit.slice(0, -1)} stays put.`,
     },
     { id: 'everyone', label: 'Reshuffle everyone', desc: 'Start over. Pin players in the preview to keep them.' },
@@ -447,9 +506,15 @@ function OptionsStep({
       <SheetHeader className="space-y-1 p-0 pr-8 text-left">
         <SheetTitle className="font-display text-xl font-extrabold">Auto-assign {unit}</SheetTitle>
         <SheetDescription>
-          {target.poolSize} players{target.subtitle ? ` · ${target.subtitle}` : ''}
+          {poolSize} players{target.subtitle ? ` · ${target.subtitle}` : ''}
         </SheetDescription>
       </SheetHeader>
+
+      {notice && (
+        <p className="rounded-lg border border-amber-300 bg-amber-50 p-2.5 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+          {notice}
+        </p>
+      )}
 
       <section className="flex flex-col gap-2">
         <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Method</span>
@@ -498,15 +563,13 @@ function OptionsStep({
               size="icon"
               className="size-11"
               aria-label="More squads"
-              disabled={squadCount >= target.poolSize}
+              disabled={squadCount >= poolSize}
               onClick={() => onSquadCount(squadCount + 1)}
             >
               <Plus className="size-4" />
             </Button>
             <div className="flex flex-1 flex-col">
-              <span className="text-sm font-semibold">
-                {lo === hi ? lo : `${lo}–${hi}`} per squad
-              </span>
+              <span className="text-sm font-semibold">{lo === hi ? lo : `${lo}–${hi}`} per squad</span>
               {squadCount === defaultSquadCount ? (
                 <span className="text-xs text-muted-foreground">Default · from squad size {target.squadSize}</span>
               ) : (
@@ -530,7 +593,7 @@ function OptionsStep({
             key={o.id}
             type="button"
             aria-pressed={scope === o.id}
-            disabled={o.id === 'unassigned' && target.unassignedCount === 0}
+            disabled={o.id === 'unassigned' && unassignedCount === 0}
             onClick={() => onScope(o.id)}
             className={cn(
               'flex items-center gap-3 rounded-[14px] border p-3 text-left disabled:opacity-50',
@@ -560,7 +623,7 @@ function OptionsStep({
         </Button>
         <Button className="h-12 flex-1" disabled={busy} onClick={onPreview}>
           <Shuffle className="size-4" />
-          {busy ? 'Working…' : `Preview ${unit}`}
+          {busy ? 'Loading players…' : `Preview ${unit}`}
         </Button>
       </div>
     </div>
@@ -573,8 +636,8 @@ function BalanceCard({
   unit,
   onHow,
 }: {
-  preview: Preview
-  sideMeta: (side: PreviewSide, index: number) => { name: string; colour?: string }
+  preview: PlanOutput
+  sideMeta: (index: number) => { name: string; colour?: string }
   unit: string
   onHow: () => void
 }) {
@@ -596,19 +659,19 @@ function BalanceCard({
             <span className={cn('text-sm font-semibold', verdictClass)}>{verdictText}</span>
           </div>
           <div className="flex items-baseline justify-between font-display text-[28px] font-extrabold">
-            <span style={{ color: sideMeta(preview.sides[0], 0).colour }}>{pct(w.expected)}%</span>
+            <span style={{ color: sideMeta(0).colour }}>{pct(w.expected)}%</span>
             <span className="text-muted-foreground">{100 - pct(w.expected)}%</span>
           </div>
           <div className="flex h-3 overflow-hidden rounded-full border" aria-hidden>
-            <span style={{ width: `${pct(w.expected)}%`, background: sideMeta(preview.sides[0], 0).colour }} />
-            <span className="flex-1" style={{ background: sideMeta(preview.sides[1], 1).colour, opacity: 0.35 }} />
+            <span style={{ width: `${pct(w.expected)}%`, background: sideMeta(0).colour }} />
+            <span className="flex-1" style={{ background: sideMeta(1).colour, opacity: 0.35 }} />
           </div>
           <div className="flex justify-between text-xs text-muted-foreground">
-            <span>{sideMeta(preview.sides[0], 0).name}</span>
+            <span>{sideMeta(0).name}</span>
             <span>
               could be {pct(w.low)}–{pct(w.high)}%{preview.unsure_count > 0 && ` · ${preview.unsure_count} unsure`}
             </span>
-            <span>{sideMeta(preview.sides[1], 1).name}</span>
+            <span>{sideMeta(1).name}</span>
           </div>
         </>
       ) : (
@@ -645,7 +708,7 @@ function BalanceCard({
   )
 }
 
-function chipFor(p: PreviewPlayer): { main: string; sub: string; tone: 'rated' | 'blend' | 'wr' | 'unknown' } {
+function chipFor(p: PlannedPlayer): { main: string; sub: string; tone: 'rated' | 'blend' | 'wr' | 'unknown' } {
   const wr = p.win_rate ? `${pct(p.win_rate.raw)}% W` : null
   const levelSub = p.level === 'newer' ? 'set: newer' : p.level === 'stronger' ? 'set: stronger' : null
   switch (p.signal) {
@@ -674,24 +737,75 @@ function CertaintyDots({ certainty, className }: { certainty: number; className?
   )
 }
 
+function SideCard({
+  side,
+  meta,
+  balanced,
+  showPlaced,
+  members,
+  pins,
+  onOpen,
+  onPin,
+}: {
+  side: PlannedSide
+  meta: { name: string; colour?: string }
+  balanced: boolean
+  showPlaced: boolean
+  members: Map<string, PoolMember>
+  pins: Map<string, number>
+  onOpen: (id: string) => void
+  onPin: (p: PlannedPlayer) => void
+}) {
+  return (
+    <div className="rounded-[20px] border bg-card px-3 py-1.5">
+      <div className="flex items-center gap-2 py-2">
+        <span className="size-3 shrink-0 rounded-full border border-black/10" style={{ background: meta.colour }} aria-hidden />
+        <span className="flex-1 truncate text-[15px] font-bold">{meta.name}</span>
+        {balanced && side.average != null && (
+          <span className="text-xs text-muted-foreground">
+            avg ≈ <strong className="text-foreground">{side.average}</strong>
+          </span>
+        )}
+        {balanced && side.unsure_count > 0 && (
+          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+            {side.unsure_count} unsure
+          </span>
+        )}
+      </div>
+      {side.players.map((p) => (
+        <PlayerRow
+          key={p.id}
+          player={p}
+          member={members.get(p.id)}
+          balanced={balanced}
+          showPlaced={showPlaced}
+          pinnedByScope={p.pinned && !pins.has(p.id)}
+          onOpen={() => onOpen(p.id)}
+          onPin={() => onPin(p)}
+        />
+      ))}
+    </div>
+  )
+}
+
 function PlayerRow({
   player,
-  display,
+  member,
   balanced,
   showPlaced,
   pinnedByScope,
   onOpen,
   onPin,
 }: {
-  player: PreviewPlayer
-  display?: PoolDisplay
+  player: PlannedPlayer
+  member?: PoolMember
   balanced: boolean
   showPlaced: boolean
   pinnedByScope: boolean
   onOpen: () => void
   onPin: () => void
 }) {
-  const name = display?.name ?? 'Player'
+  const name = member?.name ?? 'Player'
   const chip = chipFor(player)
   const toneClass = {
     rated: 'bg-accent text-accent-foreground',
@@ -702,7 +816,7 @@ function PlayerRow({
 
   return (
     <div className="flex min-h-[52px] items-center gap-2.5 border-t py-1">
-      <Avatar name={name} imageUrl={display?.imageUrl} size="lg" />
+      <Avatar name={name} imageUrl={member?.imageUrl} size="lg" />
       <button
         type="button"
         onClick={onOpen}
@@ -737,9 +851,7 @@ function PlayerRow({
         onClick={onPin}
         disabled={pinnedByScope}
         aria-pressed={player.pinned}
-        aria-label={
-          pinnedByScope ? `${name} is already placed` : player.pinned ? `Unpin ${name}` : `Pin ${name} here`
-        }
+        aria-label={pinnedByScope ? `${name} is already placed` : player.pinned ? `Unpin ${name}` : `Pin ${name} here`}
         className={cn(
           'flex h-11 w-9 shrink-0 items-center justify-center disabled:opacity-40',
           player.pinned ? 'text-primary' : 'text-muted-foreground',
@@ -759,17 +871,17 @@ function StrengthDialog({
   onLevel,
   busy,
 }: {
-  detail: { player: PreviewPlayer; sideName: string } | null
+  detail: { player: PlannedPlayer; sideName: string } | null
   name: string
   imageUrl?: string
   onClose: () => void
-  onLevel: (level: Level | null) => void
+  onLevel: (level: PlayerLevel | null) => void
   busy: boolean
 }) {
   const p = detail?.player
   const weight = p ? Math.round(p.rating_weight * 100) : 0
   const level = p?.level ?? null
-  const levels: { id: Level | null; label: string }[] = [
+  const levels: { id: PlayerLevel | null; label: string }[] = [
     { id: 'newer', label: 'Newer' },
     { id: null, label: 'As expected' },
     { id: 'stronger', label: 'Stronger' },

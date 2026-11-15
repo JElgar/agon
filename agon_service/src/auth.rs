@@ -262,7 +262,7 @@ fn load_jwk_set_env(var: &str) -> Vec<Jwk> {
 }
 
 /// Mints device-credential JWTs during pairing (`POST /devices/pair` — see
-/// `agon_core::dao::device_pairing`). A dedicated signing key, not the
+/// `agon_services_core::dao::device_pairing`). A dedicated signing key, not the
 /// Supabase-issued kind: the device never authenticates with Supabase at
 /// all, so this is the sole source of trust for its long-lived token. Its
 /// public half must be trusted by every `JwtVerifier` in the deployment via

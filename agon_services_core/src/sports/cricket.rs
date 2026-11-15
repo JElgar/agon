@@ -6,7 +6,7 @@ use super::{PersonalBest, SportRecord};
 use crate::dao::records::{BestFigureRecord, GenericSportStatsRecord, default_true};
 
 /// Cricket's stored score: the `ScoreRecord::Cricket` variant. Its stored shape is
-/// guarded by `agon_core/tests/cricket_score_record_roundtrip.rs`.
+/// guarded by `agon_services_core/tests/cricket_score_record_roundtrip.rs`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CricketScoreRecord {
     pub innings: Vec<CricketScoreInningsRecord>,

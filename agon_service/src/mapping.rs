@@ -37,12 +37,12 @@ use crate::{
     TournamentSeeding, UserProfile, UserStats,
 };
 use crate::{LadderPlacement, LadderRating, RatingHistoryPoint};
-use agon_core::dao::error::DaoError;
-use agon_core::sports::SportRecord;
+use agon_services_core::dao::error::DaoError;
+use agon_services_core::sports::SportRecord;
 
 use crate::sports::Sport;
-use agon_core::dao::live_score_ops::NewLiveEvent;
-use agon_core::dao::records::{
+use agon_services_core::dao::live_score_ops::NewLiveEvent;
+use agon_services_core::dao::records::{
     BestFigureRecord, CommentRecord, ConfirmedScoreRecord, DevicePlatform as DevicePlatformRecord,
     EligibilityRuleRecord, EmbeddedInvitationRecord, GenericSportStatsRecord,
     InvitationContextRecord, InvitationKindRecord, InvitationRecord, JoinLinkRecord,
@@ -57,8 +57,8 @@ use agon_core::dao::records::{
     TournamentGenerationRecord, TournamentRecord, TournamentRoundInfo, TournamentSeedingRecord,
     TournamentTeamFormationRecord, UserRecord, UserStatsRecord,
 };
-use agon_core::rating::ladder_for_tag;
-use agon_core::rating::{PLACEMENT_MATCHES, display, published};
+use agon_services_core::rating::ladder_for_tag;
+use agon_services_core::rating::{PLACEMENT_MATCHES, display, published};
 
 /// Parse an RFC-3339 timestamp string stored by the DAO into a UTC datetime,
 /// defaulting to the epoch on a malformed value (reads never fail on bad data).
@@ -84,7 +84,7 @@ pub fn dao_internal(err: DaoError) -> poem::Error {
 
 /// Every `MatchType`/`Score`/`MatchFormat`/`LiveEventInput` conversion and
 /// per-sport dispatch the boundary layer needs, generated from the sport
-/// registry (`agon_core::for_each_sport!`). Each modeled sport's arm calls
+/// registry (`agon_services_core::for_each_sport!`). Each modeled sport's arm calls
 /// its `Sport` impl.
 macro_rules! define_sport_dispatch {
     (
@@ -114,7 +114,7 @@ macro_rules! define_sport_dispatch {
         pub fn match_type_label(mt: &MatchType) -> &'static str {
             match mt {
                 $( MatchType::$gvariant => $glabel, )*
-                $( MatchType::$variant => <agon_core::sports::$key::$variant as SportRecord>::LABEL, )+
+                $( MatchType::$variant => <agon_services_core::sports::$key::$variant as SportRecord>::LABEL, )+
                 MatchType::Other => "Match",
             }
         }
@@ -133,7 +133,7 @@ macro_rules! define_sport_dispatch {
                 ScoreRecord::Sets { entries } => Score::Sets(SetsScore {
                     entries: entries.clone(),
                 }),
-                $( ScoreRecord::$variant(r) => Score::$variant(<agon_core::sports::$key::$variant as Sport>::score_from_record(r)), )+
+                $( ScoreRecord::$variant(r) => Score::$variant(<agon_services_core::sports::$key::$variant as Sport>::score_from_record(r)), )+
             }
         }
 
@@ -145,7 +145,7 @@ macro_rules! define_sport_dispatch {
                 Score::Sets(s) => ScoreRecord::Sets {
                     entries: s.entries.clone(),
                 },
-                $( Score::$variant(s) => ScoreRecord::$variant(<agon_core::sports::$key::$variant as Sport>::score_to_record(s)), )+
+                $( Score::$variant(s) => ScoreRecord::$variant(<agon_services_core::sports::$key::$variant as Sport>::score_to_record(s)), )+
             }
         }
 
@@ -171,14 +171,14 @@ macro_rules! define_sport_dispatch {
 
         pub fn match_format_to_record(fmt: &MatchFormat) -> MatchFormatRecord {
             match fmt {
-                $( MatchFormat::$variant(f) => MatchFormatRecord::$variant(<agon_core::sports::$key::$variant as Sport>::format_to_record(f)), )+
+                $( MatchFormat::$variant(f) => MatchFormatRecord::$variant(<agon_services_core::sports::$key::$variant as Sport>::format_to_record(f)), )+
             }
         }
 
         /// Build the API `MatchFormat` from a stored record.
         pub fn match_format_from_record(rec: &MatchFormatRecord) -> MatchFormat {
             match rec {
-                $( MatchFormatRecord::$variant(f) => MatchFormat::$variant(<agon_core::sports::$key::$variant as Sport>::format_from_record(f)), )+
+                $( MatchFormatRecord::$variant(f) => MatchFormat::$variant(<agon_services_core::sports::$key::$variant as Sport>::format_from_record(f)), )+
             }
         }
 
@@ -200,13 +200,13 @@ macro_rules! define_sport_dispatch {
 
         pub fn live_event_input_to_record(event: &LiveEventInput) -> LiveEventPayloadRecord {
             match event {
-                $( LiveEventInput::$variant(e) => LiveEventPayloadRecord::$variant(<agon_core::sports::$key::$variant as Sport>::live_event_to_record(e)), )+
+                $( LiveEventInput::$variant(e) => LiveEventPayloadRecord::$variant(<agon_services_core::sports::$key::$variant as Sport>::live_event_to_record(e)), )+
             }
         }
 
         pub fn live_event_payload_from_record(rec: &LiveEventPayloadRecord) -> LiveEventInput {
             match rec {
-                $( LiveEventPayloadRecord::$variant(e) => LiveEventInput::$variant(<agon_core::sports::$key::$variant as Sport>::live_event_from_record(e)), )+
+                $( LiveEventPayloadRecord::$variant(e) => LiveEventInput::$variant(<agon_services_core::sports::$key::$variant as Sport>::live_event_from_record(e)), )+
             }
         }
 
@@ -224,7 +224,7 @@ macro_rules! define_sport_dispatch {
             match match_type {
                 $(
                     $tag => {
-                        type S = agon_core::sports::$key::$variant;
+                        type S = agon_services_core::sports::$key::$variant;
                         let events: Vec<_> = records
                             .iter()
                             .filter_map(|r| match &r.payload {
@@ -253,7 +253,7 @@ macro_rules! define_sport_dispatch {
         /// DAO side.
         pub fn user_stats_from_record(stats: &UserStatsRecord) -> UserStats {
             UserStats {
-                $( $key: stats.$key.as_ref().map(<agon_core::sports::$key::$variant as Sport>::stats_from_record), )+
+                $( $key: stats.$key.as_ref().map(<agon_services_core::sports::$key::$variant as Sport>::stats_from_record), )+
                 $( $gkey: stats.$gkey.as_ref().map(generic_stats_from_record), )*
                 other: stats.other.as_ref().map(generic_stats_from_record),
             }
@@ -265,7 +265,7 @@ macro_rules! define_sport_dispatch {
             match score {
                 Score::Simple(s) => s.entries.keys().map(|k| k.as_str()).collect(),
                 Score::Sets(s) => s.entries.keys().map(|k| k.as_str()).collect(),
-                $( Score::$variant(s) => <agon_core::sports::$key::$variant as Sport>::side_ids(s), )+
+                $( Score::$variant(s) => <agon_services_core::sports::$key::$variant as Sport>::side_ids(s), )+
             }
         }
 
@@ -297,7 +297,7 @@ macro_rules! define_sport_dispatch {
                 }
                 $(
                     Score::$variant(s) => Some(Score::$variant(
-                        <agon_core::sports::$key::$variant as Sport>::resolve_ids(s, side_ids, player_ids)?,
+                        <agon_services_core::sports::$key::$variant as Sport>::resolve_ids(s, side_ids, player_ids)?,
                     )),
                 )+
             }
@@ -307,7 +307,7 @@ macro_rules! define_sport_dispatch {
         /// for `Score::Simple`/`Score::Sets`, which have no such field.
         pub fn set_score_players(score: &mut Score, resolved: HashMap<String, RosterPreviewPlayer>) {
             match score {
-                $( Score::$variant(s) => <agon_core::sports::$key::$variant as Sport>::set_players(s, resolved), )+
+                $( Score::$variant(s) => <agon_services_core::sports::$key::$variant as Sport>::set_players(s, resolved), )+
                 Score::Simple(_) | Score::Sets(_) => {}
             }
         }
@@ -317,7 +317,7 @@ macro_rules! define_sport_dispatch {
         /// `Score::Simple`/`Score::Sets`, which don't reference players.
         pub fn score_player_ids(score: &Score) -> Vec<String> {
             match score {
-                $( Score::$variant(s) => <agon_core::sports::$key::$variant as Sport>::player_ids(s), )+
+                $( Score::$variant(s) => <agon_services_core::sports::$key::$variant as Sport>::player_ids(s), )+
                 Score::Simple(_) | Score::Sets(_) => Vec::new(),
             }
         }
@@ -330,7 +330,7 @@ macro_rules! define_sport_dispatch {
         /// `winner_side_id` itself.
         pub fn winner_from_score(score: &Score, side_ids: &[String]) -> Option<String> {
             match score {
-                $( Score::$variant(s) => <agon_core::sports::$key::$variant as Sport>::winner(s, side_ids), )+
+                $( Score::$variant(s) => <agon_services_core::sports::$key::$variant as Sport>::winner(s, side_ids), )+
                 Score::Simple(_) | Score::Sets(_) => None,
             }
         }
@@ -348,7 +348,7 @@ macro_rules! define_sport_dispatch {
             match score {
                 $(
                     Score::$variant(s) => {
-                        type S = agon_core::sports::$key::$variant;
+                        type S = agon_services_core::sports::$key::$variant;
                         #[allow(unreachable_patterns)]
                         let format = match format {
                             Some(MatchFormatRecord::$variant(f)) => Some(<S as Sport>::format_from_record(f)),
@@ -369,7 +369,7 @@ macro_rules! define_sport_dispatch {
         }
     };
 }
-agon_core::for_each_sport!(define_sport_dispatch);
+agon_services_core::for_each_sport!(define_sport_dispatch);
 
 /// How many matches `stats` records played in `sport_tag` (`match_type_tag`'s
 /// output) — the figure an `EligibilityRuleRecord::MinMatchesPlayed` rule
@@ -380,10 +380,25 @@ agon_core::for_each_sport!(define_sport_dispatch);
 /// uncategorized sport has nothing meaningful to compare, so it's always
 /// unmet rather than silently falling back to a wrong count).
 pub fn matches_played_for_sport(stats: &UserStatsRecord, sport_tag: &str) -> u64 {
-    if sport_tag == "other" {
-        return 0;
+    match sport_tag {
+        "cricket" => stats
+            .cricket
+            .as_ref()
+            .map_or(0, |s| s.common.matches_played),
+        "football" => stats
+            .football
+            .as_ref()
+            .map_or(0, |s| s.common.matches_played),
+        "tennis" => stats.tennis.as_ref().map_or(0, |s| s.matches_played),
+        "badminton" => stats.badminton.as_ref().map_or(0, |s| s.matches_played),
+        "squash" => stats.squash.as_ref().map_or(0, |s| s.matches_played),
+        "table_tennis" => stats.table_tennis.as_ref().map_or(0, |s| s.matches_played),
+        "netball" => stats
+            .netball
+            .as_ref()
+            .map_or(0, |s| s.common.matches_played),
+        _ => 0,
     }
-    stats.common(sport_tag).map_or(0, |s| s.matches_played)
 }
 
 pub fn open_join_audience_from_record(rec: OpenJoinAudienceRecord) -> OpenJoinAudience {
@@ -630,7 +645,7 @@ pub fn published_ratings_from_record(user: &UserRecord) -> Vec<LadderRating> {
 /// the day, and recomputing it would quietly rewrite that.
 #[must_use]
 pub fn rating_history_point_from_record(
-    rec: &agon_core::dao::records::RatingHistoryRecord,
+    rec: &agon_services_core::dao::records::RatingHistoryRecord,
 ) -> RatingHistoryPoint {
     let after = display(rec.movement.mu_after, rec.movement.sigma_after);
     RatingHistoryPoint {
@@ -1306,7 +1321,7 @@ pub fn match_player_from_record(
     }
 }
 
-/// See `agon_core::dao::records::MatchPlayerRole`'s doc comment for why this
+/// See `agon_services_core::dao::records::MatchPlayerRole`'s doc comment for why this
 /// is its own type rather than a reuse of the team role.
 pub fn match_player_role_from_record(rec: MatchPlayerRoleRecord) -> MatchPlayerRole {
     match rec {
@@ -1757,7 +1772,7 @@ pub struct UnratablePlayers {
     /// used to be the other, and is not a reason for anything now: every
     /// account is rated from the first match it completes, and the number is
     /// published once its placement matches are behind it
-    /// (`agon_core::rating::placement`) — which nobody can opt into or out
+    /// (`agon_services_core::rating::placement`) — which nobody can opt into or out
     /// of, so it is not a reason to keep anyone out of a match.
     pub without_account: Vec<String>,
 }
@@ -1931,7 +1946,7 @@ pub fn search_match_from_records(
     rec: &MatchRecord,
     sides: &[MatchSideRecord],
     users: &std::collections::HashMap<String, UserRecord>,
-    outcome: Option<agon_core::search::MatchOutcome>,
+    outcome: Option<agon_services_core::search::MatchOutcome>,
     i_liked: bool,
     tournaments: &std::collections::HashMap<String, TournamentRecord>,
 ) -> SearchMatch {
@@ -1978,11 +1993,11 @@ pub fn search_match_from_records(
 }
 
 /// Map the search client's outcome enum to the API's.
-fn match_outcome_from_search(outcome: agon_core::search::MatchOutcome) -> MatchOutcome {
+fn match_outcome_from_search(outcome: agon_services_core::search::MatchOutcome) -> MatchOutcome {
     match outcome {
-        agon_core::search::MatchOutcome::Won => MatchOutcome::Won,
-        agon_core::search::MatchOutcome::Lost => MatchOutcome::Lost,
-        agon_core::search::MatchOutcome::Draw => MatchOutcome::Draw,
+        agon_services_core::search::MatchOutcome::Won => MatchOutcome::Won,
+        agon_services_core::search::MatchOutcome::Lost => MatchOutcome::Lost,
+        agon_services_core::search::MatchOutcome::Draw => MatchOutcome::Draw,
     }
 }
 
@@ -2410,11 +2425,11 @@ mod tests {
     /// is what keeps a retuned scale from rewriting what a card once said.
     #[test]
     fn a_history_point_reports_the_rating_after_its_match() {
-        let rec = agon_core::dao::records::RatingHistoryRecord {
+        let rec = agon_services_core::dao::records::RatingHistoryRecord {
             ladder: "squash".to_string(),
             match_id: "m1".to_string(),
             played_at: "2026-06-01T18:00:00.000Z".to_string(),
-            movement: agon_core::dao::records::RatingMovementRecord {
+            movement: agon_services_core::dao::records::RatingMovementRecord {
                 mu_before: 25.0,
                 sigma_before: 8.333,
                 mu_after: 26.0,
@@ -2822,8 +2837,8 @@ mod tests {
         assert!(creating.contains("friendly"), "{creating}");
     }
 
-    fn rated(matches_rated: u64) -> agon_core::dao::records::RatingRecord {
-        agon_core::dao::records::RatingRecord {
+    fn rated(matches_rated: u64) -> agon_services_core::dao::records::RatingRecord {
+        agon_services_core::dao::records::RatingRecord {
             mu: 27.0,
             sigma: 2.0,
             matches_rated,

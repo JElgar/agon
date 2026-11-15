@@ -8,7 +8,7 @@ use super::SportRecord;
 use crate::dao::records::{BestFigureRecord, GenericSportStatsRecord};
 
 /// Football's stored score: the `ScoreRecord::Football` variant. Its stored shape is
-/// guarded by `agon_core/tests/football_score_record_roundtrip.rs`.
+/// guarded by `agon_services_core/tests/football_score_record_roundtrip.rs`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FootballScoreRecord {
     /// Goal tally, keyed by side id. `#[serde(default)]` because this

@@ -7,12 +7,12 @@
 
 mod common;
 
-use agon_core::dao::stats::{MatchContribution, MatchOutcome};
-use agon_core::sports::cricket::{
+use agon_services_core::dao::stats::{MatchContribution, MatchOutcome};
+use agon_services_core::sports::cricket::{
     BestBowlingFiguresRecord, Cricket, CricketBattingEntryRecord, CricketBowlingEntryRecord,
     CricketScoreInningsRecord, CricketScoreRecord, CricketStatsRecord, OversRecord,
 };
-use agon_core::sports::{SportContribution, SportRecord};
+use agon_services_core::sports::{SportContribution, SportRecord};
 use common::{TestEnv, local_env};
 
 fn unique(prefix: &str) -> String {
@@ -103,10 +103,10 @@ async fn cricket_bests_are_stored_in_their_record_shape_and_only_ratchet_up() {
         "stats": {},
         "created_at": "2026-01-01T00:00:00.000Z",
     });
-    let item = agon_core::dao::item::to_item(
-        &agon_core::dao::keys::Pk::User(user_id.clone()),
-        &agon_core::dao::keys::Sk::Profile,
-        agon_core::dao::user::TYPE_USER,
+    let item = agon_services_core::dao::item::to_item(
+        &agon_services_core::dao::keys::Pk::User(user_id.clone()),
+        &agon_services_core::dao::keys::Sk::Profile,
+        agon_services_core::dao::user::TYPE_USER,
         &profile,
     )
     .expect("build profile item");

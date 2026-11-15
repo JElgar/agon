@@ -38,6 +38,9 @@ importers:
       '@pulumi/pulumi':
         specifier: ^3.113.0
         version: 3.169.0(typescript@5.8.3)
+      '@pulumi/random':
+        specifier: ^4.21.6
+        version: 4.21.6(typescript@5.8.3)
       '@pulumi/std':
         specifier: ^1.7.3
         version: 1.7.3(typescript@5.8.3)
@@ -295,6 +298,9 @@ packages:
         optional: true
       typescript:
         optional: true
+
+  '@pulumi/random@4.21.6':
+    resolution: {integrity: sha512-HsWUATAcKxceBcvNzPIdkC7sXyWWiGZmd/y4eZKF5nSAwCgpOPReZ+LLFbkl2bvKGHc3nNX5vIM84YU2dpSD1Q==}
 
   '@pulumi/std@1.7.3':
     resolution: {integrity: sha512-rQnwBjlSQtem7gvfIlAgFwpvC9HXxDuYeu99WifcN+QY+uTRyyq3IMHak7dVgPQmVr/GEHqkugZeAV6cBwL/lQ==}
@@ -1663,6 +1669,15 @@ snapshots:
     transitivePeerDependencies:
       - bluebird
       - supports-color
+
+  '@pulumi/random@4.21.6(typescript@5.8.3)':
+    dependencies:
+      '@pulumi/pulumi': 3.169.0(typescript@5.8.3)
+    transitivePeerDependencies:
+      - bluebird
+      - supports-color
+      - ts-node
+      - typescript
 
   '@pulumi/std@1.7.3(typescript@5.8.3)':
     dependencies:
